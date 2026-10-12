@@ -8148,11 +8148,11 @@ is refused rather than devirtualized — and the registry's recorded name must s
 constructor. Either check failing leaves the call on the dynamic path, which is the correct
 conservative answer: the rewrite declines on any uncertainty (ADR-182).
 
-**Guarded by** `crates/cli/tests/mono_differential.rs`
-`a_stale_record_id_is_not_devirtualized_to_whatever_the_name_means_now` — a `defrecord`
-named `shape` is rebound to a plain fn returning a bare map while its id stays registered,
-and `BROOD_MONO=1` must answer byte-identically to the dynamic path. A differential rather
-than a pinned string, so it cannot pass by agreeing with a wrong expectation.
+**Guarded by** `crates/cli/tests/devirt_differential.rs`
+`every_way_the_proof_lapses_answers_what_the_op_answers` (the two "stale record id" cases
+and "a constructor rebound after the caller compiled") — a `defrecord` named `shape` is
+rebound to a plain fn returning a bare map while its id stays registered, and every tier
+must answer what the tree-walker answers, with the record call seen to devirtualize.
 
 **Residual.** This closes the reachable path (a stale id, or a name rebound to something
 else). It does not make the registry itself self-cleaning — that is KI-89, still open.
@@ -13090,3 +13090,23 @@ profile overrides only `binary(suite)` to 25 minutes, and ci.yml's tree-walker s
 with `--profile tree-walker`; the VM jobs keep the 15-minute kill. **Guard.** The next CI
 runs' tree-walker suite line should read `PASS` on the first try — a `TRY 1 TMT` there is
 this entry again.
+
+## KI-223 — the opt-in ability devirtualization disagreed with the op's own dispatch ✅ FIXED 2026-10-12
+
+**Symptom.** Under `BROOD_MONO=1`, five programs answered differently from the default:
+an armed op contract was skipped (`42` where the contract should have raised); an op
+redefined after its caller compiled was ignored; a record constructor redefined after its
+caller compiled was ignored (the record's impl answered instead of `DEFAULT`, KI-90 class);
+an impl registered by a later argument of the same call was missed; and removing the impl
+of an op with no `:default` gave "cannot call non-function: nil" instead of the op's "no
+impl" error. **Cause.** The rewrite resolved the impl at compile time (or before the
+arguments ran) and called it directly, bypassing the op's body — its contract, its current
+definition and its `%no-impl` fallback. **Why it survived.** The flag was opt-in and no
+program set it; the old differential compared it only on the ability suite. **Fix.** Found
+while making devirtualization the default (the flag is gone). The rewritten head is
+`%dispatch-proven`, which returns the impl only while the op and constructor are still what
+the compiler saw and an impl exists, and otherwise the op itself. Calls whose later
+arguments can run user code, rebound or wrapped op names, rejected arities and
+contract-armed runs are not rewritten. **Guard.** `crates/cli/tests/devirt_differential.rs`:
+tiers 1 and 2 against the tree-walker on the ability suite and on one fixture per case,
+each asserting the rewrite fired (or was skipped); every guard sabotage-verified.

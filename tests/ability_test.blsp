@@ -447,7 +447,7 @@
     (is (not (abt-warns-about? "(defmodule u) (defrecord money (cents)) (defability Amt :sealed [:int :float money] (amt [self] :-> float)) (impl Amt :int (amt [n] 1.0)) (impl Amt :float (amt [n] n)) (impl Amt u/money (amt [m] 1.0)) (sig f (Amt -> float)) (defn f (x) (amt x)) (defn a () (f 42)) (defn b () (f 1.5)) (defn c () (f (money 500)))"
                "argument 1")))))
 
-(describe "direct-constructor ability calls (the BROOD_MONO Tier-1 devirt target)"
+(describe "direct-constructor ability calls (the Tier-1 devirtualization target)"
   ;; `Size` (above) has circle/rect impls. Calling an op with a DIRECT constructor arg
   ;; `(size (circle …))` is the shape the direct-constructor devirtualization rewrites;
   ;; the RESULT must be identical whether or not mono is on (verified byte-identical), and

@@ -316,6 +316,17 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         dispatch,
     );
+    // The head of a devirtualized ability call (ADR-182/294): `%dispatch` behind a guard
+    // that the op (and a constructor receiver's constructor) is still what the compiler
+    // proved. Internal; only `inline::mono_devirtualize` emits it.
+    primitives.def(
+        "%dispatch-proven",
+        Arity::range(5, 7),
+        Sig::new(vec![any, any, map_ty, any, any, any, any], any),
+        &[],
+        "",
+        dispatch_proven,
+    );
     // Atomic registry update (KI-22): the read-modify-write of a global holding a whole
     // registry map, done in ONE kernel call so two concurrent registrations cannot each
     // read the old map and clobber each other. Internal; `register-impl`/`provide`/
@@ -1309,6 +1320,25 @@ pub(super) fn map_into(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// cache-transparent memo of `impl-for`; see [`Heap::vm_dispatch`].
 pub(super) fn dispatch(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.vm_dispatch(arg(args, 0), arg(args, 1), arg(args, 2)))
+}
+
+/// `(%dispatch-proven op proven-op impls op-key id [ctor proven-ctor])` — the head a
+/// devirtualized ability call computes (`inline::mono_devirtualize`): the impl for the
+/// compile-time-proven `id`, or `op` itself — its CURRENT binding — whenever the proof no
+/// longer holds, so the call then runs the op's own dispatch and answers exactly what the
+/// dynamic call would. The proof holds while `op` is still the closure the compiler saw and,
+/// for a constructor receiver, `ctor` is still the constructor whose `:__id__` is `id`. A
+/// missing impl also answers `op`, so the op raises its own `%no-impl` error.
+pub(super) fn dispatch_proven(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let same = |a: Value, b: Value| matches!((a, b), (Value::Fn(x), Value::Fn(y)) if x == y);
+    let op = arg(args, 0);
+    if !same(op, arg(args, 1)) || (args.len() == 7 && !same(arg(args, 5), arg(args, 6))) {
+        return Ok(op);
+    }
+    match heap.vm_dispatch(arg(args, 2), arg(args, 3), arg(args, 4)) {
+        Value::Nil => Ok(op),
+        resolved => Ok(resolved),
+    }
 }
 
 /// `(%registry-update! name op path value)` — atomically read-modify-write a global that

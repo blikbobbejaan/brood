@@ -57,7 +57,7 @@ Resolution and location are re-derived in many places, each answering one slice 
   is loaded, and the require-edge graph used to materialize an image.
 - **The startup image** — an imaged prelude + modules with a manifest of what it holds.
 - **The incremental `nest check` cache** (ADR-129) — check results keyed by file.
-- **`*record-ids*`** — record-constructor id registry the `BROOD_MONO` devirtualizer reads
+- **`*record-ids*`** — record-constructor id registry the ability devirtualizer (ADR-182) reads
   to prove an ability call site.
 - **The LSP** re-derives symbol → site and `namespace → file` by scanning `defmodule`
   forms and `source-location` records on demand (`introspect::resolve_in_source`,
@@ -106,7 +106,7 @@ name  → { :module  "http"        ; the qualified module it belongs to
 
 module   → { :file "…" :provides [names…] :uses [modules…] }
 feature  → provider-module            ; subsumes the module→file question
-ability  → [impl-module…]             ; the consolidated dispatch view (BROOD_MONO)
+ability  → [impl-module…]             ; the consolidated dispatch view (devirtualization)
 ```
 
 Three properties make it safe and useful:
@@ -128,8 +128,8 @@ Three properties make it safe and useful:
   index build — a duplicate key is the collision. Reserved-name enforcement, prelude-shadow
   warnings, and the duplicate-def pass become index queries rather than separate passes.
 - **Ability → impl and feature → provider indexing.** Powers "show all implementations",
-  dead-module detection, and — notably — makes `BROOD_MONO` devirtualization a *default*
-  rather than an opt-in, since "all impls of this ability" is exactly what it needs.
+  dead-module detection, and an index the devirtualizer (ADR-182, always on) could read
+  instead of walking `*impls*`-shaped registries.
 - **Whole-program queries get cheap.** Every public symbol, every module that `:use`s X,
   modules never required, the full API surface for `nest doc` — index scans, not
   load-the-world.

@@ -1,0 +1,102 @@
+;; The reference categories (std/tool/doc-catalog.blsp) are DERIVED from where each name is
+;; defined, so these gates check the derivation and its tables rather than a per-name list:
+;; every public language name lands in a category, and every table entry still names a real
+;; module, prelude section or primitive.
+
+(defmodule doc-catalog-test (:use test) (:use-internals doc-catalog) (:use-internals docs))
+
+;; The language surface the reference documents: the bare public functions and macros —
+;; the same filter `docs/model-all` and hive's `/reference` apply.
+(defn- language-names ()
+  (seq/keep (reflect/global-names)
+    (fn (s)
+      (let (name (->string s) slash (index-of name "/"))
+        (when (and (< slash 1)
+                (not (includes? name "--"))
+                (not (string/starts-with? name "%"))
+                (not (reflect/private? s))
+                (or (fn? (reflect/eval s)) (= (type-of (reflect/eval s)) :macro)))
+          name)))))
+
+(defn- header-matches (key)
+  (seq/filter doc-catalog/prelude-headers
+    (fn (entry) (doc-catalog/header-key? (second entry) key))))
+
+(describe "doc catalogue: categories derive from the definition site"
+  (test "a prelude name takes its section's category"
+    (assert= (doc-catalog/category-of "+") :math)
+    (assert= (doc-catalog/category-of "spawn") :processes)
+    (assert= (doc-catalog/category-of "match") :patterns)
+    (assert= (doc-catalog/category-of "assoc") :maps))
+  (test "a qualified name takes its module's category"
+    (assert= (doc-catalog/category-of "string/length") :strings)
+    (assert= (doc-catalog/category-of "path/join") :filesystem)
+    (assert= (doc-catalog/category-of "editor/buffer/insert") :other))
+  (test "a kernel primitive is placed by the kernel table"
+    (assert= (doc-catalog/section-of "cons") nil)
+    (assert= (doc-catalog/category-of "cons") :collections))
+  (test "an exception overrides its section"
+    (assert= (doc-catalog/derived-category "last") :errors)
+    (assert= (doc-catalog/category-of "last") :collections))
+  (test "an unknown name is :other"
+    (assert= (doc-catalog/category-of "no-such-name-xyzzy") :other)))
+
+(describe "doc catalogue: every public name has a category"
+  (test "nothing falls through to :other"
+    (let (names (language-names))
+      ;; The corpus first: an empty one would pass the check below vacuously.
+      (is (> (count names) 150))
+      (assert= (sort (seq/filter names (fn (n) (= (doc-catalog/category-of n) :other)))) (list))))
+  (test "the generated reference has no Other group and documents the core"
+    (let (groups (:modules (docs/model-all))
+          titles (map groups :module)
+          math (seq/find groups (fn (g) (= (:module g) "Math and numbers"))))
+      (is (not (includes? titles "Other")))
+      (is (includes? (map (:defs math) :name) "+")))))
+
+(describe "doc catalogue: every table entry names something that exists"
+  (test "every category used is a known category"
+    (let (known (into #{} (map doc-catalog/*category-order* first))
+          used (append (vals doc-catalog/*module-categories*)
+                 (vals doc-catalog/*section-categories*)
+                 (vals doc-catalog/*kernel-categories*)
+                 (vals doc-catalog/*exceptions*)))
+      (assert= (seq/filter used (fn (c) (or (= c :other) (not (contains? known c))))) (list))))
+  (test "every module entry is a shipped module"
+    (let (shipped (into #{} (map (reflect/builtin-modules) ->string)))
+      (assert= (seq/filter (keys doc-catalog/*module-categories*)
+                 (fn (m) (not (contains? shipped m))))
+        (list))))
+  (test "every section entry matches exactly one prelude section header"
+    (is (> (count doc-catalog/prelude-headers) 40))
+    (assert= (seq/filter (keys doc-catalog/*section-categories*)
+               (fn (key) (not (= (count (header-matches key)) 1))))
+      (list)))
+  (test "no prelude section header is claimed by two entries"
+    (assert= (seq/filter doc-catalog/prelude-headers
+               (fn (entry)
+                 (> (count (seq/filter (keys doc-catalog/*section-categories*)
+                             (fn (key) (doc-catalog/header-key? (second entry) key))))
+                   1)))
+      (list)))
+  (test "every kernel entry is bound and has no Brood definition site"
+    (assert= (seq/filter (keys doc-catalog/*kernel-categories*)
+               (fn (name)
+                 (let (s (string/->symbol name))
+                   (or (not (bound? s)) (not (nil? (reflect/source-location s)))))))
+      (list)))
+  (test "every exception is a prelude definition its section would misplace"
+    (assert= (seq/filter doc-catalog/*exceptions*
+               (fn (pair)
+                 (let ([name category] pair)
+                   (or (nil? (doc-catalog/section-of name))
+                     (= (doc-catalog/derived-category name) category)))))
+      (list))))
+
+(describe "doc catalogue: across processes"
+  :isolated (test "workers derive the same categories as the parent"
+    (let (names ["+" "spawn" "cons" "last" "string/length" "no-such-name-xyzzy"]
+          expected (map names doc-catalog/category-of)
+          results (concurrently 8 (fn (_) (map names doc-catalog/category-of))))
+      (assert= (count results) 8)
+      (is (every? results (fn (r) (= r expected)))))))

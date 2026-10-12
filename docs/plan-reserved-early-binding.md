@@ -30,8 +30,8 @@ Target callees: reserved **prelude defns** (`get`, `map`, `filter`, `reduce`,
   reserved surface, so any resolution keyed on it is automatically conservative there.
 - `resolve_prim` (`compile.rs:646`) / `resolve_prim1` (`:742`) — the model for
   compile-time head resolution to inline ops. Phase 1 adds the *defn* analogue.
-- The BROOD_MONO devirtualization (`compile.rs` ~1021, ADR-182) — already turns a
-  call head into a **`Const` callee** and the exec/dispatch path already runs one. This
+- The ability devirtualization (`inline.rs::mono_devirtualize`, ADR-182) — already turns a
+  call head into a **computed callee** and the exec/dispatch path already runs one. This
   is the closest existing precedent for baking a resolved callee; reuse its shape, but
   see the caveat under Step B (a plain `Const` callee falls to the *computed-head*
   path, which skips the fast-link — Phase 1 must keep the fast-link).

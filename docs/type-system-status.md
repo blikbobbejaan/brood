@@ -122,7 +122,7 @@ inference or a compiler channel (5, 7), and adoption (9), which is ongoing by na
 | ~~4~~ | ~~Subtyping across terms is incomplete~~ | **Shipped** (ADR-289): the set-theoretic product rule over subsets of the alternatives, so `(tuple int\|string, int)` is proven under `(tuple int int) \| (tuple string int)`. Extended to arrows by ADR-292, where an intersection satisfies a requirement no single arm does — checked against a brute-force model of what an arrow denotes, 0 unsound and 0 missed in 2.5M pairs | ✅ |
 | ~~5~~ | ~~Return-type dispatch~~ — selecting an impl by expected return | **Declined, not deferred** (ADR-361, 2026-09-17): it can only be a checker-driven rewrite, which the advisory rule (ADR-123/124) forbids; generic code names its target as a value (a seed, an exemplar, a receiver). A multimethod keyed on a type designator is the door left open | 🚫 |
 | ~~6~~ | ~~Qualified cross-module ability type names~~ | **Shipped 2026-08-29** — and the headline was already done: in a PROJECT check both `Shape` and `shapes/Shape` resolve, because `ability_type` reads the last `/` segment (the registry is keyed by bare CamelCase name, ADR-255). What was broken was the loose single-file fallback, where neither can resolve and the checker falls back to "capitalised means an ability I cannot see" — that test read the WHOLE spelling, so `shapes/Shape` reported `unknown type` while bare `Shape` was accepted. Naming the module an ability comes from must not be what manufactures a diagnostic | ✅ |
-| 7 | **Tier-2 monomorphization** — devirtualizing an *inferred-variable* op call | Still deferred, and now for a better-founded reason. Turning `BROOD_MONO` on for the first time (2026-08-29 — **nothing in the repo had ever set it**) found Tier 1 miscompiling: it baked the resolved impl *value*, and a body compiles before it runs, so a module registering an impl and using it in the same body called the wrong one. Fixed by proving the identity and leaving resolution behind the epoch-guarded cache (ADR-294), and gated by a differential. Tier 2 multiplies that surface across every call site the checker can type and still needs the checker→compiler channel — but it now has a sound base and a gate that catches a miscompile the first time the flag goes on | Large |
+| 7 | **Tier-2 monomorphization** — devirtualizing an *inferred-variable* op call | Still deferred. Tier 1 (always on since ADR-398) proves only the identity, leaves resolution behind the epoch-guarded cache (ADR-294), and re-checks the op's and constructor's bindings per call; `devirt_differential.rs` gates it against the tree-walker. Tier 2 multiplies that surface across every call site the checker can type and still needs the checker→compiler channel, and perf-handoff Task 5 found no workload with a site | Large |
 | ~~8~~ | ~~Runtime contracts for ability ops~~ | **Shipped 2026-08-29** (ADR-293): `impl` wraps a method whose op declares `:-> RET`, decided at expansion time so an unset flag emits nothing. Building it revealed `BROOD_CONTRACTS=1` had rotted into *unusable* — three cold-boot-cache-only defects, none of which any gate could see, because the mode had no end-to-end test at all (KI-81) | ✅ |
 | 9 | **`sig` adoption across std** — **787** declarations over **3357** `defn`s on 2026-09-12 (407/2942 on 2026-08-29; 34/2828 on 2026-08-28), plus 12 `deftype`s; +54 on 2026-09-20, chosen by the load graph | Every one now buys more than it did: a declared sig is what the reversed-args gate (KI-71) reads, and inference is checked against it (ADR-259). The strict sweeps of 2026-08-30 and 2026-09-07 were mostly this. Since ADR-370 a public declaration the checker reads as-is also rides in the stdlib image's footer (**196 of 2788 names** on 2026-09-20, from 146 — a type-variable declaration rides now, a `%defseq` definition is indexed, and a curated name never loads), so a check that never loads the module knows it; `BROOD_IMAGE_TRACE=1 brood --check f.blsp` names every reference still holding a load open — the next names to declare | Ongoing |
 
@@ -174,10 +174,12 @@ open → `any`). Missing-impl warnings, sealed exhaustiveness, per-module op-nam
 record patterns in `match` with exhaustiveness, provided op bodies, ability bounds in a `sig`,
 and `:requires` super-ability conformance.
 
-### Devirtualization (ADR-182) — `BROOD_MONO`, off by default
-Tier 1 rewrites an op call with a literal or direct-constructor first arg to a direct impl
-call. Flag-off is provably inert. Tier 2 (inferred-variable dispatch — the real hot-loop win)
-is unstarted; see [ability-monomorphization.md](ability-monomorphization.md).
+### Devirtualization (ADR-182) — always on
+Tier 1 rewrites an op call with a literal or direct-constructor first arg so it skips the
+op's `%identity-of`; the impl is still resolved per call, and a rebound op or constructor
+falls back to the op itself. The tree-walker never runs it and is the differential reference
+(`crates/cli/tests/devirt_differential.rs`). Tier 2 (inferred-variable dispatch) is deferred;
+see [ability-monomorphization.md](ability-monomorphization.md).
 
 ### Reach
 `nest check` / `nest test` / `nest run` / `brood <file>` / `brood --check`; MCP `load`/`check`;
@@ -203,7 +205,7 @@ requires a new special form to declare what its body is for.
 | The reach gate (`REACH_CASES`) and the lattice/checker tests | `crates/lisp/src/types/check/tests.rs`, `types/tests.rs` |
 | Ability/multimethod checks | `crates/lisp/src/types/check/protocol.rs` |
 | Record-pattern exhaustiveness | `crates/lisp/src/types/check/exhaustive.rs` |
-| Devirtualization (`BROOD_MONO`) | `crates/lisp/src/eval/compile/inline.rs` |
+| Devirtualization (ADR-182) | `crates/lisp/src/eval/compile/inline.rs` |
 | REPL advisory check | `std/tool/repl.blsp` |
 | LSP hover / diagnostics | `crates/lsp/src/{hover,main}.rs` |
 

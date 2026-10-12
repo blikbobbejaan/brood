@@ -398,16 +398,24 @@ pub fn is_prelude_source(file: &str) -> bool {
 /// when missing or stale (a new build ships a different prelude). Editing it
 /// has no effect — it's a navigation artefact, not a load path.
 ///
-/// Returns `None` if no cache dir can be determined or the write fails; the
-/// caller treats that as "stdlib navigation unavailable" and carries on.
+/// A cache dir that cannot be written (a read-only `HOME` in a container) falls
+/// back to the system temp dir: the doc catalogue derives categories from these
+/// definition sites, so a missing file would empty the reference, not just
+/// navigation. Returns `None` only if neither can be written; the caller treats
+/// that as "stdlib navigation unavailable" and carries on.
 pub(crate) fn prelude_source_path() -> Option<String> {
     use std::path::PathBuf;
-    let base = std::env::var_os("XDG_CACHE_HOME")
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    let dir = base.join("brood");
-    std::fs::create_dir_all(&dir).ok()?;
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    cache_base
+        .and_then(|base| write_prelude_copy(&base.join("brood")))
+        .or_else(|| write_prelude_copy(&std::env::temp_dir().join("brood")))
+}
+
+fn write_prelude_copy(dir: &std::path::Path) -> Option<String> {
+    std::fs::create_dir_all(dir).ok()?;
     let path = dir.join("prelude.blsp");
     // Rewrite only when the on-disk copy is absent or differs from this build's
     // embedded prelude — keeps the file stable across runs and across versions.

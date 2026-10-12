@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use crate::core::blob::SharedBlob;
 use crate::core::heap::Heap;
-use crate::core::value::{self, Closure, ClosureId, EnvId, Symbol, Value};
+use crate::core::value::{self, Closure, ClosureId, EnvId, MapId, NativeId, Symbol, Value};
 use crate::error::{LispError, Pos};
 
 /// A `Send`, self-contained copy of a value, for crossing heaps.
@@ -306,7 +306,7 @@ pub fn to_message(heap: &Heap, v: Value) -> Result<Message, LispError> {
 }
 
 fn to_message_timed(heap: &Heap, v: Value) -> Result<Message, LispError> {
-    to_message_rec(heap, v, &mut Vec::new(), 0, None)
+    copy_value(&mut IntoMessage::new(None), heap, v, 0)
 }
 
 /// [`to_message`], but told which runtime the message is destined for. When that is *this*
@@ -318,7 +318,7 @@ pub fn to_message_to_runtime(
     v: Value,
     dest_runtime: Option<u64>,
 ) -> Result<Message, LispError> {
-    to_message_rec(heap, v, &mut Vec::new(), 0, dest_runtime)
+    copy_value(&mut IntoMessage::new(dest_runtime), heap, v, 0)
 }
 
 thread_local! {
@@ -349,7 +349,7 @@ impl Drop for ImageNativeMode {
 /// re-resolves). Everything else behaves exactly as `to_message`.
 pub fn to_message_image(heap: &Heap, v: Value) -> Result<Message, LispError> {
     let _mode = ImageNativeMode::enter();
-    to_message_rec(heap, v, &mut Vec::new(), 0, None)
+    copy_value(&mut IntoMessage::new(None), heap, v, 0)
 }
 
 /// The death reason for a process killed by an uncaught error: `[:error {…}]`,
@@ -403,222 +403,385 @@ pub fn error_reason(e: &crate::error::LispError) -> Message {
     Message::Vector(vec![kw(crate::process::keywords::ERROR), Message::Map(m)])
 }
 
-/// `visited` carries the closures currently being serialised, so a self- or
-/// mutually-recursive *local* closure is rejected cleanly instead of looping.
-fn to_message_rec(
-    heap: &Heap,
+// ===== The value walker ======================================================
+//
+// One deep-copy traversal serves both ways a value leaves its heap: serialised into a
+// heap-independent [`Message`] ([`IntoMessage`] — every send, the dist wire, the startup
+// image) and copied straight into a parked receiver's heap ([`IntoHeap`] — the L1 fast
+// path, [`copy_cross_heap`]). What differs — the output, the budget, and which values
+// decline and how — is a [`CopyTarget`]. The walker is generic over it and every target
+// method is `#[inline]`, so each target gets its own monomorphised walker: no dynamic
+// dispatch, no runtime test of which target is active, and the other target's hooks (a
+// budget charge that is a no-op for a message, a `Message` constructor the heap copy never
+// calls) compile away.
+
+/// What [`copy_value`] builds and when it stops.
+trait CopyTarget {
+    /// The copied value: a [`Message`], or a [`Value`] in the destination heap.
+    type Out;
+    /// Why the walk stopped: a user-facing [`LispError`] for a message, or [`Declined`]
+    /// for the L1 copy (whose caller falls back to the `Message` path, which then
+    /// produces the error).
+    type Decline;
+    /// Charge one node of work: called once per value visited and once per cons cell.
+    fn charge(&mut self) -> Result<(), Self::Decline>;
+    /// Decline up front a container of `nodes` children that cannot fit, before it is
+    /// materialised. Checked against the budget, not charged to it — the children are
+    /// charged as the walk visits them.
+    fn reserve(&mut self, nodes: i64) -> Result<(), Self::Decline>;
+    /// A value this target cannot carry; `error` is the user-facing reason.
+    fn refuse(&mut self, error: impl FnOnce() -> LispError) -> Self::Decline;
+    /// A leaf: `into_heap` builds it in the destination heap, `into_message` as a message.
+    /// Each target calls exactly one.
+    fn leaf(
+        &mut self,
+        into_heap: impl FnOnce(&mut Heap) -> Value,
+        into_message: impl FnOnce() -> Message,
+    ) -> Self::Out;
+    /// A LOCAL string whose payload is an `Arc` — it crosses by handle (an atomic
+    /// increment, no payload copy) either way.
+    fn shared_string(&mut self, blob: Arc<SharedBlob>) -> Self::Out;
+    /// A list (from a cons spine or a range); `whole` is the source value, for its
+    /// source position.
+    fn list(&mut self, src: &Heap, whole: Value, items: Vec<Self::Out>) -> Self::Out;
+    fn vector(&mut self, items: Vec<Self::Out>) -> Self::Out;
+    fn map(&mut self, entries: Vec<(Self::Out, Self::Out)>) -> Self::Out;
+    fn set(&mut self, elements: Vec<Self::Out>) -> Self::Out;
+    fn failure(&mut self, src: &Heap, id: MapId, depth: u32) -> Result<Self::Out, Self::Decline>;
+    fn closure(
+        &mut self,
+        src: &Heap,
+        v: Value,
+        id: ClosureId,
+        depth: u32,
+    ) -> Result<Self::Out, Self::Decline>;
+    fn native(&mut self, src: &Heap, id: NativeId) -> Result<Self::Out, Self::Decline>;
+}
+
+/// Deep-copy `v` out of `src` into `target`'s form.
+fn copy_value<T: CopyTarget>(
+    target: &mut T,
+    src: &Heap,
     v: Value,
-    visited: &mut Vec<ClosureId>,
     depth: u32,
-    dest_runtime: Option<u64>,
-) -> Result<Message, LispError> {
+) -> Result<T::Out, T::Decline> {
     // Every 32 levels, make sure the next 32 fit (see [`grow`]); the modulus keeps the
     // remaining-stack read off the per-node path.
     if depth % 32 == 31 {
-        grow(|| to_message_rec_inner(heap, v, visited, depth, dest_runtime))
+        grow(|| copy_value_inner(target, src, v, depth))
     } else {
-        to_message_rec_inner(heap, v, visited, depth, dest_runtime)
+        copy_value_inner(target, src, v, depth)
     }
 }
 
-fn to_message_rec_inner(
-    heap: &Heap,
+fn copy_value_inner<T: CopyTarget>(
+    target: &mut T,
+    src: &Heap,
     v: Value,
-    visited: &mut Vec<ClosureId>,
     depth: u32,
-    dest_runtime: Option<u64>,
-) -> Result<Message, LispError> {
+) -> Result<T::Out, T::Decline> {
     if depth >= MAX_MESSAGE_DEPTH {
-        return Err(LispError::runtime(format!(
-            "value nested deeper than {MAX_MESSAGE_DEPTH} levels (cannot serialise)",
-        ))
-        .with_code(crate::error::error_codes::MESSAGE_TOO_DEEP)
-        .with_hint(
-            "messages cross processes by deep copy — flatten or chunk the data \
-             (e.g. send a list of items rather than one nested tree)",
-        ));
+        return Err(target.refuse(|| {
+            LispError::runtime(format!(
+                "value nested deeper than {MAX_MESSAGE_DEPTH} levels (cannot serialise)",
+            ))
+            .with_code(crate::error::error_codes::MESSAGE_TOO_DEEP)
+            .with_hint(
+                "messages cross processes by deep copy — flatten or chunk the data \
+                 (e.g. send a list of items rather than one nested tree)",
+            )
+        }));
     }
+    // Charged *before* the copy so an over-budget walk stops adding work rather than
+    // finishing the node it is on.
+    target.charge()?;
     Ok(match v {
-        Value::Nil => Message::Nil,
-        Value::Bool(b) => Message::Bool(b),
-        Value::Int(n) => Message::Int(n),
-        Value::BigInt(id) => Message::BigInt(heap.bigint(id).to_string()),
-        // A decimal ships as its canonical decimal string (mirrors BigInt).
-        Value::Decimal(id) => Message::Decimal(heap.decimal(id).to_string()),
-        // A ratio ships as its `num/den` string (mirrors BigInt/Decimal).
-        Value::Ratio(id) => Message::Ratio(heap.ratio(id).to_string()),
+        // Atoms carry no heap identity — they are the same value in any heap.
+        Value::Nil => target.leaf(|_| v, || Message::Nil),
+        Value::Bool(b) => target.leaf(|_| v, || Message::Bool(b)),
+        Value::Int(n) => target.leaf(|_| v, || Message::Int(n)),
+        Value::Float(f) => target.leaf(|_| v, || Message::Float(f)),
+        Value::Sym(s) => target.leaf(|_| v, || Message::Sym(s)),
+        Value::Keyword(s) => target.leaf(|_| v, || Message::Keyword(s)),
+        Value::Ref(n) => target.leaf(|_| v, || Message::Ref(n)),
+        Value::Pid { node, id } => target.leaf(|_| v, || Message::Pid { node, id }),
+        // Numbers ship as their canonical string (`num/den` for a ratio).
+        Value::BigInt(id) => target.leaf(
+            |dst| dst.int_from_bigint(src.bigint(id).clone()),
+            || Message::BigInt(src.bigint(id).to_string()),
+        ),
+        Value::Decimal(id) => target.leaf(
+            |dst| dst.alloc_decimal(src.decimal(id).clone()),
+            || Message::Decimal(src.decimal(id).to_string()),
+        ),
+        Value::Ratio(id) => target.leaf(
+            |dst| dst.alloc_ratio(src.ratio(id).clone()),
+            || Message::Ratio(src.ratio(id).to_string()),
+        ),
         // Raw bytes ship their Arc<SharedBlob> by reference (no byte copy). Byte-clean.
-        Value::Bytes(id) => Message::Bytes(Arc::clone(&heap.bytes(id))),
-        Value::Float(f) => Message::Float(f),
-        Value::Sym(s) => Message::Sym(s),
-        Value::Keyword(s) => Message::Keyword(s),
-        Value::Str(id) => match heap.local_shared_blob(id) {
-            // LOCAL Shared: ship the Arc (atomic incr, no copy). Receiver
-            // installs the same handle into its own slab via
-            // `alloc_string_from_shared`. PRELUDE/RUNTIME and LOCAL Inline
-            // fall through to the deep-copy `Str` path.
-            Some(blob) => Message::StrShared(blob),
-            None => Message::Str(heap.string(id).to_string()),
+        Value::Bytes(id) => target.leaf(
+            |dst| dst.alloc_bytes(Arc::clone(&src.bytes(id))),
+            || Message::Bytes(Arc::clone(&src.bytes(id))),
+        ),
+        // A LOCAL Shared string crosses by its `Arc`; PRELUDE/RUNTIME and LOCAL Inline
+        // strings are copied. Neither needs charging beyond its one node: a string big
+        // enough to be worth charging for is shared (see the `SHARED_BLOB_THRESHOLD`
+        // assertion by `L1_COPY_BUDGET`), and an inline one is bounded by that threshold.
+        Value::Str(id) => match src.local_shared_blob(id) {
+            Some(blob) => target.shared_string(blob),
+            None => target.leaf(
+                |dst| dst.alloc_string(&src.string(id)),
+                || Message::Str(src.string(id).to_string()),
+            ),
         },
         Value::Pair(_) => {
-            let pos = heap.form_pos_only(v);
-            let items = heap.list_to_vec(v)?;
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(to_message_rec(
-                    heap,
-                    item,
-                    visited,
-                    depth + 1,
-                    dest_runtime,
-                )?);
-            }
-            Message::List(out, pos)
-        }
-        Value::Vector(id) => {
-            // Read straight off the slab: `heap` is borrowed shared here and the recursion
-            // takes it shared too, so the items need no copy of their own first.
-            let items = heap.vector(id);
-            let mut out = Vec::with_capacity(items.len());
-            for &item in items.iter() {
-                out.push(to_message_rec(
-                    heap,
-                    item,
-                    visited,
-                    depth + 1,
-                    dest_runtime,
-                )?);
-            }
-            Message::Vector(out)
-        }
-        // A range crosses as the list it stands in for (its elements are plain
-        // ints; rare across a message boundary, so realising it is fine).
-        Value::Range(id) => {
-            let pos = heap.form_pos_only(v);
-            let items = heap.range_to_vec(id)?;
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(to_message_rec(
-                    heap,
-                    item,
-                    visited,
-                    depth + 1,
-                    dest_runtime,
-                )?);
-            }
-            Message::List(out, pos)
-        }
-        // A lazy seq-view can't be realised here (`to_message` has only `&Heap`,
-        // no evaluator to run its transducer). `send` is a Rust builtin with no
-        // pre-realize step, so a raw view reaches here directly: return a clear
-        // error (the caller must realise it first) rather than risk silent
-        // corruption — never a panic.
-        Value::SeqView(_) => {
-            return Err(LispError::type_err(
-                "cannot send a lazy seq-view in a message; realise it first \
-                 (e.g. with `seq`, `vec`, or `into`)",
-            ))
-        }
-        Value::Map(id) => {
-            let entries = heap.map_entries(id);
-            let mut out = Vec::with_capacity(entries.len());
-            for (k, v) in entries {
-                out.push((
-                    to_message_rec(heap, k, visited, depth + 1, dest_runtime)?,
-                    to_message_rec(heap, v, visited, depth + 1, dest_runtime)?,
-                ));
-            }
-            Message::Map(out)
-        }
-        // A failure crosses as its fields — the map path verbatim, re-wrapped so the
-        // receiver gets a failure rather than a plain map.
-        Value::Failure(id) => {
-            let entries = heap.map_entries(id);
-            let mut out = Vec::with_capacity(entries.len());
-            for (k, v) in entries {
-                out.push((
-                    to_message_rec(heap, k, visited, depth + 1, dest_runtime)?,
-                    to_message_rec(heap, v, visited, depth + 1, dest_runtime)?,
-                ));
-            }
-            Message::Failure(out)
-        }
-        Value::Set(id) => {
-            let elems = heap.set_elems(id);
-            let mut out = Vec::with_capacity(elems.len());
-            for e in elems {
-                out.push(to_message_rec(heap, e, visited, depth + 1, dest_runtime)?);
-            }
-            Message::Set(out)
-        }
-        Value::Ref(n) => Message::Ref(n),
-        Value::Pid { node, id } => Message::Pid { node, id },
-        Value::Fn(id) => {
-            // Share by handle when the destination is THIS runtime and the closure already
-            // lives in the shared region — the serialised twin of ADR-194's L1 path, and the
-            // guards mirror it exactly. RUNTIME only: never promote to make something
-            // shareable, which grows the append-only region per send. Same runtime only:
-            // the process registry is global, so a second `Interp`'s handles must not
-            // cross. Plus the shared `BROOD_NO_SHARE_FN` off-switch. `pin_gen_of` holds the
-            // handle's generation for the message's whole life.
-            if let Some(tag) = dest_runtime {
-                if share_fn_enabled()
-                    && id.region() == crate::core::value::RUNTIME
-                    && tag == heap.runtime_tag()
-                {
-                    if let Some(pin) = heap.pin_gen_of(id) {
-                        return Ok(Message::FnShared { bits: id.0, pin });
+            // Walk the spine charging per cons cell, so the L1 copy declines a huge list
+            // before paying its whole O(n) spine under the mailbox lock.
+            let mut items = Vec::new();
+            let mut cursor = v;
+            loop {
+                match cursor.unpack() {
+                    crate::core::value::ValueRef::Nil => break,
+                    crate::core::value::ValueRef::Pair(pair) => {
+                        target.charge()?;
+                        let (head, tail) = src.pair(pair);
+                        items.push(head);
+                        cursor = tail;
                     }
+                    _ => return Err(target.refuse(|| LispError::type_err("improper list"))),
                 }
             }
-            Message::Closure(Box::new(closure_to_message(
-                heap,
-                id,
-                visited,
-                depth + 1,
-                dest_runtime,
-            )?))
-        }
-        Value::Macro(_) => return Err(LispError::type_err("cannot send a macro in a message")),
-        Value::Native(id) => {
-            // A builtin is a Rust function pointer with no portable form — and on another node
-            // the receiver has its own copy anyway. In a MESSAGE it is refused (the sender must
-            // reference it by name). But the STARTUP IMAGE carries it by the name it is bound
-            // to: the image restores bindings in the same runtime and is binary-keyed, so the
-            // name re-resolves to the same primitive on read. See `Message::Native`.
-            if IMAGE_NATIVE_BY_NAME.with(|f| f.get()) {
-                Message::Native(crate::core::value::intern(&heap.native(id).name))
-            } else {
-                return Err(LispError::type_err(
-                    "cannot send a builtin in a message; reference it by name (code is shared)",
-                ));
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(copy_value(target, src, item, depth + 1)?);
             }
+            target.list(src, v, out)
         }
+        Value::Vector(id) => {
+            // Read straight off the slab: `src` is borrowed shared and the recursion takes
+            // it shared too, so the items need no copy of their own first.
+            let items = src.vector(id);
+            target.reserve(items.len() as i64)?;
+            let mut out = Vec::with_capacity(items.len());
+            for &item in items.iter() {
+                out.push(copy_value(target, src, item, depth + 1)?);
+            }
+            target.vector(out)
+        }
+        // A range crosses as the list it stands in for (its elements are plain ints;
+        // rare across a message boundary, so realising it is fine). An un-realisable one
+        // (`range_to_vec`'s element cap) is refused.
+        Value::Range(id) => {
+            target.reserve(src.range_len(id))?;
+            let items = src
+                .range_to_vec(id)
+                .map_err(|error| target.refuse(|| error))?;
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(copy_value(target, src, item, depth + 1)?);
+            }
+            target.list(src, v, out)
+        }
+        // A lazy seq-view can't be realised here (the walk has only `&Heap`, no evaluator
+        // to run its transducer). `send` is a Rust builtin with no pre-realize step, so a
+        // raw view reaches here directly: refuse it clearly rather than risk silent
+        // corruption — never a panic.
+        Value::SeqView(_) => {
+            return Err(target.refuse(|| {
+                LispError::type_err(
+                    "cannot send a lazy seq-view in a message; realise it first \
+                     (e.g. with `seq`, `vec`, or `into`)",
+                )
+            }))
+        }
+        Value::Map(id) => {
+            // Two nodes per entry (key and value); `map_size` is O(1).
+            target.reserve((src.map_size(id) as i64).saturating_mul(2))?;
+            let entries = copy_entries(target, src, id, depth)?;
+            target.map(entries)
+        }
+        Value::Failure(id) => target.failure(src, id, depth)?,
+        Value::Set(id) => {
+            target.reserve(src.map_size(id) as i64)?;
+            let elements = src.set_elems(id);
+            let mut out = Vec::with_capacity(elements.len());
+            for element in elements {
+                out.push(copy_value(target, src, element, depth + 1)?);
+            }
+            target.set(out)
+        }
+        Value::Fn(id) => target.closure(src, v, id, depth)?,
+        Value::Macro(_) => {
+            return Err(target.refuse(|| LispError::type_err("cannot send a macro in a message")))
+        }
+        Value::Native(id) => target.native(src, id)?,
         Value::Rope(_) => {
             // A rope is process-local: it lives in exactly one process's heap
             // (the buffer-as-process model, ADR-045). Move its *content* across
             // as a string instead — the receiver rebuilds a rope if it needs one.
-            return Err(LispError::type_err(
-                "cannot send a rope in a message; send (rope->string r) and \
-                 rebuild with (string->rope s) on the other side",
-            ));
+            return Err(target.refuse(|| {
+                LispError::type_err(
+                    "cannot send a rope in a message; send (rope->string r) and \
+                     rebuild with (string->rope s) on the other side",
+                )
+            }));
         }
         // A socket is a global-registry id (not a per-heap handle like a rope),
         // so it is valid across every green process *in this runtime* — it may
         // cross in a message or be captured by a `spawn`ed closure (the
         // per-connection-handler pattern). It is NOT node-portable: the cross-node
         // wire codec rejects it (the id means nothing in another runtime).
-        Value::Socket(id) => Message::Socket(id),
+        Value::Socket(id) => target.leaf(|_| v, || Message::Socket(id)),
         // A subprocess is a global-registry id like a socket (the owning process
         // drives it and receives its output as messages); the reader thread emits
         // `[:proc handle …]`, so the handle must round-trip through a message. Valid
         // across this runtime's processes; not node-portable.
-        Value::Subprocess(id) => Message::Subprocess(id),
+        Value::Subprocess(id) => target.leaf(|_| v, || Message::Subprocess(id)),
         // A table is a global-registry id like a socket: the handle rides the message
         // so many processes share one store. Valid across this runtime; not
         // node-portable (the wire codec rejects it).
-        Value::Table(id) => Message::Table(id),
+        Value::Table(id) => target.leaf(|_| v, || Message::Table(id)),
     })
+}
+
+/// A map's (or a failure's) entries, each key and value copied.
+fn copy_entries<T: CopyTarget>(
+    target: &mut T,
+    src: &Heap,
+    id: MapId,
+    depth: u32,
+) -> Result<Vec<(T::Out, T::Out)>, T::Decline> {
+    let entries = src.map_entries(id);
+    let mut out = Vec::with_capacity(entries.len());
+    for (key, value) in entries {
+        out.push((
+            copy_value(target, src, key, depth + 1)?,
+            copy_value(target, src, value, depth + 1)?,
+        ));
+    }
+    Ok(out)
+}
+
+/// Serialise into a heap-independent [`Message`]. `visited` carries the closures currently
+/// being serialised, so a self- or mutually-recursive *local* closure is rejected cleanly
+/// instead of looping; `dest_runtime` is the runtime the message is bound for, if known
+/// (see [`to_message_to_runtime`]).
+struct IntoMessage {
+    visited: Vec<ClosureId>,
+    dest_runtime: Option<u64>,
+}
+
+impl IntoMessage {
+    fn new(dest_runtime: Option<u64>) -> Self {
+        IntoMessage {
+            visited: Vec::new(),
+            dest_runtime,
+        }
+    }
+}
+
+impl CopyTarget for IntoMessage {
+    type Out = Message;
+    type Decline = LispError;
+
+    /// A message has no budget.
+    #[inline]
+    fn charge(&mut self) -> Result<(), LispError> {
+        Ok(())
+    }
+    #[inline]
+    fn reserve(&mut self, _nodes: i64) -> Result<(), LispError> {
+        Ok(())
+    }
+    #[inline]
+    fn refuse(&mut self, error: impl FnOnce() -> LispError) -> LispError {
+        error()
+    }
+    #[inline]
+    fn leaf(
+        &mut self,
+        _into_heap: impl FnOnce(&mut Heap) -> Value,
+        into_message: impl FnOnce() -> Message,
+    ) -> Message {
+        into_message()
+    }
+    /// The receiver installs the same handle into its own slab via
+    /// `alloc_string_from_shared`.
+    #[inline]
+    fn shared_string(&mut self, blob: Arc<SharedBlob>) -> Message {
+        Message::StrShared(blob)
+    }
+    #[inline]
+    fn list(&mut self, src: &Heap, whole: Value, items: Vec<Message>) -> Message {
+        Message::List(items, src.form_pos_only(whole))
+    }
+    #[inline]
+    fn vector(&mut self, items: Vec<Message>) -> Message {
+        Message::Vector(items)
+    }
+    #[inline]
+    fn map(&mut self, entries: Vec<(Message, Message)>) -> Message {
+        Message::Map(entries)
+    }
+    #[inline]
+    fn set(&mut self, elements: Vec<Message>) -> Message {
+        Message::Set(elements)
+    }
+    /// A failure crosses as its fields — the map path verbatim, re-wrapped so the
+    /// receiver gets a failure rather than a plain map.
+    #[inline]
+    fn failure(&mut self, src: &Heap, id: MapId, depth: u32) -> Result<Message, LispError> {
+        Ok(Message::Failure(copy_entries(self, src, id, depth)?))
+    }
+    /// Share by handle when the destination is THIS runtime and the closure already lives
+    /// in the shared region — the serialised twin of [`IntoHeap`]'s, and the guards mirror
+    /// it exactly. RUNTIME only: never promote to make something shareable, which grows
+    /// the append-only region per send. Same runtime only: the process registry is global,
+    /// so a second `Interp`'s handles must not cross. Plus the shared `BROOD_NO_SHARE_FN`
+    /// off-switch. `pin_gen_of` holds the handle's generation for the message's whole life.
+    /// Anything else is serialised as data ([`ClosureMsg`]).
+    #[inline]
+    fn closure(
+        &mut self,
+        src: &Heap,
+        _v: Value,
+        id: ClosureId,
+        depth: u32,
+    ) -> Result<Message, LispError> {
+        if let Some(tag) = self.dest_runtime {
+            if share_fn_enabled()
+                && id.region() == crate::core::value::RUNTIME
+                && tag == src.runtime_tag()
+            {
+                if let Some(pin) = src.pin_gen_of(id) {
+                    return Ok(Message::FnShared { bits: id.0, pin });
+                }
+            }
+        }
+        Ok(Message::Closure(Box::new(closure_to_message(
+            self,
+            src,
+            id,
+            depth + 1,
+        )?)))
+    }
+    /// A builtin is a Rust function pointer with no portable form — and on another node
+    /// the receiver has its own copy anyway. In a MESSAGE it is refused (the sender must
+    /// reference it by name). But the STARTUP IMAGE carries it by the name it is bound
+    /// to: the image restores bindings in the same runtime and is binary-keyed, so the
+    /// name re-resolves to the same primitive on read. See `Message::Native`.
+    #[inline]
+    fn native(&mut self, src: &Heap, id: NativeId) -> Result<Message, LispError> {
+        if IMAGE_NATIVE_BY_NAME.with(|f| f.get()) {
+            Ok(Message::Native(crate::core::value::intern(
+                &src.native(id).name,
+            )))
+        } else {
+            Err(LispError::type_err(
+                "cannot send a builtin in a message; reference it by name (code is shared)",
+            ))
+        }
+    }
 }
 
 /// Serialise a closure into its wire form. The body and optional-default *forms*
@@ -628,13 +791,12 @@ fn to_message_rec_inner(
 /// global scope. Free globals are skipped (they re-resolve on the receiver), which
 /// is also why a builtin reached only via a global symbol never gets dragged in.
 fn closure_to_message(
+    target: &mut IntoMessage,
     heap: &Heap,
     id: ClosureId,
-    visited: &mut Vec<ClosureId>,
     depth: u32,
-    dest_runtime: Option<u64>,
 ) -> Result<ClosureMsg, LispError> {
-    if visited.contains(&id) {
+    if target.visited.contains(&id) {
         // The free-variable walk re-entered this same closure: a local closure that
         // refers to itself (or a cycle of them). Top-level recursion is fine — those
         // capture the global env (no local capture) and resolve by name.
@@ -642,47 +804,44 @@ fn closure_to_message(
             "cannot send a self-referential local closure (define it at top level instead)",
         ));
     }
-    visited.push(id);
-    // Borrow the closure — `to_message_rec` only needs `&Heap`, so there's no need
-    // to clone the whole `Closure` (notably its body `Vec`) on every send.
-    let cl = heap.closure(id);
+    target.visited.push(id);
+    // Borrow the closure — the walk only needs `&Heap`, so there's no need to clone the
+    // whole `Closure` (notably its body `Vec`) on every send.
+    let closure = heap.closure(id);
 
     // Copy only the free variables that resolve to a *local* binding. Skipped
     // entirely for a global-capturing closure (no local env) — the common case
     // (e.g. a `(spawn …)` thunk), so collecting symbols costs nothing there.
     let mut captured = Vec::new();
-    if let Some(env) = cl.env {
+    if let Some(env) = closure.env {
         let mut mentioned = std::collections::HashSet::new();
-        for arm in cl.arms.iter() {
+        for arm in closure.arms.iter() {
             for &form in &arm.body {
                 collect_symbols(heap, form, &mut mentioned);
             }
-            for &(_, d) in &arm.optionals {
-                collect_symbols(heap, d, &mut mentioned);
+            for &(_, default) in &arm.optionals {
+                collect_symbols(heap, default, &mut mentioned);
             }
         }
-        for sym in mentioned {
-            if let Some(val) = local_lookup(heap, env, sym) {
-                captured.push((
-                    sym,
-                    to_message_rec(heap, val, visited, depth, dest_runtime)?,
-                ));
+        for symbol in mentioned {
+            if let Some(value) = local_lookup(heap, env, symbol) {
+                captured.push((symbol, copy_value(target, heap, value, depth)?));
             }
         }
     }
 
     // Deep-copy each arm's `&optional` defaults and body (code-as-data).
-    let mut arms = Vec::with_capacity(cl.arms.len());
-    for arm in cl.arms.iter() {
+    let mut arms = Vec::with_capacity(closure.arms.len());
+    for arm in closure.arms.iter() {
         let optionals = arm
             .optionals
             .iter()
-            .map(|&(s, d)| Ok((s, to_message_rec(heap, d, visited, depth, dest_runtime)?)))
+            .map(|&(symbol, default)| Ok((symbol, copy_value(target, heap, default, depth)?)))
             .collect::<Result<Vec<_>, LispError>>()?;
         let body = arm
             .body
             .iter()
-            .map(|&f| to_message_rec(heap, f, visited, depth, dest_runtime))
+            .map(|&form| copy_value(target, heap, form, depth))
             .collect::<Result<Vec<_>, LispError>>()?;
         arms.push(ClosureArmMsg {
             params: arm.params.clone(),
@@ -699,34 +858,35 @@ fn closure_to_message(
     // case auto-require cannot reach: a closure crossing to another runtime (a node, or a
     // second `Interp` in this process), where the receiver never compiles the body and so
     // never infers its imports.
-    let modules =
-        if dest_runtime == Some(heap.runtime_tag()) || IMAGE_NATIVE_BY_NAME.with(|f| f.get()) {
+    let modules = if target.dest_runtime == Some(heap.runtime_tag())
+        || IMAGE_NATIVE_BY_NAME.with(|f| f.get())
+    {
+        Vec::new()
+    } else {
+        let mut candidates = Vec::new();
+        for arm in closure.arms.iter() {
+            for &form in &arm.body {
+                collect_qualified_syms(heap, form, &mut candidates);
+            }
+            for &(_, default) in &arm.optionals {
+                collect_qualified_syms(heap, default, &mut candidates);
+            }
+        }
+        if candidates.is_empty() {
             Vec::new()
         } else {
-            let mut candidates = Vec::new();
-            for arm in cl.arms.iter() {
-                for &form in &arm.body {
-                    collect_qualified_syms(heap, form, &mut candidates);
-                }
-                for &(_, d) in &arm.optionals {
-                    collect_qualified_syms(heap, d, &mut candidates);
-                }
-            }
-            if candidates.is_empty() {
-                Vec::new()
-            } else {
-                resolve_module_needs(heap, &candidates)
-            }
-        };
+            resolve_module_needs(heap, &candidates)
+        }
+    };
 
-    visited.pop();
+    target.visited.pop();
     Ok(ClosureMsg {
-        name: cl.name,
+        name: closure.name,
         arms,
-        doc: cl.doc.clone(),
+        doc: closure.doc.clone(),
         captured,
         modules,
-        module: cl.module,
+        module: closure.module,
     })
 }
 
@@ -1326,8 +1486,9 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 
 /// Deep-copy `v` out of `src` and into `dst`, returning the equivalent value in `dst`.
 /// `None` for anything the message path refuses (a rope, a macro, a builtin, an
-/// unrealised lazy seq) or that is nested past [`MAX_MESSAGE_DEPTH`] — the caller then
-/// falls back to the `Message` path, which produces the proper user-facing error.
+/// unrealised lazy seq, an improper list) or that is nested past [`MAX_MESSAGE_DEPTH`], and
+/// for a failure or a closure it cannot share by handle — the caller then falls back to the
+/// `Message` path, which carries those or produces the proper user-facing error.
 /// Bounded: `budget` (start it at [`l1_copy_budget`]) is decremented as the copy walks and
 /// the whole thing declines (`None`) the moment it goes negative. The caller reads `budget`
 /// afterwards to tell *why* it declined — a negative value means the size cap, anything
@@ -1349,7 +1510,7 @@ pub(crate) fn copy_cross_heap(
     v: Value,
     budget: &mut i64,
 ) -> Option<Value> {
-    copy_cross_heap_rec(src, dst, v, 0, budget)
+    copy_value(&mut IntoHeap { dst, budget }, src, v, 0).ok()
 }
 
 /// The copy-work budget for one L1 delivery, in units: **one heap node is one unit**, and
@@ -1412,202 +1573,133 @@ fn share_fn_enabled() -> bool {
     *F.get_or_init(|| std::env::var_os("BROOD_NO_SHARE_FN").is_none())
 }
 
-/// Decline because the message exceeds the copy budget, leaving the budget **negative**
-/// so the caller can tell this apart from a value kind the copier does not handle. The
-/// per-node charge reaches the same state by simply running out; the early-outs, which
-/// return before spending anything, have to say so explicitly.
-fn over_budget(budget: &mut i64) -> Option<Value> {
-    *budget = -1;
-    None
+/// The L1 copy's decline: the caller falls back to the `Message` path, which produces the
+/// user-facing error (or, past the budget, carries the value outside the lock).
+struct Declined;
+
+/// Copy straight into a parked receiver's heap, charging `budget` (see
+/// [`copy_cross_heap`]). Declines — [`Declined`] — everything the message path refuses, and
+/// also a failure and any closure it cannot share by handle, which then take the `Message`
+/// path so their existing semantics and error messages are unchanged.
+struct IntoHeap<'copy> {
+    dst: &'copy mut Heap,
+    budget: &'copy mut i64,
 }
 
-fn copy_cross_heap_rec(
-    src: &Heap,
-    dst: &mut Heap,
-    v: Value,
-    depth: u32,
-    budget: &mut i64,
-) -> Option<Value> {
-    if depth % 32 == 31 {
-        grow(|| copy_cross_heap_rec_inner(src, dst, v, depth, budget))
-    } else {
-        copy_cross_heap_rec_inner(src, dst, v, depth, budget)
-    }
-}
+impl CopyTarget for IntoHeap<'_> {
+    type Out = Value;
+    type Decline = Declined;
 
-fn copy_cross_heap_rec_inner(
-    src: &Heap,
-    dst: &mut Heap,
-    v: Value,
-    depth: u32,
-    budget: &mut i64,
-) -> Option<Value> {
-    if depth >= MAX_MESSAGE_DEPTH {
-        return None;
+    /// One unit per node visited, leaving the budget negative when it runs out.
+    #[inline]
+    fn charge(&mut self) -> Result<(), Declined> {
+        *self.budget -= 1;
+        if *self.budget < 0 {
+            return Err(Declined);
+        }
+        Ok(())
     }
-    // One unit per node visited. Checked *before* the copy so an over-budget walk stops
-    // adding work rather than finishing the node it is on.
-    *budget -= 1;
-    if *budget < 0 {
-        return None;
+    /// Early-out before a container is materialised: one that cannot possibly fit would
+    /// otherwise pay its full O(n) cost under the lock and only then decline — the stall
+    /// this budget exists to bound. Declining here leaves the budget **negative** so the
+    /// caller can tell it apart from a value kind the copier does not handle; the per-node
+    /// charge reaches the same state by simply running out.
+    #[inline]
+    fn reserve(&mut self, nodes: i64) -> Result<(), Declined> {
+        if nodes > *self.budget {
+            *self.budget = -1;
+            return Err(Declined);
+        }
+        Ok(())
     }
-    Some(match v {
-        // Atoms carry no heap identity — they are the same value in any heap.
-        Value::Nil
-        | Value::Bool(_)
-        | Value::Int(_)
-        | Value::Float(_)
-        | Value::Sym(_)
-        | Value::Keyword(_)
-        | Value::Ref(_)
-        | Value::Pid { .. } => v,
-        // Registry ids (runtime-global, not per-heap handles) cross unchanged, exactly
-        // as they do through `Message`.
-        Value::Socket(_) | Value::Subprocess(_) | Value::Table(_) => v,
-        Value::BigInt(id) => dst.int_from_bigint(src.bigint(id).clone()),
-        Value::Decimal(id) => dst.alloc_decimal(src.decimal(id).clone()),
-        Value::Ratio(id) => dst.alloc_ratio(src.ratio(id).clone()),
-        // Byte blobs are `Arc`-shared by the message path too: an atomic bump, no copy.
-        Value::Bytes(id) => dst.alloc_bytes(Arc::clone(&src.bytes(id))),
-        // Neither arm needs charging beyond its one node, and that is a fact about
-        // `SHARED_BLOB_THRESHOLD` rather than a guess: a string big enough to be worth
-        // charging for is an `Arc<SharedBlob>` and crosses by handle (an atomic bump, no
-        // payload copy at all), and one small enough to be inline is bounded by that
-        // threshold. The `const _` below is what keeps that true.
-        Value::Str(id) => match src.local_shared_blob(id) {
-            Some(blob) => dst.alloc_string_from_shared(blob),
-            None => dst.alloc_string(&src.string(id)),
-        },
-        Value::Pair(_) => {
-            // Walk the spine ourselves, charging per cons cell, instead of calling
-            // `list_to_vec`: that walks and allocates the WHOLE spine before any
-            // per-element check could fire, so a huge list would pay its full O(n) cost
-            // under the mailbox lock and only then be declined. A cons cell is a real
-            // heap node, so charging one unit for it is the same accounting as anywhere
-            // else. An improper list declines exactly as it did before.
-            let mut items = Vec::new();
-            let mut cur = v;
-            loop {
-                match cur.unpack() {
-                    crate::core::value::ValueRef::Nil => break,
-                    crate::core::value::ValueRef::Pair(p) => {
-                        *budget -= 1;
-                        if *budget < 0 {
-                            return None;
-                        }
-                        let (head, tail) = src.pair(p);
-                        items.push(head);
-                        cur = tail;
-                    }
-                    _ => return None, // improper list — the `Message` path's error
-                }
-            }
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(copy_cross_heap_rec(src, dst, item, depth + 1, budget)?);
-            }
-            dst.list(out)
-        }
-        Value::Vector(id) => {
-            // Early-out before materialising. `to_vec` copies the whole element array, so
-            // a vector that cannot possibly fit would otherwise pay its full O(n) cost
-            // under the lock and only then decline — which is the stall this budget
-            // exists to bound. Checked against the budget, not charged to it: the
-            // elements are charged as the walk actually visits them.
-            if src.vector(id).len() as i64 > *budget {
-                return over_budget(budget);
-            }
-            let items = src.vector(id).to_vec();
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(copy_cross_heap_rec(src, dst, item, depth + 1, budget)?);
-            }
-            dst.alloc_vector(out)
-        }
-        // A range stands in for the list of its elements, like `to_message`.
-        Value::Range(id) => {
-            // `None` here means "cannot be copied", which is exactly what an
-            // un-realisable range is (see `range_to_vec`'s element cap) — and now also
-            // what an over-budget one is, checked before it is realised.
-            if src.range_len(id) > *budget {
-                return over_budget(budget);
-            }
-            let items = src.range_to_vec(id).ok()?;
-            let mut out = Vec::with_capacity(items.len());
-            for item in items {
-                out.push(copy_cross_heap_rec(src, dst, item, depth + 1, budget)?);
-            }
-            dst.list(out)
-        }
-        Value::Map(id) => {
-            // Two nodes per entry (key and value), and `map_size` is O(1) — so the
-            // early-out costs nothing and skips materialising a large map's entry list.
-            if (src.map_size(id) as i64).saturating_mul(2) > *budget {
-                return over_budget(budget);
-            }
-            let entries = src.map_entries(id);
-            let mut out = Vec::with_capacity(entries.len());
-            for (k, val) in entries {
-                out.push((
-                    copy_cross_heap_rec(src, dst, k, depth + 1, budget)?,
-                    copy_cross_heap_rec(src, dst, val, depth + 1, budget)?,
-                ));
-            }
-            dst.map_from_pairs(out)
-        }
-        Value::Set(id) => {
-            if src.map_size(id) as i64 > *budget {
-                return over_budget(budget);
-            }
-            let elems = src.set_elems(id);
-            let mut out = Vec::with_capacity(elems.len());
-            for e in elems {
-                out.push(copy_cross_heap_rec(src, dst, e, depth + 1, budget)?);
-            }
-            dst.set_from_elems(out)
-        }
-        // A closure that **already lives in the shared code region** crosses to a process
-        // of the **same runtime** by handle, not by copy. Both processes read that region
-        // through the same `Arc`, so the handle means the same thing in `dst` — this is
-        // what `spawn` relies on for its thunk, and a copy duplicated code the receiver's
-        // runtime already has (docs/runtime-frontier.md A3). In practice: a closure that
-        // captures **no locals** (`(fn () (spawn-link (worker)))`) is already RUNTIME.
-        //
-        // **It deliberately does NOT promote a local closure to make it shareable**:
-        // promotion appends to the append-only RUNTIME region, so transient sent closures
-        // would grow it in proportion to sends — a leak in any long-running receiver.
-        // A PRELUDE-region closure still copies (it would need its own guard: the prelude
-        // is a second `Arc`).
-        //
-        // Guards, all load-bearing:
-        //  - `region() == RUNTIME` — the no-new-promotion rule above.
-        //  - `shares_runtime_with` — the process REGISTRY is global, so a second `Interp`
-        //    in the same OS process has a *different* region; its handles must not cross.
-        //    Cross-**node** sends never reach here at all (they serialise via `Message`).
-        //  - `share_fn_enabled` — `BROOD_NO_SHARE_FN=1` reverts to the copy.
-        //  - anything else declines (`None`) to the existing `Message` path unchanged.
-        //
-        // Lifetime: a shared handle retained in `dst`'s LOCAL data pins its RUNTIME
-        // generation, and that is *sound* — the drain's Phase 2 walks the whole local
-        // heap, so `runtime_gen_referenced` sees it and refuses to free underneath us;
-        // aging never moves handles, and compaction requires unique ownership. It costs
-        // reclamation latency for a superseded version whose only remaining reference is
-        // a receiver's retained handle — bounded by that value's lifetime.
-        Value::Fn(id)
-            if share_fn_enabled()
-                && id.region() == crate::core::value::RUNTIME
-                && src.shares_runtime_with(dst) =>
+    /// The budget is left as it is: not the size cap.
+    #[inline]
+    fn refuse(&mut self, _error: impl FnOnce() -> LispError) -> Declined {
+        Declined
+    }
+    #[inline]
+    fn leaf(
+        &mut self,
+        into_heap: impl FnOnce(&mut Heap) -> Value,
+        _into_message: impl FnOnce() -> Message,
+    ) -> Value {
+        into_heap(self.dst)
+    }
+    #[inline]
+    fn shared_string(&mut self, blob: Arc<SharedBlob>) -> Value {
+        self.dst.alloc_string_from_shared(blob)
+    }
+    #[inline]
+    fn list(&mut self, _src: &Heap, _whole: Value, items: Vec<Value>) -> Value {
+        self.dst.list(items)
+    }
+    #[inline]
+    fn vector(&mut self, items: Vec<Value>) -> Value {
+        self.dst.alloc_vector(items)
+    }
+    #[inline]
+    fn map(&mut self, entries: Vec<(Value, Value)>) -> Value {
+        self.dst.map_from_pairs(entries)
+    }
+    #[inline]
+    fn set(&mut self, elements: Vec<Value>) -> Value {
+        self.dst.set_from_elems(elements)
+    }
+    #[inline]
+    fn failure(&mut self, _src: &Heap, _id: MapId, _depth: u32) -> Result<Value, Declined> {
+        Err(Declined)
+    }
+    /// A closure that **already lives in the shared code region** crosses to a process
+    /// of the **same runtime** by handle, not by copy. Both processes read that region
+    /// through the same `Arc`, so the handle means the same thing in `dst` — this is
+    /// what `spawn` relies on for its thunk, and a copy duplicated code the receiver's
+    /// runtime already has (docs/runtime-frontier.md A3). In practice: a closure that
+    /// captures **no locals** (`(fn () (spawn-link (worker)))`) is already RUNTIME.
+    ///
+    /// **It deliberately does NOT promote a local closure to make it shareable**:
+    /// promotion appends to the append-only RUNTIME region, so transient sent closures
+    /// would grow it in proportion to sends — a leak in any long-running receiver.
+    /// A PRELUDE-region closure still copies (it would need its own guard: the prelude
+    /// is a second `Arc`).
+    ///
+    /// Guards, all load-bearing:
+    ///  - `region() == RUNTIME` — the no-new-promotion rule above.
+    ///  - `shares_runtime_with` — the process REGISTRY is global, so a second `Interp`
+    ///    in the same OS process has a *different* region; its handles must not cross.
+    ///    Cross-**node** sends never reach here at all (they serialise via `Message`).
+    ///  - `share_fn_enabled` — `BROOD_NO_SHARE_FN=1` reverts to the copy.
+    ///  - anything else declines to the existing `Message` path unchanged.
+    ///
+    /// Lifetime: a shared handle retained in `dst`'s LOCAL data pins its RUNTIME
+    /// generation, and that is *sound* — the drain's Phase 2 walks the whole local
+    /// heap, so `runtime_gen_referenced` sees it and refuses to free underneath us;
+    /// aging never moves handles, and compaction requires unique ownership. It costs
+    /// reclamation latency for a superseded version whose only remaining reference is
+    /// a receiver's retained handle — bounded by that value's lifetime.
+    #[inline]
+    fn closure(
+        &mut self,
+        src: &Heap,
+        v: Value,
+        id: ClosureId,
+        _depth: u32,
+    ) -> Result<Value, Declined> {
+        if share_fn_enabled()
+            && id.region() == crate::core::value::RUNTIME
+            && src.shares_runtime_with(self.dst)
         {
             // The wire path's `FnShared` arm does the same: `dst` may have acked a drain
             // of this handle's generation clean, and now holds a handle into it (KI-188).
-            dst.rearm_drain_ack();
-            v
+            self.dst.rearm_drain_ack();
+            Ok(v)
+        } else {
+            Err(Declined)
         }
-        // Everything else — a closure we declined to share, ropes, macros, builtins,
-        // unrealised seq-views — takes the `Message` path, so its existing semantics and
-        // error messages are unchanged.
-        _ => return None,
-    })
+    }
+    #[inline]
+    fn native(&mut self, _src: &Heap, _id: NativeId) -> Result<Value, Declined> {
+        Err(Declined)
+    }
 }
 
 #[cfg(test)]
@@ -2155,5 +2247,107 @@ mod depth_tests {
             drop(m);
             drop(copy);
         });
+    }
+}
+
+#[cfg(test)]
+mod decline_tests {
+    //! The two copy targets decline differently, and each difference is a contract:
+    //! the L1 copy ([`copy_cross_heap`]) declines a value kind it does not carry *without*
+    //! touching the sign of the budget (so `try_deliver_local` counts a kind gap, not the
+    //! cap), and the message path ([`to_message`]) either carries that kind or refuses it
+    //! with the user-facing error.
+    use super::*;
+
+    /// `copy_cross_heap` with an unlimited budget: declined, and not for size.
+    fn declines_as_a_kind_gap(src: &Heap, v: Value) {
+        let mut dst = Heap::new();
+        let mut budget = i64::MAX;
+        assert!(copy_cross_heap(src, &mut dst, v, &mut budget).is_none());
+        assert!(budget >= 0, "a kind gap must not read as the size cap");
+    }
+
+    /// The error `to_message` refuses `v` with.
+    fn refusal(src: &Heap, v: Value) -> LispError {
+        match to_message(src, v) {
+            Err(error) => error,
+            Ok(_) => panic!("the message path should refuse this value"),
+        }
+    }
+
+    #[test]
+    fn a_failure_is_carried_by_a_message_and_declined_by_the_heap_copy() {
+        let mut src = Heap::new();
+        let failure = src.alloc_failure("boom");
+        declines_as_a_kind_gap(&src, failure);
+        let message = to_message(&src, failure).expect("a failure crosses as a message");
+        assert!(matches!(message, Message::Failure(ref entries) if entries.len() == 1));
+    }
+
+    #[test]
+    fn an_improper_list_is_refused_by_both() {
+        let mut src = Heap::new();
+        let dotted = src.alloc_pair(Value::Int(1), Value::Int(2));
+        declines_as_a_kind_gap(&src, dotted);
+        let error = refusal(&src, dotted);
+        assert_eq!(error.message, "improper list");
+    }
+
+    /// Short of the size cap, a range too long to realise is refused by `range_to_vec`.
+    #[test]
+    fn an_unrealisable_range_is_refused_by_both() {
+        let mut src = Heap::new();
+        let range = src.alloc_range(0, i64::MAX - 16, 1);
+        declines_as_a_kind_gap(&src, range);
+        let error = refusal(&src, range);
+        assert!(
+            error.message.contains("range too large"),
+            "{}",
+            error.message
+        );
+    }
+
+    /// A range past the budget declines *before* it is realised, attributably.
+    #[test]
+    fn an_oversized_range_declines_on_the_cap() {
+        let mut src = Heap::new();
+        let range = src.alloc_range(0, 1_000, 1);
+        let mut dst = Heap::new();
+        let mut budget = 64;
+        assert!(copy_cross_heap(&src, &mut dst, range, &mut budget).is_none());
+        assert!(
+            budget < 0,
+            "the range's decline must be attributable to the cap"
+        );
+        // A range too long to realise, under the same small budget: the length check
+        // must come *before* `range_to_vec`, or this reads as a kind gap.
+        let wide = src.alloc_range(0, i64::MAX - 16, 1);
+        let mut budget = 64;
+        assert!(copy_cross_heap(&src, &mut dst, wide, &mut budget).is_none());
+        assert!(
+            budget < 0,
+            "checked against the budget before it is realised"
+        );
+        assert!(matches!(
+            to_message(&src, range).expect("a small range crosses as a message"),
+            Message::List(ref items, _) if items.len() == 1_000
+        ));
+    }
+
+    /// Nesting past [`MAX_MESSAGE_DEPTH`]: the message path names the limit and its code;
+    /// the heap copy declines (and the `Message` fallback then raises that error).
+    #[test]
+    fn a_value_nested_past_the_depth_limit_is_refused_by_both() {
+        let mut src = Heap::new();
+        let mut v = Value::Int(1);
+        for _ in 0..=MAX_MESSAGE_DEPTH {
+            v = src.alloc_pair(v, Value::Nil);
+        }
+        declines_as_a_kind_gap(&src, v);
+        let error = refusal(&src, v);
+        assert_eq!(
+            error.code,
+            Some(crate::error::error_codes::MESSAGE_TOO_DEEP)
+        );
     }
 }

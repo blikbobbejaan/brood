@@ -13,9 +13,8 @@
 //!   * **KI-41** had an index row but no section, while that file's own header tells the
 //!     reader to "⌘F the `KI-N` to jump".
 //!
-//! Both are the same class as the stale `length` sig and the 13 phantom doc-catalogue
-//! entries fixed the same day: a name that refers to something which does not exist, with
-//! nothing checking. Cheap to assert, so assert it.
+//! A name that refers to something which does not exist, with nothing checking. Cheap to
+//! assert, so assert it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

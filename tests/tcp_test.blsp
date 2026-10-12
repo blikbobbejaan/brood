@@ -690,3 +690,99 @@
           lost (first-lost-send ls (listen-port ls) 200))
       (tcp/close ls)
       (assert= lost nil))))
+
+;; ---- tcp/close silences the socket --------------------------------------------------
+;; After `tcp/close` returns, the owner receives nothing more for that socket — not the
+;; bytes the reactor reads while it lingers flushing queued output, not a `[:tcp-closed]`
+;; when the flush finishes — while the queued output still reaches the peer in full.
+
+(defn- keep-writing (sock)
+  "Write a short line to `sock` every millisecond until told `[:stop]`. True if the
+  connection was still writable then; false if it failed first (the closed end may have
+  reset it), after waiting for the `[:stop]` all the same."
+  (if (check-allow :discarded-catch
+        (try
+          (do (tcp/send sock "chatter chatter chatter chatter\n") true)
+          (catch _ false)))
+    (if (receive ([:stop] true) (after 1 false))
+      true
+      (keep-writing sock))
+    (receive ([:stop] false) (after *test-wait-ms* false))))
+
+(defn- read-to-eof (sock)
+  "Take ownership of `sock` and read it to EOF: the byte count, or `[:timeout n]` /
+  `:gone` when it did not end cleanly."
+  (check-allow :discarded-catch
+    (try
+      (do
+        (tcp/controlling-process sock (self))
+        (let ([how got] (drain-timeout sock 2000))
+          (if (= how :closed) (bytes/length got) [how (bytes/length got)])))
+      (catch _ :gone))))
+
+(defn- chatty-peer (parent)
+  "Listen, report `[:port me port]` to `parent`, and write to the one connection without
+  reading it until `parent` says `[:stop]`. Then read it to EOF and report
+  `[:received me outcome]` (see `read-to-eof`)."
+  (let (ls (tcp/listen "127.0.0.1" 0))
+    (tcp/set-binary ls true)
+    (send parent [:port (self) (listen-port ls)])
+    (let (cs (receive
+               ([:tcp-accept ^ls s] s)
+               (after *test-wait-ms* (error "chatty-peer: nobody connected")))
+          writable (keep-writing cs)
+          ;; Let the closed end read what is in flight, so its final close is a FIN, not
+          ;; a reset that could discard the tail of what it sent.
+          _ (sleep 50)
+          outcome (if writable (read-to-eof cs) :gone))
+      (tcp/close cs)
+      (tcp/close ls)
+      (send parent [:received (self) outcome]))))
+
+(defn- late-messages (sock wait-ms seen)
+  "`seen` plus the messages for `sock` that arrive, each within `wait-ms` of the last."
+  (receive
+    ([:tcp ^sock _] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-closed ^sock] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-error ^sock _] (late-messages sock wait-ms (inc seen)))
+    (after wait-ms seen)))
+
+(defn- close-under-chatter (payload window-ms)
+  "One round: connect to a peer that writes without pause, send `payload` (nil for none)
+  and close. Returns `[late received]` — the messages for the socket that arrived within
+  `window-ms` after the ones already queued at the close were taken, and what the peer
+  read (`read-to-eof`)."
+  (let (me (self)
+        peer (spawn (chatty-peer me))
+        port (receive ([:port ^peer p] p) (after *test-wait-ms* (error "no port from the peer")))
+        c (tcp/connect "127.0.0.1" port))
+    (receive ([:tcp ^c _] nil) (after *test-wait-ms* (error "the peer never wrote")))
+    (when payload (tcp/send c payload))
+    (tcp/close c)
+    ;; Whatever was delivered before the close returned may sit here; take it.
+    (late-messages c 0 0)
+    (let (late (late-messages c window-ms 0))
+      (send peer [:stop])
+      [late (receive ([:received ^peer n] n) (after *test-wait-ms* :timeout))])))
+
+(defn- first-noisy-close (payload window-ms remaining)
+  "Run `close-under-chatter` `remaining` times; the first round in which a message
+  reached us after the close, or — with a `payload` — the peer did not read all of it,
+  as `[remaining result]`; nil when every round was clean."
+  (if (= remaining 0)
+    nil
+    (let ([late received] (close-under-chatter payload window-ms))
+      (if (and (= late 0) (or (nil? payload) (= received (string/length payload))))
+        (first-noisy-close payload window-ms (dec remaining))
+        [remaining [late received]]))))
+
+(describe "tcp: nothing reaches the owner after tcp/close"
+  :isolated (test "a socket lingering to flush 8 MiB delivers nothing more, and the peer gets it all"
+    ;; The peer never reads while it writes, so most of the 8 MiB is still queued at the
+    ;; close: the socket lingers, reading the peer's chatter the whole time.
+    (assert= (first-noisy-close (string/repeat "z" (* 8 1024 1024)) 100 6) nil))
+  (test "a socket closed with nothing queued delivers nothing more"
+    ;; No linger here: the window is the gap between `tcp/close` returning and the
+    ;; reactor dropping the socket, so it takes many rounds. The peer's writes may fail
+    ;; once the closed end resets, so only the silence is asserted.
+    (assert= (first-noisy-close nil 20 30) nil)))

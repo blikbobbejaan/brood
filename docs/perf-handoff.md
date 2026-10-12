@@ -434,7 +434,7 @@ benchmark row and no real program dispatches an ability op in a hot loop on a li
 constructor call — and Tier 2's variable-receiver sites are the same ops in the same
 programs. There is no row for a channel to move. **Closed: the number is recorded, the
 channel is not built.** Reopen only when a workload appears whose profile shows
-`%identity-of`/`%dispatch`; the microbenchmark above is the probe to re-run then.
+`%identity-of`/`%dispatch`; the microbenchmark above is the probe to re-run then (with `BROOD_DEVIRT_DBG=1` to count sites; the rewrite is always on).
 
 **What (2) found on the way — KI-161, fixed.** Tier 1 had NEVER fired on a record constructor
 inside a `defmodule`, i.e. in any real code: the KI-90 guard compared the registry's BARE
@@ -452,7 +452,13 @@ spellings, and the sabotage (the name comparison back) reds it both ways.
 Filed 2026-09-17 when the type-system review's last two items were decided (item 5,
 return-type dispatch, was declined — ADR-361; this is item 7, which is a perf item).
 
-**What it is.** ADR-182's Tier 1 (`BROOD_MONO=1`, off by default) devirtualizes an
+> **Since ADR-398 Tier 1 is always on and `BROOD_MONO` is gone** — the `BROOD_MONO=1`
+> measurements below are of the then-opt-in rewrite; `BROOD_DEVIRT_DBG=1` is the trace now,
+> and the `BROOD_MONO=2` lever below was never built (Tier 2 stays deferred). The always-on
+> rewrite's head is the guarded `%dispatch-proven`, a slightly different call from the one
+> measured; its effect on the rows is unmeasured.
+
+**What it is.** ADR-182's Tier 1 (then `BROOD_MONO=1`, off by default) devirtualizes an
 ability-op call whose first argument is a LITERAL or a direct record-constructor call —
 `(area (circle 2))` — to a direct impl call, the identity proven at compile time and the
 resolution left behind the epoch-guarded cache (ADR-294, so a re-registered impl still

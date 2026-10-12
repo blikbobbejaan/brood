@@ -408,11 +408,9 @@ record built at root and an impl for it at root must land on the same dispatch i
 ;; The `(sig …)` forms for an all-typed record: the constructor arrow, then one
 ;; accessor arrow per field. Built as plain data — `sig` reads the un-expanded type.
 ;; id-keyword → record name: the set of nominal ids that are GENUINE `defrecord`
-;; identities. Ground truth for BROOD_MONO's direct-constructor devirtualization
-;; (ADR-182) — a constructor call `(circle 2)` may be devirtualized only when its baked
-;; id (`:module/circle`) is registered here, so a same-named non-record fn is never
-;; mistaken for a record constructor. Always populated (cheap load-time metadata, like
-;; `*impls*`); read only under the flag.
+;; identities. The compiler's direct-constructor devirtualization (ADR-182) reads it: a
+;; constructor call `(circle 2)` is devirtualized only when its baked id
+;; (`:module/circle`) is registered here AND the head's closure builds that id.
 (def- *record-ids* {})
 (defn %record-register (id nm)
   "Record that `id` (a `:module/name` keyword) is a `defrecord`'s nominal identity."

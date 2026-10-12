@@ -1277,15 +1277,12 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             for &a in &items[1..] {
                 args.push(compile_node(heap, a, scope, false)?);
             }
-            // BROOD_MONO Tier 1 (ADR-182): devirtualize an ability op call with a literal
-            // first argument to a direct call to the resolved impl. Off by default — the
-            // `mono_enabled()` bool is the only cost then, so default builds are unchanged.
-            // A Const callee falls through to the NO_SITE (computed-head) path below.
-            if inline::mono_enabled() {
-                if let Node::Global(op) = callee {
-                    if let Some(direct) = inline::mono_devirtualize(heap, scope, op, &args) {
-                        callee = direct;
-                    }
+            // ADR-182: an ability op call whose first argument's identity is provable skips
+            // the op's `%identity-of`. The rewritten head is computed, so it takes the
+            // NO_SITE path below.
+            if let Node::Global(op) = callee {
+                if let Some(direct) = inline::mono_devirtualize(heap, scope, op, &args) {
+                    callee = direct;
                 }
             }
             // A free-global callee gets a call-site inline-cache id (ADR-096);

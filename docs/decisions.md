@@ -9281,7 +9281,10 @@ machines), joined by a command channel + waker.
   and returns; the reactor flushes as the peer accepts bytes. `tcp-close`
   **drains the queue first** (bounded by a 5 s linger), so send-then-close can
   never truncate a response — the old blocking-write model's documented
-  footgun (hatch audit #1), now structurally gone. A slow/stuck reader is
+  footgun (hatch audit #1), now structurally gone. The drain is invisible to
+  the owner: once `tcp-close` returns, no new message for the socket reaches
+  any mailbox (inbound bytes are discarded, no `[:tcp-closed]` follows; ADR-398
+  follow-up 2026-10-12). A slow/stuck reader is
   bounded by a 16 MiB per-socket queue cap (past it the connection drops);
   write failures surface as `[:tcp-closed …]`. Callers that could be told
   synchronously (unknown socket, a listener, an unclaimed TLS stream) still
@@ -12362,7 +12365,11 @@ ADR-011 (sealed-only, defer the open case), the 2026-07-29 devlog entry.
 
 ## ADR-182 — Ability-dispatch monomorphization (`BROOD_MONO`, Tier 1)
 
-**Status:** accepted + shipped (Tier 1, **off by default**). The runtime companion to
+**Status:** accepted + shipped (Tier 1). **Always on since ADR-398** — the `BROOD_MONO` flag
+is gone, the rewritten head is the guarded `%dispatch-proven` (a rebound op or constructor,
+or a missing impl, falls back to the op), and an argument that can run user code or armed
+contracts decline it; see [ability-monomorphization.md](ability-monomorphization.md). The
+flag-off/flag-on guarantees below are history. The runtime companion to
 ADR-180/181's checker work — where the checker *proves* a dispatch identity, the compiler
 can *use* it. See [ability-monomorphization.md](ability-monomorphization.md) for the full
 design.

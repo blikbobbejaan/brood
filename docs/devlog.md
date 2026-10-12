@@ -16747,3 +16747,42 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
   `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, a fuzz-differential pass (180 programs, six
   generators, zero divergences), the network files 90× across tiers and boot paths, both
   checker gates at zero, and bedit's three gates.
+
+## 2026-10-12 — the cleanup's last four: tcp/close silence, one copy walker, devirtualization on, a derived doc catalogue
+
+- **`tcp/close` silences the socket at once.** A closing stream lingers up to 5 s to flush
+  queued output, and during that time the old owner could still receive inbound data and a
+  late `[:tcp-closed]`. Each socket now has one owner record; every delivery goes through it
+  under its lock, and `close` clears it under the same lock before returning, so nothing new
+  for the socket reaches any mailbox once `tcp/close` returns. Queued output still flushes
+  (send-then-close never truncates); bytes read meanwhile are discarded and their flow
+  credit returned. The rule covers TLS streams, listener accepts, failed dials and the
+  reactor-death sweep; `close` itself sends nothing. Guards: `tests/tcp_test.blsp` (8 MiB
+  linger, 6 rounds; nothing queued, 30 rounds) and `tests/tls_test.blsp` (mid-request close)
+  — the linger and TLS guards sabotage-verified.
+- **One message-copy walker.** `to_message_rec` (Value → `Message`) and
+  `copy_cross_heap_rec` (the L1 parked-receiver copy) were the same traversal written twice.
+  They are `copy_value<T: CopyTarget>`, monomorphised over `IntoMessage` and `IntoHeap`;
+  every difference (budget charging, up-front size checks, refusal as an error vs a silent
+  decline, failures, closures by handle, builtins in image mode, list positions) is an
+  `#[inline]` trait method, and refusals build their error lazily, so each path compiles to
+  its own walker with no runtime mode test. The L1 vector arm no longer copies the element
+  array. New `decline_tests` pin each asymmetry; the depth limit had no test before.
+- **Ability devirtualization is always on; `BROOD_MONO` is gone (ADR-182/398).** Turning
+  it on found five ways the opt-in rewrite disagreed with the op's own dispatch (KI-223).
+  The rewritten head is `%dispatch-proven`, which re-checks the op's and constructor's
+  definitions on every call and falls back to the op itself; calls with user-code
+  arguments, rebound or wrapped op names, rejected arities and contract-armed runs are not
+  rewritten. `crates/cli/tests/devirt_differential.rs` compares tiers 1 and 2 with the
+  tree-walker. The trace is `BROOD_DEVIRT_DBG`. Tier 2 stays deferred; the performance
+  effect is unmeasured here (a rewritten call trades the op's frame and `%identity-of` for
+  one primitive with two cached reads).
+- **The doc catalogue derives categories.** `std/tool/doc-catalog.blsp` no longer lists
+  ~600 names by hand (695 → ~205 lines). A qualified name takes its module's category, a
+  bare prelude name the category of the `;; ---- section ----` header above its definition,
+  a kernel primitive a small table; 3 exceptions remain. `tests/doc_catalog_test.blsp`
+  replaces the hand-list gates: every public name gets a category, every section key
+  matches exactly one header, an exception must disagree with its section. Five names moved
+  (`any?`, `every?`, `includes?`, `vec` → collections; `contains?` → maps). The prelude's
+  source copy falls back to the temp dir when the cache dir is read-only, since categories
+  now depend on its definition sites.

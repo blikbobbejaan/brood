@@ -93,7 +93,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![socket_ty], nil_ty),
         &["sock"],
-        "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Idempotent; returns nil.",
+        "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Once this returns, no new message for sock reaches any mailbox; a stream's queued output still flushes to the peer (5 s linger) and bytes it sends meanwhile are discarded. Idempotent; returns nil.",
         tcp_close);
     primitives.def(
         "%tcp-local-port",
