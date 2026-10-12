@@ -25,9 +25,9 @@
 ;; rendering third-party Markdown (a package README on a registry, a dependency's guide in
 ;; a generated site) means whoever wrote that Markdown chose the code.
 ;;
-;; An ALLOW-list, because the deny-list it replaced was beaten twice by spelling: first by
-;; case (`JaVaScRiPt:`), then by the characters a browser deletes before it reads the
-;; scheme — `java\tscript:` and a leading `\u{1}` both rendered as live script links.
+;; An ALLOW-list, because a deny-list is beaten by spelling: case (`JaVaScRiPt:`), and the
+;; characters a browser deletes before it reads the scheme (`java\tscript:`, a leading
+;; `\u{1}`).
 (def- *md-safe-schemes* ["http" "https" "mailto"])
 
 ;; Scrub what the URL parser in a browser scrubs before it reads the scheme: every ASCII

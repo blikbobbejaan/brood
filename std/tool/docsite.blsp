@@ -409,8 +409,8 @@ result and the cited name stays escaped."
     ".docsite .sig{font-weight:600;color:var(--docsite-fg)}.docsite .tag{background:var(--docsite-border);color:var(--docsite-muted);border-radius:.25rem;padding:0 .35rem;font-size:.72rem;vertical-align:middle}"
     ".docsite .type{color:var(--docsite-dim);font-size:.85rem;margin-top:.15rem}"
     ;; `.doc` and `.moduledoc` share one block vocabulary — what `prose` renders: paragraphs,
-    ;; lists, quotes and indented examples. The moduledoc used to have no paragraph rule at
-    ;; all, so a host that zeroes `p` margins (Tailwind's preflight) ran its paragraphs together.
+    ;; lists, quotes and indented examples. Both need the paragraph rule, or a host that
+    ;; zeroes `p` margins (Tailwind's preflight) runs paragraphs together.
     ".docsite .doc{margin-top:.4rem;color:var(--docsite-text)}"
     ".docsite .doc p,.docsite .moduledoc p{margin:.5rem 0}"
     ".docsite .doc ul,.docsite .moduledoc ul{list-style:disc;margin:.5rem 0;padding-left:1.4rem}"
@@ -422,10 +422,8 @@ result and the cited name stays escaped."
     ".docsite .doc pre,.docsite .moduledoc pre{background:var(--docsite-code-bg);border-radius:.375rem;padding:.6rem .8rem;margin:.5rem 0;overflow-x:auto;font-size:.85rem;line-height:1.45}"
     ".docsite .doc pre code,.docsite .moduledoc pre code{background:none;padding:0;white-space:pre}"
     ".docsite .empty{color:var(--docsite-faint)}" ".docsite .guide-body{color:var(--docsite-text)}"
-    ;; The guide headings follow `--docsite-fg` rather than a literal. They used to be a
-    ;; hard `#1f2933` that the dark block never overrode, so a dark standalone page drew
-    ;; near-black headings on a near-black background; routing them through the variable
-    ;; fixes that as a consequence of having one palette instead of two.
+    ;; The guide headings follow `--docsite-fg` rather than a literal colour, so the dark
+    ;; palette applies to them too (one palette, not two).
     ".docsite .guide-body h1{font-size:1.5rem;margin:1rem 0 .5rem;color:var(--docsite-fg)}"
     ".docsite .guide-body h2{font-size:1.2rem;border:0;margin:1rem 0 .4rem;color:var(--docsite-fg)}"
     ".docsite .guide-body h3{font-size:1.05rem;margin:.8rem 0 .3rem;color:var(--docsite-fg)}"

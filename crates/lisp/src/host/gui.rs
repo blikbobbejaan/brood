@@ -388,10 +388,9 @@ pub enum Key {
 /// The name of a named key under modifiers — ONE rule for both frontends, so a chord
 /// reads the same whether it arrived from winit or from crossterm: `[ctrl-meta-|ctrl-|
 /// alt-][shift-]<name>` — `:ctrl-left`, `:alt-shift-up`, `:ctrl-meta-delete`. Character
-/// chords already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`); named keys
-/// used to keep only Shift, and only on the motion keys, so `C-<left>` (Emacs
-/// `right-word`) and `C-S-<arrow>` (swap a window with its neighbour) could not be bound
-/// at all. Tab keeps its own spelling (Shift+Tab is `:back-tab`) and Escape carries none.
+/// chords already spell their modifiers this way (`:ctrl-x`, `:ctrl-meta-f`), and every
+/// named key carries all of its modifiers so chords like `C-<left>` can be bound. Tab
+/// keeps its own spelling (Shift+Tab is `:back-tab`) and Escape carries none.
 ///
 /// Returns a `&'static str` — the vocabulary is closed (a dozen keys × eight modifier
 /// sets), so each spelling is built once and kept for the process, which lets [`Key`]

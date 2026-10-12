@@ -111,8 +111,8 @@ pub fn compiled_features() -> Vec<&'static str> {
 ///
 /// The git-sha half is baked in at compile time (`BROOD_GIT_SHA`): `git rev-parse
 /// --short HEAD`, with `-dirty` appended when `crates/` or `std/` differed from the
-/// commit (2026-09-13 — two binaries from one commit, one carrying an uncommitted
-/// checker change, reported the same version and disagreed on a `nest check`). It is
+/// commit, so a binary carrying an uncommitted change does not claim the clean
+/// commit's version. It is
 /// still **not** by itself a reliable staleness stamp: two dirty builds on one commit
 /// share it, and the marker is re-evaluated only when this crate's sources or the head
 /// change (`build.rs`'s `rerun-if-changed`).

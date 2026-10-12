@@ -515,10 +515,8 @@ Either argument may be anything implementing `Spanning`.
 ;; **shorter** one sorts first (`2026-01` before `2026`).
 ;;
 ;; A `defmethod` on the prelude's `compare-to` multimethod, not a plain `tempo/compare-to`
-;; function. It was the latter until 2026-08-28, which meant tempo values were orderable only
-;; by naming this function: `sort`, `<`, `<=`, `>`, `>=` and `compare` all route a RECORD
-;; through the multimethod (`%ord-compare`), found no method, and raised — so the module that
-;; exists to put time on a line could not put its own values in order.
+;; function: `sort`, `<`, `<=`, `>`, `>=` and `compare` all route a RECORD through the
+;; multimethod (`%ord-compare`), so only a method makes tempo values orderable by them.
 (defmethod compare-to
   [tempo tempo]
   (a b)
@@ -763,8 +761,8 @@ arithmetic for years and months, exact millisecond arithmetic below that.
 
     (tempo/resolution (tempo/now :day))   → :day"
   ;; Guarded for the same reason `truncate` is, and more urgently: an unguarded `u` reaches
-  ;; `tp-restrict` at rank -1, which keeps NO units, so `(now :fortnight)` used to build a
-  ;; tempo with an empty unit map — and that only surfaced later, as `expected number, got
+  ;; `tp-restrict` at rank -1, which keeps NO units, so `(now :fortnight)` would build a
+  ;; tempo with an empty unit map — which would only surface later, as `expected number, got
   ;; nil` from inside `tp-pad` or `datetime/dt-ymd->days`, nowhere near the typo.
   (when (not (tp-unit? u)) (error (str "tempo/now: not a time unit: " (str u))))
   (tp-of-datetime (datetime/utc-now) u))

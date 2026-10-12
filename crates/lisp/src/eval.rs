@@ -23,14 +23,10 @@ use crate::error::{LispError, LispResult};
 
 /// Truthiness: only `nil` and `false` are falsy.
 ///
-/// A **failure is truthy**, deliberately. It was falsy for one release, on the
-/// argument that it should short-circuit wherever a `nil`-on-failure used to, so
-/// callers would need no edits. That is exactly what was wrong with it: the call
-/// sites that needed no edit were the ones *silently swallowing* the failure —
-/// `(or (string/->number p) 0)` turned `"x"` into `0` and said nothing, which is
-/// the "an unable is never defaulted" rule broken by default. Measured on the
-/// tree: flipping to truthy broke seven files, and every one broke *loudly*, with
-/// a type error naming the failure and its cause. None was a silent wrong branch.
+/// A **failure is truthy**, deliberately: a falsy failure would let
+/// `(or (string/->number p) 0)` silently turn `"x"` into `0` — the "an unable is
+/// never defaulted" rule broken by default. Truthy, the same call site fails
+/// loudly with a type error naming the failure.
 ///
 /// So a failure behaves like any other value here: to treat one as absent you say
 /// so, with `failure?`. Falsiness cannot distinguish "it failed" from "there is
@@ -50,10 +46,8 @@ fn eval_at(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
 /// The evaluator's special forms, as a closed enum. The hot path (every
 /// combination) dispatches on the head symbol's interned id (a `u32`) to one of
 /// these — or `None` for an ordinary call — then `match`es the *enum* (a jump on
-/// a small discriminant). Previously this returned a `&'static str` and the
-/// caller matched on the string; the enum drops those per-form string compares
-/// and gives the compiler a dense jump table. (It still avoids `symbol_name`'s
-/// global-interner lock and `String` allocation, as before.)
+/// a small discriminant) — no per-form string compares, a dense jump table, and
+/// no `symbol_name` interner lock or `String` allocation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SpecialForm {
     Quote,
@@ -178,9 +172,9 @@ fn eval_tail_loop(
     let mut expr = expr;
     let mut env = env;
     // GC-block guard: increments `GC_BLOCK` for the lifetime of this `eval` frame.
-    // Since ADR-061 the GC safepoint no longer gates on this depth (it collects at
-    // any eval depth — every frame roots its transients on the operand stack); the
-    // guard now feeds only the stack-overflow byte guard below, which keys its base
+    // The GC safepoint does not gate on this depth (ADR-061: it collects at any eval
+    // depth — every frame roots its transients on the operand stack); the guard
+    // feeds only the stack-overflow byte guard below, which keys its base
     // off the outermost eval (`gc_block_depth() <= 1`). `Drop` runs on every return
     // path (including `?` and panic).
     let _gc_block = crate::process::GcBlockGuard::enter();
@@ -598,8 +592,7 @@ fn eval_tail_loop(
                         // macro does *not* re-expand callers already compiled with
                         // the old expansion — they keep the old code until re-eval'd.
                         // `defmacro` is a macro lowering to `(def name (%make-macro …))`,
-                        // so this is the def-side home of what used to live in the
-                        // `defmacro` special form.
+                        // so the diagnostic lives on the `def` side.
                         if matches!(old.unpack(), ValueRef::Macro(_))
                             && matches!(val.unpack(), ValueRef::Macro(_))
                             && reload_diagnostics_enabled(heap, root)
@@ -665,8 +658,8 @@ fn eval_tail_loop(
                 }
                 Some(SpecialForm::Quasiquote) => {
                     // One template, and no trailing tail — the same rule `quote`
-                    // follows, for the same reason: `` `(a) b `` used to return the
-                    // template's value and drop `b` without a peep. (And the same
+                    // follows, for the same reason: `` `(a) b `` must not silently
+                    // drop `b`. (And the same
                     // degenerate case: no template at all yields nil, like `(quote)`
                     // / `(do)` / `(if)`, because nothing is being *dropped*.)
                     let (template, r) = uncons(heap, rest);
@@ -800,9 +793,8 @@ fn eval_tail_loop(
         // Resolve the head once: a symbol head is looked up in the environment
         // (a single walk, shared by the macro check and the callee), any other
         // head form is evaluated. A macro expands and re-enters the loop; anything
-        // else becomes the callee. (Previously the head was resolved twice — once
-        // for the macro test, once via `eval(head)` — doubling global-table hits
-        // on the hottest path.)
+        // else becomes the callee. Resolving it twice would double global-table
+        // hits on the hottest path.
         // Source position of *this* combination — used as the fallback when an
         // error bubbles up from a sub-eval / primitive / closure-arity check
         // that didn't tag itself with a more-inner position. `or_form_pos`
@@ -1238,7 +1230,7 @@ pub(crate) fn not_a_function_error(heap: &Heap, v: Value) -> LispError {
     let shown = crate::syntax::printer::print(heap, v);
     let err = LispError::type_err(format!("cannot call non-function: {}", shown));
     match v.unpack() {
-        // (A keyword no longer lands here — ADR-165 made it callable.)
+        // (A keyword never lands here — it is callable, ADR-165.)
         // `({:a 1} :a)` — Clojure's map-as-function.
         ValueRef::Map(_) => err.with_hint(
             "a map isn't a function in Brood: look a key up with `(get m k)` \
@@ -1608,8 +1600,8 @@ fn call_native(heap: &mut Heap, id: NativeId, argv: &[Value], env: EnvId) -> Lis
     // `BROOD_STALL_MS`: in a green process, time the call, charge long natives
     // against the reduction budget (`scheduler::charge_native`) and name the
     // builtin that held the worker. Gated behind the stall tracer because
-    // always-on per-call timing measured **8–22% on the message-heavy rows**
-    // (pingpong/ring/json, 2026-07-18 A/B) while buying almost nothing: the
+    // always-on per-call timing costs heavily on message-heavy workloads
+    // while buying almost nothing: the
     // reduction budget already bounds post-native hogging to ~one quantum
     // (~1 ms of Brood work) — the un-preemptible time *inside* a long native
     // is only fixed by the M4 dirty-CPU offload pool. When the tracer is off
@@ -1791,9 +1783,9 @@ pub(crate) fn foreign_construct_hint(name: &str) -> Option<&'static str> {
         "with-meta" | "vary-meta" => "Brood values carry no metadata.",
         // ADR-154 renames + removals. Without these a downstream caller (or an LLM
         // writing from Clojure habit) gets a bare "unbound symbol" for a name that
-        // has a direct replacement. `some?` matters most: it was *freed* precisely
-        // because it used to mean "any element matches", which reads as Clojure's
-        // non-nil test — so the error must say which one you want.
+        // has a direct replacement. `some?` matters most: "any element matches"
+        // vs Clojure's non-nil test are both plausible readings, so the error
+        // must say which one you want.
         "car" => "Brood spells `car` as `first` (ADR-154 removed the Lisp lineage names).",
         "cdr" => "Brood spells `cdr` as `rest` (ADR-154 removed the Lisp lineage names).",
         "concat" => "Brood spells `concat` as `append` (any number of lists/vectors → a list).",
@@ -1819,8 +1811,8 @@ pub(crate) fn foreign_construct_hint(name: &str) -> Option<&'static str> {
         "path-exists?" => "Brood spells `path-exists?` as `file/exists?`.",
         "working-dir" => "Brood spells `working-dir` as `file/cwd`.",
         // The `#` arm fires when `#` itself is read as a bare symbol — i.e. for a
-        // reader macro Brood lacks. It used to claim `#{…}` was one of them; sets
-        // have been a real literal since ADR-060, and `#b"…"` bytes since ADR-139.
+        // reader macro Brood lacks. `#{…}` sets (ADR-060) and `#b"…"` bytes
+        // (ADR-139) are real literals and must not be listed as missing.
         "#" => {
             "Brood has only two `#` literals — `#{…}` (a set) and `#b\"…\"` (bytes). \
              It has no `#(…)` lambda shorthand (write `(fn (x) …)`), no `#_` form \
@@ -2138,14 +2130,11 @@ pub(crate) fn make_closure_cached(
             return Ok(c);
         }
     }
-    // Promote on the Nth sighting, not the second. "Seen twice" was meant to mean "a
-    // literal in a loop", but a spawned process that evaluates a `receive` twice also sees
-    // its matcher twice — so every short-lived worker promoted its matcher into the
-    // append-only RUNTIME region, one entry per process (measured: ~1 promote per spawn on
-    // a 4k-spawn workload; `runtime-frontier.md` A3 rejects exactly this growth shape at
-    // 541 MB / 800k ops). A genuinely hot literal loop crosses 8 sightings in microseconds
-    // and still gets its stable promoted handle; a worker that parses, receives twice and
-    // dies now costs the region nothing.
+    // Promote on the Nth sighting, not the second: a spawned process that evaluates a
+    // `receive` twice also sees its matcher twice, and promoting then would grow the
+    // append-only RUNTIME region by one entry per short-lived process (the growth shape
+    // `runtime-frontier.md` A3 rejects). A genuinely hot literal loop crosses 8 sightings
+    // in microseconds and still gets its stable promoted handle.
     const PROMOTE_AFTER_SIGHTINGS: u32 = 8;
     let (closure, promote_now) = if let Some((tpl, seen)) = heap.lookup_closure_template(key) {
         (

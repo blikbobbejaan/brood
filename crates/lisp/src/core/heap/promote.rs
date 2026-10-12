@@ -322,11 +322,9 @@ impl Heap {
         // this closure reached while promoting its captured scope resolves here
         // rather than recursing forever (e.g. `(let (g (fn () g)) g)`).
         // `BROOD_TRACE_PROMOTE=1` — name every closure entering the append-only RUNTIME
-        // region, with the Rust frames that put it there. This is the tool that finally
-        // pinned KI-22's sibling (thread 6): 1382 of 1389 promotions in a supervisor
-        // workload came from one site, `spawn_impl <- spawn_link`. Elimination bisecting had
-        // failed on it for hours; one run of this answered it. Gated, so it costs a single
-        // `var_os` on the promote path when off.
+        // region, with the Rust frames that put it there — the way to find a site that
+        // promotes per operation (an unbounded leak of shared code; KI-22). Gated, so it
+        // costs a single `var_os` on the promote path when off.
         if std::env::var_os("BROOD_TRACE_PROMOTE").is_some() {
             let nm = self
                 .closure(id)

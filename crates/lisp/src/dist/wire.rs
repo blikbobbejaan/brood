@@ -82,9 +82,8 @@ pub(super) enum Frame {
     // name on the wire. The receiver always takes the originating node from the
     // *authenticated* link (the `peer` established by the handshake), never from
     // wire data — so a malicious peer can't claim to be node X and inject
-    // `[:down …]` / link-exit deliveries to processes coupled with X. A
-    // `from_node` field used to be shipped here and deliberately ignored; it was
-    // removed entirely (greenfield, no wire compat) to keep the wire honest.
+    // `[:down …]` / link-exit deliveries to processes coupled with X. So the frame
+    // carries no `from_node` field at all.
     /// "Watch local pid `target` for me; deliver `[:down ref pid reason]` to my
     /// `watcher_pid` (on the authenticated peer node) when it dies." The receiver
     /// routes through `process::add_monitor` with a `Watcher::Remote`, reusing
@@ -741,8 +740,8 @@ pub(crate) fn decode_msg(r: &mut Cursor<Vec<u8>>) -> io::Result<Message> {
 
 /// The decoder checks the stack every 32nd level, so `process::grow`'s red zone must
 /// hold 32 levels of `decode_msg_at_inner` — it does at 64 KiB in an ordinary build,
-/// and `crate::stack` raises it for AddressSanitizer's larger frames (a 200 000-deep
-/// decode overflowed a 2 MiB stack between two checks there, from 2026-10-01).
+/// and `crate::stack` raises it for AddressSanitizer's larger frames, which would
+/// otherwise overflow a 2 MiB stack between two checks.
 fn decode_msg_at(r: &mut Cursor<Vec<u8>>, depth: u32) -> io::Result<Message> {
     if depth % 32 == 31 {
         crate::process::grow(|| decode_msg_at_inner(r, depth))

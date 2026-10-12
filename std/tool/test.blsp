@@ -1026,13 +1026,12 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; from `*test-timeout-ms*` (the runner's hard per-test ceiling) and from the short
 ;; deadlines a test uses to assert that *nothing* arrives, which must stay short.
 ;;
-;; Why it is a named knob rather than a literal at each site: those guards were
-;; written with 5s deadlines, and 5s is not a lot when the suite saturates every core —
-;; one of them (`remote_spawn_test`) intermittently reddened the whole run on timing
-;; alone. They are correctness tests ("did the message arrive at all"), never latency
-;; tests, so the deadline exists only to stop a hang and should be generous.
+;; Why it is a named knob rather than a literal at each site: a few seconds is not a lot
+;; when the suite saturates every core. These are correctness tests ("did the message
+;; arrive at all"), never latency tests, so the deadline exists only to stop a hang and
+;; should be generous.
 ;;
-;; 20s: 4× the old headroom, while several compounding guards still fit inside the
+;; 20s: generous, while several compounding guards still fit inside the
 ;; 120s per-test ceiling, so a genuinely stuck test is still reported with its own
 ;; message rather than by the hard kill.
 (defdyn *test-wait-ms* 20000)
@@ -1212,14 +1211,11 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; ─── The test runner ────────────────────────────────────────────────────────
 ;; The runner is one long-lived process gathering every step's results. Its
 ;; per-step transients — worker-result copies, the `append` spine, spawn/monitor
-;; machinery — are garbage that once climbed to the memory cap (the ~633-test
-;; suite hit ~4 GiB) because automatic collection was off. It no longer does: the
+;; machinery — are garbage that must not accumulate across the suite. The
 ;; driver loop is a SPAWNED process body, so it runs at the depth-1 eval safepoint
 ;; where **Stage B's automatic copying GC** (ADR-055) fires — each iteration's
 ;; garbage is reclaimed while the live `acc` is kept (it's rooted as a tail-call
-;; argument). A plain tail call bounds the suite; the `(proc/hibernate)` Stage A used
-;; here is gone (and the primitive itself was removed — automatic GC made it
-;; redundant, docs/memory-review.md §6).
+;; argument). A plain tail call bounds the suite (docs/memory-review.md §6).
 ;;
 ;; Each isolated unit still runs in its OWN awaited worker (so its heap is dropped
 ;; wholesale on exit, and its mailbox can't leak stragglers into another test);
@@ -1369,8 +1365,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; Looping closes the window: each round kills the supervisor too (it is a straggler), so
 ;; after it exhausts its restart intensity — or is simply dead — no new child appears and the
 ;; set goes empty. Bounded so a genuinely wedged process cannot hang the run; if the bound is
-;; hit we warn and restore anyway, exactly as the single pass did, because proceeding is no
-;; worse than the old behaviour and a hang is worse than both.
+;; hit we warn and restore anyway, because a hang is worse than proceeding.
 (defn- test-quiesce-rounds (before rounds)
   (let (stragglers (seq/filter (proc/list) (fn (p) (not (includes? before p)))))
     (cond

@@ -243,18 +243,14 @@ otherwise a leading block marker plus an inline scan of the rest."
 (sig md-line-spans (string int bool -> vector))
 
 ;; One `string-split` for the whole source, then walk the lines with a running offset —
-;; instead of `(string/substring src i e)` per line with a rising `i`. Both of the old per-line
-;; calls (`string-span-until` to find the newline, `substring` to cut the line) convert a
-;; CHAR index to a byte offset, which is O(1) only on pure-ASCII text; off that fast path it
-;; is O(i), so the document scan was O(n²) as soon as one non-ASCII character appeared —
-;; measured 5.03x then 6.92x across three rising points, against 3.81x/3.88x for the same
-;; text in ASCII. Splitting once is the same fix `stream-lines` needed (2026-08-02) and for
-;; the same reason. The offset arithmetic replaces the newline scan exactly: the next line
-;; starts one past this line's end.
+;; instead of `(string/substring src i e)` per line with a rising `i`. Per-line char-index
+;; calls convert a CHAR index to a byte offset, which is O(1) only on pure-ASCII text; off
+;; that fast path it is O(i), making the scan O(n²) once one non-ASCII character appears —
+;; the same reason `stream-lines` splits once. The offset arithmetic replaces the newline
+;; scan exactly: the next line starts one past this line's end.
 ;;
 ;; `string-split` yields a trailing "" when the source ends in a newline (and `("")` for the
-;; empty string), where the old `(>= i n)` loop stopped instead. Dropping a final empty
-;; element reproduces the old line set exactly for every case — "", "a", "a\n", "a\nb",
+;; empty string). Dropping a final empty element gives the expected line set exactly for every case — "", "a", "a\n", "a\nb",
 ;; "a\nb\n", "\n", "a\n\nb" — which the equivalence test in `tests/markdown_test.blsp`
 ;; pins rather than leaving to this comment.
 (defn- md-drop-trailing-empty (lines)

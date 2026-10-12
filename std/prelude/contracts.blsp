@@ -17,8 +17,8 @@
 ;; the spec parsing, the argument/result checks, the templates — lives in `std/contract.blsp`
 ;; and is loaded by `require-one` at the hook's first ARMED call. Everything in the prelude
 ;; is localized and frozen into the shared region at every runtime's boot and carried in the
-;; prelude image, so 200 lines an unarmed run never reaches were boot cost paid by every
-;; process for a mode that is off (KI-182's residual). What stays is what the kernel or the
+;; prelude image, so code an unarmed run never reaches would be boot cost paid by every
+;; process for a mode that is off (KI-182). What stays is what the kernel or the
 ;; expander needs in every mode: this hook, the exemption, and `sig!`.
 ;;
 ;; `%contract-check-op-result` — an ability op's declared return — stays in tools.blsp for a

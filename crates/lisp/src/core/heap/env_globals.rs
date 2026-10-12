@@ -1566,8 +1566,7 @@ impl Heap {
     pub(crate) fn rec_check_dep_sym(&self, sym: Symbol) {
         // A gensym is a macro-expansion temporary, never a global: its counter differs
         // in every process, so recording one made the dependency fingerprint
-        // process-specific — `nest check` and `nest run` could never share a verdict
-        // (found 2026-08-30: 1 982 keys per bedit file, the differing ones all `and__N`).
+        // process-specific — `nest check` and `nest run` could never share a verdict.
         if crate::core::value::is_gensym(sym) {
             return;
         }
@@ -1661,10 +1660,9 @@ impl Heap {
     ///
     /// Memoised per process, keyed on the store's version: this is asked per checked VALUE
     /// under contracts, and the scan it answers with walks every declared signature in the
-    /// runtime — 76 M instructions of a 1.3 G callgrind run were this scan, three times per
-    /// `conj` (2026-09-21). A `deftype` (a store insert) bumps the version and drops the
-    /// memo. Keys only, never handles: a compaction relocates the store's values, and the
-    /// caller re-reads the form through the live store by this key.
+    /// runtime, several times per `conj`. A `deftype` (a store insert) bumps the version
+    /// and drops the memo. Keys only, never handles: a compaction relocates the store's
+    /// values, and the caller re-reads the form through the live store by this key.
     pub fn alias_key_by_suffix(
         &self,
         name: Symbol,
@@ -1787,18 +1785,15 @@ impl Heap {
         );
         // Serialize with the registry read-modify-write (`registry_update`/`registry_cas`,
         // KI-22's lock) — KI-89. Those RMWs hold `registry_lock` from their read of the
-        // registry global to their write; this swap did NOT take it, so a concurrent
-        // registration could read `cur` before the swap and `env_define` its successor
-        // after it — writing back a map computed from the PRE-restore table, i.e.
-        // resurrecting every accumulated `*record-ids*`/`*impls*`/`*features*` entry
-        // wholesale while the ordinary bindings beside them stayed rolled back. That
-        // asymmetry (ids registered, constructors unbound) is exactly KI-89's orphaned
-        // record ids, and one hit is sticky: the resurrected entries sit inside every
-        // later snapshot. Measured before this lock: 1994 of 2000 isolate cycles against
-        // a registering bystander resurrected the rolled-back entry. Under the lock a
-        // racing RMW either completes first (and is wiped — the isolation contract) or
-        // starts after (and reads the restored table). Lock order is registry_lock →
-        // globals lock here and in every RMW, so no inversion.
+        // registry global to their write. Without the lock here, a concurrent registration
+        // could read `cur` before the swap and `env_define` its successor after it —
+        // writing back a map computed from the PRE-restore table, resurrecting rolled-back
+        // `*record-ids*`/`*impls*`/`*features*` entries while the ordinary bindings beside
+        // them stayed rolled back (KI-89's orphaned record ids; sticky, since every later
+        // snapshot carries them). Under the lock a racing RMW either completes first (and
+        // is wiped — the isolation contract) or starts after (and reads the restored
+        // table). Lock order is registry_lock → globals lock here and in every RMW, so no
+        // inversion.
         // Clone the Arc so the guard borrows a LOCAL, leaving `&mut self` free for the
         // journal replay below (the same shape `registry_update` uses).
         let rt = self.runtime.clone();
@@ -1820,9 +1815,8 @@ impl Heap {
         //
         // Replayed into a PRIVATE copy first, then installed with the ONE swap below. Readers
         // are not under this lock: swapping the bare snapshot in and replaying into the live
-        // table left a window in which a worker's `conj` dispatched against an `*impls*`
-        // table its record was no longer in — 4 of 12 three-file repro runs, the same
-        // symptom this exists to remove. Copied out under the journal lock, applied after it
+        // table would leave a window in which a worker's `conj` dispatches against an
+        // `*impls*` table its record is not in. Copied out under the journal lock, applied after it
         // (the apply allocates and takes `promote_lock`); still under `registry_lock`, so no
         // registry read-modify-write interleaves with the rebuild.
         let mut table = snapshot.saved;

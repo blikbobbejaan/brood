@@ -47,16 +47,13 @@ also returns a list whatever it was given.
     (take-while [1 2 3 1] (fn (x) (< x 3)))   → (1 2)
     (take-while [5 1] (fn (x) (< x 3)))       → nil
 
-The loop guards on `empty?`, the test `take`/`drop` use. It guarded on `(pair? coll)`, which
-is false for a VECTOR and a STRING, so `(take-while [1 2 3] pred)` silently answered `nil` —
-a wrong value, not an error — while `(take [1 2 3] 2)` beside it worked. Found by writing
-the example above."
+Works on any collection `take` does — vectors and strings included."
   (%take-while-acc pred coll nil))
 (defn- %take-while-acc (pred coll acc)
   ;; `empty?`, not `pair?` — the guard `take`/`drop` use. `pair?` is false for a VECTOR and
-  ;; a STRING, so this used to walk zero items of either and answer `nil`.
+  ;; a STRING, so it would walk zero items of either and answer `nil`.
   ;; Two `if`s, not `(and (not (empty? …)) …)`: `not` is a prelude closure, a call per
-  ;; element on this path (KI-182's lesson, swept).
+  ;; element on this path (KI-182).
   (if (empty? coll)
     (reverse acc)
     (if (pred (first coll))
@@ -83,10 +80,8 @@ the example above."
 ;; draws the boundary on: a module name claims the ops whose *subject* is that type, and
 ;; this one's subject is any collection — it dispatches on `(string? coll)` and falls
 ;; through to a list/vector scan. (`last-index-of` looked like its twin and is not: that
-;; one is string-only, so it moved to `string/`.) It lives here, in the sequence file,
-;; rather than beside the string helpers it used to sit among, so that where it is defined
-;; and how the reference categorises it both say "collection" — the catalogue said
-;; `:strings` and half the reason the name looked misplaced was that it read as a string op.
+;; one is string-only, so it lives in `string/`.) It lives here, in the sequence file, so
+;; that where it is defined and how the reference categorises it both say "collection".
 
 (defn- %index-of-seq-from (coll x i from)
   ;; scan from the head; only start matching once the running index reaches `from`
@@ -115,26 +110,20 @@ and the reader is not."
       ;; Strings ride on the `%str-index-of` kernel primitive — linear; a pure-Brood
       ;; scan would be O(n²) (char indexing is O(index)), which is too slow for
       ;; whole-namespace `doc-search`/`apropos` use. The `from` offset goes to the
-      ;; primitive, which searches in place. It used to be `(%str-index-of (string/substring
-      ;; coll s0 n) x)` — which COPIED the suffix on every call, so the incremental
-      ;; search this offset exists for was itself quadratic. `last-index-of` is where that
-      ;; measurably mattered (540 ms → 1 ms at 6400 matches); `fuzzy-next` also calls it
-      ;; per query char per candidate, but making the scan cheap barely moved ranking —
-      ;; see the note there before assuming this is anyone's bottleneck. The empty needle
+      ;; primitive, which searches in place — slicing a `string/substring` first would copy
+      ;; the suffix on every call and make the incremental search quadratic. The empty needle
       ;; still matches at `from`, and a `from` past the end still finds nothing.
       (string? coll) (%str-index-of coll x (%max 0 start))
       else (%index-of-seq-from coll x 0 start))))
 
 ;; `includes?` follows it for the same reason — the membership question over any
 ;; collection, string included, not a string op that happens to accept a vector.
-;; The RETURN is an index or -1, never anything else: without it the inferred return was
-;; `number`, and that width travelled into every caller's arithmetic — `string/substring`
-;; and `bytes/at` want an int, so hatch's request parser, its BML scanner and hive's
-;; changelog renderer all reported positions that were only ever integers. The collection
-;; is what the body accepts (2026-09-12): a string, or anything `first`/`rest` walk —
-;; every seqable, a bytes value included — or nil (-1). An int or a keyword raises inside
-;; `%index-of-seq-from`, and `(any …)` here was the reason a caller's parameter handed to
-;; `index-of` inferred as `any` in every module that uses it.
+;; The RETURN is an index or -1, never anything else: inferred, it would be `number`, and
+;; that width would travel into every caller's arithmetic (`string/substring` and `bytes/at`
+;; want an int). The collection is what the body accepts: a string, or anything
+;; `first`/`rest` walk — every seqable, a bytes value included — or nil (-1). An int or a
+;; keyword raises inside `%index-of-seq-from`; declaring `any` here would infer every
+;; caller's parameter handed to `index-of` as `any`.
 (sig index-of ((or nil string seqable) any &optional (or nil int) -> int))
 (defn includes? (coll x)
   "True if `coll` contains `x`. Works on lists, vectors, strings (string/substring), sets, and maps (membership among values — use `contains?` for keys).
@@ -145,13 +134,10 @@ and the reader is not."
     (includes? {:a 1} 1)          → true    ; VALUES, not keys
     (includes? {:a 1} :a)         → false   ; use contains? for that"
   (cond
-    ;; A set answers from its trie, never by scanning itself. Without this arm a set fell
-    ;; through to `index-of` and gave the right answer the slow way — 64x slower than
-    ;; `contains?` on 500 elements — and nothing said so, because the result was correct.
-    ;; That is the worst shape a performance bug can have: bedit's playground put one such
-    ;; call in a per-keystroke loop and it became 287ms of a 309ms pass, on a 500-form
-    ;; buffer, with no failing test to point at. `includes?` is the membership question
-    ;; people reach for first; it has to be the fast one wherever a fast one exists.
+    ;; A set answers from its trie, never by scanning itself: falling through to
+    ;; `index-of` gives the right answer the slow way, which no test catches. `includes?`
+    ;; is the membership question people reach for first; it has to be the fast one
+    ;; wherever a fast one exists.
     (set? coll) (%set-has? coll x)
     (map? coll) (includes? (vals coll) x)
     else (>= (index-of coll x) 0)))
@@ -211,22 +197,17 @@ Always true for `n` <= 0.
     ;; define its own order; every built-in keeps the native `%sort-cmp` path.
     (record? (first coll)) (%merge-sort (fn (x y) (< (%ord-compare x y) 0)) coll)
     else (%sort-cmp coll)))
-;; The comparator goes LAST (ADR-308), like every other combinator. It used to come
-;; first — `(sort > [3 1 2])` — and nothing caught it: `audit/data-first?` judges by
-;; declared types then by parameter names, and `sort` had no signature and named its
-;; parameters `a`/`more`, so it was "vacuously fine" on both axes.
+;; The comparator goes LAST (ADR-308), like every other combinator.
 ;;
-;; The comparator is declared as an ARROW rather than a bare `fn` for exactly that
-;; reason: `audit/arrow-type?` is `(includes? t "->")`, so `fn` would have left the gate
-;; blind a second time — the collection would be found by type and the subject by
-;; neither type nor name (`more` is not in `subject-params`), which is the same
-;; vacuous pass in a new spelling. With the arrow, flipping the order back puts the
-;; subject at index 0 and `audit/reversed-args` names it.
+;; The comparator is declared as an ARROW rather than a bare `fn` so the argument-order
+;; audit can see it: `audit/arrow-type?` is `(includes? t "->")`, and with `fn` the
+;; subject would be found by neither type nor name (`more` is not in `subject-params`), so
+;; a flipped order would pass vacuously. With the arrow, `audit/reversed-args` names it.
 ;; `(or list vector set)`, not `seqable`: `seqable` additionally admits a string, a map
 ;; and bytes, and `sort` RAISES on all three (`%sort-asc`/`%sort-cmp` both materialise
 ;; through `Heap::seq_items`, which takes nil/pair/vector/set and nothing else). A range
-;; needs no mention — it materialises as a pair. Declaring the wider `seqable` warned
-;; inside sort's own body, which was the checker being right.
+;; needs no mention — it materialises as a pair. The wider `seqable` would (rightly) warn
+;; inside sort's own body.
 (sig sort ((or list vector set) &optional (any any -> bool) -> any))
 ;; Split `coll` into its first `n` items and the rest in ONE pass — what `%merge-sort`
 ;; needs instead of a separate `take` + `drop` (two walks). Private: the published
@@ -260,10 +241,8 @@ Always true for `n` <= 0.
 (defn- %merge-acc (less? a b acc)
   (cond
     ;; `acc` holds the merged prefix reversed; `%reverse-onto` splices it in front of
-    ;; the remaining run in ONE pass — the old `(append (reverse acc) …)` reversed
-    ;; `acc` and then re-walked it. (This was `(fold %flip-cons tail acc)`, already
-    ;; one pass, but paying a `%flip-cons` apply frame per element: 1674 ms vs 601 ms
-    ;; over 20k splices of a 500-element prefix.)
+    ;; the remaining run in ONE pass, with no per-element apply frame (see
+    ;; `%reverse-onto`).
     (empty? a) (%reverse-onto acc b)
     (empty? b) (%reverse-onto acc a)
     ;; strict `<` on b-vs-a: equal elements take from `a` first, so it's stable.
@@ -295,13 +274,12 @@ Always true for `n` <= 0.
         (fold (seq from) to %conj-one)
         (%map-into to (if (map? from) (%map-pairs from) from)))
     ;; Set target: add each item (duplicates collapse). Without this branch the
-    ;; `else` poured a set into a LIST — `(into #{} [1 1 2])` was `(1 1 2)`.
+    ;; `else` would pour a set into a LIST — `(into #{} [1 1 2])` as `(1 1 2)`.
     (set? to) (fold from to %set-add)
     ;; Vector target. Pouring into an EMPTY vector is what `vec`, and almost every
     ;; `(into [] …)` at a call site, actually asks for — and it needs no `append` at all.
-    ;; Going through `append` cost a fold-of-flip-cons plus the reverse that undoes it,
-    ;; building a whole intermediate list only to re-vectorise it: measured 4.89us against
-    ;; 0.62us for a 12-item list, and 1190us against 230us for ten thousand. An already-
+    ;; Going through `append` would build a whole intermediate list only to re-vectorise
+    ;; it, several times slower. An already-
     ;; vector `from` is the answer itself — vectors are immutable, so there is nothing to
     ;; copy. Only a non-empty `to` still needs the concatenation.
     (vector? to)
@@ -319,7 +297,7 @@ Always true for `n` <= 0.
 (defn- %conj-one (coll x)
   (cond
     (nil? coll) (list x)
-    ;; a flat copy plus one: the kernel op (going through `into`/`append` cost 7.7 µs)
+    ;; a flat copy plus one: the kernel op, not a trip through `into`/`append`
     (vector? coll) (%vector-concat coll [x])
     (set? coll) (%set-add coll x)
     ;; a record dispatches to its `Conjable` impl (default: the map behaviour below); a
@@ -472,9 +450,7 @@ and it must be loaded before this `defrecord`.
     (defrecord point (x y) :derives [Columns])   ; columns synthesised field-wise
 
 Note the example defines the ability *with* a `:derive-record` recipe: no ability in the
-prelude declares one, so `:derives` always names an ability from your own code. It read
-`:derives [Ord]` until 2026-08-28 — an ability that does not exist, so the one example of
-this clause was an expansion error."
+prelude declares one, so `:derives` always names an ability from your own code."
   (let (
         ;; An optional leading docstring, like `defn`/`defability`/`defmulti` — carried
         ;; onto the generated constructor.
@@ -493,8 +469,8 @@ this clause was an expansion error."
         body (%zipmap (cons :__id__ fkws) (cons id fnames))
         ;; Generated bindings carry a docstring: a constructor and its accessors are
         ;; public surface, and one with no `(doc …)` at all is a hole in `nest doc`,
-        ;; the LSP and `(audit/undocumented)` alike — `io/file-port` and its accessors
-        ;; were exactly that. The record's own docstring, when it wrote one, follows.
+        ;; the LSP and `(audit/undocumented)` alike. The record's own docstring, when it
+        ;; wrote one, follows.
         ctor `(defn ~rec (~@fnames)
                 ~(str "Construct a `"
                    (->string rec)
@@ -514,7 +490,7 @@ this clause was an expansion error."
         ;; An undeclared field type is a TYPE VARIABLE named after the field (`?x`), not
         ;; `any`: the checker binds it to the argument at each constructor call, so
         ;; `(pt 1 2)` is the shape `{__id__: :pt, x: 1, y: 2}` and `(:x (pt 1 2))` is `1`.
-        ;; With `any` every field of every constructed record was unknown at the call.
+        ;; With `any` every field of every constructed record would be unknown at the call.
         ;; A declared type stays declared — it is a contract, checked at the call.
         field-ty (fn (f)
                    (or (%defrecord-ftype f)
@@ -560,11 +536,8 @@ this clause was an expansion error."
                              (list '/reflect/current-ns))))
                        nil))
     ;; The constructor's `sig` follows its `defn`, exactly as the accessor sigs already
-    ;; follow theirs. The order stopped being load-bearing with ADR-381 (a contract is
-    ;; installed whenever the binding lands, either side of the declaration); it used to
-    ;; be — a `sig` above its definition was a hard error under `BROOD_CONTRACTS=1`, and
-    ;; emitting it first once made every `defrecord` fatal in that mode (`std/io.blsp`'s
-    ;; `standard-port` took the boot down as soon as anything required `io`).
+    ;; follow theirs. The order is not load-bearing (ADR-381: a contract is installed
+    ;; whenever the binding lands, either side of the declaration).
     `(do ~ctor ~ctor-sig ~@accs ~@acc-sigs ~@derive-calls (%record-register ~id '~rec) nil)))
 
 (defn- %repeat-acc (n x acc) (if (<= n 0) acc (%repeat-acc (dec n) x (cons x acc))))
@@ -575,7 +548,7 @@ this clause was an expansion error."
     (repeat 0 :a)   → nil"
   ;; The same ceiling a range is realised under (`MAX_REALISED_RANGE`, 2^26): past it
   ;; the list is a single call eating the machine, and the allocation failure it ends
-  ;; in is an abort, not an error anything can catch (2026-09-30).
+  ;; in is an abort, not an error anything can catch.
   (if (> n 67108864)
     (error "repeat: " n " elements is too many to build (limit 67108864)")
     (%repeat-acc n x nil)))
@@ -612,9 +585,8 @@ arguments, `identity`.
     (empty? (rest fns)) (first fns)
     else (fold (rest fns) (first fns) %comp-compose)))
 
-;; The rest of the combinator family. `comp` shipped alone for a long time, which
-;; left `(map (fn (x) (f a x)) xs)` as the only spelling of a partially-applied
-;; call — the gap a review found on 2026-07-26.
+;; The rest of the combinator family, so a partially-applied call has a spelling
+;; other than `(map xs (fn (x) (f a x)))`.
 (defn partial (f & bound)
   "`f` with its leading arguments fixed: `((partial f a b) c)` is `(f a b c)`.
 The workhorse for handing a configured function to a higher-order op.
@@ -694,7 +666,7 @@ callers a type.
 ;; wrappers over these — and ADR-291 considered exactly that and DECIDED AGAINST it: the
 ;; `l*` names stay defined in the PRELUDE under their qualified spelling, because the
 ;; prelude is the boot image and relocating a definition changes boot order for no
-;; established gain. Audited again 2026-09-05 and left alone. If you reopen it, reopen the
+;; established gain. If you reopen it, reopen the
 ;; ADR: the premise to re-test is "no gain", which predates the prelude image (ADR-314).
 (defn %xmap (f)
   "The `map` stage as a transducer — internal; published as `seq/xmap`."
@@ -781,9 +753,8 @@ iterating for side effects.
 ;; binding becomes a `fold` over its collection that conses the body onto `acc`;
 ;; each :when an `if` that passes `acc` through unchanged when the guard fails;
 ;; the body a single `(cons body acc)`. The whole thing builds the result in
-;; reverse with no intermediate per-element lists (the old `mapcat` lowering
-;; allocated a one-element `(list body)` per item and concatenated them) — so a
-;; final `reverse` restores order in one extra O(n) pass. `fold` is tail-
+;; reverse with no intermediate per-element lists (a `mapcat` lowering would
+;; allocate a one-element `(list body)` per item) — so a final `reverse` restores order in one extra O(n) pass. `fold` is tail-
 ;; recursive, so deep comprehensions don't grow the stack.
 ;; check-allow: deliberately non-tail — expansion-time recursion over macro-body syntax — depth is source nesting, not runtime data.
 ;;
@@ -842,7 +813,7 @@ iterating for side effects.
     else (%for-check-binds (rest (rest binds)))))
 
 (defmacro for (binds & body)
-  "List comprehension: `(for (x xs) expr)` yields `expr` for each `x`; supports `:when guard` filters and multiple bindings (last varies fastest). Bindings may destructure. Multiple body forms are evaluated in order and the LAST one is collected (like `let`/`when`/`doseq`) — `for` took exactly one body form until 2026-07-26, the only iteration form that did.
+  "List comprehension: `(for (x xs) expr)` yields `expr` for each `x`; supports `:when guard` filters and multiple bindings (last varies fastest). Bindings may destructure. Multiple body forms are evaluated in order and the LAST one is collected (like `let`/`when`/`doseq`).
 
 A trailing `:into coll` collects with `conj` onto `coll` instead of building a list, so the target's kind decides the result — a vector appends, a map takes `[k v]` pairs, a set drops duplicates (ADR-377).
 
@@ -950,8 +921,7 @@ when nothing is dropped, exactly as `(drop [1 2 3] 0)` does.
     (drop-while [1 2 3 1] (fn (x) (< x 3)))   → (3 1)
     (drop-while [5 1] (fn (x) (< x 3)))       → [5 1]   ; nothing dropped, so `coll` itself
 
-See `take-while`: the `pair?` guard was false for a vector, so this used to hand back the
-whole collection whatever the predicate said."
+Works on any collection `drop` does — vectors and strings included."
   (%drop-while-from pred coll))
 (defn- %drop-while-from (pred coll)
   (if (empty? coll)
@@ -982,7 +952,7 @@ empty chunks.
     (partition [1 2 3] 2)      → ((1 2))          ; the odd 3 is dropped
     (partition [1 2] 5)        → nil"
   ;; A size <= 0 never shrinks `coll` (`(drop coll 0)` is `coll`, and a zero-sized chunk
-  ;; always "fits"), so the accumulator used to grow until memory ran out.
+  ;; always "fits"), so the accumulator would grow until memory ran out.
   (if (> n 0)
     (%partition-acc n coll nil)
     (error "partition: chunk size must be positive, got " n)))

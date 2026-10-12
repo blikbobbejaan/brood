@@ -186,7 +186,7 @@ for a negative — the inverse of `string/->number` with the same radix contract
   ;; A lazy seq-view is realised first (the native walks it via `seq_items`,
   ;; which can't run a transducer). NOTE: this materialises the mapped strings —
   ;; the `strings` benchmark's full fusion would need a string-builder reducer
-  ;; (a follow-up); today join over a view matches the old eager-`map` behaviour.
+  ;; (a follow-up); join over a view behaves as over the eager `map` result.
   (let (coll (if (seqview? coll) (seq coll) coll))
     (if (string? sep)
       (%string-join sep coll)

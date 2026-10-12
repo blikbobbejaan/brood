@@ -19,7 +19,7 @@ use crate::types::Ty;
 // applicable). `ANY` is the "no useful info" lane — overlaps everything,
 // so the disjointness checker never warns against it.
 // `const` (not `let`) so each of the 170-odd uses below re-materialises a
-// fresh `Ty` — `Ty` is no longer `Copy` (it carries an optional `Arc` arrow
+// fresh `Ty` — `Ty` is not `Copy` (it carries an optional `Arc` arrow
 // refinement, ADR-078), but a `const` mention is inlined, so reusing these
 // shorthands by value needs no `.clone()`. Lowercase names kept (they read as
 // type shorthands, not globals); hence the `allow` on the enclosing fn.

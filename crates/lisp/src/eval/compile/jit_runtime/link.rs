@@ -114,8 +114,7 @@ pub(crate) fn jit_run_fast_link(
     // by the invoked code pointer against the keep-alive registry (every arm with
     // installed native code is in it, immortally — bug #2's fix), NOT the call IC: the
     // park usually spans a GC, whose epoch bump makes `vm_call_ic_probe` with the
-    // pre-call `epoch` decline — measured as 13 dirty parks producing 3 latches, i.e.
-    // a latch that mostly failed to hold. The probe stays as the fallback for the one
+    // pre-call `epoch` decline, so a latch through it would mostly fail to hold. The probe stays as the fallback for the one
     // race the scan can miss (an inlined-upgrade swap between invoke and here).
     if heap.blocked_under_gateway == gw_seq {
         jit_latch_dirty_blocked(heap, code, site, head, argc, epoch);
@@ -376,11 +375,10 @@ pub(super) fn jit_fast_link_cold_outcome(
                 // see [`jit_frame_shape_matches`] (KI-26).
                 // `1 | 2` — deopt AND preempt — matching `vm_run_bc`'s handler (KI-18): the
                 // journal, not the outcome code, decides whether there is a checkpoint to
-                // resume from, and `jit_ckpt_resume` returns `None` on a zero journal. Today
-                // a preempt provably observes a zero journal (`emit_self_call` resets it
-                // immediately before the tick poll), but that invariant lives in the lowerer
-                // while these consumers depend on it silently — and its failure mode is a
-                // silently REPEATED side effect, so all four consumers now gate the same way.
+                // resume from, and `jit_ckpt_resume` returns `None` on a zero journal. A
+                // preempt does observe a zero journal (`emit_self_call` resets it before the
+                // tick poll), but that invariant lives in the lowerer and its failure mode is
+                // a silently REPEATED side effect, so all four consumers gate the same way.
                 if matches!(outcome, 1 | 2) && jit_frame_shape_matches(&arm, nslots) {
                     if let Some((resume, rip, depth)) =
                         jit_ckpt_resume(heap, arm.arc(), base, nslots)
@@ -425,11 +423,11 @@ pub(super) fn jit_fast_link_cold_outcome(
 /// At THAT epoch, not the current one: the IR validated the mirror against the global epoch
 /// with a raw load, and a `def` on another worker can bump the epoch between that load and
 /// this callback (`concurrency_race::fanout_with_concurrent_global_rebind_matches_serial` is
-/// exactly that race). Probing at the new epoch answered `None` for a mirror that was valid
-/// when the IR read it, which fired this assertion once on CI (2026-09-20, `auth=None`). The
-/// release path is unaffected — `jit_run_fast_link` re-validates and falls through on a
-/// move. And the ENTRY, not the probe: `vm_call_ic_fast_link` reads the mirror first, so
-/// probing through it compared the mirror with itself. `tests::mirror_check_tolerates_a_
+/// exactly that race). Probing at the new epoch would answer `None` for a mirror that was
+/// valid when the IR read it. The release path is unaffected — `jit_run_fast_link`
+/// re-validates and falls through on a move. And the ENTRY, not the probe:
+/// `vm_call_ic_fast_link` reads the mirror first, so probing through it would compare the
+/// mirror with itself. `tests::mirror_check_tolerates_a_
 /// rebind_between_the_irs_load_and_the_callback` drives it with the race's exact state.
 #[cfg(all(feature = "jit", debug_assertions))]
 #[allow(clippy::too_many_arguments)]
@@ -489,7 +487,7 @@ pub(crate) fn debug_check_fast_link_mirror(
 /// guards against a call-site id reused across a `runtime_collect` clear, ADR-096) and read
 /// `(code, nslots, env)` out of [`Heap::vm_fast_links`] with raw
 /// loads — so this skips the IC probe + `RefCell` borrow that [`jit_dispatch_call`]'s fast
-/// path pays (the measured 40.9%-of-`fib` cost) and runs the same frame body via
+/// path pays (~40% of `fib`) and runs the same frame body via
 /// [`jit_run_fast_link`]. The `argc` args are the top operands on `roots`. Returns a
 /// [`FastLinkOutcome`] the caller maps to a status: `Done` (result), `Error` (parked), or
 /// `Fallthrough` — over the native-recursion cap, or the IC moved — which sends the IR to
@@ -526,9 +524,8 @@ pub(crate) fn jit_dispatch_fast_frame(
     // At THAT epoch, not the one read above: the IR validated the mirror against the
     // global epoch with a raw load, and a `def` on another worker can bump the epoch
     // between that load and this callback (`concurrency_race::fanout_with_concurrent_
-    // global_rebind_matches_serial` is exactly that race). Probing at the new epoch then
-    // answers `None` for a mirror that was valid when the IR read it — which fired this
-    // assertion once on CI (2026-09-20) with `auth=None`. The release path is unaffected:
+    // global_rebind_matches_serial` is exactly that race). Probing at the new epoch would
+    // answer `None` for a mirror that was valid when the IR read it. The release path is unaffected:
     // `jit_run_fast_link` re-validates against `epoch` and falls through on a move. A slot
     // whose mirror was cleared meanwhile has nothing to compare against and stands down.
     #[cfg(debug_assertions)]

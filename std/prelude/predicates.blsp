@@ -254,9 +254,8 @@ front of an accumulated remainder wants; a vector last is converted."
   ;; Right to left: the last argument becomes the tail as it is (a list) or as a list
   ;; (a vector), and each earlier one is copied in front — two walks of it, none of the
   ;; tail. O(everything but the last) and fully tail-recursive, so `mapcat` (via `apply
-  ;; append`) stays stack-safe on many/long lists. The previous shape reversed the
-  ;; whole result, walking every argument twice — 27 µs to put five items in front of
-  ;; 240, which a per-frame splice paid fifty times over.
+  ;; append`) stays stack-safe on many/long lists. Never reverse the whole result: that
+  ;; walks every argument twice, the long tail included.
   (if (empty? lists)
     nil
     (let (rl (reverse lists)
@@ -279,7 +278,7 @@ front of an accumulated remainder wants; a vector last is converted."
     (count {:a 1 :b 2})  → 2
     (count nil)          → 0"
   ;; `vector?`/`map?` short-circuit to the O(1) `vector-length`/`%map-count`
-  ;; kernels (both were O(n) — a fold walk / a `%map-pairs` allocation); lists
+  ;; kernels (rather than O(n) — a fold walk / a `%map-pairs` allocation); lists
   ;; and nil go through a dedicated tail loop, not a per-element counting closure.
   (cond
     (range? coll) (%range-count coll)
@@ -293,7 +292,7 @@ front of an accumulated remainder wants; a vector last is converted."
     ;; raw map, which would include the internal `:__id__`. `%map-get` distinguishes it.
     (map? coll) (if (%map-get coll :__id__ nil) (count (->seq coll)) (%map-count coll))
     (set? coll) (%set-count coll)
-    ;; A rope and a table have an O(1) size and used to raise here (ADR-253). Sized
+    ;; A rope and a table have an O(1) size (ADR-253). Sized
     ;; directly rather than through `Seqable`, whose `->seq` is a LIST view: a rope
     ;; would have to materialise every character to answer what its length already
     ;; knows, and a rope is on the editor's hot path. A rope counts in CHARACTERS,
@@ -302,24 +301,20 @@ front of an accumulated remainder wants; a vector last is converted."
     (rope? coll) (%rope-length coll)
     (table? coll) (%table-count coll)
     ;; Lists and nil are what `%count-acc` is for. Anything else reaching here has no
-    ;; native count — a rope, a table — and used to die inside `%count-acc` with
-    ;; `empty?: expected collection`. Consult `Seqable` where an impl exists for that
-    ;; identity; otherwise keep the old error, which is the honest one (ADR-253).
+    ;; native count: consult `Seqable` where an impl exists for that identity; otherwise
+    ;; raise (ADR-253).
     (or (pair? coll) (nil? coll)) (%count-acc coll 0)
     (%impl-exact? '[Seqable ->seq] (%identity-of coll)) (count (->seq coll))
-    ;; The error names `count` and the value; it used to surface as
-    ;; "empty?: expected collection" from the loop below (2026-09-30).
+    ;; The error names `count` and the value, not an internal of the loop below.
     (or (pair? coll) (nil? coll)) (%count-acc coll 0)
     else (error (str "count: expected a collection, got " (type-of coll) " (" (pr-str coll) ")"))))
 
 (defn- %nth-list (coll i d)
   (cond (empty? coll) d (= i 0) (first coll) else (%nth-list (rest coll) (- i 1) d)))
 
-;; A non-integer index is a type error that must name `nth`. Before this it fell
-;; through to the guards and the list walk, where `(>= i 0)` / `(- i 1)` raised
-;; `>=: expected number, got keyword` and `-: expected number, got keyword` — errors
-;; naming an arithmetic helper the caller never wrote, in violation of the
-;; self-identifying-type-error promise in docs/language.md. `(nth v :k)` is a real
+;; A non-integer index is a type error that must name `nth`, not an arithmetic helper
+;; in the guards or the list walk the caller never wrote (the self-identifying-type-error
+;; promise in docs/language.md). `(nth v :k)` is a real
 ;; mistake (usually a map/sequence mix-up), so it must say so.
 (defn- %nth-bad-index (coll i)
   (error (str "nth: expected an integer index, got "
@@ -351,13 +346,12 @@ front of an accumulated remainder wants; a vector last is converted."
     (nth [10 20] 9 :missing)  → :missing"
   ;; The fixed 2-arity arm is the hot path (`(nth v i)`): it is VM-eligible
   ;; (exact arity), so its body compiles to bytecode and the inner `vector-ref`
-  ;; inlines to a slab read — whereas the variadic-only definition deferred the
-  ;; whole thing to the tree-walker. The `& default` arm keeps the explicit-default
+  ;; inlines to a slab read — a variadic-only definition would defer the whole thing
+  ;; to the tree-walker. The `& default` arm keeps the explicit-default
   ;; behaviour for the rarer 3-arg call.
   ;; The index guard is `(if (int? i) … bad)`, never `(not (int? i))` as a `cond` test:
-  ;; `not` is a prelude closure, so that spelling was a Brood call on EVERY `nth` — and
-  ;; enough of them in one module load (`for` over the image's impl records indexes with
-  ;; `nth`) to tier `not` and instantiate Cranelift at boot (KI-182's watch item).
+  ;; `not` is a prelude closure, so that spelling is a Brood call on EVERY `nth` — enough
+  ;; in one module load to tier `not` and instantiate Cranelift at boot (KI-182).
   ((coll i) (if (int? i)
               (cond
                 (vector? coll)

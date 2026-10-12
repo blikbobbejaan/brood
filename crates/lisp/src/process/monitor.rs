@@ -57,12 +57,9 @@ pub(crate) enum Watcher {
 /// Indexed from BOTH ends, as Erlang keeps both sides' monitor lists on the process:
 /// `by_target` answers a target's death (fan the downs out), `by_watcher` answers a
 /// watcher's death and its `demonitor` — each touching only that process's own entries.
-/// Until 2026-09-20 there was only the first index, and a watcher's death or a
-/// `demonitor` walked the WHOLE table ("cold death path, so the full-table walk is
-/// fine") — fine at ten monitors and O(n²) for a fleet: a supervisor holding 200 000
-/// monitored children paid **1.2 ms per child death** (200 000 entries walked each time)
-/// against 0.7 µs for an unmonitored one, 1 500× — the whole of `exit :kill`'s cost on the
-/// process-lifecycle probe was this walk. `demonitor` had the same shape.
+/// Without the second index a watcher's death or a `demonitor` walks the WHOLE table,
+/// which is O(n²) for a fleet: a supervisor of many monitored children would pay a
+/// full-table walk per child death.
 pub(super) static MONITORS: LazyLock<Mutex<MonitorTable>> =
     LazyLock::new(|| Mutex::new(MonitorTable::default()));
 
@@ -400,8 +397,8 @@ pub(super) fn demonitor_for(me: u64, mref: u64) {
 
 /// Remove every `Watcher` matching `pred` from `MONITORS` — a full table walk, for the
 /// REMOTE retirements only: `Frame::Demonitor` from a peer, and the node-down cleanup
-/// that flushes a peer's remote watchers from every target's list. (A local `demonitor`
-/// used to route through here too; it is indexed now.)
+/// that flushes a peer's remote watchers from every target's list. A local `demonitor`
+/// uses the watcher index instead.
 pub(crate) fn drop_monitor(pred: impl Fn(&Watcher) -> bool) {
     crate::core::sync::lock(&MONITORS).retain_all(pred);
 }
@@ -411,9 +408,9 @@ pub(crate) fn drop_monitor(pred: impl Fn(&Watcher) -> bool) {
 /// (and [`PENDING_REMOTE`]) until the *watched* target died — a leak for
 /// watchers of long-lived targets (a supervisor of a never-dying server,
 /// restarted in a loop). Indexed by watcher, so a death costs the monitors IT
-/// held and nothing else — see [`MONITORS`] for what the full walk this used to be
-/// cost. (A peer node holding our dead pid as a `Watcher::Remote` cleans up when
-/// *its* target dies — the `[:down …]` send to a dead pid is dropped harmlessly.)
+/// held and nothing else — see [`MONITORS`] for why a full walk is wrong. (A peer
+/// node holding our dead pid as a `Watcher::Remote` cleans up when *its* target dies —
+/// the `[:down …]` send to a dead pid is dropped harmlessly.)
 pub(super) fn sweep_dead_watcher(pid: u64) {
     crate::core::sync::lock(&MONITORS).remove_watcher(pid);
     let mut pending = crate::core::sync::lock(&PENDING_REMOTE);

@@ -382,10 +382,9 @@ already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)
 ;; The pid of the `ui-run` loop this code is running inside — bound for the loop's whole
 ;; life, `update` and `view` alike — or nil outside one: a test calling `update` directly, a
 ;; batch run. The one question an app has to ask before it fires work at another process and
-;; waits for the answer to come back as an input: is there a loop here to receive it? An
-;; editor used to answer it with a registered name (`:editor`), which is true of exactly one
-;; loop — so a second window, or a daemon's per-client loop, read as "no loop" and did the
-;; work inline, in the wrong process, with nothing to time it out.
+;; waits for the answer to come back as an input: is there a loop here to receive it? Ask
+;; this, not a registered name like `:editor`, which is true of exactly one loop — a second
+;; window or a daemon's per-client loop would read as "no loop" and do the work inline.
 
 (defdyn *ui-memo* nil)
 ;; The previous turn's memo table — `{key -> [deps ops]}` — while `view` runs inside

@@ -234,6 +234,6 @@ pub(crate) trait JitBackend {
     ///
     /// The backend is expected to stop using that strategy for `name` from here on, so the
     /// re-tier that follows produces drainable code instead. Without it, a deep non-tail
-    /// recursion deopts and re-tiers once per level — measured ~100× thrash.
+    /// recursion deopts and re-tiers once per level (a ~100× thrash).
     fn note_depth_bail(_name: Symbol) {}
 }

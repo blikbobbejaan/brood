@@ -643,12 +643,10 @@ fn cmd_release(
 /// `--brood-boot-check` argument, so the ARTIFACT is proven to load its modules and
 /// resolve `:main` before the release is called a success (KI-66).
 ///
-/// **On by default**, and `--no-smoke` is the only way out. It was opt-in until
-/// 2026-08-29, which is the wrong default for the one question a release has to
-/// answer: "does the thing I just wrote start?" Nothing upstream answers it —
-/// `nest check` resolves names and `nest test` runs the suite, and NEITHER loads
-/// `main` — so an unbootable binary was reported as `Wrote app (41 modules, 31.5 MB)`
-/// and discovered by whoever ran it. Running it costs one process and a module load.
+/// **On by default**, and `--no-smoke` is the only way out: it is the one question a
+/// release has to answer — "does the thing I just wrote start?" — and nothing upstream
+/// answers it (`nest check` resolves names and `nest test` runs the suite, and NEITHER
+/// loads `main`). Running it costs one process and a module load.
 ///
 /// Checking the source tree is not the same act either: the bundle carries a *snapshot*
 /// of every dependency, so a dependency updated on disk since the last `nest fetch`, a

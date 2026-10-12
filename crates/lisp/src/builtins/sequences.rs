@@ -572,8 +572,7 @@ pub(super) fn first(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
         // empty — so `first`/`map`/`fold`/… treat a set as a seq (Clojure-like).
         Value::Set(id) => Ok(heap.set_elems(id).first().copied().unwrap_or(Value::nil())),
         // A map seqs as its `[k v]` pairs — the same view `seq`/`map`/`fold`/`last`
-        // already take, so `first`/`rest` no longer erred on the one collection
-        // every other seq op accepted.
+        // already take, so `first`/`rest` accept what every other seq op does.
         Value::Map(id) => match heap.map_first_entry(id) {
             Some((k, val)) => Ok(heap.alloc_vector(vec![k, val])),
             None => Ok(Value::nil()),
@@ -861,10 +860,8 @@ pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispR
 /// wrapper's redirect. [`reduce_prim_op`] resolves that wrapper ONCE (it is what makes
 /// `(fold + 0 (range n))` fast today), but nothing on the vector path consulted it.
 ///
-/// Measured on the `spawn-live` shape (100k fresh processes each folding a 16-cell payload,
-/// the published row's exact `(fold + 0 p)`): the fold step cost **13.6 µs/unit** through
-/// `fold-vec` against **8.8 µs** for the same fold written as `(fold %add 0 p)` — i.e. ~4.8 µs
-/// of every unit was the passthrough redirect alone, on a row whose total is ~34 µs.
+/// On a short-lived process folding a small vector (the `spawn-live` shape) that per-element
+/// redirect is a large share of the whole unit of work.
 ///
 /// Ordering and semantics match `fold-vec` exactly: left-to-right, `(f acc item)`, and the
 /// element is re-read from the (rooted) vector each step because every `apply` is a GC
@@ -1075,14 +1072,10 @@ pub(super) fn sort_asc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     // i64 the compiler gets an unboxed, branch-predictable compare it can
     // vectorise.
     //
-    // Measured A/B on one binary, benchmark suite's `sort` row (375k ints):
-    // the sort call itself 106 -> 79 ms, the whole row 225 -> 196 ms. Note
-    // what that does NOT say: comparison was only ~27 ms of the original
-    // 106 ms. The rest is `seq_items` walking the cons spine in and
-    // `heap.list` allocating a fresh 375k-cell list out, and this fast path
-    // does not touch either. Anyone chasing the remaining ~79 ms should go
-    // after the traversal/rebuild (i.e. allocation), not the comparator —
-    // sorting is no longer the expensive part of `sort`.
+    // Comparison is only a minor share of `sort` on a large list: the rest is
+    // `seq_items` walking the cons spine in and `heap.list` allocating a fresh
+    // list out, which this fast path does not touch. Chase the traversal/
+    // rebuild (allocation), not the comparator.
     //
     // `sort_unstable` is safe to use here even though the general path is
     // stable: two equal `Int`s are the same value, so no observable ordering
@@ -1195,9 +1188,8 @@ pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 /// `(%vector-concat v xs)` — a fresh vector of `v`'s items followed by `xs`'s (a
 /// vector, a list, a range, a set or nil): one allocation, one copy. The kernel op
 /// behind `conj` on a vector and `into` onto one — a vector is flat, so the fresh copy
-/// IS the append. Going through `append` built the result as a list, twice reversed, and
-/// re-vectorised it: 7.7 µs to `conj` onto four items (measured 2026-09-21), in the code
-/// every game frame runs. No GC safepoint runs inside a builtin, so the handles stay valid
+/// IS the append, rather than building a list, reversing it twice and re-vectorising it in
+/// code every game frame runs. No GC safepoint runs inside a builtin, so the handles stay valid
 /// across `alloc_vector`.
 pub(super) fn vector_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
@@ -1272,8 +1264,8 @@ pub(super) fn hash_map(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// [`map_into`] to read the items of an `into`/`zipmap` sequence.
 pub(super) fn pair_kv(heap: &Heap, who: &str, p: Value) -> Result<(Value, Value), LispError> {
     match p {
-        // Exactly two items: a one-item entry used to read as `[k nil]` and a three-item
-        // one silently dropped its tail (`(into {} [[1]])` was `{1 nil}`, 2026-09-30).
+        // Exactly two items: a one-item entry must not read as `[k nil]`, nor a
+        // three-item one silently drop its tail.
         Value::Vector(id) => {
             let v = heap.vector(id);
             if v.len() == 2 {
@@ -1565,9 +1557,8 @@ pub(super) fn set_count(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 pub(super) fn string_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
     match v {
-        // O(1): the char count is cached on the slot. It used to be `chars().count()`
-        // here — a full scan on every call, which is why a loop bounded by
-        // `(string/length s)` was quadratic before it did anything else.
+        // O(1): the char count is cached on the slot, so a loop bounded by
+        // `(string/length s)` is not quadratic before it does anything else.
         Value::Str(id) => Ok(Value::int(heap.str_metrics(id).0 as i64)),
         _ => Err(LispError::wrong_type(heap, "string/length", "string", v)),
     }

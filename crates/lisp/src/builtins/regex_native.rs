@@ -18,8 +18,8 @@
 //!
 //! The primitives answer the language's own values — the match maps `regex/find` returns,
 //! the token maps `regex/tokens` returns — rather than offsets for Brood to build them
-//! from. Measured: the engine found a match in 0.8 µs and building its map in Brood took
-//! another 6, so a primitive that answered offsets gave most of the speed-up back.
+//! from: building the map in Brood costs several times the match itself, so a primitive
+//! that answered offsets would give most of the speed-up back.
 //!
 //! **Offsets are characters, not bytes**, like every string builtin: the engine answers in
 //! UTF-8 byte offsets and they are converted with the string's own char index (O(1) for

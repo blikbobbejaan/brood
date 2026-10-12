@@ -56,9 +56,8 @@ Brood."
 (defdyn *http-max-head-bytes* 65536)
 
 ;; The largest request body the server will read. `Content-Length` is the client's
-;; word, and it used to be trusted to any size: one 100 MB upload took a worker to
-;; 601 MB RSS (the chunks, their join, and the parse's copy). A request declaring
-;; more is answered 413 BEFORE any of its body is read. Rebind with `binding` around
+;; word, and buffering costs several copies of the body (chunks, join, parse). A request
+;; declaring more is answered 413 BEFORE any of its body is read. Rebind with `binding` around
 ;; `serve` for an upload endpoint.
 (defdyn *http-max-body-bytes* (* 8 1024 1024))
 
@@ -208,10 +207,8 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 ;; framed: `[:length n]` — `n` the bytes after the blank line that ARE the body, 0 when
 ;; none is declared — or `[:refuse status message]`.
 ;;
-;; The body used to be everything after the head, whatever `Content-Length` said
-;; (`Content-Length: 3` + `abcdefgh` gave the handler 8 bytes), and `Transfer-Encoding:
-;; chunked` was ignored, so the chunk-size lines reached the handler as body. A server
-;; and a proxy that disagree on where a body ends is request smuggling, so anything
+;; The body is exactly what `Content-Length` declares, never "everything after the head".
+;; A server and a proxy that disagree on where a body ends is request smuggling, so anything
 ;; ambiguous is refused rather than guessed: a `Transfer-Encoding` (this server does not
 ;; decode one — 501, or 400 beside a `Content-Length`, the classic smuggling pair), and
 ;; a `Content-Length` that is not exactly one non-negative integer (garbage, a sign, a
@@ -274,8 +271,8 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 (sig parse-request ((or bytes string) -> map))
 
 ;; ---- responses --------------------------------------------------------------
-;; The standard reason phrases (RFC 9110 §15). A code missing here used to render as
-;; `503 OK`; it now renders with the neutral `http-reason` fallback.
+;; The standard reason phrases (RFC 9110 §15). A code missing here renders with the
+;; neutral `http-reason` fallback, never a wrong phrase like `503 OK`.
 (def *http-status-text*
   {100 "Continue"
    101 "Switching Protocols"
@@ -335,9 +332,9 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 ;; A handler returns a response VALUE, and the server writes it to the connection. There
 ;; are two shapes with genuinely different wire behaviour — a plain response (render head
 ;; + body, then close) and a streaming one (render the head, then hand the live socket
-;; over and DON'T close) — which the server used to tell apart by sniffing for a `:stream`
-;; key and branching. They are now two records with one `Response` ability between them,
-;; so "how this response reaches the socket" lives with the response type.
+;; over and DON'T close). They are two records with one `Response` ability between them,
+;; so "how this response reaches the socket" lives with the response type rather than in
+;; a server branch sniffing for keys.
 ;;
 ;; That is also the extension point: a response kind with different wire behaviour — a
 ;; sendfile, a chunked encoder, a 101 protocol upgrade — is a `defrecord` plus an `impl
@@ -393,8 +390,8 @@ exactly. There is no mode flip-back — outbound writes are mode-independent
 **Raises** if any header name or value contains a CR or LF — splicing one into
 the CRLF-framed wire format would let the caller inject extra headers (HTTP
 request/response splitting)."
-  ;; Render each header line, then one `(apply str …)` — the old `(str acc …)`
-  ;; fold rebuilt the whole accumulator per header (O(headers²) in total bytes).
+  ;; Render each header line, then one `(apply str …)` — a `(str acc …)` fold would
+  ;; rebuild the whole accumulator per header (O(headers²) in total bytes).
   (apply str
     (map (%map-pairs headers)
       (fn (kv)
@@ -613,8 +610,7 @@ socket is registered *passive* (no reader until the worker calls
   ;; Set binary mode BEFORE taking ownership, and for the connection's whole
   ;; life: `tcp/controlling-process` is what starts the reader, and the reader
   ;; decodes each chunk by the current flag — setting binary after the handoff
-  ;; left a window where a first chunk was decoded as lossy text (the old http
-  ;; binary-body flake). An accepted socket is passive until the handoff, so
+  ;; would leave a window where a first chunk is decoded as lossy text. An accepted socket is passive until the handoff, so
   ;; nothing is read before this; and outbound writes are mode-independent
   ;; (ADR-141), so binary-for-life costs the response path nothing.
   (tcp/set-binary c true)
@@ -634,9 +630,8 @@ socket is registered *passive* (no reader until the worker calls
   (or (not (record? resp)) (= (record-id resp) :http/response)))
 
 ;; Run `handler` on the request and send what it returns. A handler that raises, or a
-;; response that cannot be rendered, used to kill the worker with the client still
-;; waiting and nothing sent: the client now gets a 500 and the connection closes. The
-;; error is then re-raised, so the worker still dies of it and the crash reporter still
+;; response that cannot be rendered, gets the client a 500 and closes the connection
+;; rather than leaving it waiting with nothing sent. The error is then re-raised, so the worker still dies of it and the crash reporter still
 ;; names it — the 500 is for the client, not instead of the report.
 ;;
 ;; One dispatch: each response type knows how it reaches the socket, including whether
@@ -786,8 +781,8 @@ a PEM certificate replacing the Mozilla roots as the trust anchor (private CAs,
 `tls/self-signed` dev servers). Must run in a process (it `receive`s the
 response); the root process counts."
   (let (u (parse-url url)
-        ;; A relative or empty URL parsed to a nil host, and the failure surfaced as
-        ;; "%tcp-connect: expected string, got nil" (2026-09-30).
+        ;; A relative or empty URL parses to a nil host; say so here rather than let it
+        ;; surface as "%tcp-connect: expected string, got nil".
         _ (when (nil? (/get u :host))
             (error "http/request: expected an absolute http or https URL, got " (pr-str url)))
         body (or (/get opts :body) "")

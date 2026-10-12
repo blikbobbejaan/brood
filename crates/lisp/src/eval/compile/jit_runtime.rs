@@ -31,8 +31,8 @@ pub(crate) use support::*;
 ///
 /// This is a CALL threshold, and it is deliberately high: boot alone tiers ~139 prelude
 /// arms at a threshold of 8, and the compiler drains a FIFO — so a program's own hot
-/// function waited behind boot-path code that ran eight times and never again. 64–128 is
-/// the measured plateau; 256+ starts delaying short loops. What this threshold is NOT for
+/// function would wait behind boot-path code that ran eight times and never again. 64–128
+/// is the plateau; 256+ starts delaying short loops. What this threshold is NOT for
 /// is a loop's iteration count — see [`BACKEDGE_TIER_WEIGHT`].
 #[cfg(feature = "jit")]
 pub(crate) const TIER_THRESHOLD: u32 = 128;
@@ -279,9 +279,8 @@ pub(crate) fn jit_tier_in_frame(
                     arm.compile_epoch.store(epoch, Release);
                     // Trace the ADOPT path: this arm installs a peer's compiled pointer
                     // WITHOUT lowering, so it never reaches the `BROOD_JIT_DUMP_IR` dump.
-                    // That is why an arm can hold native code, deopt out of it, and still be
-                    // absent from every IR dump — which is exactly the state the tagged-tuple
-                    // receive matcher was found in.
+                    // Without this trace an arm can hold native code, deopt out of it, and
+                    // still be absent from every IR dump.
                     {
                         if crate::diagnostics::debug_flags::jit_bail_trace() {
                             let name = arm
@@ -319,9 +318,8 @@ pub(crate) fn jit_tier_in_frame(
         if !chunk_ops_all_native(heap, arm) {
             // The last untraced BAILED route, and a sticky one: an arm is refused here
             // because some operator its chunk calls is not a native primitive, and it then
-            // stays on the VM. Silent until now, which is why a `receive` matcher for a
-            // tagged tuple could sit permanently on the interpreter with no diagnostic
-            // pointing at the reason.
+            // stays on the VM — so name it, or the arm sits on the interpreter permanently
+            // with no diagnostic pointing at the reason.
             if crate::diagnostics::debug_flags::jit_bail_trace() {
                 let name = arm
                     .dbg_name
@@ -424,8 +422,8 @@ pub(crate) fn jit_tier_in_frame(
                 // counter all the way off, so the arm runs on the VM for another TIER_THRESHOLD
                 // calls before re-attempting — instead of re-validating (`chunk_ops_all_native`,
                 // an `env_get`/`resolve_prim` per op) on *every* call while the queue stays
-                // full. Measured: ~36M redundant re-validations in `spawn` (20 000 procs)
-                // collapse to ~1/TIER_THRESHOLD of that. The arm still compiles once the queue
+                // full (tens of millions of redundant re-validations under a spawn storm).
+                // The arm still compiles once the queue
                 // drains (a long-lived process re-reaches the threshold and re-enqueues).
                 arm.jit_code.store(std::ptr::null_mut(), Release);
                 arm.jit_calls.store(0, Relaxed);
@@ -451,7 +449,7 @@ pub(crate) fn jit_tier_in_frame(
     if arm.jit_code.load(Acquire) != code {
         return None;
     }
-    // ---- Two-stage tiering (devlog 2026-06-17): the deferred inlined upgrade ----
+    // ---- Two-stage tiering: the deferred inlined upgrade ----
     // The small original native is installed and running (the spawn-friendly fast path).
     // For an arm that qualifies for recursive self-inlining, the *inlined* body is compiled
     // separately on the lower-priority deferred queue and swapped in here once ready:
@@ -479,15 +477,11 @@ pub(crate) fn jit_tier_in_frame(
     let xcall_relower = arm.inline_name.is_none()
         && arm.leaf.is_none()
         && arm.dbg_name.is_some()
-        // Profitability, measured 2026-08-30: the inline blob adds ~90 CLIF lines and
-        // several blocks PER CALL SITE, and every value live across a call is pressured
-        // through that extra CFG — so an arm carrying lots of live state pays in its own
-        // loop code what the calls save. `nslots` is that live state's size. bintree's
-        // winners (`check-node` 3, `make` 4: −15% wall) sit far below nbody's loser
-        // (`advance-body`, 20 slots, 8 call sites, float-unboxed: relowered body +32%
-        // CLIF / +36% blocks, row +8%). The cut is between 5 and 20; 8 keeps every
-        // measured winner (`run` at 5 included) and excludes the measured loser with
-        // margin on both sides.
+        // Profitability: the inline blob adds ~90 CLIF lines and several blocks PER CALL
+        // SITE, and every value live across a call is pressured through that extra CFG —
+        // so an arm carrying lots of live state pays in its own loop code what the calls
+        // save. `nslots` is that live state's size: the winners sit at 3–5 slots, the
+        // loser (nbody's `advance-body`) at 20, and 8 leaves margin on both sides.
         && arm.nslots <= XCALL_RELOWER_MAX_NSLOTS
         && super::xcall_relower_enabled()
         && *arm.xcall_wanted.get_or_init(|| {
@@ -601,8 +595,7 @@ pub(crate) fn jit_tier_in_frame(
             // re-validated at compile time) and invalidate only this process's fast-links to
             // this callee, which then re-probe and pick up `inline_code` + `inline_nslots`.
             //
-            // **The real invariant, stated plainly (this comment used to claim the opposite).**
-            // Since ADR-215 this `CompiledArm` is NOT per-process: `compiled_arm_for` hands
+            // **The real invariant.** Since ADR-215 this `CompiledArm` is NOT per-process: `compiled_arm_for` hands
             // every process of the runtime the same `Arc<CompiledArm>` out of `shared_closures`,
             // so `inline_installed` / `jit_code` / `inline_code` are shared mutable state read
             // concurrently by worker threads. `jit_frame_shape_matches`'s doc has this right.
@@ -615,7 +608,7 @@ pub(crate) fn jit_tier_in_frame(
             // this epoch (both bodies are valid; the upgrade is a speed change, not a semantic
             // one) until its own `jit_tier` entry re-reads and upgrades. Any consumer that mixes
             // ONE of those two fields with a freshly re-read other one is the bug — which is
-            // exactly the KI-48 family, and why the frame-building callers now go through
+            // exactly the KI-48 family, and why the frame-building callers go through
             // `jit_tier_in_frame` / `frame_size_for_code`.
             //
             // `vm_call_ic_fast_link` (`core/heap/vm_cache.rs`) records such a snapshot too, and
@@ -666,8 +659,7 @@ pub(crate) fn jit_tier_in_frame(
     //
     // NB the reason is the *publishing channel*, not process locality: since ADR-215 peers
     // share this very `CompiledArm` (`compiled_arm_for` → `shared_closures`), so there is no
-    // "peer copy with `inline_installed == false`" — this comment used to say there was.
-    // Guard on `inline_installed`.
+    // "peer copy with `inline_installed == false`". Guard on `inline_installed`.
     if !arm.inline_installed.load(Acquire) {
         if let Some(key) = arm.share_key {
             if !arm.shared_published.swap(true, Relaxed) {

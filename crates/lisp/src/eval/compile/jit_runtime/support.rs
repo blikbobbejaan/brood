@@ -162,13 +162,9 @@ pub(crate) fn stamp_stack_limit(heap: &mut Heap) {
 ///
 /// [`Heap::jit_stack_limit`] is an absolute address derived from the running thread's stack
 /// bottom, which does not move for the life of that thread. Re-deriving it at every
-/// Brood→Brood link therefore recomputed a constant, and `stacker::remaining_stack()` is not
-/// free. Worth ~5% on `bintree` (130 → 124 ms, best-of-15 — the 16.3 M-fast-link row).
-///
-/// It is worth **nothing** on `fib`, which is what this hoist was originally proposed to fix
-/// (see the 2026-07-27 devlog): `fib` tiers to the i64 register worker and recurses natively
-/// without ever taking a fast link. That regression was the *prologue* guard — specifically a
-/// redundant second compare per level — and is fixed in `jit_lower/i64.rs`, not here.
+/// Brood→Brood link would recompute a constant, and `stacker::remaining_stack()` is not free
+/// (~5% on the fast-link-heavy `bintree`). It does nothing for `fib`, which tiers to the i64
+/// register worker and never takes a fast link; that worker's guard is in `jit_lower/i64.rs`.
 ///
 /// The stamp is still *live* rather than a constant because a green process resumes on
 /// whichever worker the scheduler routes it to, and worker stack bases differ — hence the
@@ -211,12 +207,10 @@ pub(super) const JIT_HEADROOM_PROBE_FROM: u32 = 64;
 /// ([`crate::process::NATIVE_STACK_MARGIN_BYTES`], `vm_apply`'s guard). This margin is what
 /// starts the drain: past it the slow call sets `jit_force_vm` and hands the rest of the
 /// subtree to `vm_apply`, whose heap frames are where deep recursion belongs. With the two
-/// margins EQUAL (both 512 KiB until 2026-10-02) the drain could never start — the moment
-/// the JIT declined another native level, `vm_apply` refused the drain on the same
-/// measurement and raised `recursion too deep`. A recursion whose loop alternates a native
-/// arm with an interpreted one (a contract shim over a `call-mediated-boxed` original:
-/// native → `brood_rt_call_slow` → `vm_apply` → `jit_tier_in_frame` → native, Rust stack
-/// per level) therefore died at ~4k levels where the same function unarmed reached 200k.
+/// margins EQUAL the drain can never start — the moment the JIT declines another native
+/// level, `vm_apply` refuses the drain on the same measurement and raises `recursion too
+/// deep`, so a recursion alternating a native arm with an interpreted one (a contract shim
+/// over a `call-mediated-boxed` original) dies at a few thousand levels.
 /// The gap between the two is the drain's working room: one `vm_apply` re-entry plus
 /// whatever bounded native callbacks the drained subtree makes per level.
 #[cfg(feature = "jit")]

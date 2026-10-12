@@ -29,9 +29,7 @@ set). Duplicates collapse: `(set [1 1 2]) ⇒ #{1 2}`.
 ;; `conj`/`disj` deliberately do NOT live here: they are prelude functions that
 ;; dispatch on the collection kind (a set is one), so they need no import — and a
 ;; module-local copy would SHADOW the polymorphic prelude ones under `(:use set)`,
-;; breaking `(conj [1 2] 3)` for the rest of that file. (They were defined here
-;; until 2026-07-26, on the mistaken premise that `clojure.set` does the same;
-;; Clojure's `conj`/`disj` are both `clojure.core`, and polymorphic.)
+;; breaking `(conj [1 2] 3)` for the rest of that file.
 
 (defn union (a b)
   "Every element in either `a` or `b`.

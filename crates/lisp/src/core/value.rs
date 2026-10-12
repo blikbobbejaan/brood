@@ -27,7 +27,7 @@ pub type Symbol = u32;
 //   pushed entries never move (stable refs) — the same structure the shared
 //   RUNTIME code region uses. The hot readers go through here (`symbol_name` in
 //   the printer, `symbol_is` in the compile-pass walk), so symbol spelling and
-//   comparison no longer serialise every scheduler thread through one mutex.
+//   comparison never serialise every scheduler thread through one mutex.
 // - `IDS` (spelling -> id) is read and extended only by `intern`, so it stays
 //   behind a `Mutex`; the lock is held across the `NAMES` push so the two tables
 //   agree on each new id (two threads can't mint different ids for one name).

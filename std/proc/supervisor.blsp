@@ -126,9 +126,7 @@ address the child by a stable name even though its pid changes across restarts."
 ;; ---- the children collection ------------------------------------------------
 ;; `:children` is a **map pid → child record**, not a list. A supervisor grown to
 ;; thousands of children is the ordinary dynamic-supervisor case, and on a list
-;; every operation walked (and re-allocated) the whole thing: `start-child`
-;; `append`ed, so N children cost O(N²) — measured 447µs per child at N=8000
-;; against Elixir's ~5µs, and `restart-child` reached 19ms/op at 4000 children.
+;; every operation walks (and re-allocates) the whole thing — O(N²) to start N.
 ;; Keyed by pid, insert / find / replace / drop are all O(1)-ish.
 ;;
 ;; Start order still matters (`which-children`, `:rest-for-one`, shutdown order),
@@ -141,8 +139,7 @@ address the child by a stable name even though its pid changes across restarts."
 ;; later-started of them; both are still supervised, restarted and torn down.
 
 (defn- supervisor-ordered (children)
-  "Every child record in **start order** — the order `:children` itself used to be
-kept in, reconstructed from each record's `:seq`."
+  "Every child record in **start order**, reconstructed from each record's `:seq`."
   (sort-by (vals children) (fn (c) (get c :seq))))
 
 (defn- supervisor-find (children pid)
@@ -241,11 +238,9 @@ recursively — before the next, so a whole tree shuts down depth-first."
 ;; is consed onto `:back`, and pruning pops from `:front`, refilling it by reversing
 ;; `:back` only when it runs dry (each timestamp therefore moves at most once).
 ;;
-;; It used to be a plain list re-`filter`ed on every restart, which is O(R) per restart and
-;; O(R²) for a supervisor doing R restarts inside one window — and R is bounded by
-;; `:max-restarts`, which a supervisor legitimately sets high when it supervises thousands
-;; of children. Measured on the `supervisor` benchmark row: 5000 restarts spent 4.5 s in
-;; here, against 0.6 s for the (linear) fill of the same run.
+;; A plain list re-`filter`ed per restart would be O(R²) for R restarts inside one window,
+;; and R is bounded only by `:max-restarts`, which a supervisor of thousands of children
+;; legitimately sets high.
 
 (defn- supervisor-window-prune (w now-ms window-ms)
   "Drop every timestamp in `w` older than `window-ms` before `now-ms`, refilling `:front`

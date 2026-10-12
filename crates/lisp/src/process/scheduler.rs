@@ -88,13 +88,10 @@ pub(super) struct Process {
     pub(super) worker_id: usize,
     /// This process's LOCAL data heap — travels with it across workers.
     ///
-    /// **Inline by value, and boxing it was tried and rejected** (2026-08-04). `Heap` is ~1200
-    /// of `Process`'s ~1304 bytes, so `Box`ing it shrinks `Process` to 112 — but it adds a
-    /// *second allocation per spawn*, and that costs more than the memory it saves: the idle
-    /// floor fell 4273 → 4124 B/process (−3.5%) while `spawn` went +3.2% and `spawn-live`
-    /// +6.4%, each several times its own base-vs-base noise floor. `spawn-live` is already the
-    /// worst published row, so that is the wrong direction. Don't re-attempt it without a plan
-    /// that avoids the extra allocation. Measure with `scripts/fuzz/stress/process_floor.blsp`.
+    /// **Inline by value — don't box it.** `Heap` is most of `Process`'s size, but `Box`ing
+    /// it adds a *second allocation per spawn*, which costs spawn throughput more than the
+    /// few percent of idle memory it saves. Don't re-attempt it without a plan that avoids
+    /// the extra allocation. Measure with `scripts/fuzz/stress/process_floor.blsp`.
     heap: Heap,
     /// The 0-arg body thunk (a shared-runtime `Fn` handle, valid in `heap`). Unused
     /// (`nil`) when `program` is set — a whole-program root process (ADR-135).
@@ -861,11 +858,11 @@ pub fn migrate_count() -> u64 {
 
 /// Cumulative green-process `receive`s that DIRTY-BLOCKED their worker thread (the §7.4
 /// carve-out: a native frame between the body driver and the receive means the process
-/// cannot be state-captured, so the whole OS worker waits on the mailbox condvar). This
-/// used to be invisible — a program could quietly lose capture-mode (and migration) for
-/// every parked receive and nothing anywhere said so. The JIT's suspend-latch heals the
-/// JIT-frame cause of it (see `jit_suspend_feedback`), so this figure staying flat after
-/// warmup is the observable that latch is working; the regression test asserts exactly that.
+/// cannot be state-captured, so the whole OS worker waits on the mailbox condvar), so a
+/// program quietly losing capture-mode (and migration) is observable. The JIT's
+/// suspend-latch heals the JIT-frame cause of it (see `jit_suspend_feedback`), so this
+/// figure staying flat after warmup is the observable that latch is working; the
+/// regression test asserts exactly that.
 pub(crate) static DIRTY_RECEIVE_BLOCKS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn note_dirty_receive_block() {
@@ -1038,7 +1035,7 @@ pub fn self_pid() -> u64 {
 /// This process's mailbox arrival sequence right now, for `(ref)` to stamp a receive-mark
 /// (ADR-195). Takes the mailbox lock — deliberately, rather than keeping a lock-free hint
 /// republished on every push: a hint costs an atomic store per *message*, which rows that
-/// never call `(ref)` still pay (measured: `pingpong` +5.7%, `ring` +4.0%). Reading it here
+/// never call `(ref)` would still pay. Reading it here
 /// moves that cost onto ref creation, which is rarer than sending by construction, and the
 /// caller is about to take the same lock to `send` anyway.
 pub fn self_mailbox_seq() -> u64 {
@@ -1219,11 +1216,10 @@ pub fn pid_value(id: u64) -> Value {
 /// Deregisters a **root-thread** context when its OS thread exits.
 ///
 /// `ensure_ctx` mints a pid + mailbox for any thread that touches `self`/`send`/`receive`
-/// outside the scheduler, and until this guard existed nothing ever removed it: green
-/// processes die through `deregister` and `shutdown_runtime_parked` reaps only *parked*
-/// waiters, so a host that churns OS threads leaked one registry entry, one mailbox (plus
-/// every message subsequently sent to it), and one `live_pids()` member per thread for the
-/// life of the OS process.
+/// outside the scheduler, and nothing else removes it: green processes die through
+/// `deregister` and `shutdown_runtime_parked` reaps only *parked* waiters, so without this
+/// a host that churns OS threads would leak one registry entry, one mailbox (plus every
+/// message sent to it), and one `live_pids()` member per thread.
 ///
 /// Armed **only** on the minting branch of `ensure_ctx`, so it is never armed for a green
 /// process's `Ctx` (which `run_one` installs into `CURRENT` and `save_ctx` takes back out
@@ -1523,14 +1519,12 @@ mod charge_tests {
 
     /// The per-process memory **floor**, structurally attributed.
     ///
-    /// A live idle process costs ~4.19 KB of RSS (measured as the *slope* of RSS against
-    /// process count: 4389 / 4186 / 4195 bytes at N = 10k / 40k / 80k — RSS/N would instead
-    /// fold in the runtime's ~24 MB base). Against the BEAM's ~3.1 KB that is the standing gap
-    /// in `docs/handoff.md`, and the bytes were recorded as "roughly half unattributed".
+    /// A live idle process's RSS cost is the *slope* of RSS against process count (RSS/N
+    /// would fold in the runtime's base).
     ///
     /// This prints the breakdown so the attribution is reproducible rather than folklore, and
-    /// asserts a ceiling so accidental growth is caught here instead of showing up as a
-    /// benchmark row six weeks later. `Heap` is embedded *by value* in `Process`, so a new
+    /// asserts a ceiling so accidental growth is caught here instead of in a benchmark
+    /// row much later. `Heap` is embedded *by value* in `Process`, so a new
     /// field on `Heap` is paid once per live process — which is exactly the kind of change
     /// that slips through review.
     #[test]

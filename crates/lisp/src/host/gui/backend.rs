@@ -415,10 +415,9 @@ fn headless_px(size: Option<(f64, f64)>) -> (u32, u32) {
 /// Can the event loop live on a thread we choose, or must it own the **process main
 /// thread**?
 ///
-/// Wayland/X11 let a loop run anywhere, which is why the GUI has always been a
-/// dedicated `brood-gui` thread. macOS does not: AppKit's run loop is main-thread-only
-/// and winit exposes no `with_any_thread` there — so the gui feature simply did not
-/// compile for macOS until 2026-09-11 (KI-125). Windows is the same shape. Anything not
+/// Wayland/X11 let a loop run anywhere, so there the GUI is a dedicated `brood-gui`
+/// thread. macOS does not: AppKit's run loop is main-thread-only and winit exposes no
+/// `with_any_thread` there (KI-125). Windows is the same shape. Anything not
 /// on the permissive list therefore hosts the loop on the main thread.
 const DEDICATED_THREAD_OK: bool = cfg!(any(
     target_os = "linux",
@@ -1093,9 +1092,8 @@ enum Backend {
 
 /// Whether a `gui-gpu` build draws on the GPU: yes unless `BROOD_GUI_GPU=0` asks for the
 /// CPU painter (the A/B lever, and the escape hatch on a box whose GPU driver misbehaves).
-/// Until 2026-09-20 the GPU target was OPT-IN (`=1`), because it drew no cursor, region
-/// or rounded corner; it now draws every op the CPU painter does, so the build flag alone
-/// selects it. A GPU whose device cannot be created falls back to the CPU painter.
+/// It draws every op the CPU painter does, so the build flag alone selects it. A GPU
+/// whose device cannot be created falls back to the CPU painter.
 #[cfg(feature = "gui-gpu")]
 fn gpu_enabled() -> bool {
     std::env::var("BROOD_GUI_GPU")

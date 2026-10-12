@@ -56,10 +56,9 @@ pub(super) fn emit_prim1(
             // Tag-check it's a Pair; anything else takes the `brood_rt_first`/`_rest`
             // FALLBACK, which answers nil / vector / range / bytes / set and the type
             // error itself and deopts only for a record or a seq-view (they need the
-            // evaluator). This used to deopt for every non-pair — an arm whose `first`
-            // saw a vector on each activation (`second`, `(first (rest x))`, on `http`)
-            // deopted per activation and was latched off the native tier (ADR-353's
-            // class). The result is an arbitrary Value, so it's a Handle; the two paths
+            // evaluator). Deopting for every non-pair would latch an arm whose `first`
+            // sees a vector each activation off the native tier (ADR-353's class). The
+            // result is an arbitrary Value, so it's a Handle; the two paths
             // meet at `merge`.
             let [w0, w1, w2] = read_words(b, operand, frame);
             let tagb = b.ins().band_imm_s(w0, 0xff);
@@ -235,11 +234,8 @@ pub(super) fn emit_prim1(
         PrimOp1::IsPair => {
             // Tag-only pair check, over the THREE discriminants the native `pair?` accepts:
             // a `Range` and a `SeqView` are `pair` to the language (`tag`, `type-of`) but
-            // carry their own bytes. This compared against `TAG_PAIR` alone from the day it
-            // was written — the comment beside it claimed ranges "also carry TAG_PAIR" —
-            // so `(pair? (range 3))` was `false` in native code and `true` on the VM and
-            // the tree-walker, and `list?` with it (KI-178; found by a contract over
-            // `seqable` that rejected a range once its caller tiered up).
+            // carry their own bytes. Checking `TAG_PAIR` alone makes `(pair? (range 3))`
+            // (and `list?`) disagree between native code and the VM (KI-178).
             let [w0, _, _] = read_words(b, operand, frame);
             let tagb = b.ins().band_imm_s(w0, 0xff);
             let is_pair = b.ins().icmp_imm_s(IntCC::Equal, tagb, TAG_PAIR as i64);
@@ -253,12 +249,9 @@ pub(super) fn emit_prim1(
             // nil → true, pair → false, inline; anything else takes the
             // `brood_rt_is_empty` FALLBACK, which sizes a vector / string / set / bytes /
             // range / rope / table itself and deopts only for a map (a record's `Seqable`
-            // view decides) or a seq-view (it realises). This used to deopt for every
-            // non-nil/non-pair, and a `(cond (empty? coll) … (first coll) … (rest coll))`
-            // loop — `any?`, `every?`, `seq/index-where` — handed a vector deopted AT ENTRY
-            // on every activation and ran its whole scan on the VM (`json`'s
-            // `needs-escape?` is `(any? (string/->codepoints s) …)`: 7 910 entry deopts per
-            // run, never latched because a `SelfCall` arm is not deopt-watched). The two
+            // view decides) or a seq-view (it realises). Deopting instead would send every
+            // `(cond (empty? coll) … (first coll) … (rest coll))` loop handed a vector to the
+            // VM at entry, never latched because a `SelfCall` arm is not deopt-watched. The two
             // paths meet at `merge` with the boolean as an `i8`.
             let [w0, w1, w2] = read_words(b, operand, frame);
             let tagb = b.ins().band_imm_s(w0, 0xff);
@@ -492,12 +485,10 @@ pub(super) fn emit_make_vector(
     if n == 2 {
         // Arity-2 fast path: bump-allocate the slot, then write both elements **into it**.
         //
-        // The elements used to travel as six `i64` arguments to `brood_rt_make_vector2`.
-        // SysV passes six in registers and `heap`/`out` take two of them, so four words
-        // spilled to this arm's outgoing-args area and the callee loaded them straight
-        // back — two stack loads that were **66% of that function**, itself 7.9% of
-        // `bintree`. Same shape as the return value in §2h, same fix: hand back the
-        // destination. `brood_rt_vec2_room` takes two register arguments, returns the
+        // Do not pass the elements as six `i64` arguments: with `heap`/`out` that exceeds
+        // SysV's six register slots, and the spill/reload dominated the callee. Same fix as
+        // the return value in §2h: hand back the destination. `brood_rt_vec2_room` takes
+        // two register arguments, returns the
         // slot's element storage, and the stores below land there.
         //
         // The slot is reachable from the handle the moment it is allocated, so **nothing
@@ -1213,8 +1204,8 @@ pub(super) fn emit_prim2_slot_slot(
         && !op_is_float(Op::Slot(slot_b), frame)
     {
         // `(= slot slot)` — runtime-dispatched equality (see eq_dispatch): int×int costs
-        // the same two tag-checks as the old int-only path, and keyword/symbol operands
-        // now compare inline instead of deopting the whole arm.
+        // two tag-checks, and keyword/symbol operands compare inline instead of deopting
+        // the whole arm.
         let wa = read_words(b, Op::Slot(slot_a), frame);
         let wb = read_words(b, Op::Slot(slot_b), frame);
         stack.push(Op::Int(eq_dispatch(b, wa, wb, frame, funcs)));

@@ -153,8 +153,8 @@ pub enum Message {
 /// per nesting level, and a value built at runtime can be nested to any depth — the
 /// reader's 256-level cap is for source, not for `(fold xs nil (fn (acc x) [x acc]))` —
 /// so each CONTAINER step grows the native stack when it is near its end (a leaf pays
-/// nothing). Before 2026-09-30 the serialiser refused anything past 256 levels instead,
-/// which made a persistent stack of 300 elements unsendable and un-tallyable.
+/// nothing). A fixed depth cap instead would make an ordinary deep persistent structure
+/// unsendable.
 pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, f)
 }
@@ -294,7 +294,7 @@ pub struct ClosureArmMsg {
 /// Maximum nesting depth `to_message` will descend into — a sanity bound on a runaway
 /// structure, not a stack limit: every walker grows the native stack as it descends
 /// ([`grow`]), and `Clone`/`Drop` are hand-written for the same reason, so the cap is
-/// a million levels where it was 256 (2026-09-30). The wire decoder
+/// a million levels. The wire decoder
 /// (`dist::wire::MAX_DECODE_DEPTH`) is defined in terms of this so the two can't
 /// diverge — wire round-trip stays symmetric.
 pub(crate) const MAX_MESSAGE_DEPTH: u32 = 1 << 20;
@@ -1309,8 +1309,7 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 // graph, with both intermediates becoming garbage. That shape is right for the *dist*
 // wire (a peer node has its own heap and its own interner), but a local send to a
 // **parked** receiver can copy straight from one heap into the other, which is what the
-// BEAM does. Measured 2026-07-29: the round trip is ~580 ns of a ~1160 ns `[:tag v]`
-// message, so removing one of the two copies is worth ~25% of send+receive.
+// BEAM does — removing one of the two copies, a large share of send+receive.
 //
 // Two invariants make this sound, both verified in the code rather than assumed:
 //
@@ -1338,19 +1337,10 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 /// that is not incidental, it is what makes the fast path sound: the lock is what gives us
 /// the parked receiver's `Box<Process>` and therefore exclusive `&mut` on its heap. So the
 /// lock hold is proportional to the message, and a *large* message stalls every unrelated
-/// operation on that mailbox. Measured with an unrelated `%mailbox-size` probe (a pure
-/// lock-acquire, zero message work, so a stall can only be lock wait) against a parked
-/// receiver in synchronous request/reply:
-///
-/// | payload | L1 p50 | L1 p99 | wire p50 | wire p99 |
-/// |---|---|---|---|---|
-/// | ~8 KB | 4.8 µs | 11 µs | 4.4 µs | 7.5 µs |
-/// | ~80 KB | 4.9 µs | 1 106 µs | 4.9 µs | 8.7 µs |
-/// | ~1.6 MB | 5 011 µs | 13 994 µs | 7.3 µs | 15.0 µs |
-///
-/// The wire arm is flat across a 500× payload range because its heavy work happens
-/// *outside* the lock. So the fix is not to move this copy out of the lock — that was
-/// tried and is unsound, since `shutdown_runtime_parked` reaps parked waiters and would
+/// operation on that mailbox: an unrelated lock-acquire probe sees nothing at ~8 KB
+/// payloads but millisecond p99 stalls by ~80 KB, while the wire path stays flat because
+/// its heavy work happens *outside* the lock. Don't move this copy out of the lock — that
+/// is unsound, since `shutdown_runtime_parked` reaps parked waiters and would
 /// skip a process during the window — but to **decline the large ones** and let them take
 /// the wire path that already handles them well. The `st.waiter` invariant is untouched.
 pub(crate) fn copy_cross_heap(
@@ -1367,14 +1357,13 @@ pub(crate) fn copy_cross_heap(
 /// single node but a `memcpy`, and a byte moved is not free just because it is not a
 /// pointer chase).
 ///
-/// The default is chosen from the measurement above rather than from a round number: the
-/// probe shows nothing at ~8 KB and a p99 blow-up by ~80 KB, so the cap sits between them.
+/// The default sits between the ~8 KB and ~80 KB stall boundaries described above.
 /// Below it every ordinary message — a request, a reply, a keyword-tagged tuple, a
 /// record — keeps the fast path; above it the send is one of the rare multi-KB-to-MB
-/// payloads that was doing the stalling.
+/// payloads that would stall the lock.
 ///
 /// `BROOD_L1_BUDGET=<units>` overrides it, and **`0` means unlimited** — the A/B lever,
-/// the bisect switch, and the way to restore the pre-cap behaviour without a rebuild.
+/// the bisect switch, and the way to run uncapped without a rebuild.
 const L1_COPY_BUDGET: i64 = 4096;
 
 /// The budget counts **nodes**, which bounds the copy only because no single node can carry
@@ -1384,7 +1373,7 @@ const L1_COPY_BUDGET: i64 = 4096;
 /// bounded by that threshold.
 ///
 /// Raise the threshold far enough and that stops being true — a node-counting budget would
-/// then let a large string copy under the lock, which is exactly the stall KI-56 measured.
+/// then let a large string copy under the lock — the stall of KI-56.
 /// This fails the build instead.
 const _: () = assert!(
     crate::core::blob::SHARED_BLOB_THRESHOLD <= 4096,
@@ -2108,8 +2097,8 @@ mod drain_ack_tests {
 
 #[cfg(test)]
 mod depth_tests {
-    //! A message is nested as deep as the sender built it (2026-09-30: the 256-level cap
-    //! became a million-level sanity bound). Every walker must survive that on a SMALL
+    //! A message is nested as deep as the sender built it (up to a million-level sanity
+    //! bound). Every walker must survive that on a SMALL
     //! thread: the dist reader and the offload pool run on the default 2 MiB stack, not
     //! the workers' 16 MiB.
     use super::*;

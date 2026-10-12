@@ -977,7 +977,7 @@ pub(in crate::builtins) fn audio_beep(args: &[Value], _: EnvId, heap: &mut Heap)
 /// `(%gui-compiled?)` — was this runtime built with the GUI backend? The predicate an
 /// app asks BEFORE a `gui/*` call it means to skip headlessly, instead of calling and
 /// catching — a catch around a `gui/*` call swallows an unbound symbol just as readily
-/// as the missing backend, which is how a rename wave ran unnoticed for hours.
+/// as the missing backend, hiding a rename.
 pub(in crate::builtins) fn gui_compiled_p(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::boolean(cfg!(feature = "gui")))
 }

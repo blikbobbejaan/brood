@@ -745,9 +745,8 @@ impl Heap {
         // Without the dedup this walk alone is O(depth × arm size). It is one of three
         // things that made a deep process's probe explode under KI-14; the throttles in
         // `runtime_gen_referenced_private` bound how often the probe runs, while this bounds
-        // what a single run costs. (It also drops a full `Vec<Arc<_>>` clone — one atomic
-        // increment per active frame — that the walk previously took for borrow reasons it
-        // no longer needs.)
+        // what a single run costs. (It iterates in place: no `Vec<Arc<_>>` clone, so no
+        // atomic increment per active frame.)
         let mut seen_arms: HashSet<*const crate::eval::compile::CompiledArm> = HashSet::new();
         for arm in self.live_vm_arms.iter() {
             if !seen_arms.insert(Arc::as_ptr(arm.arc())) {
@@ -1466,8 +1465,7 @@ impl Heap {
             // registry scan) to 1/stride of this process's safepoints. A drain that can't
             // yet complete otherwise re-runs that whole-registry scan on every safepoint of
             // every worker purely to re-discover "still not drained" — the dominant cost
-            // once the self-report walk is cheap (measured: ~800 k scans / 20 M mailbox
-            // locks / 30-round repro). Every process's O(1) self-report still runs every
+            // once the self-report walk is cheap. Every process's O(1) self-report still runs every
             // frame, so acks stay current and the free is still attempted every `stride`
             // frames as long as any process reaches a safepoint (no lost wakeup).
             let t = self.rt_drain_tick.get().wrapping_add(1);

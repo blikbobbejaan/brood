@@ -740,8 +740,8 @@ pub fn print_catalogue() {
     println!("Set any to 1 unless a value is described. CLAUDE.md's table is the long form:");
     println!("it carries the measurement history behind each default.");
     let width = FLAGS.iter().map(|f| f.name.len()).max().unwrap_or(0);
-    // Drive the grouping from GROUP_ORDER rather than from adjacency in the array: an entry
-    // added next to its siblings used to split its group in two and print the heading twice.
+    // Drive the grouping from GROUP_ORDER rather than from adjacency in the array, so an
+    // entry added away from its siblings cannot split its group and print the heading twice.
     for group in GROUP_ORDER {
         println!("\n{group}");
         for flag in FLAGS.iter().filter(|f| f.group == *group) {
@@ -798,8 +798,7 @@ mod tests {
                     .is_some_and(|e| e == "rs" || e == "blsp" || e == "mk")
                 {
                     // Skip THIS file. It lives under `crates/`, so including it makes every
-                    // catalogued name find itself and the assertion vacuously true — verified
-                    // by sabotage: renaming a flag here passed until this line existed.
+                    // catalogued name find itself and the assertion vacuously true.
                     if path.file_name().is_some_and(|n| n == "debug_flags.rs") {
                         continue;
                     }

@@ -47,9 +47,8 @@ use crate::core::heap::{FastLink, Heap};
 /// a per-process heap limit, a mailbox overflow — and native code cannot raise, so the
 /// loop deopts at its back-edge (the frame holds the next iteration's arguments, the
 /// checkpoint was just reset) and the VM's own safepoint at that iteration raises it, the
-/// way the VM's self-tail path always did. Before this a native consing loop under a soft
-/// limit never saw the limit at all — `mem_limit.rs`'s runaway built its million cells
-/// and returned (2026-09-17, the day letrec loops started running native: KI-156).
+/// way the VM's self-tail path does. Without it a native consing loop under a soft limit
+/// never sees the limit at all (KI-156).
 ///
 /// # Safety
 /// `heap` is a live heap; the limit peeks read it only.
@@ -250,11 +249,8 @@ pub unsafe extern "C" fn brood_rt_car(
 }
 
 /// `first` of a non-pair, for the JIT's inline `first` whose tag check failed — the
-/// **fallback instead of a deopt**. The inline path used to deopt for anything but a
-/// `Pair`, so an arm reading `first` of a vector (or `second` of anything: `(first
-/// (rest x))`, whose inner `rest` of a vector is a fresh LIST but whose outer `first`
-/// still saw a non-pair on every activation elsewhere) deopted per activation and was
-/// latched off the native tier — `second` was the arm `http` lost this way. Same status
+/// **fallback instead of a deopt**: deopting for every non-`Pair` would deopt an arm reading
+/// `first` of a vector per activation and latch it off the native tier. Same status
 /// protocol as [`brood_rt_vector_ref`]: 0 = `*out` holds the answer, 1 = deopt (a
 /// record's `Seqable` dispatch or a seq-view's realisation, which need the evaluator),
 /// 2 = the builtin's own type error, parked.
@@ -311,12 +307,10 @@ pub unsafe extern "C" fn brood_rt_rest(
 
 /// `empty?` of a non-nil, non-pair — the inline `empty?`'s tag-check miss, as a
 /// **fallback instead of a deopt** (the [`brood_rt_first`] protocol: 0 = `*out` holds the
-/// answer, 1 = deopt, 2 = error parked). The inline path used to deopt for anything but
-/// nil or a pair, so every prelude loop of the shape `(cond (empty? coll) … (first coll) …
-/// (rest coll))` — `any?`, `every?`, `seq/index-where`, … — deopted AT ENTRY on each
-/// activation handed a vector, a string, a set or bytes, and ran the whole scan on the VM:
-/// `json`'s `needs-escape?` is `(any? (string/->codepoints s) …)`, 7 910 entry deopts per
-/// run, and a `SelfCall` arm is never deopt-watched, so nothing ever latched it.
+/// answer, 1 = deopt, 2 = error parked). Deopting instead would send every prelude loop of
+/// the shape `(cond (empty? coll) … (first coll) … (rest coll))` handed a vector, string,
+/// set or bytes to the VM at entry — and a `SelfCall` arm is never deopt-watched, so
+/// nothing would ever latch it.
 ///
 /// # Safety
 /// `heap`/`out` live; the word triple is bytes the JIT read out of a real `Value`.
@@ -773,9 +767,8 @@ pub unsafe extern "C" fn brood_rt_map_get(
 
 /// Structural `=` on two operands native code could not decide inline — the residual case
 /// of `eq_dispatch` (KI-132). The lowering compares Int×Int and Sym/Keyword identity in
-/// machine ops; every other pair (strings, floats, structural values) used to DEOPT, so an
-/// arm comparing a string per activation deopted per activation and was latched off the
-/// native tier after sixteen. This is exactly `%eq` (`prim_eq`): `Heap::equal` for anything
+/// machine ops; every other pair (strings, floats, structural values) lands here rather
+/// than deopting, which would latch an arm comparing strings off the native tier. This is exactly `%eq` (`prim_eq`): `Heap::equal` for anything
 /// but a lazy seq-view, which the kernel cannot realise without an evaluator.
 ///
 /// Returns **1** equal, **0** not equal, **2** declined (a `SeqView` operand — the caller
@@ -863,9 +856,8 @@ pub unsafe extern "C" fn brood_rt_i64_overflow_ptr(heap: *mut Heap) -> *mut u8 {
 }
 
 /// Reserve `n` argument slots at the top of `roots` and hand back a pointer to them, for the
-/// emitting arm to store its operands into directly. The counterpart of
-/// The JIT's argument staging. It used to go
-/// store-into-a-stack-slot then copy-the-block, and the copy alone was 4.4% of `bintree`.
+/// emitting arm to store its operands into directly — the JIT's argument staging, with no
+/// intermediate stack slot and block copy (that copy was a measurable share of call cost).
 ///
 /// # Safety
 /// `heap` live. The caller must store `n` valid `Value`s into the returned slots **before
@@ -913,16 +905,15 @@ pub unsafe extern "C" fn brood_rt_call_native_fl(
     crate::jit::JitCallCtx::assert_depth_gateway(ctx, &mut *heap);
     let h = &mut *heap;
     let f: crate::core::value::NativeFnPtr = std::mem::transmute(func as usize);
-    // COPY, don't borrow: `args` now points into `roots` (the arm stages in place — see
+    // COPY, don't borrow: `args` points into `roots` (the arm stages in place — see
     // `brood_rt_push_room`), and a native is free to push roots, which reallocates the
-    // buffer and would dangle a borrowed slice mid-call. This is the "a native receives
-    // unrooted copies" contract this path always documented, now actually made.
+    // buffer and would dangle a borrowed slice mid-call ("a native receives unrooted
+    // copies").
     //
     // **Copied with a `match` on the arity, not `SmallVec::from(slice)`.** That goes through
     // `copy_from_slice` → libc `memcpy`, and at an arity's worth of bytes (24–72) the
-    // size-class dispatch costs far more than the move: it made `wordcount`, which is
-    // builtin-heavy, **+14%** — the whole in-place-staging win handed back and then some.
-    // Same lesson as the staging copy this replaced, one call site over.
+    // size-class dispatch costs far more than the move (a double-digit regression on
+    // builtin-heavy code).
     let n = argc as usize;
     let mut buf = [crate::core::value::Value::Nil; INLINE_ARGV];
     let spill;
@@ -1188,9 +1179,9 @@ pub unsafe extern "C" fn brood_rt_global_probe(
     // parking an error, because the caller's answer to "unbound" is to deopt, not to raise.
     //
     // The hoist resolves every global the arm mentions at entry, including ones only a cold
-    // branch reads — so raising there reported `unbound symbol` for a branch the VM never
-    // evaluates: `(defn pick (n) (if (< n 0) never-defined-global (+ n 1)))` worked until it
-    // got hot, then threw. Deopting instead hands the arm to the VM, which evaluates only
+    // branch reads — so raising there would report `unbound symbol` for a branch the VM
+    // never evaluates (`(if (< n 0) never-defined-global (+ n 1))` would throw once hot).
+    // Deopting instead hands the arm to the VM, which evaluates only
     // the branch actually taken and raises only if that branch really reads the name. A
     // parked error would then be a lie left in the heap, hence this non-parking form.
     let h = &mut *heap;
@@ -1309,10 +1300,8 @@ pub unsafe extern "C" fn brood_rt_call_slow(
 /// (KI-117). Called from each arm's error-exit block — the general lowering's `error`
 /// block and the scalar worker's `poisoned` block when its sentinel reads 3 — so a native
 /// recursion contributes one frame per level, innermost first, exactly as the VM's
-/// `BcFrame`s do through `attach_vm_trace`. Before this, nothing on the native side ever
-/// pushed a frame: a hot function's error reached `catch` with an EMPTY trace (the suite's
-/// 32-frame cap test read 8, then 0, once `deep` tiered up), and the default crash reporter
-/// printed no frames for exactly the code most likely to crash.
+/// `BcFrame`s do through `attach_vm_trace` — otherwise a hot function's error would reach
+/// `catch` with an empty trace.
 ///
 /// Name and defining file only — the call site that entered the frame lives in the
 /// caller's instruction stream, which native code does not keep. A frame with neither is
@@ -1387,15 +1376,11 @@ pub unsafe extern "C" fn brood_rt_fastlink_base(
 /// The JIT's in-IR fast call path (Track B / Technique A) — the hottest callback in the
 /// runtime.
 ///
-/// **Four arguments, and that is the point.** It used to take ten — `site`, `head`, `argc`,
-/// `nslots`, `code`, `env`, and the two callee IC bases, all of them fields the IR had just
-/// loaded out of the very [`FastLink`] slot it validated. SysV passes six in registers, so
-/// four spilled to the stack, and this function's own profile was almost entirely prologue
-/// and argument shuffling (`pushq 0x70(%rsp)` / `pushq 0x10(%rsp)` re-pushing them for the
-/// inner call): 8.2% of `bintree` with no single operation in it. Passing the **slot
-/// pointer** and reading the fields here instead fits the whole call in registers, and the
-/// reads are free — the IR has just touched that cache line to check the slot's epoch and
-/// identity.
+/// **Four arguments, and that is the point.** Do not pass the [`FastLink`] slot's fields
+/// (`site`, `head`, `argc`, `nslots`, `code`, `env`, the IC bases) as arguments: SysV passes
+/// six in registers, and the spills dominated this function's profile. Passing the **slot
+/// pointer** and reading the fields here fits the call in registers, and the reads are free
+/// — the IR has just touched that cache line to check the slot's epoch and identity.
 ///
 /// Sound because the guard has already run: the IR only branches here after proving
 /// `site < len`, `slot.epoch == global_epoch`, and that `slot.sym`/`slot.argc` match this
@@ -1499,7 +1484,7 @@ pub unsafe extern "C" fn brood_rt_xcall_cold(
     let nslots = (argc_nslots as u32) as usize;
     // `jit_force_vm` is set only by a native prologue's stack-limit trip, which deopts
     // at once — so it can change only under a cold outcome, and it is scoped here (the
-    // inline call path no longer saves and restores it per call; rung A1).
+    // inline call path does not save and restore it per call; rung A1).
     let saved_force_vm = (*heap).jit_force_vm;
     let r = crate::eval::compile::jit_xcall_cold_outcome(
         &mut *heap,

@@ -37,8 +37,7 @@
 //! Counting "every line holding a form" against "lines that recorded a hit" compares
 //! different things and systematically under-reports: a `defmodule` header, a docstring
 //! and a `defn`'s own line are all forms, none is an instrumented node, so a fully
-//! exercised file reports a fraction of itself. (Measured on a fixture whose every
-//! function ran: 14%.)
+//! exercised file reports a fraction of itself.
 //!
 //! So the denominator is not inferred from source text at all — [`note_instrumented`]
 //! records what the compiler actually instrumented, at compile time. Arms compile on

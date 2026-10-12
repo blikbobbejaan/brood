@@ -634,22 +634,37 @@
           (assert= (type-of data) :string)
           (assert= data "plain text"))))))
 
+(defn- first-accepted-after-close (remaining)
+  "Bind a listener, close it and connect to its port at once, `remaining` times; the round
+  whose connect was NOT refused (its error code, or `:connected`), or nil."
+  (if (= remaining 0)
+    nil
+    (let (ls (tcp/listen "127.0.0.1" 0)
+          port (listen-port ls)
+          _ (tcp/close ls)
+          outcome (check-allow :discarded-catch
+                    (try
+                      (do (tcp/close (tcp/connect "127.0.0.1" port)) :connected)
+                      (catch e (get e :code)))))
+      (if (= outcome "E0050")
+        (first-accepted-after-close (- remaining 1))
+        [remaining outcome]))))
+
 (describe "tcp: connect failure"
   :isolated (test "a refused connect raises a structured error carrying E0050"
     ;; Bind then close a listener so the port is known and nothing is listening on it.
-    ;; `tcp/close` only queues the close on the reactor, so the fd may still accept for a
-    ;; moment; a completed connect to a second listener is a barrier — the reactor
-    ;; announces `[:tcp-connected]` only after handling every command queued before it.
     (let (ls (tcp/listen "127.0.0.1" 0)
-          port (listen-port ls)
-          barrier (tcp/listen "127.0.0.1" 0))
+          port (listen-port ls))
       (tcp/close ls)
-      (tcp/close (tcp/connect "127.0.0.1" (listen-port barrier)))
-      (tcp/close barrier)
       (let (e (check-allow :discarded-catch
                 (try (tcp/connect "127.0.0.1" port) (catch e e))))
         (assert= (get e :code) "E0050")
-        (is (includes? (error-message e) (str "tcp-connect 127.0.0.1:" port)))))))
+        (is (includes? (error-message e) (str "tcp-connect 127.0.0.1:" port))))))
+  :isolated (test "a connect right after tcp/close of a listener is refused, every time"
+    ;; `tcp/close` used to queue the listener's close on the reactor, so the fd went on
+    ;; accepting until the reactor got to it and a connect issued right after the close
+    ;; could succeed. The window is widest on one CPU (`taskset -c 0`).
+    (assert= (first-accepted-after-close 300) nil)))
 
 (defn- first-lost-send (ls port remaining)
   "Connect and send AT ONCE, `remaining` times; the round whose bytes never reached the

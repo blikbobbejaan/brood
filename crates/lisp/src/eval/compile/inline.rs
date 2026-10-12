@@ -127,11 +127,9 @@ fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<Value> {
             // can be rebound after registration (`(defn shape (n) {:n n})` over a
             // `defrecord shape`) — the KI-90 shape, where the dynamic path answers
             // `:default` for the bare map and a devirtualized call would answer the
-            // record's impl. Until 2026-09-17 this compared the registry's recorded name
-            // with the head symbol, which never guarded anything: the registry stores the
-            // BARE name and a module-qualified head never equalled it (so Tier 1 never
-            // fired on a record inside a `defmodule`), while a module-less head always
-            // did (so the rebind miscompiled). The sound test is structural, on the value
+            // record's impl. Comparing the registry's recorded (BARE) name with the head
+            // symbol guards nothing — it misses every module-qualified head and accepts a
+            // rebound bare one. The sound test is structural, on the value
             // the head is bound to NOW: a `defrecord` constructor is one arm whose one
             // body form is the map literal `{:__id__ <id> …}` — and that `:__id__` IS the
             // dispatch identity, so a closure that builds it constructs exactly the values
@@ -307,8 +305,7 @@ pub(crate) fn linmap_update_op(sym: Symbol) -> Option<&'static str> {
 /// user writes** — `(get acc k [d])` as a read and the fused `(assoc acc k (+ (get acc k 0)
 /// e))` as an update — beside the `%`-primitives `linmap_read_op`/`linmap_update_op` list.
 /// `%map-int-add` is not a name anyone should have to know: the rewrite exists so the
-/// tally a Brood user writes builds in place, and until 2026-09-16 that shape was refused
-/// (the `assoc` was an escape) while only the primitive spelling was rewritten.
+/// tally a Brood user writes builds in place, not just the primitive spelling.
 ///
 /// `None` when either global is not the PRELUDE closure — a user `(def get …)` means the
 /// call is not the read the rewrite assumes, so the shape simply is not recognised (the
@@ -785,9 +782,8 @@ pub(crate) fn shift_slots(node: &Node, delta: usize) -> Node {
             // tail position any more. A call that was tail-of-the-original-fn (e.g. the
             // `else (helper …)` clause of a `cond` body) must NOT stay `tail: true`: a
             // tail call returns from the whole frame, which would discard the expression
-            // wrapping the inlined block (`(/ 1 <block>)` returned `<block>` — the pow /
-            // `s` 32-test regression). Leaf self-calls were already `tail: false`; forcing
-            // false is a no-op for them. (`shift_slots` is used only by the inliner, and
+            // wrapping the inlined block (`(/ 1 <block>)` would return `<block>`). Leaf
+            // self-calls are already `tail: false`; forcing false is a no-op for them. (`shift_slots` is used only by the inliner, and
             // only to splice into non-tail position, so the demotion is always correct.)
             tail: false,
             pos: *pos,
@@ -1140,23 +1136,12 @@ pub(crate) fn jit_verify_staged(
     }
 }
 
-/// **Non-mutating** probe: does `body` qualify for depth-1 self-inlining, and if so what
-/// is the inlined frame's slot high-water mark? Runs the inliner on a CLONE (discarded),
-/// so the original `body` is never touched — the VM keeps the small layout. `m` is the
-/// original arm's slot high-water mark (`scope.max`), the per-block slot stride. Returns
-/// the inlined `scope.max` (= `m * (1 + blocks)`) when ≥1 site inlines, else `None`. The
-/// gate (top-level no-capture recursive defn) is partly the caller's (`defn_name` +
-/// fixed-arity); here we enforce no `SelfCall`/`MakeClosure`, the body-size bound, and
-/// ≥1 qualifying call. The *spill reserve* for the inlined chunk is added by the caller's
-/// re-derivation; this returns the slot count only.
 /// True if `node` (or any descendant) does **heap work** — builds a vector/map literal
 /// (`[..]`/`{..}`), `cons`es, or reads a structure (`nth`/`vector-ref`, `first`/`rest`).
-/// Such recursive arms must NOT be inlined. **Measured (devlog 2026-06-17):** inlining
-/// bintree's `make` (which builds `[l r]` per node) regresses bintree **~15×**
-/// (0.45s → 6.4s) and inlining its `nth`-walking `check` ~5.6× — the bigger inlined arm +
-/// its larger per-engine frame, hit on ~1.6M short heap-touching activations, lose far
-/// more than the per-call dispatch they remove. The inline win only materialises for
-/// **pure-arithmetic/control recursion** (fib/collatz/pfib keep their ~1.8×, no heap work).
+/// Such recursive arms must NOT be inlined: the bigger inlined arm + its larger per-engine
+/// frame, hit on many short heap-touching activations, lose far more than the per-call
+/// dispatch they remove (bintree regresses by an order of magnitude). The inline win only
+/// materialises for **pure-arithmetic/control recursion** (fib/collatz/pfib).
 #[cfg(feature = "jit")]
 pub(crate) fn node_touches_heap(node: &Node) -> bool {
     match node {
@@ -1208,6 +1193,15 @@ pub(crate) fn node_touches_heap(node: &Node) -> bool {
     }
 }
 
+/// **Non-mutating** probe: does `body` qualify for depth-1 self-inlining, and if so what
+/// is the inlined frame's slot high-water mark? Runs the inliner on a CLONE (discarded),
+/// so the original `body` is never touched — the VM keeps the small layout. `m` is the
+/// original arm's slot high-water mark (`scope.max`), the per-block slot stride. Returns
+/// the inlined `scope.max` (= `m * (1 + blocks)`) when ≥1 site inlines, else `None`. The
+/// gate (top-level no-capture recursive defn) is partly the caller's (`defn_name` +
+/// fixed-arity); here we enforce no `SelfCall`/`MakeClosure`, the body-size bound, and
+/// ≥1 qualifying call. The *spill reserve* for the inlined chunk is added by the caller's
+/// re-derivation; this returns the slot count only.
 #[cfg(feature = "jit")]
 pub(crate) fn self_inline_probe(
     body: &Node,
@@ -1226,7 +1220,7 @@ pub(crate) fn self_inline_probe(
     // Inline ONLY pure-arithmetic/control recursion. A heap-touching body (builds `[..]`/
     // `{..}`, `cons`, `nth`, `first`/`rest`) regresses when inlined — the bigger arm + frame
     // on millions of alloc/walk activations costs more than the dispatch it removes
-    // (bintree's `make` ~15×, `check` ~5.6×; see [`node_touches_heap`], devlog 2026-06-17).
+    // (see [`node_touches_heap`]).
     if node_touches_heap(body) {
         return None;
     }
@@ -1339,7 +1333,7 @@ pub(crate) fn leaf_body_qualifies(body: &Node) -> bool {
 // (`compiled_arm_for` → `compile_closure` → `compile_arm`), and that nested compile
 // must not run its own leaf probe — unguarded, the probe walks the entire call graph
 // (and never terminates on mutual recursion: `a`'s probe compiles `b`, whose probe
-// compiles `a`, … → the boot stack overflow this guard fixed). With the guard, a
+// compiles `a`, … → a stack overflow at boot). With the guard, a
 // nested compile skips probing: depth is bounded at 1, and since a *qualifying*
 // callee is calls-free, suppressing its (empty) probe changes nothing. The one wart:
 // a NON-qualifying callee compiled here is cached without its own leaf metadata, so
@@ -1522,7 +1516,7 @@ pub(crate) struct LeafDerivation {
 /// sizes that journal; if it declines (its chicken switch, or a chunk whose operand
 /// depths don't reconcile) the derivation is refused rather than run unjournalled. A
 /// chunk with no checkpoint site at all needs no journal — a from-ip-0 re-run of it is
-/// effect-free, which is the case the all-or-nothing bail used to be the only way to get.
+/// effect-free.
 ///
 /// A journalled derivation is spliced a second time, from `full_nslots` (the caller's
 /// whole small frame) rather than `locals_max` (just its locals), so its callee blocks

@@ -50,9 +50,7 @@ fn no_curated_name_is_declared_in_std() {
                 _ => bare.clone(),
             };
             inspected.push(qualified.clone());
-            if super::sigs::curated_sig(crate::core::value::intern(&qualified)).is_some()
-                && !super::sigs::CURATED_DECLARED_EXCEPTIONS.contains(&qualified.as_str())
-            {
+            if super::sigs::curated_sig(crate::core::value::intern(&qualified)).is_some() {
                 violations.push(format!(
                     "  {qualified} ({}): declared in std AND curated — delete the curated entry",
                     path.file_name().unwrap_or_default().to_string_lossy(),
@@ -70,15 +68,6 @@ fn no_curated_name_is_declared_in_std() {
          module qualification broke, and a green result here would mean nothing",
         inspected.len()
     );
-    // An exception that is no longer both declared and curated is stale: drop it.
-    for exception in super::sigs::CURATED_DECLARED_EXCEPTIONS {
-        assert!(
-            inspected.iter().any(|name| name == exception)
-                && super::sigs::curated_sig(crate::core::value::intern(exception)).is_some(),
-            "`{exception}` is listed in CURATED_DECLARED_EXCEPTIONS but is no longer both \
-             declared in std and curated — remove it from the list"
-        );
-    }
     assert!(
         violations.is_empty(),
         "{} std-declared name(s) are also curated:\n{}",

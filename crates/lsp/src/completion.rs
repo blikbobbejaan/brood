@@ -591,10 +591,9 @@ mod tests {
         assert!(!chk("(+ 1 2)", "+")); // ordinary call
     }
 
-    // This is the only test that reads the *default* `*load-path*`, which made it the
-    // canary for KI-12: a frozen-prelude handle bug left that path holding an
-    // unrelated object, so no module was ever found on it. Fixed 2026-07-26
-    // (`Heap::localize_for_freeze`); keep this test as the regression guard.
+    // The only test that reads the *default* `*load-path*`, so it is the regression
+    // guard for KI-12 (a frozen-prelude handle left that path holding an unrelated
+    // object; see `Heap::localize_for_freeze`).
     #[test]
     fn completes_module_names_in_use() {
         // A module on the load-path is offered inside `(:use …)`, and the generic

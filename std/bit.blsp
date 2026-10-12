@@ -5,8 +5,7 @@
 ;; Rust supplies the mechanism, the namespace is Brood's. This file is the module the
 ;; qualified names belong to — it declares the namespace and documents the surface.
 ;;
-;; They were bare (`bit-and`, `bit-shift-left`, `float->bits`, …) until 2026-08-26. Ten
-;; names for one coherent idea is exactly what a namespace is for, and the bare namespace
+;; Ten names for one coherent idea is exactly what a namespace is for, and the bare namespace
 ;; is the scarce resource — every name in it is one a user's own top-level `def` cannot
 ;; have. `(:use bit)` brings them back bare inside one module if you want them there.
 ;;

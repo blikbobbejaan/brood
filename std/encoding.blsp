@@ -210,17 +210,15 @@ UTF-8 form.
 ;; Reverse lookup: base64 char CODEPOINT → 6-bit value, as a **dense 128-entry vector
 ;; indexed by the codepoint itself**, nil at every non-alphabet slot.
 ;;
-;; This was a CHAMP map keyed by the int codepoint. 128 entries covers all of ASCII, which
+;; A dense vector, not a map keyed by codepoint. 128 entries covers all of ASCII, which
 ;; is every character either alphabet uses (`+` 43, `-` 45, `/` 47, `0`–`9` 48–57, `A`–`Z`
 ;; 65–90, `_` 95, `a`–`z` 97–122), so a codepoint at or above 128 is invalid input and must
 ;; not index the vector at all — every lookup site guards with `(< c 128)`, inlined rather
-;; than wrapped in a helper because a call per character would give back what the probe
-;; cost. (Measured: wrapping the *encoder*'s byte check in a one-line helper cost that
-;; direction 4×. A per-element call in one of these loops is not a small thing.)
+;; than wrapped in a helper: a per-character call in these loops costs several times the
+;; probe itself.
 ;;
 ;; Note `0` is a legitimate value — it is `A` — and only nil/false are falsy in Brood, so
-;; the loop's `(not (and v1 v2))` validity test reads a real 0 as present, exactly as it did
-;; with the map.
+;; the loop's `(not (and v1 v2))` validity test reads a real 0 as present.
 (defn- encoding-b64-val-vec (alpha)
   (let (cs (string/->codepoints alpha)
         empty-128 (apply vector (map (range 128) (fn (_) nil))))
@@ -269,11 +267,9 @@ UTF-8 form.
 ;; `%vector-ref` on both vectors, not `nth`. `nth`'s 2-arity arm is a closure that
 ;; re-checks `int?`, `vector?` and the length before it reaches `%vector-ref`, and this loop
 ;; reads eight per output triple — four alphabet lookups and four codepoints — so those
-;; checks *were* the loop. Every index here is already proven in range: `i` and its
+;; checks would dominate the loop. Every index here is already proven in range: `i` and its
 ;; +1/+2/+3 by the `remaining` tests against `n`, and an alphabet index by the `< 128` guard
-;; against a vector that is exactly 128 long. Measured on the `base64` benchmark's
-;; 50 000-byte payload, warm best-of-5 in one process: **29.4 ms → 15.5 ms**. The dense
-;; vector alone was worth ~7%; the rest is not calling `nth`.
+;; against a vector that is exactly 128 long.
 (defn- encoding-b64-dec-loop (s i n vals acc)
   (if (>= i n)
     (reverse acc)

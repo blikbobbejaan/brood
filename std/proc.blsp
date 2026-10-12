@@ -2,11 +2,9 @@
 ;; plus OS subprocesses. Policy over the %-prefixed primitives, so it lives under proc/*
 ;; rather than the bare core. (The mainstream actor model — spawn/send/receive/self/link/
 ;; unlink/monitor/demonitor/exit — stays bare in the prelude. `register`/`unregister`/
-;; `whereis`/`alive?` moved HERE in ADR-252 and are kernel primitives registered under
-;; `proc/`; this line claimed they were still bare until 2026-08-28.)
+;; `whereis`/`alive?` live HERE (ADR-252) as kernel primitives registered under `proc/`.)
 ;;
-;; `proc/trap-exit` and `proc/system-monitor` joined them 2026-08-28, also as Rust-registered
-;; primitives. Neither is mainstream actor vocabulary: `proc/trap-exit` is a per-process FLAG, so
+;; `proc/trap-exit` and `proc/system-monitor` are Rust-registered primitives here too. Neither is mainstream actor vocabulary: `proc/trap-exit` is a per-process FLAG, so
 ;; it belongs beside `proc/flag` rather than reading as a verb you send a message with, and
 ;; `proc/system-monitor` is a kernel observability stream, not something an ordinary process
 ;; touches. `link`/`unlink` and `monitor`/`demonitor` stayed bare TOGETHER — splitting an
@@ -75,13 +73,11 @@ call and not automatic."
 ;; during `nest fetch` before any module loads) — see std/prelude/process.blsp.
 
 ;; ---- timers ----------------------------------------------------------------
-;; Cancellation moved to `timer/cancel`, beside the two functions that create a timer.
+;; Cancellation is `timer/cancel`, beside the two functions that create a timer.
 
 ;; ---- naming ------------------------------------------------------------------
 ;; `proc/register` / `proc/whereis` / `proc/unregister` / `proc/alive?` are kernel
-;; primitives registered under this module (the `bit/*` pattern). They were bare
-;; (`register`, `whereis`) until 2026-08-26 — process naming is process business, and
-;; it reads better beside `proc/info` and `proc/list` than loose in the global namespace.
-;; `unregister` and `alive?` are new: `register` had no inverse, so a name could only be
-;; released by its process dying, and liveness had to be asked for by allocating a whole
-;; `proc/info` snapshot and testing it for nil.
+;; primitives registered under this module (the `bit/*` pattern) — process naming is process
+;; business, and it reads better beside `proc/info` and `proc/list`. `unregister` releases a
+;; name without the process dying, and `alive?` asks liveness without allocating a whole
+;; `proc/info` snapshot.

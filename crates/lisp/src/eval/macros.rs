@@ -204,8 +204,8 @@ fn qq_seq(
 ) -> LispResult {
     // A dotted unquote tail: `` `(a b . ~t) `` reads as `(a b unquote t)` — the pair
     // `(unquote t)` IS the cdr — so a bare `unquote` symbol second-to-last, with something
-    // before it, marks the evaluated tail. Built element by element it came out as the
-    // literal `(a b unquote t)`. `~@` there means the same tail (there is nothing to splice
+    // before it, marks the evaluated tail (built element by element it would come out as
+    // the literal `(a b unquote t)`). `~@` there means the same tail (there is nothing to splice
     // it into but the end). The prefix conses onto the tail, so a non-list tail makes the
     // dotted pair the template spells: `` `(1 . ~2) `` is `(1 . 2)`.
     if !is_vector && items.len() >= 3 {
@@ -978,8 +978,8 @@ fn has_autogensym(heap: &Heap, form: Value) -> bool {
 /// constructed form does not): a list SPINE is walked in the loop, so a long flat
 /// template costs no depth, and descent stops at `MAX_DEPTH` — a template that deep
 /// cannot expand anyway (`qq_elem` refuses it), so answering `false` there only picks
-/// which path reaches that error. Before this a 3000-level `(quasiquote (unquote …))`
-/// chain overflowed the stack here, an uncatchable abort (2026-09-30).
+/// which path reaches that error. Unbounded, a deep `(quasiquote (unquote …))` chain
+/// would overflow the stack — an uncatchable abort.
 fn has_autogensym_at(heap: &Heap, form: Value, depth: u32) -> bool {
     if depth >= MAX_DEPTH {
         return false;
@@ -1033,20 +1033,17 @@ fn expand_static_quasiquotes(heap: &mut Heap, form: Value) -> Value {
 fn expand_qq_rec(heap: &mut Heap, form: Value, depth: u32) -> (Value, bool) {
     // This rewrite is an optimisation (the evaluator expands a `quasiquote` it did not
     // reach, one level per tail-loop turn), so past the cap the form is simply left
-    // alone. The expansion walk never descends into a template, which is why a
-    // runtime-built `(quasiquote (unquote (quasiquote …)))` chain 100 000 levels deep
-    // reached here unbounded and overflowed the native stack — an abort, not an
-    // error (2026-09-30).
+    // alone. The expansion walk never descends into a template, so a runtime-built
+    // `(quasiquote (unquote (quasiquote …)))` chain arrives here unbounded and would
+    // overflow the native stack — an abort, not an error.
     if depth >= MAX_DEPTH {
         return (form, false);
     }
     // A VECTOR literal is an atom to `list_to_vec`, but its elements are
     // unevaluated forms — so a quasiquote nested inside one (`[a b \`(do ~@xs)]`,
-    // the shape `%receive-split` returns) was invisible to this walk, the raw
-    // `quasiquote` special form survived into the arm, and the WHOLE arm deferred
-    // to the tree-walker — transitively tree-walking everything it called, since
-    // the tree-walker's `apply_closure` never re-enters the VM. Found 2026-08-30
-    // chasing pingpong's ~83 M-instruction load-time expansion constant (§7.3).
+    // the shape `%receive-split` returns) must be walked too: a raw `quasiquote`
+    // special form surviving into the arm defers the WHOLE arm to the tree-walker,
+    // and everything it calls with it (§7.3).
     if let ValueRef::Vector(vid) = form.unpack() {
         let items = heap.vector(vid).to_vec();
         let mut out = Vec::with_capacity(items.len());
@@ -1273,8 +1270,8 @@ pub fn resolve(heap: &mut Heap, form: Value) -> Value {
         // At ROOT there is no namespace to qualify against, but the `/name` root escape
         // (ADR-236) still has to mean something: a prelude macro emits `/get` so a module
         // defining `get` cannot capture it, and that same expansion must also work in a
-        // root script and during the prelude's own boot, where this pass used to return
-        // the form untouched and `/get` reached the evaluator literally — unbound.
+        // root script and during the prelude's own boot — returned untouched, `/get` would
+        // reach the evaluator literally, unbound.
         //
         // So root gets the escape rewrite and nothing else. It cannot use `resolve_sym`:
         // with an empty `ns_name` that function's qualifier would turn every free symbol
@@ -1309,11 +1306,10 @@ pub fn resolve_reference(heap: &Heap, s: value::Symbol) -> value::Symbol {
 /// anywhere change the path the loader reads).
 ///
 /// Ambient status comes from a **declaration**, not a spelling: the name must have
-/// been declared with `defdyn`. It used to be any `*earmuffed*` name (ADR-065),
-/// which made an ordinary module-local constant silently global — two modules that
-/// each wrote `(def *width* …)` shared one binding, and the second load clobbered
-/// the first with no diagnostic. Earmuffs remain the *convention* for a knob (and
-/// the checker still reads them as one), but they no longer change scoping: an
+/// been declared with `defdyn`. A spelling rule would make an ordinary module-local
+/// constant silently global — two modules that each wrote `(def *width* …)` would
+/// share one binding. Earmuffs remain the *convention* for a knob (and the checker
+/// reads them as one), but they do not change scoping: an
 /// undeclared `(def *width* 10)` inside a module is `mod/*width*`, like every other
 /// definition.
 pub(crate) fn is_ambient(sym: value::Symbol) -> bool {
@@ -1353,10 +1349,9 @@ fn is_syntax_keyword(s: value::Symbol) -> bool {
 
 /// A symbol the quasiquote expander reads by NAME, which no namespace may own: the
 /// `~`/`~@` markers and a `#`-suffixed auto-gensym. The file path never reaches them
-/// (they are not known names), but the runtime `eval` path's assume-own rule qualified
-/// every unbound bare symbol, so `(reflect/eval '(quasiquote [1 (unquote x)]))` inside a
-/// module answered `[1 (mod/unquote x)]` and a `defmacro` through `eval` could not use
-/// `~` at all (2026-09-30).
+/// (they are not known names), but the runtime `eval` path's assume-own rule qualifies
+/// every unbound bare symbol, which would turn `(unquote x)` into `(mod/unquote x)` and
+/// leave a `defmacro` through `eval` unable to use `~`.
 fn is_template_marker(s: value::Symbol) -> bool {
     if value::symbol_is(s, kw::UNQUOTE) || value::symbol_is(s, kw::UNQUOTE_SPLICING) {
         return true;
@@ -1842,12 +1837,9 @@ fn generic_resolve(
 /// alone. `(x &optional (n *lim*))` keeps `x` and `n` verbatim but resolves `*lim*` to
 /// `ns/*lim*`.
 ///
-/// Param lists used to be passed through verbatim, which left a default expression as
-/// the only place in a module where a reference to the module's own global was never
-/// qualified — so it resolved at call time in whatever namespace the CALLER was in and
-/// raised `unbound symbol`. Earmuffs masked it (they were ambient pre-ADR-151, so the
-/// usual `(&optional (n *knob*))` happened to work); a plain `(&optional (n limit))`
-/// was already broken.
+/// Passed through verbatim, a default expression's reference to the module's own global
+/// would resolve at call time in whatever namespace the CALLER was in and raise
+/// `unbound symbol`.
 ///
 /// Earlier binders are in scope for a later default, so they accumulate as locals as the
 /// list is walked. A destructuring `[a b]` param is a pattern, not a reference, and stays
@@ -2139,9 +2131,8 @@ thread_local! {
 /// rewrites (the pipeline fusion, the tally rewrite, the counted range loop). The CHECKER
 /// holds one: it checks the author's code, and the rewrites are semantics-preserving, so
 /// the original is what its diagnostics and its inference should read — a rewritten
-/// `(fold (range 16) {} …)` became `(if (range? r) <letrec loop> <fold>)`, whose union the
-/// checker typed less precisely than the fold alone, and `encoding/hex-decode` picked up
-/// a warning it had never earned (2026-09-17). The evaluator never holds one.
+/// `(fold (range 16) {} …)` becomes `(if (range? r) <letrec loop> <fold>)`, whose union the
+/// checker types less precisely than the fold alone. The evaluator never holds one.
 pub struct NoSourceRewrites {
     was: bool,
 }
@@ -2164,10 +2155,9 @@ impl Drop for NoSourceRewrites {
 /// the runtime's, never "the author's code under check" — but the checker's compile pass
 /// holds a [`NoSourceRewrites`] while `compile` itself infers and performs the file's
 /// `require`s (ADR-227), and the transitive scan (ADR-340) loads more from inside the same
-/// check. Without this every module a `brood file.blsp` pre-flight loaded ran UNREWRITTEN
-/// for the rest of the program: `seq/frequencies` over 750k keys 860 ms against 343 ms with
-/// `BROOD_NO_CHECK=1`, the same as `BROOD_LINMAP=0` (KI-173, 2026-09-20) — and a stdlib
-/// image written by such a process carried the unrewritten bodies to every later run.
+/// check. Without this every module a `brood file.blsp` pre-flight loads would run
+/// UNREWRITTEN for the rest of the program (KI-173) — and a stdlib image written by such a
+/// process would carry the unrewritten bodies to every later run.
 pub struct SourceRewritesOn {
     was: bool,
 }
@@ -2188,9 +2178,9 @@ impl Drop for SourceRewritesOn {
 // ===================== pipeline fusion + the counted range loop (ADR-360 §7) ==============
 //
 // `(-> (range n) (seq/lfilter p) (seq/lmap f) (reduce 0 +))` is what the pocket reference and
-// the benchmarks write, and what it ran was: a transducer closure per stage, composed at
+// the benchmarks write, and unrewritten it runs a transducer closure per stage, composed at
 // runtime, called per element through a Rust→native gateway, each stage a fast-linked call
-// into the next — ~390 ns per element against ~2 ns for the same work in a `defn` loop. The
+// into the next — two orders of magnitude slower than the same work in a `defn` loop. The
 // two rewrites below take the shape the compiler can prove and turn it into that loop:
 //
 //   1. FUSION. A chain of `seq/lmap` / `seq/lfilter` / `seq/lreject` / `seq/lkeep` stages
@@ -2785,11 +2775,8 @@ fn coll_or_fold(
     // copy of the body, and a copy costs ~1–3M instructions wherever the fold is compiled
     // (a closure template promoted, an arm compiled, the JIT's share) — including the std
     // functions a program materialises at boot, where a fold of a few elements pays the
-    // copies and never the loop. Measured 2026-09-17: the three-loop dispatch on every
-    // literal fold read +7.7M instructions on `(io/puts 0)` (+10%) and +16% on the
-    // `pipeline` row (whose fused body is small, so it got all three) for a 1.6× win on a
-    // vector or list fold (141 → 42 → 25 ms on 1M elements; the range loop alone is 20×
-    // on its row). Set the constant to bring them back once a copy is cheaper.
+    // copies and never the loop — the boot-time cost outweighed the loop win on a vector or
+    // list fold. Set the constant to bring them back once a copy is cheaper.
     let atoms = body.iter().map(|&f| form_atoms(heap, f, 0)).sum::<usize>();
     let want_more = FOLD_LOOP_SMALL_ATOMS.is_some_and(|small| atoms <= small);
     let rest = if want_more {
@@ -2853,8 +2840,8 @@ fn range_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Valu
 fn macroexpand_all_depth(heap: &mut Heap, form: Value, env: EnvId, depth: u32) -> LispResult {
     // Expansion recurses per nesting level of the form; a deeply-nested-but-
     // legal form (30k+ levels) would blow the native stack. Grow it in
-    // heap-backed segments instead (the stacker remedy the deep-VALUE walkers
-    // got on 2026-07-20, extended to the code walkers) — the fast path is a
+    // heap-backed segments instead (the same stacker remedy as the deep-VALUE
+    // walkers) — the fast path is a
     // couple of compares, and depth stays structurally bounded by the form.
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         macroexpand_all_depth_inner(heap, form, env, depth)
@@ -2933,15 +2920,14 @@ fn macroexpand_all_depth_step_inner(
                 if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
                     return Ok(form);
                 }
-                // (`lambda` used to be canonicalised to `fn` here — the alias was
-                // retired in ADR-162; `fn` is the only spelling.)
+                // (`fn` is the only spelling — no `lambda` alias, ADR-162.)
                 let s = head;
                 // Desugar pattern binders into the Brood `match*` engine so they
                 // expand once here (fast) rather than per call. eval's `let`/`fn`
                 // then only ever see plain symbol binds.
                 if value::symbol_is(s, kw::LET) || value::symbol_is(s, kw::LETREC) {
                     // A **vector** bindings container — `(let [a 1] …)`, and with it
-                    // the Clojure `(let [[a 1] [b 2]] …)` shape that used to
+                    // the Clojure `(let [[a 1] [b 2]] …)` shape, which would otherwise
                     // destructure `[a 1]` against `[b 2]` and report a bewildering
                     // `unbound symbol: b`. Lists for code (ADR-010): reject it here,
                     // in the pass both engines share.
@@ -3178,9 +3164,9 @@ fn rebuild_list(heap: &mut Heap, original: Value, items: Vec<Value>) -> Value {
 /// `nil` for a seed a table cannot stand in for — a value a table cannot hold (a rope,
 /// a builtin, a lazy view), or a record, whose misses consult `Lookup` — and the wrapper
 /// then runs `SLOW`, the loop exactly as the author wrote it (self-recursion re-pointed
-/// at itself, nothing else touched). Before that copy existed (2026-09-16) a tally seeded
-/// with `{:r <rope>}` raised `cannot send a rope` with the rewrite on and returned the
-/// map with it off; the rewrite has to be unobservable on EVERY input, and the seed is
+/// at itself, nothing else touched). Without it a tally seeded with `{:r <rope>}` would
+/// raise `cannot send a rope` only with the rewrite on; the rewrite has to be
+/// unobservable on EVERY input, and the seed is
 /// the one thing the linearity proof cannot see. Returns the replacement, or `None` to
 /// leave the `def` unchanged. `items` is the expanded `def` form.
 fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value> {
@@ -4024,7 +4010,7 @@ pub(crate) fn fn_needs_lowering(heap: &Heap, fn_form: Value) -> bool {
 /// required parameters, into a plain `fn` plus the Brood `match*` engine.
 /// `Ok(None)` for an ordinary single-clause `fn` (left as-is); an error for a
 /// **vector** where a parameter list belongs (ADR-010, item 1 of the syntax
-/// finalisation) — the one shape that used to be misread instead of rejected.
+/// finalisation) — rejected rather than misread.
 fn lower_fn(heap: &mut Heap, items: &[Value]) -> Result<Option<Value>, LispError> {
     let forms = &items[1..];
 
@@ -4252,10 +4238,9 @@ mod resolve_tests {
     #[test]
     fn scan_regions_collects_names_a_definition_macro_binds() {
         // KI-118. The pre-scan reads UNEXPANDED forms, so a name bound by a MACRO —
-        // std's own `defonce`/`defrecord`/`defmulti`, or hatch's `defhtml` — used to be
-        // absent from the region's known names. A reference to it from a function
-        // written ABOVE the definition then failed to qualify to `ns/name`, fell through
-        // to root, and was UNBOUND at runtime, past a clean check and a green suite.
+        // std's own `defonce`/`defrecord`/`defmulti`, or hatch's `defhtml` — must be in the
+        // region's known names, or a reference from a function written ABOVE the
+        // definition fails to qualify to `ns/name` and is UNBOUND at runtime.
         let mut interp = Interp::new();
         let forms = reader::read_all(
             &mut interp.heap,
@@ -4285,7 +4270,7 @@ mod resolve_tests {
     #[test]
     fn a_macro_defined_name_resolves_from_above_its_definition() {
         // The end-to-end shape of KI-118: `read-it` is written above the `defthing` that
-        // binds `thing`. Before the fix this was `unbound symbol: thing` at CALL time.
+        // binds `thing`; it must not be `unbound symbol: thing` at CALL time.
         let mut interp = Interp::new();
         interp
             .eval_str(

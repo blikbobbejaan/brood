@@ -240,14 +240,14 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
             };
             // A free-global head is NOT staged: `Inst::Call` resolves it through the call IC
             // (or `env_get` on a miss), so there's no redundant head-`Global` push + per-call
-            // `env_get`. A computed callee (head `None`) is staged below the args as before.
+            // `env_get`. A computed callee (head `None`) is staged below the args.
             //
             // NOTE (KI-19): this moves the head's resolution to *after* the arguments, while
             // the tree-walker resolves the operator *first*. An argument that rebinds the
-            // head makes the engines disagree. Staging the head to fix the order was tried
-            // and reverted: it forces `head: None`, which disables the call-site IC, and
-            // `json` went 168 ms -> 1159 ms (6x). A correct fix needs the head resolved
-            // through the IC *before* the args (its own global-IC site), not a plain stage.
+            // head makes the engines disagree. Do not fix that by staging every head: it
+            // forces `head: None`, which disables the call-site IC (a ~6x loss on `json`). A
+            // correct fix resolves the head through the IC *before* the args (its own
+            // global-IC site).
             // Staged: emit the callee BEFORE the args, so the operator is resolved first
             // (KI-19). A computed callee is staged for the same structural reason.
             if head.is_none() || *staged {
@@ -260,11 +260,9 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
             // callee was therefore not pushed above — so a named head without a site names a
             // callee nothing can find. `compile_node` cannot produce that pairing (it
             // allocates the site in the same match arm that yields a `Global` callee), but a
-            // hand-built `Node::Call` can, and one did: the ADR-294 dispatch rewrite. Below
-            // the tiering threshold it was harmless; once the arm went native the
-            // site-indexed fast-link path read garbage and the call returned nil. Assert the
-            // invariant here, where it is cheap and where the next hand-built node will meet
-            // it, rather than leaving it to be rediscovered as a wrong answer.
+            // hand-built `Node::Call` can (as the ADR-294 dispatch rewrite did): harmless
+            // interpreted, but once the arm goes native the site-indexed fast-link path reads
+            // garbage and the call returns nil. Assert the invariant here, where it is cheap.
             debug_assert!(
                 head.is_none() || *site != NO_SITE,
                 "call with a named head ({:?}) must carry a call site: the callee is not \

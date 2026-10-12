@@ -279,12 +279,9 @@ definitions, with the language's and any later-required module's excluded. What
 
 ;; ---- holds a killed evaluator can no longer release --------------------------
 ;; A traced request holds its wrappers and releases them at teardown — but an evaluator the
-;; parent KILLS never reaches its teardown, and its held set died with it. The parent used to
-;; answer that with `debug/untrace-all`, "the trace registry is shared globals, so the parent
-;; can", and that is the KI-107 mechanism restated one level up: a timeout in one request
-;; wiped every wrapper in the image, including those a CONCURRENT request was still using.
-;; The `answer` tests include a deliberate timeout, so this is not hypothetical — it is the
-;; residual that survived scoping the ordinary teardown.
+;; parent KILLS never reaches its teardown. The parent must not answer that with
+;; `debug/untrace-all` — KI-107 one level up: a timeout in one request would wipe the
+;; wrappers a CONCURRENT request is still using (the `answer` tests time out deliberately).
 ;;
 ;; So the held set lives where the parent can reach it: a registry keyed by the evaluator's
 ;; pid. The child records as it holds; it clears its own entry on a normal teardown; the
@@ -351,17 +348,13 @@ image and so took wrappers away from requests that were still running (KI-107)."
   ;; Teardown: let go of exactly the names this request held. The wrapper is restored only if
   ;; no one else is still holding it.
   ;;
-  ;; This used to be `debug/untrace-all`, and that is KI-107. The trace registry is shared
-  ;; GLOBALS — deliberately, so a parent can clean up after a child it killed — so a request
-  ;; tearing down restored every wrapper in the image, including one a CONCURRENT request had
-  ;; just installed. The victim's own trace then stopped mid-recursion and its reply came back
-  ;; with an empty `:spy`, about 1 run in 17, with no error anywhere: the evidence showed the
-  ;; wrapper installed and then lost, and no refusal for the name that lost it.
+  ;; Never `debug/untrace-all` (KI-107): the trace registry is shared GLOBALS — deliberately,
+  ;; so a parent can clean up after a child it killed — so it would restore a wrapper a
+  ;; CONCURRENT request had just installed, silently emptying that request's `:spy`.
   ;;
   ;; `:isolated` does not prevent it. A test step awaits its worker, not the processes that
   ;; worker spawned, so the PREVIOUS unit's evaluator can still be alive and tearing down
-  ;; while this one installs — which is why quiescing before each isolated step was measured
-  ;; and did not move the rate.
+  ;; while this one installs.
   (doseq (s (keys (or (table/get acc :held) {})))
     ;; check-allow :discarded-catch — best-effort release; a name redefined since is reported by `untrace-fn` itself
     (check-allow :discarded-catch (try (debug/trace-release (symbol s)) (catch _ nil))))
@@ -375,9 +368,8 @@ image and so took wrappers away from requests that were still running (KI-107)."
   ;; left alone, a name the previous form REDEFINED is wrapped afresh around its new
   ;; body, and a name that does not exist yet is skipped until the form that defines it
   ;; has run. So `(defn f …) (f 5)` traces `f`, and so does `(defn f …)` in one request
-  ;; followed by `(f 5)` in the next, whatever the definition form was spelled — this
-  ;; used to hinge on a list of definition heads, and the day `defn-` was not on it a
-  ;; playground evaluated the previous definition of every private function it traced.
+  ;; followed by `(f 5)` in the next, whatever the definition form was spelled — no list
+  ;; of definition heads to fall out of date.
   ;; …and once more AFTER the last form: a request whose final form redefined a traced
   ;; name would otherwise hand `untrace-all` a moved generation, which it (rightly)
   ;; refuses to restore over — and reports. Re-wrapping the new body first makes the

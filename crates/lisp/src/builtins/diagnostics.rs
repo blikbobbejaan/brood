@@ -400,8 +400,8 @@ pub(super) fn mem_peak(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
 /// live CAPACITY x the real element size — a `Vec` grown past its contents holds that
 /// memory whatever its length says. `:call-entry-bytes` is `size_of::<Option<CallIcEntry>>()`,
 /// the figure a shrink of that struct would move. Per-process; size it at the PARKED
-/// state, not at teardown (a teardown slot count read 3.5x too high — see the
-/// 2026-08-18 note in `docs/runtime-frontier.md`).
+/// state, not at teardown (a teardown slot count reads several times too high — see
+/// `docs/runtime-frontier.md`).
 #[cfg(feature = "dev-tools")]
 pub(super) fn ic_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (t, entry) = heap.ic_table_stats();
@@ -430,9 +430,9 @@ pub(super) fn ic_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 
 /// `(%pos-stats)` — entry counts of the two source-position side tables:
 /// `:local-forms` (this process's LOCAL `form_pos`) and `:runtime-forms` (the
-/// runtime-shared `positions`). Measurement surface for the position-table cost,
-/// which the 2026-08-06 module-load breakdown put at 169 MB of a 933 MB load and
-/// 24% of load time. Per-process for the LOCAL half, runtime-wide for the other.
+/// runtime-shared `positions`). Measurement surface for the position-table cost, a
+/// large share of module-load memory and time. Per-process for the LOCAL half,
+/// runtime-wide for the other.
 #[cfg(feature = "dev-tools")]
 pub(super) fn pos_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (local, local_cap, runtime, rt_cap) = heap.pos_table_stats();
@@ -706,11 +706,10 @@ pub(super) fn vm_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 ///
 /// The counters are **process-global and cumulative from process start**, so a snapshot
 /// taken after a short program includes the runtime's own boot work — and boot is
-/// macro-expansion-heavy, which defers to the tree-walker. Measured: the same
-/// list-building program read an 84% defer rate on a cold boot cache and 0.8% on a warm
-/// one, purely from whether expansion ran. Anything measuring a *region* rather than a
-/// whole process must zero first; `(perf/measure thunk)` in `std/tool/perf.blsp` is that,
-/// packaged.
+/// macro-expansion-heavy, which defers to the tree-walker, so the same program's defer
+/// rate differs wildly between a cold and a warm boot cache. Anything measuring a
+/// *region* rather than a whole process must zero first; `(perf/measure thunk)` in
+/// `std/tool/perf.blsp` is that, packaged.
 ///
 /// A no-op returning `:enabled false` without `--features perf-stats`, like `(%vm-stats)`.
 #[cfg(feature = "dev-tools")]

@@ -178,6 +178,7 @@ arg silently becoming `nil`.
 | | `system/build-id` | 0 | This brood build's identity as "<version>+<git-sha>+<binary-stamp>" (e.g. "0.1.0+dcab7ca+18f2e1a9b3c4d5e6") — the correct staleness stamp for an on-disk cache of anything the kernel computes. |
 | **Errors / control** | `throw` | 1 | raise a value as an error (non-local exit) |
 | | `%try` | 2 | call a thunk; on raise, call the handler with the caught value |
+| | `%try-described` | 2 | like `%try`, but the handler also gets the error's full description (`:file :line :col :trace`) whatever value was thrown |
 | | `%isolate` | 1 | call a thunk against a private copy of the globals; roll back its `def`s afterward (used by `:isolated` tests) |
 | **Processes** | `%spawn` | 1 | run a **0-arg thunk** in a new green process; returns its pid. `spawn` is the prelude macro over it — `(spawn expr)` wraps `expr` in the thunk, and `(spawn name expr)` is the named/idempotent form (a live registration under `name` short-circuits and `expr` is never evaluated) |
 | | `%spawn-link` | 1 | as `%spawn`, but the symmetric caller↔child link is registered **before the child is enqueued** (atomic spawn+link, ADR-067), so an instant exit still reports its true reason — a spawn-then-`link` can find the child already dead and reports `:noproc`, losing it. `spawn-link` is the macro over it |

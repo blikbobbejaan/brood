@@ -178,9 +178,8 @@ pub(crate) fn exec_call(
 }
 
 /// Restores the `capture_top_level` flag on drop — so the gate is reset even if the
-/// guarded tree-walker `apply` *panics* (caught by `run_one`'s `catch_unwind`). The
-/// manual save/restore it replaces leaked a `false` flag on a panic until the next
-/// `vm_run_bc` entry re-stamped it.
+/// guarded tree-walker `apply` *panics* (caught by `run_one`'s `catch_unwind`); a manual
+/// save/restore would leak a `false` flag on a panic.
 pub(crate) struct CaptureTopGuard(pub(crate) bool);
 impl Drop for CaptureTopGuard {
     fn drop(&mut self) {
@@ -654,8 +653,7 @@ pub(crate) fn push_frame(
 }
 
 /// Run a chunked closure arm and its whole chain of chunked calls on the explicit
-/// bytecode frame stack ([`vm_run_bc`]) — the sole VM executor since ADR-100 Stage 5
-/// (the `Node`-walking trampoline was retired with the bytecode default). Every
+/// bytecode frame stack ([`vm_run_bc`]) — the sole VM executor (ADR-100 Stage 5). Every
 /// `CompiledArm` from `compile_arm` has a chunk, so this always routes to the driver;
 /// `vm_run_bc` does the per-frame live-arm registration + the runaway frame guard.
 /// Callers: `dispatch` (non-tail VM-closure branch), `exec_call`'s IC fast path, and

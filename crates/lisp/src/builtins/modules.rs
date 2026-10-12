@@ -518,8 +518,8 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // is unaffected. `(:use map)` for bare access, or call qualified.
     embedded_module!("map", "std/map.blsp"),
     // The math library (ADR-227): sqrt / pow / ceil / round / round-to / clamp / abs /
-    // sum / product / positive? / negative? / even? / odd? + the constants pi/e, and since
-    // 2026-08-27 the rest of the derived arithmetic too — min / max / rem / quot / mod /
+    // sum / product / positive? / negative? / even? / odd? + the constants pi/e, and the
+    // rest of the derived arithmetic too — min / max / rem / quot / mod /
     // floor / ->fixed / numerator / denominator, plus the `Zero` and `Numeric` abilities
     // (zero? / nan? / infinite?). Only the OPERATORS `+ - * / < =` stay bare.
     //
@@ -530,18 +530,18 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     embedded_module!("math", "std/math.blsp"),
     // Bitwise ops on integers + the IEEE-754 float/bit reinterpretations. The operations
     // are kernel primitives registered as `bit/*` (the `string/length` pattern); this
-    // module declares the namespace they live in. Bare until 2026-08-26 — ten names for
-    // one idea is what a namespace is for, and bare is the scarce resource.
+    // module declares the namespace they live in — ten names for one idea is what a
+    // namespace is for, and bare is the scarce resource.
     embedded_module!("bit", "std/bit.blsp"),
     // Exact base-10 decimals — the `bit` story again: kernel primitives registered as
     // `decimal/*`, this module declares the namespace. `decimal?` stays bare with the
-    // other type predicates. Bare until 2026-08-26.
+    // other type predicates.
     embedded_module!("decimal", "std/decimal.blsp"),
     // Arithmetic for RECORD types — the `+`/`-`/`*`/`/` extension point (ADR-179). The
     // `bit`/`decimal` story with one twist: the ops are neither Rust nor loadable, they are
     // prelude MULTIMETHODS, because `%add`'s cold fallback calls them before any module can
-    // load. This module declares the namespace and documents them. `num-add`… until
-    // 2026-08-28 — a four-name hyphen prefix is a namespace spelled by hand (ADR-251).
+    // load. This module declares the namespace and documents them — a four-name hyphen
+    // prefix would be a namespace spelled by hand (ADR-251).
     embedded_module!("num", "std/num.blsp"),
     // OS/process interface: env vars, argv, subprocess execution, OS type, halt.
     // Wraps the %env-all/%argv/%os-cmd/%os-type/%halt primitives with a clean API.
@@ -625,8 +625,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // The rope text-engine seam: policy over the `%rope-*` primitives → `text/*`.
     embedded_module!("text", "std/text.blsp"),
     // A quantity as a person reads it → `humanize/*`. Tiny and dependency-free on
-    // purpose: an editor's render path loads it without loading project tooling, which is
-    // where the one public byte formatter used to live.
+    // purpose: an editor's render path loads it without loading project tooling.
     embedded_module!("humanize", "std/humanize.blsp"),
     // Seeded PRNG (xorshift32): public face of the prelude's `%rand-*` mechanism → `rand/*`.
     embedded_module!("rand", "std/rand.blsp"),
@@ -1473,10 +1472,8 @@ pub(crate) fn every_provided_feature_is_embedded(heap: &Heap) -> bool {
 /// Another process's claim is not that. `require-one` (which `defmodule` runs before this
 /// refer) already waited for that load and returned on its `provide`, which happens INSIDE
 /// `%require-force` — a few instructions before the loader clears its marker. Reading the
-/// marker alone here called that window a "circular `(:use http/util)`" on a module with no
-/// `:use` at all: a bundle's boot loop in one process met a module a supervisor started at
-/// load had begun pulling in from another, and `nest release` refused every hive since
-/// v0.28.0 (found 2026-09-16, `BROOD_TRACE_GLOBAL='*features-loading*'`). Under lazy loading
+/// marker alone would call that window a spurious circular `:use` when two processes load
+/// the same module concurrently. Under lazy loading
 /// (ADR-335) a load starting in a spawned process is the ordinary case, not a race to fix.
 fn module_is_loading(heap: &mut Heap, mod_name: &str) -> bool {
     let map_id = match heap
@@ -1592,7 +1589,7 @@ pub(super) fn refer(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             // error): `:only` resolves lazily, and at refer time the module may be mid-load
             // (a cycle), batched-but-not-reached by the project loader, or provided by a
             // project image whose bindings materialise on first use — a runtime check here
-            // refused all three on 2026-09-30 and was withdrawn. A typo in an `:only` list
+            // would refuse all three. A typo in an `:only` list
             // is the checker's to report.
             for item in heap.seq_items(subset)? {
                 let bare = expect_symbol(heap, "%refer", item)?;

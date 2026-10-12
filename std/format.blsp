@@ -84,11 +84,8 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
   (dec (count (string/split s "\n"))))
 (sig count-newlines (string -> int))
 
-;; (`string-repeat` is the prelude's — it used to be redefined here with an
-;; accumulator that did `(str acc s)` each step (O(total length²)); the prelude's
-;; `(apply str (repeat n s))` is a single O(total length) pass. The runtime shares
-;; one global table, so this local copy clobbered the prelude's for the whole image
-;; once `format` was required. Use the prelude's.)
+;; (Use the shared `string/repeat`; never redefine a repeat here — the runtime shares one
+;; global table, so a local copy would clobber it for the whole image.)
 (defn- indent-of (n) (string/repeat " " n))
 
 ;; The whitespace inside a comment node is `";; foo\n"` — the trailing newline
@@ -1015,10 +1012,9 @@ if you are reintroducing hoisting, they are what you have to write back."
                   next-col
                   labelled?)
               ;; Keep a same-line trailing comment WHERE THE AUTHOR PUT IT — after the
-              ;; form, on the same line. It used to be hoisted onto its own line above
-              ;; the form, which is what made `nest format` disagree with the whole tree
-              ;; (98 lines of the red) and destroyed the alignment that makes a column of
-              ;; trailing comments readable. `col` is nil after one: nothing may ride a
+              ;; form, on the same line — hoisting it above the form would destroy the
+              ;; alignment that makes a column of trailing comments readable. `col` is nil
+              ;; after one: nothing may ride a
               ;; line that now ends in a comment, or it would be commented out.
               else
                 (render-body-at kids
@@ -1050,12 +1046,9 @@ if you are reintroducing hoisting, they are what you have to write back."
 (defn cst-root (kids)
   "Render the root's child nodes `kids` — the top-level forms — into the formatted source string, with exactly one trailing newline."
   ;; The walk accumulates the top-level blocks as a REVERSED chunk list, joined once here.
-  ;; It used to accumulate the output string itself — `(str acc "\n" block)` per top-level
-  ;; form — which recopies everything emitted so far, i.e. O(forms × file). That reads as
-  ;; linear at small sizes (the per-form render dominates) and only shows up as the file
-  ;; grows: ratios 3.80 / 4.12 / 4.64 / 4.46 / 6.40 across bases, and 3.6 s for 12 800
-  ;; forms. A shape that creeps *up* across bases is the opposite of the warm-up signature
-  ;; that clears a row, and it was mistakenly cleared once on the small-N numbers alone.
+  ;; Accumulating the output string itself — `(str acc "\n" block)` per form — would recopy
+  ;; everything emitted so far, O(forms × file); it reads as linear at small sizes and only
+  ;; shows as the file grows.
   (let (out (apply str (reverse (format-cst-root-walk kids 0 (count kids) 0 ()))))
     (cond (= out "") "" (string/ends-with? out "\n") out else (str out "\n"))))
 
@@ -1103,9 +1096,8 @@ if you are reintroducing hoisting, they are what you have to write back."
 
 ;; `acc` is the reversed chunk list, so gluing is two `cons`es instead of a full recopy.
 ;; The empty case is deliberately `(if (= block "") acc …)` rather than a plain `(list
-;; block)`: the old string version tested `(= acc "")`, which stays true while every block
-;; so far has been empty, and only then omits the separator. Consing an empty first block
-;; would make the list non-empty and emit a leading separator the old code never produced.
+;; block)`: while every block so far has been empty no separator is emitted, and consing
+;; an empty first block would make the list non-empty and emit a leading separator.
 (defn- format-source-glue (acc nl block)
   (cond
     (empty? acc) (if (= block "") acc (list block))

@@ -87,10 +87,9 @@ data) …))` from an `http` handler to push events to a browser `EventSource`."
 
 (defn- frames (buf)
   "`[complete-event-blocks remainder]` extracted from accumulated stream text `buf`."
-  ;; ONE native split, not a `substring` of the rest per block. The drain this replaced
-  ;; re-copied the remainder of the buffer for every event, so a single socket read holding
-  ;; k events cost O(k * chunk) — the `stream-lines` quadratic (2026-08-02) in another
-  ;; module, and one 64 KB read is the normal case, not the pathological one.
+  ;; ONE native split, not a `substring` of the rest per block, which would re-copy the
+  ;; remainder per event — O(k * chunk) for one socket read of k events, and a 64 KB
+  ;; read is the normal case (the same reason `stream-lines` splits once).
   ;; `string-split` keeps a trailing empty piece, so the LAST piece is exactly the
   ;; remainder (`""` when the buffer ended on a blank line); an empty buffer splits to no
   ;; pieces at all, hence the guard. Covered by the `sse frames-1c` sweep row.

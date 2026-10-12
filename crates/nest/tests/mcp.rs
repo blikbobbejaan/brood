@@ -477,6 +477,45 @@ fn a_project_mcp_blsp_extends_the_catalogue() {
 }
 
 #[test]
+fn a_thrown_value_reports_where_the_handler_raised_it() {
+    let directory = project(
+        "thrown-position",
+        &[(
+            "mcp.blsp",
+            "(defn reject (x)\n  (+ 1 (throw (str \"rejected: \" x))))\n\n\
+             (defn mcp-tools ()\n  (cons {:name \"strict\" :schema {:type \"object\"} \
+             :handler (fn (args) (+ 1 (reject (get args :msg))))}\n    (mcp/tools)))\n",
+        )],
+    );
+    let session = serve(
+        &directory.path,
+        &[call(1, "strict", json!({ "msg": "nope" }))],
+    );
+    assert_eq!(session.code, Some(0), "stderr: {}", session.stderr);
+    let error = &reply(&session, 1)["error"];
+    assert_eq!(error["code"], -32603);
+    let data = &error["data"];
+    assert_eq!(data["kind"], "user", "{data}");
+    assert_eq!(data["message"], "rejected: nope", "{data}");
+    assert!(
+        data["file"]
+            .as_str()
+            .is_some_and(|file| file.ends_with("mcp.blsp")),
+        "{data}"
+    );
+    assert_eq!(data["line"], 2, "{data}");
+    assert!(data["col"].is_number(), "{data}");
+    let through_reject = data["trace"].as_array().is_some_and(|frames| {
+        frames.iter().any(|frame| {
+            frame["fn"]
+                .as_str()
+                .is_some_and(|name| name.ends_with("reject"))
+        })
+    });
+    assert!(through_reject, "{data}");
+}
+
+#[test]
 #[cfg(debug_assertions)]
 fn a_panicking_handler_is_an_error_reply_and_the_session_survives() {
     let directory = project("panic", &[]);

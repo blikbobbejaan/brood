@@ -27,7 +27,12 @@
   (test "a non-string :source is rejected (thrown for the dispatcher to catch)"
     (assert-error (mcp/eval-tool {:source 42})))
   (test "a parse error surfaces as :error, not a drop"
-    (is (contains? (mcp/eval-tool {:source "(+ 1"}) :error))))
+    (is (contains? (mcp/eval-tool {:source "(+ 1"}) :error)))
+  (test "a value the source throws comes back with where it was raised"
+    (let (error (get (mcp/eval-tool {:source "(+ 1\n  (throw :mcpt-thrown))"}) :error))
+      (assert= (get error :kind) :user)
+      (assert= (get error :payload) :mcpt-thrown)
+      (assert= (get error :line) 2))))
 
 ;; The LLM-native tools error and find-pattern (thin wrappers over
 ;; std/tool/explain.blsp — 2026-07-23).
@@ -130,6 +135,10 @@
 
 (defn mcpt-spin () (mcpt-spin))
 
+(defn mcpt-raise (x)
+  "Throw a bare string through a non-tail call, so the raise has a frame to trace."
+  (+ 1 (throw (str "deep: " x))))
+
 (def mcpt-catalogue
   (list {:name "double"
          :description "Double :n"
@@ -139,6 +148,7 @@
     {:name "text" :schema {:type "object"} :handler (fn (_args) "plain")}
     {:name "soft-fail" :schema {:type "object"} :handler (fn (_args) {:error "nope"})}
     {:name "throws" :schema {:type "object"} :handler (fn (_args) (throw "throws: bad input"))}
+    {:name "throws-deep" :schema {:type "object"} :handler (fn (_args) (+ 1 (mcpt-raise 1)))}
     {:name "divides" :schema {:type "object"} :handler (fn (_args) (/ 1 0))}
     {:name "dies"
      :schema {:type "object"}
@@ -209,7 +219,7 @@
           names (map tools (fn (t) (get t :name))))
       (is (includes? names "double"))
       (refute (includes? names "no-schema"))
-      (assert= (count tools) 12)
+      (assert= (count tools) 13)
       (assert= (first tools)
         {:name "double"
          :description "Double :n"
@@ -241,11 +251,22 @@
     (let (error (get (mcpt-call "nope" {}) :error))
       (assert= (get error :code) -32602)
       (is (string/starts-with? (get error :message) "no such tool"))))
-  (test "a thrown value is a -32603 whose data is :user"
-    (let (error (get (mcpt-call "throws" {}) :error))
+  (test "a thrown value is a -32603 whose data is :user, with where it was raised"
+    (let (error (get (mcpt-call "throws" {}) :error)
+          data (get error :data))
       (assert= (get error :code) -32603)
       (assert= (get error :message) "error: throws: bad input")
-      (assert= (get error :data) {"kind" "user" "message" "throws: bad input"})))
+      (assert= (get data "kind") "user")
+      (assert= (get data "message") "throws: bad input")
+      (is (string/ends-with? (get data "file") "mcp_test.blsp"))
+      (is (int? (get data "line")))
+      (is (int? (get data "col")))))
+  (test "a value thrown below the handler carries the trace through it"
+    (let (data (get-in (mcpt-call "throws-deep" {}) [:error :data]))
+      (assert= (get data "kind") "user")
+      (is (int? (get data "line")))
+      (is (any? (or (get data "trace") ())
+            (fn (frame) (string/ends-with? (or (get frame "fn") "") "mcpt-raise"))))))
   (test "a kernel error travels whole in the error data"
     (let (error (get (mcpt-call "divides" {}) :error))
       (assert= (get error :code) -32603)

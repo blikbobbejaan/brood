@@ -292,8 +292,8 @@ impl<'a> Scanner<'a> {
     /// Malformed `\x` / `\u{}` (wrong number of hex digits, missing brace,
     /// non-hex char, codepoint > 0x10FFFF) is a **hard error** —
     /// [`StringScan::BadEscape`], carrying the backslash's offset. Silently
-    /// passing the chars through as literals (the old rule) was a
-    /// wrong-output footgun (kernel audit): `"\xZZ"` quietly became `"xZZ"`.
+    /// passing the chars through as literals would be a wrong-output footgun:
+    /// `"\xZZ"` quietly becoming `"xZZ"`.
     /// An unknown **alphabetic** escape (`\d`, `\w`, `\s`, `\q`, …) is the same
     /// footgun and is likewise a hard `BadEscape`: it's almost always a regex
     /// class written in a plain string, where dropping the backslash silently
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn malformed_hex_escapes_report_bad_escape() {
         // `\xZ` — Z isn't hex: a hard `BadEscape` at the backslash's offset
-        // (kernel audit; the old literal-passthrough silently produced "xZZ").
+        // (never a literal passthrough that silently produces "xZZ").
         // The body is still scanned through the close quote.
         let mut s = Scanner::new(r#"ab\xZZ"after"#);
         let mut out = String::new();
@@ -594,7 +594,7 @@ mod tests {
     #[test]
     fn line_starts_count_lone_cr_but_not_unicode_separators() {
         // CRLF is one break (via its `\n`); a lone CR breaks a line of its own
-        // (kernel audit: diagnostics after a lone CR reported a wrong line:col).
+        // (else diagnostics after a lone CR report a wrong line:col).
         // U+2028/U+2029 do NOT: an LSP client does not break on them, so a
         // diagnostic after one named a line the editor did not have.
         let src = "a\r\nb\rc\u{2028}d\u{2029}e";

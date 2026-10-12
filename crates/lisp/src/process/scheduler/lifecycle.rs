@@ -295,8 +295,7 @@ pub fn spawn_linked(heap: &Heap, f: Value) -> Result<u64, LispError> {
 /// yield between the two calls. Let any gap open — a loaded scheduler, or a boundary trace
 /// wrapping the code — and a short-lived child exits first, `monitor` takes its
 /// already-dead branch, and the DOWN arrives with `:noproc` **in place of the true exit
-/// reason**. Measured: with the two calls adjacent, 0 of 300 runs lost the reason; with a
-/// single 5 ms yield between them, 40 of 40 did.
+/// reason**; a single yield between the two calls is enough.
 ///
 /// That is a silent wrong answer rather than an error — the receive still fires, carrying
 /// a reason that says only "it was already gone" — which is why the atomic form has to
@@ -446,9 +445,9 @@ fn spawn_impl_timed(
     // history rather than prediction — a second spawn with no block in between means this
     // process is not about to block — so only then do we hand the child to a parked peer.
     //
-    // Gating on this matters: waking unconditionally costs the `supervisor` row 11%
-    // (907 → 1007 ms) in futex wakes that find nothing, since its spawner drains its own
-    // child every time. Placement itself is unchanged either way.
+    // Gating on this matters: waking unconditionally costs a spawner that drains its own
+    // child every time (the `supervisor` row) futex wakes that find nothing. Placement
+    // itself is unchanged either way.
     if placed_on_self && spawns_since_park_bump() >= 2 {
         wake_a_parked_peer(worker_id);
     }
@@ -478,22 +477,17 @@ pub fn spawn_root_program(
     child.set_global(EnvId::GLOBAL);
     // Package-rooted namespaces (ADR-070): the program inherits the caller's package
     // context, exactly as a spawned child does above. `nest run FILE` runs `project/setup`
-    // (which installs the project's context) and then launches the file through here — and
-    // without this the file's `(:use model)` loaded the project's module a SECOND time,
-    // bare, beside the rooted `bedit/model` the pre-flight check had already loaded, so
-    // every `deftype` alias in it was registered under two names and read as ambiguous
+    // (which installs the project's context) and then launches the file through here —
+    // without this the file's `(:use model)` would load the project's module a second
+    // time, bare, beside the rooted one, registering every `deftype` alias twice
     // (KI-129). Empty pair outside a package, so this is free for a plain `brood FILE`.
     let (package_prefix, package_modules) = heap.package_context();
     child.set_package_context(package_prefix, package_modules);
     // The program's file must be CURRENT before the read, not merely recorded in
     // `ProgramState` for error rendering: the reader stamps every form's position record
     // with `current_file_arc` at read time, and without this every form of a
-    // `brood script.blsp` program was born `file=None`. That stayed invisible for months
-    // because the expander's list rebuilds re-stamped positions with the ambient file
-    // during eval (right by coincidence), until ADR-297 made rebuilds copy the original
-    // record faithfully — faithfully preserving the hole, which broke coverage/attribution
-    // for every directly-run program (`std_attribution` + four `coverage_lines` tests,
-    // 2026-08-29).
+    // `brood script.blsp` program is born `file=None` — which, since rebuilds copy the
+    // original record (ADR-297), breaks coverage/attribution for directly-run programs.
     child.set_current_file(file.clone());
 
     // Read the program into the child heap and pin every form on its root stack — the

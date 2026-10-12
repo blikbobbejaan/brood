@@ -30,12 +30,20 @@ map, pid, ref). Closures, tables, bytes etc. can't be JSON-ified and surface as 
 
 ;; Coerce a caught value into the structured error shape MCP tools return.
 ;; Built-in errors are already maps (`{:kind :code :message :file :line :col
-;; :hint}` — see `LispError::to_value_map` in the kernel); user `(throw v)`s
+;; :hint :trace}` — see `LispError::to_value_map` in the kernel); user `(throw v)`s
 ;; come through as the value itself, so we wrap them as `{:kind :user :payload
 ;; v}` to keep `:error` always a map for the agent's JSON consumers. The
 ;; asymmetry — built-in vs user — is deliberate per `docs/llm-native.md` §4.
-(defn- error-shape (e)
-  (if (map? e) e {:kind :user :payload e}))
+;; Either way the raise site (`error`, from `%try-described`) fills in any of
+;; `:file :line :col :trace` the value lacks: a `catch` binds a user throw verbatim,
+;; and an agent debugging its own call needs to know where it came from.
+(defn- error-shape (e error)
+  (merge (dissoc error :kind :message :code :hint) (if (map? e) e {:kind :user :payload e})))
+
+(defn- attempt (thunk on-error)
+  "Call `thunk`; if it raises, call `on-error` with the raise's `error-shape`, which
+carries the position and trace whatever was thrown."
+  (%try-described thunk (fn (caught error) (on-error (error-shape caught error)))))
 
 (defn eval-tool (args)
   "`reflect/eval` — evaluate `:source` in the session's global env. State persists
@@ -52,14 +60,9 @@ process's OS user can; that process is the trust boundary."
   (let (src (get args :source))
     (when (not (string? src))
       (throw "eval: :source must be a string"))
-    (try
-      ;; Evaluate *every* form and return the last value — so pasting a multi-form
-      ;; block (a batch of `defn`s, say) runs all of them instead of silently
-      ;; dropping every form after the first (the old `reflect/read-first` behaviour).
-      (let (value (reflect/eval-string src))
-        {:value (pr-str value)})
-      (catch e
-        {:error (error-shape e)}))))
+    ;; Evaluate *every* form and return the last value — so pasting a multi-form
+    ;; block (a batch of `defn`s, say) runs all of them, not just the first.
+    (attempt (fn () {:value (pr-str (reflect/eval-string src))}) (fn (shape) {:error shape}))))
 
 ;; Cross-file shadow warnings involving `file`: the *qualified* names
 ;; (`ns/name`) this file defines that another
@@ -81,14 +84,12 @@ process's OS user can; that process is the trust boundary."
 the shared body of the `reflect/load`/`write`/`edit` tools. `def`s persist (hot reload,
 ADR-013); `diagnostics` are `check-file-structured` warnings, `shadows` the
 cross-file flat-namespace collisions."
-  (try
-    (do
-      (reflect/load file)
-      {:ok true
-       :diagnostics (or (reflect/check-file-structured file) [])
-       :shadows (or (shadows-for file) [])})
-    (catch e
-      {:ok false :error (error-shape e)})))
+  (attempt (fn ()
+             (reflect/load file)
+             {:ok true
+              :diagnostics (or (reflect/check-file-structured file) [])
+              :shadows (or (shadows-for file) [])})
+    (fn (shape) {:ok false :error shape})))
 
 (defn load-tool (args)
   "`reflect/load` — load a `.blsp` file into the session and check it. Side-effects
@@ -200,13 +201,12 @@ itself as the trust boundary."
         content (get args :content))
     (when (not (string? content))
       (throw "write: :content must be a string"))
-    (try
-      (let (abs (project-path rel)
-            _dir (file/mkdir (path/dirname abs))
-            _w (file/spit abs content))
-        (write-result rel abs))
-      (catch e
-        {:ok false :error (error-shape e)}))))
+    (attempt (fn ()
+               (let (abs (project-path rel)
+                     _dir (file/mkdir (path/dirname abs))
+                     _w (file/spit abs content))
+                 (write-result rel abs)))
+      (fn (shape) {:ok false :error shape}))))
 
 (defn edit-tool (args)
   "`edit` — exact-string replacement in a project file through the live image.
@@ -226,23 +226,22 @@ image stays in sync with disk."
       (throw "edit: :new must be a string"))
     (when (= old "")
       (throw "edit: :old must be non-empty"))
-    (try
-      (let (abs (project-path rel))
-        (if (not (file/exists? abs))
-          {:ok false :error (str "edit: no such file: " rel)}
-          (let (text (file/slurp abs)
-                hits (- (count (string/split text old)) 1))
-            (cond
-              (= hits 0) {:ok false :error (str "edit: :old not found in " rel)}
-              (> hits 1)
-                {:ok false
-                 :error (str "edit: :old occurs "
-                          hits " times in " rel " — make it unique")}
-              else
-                (let (_w (file/spit abs (string/replace text old new)))
-                  (write-result rel abs))))))
-      (catch e
-        {:ok false :error (error-shape e)}))))
+    (attempt (fn ()
+               (let (abs (project-path rel))
+                 (if (not (file/exists? abs))
+                   {:ok false :error (str "edit: no such file: " rel)}
+                   (let (text (file/slurp abs)
+                         hits (- (count (string/split text old)) 1))
+                     (cond
+                       (= hits 0) {:ok false :error (str "edit: :old not found in " rel)}
+                       (> hits 1)
+                         {:ok false
+                          :error (str "edit: :old occurs "
+                                   hits " times in " rel " — make it unique")}
+                       else
+                         (let (_w (file/spit abs (string/replace text old new)))
+                           (write-result rel abs)))))))
+      (fn (shape) {:ok false :error shape}))))
 
 (defn lookup-tool (args)
   "`lookup` — describe a global name. Returns `{:name :arglist :doc :type
@@ -255,17 +254,16 @@ the agent can branch on `(get r :error)` cleanly."
     (when (not (string? name))
       (throw "lookup: :name must be a string"))
     (let (sym (reflect/read-string name))
-      (try
-        ;; `arglist` and `doc` want the *function value*; `(reflect/eval sym)`
-        ;; resolves the name. `source-location` wants the symbol itself.
-        (let (val (reflect/eval sym))
-          {:name name
-           :arglist (arglist val)
-           :doc (doc val)
-           :type (reflect/type-signature sym)
-           :source-location (reflect/source-location sym)})
-        (catch e
-          {:name name :error (error-shape e)})))))
+      ;; `arglist` and `doc` want the *function value*; `(reflect/eval sym)`
+      ;; resolves the name. `source-location` wants the symbol itself.
+      (attempt (fn ()
+                 (let (value (reflect/eval sym))
+                   {:name name
+                    :arglist (arglist value)
+                    :doc (doc value)
+                    :type (reflect/type-signature sym)
+                    :source-location (reflect/source-location sym)}))
+        (fn (shape) {:name name :error shape})))))
 
 (defn macroexpand-tool (args)
   "`macroexpand` — expand `:form` (a source string) once (`:mode \"1\"`, the
@@ -276,14 +274,13 @@ text — unbalanced parens in `:form` can't break the host expression."
         mode (get args :mode))
     (when (not (string? src))
       (throw "macroexpand: :form must be a string"))
-    (try
-      (let (form (reflect/read-first src)
-            out (if (= mode "all")
-                  (macroexpand form)
-                  (macroexpand-1 form)))
-        {:expanded (pr-str out)})
-      (catch e
-        {:error (error-shape e)}))))
+    (attempt (fn ()
+               (let (form (reflect/read-first src)
+                     expanded (if (= mode "all")
+                                (macroexpand form)
+                                (macroexpand-1 form)))
+                 {:expanded (pr-str expanded)}))
+      (fn (shape) {:error shape}))))
 
 (defn format-tool (args)
   "`format` — reformat `:source` via `std/format.blsp`'s `(source ...)`.
@@ -292,10 +289,7 @@ check after the first invocation."
   (let (src (get args :source))
     (when (not (string? src))
       (throw "format: :source must be a string"))
-    (try
-      {:formatted (source src)}
-      (catch e
-        {:error (error-shape e)}))))
+    (attempt (fn () {:formatted (source src)}) (fn (shape) {:error shape}))))
 
 (defn check-tool (args)
   "`check` — advisory type-check the project. Returns
@@ -305,29 +299,18 @@ position omitted when the checker can't supply one — ADR-024). Backed by
 so a clean project renders as `{:diagnostics []}` rather than `{:diagnostics
 null}` — agents shouldn't have to disambiguate \"no warnings\" from
 \"missing field\"."
-  (try
-    ;; `*project-root*` explicitly, not the implicit `(file/cwd)` this used to rely on. The
-    ;; server serves ONE project — that root is what the write sandbox is pinned to
-    ;; (`project-path`) and what every other project-scoped tool here already reads
-    ;; (`project-check/all-files *project-root*`) — so taking the checked project from cwd
-    ;; made `check` the one tool that could disagree with the rest if the host process
-    ;; ever moved. It also made the tool untestable without process-global state, which
-    ;; is how its test came to type-check the whole brood repo (KI-46). Nil root keeps
-    ;; the old behaviour: `check-structured` falls back to `(file/cwd)` and reports
-    ;; "not in a Brood project" the same way.
-    {:diagnostics (or (project-check/check-structured *project-root*) [])}
-    (catch e
-      {:error (error-shape e)})))
+  ;; `*project-root*`, not `(file/cwd)`: the server serves ONE project, and the write
+  ;; sandbox and every other project-scoped tool read that root (KI-46). A nil root
+  ;; makes `check-structured` fall back to the cwd and report "not in a Brood project".
+  (attempt (fn () {:diagnostics (or (project-check/check-structured *project-root*) [])})
+    (fn (shape) {:error shape})))
 
 (defn run-tests-tool (args)
   "`run-tests` — run the project test suite. Returns the structured runner
 result from `(project-run/run-tests-structured)` — `{:total :passed :failed
 :failed-assertions :ms :results [{:group :name :passed :ms :failures ...}]}`.
 Outside a Brood project, returns `{:error msg}`."
-  (try
-    (project-run/run-tests-structured)
-    (catch e
-      {:error (error-shape e)})))
+  (attempt project-run/run-tests-structured (fn (shape) {:error shape})))
 
 (defn- process-infos ()
   "A `(proc/info pid)` stat map for every live process, dropping any that died
@@ -498,18 +481,17 @@ like `reflect/eval`. Returns `{:error msg}` on failure."
       (throw "bench: :source must be a string"))
     (when (not (and (int? iters) (> iters 0)))
       (throw "bench: :iterations must be a positive integer"))
-    (try
-      (let (form (reflect/read-first src)
-            t0 (os/now)
-            value (reflect/eval form)
-            _done (bench-loop form (- iters 1))
-            total (- (os/now) t0))
-        {:ms total
-         :iterations iters
-         :per-iter-ms (/ (* 1.0 total) iters)
-         :value (pr-str value)})
-      (catch e
-        {:error (error-shape e)}))))
+    (attempt (fn ()
+               (let (form (reflect/read-first src)
+                     started (os/now)
+                     value (reflect/eval form)
+                     _done (bench-loop form (- iters 1))
+                     total (- (os/now) started))
+                 {:ms total
+                  :iterations iters
+                  :per-iter-ms (/ (* 1.0 total) iters)
+                  :value (pr-str value)}))
+      (fn (shape) {:error shape}))))
 
 ;; ---- ability / record introspection ----------------------------------------
 
@@ -574,10 +556,8 @@ doesn't parse (incomplete input). Backed by `check-string-structured`."
   (let (src (get args :source))
     (when (not (string? src))
       (throw "check-source: :source must be a string"))
-    (try
-      {:diagnostics (or (reflect/check-string-structured src) [])}
-      (catch e
-        {:error (error-shape e)}))))
+    (attempt (fn () {:diagnostics (or (reflect/check-string-structured src) [])})
+      (fn (shape) {:error shape}))))
 
 ;; ---- catalogue -------------------------------------------------------------
 
@@ -929,10 +909,12 @@ walk them with `first`/`rest`."
    :type "type error:"
    :runtime "runtime error:"})
 
-(defn- raised-error (e)
-  "The JSON-RPC error for value `e` a handler raised and did not catch. A kernel error is
-a map (`{:kind :message :code …}`, the shape `catch` binds) and travels whole in `data`,
-so an agent branches on `error.data.kind`; anything else a handler threw is `:user`."
+(defn- raised-error (e error)
+  "The JSON-RPC error for value `e` a handler raised and did not catch, `error` the raise's
+description from `%try-described`. A kernel error is a map (`{:kind :message :code …}`, the
+shape `catch` binds) and travels whole in `data`, so an agent branches on
+`error.data.kind`; anything else a handler threw is `:user`, with the raise's
+`file`/`line`/`col`/`trace` beside its message."
   (if (and (map? e) (contains? e :kind) (contains? e :message))
     {:code -32603
      :message (str (or (get error-labels (get e :kind)) "error:") " " (get e :message))
@@ -940,7 +922,9 @@ so an agent branches on `error.data.kind`; anything else a handler threw is `:us
              (json-data e)
              (catch _ {"kind" (str (get e :kind)) "message" (str (get e :message))}))}
     (let (message (if (string? e) e (pr-str e)))
-      {:code -32603 :message (str "error: " message) :data {"kind" "user" "message" message}})))
+      {:code -32603
+       :message (str "error: " message)
+       :data (json-data (assoc (dissoc error :code :hint) :kind "user" :message message))})))
 
 (defn- died-error (reason)
   "The JSON-RPC error for a handler process that died rather than answering — a Rust panic
@@ -982,12 +966,13 @@ A map with a non-null `error` is a soft failure, so the result says `isError`."
 and send the outcome to `dispatcher`, already projected to JSON data."
   (%capture-begin)
   (let (sink (if reports-progress {:to dispatcher :call (self)} nil)
-        outcome (try
-                  (let (value (binding (*mcp-progress-sink* sink) (handler arguments)))
-                    (try
-                      [:ok (json-data value)]
-                      (catch e [:unencodable (if (string? e) e (pr-str e))])))
-                  (catch e [:raised e]))
+        outcome (%try-described (fn ()
+                                  (let (value (binding (*mcp-progress-sink* sink)
+                                                (handler arguments)))
+                                    (try
+                                      [:ok (json-data value)]
+                                      (catch e [:unencodable (if (string? e) e (pr-str e))]))))
+                  (fn (caught error) [:raised caught error]))
         output (or (%capture-take) ""))
     (send dispatcher [:mcp-outcome (self) outcome output])))
 
@@ -1016,7 +1001,7 @@ answers, dies, or overruns `:deadline` (epoch ms, nil for none) and is killed."
   "The `[status payload]` reply for a handler's outcome."
   (case (first outcome)
     :ok [:ok (tool-content (nth outcome 1) (nth outcome 2))]
-    :raised [:error (raised-error (nth outcome 1))]
+    :raised [:error (raised-error (nth outcome 1) (nth outcome 2))]
     :unencodable [:error (rpc-error -32603 (nth outcome 1))]
     :died [:error (died-error (nth outcome 1))]
     [:ok

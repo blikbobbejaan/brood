@@ -49,9 +49,8 @@ transitively-closed lock file and puts each dep's source on *load-path*."
             (cons relative acc)))))))
 
 ;; Hash the file's raw bytes, not a UTF-8 string: `file/slurp` throws on a binary
-;; asset (image, font, …), so the old `(hash/sha256 (file/slurp path))` couldn't hash a
-;; tree that contained one. For a text file the hash is identical (its UTF-8
-;; bytes are the file bytes), so existing lock hashes don't churn.
+;; asset (image, font, …). For a text file the hash is identical to hashing the
+;; string (its UTF-8 bytes are the file bytes).
 (defn- package-sha256-file (path) (hash/sha256-bytes (file/slurp-bytes path)))
 
 (defn tree-hash (dir)
@@ -1198,9 +1197,9 @@ sha256 pin still holds."
       (apply append
         (map files (fn (file) (map (get by-file file) (fn (m) (list m file)))))))))
 
-;; The [label src-dir] providers to check for a *module-name* collision. Since deps
-;; are package-rooted (ADR-070) — a dep `foo`'s `b` is the global `foo/b` — a dep can
-;; no longer collide with another dep or with your own module; the only real clash left
+;; The [label src-dir] providers to check for a *module-name* collision. Deps are
+;; package-rooted (ADR-070) — a dep `foo`'s `b` is the global `foo/b` — so a dep cannot
+;; collide with another dep or with your own module; the only real clash
 ;; is two of YOUR OWN source files declaring the same `(defmodule …)`. So only the
 ;; project's own source dirs are checked; `entries` is kept for signature stability.
 (defn- package-collision-sources (root entries)
@@ -1208,9 +1207,8 @@ sha256 pin still holds."
 
 ;; `main` is a project's ENTRY POINT, not part of its library surface: `nest run` only
 ;; ever uses the ROOT project's `:main`, and nothing `require`s a dependency's. So two
-;; projects each having one is not a conflict — yet it used to be reported as one, which
-;; meant any project scaffolded by `nest new` could never be used as a dependency
-;; (it provides `main`, and so does its consumer).
+;; projects each having one is not a conflict — reporting it would mean no project
+;; scaffolded by `nest new` could be used as a dependency (both provide `main`).
 (defn- package-entry-module? (mod) (= (str mod) "main"))
 
 ;; Walk the providers, accumulating module-name -> first provider; error on the
@@ -1579,16 +1577,14 @@ temp, and the second rename would find it gone."
 
 ;; A dependency name is written VERBATIM into project.blsp (unquoted, as a symbol) and
 ;; names the `_deps/<name>/` directory, so `add` refuses one `project/valid-dep-name?`
-;; rejects. Without it `nest add "" :path ../x` wrote `:dependencies [[ :path "../x"]]` —
-;; a manifest that no longer parses — and `nest add .. …` aimed the re-fetch's delete at
-;; the project itself.
+;; rejects. Without it `nest add "" :path ../x` would write a manifest that does not parse,
+;; and `nest add .. …` would aim the re-fetch's delete at the project itself.
 
 ;; --- editing project.blsp safely --------------------------------------------
 ;; The manifest edit is a read-modify-write: read the source, splice an entry in or
-;; out (Brood code), write it back. Done with a plain `file/slurp`/`file/spit` that LOSES an
-;; update under concurrency — two `nest add`s both read the original, both append,
-;; the second write erases the first, and both report success. Measured before the
-;; fix: three concurrent adds landed between one and three of them.
+;; out (Brood code), write it back. A plain `file/slurp`/`file/spit` LOSES an update
+;; under concurrency — two `nest add`s both read the original, both append, the second
+;; write erases the first, and both report success.
 ;;
 ;; `%file-swap` closes it: the write only lands if the file still holds exactly what
 ;; we read, serialised across processes by an exclusive lock, and crash-atomic. When
@@ -1654,11 +1650,10 @@ temp, and the second rename would find it gone."
         ;; ATOMIC: the manifest edit has to happen before
         ;; resolution (resolution reads the loaded manifest), so a
         ;; failure afterwards is rolled back. Without this, `nest
-        ;; add foo :path ../nonexistent` left an unresolvable dep
-        ;; in project.blsp and EVERY later command failed on it —
-        ;; the project needed hand-repair after one typo.
+        ;; add foo :path ../nonexistent` would leave an unresolvable
+        ;; dep in project.blsp that fails every later command.
         ;; The edit is a locked compare-and-swap (see package-edit-manifest), so a
-        ;; concurrent `nest add` can no longer erase this one.
+        ;; concurrent `nest add` cannot erase this one.
         (let (manifest (path/join root "project.blsp")
               edit (package-edit-manifest root
                      (fn (src) (package-manifest-add src (dep-entry-node dep))))

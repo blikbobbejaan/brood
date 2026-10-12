@@ -132,18 +132,13 @@ fn i64_has_self_call(node: &Node) -> bool {
     }
 }
 
-// The i64 worker's native-recursion **frame-count** cap (`I64_DEPTH_LIMIT`, last valued at
-// 32 768) lived here and is gone as of 2026-07-27. It bounded the native stack the register
-// recursion runs on by counting levels, which is only ever right for one frame size — the
-// KI-14 abort was exactly a frame size it was wrong for. The worker's byte-based stack guard
-// (`jit_lower_arm_i64`'s prologue, comparing the frame address against `Heap::jit_stack_limit`)
-// measures the resource that actually runs out and therefore subsumes it, and dropping the
-// second per-level compare recovered the ~18% the guard had cost `fib`. The depth-bail
-// *sentinel* (`2`) it used to raise is unchanged — the byte guard raises the same one, so the
-// wrapper still returns outcome 5 and `jit_tier` still switches the arm permanently to the
-// boxed path (without that switch a deep non-tail recursion deopt-and-re-tiers per level, a
-// ~100× thrash). The `depth` parameter is still threaded: it costs nothing measurable and the
-// bail diagnostics read it.
+// The i64 worker bounds its native recursion by BYTES, not a frame count: a count is only
+// ever right for one frame size (KI-14). The byte guard (`jit_lower_arm_i64`'s prologue,
+// comparing the frame address against `Heap::jit_stack_limit`) raises the depth-bail
+// sentinel (`2`), so the wrapper returns outcome 5 and `jit_tier` switches the arm
+// permanently to the boxed path (without that switch a deep non-tail recursion
+// deopt-and-re-tiers per level, a ~100× thrash). The `depth` parameter is still threaded:
+// it costs nothing measurable and the bail diagnostics read it.
 
 /// Functions (by defining-`defn` name) that a depth-bail proved are too deeply recursive for the
 /// register worker — they run the boxed path instead (which drains gracefully). Process-global
@@ -698,24 +693,16 @@ pub(super) fn jit_lower_i64_arm(
         // **Stack guard (KI-14), and it is the ONLY per-level test.** Bail on *bytes*:
         // compare this frame's address against the limit the native entry point stamped
         // (`Heap::jit_stack_limit`, an absolute address ~512 KiB above the stack bottom).
-        // The sentinel is the same one the old frame-count cap set, so the arm switches to
-        // the boxed path and drains through heap frames.
+        // The sentinel makes the arm switch to the boxed path and drain through heap frames.
         //
-        // A frame *count* cap (`I64_DEPTH_LIMIT`, 32 768) used to run alongside this, and
-        // it was both wrong and expensive. Wrong: a count is only ever right for one frame
-        // size, which is what KI-14 was — `n_structure_open_array_object.json` recurses
-        // ~100 000 levels through this worker with frames far heavier than the ~55–200 B
-        // the cap was sized for, so 32 768 frames exhausted the 16 MiB worker stack long
-        // before the count tripped, and the process died on its guard page rather than
-        // raising a catchable error. Expensive: measuring the bytes AND the frames put a
-        // second compare on every level of the recursion, which the 2026-07-27 run priced
-        // at ~18% of `fib` (89 → 73 ms with it gone). The byte test subsumes the count
-        // test — it measures the thing that actually runs out — so the count is gone.
+        // Do not add a frame *count* cap beside this: a count is only right for one frame
+        // size (KI-14 — heavy frames exhausted the worker stack before the count tripped),
+        // and a second per-level compare costs ~18% of `fib`. The byte test measures the
+        // thing that actually runs out.
         //
-        // What the count *did* still cover is the case where the byte limit is `0`, i.e.
-        // the platform could not read the stack: an unsigned compare against 0 never trips,
-        // so the guard fails open. With no count cap behind it that would be an unguarded
-        // native recursion, so the **wrapper refuses to run this worker at all when the
+        // The one case it does not cover is a byte limit of `0`, i.e. the platform could
+        // not read the stack: an unsigned compare against 0 never trips, so the guard fails
+        // open. That would be an unguarded native recursion, so the **wrapper refuses to run this worker at all when the
         // limit is 0** (returns outcome 5 → `jit_tier` moves the fn to the boxed path,
         // which keeps its own dispatch-level depth caps). See the wrapper's `nostack` bail.
         let limit = b.ins().load(
@@ -927,9 +914,8 @@ pub(super) fn jit_lower_i64_arm(
         b.switch_to_block(ovb);
         let o1b = b.ins().iconst(types::I64, 1);
         b.ins().return_(&[o1b]);
-        // Done → box the scalar result through the caller's `out` pointer, outcome 0. It
-        // used to go into `roots[base]` and be loaded straight back by the caller; see
-        // `emit::store_result`.
+        // Done → box the scalar result through the caller's `out` pointer, outcome 0 (not
+        // via `roots[base]`; see `emit::store_result`).
         b.switch_to_block(doneb);
         let addr2 = out_ptr;
         let tagv = b.ins().iconst(types::I64, kind.tag() as i64);

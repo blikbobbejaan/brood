@@ -12,8 +12,8 @@ fn warnings(src: &str) -> Vec<Diagnostic> {
 #[test]
 fn a_text_the_reader_refuses_publishes_the_readers_error() {
     // The CST tolerates `\c` (a Clojure character literal) as an atom, so Tier 0 says
-    // nothing; the reader refuses it, and every checker warning used to vanish with no
-    // diagnostic in their place.
+    // nothing; the reader refuses it, and the reader's error must be published rather than
+    // every checker warning vanishing with no diagnostic in its place.
     let src = "(defn f () (+ 1 \"x\"))\n(g \\c)";
     let diags = warnings(src);
     let error = diags

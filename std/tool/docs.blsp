@@ -57,8 +57,7 @@ module's namespace-rooted globals (ADR-070) back to it."
 ;; where an anchor into a page that is not open is worse than no link at all — and the heading
 ;; slug a renderer would generate from `### \`(seq/reject coll pred)\`` is not something this
 ;; module can predict. So here the reference renders as the code span it is: `reject`. The
-;; brackets never reach the reader either way, which is the bug being fixed — they used to
-;; print verbatim in both surfaces.
+;; brackets never reach the reader in either surface.
 ;;
 ;; Same two guards as the docsite's: a name has no spaces (docstrings carry literal vectors
 ;; like `[[hatch :path "…"]]`), and an unclosed `[[` is prose.
@@ -448,7 +447,7 @@ bare-surface (prelude) name, whose references are bare already."
 
 ;; --- guides (narrative Markdown pages) ---------------------------------------
 ;; A `guides/*.md` file becomes a narrative page in the generated site, alongside the API
-;; reference, rendered by `markdown/->html` — a CORE module since 2026-09-16, because the
+;; reference, rendered by `markdown/->html` — a CORE module, because the
 ;; hosted registry renders package READMEs with the same renderer at request time and an
 ;; app's runtime does not carry this module.
 

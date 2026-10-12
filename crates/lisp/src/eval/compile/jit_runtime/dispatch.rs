@@ -107,8 +107,8 @@ pub(crate) fn jit_dispatch_call(
         // `[stage_base, n)` — the same discipline the VM's `Inst::Call` uses),
         // invoke the native fn pointer, park any error. This is the native-callee
         // fast path: no `env_get`, no `dispatch` (passthrough loop + `apply`
-        // unfold + arity re-checks) — the ~55–75 ns/call protocol every `str`/
-        // `string/char->int`/`string-length` from JIT'd code used to pay. `apply` itself
+        // unfold + arity re-checks, ~55–75 ns/call) for `str`/`string-length` and
+        // friends called from JIT'd code. `apply` itself
         // has a real native body (`apply_builtin`), so direct invocation is exact.
         macro_rules! call_native_direct {
             ($nid:expr) => {{
@@ -499,16 +499,13 @@ pub(crate) fn jit_dispatch_tail(
     arm: &CompiledArm,
     env: EnvRoot,
     // The size this frame was actually BUILT to, captured by the trampoline at native entry.
-    // **Must be passed, never re-derived here** (KI-48). It used to be
-    // `base + arm.frame_size_for_new_entry()`, which re-reads `inline_installed` — the KI-26 / ADR-210
-    // anti-pattern. The background inline upgrade can flip that flag between the native
+    // **Must be passed, never re-derived here** (KI-48). Re-deriving it as
+    // `base + arm.frame_size_for_new_entry()` re-reads `inline_installed` — the KI-26 / ADR-210
+    // anti-pattern: the background inline upgrade can flip that flag between the native
     // entering (small frame) and this callback running, after which the staged
-    // `[callee, args…]` is written at one offset and read at another: measured live on 123
-    // arms, `fold` among them at nslots=13 vs inline_nslots=25, i.e. a 12-slot overshoot
-    // straight past the staged area and off the roots stack. The caller already captures the
-    // size once for exactly this reason ("the two must agree on the same frame boundary"),
-    // and the deopt-resume helpers are already told it rather than re-deriving; this path was
-    // the one that was not.
+    // `[callee, args…]` is written at one offset and read at another, overshooting off the
+    // roots stack. The caller captures the size once for exactly this reason, as do the
+    // deopt-resume helpers.
     frame_nslots: usize,
 ) -> Result<ChunkExit, LispError> {
     // A tail call is staged by the native code ABOVE its own frame top.

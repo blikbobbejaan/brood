@@ -79,8 +79,7 @@ against a low run count is the separate `compiles but keeps falling off native` 
      ;; How many samples each rate above rests on. `verdict` refuses to judge a rate drawn
      ;; from too few, because a rate is not a signal at small n: a region whose hot loop runs
      ;; natively leaves only a handful of IC probes behind, and 0 hits out of 3 is a 0% hit
-     ;; rate that means nothing. Measured — that exact shape labelled a JIT'd list-building
-     ;; loop `:dispatch-bound` before this guard existed.
+     ;; rate that means nothing (unguarded, it would label a JIT'd loop `:dispatch-bound`).
      :samples {:activations activations
                :ic-probes (+ ic-hit ic-miss)
                :env-gets (at vm :env-get)}}))

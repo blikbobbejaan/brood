@@ -173,14 +173,11 @@ pub(crate) fn compile_arm(
     // Deopt-feedback watch (see the field doc): every non-loop arm. The one exclusion
     // that has a rationale is `SelfCall` loops — their deopt follows productive native
     // iterations (an overflow at the end of a long int loop), so counting activations
-    // would mis-bail them. The predicate used to ALSO require ≥1 non-tail call (the shape
-    // nbody's `advance-body` had), which left a **call-free** arm with no thrash
-    // protection at all: mandelbrot's `->float` — one multiply, no calls — deopted
-    // **275,007 times in one run** (native entry + guard + deopt + full VM re-run per
-    // call, watch=false), the exact pathology this mechanism exists to stop, invisible
-    // to every gate because the answers are right. A healthy arm pays one relaxed load
-    // per native completion; an arm that deopts 16 times consecutively was not being
-    // served by its native code, calls or no calls.
+    // would mis-bail them. Do not also require a non-tail call: a **call-free** arm (one
+    // multiply, like mandelbrot's `->float`) can thrash deopts just as hard, invisibly,
+    // since the answers stay right. A healthy arm pays one relaxed load per native
+    // completion; an arm that deopts 16 times consecutively is not being served by its
+    // native code, calls or no calls.
     let deopt_watch = chunk
         .as_ref()
         .is_some_and(|c| !c.code.iter().any(|i| matches!(i, Inst::SelfCall { .. })));
@@ -190,7 +187,7 @@ pub(crate) fn compile_arm(
     let src_file = body_first_form
         .and_then(|f| heap.form_pos(f))
         .and_then(|(_, file)| file);
-    // Recursive self-inlining (Phase B, §6b — two-stage tiering, devlog 2026-06-17):
+    // Recursive self-inlining (Phase B, §6b — two-stage tiering):
     // PROBE depth-1 inlining of a top-level no-capture recursive `defn`'s body WITHOUT
     // mutating the original. The VM keeps the original small `body`/`chunk`/`nslots`;
     // the inlined body is re-derived fresh in `jit_lower_arm` and compiled as a deferred
@@ -248,19 +245,13 @@ pub(crate) fn compile_arm(
                                 // a derivation that splices a callee needing no slot beyond
                                 // the caller's own (`(dec n)`) comes out exactly equal.
                                 //
-                                // When they were equal, a leaf-spliced frame was read as
-                                // the small layout, so the small body's `ckpt_slot` — a
-                                // live local in the spliced layout — was decoded as a deopt
-                                // journal: `(defn sum-down (n acc) (if (<= n 0) acc
-                                // (sum-down (dec n) (+ acc n))))` resumed at ip `n >> 16`
-                                // with operand depth `n & 0xFFFF`, returning 6251217600 for
-                                // `(sum-down 200000 0)` instead of 20000100000, and failing
-                                // as `type error: -: expected number, got nil` at 400000.
-                                // Splicing removes the residual `Call`, which makes the
-                                // derivation `pure_self` and therefore *unjournalled*, so
-                                // the old "leaf and journalled" test could never separate
-                                // this pair. One reserved slot restores the invariant the
-                                // rest of the machinery already documents and asserts.
+                                // Equal sizes would read a leaf-spliced frame as the small
+                                // layout, decoding the small body's `ckpt_slot` — a live
+                                // local in the spliced layout — as a deopt journal (wrong
+                                // answers on e.g. a `(sum-down (dec n) (+ acc n))` loop).
+                                // Such a derivation is `pure_self` and *unjournalled*, so
+                                // only the size can separate the pair. One reserved slot
+                                // restores the invariant the rest of the machinery asserts.
                                 let leaf_nslots = d.nslots.max(nslots_total + 1);
                                 // The resume arm (see `ir::LeafInline::resume`): the same
                                 // function over the spliced body, so a deopt out of the
@@ -599,8 +590,8 @@ pub(crate) fn cache_key(heap: &Heap, id: ClosureId) -> Option<VmCacheKey> {
     // Why the AST and not the handle: a closure that captures no locals is *promoted on
     // every creation* (ADR-194), so `(spawn (worker))`'s thunk gets a FRESH RUNTIME handle
     // per spawn while reusing one template (`make_closure_cached` already keys that by the
-    // same `fn` form). Keying the compiled body by handle therefore missed on every
-    // creation — measured as one full bytecode compile per spawned process.
+    // same `fn` form). Keying the compiled body by handle would miss on every creation —
+    // one full bytecode compile per spawned process.
     if let Some(first) = heap
         .closure(id)
         .arms
@@ -850,9 +841,8 @@ pub(crate) fn compiled_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Optio
 ///
 /// Exists for line coverage's denominator (ADR-148 tier 2). Arms compile LAZILY — on
 /// first call, via [`compiled_arm_for`] — so the set of instrumented lines otherwise
-/// contains only lines that already ran, making the ratio a tautology: a fixture whose
-/// every function had run reported 100% while a deliberately-uncalled function's lines
-/// were absent from BOTH halves. Forcing the compile registers those lines, so a
+/// contains only lines that already ran, making the ratio a tautology (an uncalled
+/// function's lines would be absent from BOTH halves). Forcing the compile registers those lines, so a
 /// never-called function correctly reports 0%.
 ///
 /// Only the closure's own arms are reached. A nested `(fn …)` inside a body compiles
@@ -986,9 +976,9 @@ pub(crate) fn hof_apply_native(
         if code == crate::jit::BAILED {
             crate::perf_bump!(hof_decline_bailed);
             // Name the arm under BROOD_JIT_BAIL_TRACE. The counter says "some HOF arm is
-            // BAILED N times" and stops there — and the `receive` matcher for a tagged
-            // tuple turned out to be exactly such an arm on 2026-08-20, invisible in every
-            // other trace because it is refused somewhere that does not report.
+            // BAILED N times" and stops there; such an arm (e.g. a `receive` matcher) can be
+            // invisible in every other trace because it is refused somewhere that does not
+            // report.
             {
                 if crate::diagnostics::debug_flags::jit_bail_trace() {
                     static SEEN: std::sync::OnceLock<

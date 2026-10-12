@@ -790,8 +790,7 @@ pub struct Heap {
     /// the drain can't yet complete — a long-lived process still runs old-generation
     /// code, so the generation stays pinned — that means the O(live-process) registry
     /// scan runs on *every* safepoint of *every* worker purely to re-discover "still not
-    /// drained" (measured: 800 k scans / 20 M mailbox locks on a 30-round repro, ~6×
-    /// the default runtime). Throttling the free-attempt to 1/[`RT_DRAIN_SCAN_STRIDE`]
+    /// drained". Throttling the free-attempt to 1/[`RT_DRAIN_SCAN_STRIDE`]
     /// cuts that ~stride-fold; the free is still attempted regularly (no lost wakeup) as
     /// long as any process reaches a safepoint, and every process's O(1) drain
     /// self-report still runs every frame so acks stay current. A plain `Cell` (the
@@ -1379,9 +1378,8 @@ impl Heap {
     /// Reason id recorded by the JIT at its most recent type-deopt, written by
     /// `brood_rt_note_deopt` from the (cold) shared deopt block. `0` = none yet.
     ///
-    /// Exists because a deopt previously told you only *where it resumed* — the last
-    /// checkpoint — and an arm can have a dozen guards after that point. KI-49 sat at
-    /// "one of five guards" for exactly this reason.
+    /// Exists because *where a deopt resumed* — the last checkpoint — does not say which
+    /// of the dozen guards after that point failed (KI-49).
     #[cfg(feature = "jit")]
     pub(crate) fn note_jit_deopt_reason(&self, reason: u32) {
         self.jit_deopt_reason.set(reason);

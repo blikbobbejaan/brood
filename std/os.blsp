@@ -209,11 +209,9 @@ argument vector to `os/cmd` / `os/spawn` and there is nothing to quote.
   (string/trim (get result :stdout "")))
 
 ;; ---- child processes ---------------------------------------------------------
-;; A persistent OS child with piped stdio (ADR-104). These lived in `proc` until
-;; 2026-08-27, which put green-process introspection and OS children in one module and made
-;; `os/spawn` start an operating-system process while the bare `spawn` special form starts
-;; a green one. `spawn` cannot be namespaced — it is a special form, not a function — so the
-;; OS half moved here instead.
+;; A persistent OS child with piped stdio (ADR-104). Here, not in `proc`: `proc` is
+;; green-process business, and the bare `spawn` special form starts a green process, so the
+;; operating-system half belongs with `os`.
 ;;
 ;; `os/write`, not `send`: this writes to the child's STDIN. In this language `send` means
 ;; message-passing to a process mailbox, which is a different thing entirely.

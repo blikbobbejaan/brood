@@ -100,11 +100,9 @@ monitor is the whole guard."
 (defn- done-loop ()
   ;; An exhausted stream answers :stream-done ONCE, then exits — like every other source
   ;; loop (list-loop, fn-loop) and every transformer, all of which return on
-  ;; exhaustion. Recursing here (answering :done idempotently) kept the process parked
-  ;; forever after its stream was fully consumed: a per-stream process leak that grew
-  ;; memory at volume. A well-behaved consumer stops at the first :done, so the idempotence
-  ;; was never relied on (and a transformer forwards :done then exits, never re-polling its
-  ;; upstream), so exiting here is safe. See KI-33 / devlog 2026-08-07.
+  ;; exhaustion. Recursing here (answering :done idempotently) would park the process
+  ;; forever — a per-stream leak. Exiting is safe: a consumer stops at the first :done, and
+  ;; a transformer forwards :done then exits, never re-polling its upstream (KI-33).
   (receive
     ([:next r] (send r :stream-done))
     (:stream-close nil)))
@@ -365,12 +363,9 @@ after EOF is emitted as a last line (for streams without a trailing newline)."
 ;; `buf` is the incomplete trailing fragment; `pending` the complete lines already split
 ;; out of the last chunk, waiting to be pulled one per `:next`.
 ;;
-;; It used to hold only `buf` and, per line, `index-of` + two `substring`s — the second of
-;; which copied the WHOLE REST of the buffer. That is O(lines × buffer) *within one chunk*:
-;; harmless on a line-at-a-time drip (measured 4.50/4.27, linear), but 11.50 then 13.17 per
-;; 4× when one chunk carries many lines — which is the normal case for a 64 KB socket read
-;; (~1700 short lines) or a file slurped and streamed. Splitting the chunk once instead
-;; makes both shapes linear.
+;; Splitting each chunk once keeps this linear. Cutting lines one at a time with `index-of`
+;; + `substring` copies the rest of the buffer per line — O(lines × buffer) within a chunk,
+;; which is the normal shape for a 64 KB socket read or a file slurped and streamed.
 (defn- lines-outer (up buf pending)
   (receive
     ([:next r] (lines-fetch up buf pending r))

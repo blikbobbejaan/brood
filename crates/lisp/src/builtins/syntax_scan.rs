@@ -189,17 +189,16 @@ pub(super) fn scan_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 // — the beginning-of-defun primitive under `tool/sexp`'s narrowing and
 // `editor/highlight`'s `safe-restart`. Correctness requires a FORWARD lexical pass from
 // offset 0: a backward scan cannot know whether a `(` sits inside a string or a comment.
-// That makes one call O(pos) and a SEQUENCE of motions over one buffer O(n^2), which is
-// exactly what `scale_sweep.blsp`'s `sexp motions` row measured (2.3 s at 3200 forms,
-// 18.9 s at 12800).
+// That makes one call O(pos) and a SEQUENCE of motions over one buffer O(n^2)
+// (`scale_sweep.blsp`'s `sexp motions` row).
 //
 // Two things fix it, and only the second changes the shape:
 //
-//  1. The pass runs over BYTES, not a `Vec<char>`. It used to materialise `pos + 1`
-//     `char`s — 4 bytes each — per call, so a motion near the bottom of a 1 MB file
-//     allocated 4 MB before scanning it. Every character this lexer cares about (`"`,
-//     `\`, `;`, `\n`, the brackets) is ASCII, so byte matching is exact; the char index
-//     the language speaks is carried alongside, incremented per char boundary.
+//  1. The pass runs over BYTES, not a `Vec<char>` — materialising `pos + 1` `char`s per
+//     call would allocate 4 MB for a motion near the bottom of a 1 MB file. Every
+//     character this lexer cares about (`"`, `\`, `;`, `\n`, the brackets) is ASCII, so
+//     byte matching is exact; the char index the language speaks is carried alongside,
+//     incremented per char boundary.
 //
 //  2. A **safepoint table** cached against the string value ([`Heap::str_scan_table`]),
 //     holding the lexer's answer every `SCAN_POINT_STRIDE` bytes. A query then resumes
@@ -212,11 +211,11 @@ pub(super) fn scan_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 // What this does NOT fix, deliberately recorded because it looks like it should: the
 // buffer-command path (`sexp/forward` and friends) calls `(buffer-text buf)`, which is
 // `rope->string` — a FRESH string value per motion, so this table (and the char↔byte
-// index) can never hit there. The residual cost is that MISS, not the copy: measured
-// 2026-08-07, the `rope->string` copy is ~14% of a buffer-path motion, while the table
-// miss makes `scan-form-start-2` re-scan O(pos) from the top every keystroke — so a
-// buffer-path motion stays O(buffer) even though `narrow`'s forward window scan is now
-// native (`scan-form-end`) and the held-text path is flat. Making the buffer path flat
+// index) can never hit there. The residual cost is that MISS, not the copy (a minor
+// share of a buffer-path motion): the table miss makes `scan-form-start-2` re-scan
+// O(pos) from the top every keystroke — so a buffer-path motion stays O(buffer) even
+// though `narrow`'s forward window scan is native (`scan-form-end`) and the held-text
+// path is flat. Making the buffer path flat
 // needs the cache to survive across motions — rope-native scanning, or a GC-safe
 // `rope->string` memo so an unchanged rope yields the same string value — a separate
 // piece of work. The shapes this DOES fix are the ones that hold one text value across

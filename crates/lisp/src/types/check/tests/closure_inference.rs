@@ -653,12 +653,14 @@ fn a_function_reached_only_through_itself_is_not_derived() {
 /// names. Every assertion macro expands to `(pr-str (quote (assert= … (drive 3000 0))))`
 /// for its failure message, and reading `drive` there as an ESCAPE excluded every private
 /// function under a test from derivation — a driver called only from its tests derived
-/// from its own recursion alone, and reported `number` on `(- i 1)`. A quoted datum
-/// anywhere else is still an escape: it may be `eval`ed.
+/// from its own recursion alone, and reported `number` on `(- i 1)` handed to `want-int`.
+/// A quoted datum anywhere else is still an escape: it may be `eval`ed.
 #[test]
 fn a_quoted_datum_printed_is_not_an_escape() {
     let driver = "(defmodule t)\n\
-         (defn- drive (i acc) (if (= i 0) acc (drive (- i 1) (+ acc (bit/and i 1)))))\n";
+         (sig want-int (int -> int))\n\
+         (defn want-int (n) n)\n\
+         (defn- drive (i acc) (if (= i 0) acc (drive (- i 1) (+ acc (want-int (- i 1))))))\n";
     let ws = file_warnings_mode(
         &format!("{driver}(defn run () (str (pr-str (quote (drive 3000 0))) (drive 3000 0)))"),
         true,
@@ -670,7 +672,7 @@ fn a_quoted_datum_printed_is_not_an_escape() {
     );
     assert!(
         ws.iter()
-            .any(|w| w.contains("drive: argument 1 expects int, got number")),
+            .any(|w| w.contains("want-int: argument 1 expects int, got number")),
         "quoted elsewhere, the name escapes and the driver is not derived — {ws:?}"
     );
 }

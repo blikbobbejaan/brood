@@ -74,15 +74,13 @@ use crate::process::{
 struct Proc {
     /// Queue into this child's **writer thread**, which owns its stdin.
     ///
-    /// `proc-send` used to `write_all` on the calling thread. A pipe write is bounded by
-    /// the OS buffer, so a child that stops draining its stdin blocked that thread
+    /// `proc-send` must not `write_all` on the calling thread: a pipe write is bounded by
+    /// the OS buffer, so a child that stops draining its stdin would block that thread
     /// forever — and for a green process that thread is a scheduler worker, which cannot
-    /// be preempted mid-syscall (ADR-059), so a handful of such sends drained the
-    /// ~nproc pool with no timeout or `try` able to recover. The old comment justified
-    /// this as "the blocking contract `tcp-send` also has", but `tcp-send` went async in
-    /// ADR-143, so nothing was left holding that contract up (KI-97 item 2).
+    /// be preempted mid-syscall (ADR-059), so a handful of such sends would drain the
+    /// pool with no timeout or `try` able to recover (KI-97).
     ///
-    /// The shape is `dist`'s, which had the same problem and solved it the same way: one
+    /// The shape is `dist`'s, which has the same problem and solves it the same way: one
     /// writer thread per link, fed by a **bounded** channel, with a full queue treated as
     /// "the peer is not draining" rather than something to buffer without limit. A single
     /// writer also keeps writes serialized and whole, which a per-call timeout could not —
@@ -90,8 +88,7 @@ struct Proc {
     /// stream, silently corrupting its protocol, which is worse than the hang it fixes.
     ///
     /// Dropping this sender is what closes the child's stdin: the writer thread sees the
-    /// channel disconnect and drops its `ChildStdin`, sending EOF exactly as dropping the
-    /// old handle did.
+    /// channel disconnect and drops its `ChildStdin`, sending EOF.
     writer: mpsc::SyncSender<Vec<u8>>,
     /// Shared with the waiter thread, which reaps the child once the handle is finished.
     /// `proc-close` and `proc-signal` lock it briefly to signal the group; the waiter
@@ -165,8 +162,8 @@ struct Lifecycle {
 // ---- inbound backpressure ----
 
 /// How much one reader may have delivered to its owner's mailbox and not yet had taken
-/// before it stops reading. Readers used to post every chunk as it arrived, so a chatty
-/// child (`yes`) whose owner was not receiving grew that mailbox without limit. Past
+/// before it stops reading, so a chatty child (`yes`) whose owner is not receiving cannot
+/// grow that mailbox without limit. Past
 /// this mark the reader thread waits; the child then blocks on its full pipe, which is
 /// the backpressure a pipe already has. Measured in payload bytes plus
 /// [`MESSAGE_COST_OVERHEAD`] per chunk — the socket reactor's marks and cost

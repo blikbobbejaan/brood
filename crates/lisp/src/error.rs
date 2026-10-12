@@ -619,8 +619,7 @@ impl LispError {
     /// - a built-in error → [`to_value_map`](Self::to_value_map)'s structured map;
     /// - a **contract violation** (`E0080`, raised by `%contract-raise`) → the policy's
     ///   own map, enriched with the `:code`, `:file`/`:line`/`:col` and `:trace` every
-    ///   built-in error carries. A contract map used to be an ordinary `throw`, so a
-    ///   caught one had no position at all. The code is what tells it apart: a user
+    ///   built-in error carries. The code is what tells it apart: a user
     ///   `throw` never carries one, so a map a program throws itself — even one of kind
     ///   `:contract` — still comes back exactly as thrown.
     pub fn caught_value(&self, heap: &mut crate::core::heap::Heap) -> Value {

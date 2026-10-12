@@ -21,8 +21,8 @@
 //! several encode a *negative* result that is invisible in the code that benefits from it:
 //!
 //! - [`codegen::plan_general_lowering`]'s call-mediated gate exists because lowering the
-//!   boxed-call shape measurably regressed `nbody` 15–20% — re-verified 2026-08-29, when
-//!   removing it (§7.1 step 2) regressed every measured row, winners included.
+//!   boxed-call shape regresses `nbody` 15–20%, and removing it (§7.1 step 2) regressed every
+//!   row, winners included.
 //! - [`codegen::inst_allocates_hot`] is deliberately narrower than
 //!   [`codegen::inst_may_allocate`] because including the table ops cost `sieve` 6%.
 //! - [`jit_spill_reserve`] is liveness-driven because a hardcoded `1` made a two-call recursion
@@ -144,27 +144,15 @@ pub(crate) fn jit_spill_reserve(code: &[Inst]) -> usize {
     // that can be live at a leader — `max_leader_depth`.
     //
     // This reserve is unavoidably profile-independent (it runs at arm construction, before
-    // any type profile exists), so it lands on every lowerable arm. That is the shape whose
-    // cost is already on record — blanket-reserving regressed `spawn` ~1.9x — which is why
-    // it stays behind the `chunk_in_jit_subset` gate above and why the change was measured
-    // (spawn / fib / collatz / pingpong) rather than reasoned about.
-    // **Do not widen the `< 2 → 0` rule below without a profitability case — measured
-    // twice (2026-08-29/30), it buys nothing and costs.** A single-non-tail-call arm
-    // holding a handle below the call (the gate-exempt HOF-step closures on
-    // `nqueens`/`pipeline`, `(… (rest xs) … Call …)`) gets reserve 0 here and bails
-    // mid-emit at `call-spill-exhausted` — which looks like a bug, and unlocking it was
-    // measured (live stdimage BOTH arms, `-b HEAD --floor -n 15`):
-    //
-    //   - §7.1 step 2's blanket widening (MakeClosure as safepoint, `Global`/`GlobalIc`
-    //     as producers): `spawn` +8.6% against a 1.2% floor, on its own — every
-    //     global-reading arm's frame inflated.
-    //   - The narrow form (one call + ≥1 real producer reserves; call-only arms
-    //     untouched): nqueens +2.2% (floor 1.5%), pipeline +0.0%, startup +0.0%,
-    //     spawn +4.8% (floor 1.2%) — the unlocked closures are call-mediated boxed
-    //     shapes, exactly the class `plan_general_lowering` refuses for NAMED arms, so
-    //     they lower and win nothing, while the wider frames lean on `spawn`.
-    //
-    // So the accidental bail does the gate's job for single-call closures, for free. If
+    // any type profile exists), so it lands on every lowerable arm — blanket-reserving
+    // regresses `spawn` ~1.9x, which is why it stays behind the `chunk_in_jit_subset` gate.
+    // **Do not widen the `< 2 → 0` rule below without a profitability case — it buys
+    // nothing and costs.** A single-non-tail-call arm holding a handle below the call (the
+    // gate-exempt HOF-step closures, `(… (rest xs) … Call …)`) gets reserve 0 here and
+    // bails mid-emit at `call-spill-exhausted`. That looks like a bug but is not: those
+    // closures are call-mediated boxed shapes, exactly the class `plan_general_lowering`
+    // refuses for NAMED arms, so unlocking them wins nothing while the wider frames cost
+    // `spawn` (+5–9%). The accidental bail does the gate's job for free. If
     // partial lowering (§7.1) ever admits these shapes deliberately, it must bring its
     // own profitability judgement — and then widen this rule with it.
     if non_tail_call_count(code) < 2 {
@@ -183,18 +171,16 @@ pub(crate) fn jit_spill_reserve(code: &[Inst]) -> usize {
 /// `jit_spill_reserve` returns 0 for an arm with a single non-tail call, which still wants
 /// block-argument slots as soon as an `if` sits inside that call's argument list
 /// (`(w (rest xs) (step (first xs) (if first? acc (cons "," acc))) false)`). Honouring the
-/// unclamped want slid the window down onto the journal, and a later block-argument read
-/// then returned the packed journal word `(resume_ip << 16 | depth)` as a live value — the
-/// `1114114` a JSON-encoding service saw as `empty?: expected collection, got int`. An arm
-/// with no journal wrote past the frame top instead.
+/// unclamped want slides the window down onto the journal, so a later block-argument read
+/// returns the packed journal word `(resume_ip << 16 | depth)` as a live value (or, with no
+/// journal, writes past the frame top).
 ///
 /// So the window is always the TOP `len` slots of the reserve, and `len` never exceeds it.
-/// Where the reserve exists (the ≥2-non-tail-call shape KI-49 measured) `reserve >= want`
-/// and this is exactly what KI-49 shipped. Where it does not, `len` is 0 and a `Handle`
-/// crossing a boundary falls through to `ParamRepr::Int` — the pre-KI-49 behaviour, which
-/// tag-checks and *deopts* rather than corrupting. Growing every frame instead was measured
-/// and rejected: it costs +2–7% on nearly every benchmark row, because `max_leader_depth`
-/// counts int/bool merges that need no slot at all (`not`, `int?`, `inc`).
+/// Where the reserve exists (the ≥2-non-tail-call shape, KI-49) `reserve >= want`. Where it
+/// does not, `len` is 0 and a `Handle` crossing a boundary falls through to `ParamRepr::Int`,
+/// which tag-checks and *deopts* rather than corrupting. Do not grow every frame instead: it
+/// costs +2–7% on nearly every benchmark row, because `max_leader_depth` counts int/bool
+/// merges that need no slot at all (`not`, `int?`, `inc`).
 // Callers are the (gated) Cranelift lowering and the gated `codegen` tests; the VM sizes
 // frames without it, so a no-jit build has no user.
 #[cfg(feature = "jit")]
@@ -237,8 +223,7 @@ fn max_leader_depth(code: &[Inst]) -> usize {
         .max()
         .unwrap_or(0) as usize
 }
-/// Deopt-resume checkpointing (the fix for the deopt-rerun side-effect bug,
-/// devlog 2026-07-16): the abstract operand-stack depth **after each non-tail
+/// Deopt-resume checkpointing (so a deopt never re-runs a side effect): the abstract operand-stack depth **after each non-tail
 /// `Call` completes**, maximised over all call sites — the number of extra frame
 /// slots the JIT'd arm needs to journal its live operands at each checkpoint.
 /// `None` when the chunk has no non-tail call (nothing to checkpoint — deopts
@@ -331,12 +316,9 @@ pub(super) fn jit_ckpt_depth(
             Inst::Prim2 { .. } => d >= 2 && merge(&mut depth, &mut work, ip + 1, d - 1),
             // `table-put` is the one *effect* in the boxed subset. It must be a
             // checkpoint site for the same reason a completed call is: a deopt after it
-            // otherwise re-runs the arm from ip 0 on the VM and puts a second time. It
-            // is not hypothetical — before this, an arm with a `table-put` and **no**
-            // non-tail call got no journal at all (the accumulator stayed `None`), and a
-            // 200 000-iteration driver landed a counter on 402 047. (Worse, the VM
-            // re-run re-enters `jit_tier`, so each deopting activation put *three*
-            // times.) Journaling here bounds it to exactly once and keeps the dense-table
+            // otherwise re-runs the arm from ip 0 on the VM and puts a second time (or
+            // more: the VM re-run re-enters `jit_tier`) — even in an arm with no non-tail
+            // call. Journaling here bounds it to exactly once and keeps the dense-table
             // lowering (the sieve lever), which refusing to lower such arms would lose.
             Inst::Prim3 {
                 op: PrimOp3::TablePut,
@@ -436,8 +418,7 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
         )
         // `Cons` is admitted: the lowering calls `brood_rt_cons` (same bump-allocate
         // path as `brood_rt_vec2_room`, which works) and reads all 3 result words
-        // back as a `Handle`. The earlier miscompile (surfaced in `jit_cons_test.blsp`)
-        // was fixed with the correct lowering; the old bail is no longer needed.
+        // back as a `Handle` (guarded by `jit_cons_test.blsp`).
     };
     // `%receive` fences the whole chunk out of the subset. A `receive` is just a `Call` to
     // this primitive, and it SUSPENDS: the nested-run machinery re-raises the park as a
@@ -481,10 +462,9 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
         Inst::MakeVector(n) => *n <= 32,
         // A map literal `{k v …}` — `MakeVector`'s variadic shape exactly: the `2n` operands
         // are staged into a stack slot and `brood_rt_make_map_n` builds the map (a GC-quiet
-        // in-place CHAMP build that allocates and never collects). Until 2026-09-18 this was
-        // NOT admitted, so one `{…}` in a hot arm put the whole arm on the interpreter for
-        // good — `(get {:a 1} :zz 2)` in a loop bailed `chunk-outside-jit-subset` (found
-        // writing ADR-368's native check). Same cap as the vector, in values.
+        // in-place CHAMP build that allocates and never collects). Admitted so one `{…}` in
+        // a hot arm does not put the whole arm on the interpreter for good. Same cap as the
+        // vector, in values.
         Inst::MakeMap(n) => 2 * *n <= 32,
         // A `(fn …)` literal (`MakeClosure`) stays out: admitting it tiered up dozens of
         // boot-path closure arms for a fixed per-run compile cost, while the arms that
@@ -739,9 +719,9 @@ pub(super) mod codegen {
     /// tripwire cannot see them: the read never goes through a `Heap` accessor.
     ///
     /// So: no non-tail `Call` (a GC safepoint, and a `def` → RUNTIME compaction), and nothing
-    /// [`inst_may_allocate`] — the same *correctness* predicate the `pair_bases` hoist uses, and
-    /// the one this gate used to be narrower than (it listed `Call`/`MakeVector`/`Cons` and left
-    /// out the table ops, whose hashed path reconstructs a compound value into the caller's heap).
+    /// [`inst_may_allocate`] — the same *correctness* predicate the `pair_bases` hoist uses. Not a
+    /// narrower list: the table ops count too, since their hashed path reconstructs a compound
+    /// value into the caller's heap.
     /// `brood_rt_vector_base`'s own justification is "gated to arms that neither allocate nor make
     /// a Brood→Brood call"; this is that sentence, as code.
     ///
@@ -777,9 +757,8 @@ pub(super) mod codegen {
 
     /// Does `i` allocate on its **fast path** — the gate for emitting a back-edge GC safepoint?
     ///
-    /// Narrower than [`inst_may_allocate`] by exactly the table ops, and measured: including them
-    /// cost `sieve` **6%** (confirmed solo at best-of-15 after a 8% sweep reading), because a
-    /// dense table op lowers to an inline `xchg`/load that allocates nothing — only the hashed
+    /// Narrower than [`inst_may_allocate`] by exactly the table ops: including them costs `sieve`
+    /// ~6%, because a dense table op lowers to an inline `xchg`/load that allocates nothing — only the hashed
     /// FFI fallback can, and that is the uncommon shape.
     ///
     /// Leaving them out does not let the nursery run away, which is what the safepoint is for:
@@ -815,11 +794,8 @@ pub(super) mod codegen {
 
     /// Why an arm the lowerer could otherwise handle should be left on the VM.
     ///
-    /// Reportable on purpose. A refusal used to be a bare `None` returned from inside the
-    /// lowering, observable only as *absence* from `BROOD_JIT_DUMP_IR` — which reads identically
-    /// for an arm that was never hot, was never tried, or lowered through the scalar-register
-    /// path (that path emits no dump line at all). `BROOD_JIT_BAIL_TRACE=1` names the refusal
-    /// instead of leaving it to be inferred from silence.
+    /// Reportable on purpose: `BROOD_JIT_BAIL_TRACE=1` names the refusal, since absence from
+    /// `BROOD_JIT_DUMP_IR` cannot distinguish a refused arm from one never hot or never tried.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     pub enum BailReason {
         /// **Call-mediated boxed work does not win natively.** The general lowering only beats
@@ -829,7 +805,7 @@ pub(super) mod codegen {
         /// reads gains nothing: it must box/unbox a `Value` around each op *and* pay native-entry
         /// + FFI-callback + deopt cost, which the VM does without. This is `nbody`'s shape
         /// (`f`=`(nth (nth b i) k)`, plus `newvel`/`potential`/`advance-body`'s `f64` arith over
-        /// `f` calls), where tiering measurably **regressed** the benchmark 15–20%.
+        /// `f` calls), where tiering **regresses** the benchmark 15–20%.
         CallMediatedBoxed,
     }
 
@@ -858,7 +834,7 @@ pub(super) mod codegen {
     ///
     /// **This gate encodes a COST model, so deopt feedback cannot replace it**: an admitted
     /// call-mediated arm compiles correctly and never type-deopts, so feedback has no signal.
-    /// Removing the gate regressed every measured row (docs/compute-frontier.md §7.1); the
+    /// Removing the gate regresses every benchmark row (docs/compute-frontier.md §7.1); the
     /// design that can beat it is partial lowering, not admission-plus-feedback.
     pub fn plan_general_lowering(arm: &CompiledArm) -> Result<(), BailReason> {
         let Some(chunk) = arm.chunk.as_ref() else {

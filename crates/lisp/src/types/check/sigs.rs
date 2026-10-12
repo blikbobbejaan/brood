@@ -35,17 +35,6 @@ use super::ctx::Ctx;
 use super::infer::expr_ty;
 use super::walk::list_items;
 
-/// The declared std names still curated — see the comment at their entries. The gate
-/// `no_curated_name_is_declared_in_std` allows exactly these.
-#[cfg(test)]
-pub(super) const CURATED_DECLARED_EXCEPTIONS: [&str; 5] = [
-    "math/even?",
-    "math/odd?",
-    "string/starts-with?",
-    "string/ends-with?",
-    "index-of",
-];
-
 /// Curated stdlib sigs, keyed by interned `Symbol` (a `SymbolMap` probe, no spelling
 /// allocated per call). The last authored source [`sig_of`] consults — see its doc for
 /// the order — so it holds only names no other source types.
@@ -197,19 +186,6 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     put("includes?", Sig::new(vec![any, any], bool_ty));
     put("string/list->", Sig::new(vec![seq], str_ty));
     put("seq/index-where", Sig::new(vec![seq, cb1], int));
-    // KNOWN EXCEPTIONS to "never curate a declared name" — `CURATED_DECLARED_EXCEPTIONS`.
-    // The caller-derived demand walk reads this table ahead of a loaded declaration, and
-    // these still carry a looser curated domain than their std `(sig …)`: removing them
-    // makes the stricter declaration reach call sites whose parameters the derivation
-    // does not yet prove (`jit_makemap_test`'s `keyed-loop` via `math/odd?`, `nest`'s
-    // `split-eq`/`parse-words` via `index-of`). Delete each once the derivation types
-    // those sites.
-    put("math/even?", Sig::new(vec![num], bool_ty));
-    put("math/odd?", Sig::new(vec![num], bool_ty));
-    for n in ["string/starts-with?", "string/ends-with?"] {
-        put(n, Sig::new(vec![str_ty, str_ty], bool_ty));
-    }
-    put("index-of", Sig::new(vec![any, any], int));
     m
 });
 

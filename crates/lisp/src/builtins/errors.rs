@@ -85,6 +85,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         try_catch,
     );
     primitives.def(
+        "%try-described",
+        Arity::exact(2),
+        Sig::new(vec![callable, callable], any),
+        &["thunk", "handler"],
+        "Call thunk; if it raises, call (handler caught error): caught is what `catch` binds, error the structured description {:kind :message [:code :file :line :col :hint :trace]} of the raise — for any thrown value, a bare `throw` included.",
+        try_described,
+    );
+    primitives.def(
         "%make-macro",
         Arity::exact(1),
         Sig::new(vec![callable], any),
@@ -183,6 +191,36 @@ pub(super) fn blob_strong_count(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 }
 
 pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    run_guarded(
+        args,
+        env,
+        heap,
+        |error, heap| vec![error.caught_value(heap)],
+    )
+}
+
+/// `(%try-described thunk handler)` — `%try` whose handler also receives the raise's
+/// structured description (`LispError::to_value_map`). A `catch` binds a user `throw`'s
+/// value verbatim, which has nowhere to carry the position and trace the error collected
+/// as it unwound; this is the one way to read them for ANY thrown value. Never inlined by
+/// the compiler (its handler takes two parameters), so it always runs here.
+pub(super) fn try_described(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    run_guarded(args, env, heap, |error, heap| {
+        let caught = error.caught_value(heap);
+        // No rooting needed between the two allocations: allocation never collects (the
+        // GC fires only at eval safepoints).
+        vec![caught, error.to_value_map(heap)]
+    })
+}
+
+/// Run `args[0]` (a thunk); on a raise, call `args[1]` with the arguments `handler_args`
+/// builds from the error. A control signal is never caught.
+fn run_guarded(
+    args: &[Value],
+    env: EnvId,
+    heap: &mut Heap,
+    handler_args: impl FnOnce(&LispError, &mut Heap) -> Vec<Value>,
+) -> LispResult {
     let thunk = arg(args, 0);
     let handler = arg(args, 1);
     // The thunk runs through `apply`, which can collect at ANY eval depth
@@ -216,8 +254,8 @@ pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResu
             //     parsing strings (`docs/llm-native.md` §4). Shape on
             //     `LispError::to_value_map`: `{:kind :message [:code] [:file
             //     :line :col] [:hint]}`.
-            let caught = e.caught_value(heap);
-            apply_engine(heap, handler, &[caught], env)
+            let handler_argv = handler_args(&e, heap);
+            apply_engine(heap, handler, &handler_argv, env)
         }
     }
 }

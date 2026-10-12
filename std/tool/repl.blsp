@@ -6,14 +6,13 @@
 ;;    (`brood` with no args, `nest repl`) only bootstrap into `(run)`; the
 ;;    loop itself — prompts, multi-line reads, error formatting — lives here so
 ;;    it can be redefined at runtime like everything else (the project's reason
-;;    for existing). Replaces the old Rust `crates/repl`.
+;;    for existing).
 ;;  - No mutation, no loop construct: `repl-loop` is tail-recursive, so it runs
 ;;    forever in O(1) stack. Memory is bounded by **Stage B's automatic copying
 ;;    GC** (ADR-055): the loop is a depth-1 spawned-process body, so each command's
 ;;    transients are reclaimed at the eval safepoint between iterations, keeping
 ;;    only the loop fn + its args live. `run` runs the loop in a spawned
-;;    process and `monitor`s it to await EOF. (Pre-ADR-055 this used an explicit
-;;    `(proc/hibernate)` arena flip; automatic GC made that redundant — see ADR-048.)
+;;    process and `monitor`s it to await EOF.
 ;;  - Multi-line input is driven by the reader, not a hand-rolled scanner: an
 ;;    unclosed form or string makes `reflect/eval-string` raise the INCOMPLETE_INPUT
 ;;    error (code "E0002", ADR-049), the signal to read another line. Because
@@ -32,7 +31,7 @@
 ;;    matching / hints see the whole form.
 ;;  - Reads work piped, too: `echo '(+ 1 2)' | brood` prints `3`. Prompts and the
 ;;    banner are gated on `(os/stdout-tty?)`, so they never pollute a redirected
-;;    stdout; results always print (matching the old plain reader).
+;;    stdout; results always print.
 
 ; highlight-spans — colourised result output
 (defmodule repl
@@ -195,9 +194,9 @@ argument text. Re-registering any of `:names` replaces the earlier command (kept
 registration order, the new one last). The extension seam tools use to add commands
 — e.g. the debugger registers `,resume`/`,step` under `pry`. Returns the primary name."
   (let (names (get spec :names))
-    ;; Filter-then-append as ONE transform: two concurrent registrations of the same
-    ;; name each used to filter the old list and each append, so the duplicate this
-    ;; promises to replace survived (KI-23 — it failed `repl_test` 2 runs in 5).
+    ;; Filter-then-append as ONE transform: as two steps, two concurrent registrations
+    ;; of the same name would each filter the old list and each append, leaving the
+    ;; duplicate this promises to replace (KI-23).
     (%swap-registry! repl/*repl-commands*
       (fn (l)
         (append (seq/filter l
@@ -496,30 +495,25 @@ reporting a real error. Never lets an error escape the loop."
           :error)))))
 
 ;; ---- interruptible evaluation ------------------------------------------------
-;; Ctrl-C during a long evaluation used to terminate the runtime: the default SIGINT
-;; disposition, arriving while the terminal is out of raw mode (the editor only holds
-;; raw mode for the *read*). So the price of stopping one runaway expression was the
-;; entire live image — every definition and every spawned process. In a language whose
-;; whole premise is a long-lived redefinable image, that is the worst possible trade.
+;; Ctrl-C during a long evaluation must stop that evaluation, not the runtime: under the
+;; default SIGINT disposition (the terminal is out of raw mode during eval) it would
+;; take the entire live image with it — every definition and every spawned process.
 ;;
-;; The fix uses machinery that already existed rather than adding an interrupt path to
-;; the evaluator: run each eval in its own **green process**, and `(exit pid :kill)` it
+;; No interrupt path in the evaluator is needed: run each eval in its own **green process**, and `(exit pid :kill)` it
 ;; — the untrappable hard kill, honoured at the target's next reduction tick. The
 ;; kernel contributes only the signal seam it must (`%install-interrupt-handler` /
 ;; `%interrupt-taken?`, ADR-006: signals are mechanism), and everything else is here.
 ;;
 ;; Why this needs no evaluator changes *here*: the parent parks in `receive`, so the
 ;; scheduler is free to run the child, and the *scheduler* is what enforces the kill.
-;; Nothing has to poll a flag inside `reflect/eval`. (It did need one kernel fix to work at
-;; all: a process spinning inside a nested `reflect/eval`/`reflect/eval-string` never honoured the
-;; hard kill, because the non-capturing eval paths' reduction tick was pure
-;; accounting — `tick_reporting_hard_kill` in `process/scheduler.rs` closed that,
-;; measured at ~4ms kill latency even on a JIT'd loop. The same fix is what makes
-;; supervisors able to kill a stuck code-evaluating child, so it stands on its own.)
+;; Nothing has to poll a flag inside `reflect/eval`. (A process spinning inside a nested
+;; `reflect/eval`/`reflect/eval-string` honours the hard kill through
+;; `tick_reporting_hard_kill` in `process/scheduler.rs` — which is also what lets a
+;; supervisor kill a stuck code-evaluating child.)
 ;;
 ;; Off-switch: `(def *repl-interruptible* false)` in `.broodrc.blsp` reverts to the
-;; inline eval path with the default SIGINT disposition (Ctrl-C kills the runtime, as
-;; before) — the rc runs before the handler would be installed, so the `and` in
+;; inline eval path with the default SIGINT disposition (Ctrl-C kills the runtime)
+;; — the rc runs before the handler would be installed, so the `and` in
 ;; `run` short-circuits. A redefinable global, not an env knob, like every other
 ;; REPL policy here. (Setting it false *at the prompt* also reroutes to inline eval,
 ;; but the handler is already installed by then, so Ctrl-C during a long eval becomes
@@ -825,9 +819,8 @@ the loop spawns so its `def`s are in place for the first prompt."
 ;; plain `def` (not a `defdyn`) so it reaches the spawned loop across `spawn`.
 (def *repl-start-ns* nil)
 ;; `(or symbol nil)`, declared rather than inferred (placement is free since ADR-381).
-;; `nest repl` rebinds it through `start-in!` below (ADR-322; it used to be a
-;; `(def repl/*repl-start-ns* …)` evaluated from Rust, which no static reading could see), so
-;; inference would otherwise pin it to its initializer and call the `symbol?` guard dead.
+;; `nest repl` rebinds it through `start-in!` below (ADR-322), so inference would otherwise
+;; pin it to its initializer and call the `symbol?` guard dead.
 (sig *repl-start-ns* (or symbol nil))
 
 (defn start-in! (ns)

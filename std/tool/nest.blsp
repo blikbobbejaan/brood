@@ -9,7 +9,7 @@
 ;;
 ;; `(nest/main argv)` returns the process exit code as an int; it never exits itself, so it
 ;; can be called from a test in-image. Errors it does not expect propagate: the Rust side
-;; reports them and exits 1, exactly as the old `run` helper did.
+;; reports them and exits 1.
 
 (defmodule nest
   "The `nest` command line: argv parsing and dispatch for the subcommands implemented in
@@ -1051,9 +1051,9 @@ words, it is the program's."
                 (eputs "For more information, try '--help'.")
                 2)
             else ((get spec :run) options)))))))
-;; `list`, not `vector`: the router passes `(list "check" …)`, and a `vector` contract refused
-;; every Brood-routed subcommand under BROOD_CONTRACTS=1 (found by KI-113's sweep).
-(sig main (list -> int))
+;; `list`, not `vector`: the router passes `(list "check" …)`, so a `vector` contract would
+;; refuse every Brood-routed subcommand when contracts are armed (KI-113).
+(sig main ((list string) -> int))
 
 (defn- print-matching (candidates current)
   "Print each of `candidates` that starts with `current`, one per line, skipping empties."

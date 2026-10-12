@@ -88,8 +88,8 @@ use line_index::LineIndex;
 fn main() -> Result<(), Box<dyn Error + Sync + Send>> {
     // stdio transport: the editor launches us and talks JSON-RPC over the pipe. Our own
     // framing rather than `Connection::stdio()`: that reader allocates whatever
-    // `Content-Length` a client sends, so `Content-Length: 99999999999` aborted the
-    // server with an allocation failure (2026-09-30). Ours refuses a frame past
+    // `Content-Length` a client sends, so one huge header would abort the server with an
+    // allocation failure. Ours refuses a frame past
     // `MAX_FRAME_BYTES` as a protocol error.
     let (connection, io_threads) = stdio_capped();
 
@@ -1364,8 +1364,8 @@ fn read_frame_capped(input: &mut impl std::io::BufRead) -> std::io::Result<Optio
 #[cfg(test)]
 mod frame_cap_tests {
     //! The stdio transport refuses a frame past `MAX_FRAME_BYTES` as a protocol error
-    //! (2026-09-30): `lsp_server::Connection::stdio()` allocated whatever
-    //! `Content-Length` the client sent, so one header aborted the server.
+    //! — `lsp_server::Connection::stdio()` allocates whatever `Content-Length` the
+    //! client sends, so one header would abort the server.
     use super::*;
     use std::io::Cursor;
 

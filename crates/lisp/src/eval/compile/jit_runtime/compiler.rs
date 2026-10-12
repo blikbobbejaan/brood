@@ -41,8 +41,7 @@ pub(crate) type JitWorkItem = (Arc<CompiledArm>, Vec<u8>, u64);
 pub(crate) struct JitCompiler {
     /// Primary (initial-tier) queue: the small ORIGINAL arm. Drained first, always. A
     /// `None` is not work — it is [`Self::defer`]'s wake-up, so the idle thread can block
-    /// on this one channel and still notice a deferred item (it used to poll every 1 ms,
-    /// forever, in every process that had ever tiered an arm).
+    /// on this one channel and still notice a deferred item without a polling loop.
     primary: std::sync::mpsc::SyncSender<Option<JitWorkItem>>,
     /// Deferred (lower-priority) queue: the re-derived **inlined** upgrade. The bg thread
     /// pulls from it only when `primary` is empty — so under a spawn-style initial-tier
@@ -314,7 +313,7 @@ pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) {
     // Take (and clear) any mid-emit reason regardless of the trace flag, so a reason
     // recorded under a flagless run cannot leak into a later flagged one.
     // `lowering-returned-none` is the FALLBACK — it means a give-up path that recorded
-    // nothing, which every path now does. Seeing it in a trace is itself the finding.
+    // nothing, which no path should do. Seeing it in a trace is itself the finding.
     let (reason, detail) =
         super::take_mid_emit_reason().unwrap_or(("lowering-returned-none", None));
     let detail = detail.map(|d| format!(":{d}")).unwrap_or_default();

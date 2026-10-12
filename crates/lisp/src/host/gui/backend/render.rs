@@ -376,20 +376,13 @@ impl Renderer {
     ///     sits on the right.
     ///   - **vertical**: BELOW the grid, too. The grid is TOP-ALIGNED: row 0 sits at
     ///     the inset and the slack goes under the last row, as Emacs leaves it under
-    ///     the echo area. It used to go ABOVE the grid, so the bottom row sat flush
-    ///     against the window's edge. That left up to a whole row of empty space over
-    ///     the first line of text, which reads as a layout bug, not as headroom. It
-    ///     also moved every row up or down on each font-size step, for the same reason
-    ///     the horizontal remainder did (below).
+    ///     the echo area. Slack ABOVE the grid would leave up to a whole row of empty
+    ///     space over line 1 and move every row on each font-size step.
     ///
-    /// The horizontal half-remainder (`rem_w / 2`) that used to centre the grid is gone,
-    /// and the reason is worth keeping. `rem_w` is `width % cell_w`, so it depends on the
-    /// CELL SIZE: change the font size by one pixel and the remainder jumps somewhere else
-    /// in `0..cell_w`, moving the whole grid sideways by up to half a cell. At rest nobody
-    /// sees it — it is a fixed margin. During a font-size zoom it is the text sliding left
-    /// and right under your eyes on every step, and the widest thing on screen (an editor's
-    /// full-width status bar) is where it reads worst. Symmetric margins are not worth a
-    /// grid that moves; the cost is a right margin up to one cell wider than the left.
+    /// Don't centre the grid on the horizontal half-remainder (`rem_w / 2`): `rem_w` is
+    /// `width % cell_w`, so it depends on the CELL SIZE, and a font-size zoom would slide
+    /// the whole grid sideways by up to half a cell on every step. Symmetric margins are
+    /// not worth a grid that moves; the cost is a right margin up to one cell wider.
     ///
     /// WM-independent (no window resize, so it works where `request_inner_size` is
     /// ignored), and the mouse hit-test (`px_to_cell`) shares it so clicks stay
@@ -734,8 +727,7 @@ impl Renderer {
         // colour is lighter than the pixel it lands on, and never to a colour glyph
         // (emoji). A taste knob now, not a correction: the text lerp is in sRGB space
         // (`blend_text`), so γ = 1.0 already puts an edge pixel at the coverage it
-        // represents. It used to compensate a linear-light blend, which is why its
-        // default was 1.4 and why the value that actually looked right was 0.5.
+        // represents.
         let lift = self.text_contrast != 1.0 && !cg.color;
         let lut = &self.cov_lut;
         let fg_lum = luma(fg);
@@ -1467,10 +1459,9 @@ mod text_contrast_tests {
 mod grid_stability_tests {
     use super::*;
 
-    /// A size change must not move the grid sideways. The origin used to centre the
-    /// horizontal remainder (`width % cell_w`), which depends on the cell size — so every
-    /// pixel of a font-size zoom slid the whole grid left or right by up to half a cell,
-    /// and the widest band on screen (an editor's status bar) is where that reads worst.
+    /// A size change must not move the grid sideways: centring the horizontal remainder
+    /// (`width % cell_w`, which depends on the cell size) would slide the grid by up to
+    /// half a cell on every font-size step.
     #[test]
     fn the_grid_does_not_slide_sideways_as_the_font_size_changes() {
         let mut r = Renderer::new(1.0, default_families(), 15.0);
@@ -1488,9 +1479,7 @@ mod grid_stability_tests {
     }
 
     /// The first row sits at the top inset at every size. The vertical remainder goes
-    /// under the grid, so the text starts where the window starts. It used to go above
-    /// the grid, which left up to a whole row of empty space over line 1, and that gap
-    /// changed on every font-size step.
+    /// under the grid, so the text starts where the window starts.
     #[test]
     fn the_first_row_stays_at_the_top_at_every_size() {
         let mut r = Renderer::new(1.0, default_families(), 15.0);

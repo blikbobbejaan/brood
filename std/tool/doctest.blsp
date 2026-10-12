@@ -31,9 +31,8 @@ the sentence.
 (defn- strip-comment (line)
   ;; `line` up to its first `;` that is OUTSIDE a string literal, so `→ :x  ; note`
   ;; compares against `:x` while `→ ("a; b")` keeps its semicolon. Cutting at the first
-  ;; `;` unconditionally truncated any documented result containing one, leaving an
-  ;; expectation that no longer read as a value — so it fell through to the text
-  ;; comparison and could only fail, however right the code was.
+  ;; `;` unconditionally would truncate such a result into something that no longer reads
+  ;; as a value, and the example could only fail.
   (letrec (go (fn (cs i in-string escaped)
                 (cond
                   (empty? cs) line

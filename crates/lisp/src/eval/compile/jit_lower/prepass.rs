@@ -19,13 +19,10 @@ pub(crate) fn block_analysis(code: &[Inst], len: usize) -> (Vec<bool>, Vec<Optio
 }
 
 /// [`block_analysis`] plus the opcode the depth walk had NO model for, if it met one.
-/// The walk used to `break` there silently, leaving every leader past that instruction
-/// at `None` depth (sized as 0 params) while the emit loop — which lowers the
-/// instruction fine — arrived with a deeper stack: a Cranelift verifier rejection
-/// ("mismatched argument count") reported as `cranelift-define-function`, on every arm
-/// with a `[…]` literal ahead of a join (`%match-splice-fail-in`, 2026-09-15). The
-/// subset rule and this model must agree instruction for instruction; the caller
-/// bails by NAME when they do not.
+/// Breaking silently there would leave every leader past that instruction at `None` depth
+/// (sized as 0 params) while the emit loop arrives with a deeper stack — an opaque Cranelift
+/// verifier rejection. The subset rule and this model must agree instruction for
+/// instruction; the caller bails by NAME when they do not.
 pub(crate) fn block_analysis_checked(
     code: &[Inst],
     len: usize,
@@ -145,7 +142,7 @@ pub(crate) fn block_analysis_checked(
 /// call returns to the driver (outcome 4) to dispatch the callee — a native↔driver round
 /// trip per hop that a `SelfCall` loop avoids — so the arm must do enough work per
 /// activation to amortise it: at least `TAIL_CALL_MIN_WORK` arithmetic/list prims or
-/// non-tail calls (a 2-op ping/pong body measured slower native than interpreted). An arm
+/// non-tail calls (a 2-op ping/pong body runs slower native than interpreted). An arm
 /// with no tail call has no round trip, and a non-self-recursive one is a pure delegator
 /// whose round trip is amortised over all of its callee's work; both pass.
 pub(crate) fn tail_call_work_is_enough(code: &[Inst]) -> bool {

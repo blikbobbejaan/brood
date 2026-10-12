@@ -58,9 +58,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         str_index_of,
     );
-    // Reverse search: one forward pass with an advancing cursor. The Brood version called
-    // `index-of` per match, and each of those re-derives a char offset, making a reverse
-    // search over one string quadratic (measured 16.5x/16.4x per 4x). Editor hot path.
+    // Reverse search: one forward pass with an advancing cursor. Calling `index-of` per
+    // match re-derives a char offset each time, making a reverse search quadratic. Editor
+    // hot path.
     primitives.def(
         "%str-last-index-of",
         Arity::range(2, 3),
@@ -92,9 +92,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["s"],
         "The characters of s as a vector of integer Unicode codepoints, in one O(n) pass — the random-access form text parsers index with nth and compare as ints. The inverse is (%codepoints->string codes), i.e. string/codepoints->.\n\n    (string/->codepoints \"Hi there\")   → [72 105 32 116 104 101 114 101]",
         string_to_codepoints);
-    // The inverse. It had none until 2026-08-26, so every text parser in std/ rebuilt its
-    // result with `(apply str (map int->char cs))` — a seq view, a closure per code point
-    // making a one-character string, then an N-way variadic concat. Mechanism, not policy:
+    // The inverse, so a text parser need not rebuild its result with
+    // `(apply str (map int->char cs))` — a closure and a one-character string per code
+    // point, then an N-way variadic concat. Mechanism, not policy:
     // encoding a code point sequence as UTF-8 is not a rule Brood can express cheaply.
     primitives.def(
         "%codepoints->string",
@@ -585,7 +585,7 @@ pub(super) fn str_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     // could only do it for ASCII, because its mechanism is the ASCII test itself.
     //
     // A start past the end converts to the end, so an out-of-range start simply finds
-    // nothing (matching the clamp the Brood side used to do).
+    // nothing.
     let byte_start = if start == 0 {
         0
     } else {
@@ -602,10 +602,9 @@ pub(super) fn str_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 /// `needle` in `s` starting strictly before char index `before`, or -1.
 ///
 /// Genuinely needs Rust, for the same reason as `string-split` and the `from` offset above:
-/// the Brood version walked forward calling `(index-of s needle i)` per match, and every one
-/// of those re-derives a char offset (and, before that offset existed, allocated a copy of
-/// the suffix) — so a reverse search was O(matches x length). Measured 16.5x then 16.4x per
-/// 4x of input, where linear is 4x. This is one forward pass with an advancing cursor.
+/// walking forward with `(index-of s needle i)` per match re-derives a char offset every
+/// time, making a reverse search O(matches x length). This is one forward pass with an
+/// advancing cursor.
 ///
 /// It is on an editor hot path in both directions: `buffer.blsp`'s reverse search runs over
 /// whole buffer text, and `lineedit.blsp` finds the current line's start (`last-index-of
@@ -615,7 +614,7 @@ pub(super) fn str_last_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
     let h: &Heap = heap;
     let a = expect_str_arg(h, "%str-last-index-of", arg(args, 0))?;
     let needle = expect_string_ref(h, "%str-last-index-of", arg(args, 1))?;
-    // Cached char count, O(1); `char_len` used to be a full scan.
+    // Cached char count, O(1).
     let char_len = a.chars;
     let before = match args.get(2) {
         None | Some(Value::Nil) => char_len as i64,
@@ -744,8 +743,8 @@ pub(super) fn string_split(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 /// parsers (std/regex, std/json, std/encoding) index code points with O(1)
 /// `nth` and compare them as ints. Building the same vector in Brood —
 /// `(apply vector (map string/char->int (string/->list s)))` — costs a 1-char string
-/// allocation per char plus a closure call per char, and measured ~40 % of the
-/// whole regex benchmark. Like `string-split`/`string-span`, this is text-access
+/// allocation per char plus a closure call per char, a large share of a regex
+/// workload. Like `string-split`/`string-span`, this is text-access
 /// *mechanism*; the parsers themselves stay in Brood.
 pub(super) fn string_to_codepoints(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     // Borrowed: the codepoints are ints, so nothing is allocated while the borrow is

@@ -103,11 +103,10 @@ fine for position queries, but don't feed the returned spans to `reflect/eval` u
 ;; start is a top-level (depth-0) open bracket that lies OUTSIDE any string or comment
 ;; (`highlight/safe-restart` is the same idea) — found by the native `scan-form-start`:
 ;; the awareness needs a forward lexical pass from the top (a backward char-scan can't know
-;; whether a `(` sits inside an unterminated string), and interpreted that pass made every
-;; structural query O(pos) at char-recursion cost. The window END — the forward scan over
-;; the ~3-form window, skipping strings/comments and tracking bracket depth — is likewise
-;; the native `scan-form-end`; it was an interpreted `char-at` loop and measured ~85% of
-;; every keystroke-driven motion.
+;; whether a `(` sits inside an unterminated string), and interpreted that pass would make
+;; every structural query O(pos) at char-recursion cost. The window END — the forward scan
+;; over the ~3-form window, skipping strings/comments and tracking bracket depth — is
+;; likewise native (`scan-form-end`), since it runs on every keystroke-driven motion.
 
 (defn narrow (text point)
   "`[base sub]` — `text` sliced to the top-level forms around `point` (the previous,
@@ -117,13 +116,11 @@ shifted by `base`, the result shifted back) matches running them on all of `text
 cost of ~three forms, not the whole buffer."
   (let (n (string/length text)
         p (math/max 0 (math/min point n))
-        ;; ONE lexical pass for both offsets. The pair used to be two `scan-form-start`
-        ;; calls, and the second re-walked the prefix the first had already covered — the
-        ;; dominant cost of every structural motion, paid twice (2026-08-04).
+        ;; ONE lexical pass for both offsets — two `scan-form-start` calls would re-walk
+        ;; the same prefix, the dominant cost of every structural motion.
         [base start] (reflect/scan-form-start-2 text (math/min p (math/max 0 (dec n))))
-        ;; The window END was an interpreted `sexp-scan` char-at loop over the ~3-form
-        ;; window — ~85% of every structural motion. `scan-form-end` is the same lexical
-        ;; scan (strings/comments skipped, bracket depth tracked) in one native byte pass.
+        ;; The window END: the lexical scan (strings/comments skipped, bracket depth
+        ;; tracked) in one native byte pass.
         end (reflect/scan-form-end text base 3))
     [base (string/substring text base end)]))
 (sig narrow (string int -> (tuple int string)))
@@ -139,10 +136,9 @@ cost of ~three forms, not the whole buffer."
   (container-kind? (get anode :kind)))
 
 ;; ---- the site: everything a motion asks about the point, computed once --------
-;; Every structural motion used to re-derive the same triple — `narrow` the text,
-;; `tree` the window, `enclosing` the point — with its own copy of the base-offset
-;; arithmetic, and each new rule (the straddled atom) was a fourth branch pasted into
-;; each. A motion is a SELECTION over one value: the enclosing container, its forms, and
+;; Every structural motion needs the same triple — `narrow` the text, `tree` the window,
+;; `enclosing` the point — so it is derived once, with the base-offset arithmetic in one
+;; place. A motion is a SELECTION over one value: the enclosing container, its forms, and
 ;; where the point sits among them.
 
 (defn- sexp-site (text point)

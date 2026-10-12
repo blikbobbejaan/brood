@@ -10,10 +10,9 @@
 ;;
 ;; WHAT a document is matters more than it looks. It is keyed by `registry-key`: the FILE
 ;; for a buffer that has one, the name only for a buffer that has none (`*scratch*`,
-;; `*Messages*` — global by name, as in Emacs). It used to be keyed by the display name,
-;; and a display name is neither unique nor stable: two `README.md`s in two projects are
-;; both called `README.md`, so the second one opened was handed the FIRST one's process
-;; and its edits were spliced into the other file. The name is the entry's metadata; a
+;; `*Messages*` — global by name, as in Emacs). Never by display name, which is neither
+;; unique nor stable: two `README.md`s in two projects would share one process and splice
+;; edits into the wrong file. The name is the entry's metadata; a
 ;; `C-x C-w` that moves a buffer to another file is `registry-rekey`.
 ;;
 ;;     (def reg (registry-start))

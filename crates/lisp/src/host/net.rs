@@ -151,6 +151,28 @@ struct Ctl {
     claimed: bool,
     /// The local port, cached at creation so `tcp-local-port` never blocks.
     port: Option<u16>,
+    /// A listener's fd, shared with the reactor so `close` can shut it on the calling
+    /// thread. `None` for a stream.
+    listener: Option<ListenerSlot>,
+}
+
+/// A listener's fd, held jointly by its control-plane entry and the reactor. `close`
+/// empties it on the calling thread, so the port refuses connections before
+/// `tcp-close` returns — a queued close left the fd accepting until the reactor got to
+/// it. The reactor touches the listener only under this lock and treats an empty slot
+/// as closed, so no accept can run after the close.
+type ListenerSlot = Arc<Mutex<Option<MioListener>>>;
+
+fn listener_slot(listener: MioListener) -> ListenerSlot {
+    Arc::new(Mutex::new(Some(listener)))
+}
+
+/// Close a listener's fd now. Deregistering one the reactor never registered fails
+/// harmlessly.
+fn shut_listener(slot: &ListenerSlot, registry: &mio::Registry) {
+    if let Some(mut listener) = crate::core::sync::lock(slot).take() {
+        let _ = registry.deregister(&mut listener);
+    }
 }
 
 /// The socket table, indexed by owner — the green process whose death closes the socket
@@ -235,14 +257,14 @@ enum Cmd {
     /// A plaintext listener.
     Listen {
         id: u64,
-        listener: MioListener,
+        listener: ListenerSlot,
         sink: MailboxSink,
         subscriber: Arc<AtomicU64>,
     },
     /// A TLS listener (accepted connections become passive TLS streams).
     TlsListen {
         id: u64,
-        listener: MioListener,
+        listener: ListenerSlot,
         sink: MailboxSink,
         subscriber: Arc<AtomicU64>,
         config: Arc<ServerConfig>,
@@ -283,6 +305,8 @@ enum Cmd {
 struct Reactor {
     tx: Sender<Cmd>,
     waker: Waker,
+    /// For deregistering a listener `close` shuts on the calling thread.
+    registry: mio::Registry,
 }
 
 impl Reactor {
@@ -302,6 +326,10 @@ fn reactor() -> &'static Reactor {
     R.get_or_init(|| {
         let poll = Poll::new().expect("net reactor: mio poll");
         let waker = Waker::new(poll.registry(), WAKER_TOKEN).expect("net reactor: waker");
+        let registry = poll
+            .registry()
+            .try_clone()
+            .expect("net reactor: registry clone");
         let (tx, rx) = std::sync::mpsc::channel::<Cmd>();
         std::thread::Builder::new()
             .name("brood-net-reactor".into())
@@ -317,7 +345,11 @@ fn reactor() -> &'static Reactor {
                 reactor_died(r.err());
             })
             .expect("spawn net reactor thread");
-        Reactor { tx, waker }
+        Reactor {
+            tx,
+            waker,
+            registry,
+        }
     })
 }
 
@@ -588,17 +620,15 @@ enum Rx {
     Tls(TlsConn),
     TlsPending(TlsPending),
     Listener {
-        listener: MioListener,
+        listener: ListenerSlot,
         sink: MailboxSink,
         subscriber: Arc<AtomicU64>,
-        registered: bool,
     },
     TlsListener {
-        listener: MioListener,
+        listener: ListenerSlot,
         sink: MailboxSink,
         subscriber: Arc<AtomicU64>,
         config: Arc<ServerConfig>,
-        registered: bool,
     },
 }
 
@@ -673,8 +703,11 @@ fn drive(
             listener,
             sink,
             subscriber,
-            ..
         } => {
+            let mut slot = crate::core::sync::lock(listener);
+            let Some(listener) = slot.as_mut() else {
+                return true; // `close` shut it; its `Cmd::Close` removes the entry too
+            };
             if readable {
                 accept_ready(id, listener, sink, subscriber, None, accepted);
             }
@@ -685,8 +718,11 @@ fn drive(
             sink,
             subscriber,
             config,
-            ..
         } => {
+            let mut slot = crate::core::sync::lock(listener);
+            let Some(listener) = slot.as_mut() else {
+                return true;
+            };
             if readable {
                 accept_ready(
                     id,
@@ -747,6 +783,7 @@ fn accept_ready(
                         subscriber: ccell.clone(),
                         claimed: false,
                         port,
+                        listener: None,
                     },
                 );
                 let entry = match &tls {
@@ -1081,14 +1118,13 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             sink,
             subscriber,
         } => {
-            let (listener, registered) = register_listener(id, listener, registry);
+            register_listener(id, &listener, registry);
             conns.insert(
                 id,
                 Rx::Listener {
                     listener,
                     sink,
                     subscriber,
-                    registered,
                 },
             );
         }
@@ -1099,7 +1135,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             subscriber,
             config,
         } => {
-            let (listener, registered) = register_listener(id, listener, registry);
+            register_listener(id, &listener, registry);
             conns.insert(
                 id,
                 Rx::TlsListener {
@@ -1107,7 +1143,6 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
                     sink,
                     subscriber,
                     config,
-                    registered,
                 },
             );
         }
@@ -1180,16 +1215,11 @@ fn start_stream(
     conns.insert(id, Rx::Plain(connection));
 }
 
-/// Register a listener for accept readiness; returns it with whether that succeeded.
-fn register_listener(
-    id: u64,
-    mut listener: MioListener,
-    registry: &mio::Registry,
-) -> (MioListener, bool) {
-    let registered = registry
-        .register(&mut listener, Token(id as usize), Interest::READABLE)
-        .is_ok();
-    (listener, registered)
+/// Register a listener for accept readiness — unless `close` already shut it.
+fn register_listener(id: u64, listener: &ListenerSlot, registry: &mio::Registry) {
+    if let Some(listener) = crate::core::sync::lock(listener).as_mut() {
+        let _ = registry.register(listener, Token(id as usize), Interest::READABLE);
+    }
 }
 
 /// The parts of a `Cmd::TlsClient` that become the connection.
@@ -1462,19 +1492,8 @@ fn teardown(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                 }
             }
             Rx::TlsPending(_) => {}
-            Rx::Listener {
-                mut listener,
-                registered,
-                ..
-            }
-            | Rx::TlsListener {
-                mut listener,
-                registered,
-                ..
-            } => {
-                if registered {
-                    let _ = registry.deregister(&mut listener);
-                }
+            Rx::Listener { listener, .. } | Rx::TlsListener { listener, .. } => {
+                shut_listener(&listener, registry);
             }
         }
     }
@@ -1676,6 +1695,7 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             subscriber: cell.clone(),
             claimed: true,
             port: None,
+            listener: None,
         },
     );
     // Closes the race with `reactor_died`'s sweep: the flag is set before the sweep
@@ -1727,7 +1747,7 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     let std_listener = std::net::TcpListener::bind((host, port))?;
     let local = std_listener.local_addr()?.port();
     std_listener.set_nonblocking(true)?;
-    let listener = MioListener::from_std(std_listener);
+    let listener = listener_slot(MioListener::from_std(std_listener));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
@@ -1739,6 +1759,7 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
             subscriber: cell.clone(),
             claimed: true,
             port: Some(local),
+            listener: Some(listener.clone()),
         },
     );
     reactor().cmd(Cmd::Listen {
@@ -1869,11 +1890,12 @@ pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// `(tcp-close sock)` — flush queued outbound (bounded by [`LINGER`]), then
-/// close; stops a listener's accepts. Idempotent.
+/// close. A listener's fd is closed before this returns, so a connect issued after it
+/// is refused. Idempotent.
 pub fn close(id: u64) {
-    let known = reg().remove(&id).is_some();
-    if known {
-        reactor().cmd(Cmd::Close { id });
+    let removed = reg().remove(&id);
+    if let Some(ctl) = removed {
+        retire(id, ctl);
     }
 }
 
@@ -1881,9 +1903,20 @@ pub fn close(id: u64) {
 /// a dead owner never leaks fds or registry slots. O(sockets `pid` owns).
 pub fn close_process_sockets(pid: u64) {
     let doomed = reg().remove_owned_by(pid);
-    for (id, _) in doomed {
-        reactor().cmd(Cmd::Close { id });
+    for (id, ctl) in doomed {
+        retire(id, ctl);
     }
+}
+
+/// Close a socket whose control-plane entry the caller has just removed (outside the
+/// registry lock: the reactor takes a listener's slot before the registry). A stream's
+/// flush-then-close stays on the reactor; a listener's fd is shut here and now.
+fn retire(id: u64, ctl: Ctl) {
+    let reactor = reactor();
+    if let Some(listener) = &ctl.listener {
+        shut_listener(listener, &reactor.registry);
+    }
+    reactor.cmd(Cmd::Close { id });
 }
 
 /// The local port `sock` is bound to.
@@ -1969,6 +2002,7 @@ pub fn tls_request(
             subscriber: cell.clone(),
             claimed: true,
             port: None,
+            listener: None,
         },
     );
     // See `connect` — closes the race with `reactor_died`'s sweep.
@@ -2065,7 +2099,7 @@ pub fn tls_listen(
     let std_listener = std::net::TcpListener::bind((host, port))?;
     let local = std_listener.local_addr()?.port();
     std_listener.set_nonblocking(true)?;
-    let listener = MioListener::from_std(std_listener);
+    let listener = listener_slot(MioListener::from_std(std_listener));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
@@ -2077,6 +2111,7 @@ pub fn tls_listen(
             subscriber: cell.clone(),
             claimed: true,
             port: Some(local),
+            listener: Some(listener.clone()),
         },
     );
     reactor().cmd(Cmd::TlsListen {

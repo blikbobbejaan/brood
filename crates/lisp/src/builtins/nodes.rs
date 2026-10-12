@@ -99,8 +99,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 
 /// Coerce a node/name argument (a keyword or symbol) to its interned `Symbol`.
 /// Goes through the same `wrong_type` formatter as the other `expect_*`
-/// helpers — pre-fix this one used `type_err` and lost the offending value
-/// from the message, the one expect-family inconsistency the review flagged.
+/// helpers, so the message names the offending value.
 
 pub(super) fn expect_node_name(
     heap: &Heap,

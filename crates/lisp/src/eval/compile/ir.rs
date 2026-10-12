@@ -38,8 +38,7 @@ pub enum PrimOp {
     // (through the prelude `nth`) any indexed vector walk. The JIT lowers it now
     // (`jit_plan::chunk_in_jit_subset` admits it, and an inline vector read is one of
     // the two unboxing signals `plan_general_lowering` looks for — it is what rules
-    // `bintree`/`matmul` into the general lowering); the note here previously said the
-    // opposite, from when it was still subset-excluded.
+    // `bintree`/`matmul` into the general lowering).
     VectorRef,
     // `max`/`min` (perf): replaces the prelude's variadic fold-over-closure with a
     // single native + JIT-inlined `select` instruction. Eliminates ~2 heap allocs
@@ -147,8 +146,8 @@ pub enum PrimOp1 {
     /// carrying the `type-of` keyword it tests for. Every one of them is the one-line
     /// wrapper `(%eq (type-of x) :kw)`, which `resolve_prim1` recognises STRUCTURALLY (the
     /// `sqrt` discipline: the shape, not the name, earns the inline, and a rebind that
-    /// changes the shape drops it at the next epoch check). Before this each was a full
-    /// Brood call — ~100 ns on the VM against a tag read — and they are what every `match`
+    /// changes the shape drops it at the next epoch check). Otherwise each is a full
+    /// Brood call where a tag read suffices — and they are what every `match`
     /// / `receive` / destructuring `let` clause tests first, what `get` and `assoc` dispatch
     /// on, and what the seq predicates apply per element. Total over every operand: a tag
     /// byte compared to a constant, the same `type_of_kw_table` load `TypeOf` uses in the
@@ -198,9 +197,8 @@ impl PrimOp {
             "%div" => PrimOp::Div,
             "%quot" => PrimOp::Quot,
             "cons" => PrimOp::Cons,
-            // The native is `%vector-ref` — it was `vector-ref` until the `seq/` refactor
-            // renamed it, and this entry kept the OLD spelling, so the direct inline was dead
-            // for every pattern-match element read (`nth`'s head-keyed path survived alone).
+            // Must match the native's CURRENT spelling: a stale name here silently kills the
+            // direct inline for every pattern-match element read.
             "%vector-ref" => PrimOp::VectorRef,
             "%max" => PrimOp::Max,
             "%min" => PrimOp::Min,
@@ -240,9 +238,8 @@ pub enum HandleKind {
 /// `&Node`, so the `Arc` can't be swapped for a relocated copy; the handle bits must
 /// move under the live reference. The atomic also keeps `ConstVal`/`Node`
 /// `Send + Sync` (required because `Arc<CompiledArm>` is cached in a `Send` `Heap`).
-/// Pre-ADR-076 every promoted constant was immovable, so this was a plain `Value`;
-/// the compactor made promoted handles movable, which is the slab-OOB / corruption
-/// bug this encoding fixes (`docs/known-issues.md`).
+/// A plain `Value` is not enough: the compactor moves promoted handles, and a stale
+/// one reads as a slab-OOB / corruption.
 pub enum ConstVal {
     /// An inline scalar / interned symbol-or-keyword / `Nil` — never relocated.
     Atom(Value),
@@ -354,7 +351,7 @@ pub enum Node {
     /// handle as `(kind, AtomicU64)`. Construct only via [`const_node`], which
     /// `promote`s out of LOCAL first. The cached `Node` tree is an `Arc` off the GC
     /// root graph, so the collector never traces it — a LOCAL handle here would
-    /// dangle (the use-after-GC bug fixed 2026-05-31), and a *RUNTIME* handle would
+    /// dangle (use-after-GC), and a *RUNTIME* handle would
     /// dangle under a compaction unless rewritten in place, which is why the handle
     /// case is atomic (`runtime_collect` walks live arms and rewrites it).
     Const(ConstVal),
@@ -563,9 +560,8 @@ pub struct CompiledArm {
     /// block of this many slots in its own IC tables ([`Heap::vm_arm_block`]) and runs
     /// the arm with the block's base in `Heap::cur_ic_base` — so the *same* compiled
     /// arm (and its JIT'd native code, whose site ids are baked in) is valid in every
-    /// process, each against its own IC block. Before this, sites were absolute in the
-    /// compiling process's table, which made a shared arm's ICs silently dead in every
-    /// *other* process (its sites failed their bounds checks).
+    /// process, each against its own IC block. Absolute sites would make a shared arm's
+    /// ICs silently dead in every process but the compiling one.
     pub nsites: u32,
     /// Global-read IC slots, arm-relative from 0 — the `Node::GlobalIc` counterpart of
     /// [`Self::nsites`], indexing `Heap::vm_global_ics` via `Heap::cur_gic_base`.
@@ -581,7 +577,7 @@ pub struct CompiledArm {
     pub site_pos: Box<[Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>]>,
     pub body: Node,
     /// The body compiled to flat **bytecode** (`Chunk`). [`vm_run_bc`] runs this — the
-    /// sole VM executor since ADR-100 Stage 5. `compile_arm` always fills it (every
+    /// sole VM executor (ADR-100 Stage 5). `compile_arm` always fills it (every
     /// `Node` shape lowers via [`compile_chunk`]); it's `Option` only for the synthetic
     /// chunk-less arms (`run`'s top-level wrapper, tests) that never reach `vm_run_bc`.
     /// `body` is retained as the lowering *source* (and the tree-walker's reference);
@@ -609,8 +605,7 @@ pub struct CompiledArm {
     /// loop, so counting activations would mis-bail it). `jit_deopts` counts
     /// **consecutive** type-deopts: a successful native completion resets it, a
     /// deopt bumps it, and 16 in a row store `BAILED` — a persistent thrasher
-    /// (nbody's `advance-body` deopted on ~100% of its 248k activations, paying
-    /// native entry + deopt + a full VM re-run per call) self-heals onto the VM,
+    /// (paying native entry + deopt + a full VM re-run per call) self-heals onto the VM,
     /// while an arm with only occasional deopts keeps its native code. Unwatched
     /// arms pay a single bool test; watched healthy arms one relaxed load.
     pub deopt_watch: bool,
@@ -618,16 +613,15 @@ pub struct CompiledArm {
     /// Every type-deopt of this arm, CUMULATIVE and watched or not — the probe
     /// `%jit-arm-state` reports as `:deopts-total`. `jit_deopts` above is the feedback's
     /// consecutive count and only moves for a watched arm, so a `SelfCall` loop that
-    /// deopted at entry on every activation (`any?` over a vector, before its `empty?`
-    /// fallback) read `:deopts 0` — a test asserting on it was vacuous. One relaxed
+    /// deopts at entry on every activation reads `:deopts 0` there. One relaxed
     /// increment on the deopt path, which is cold by definition.
     pub jit_deopts_total: std::sync::atomic::AtomicU32,
     /// Param slots the tier-time profile typed `Int`/`Float` that activations have since
     /// contradicted AT ENTRY (deopt reason 106, the register-carry tag check): bit `k` set
     /// means slot `k` is polymorphic and the next lowering must leave it boxed on the frame
     /// (`profile_slot_tags` masks it). A profile is one activation's snapshot — `json/emit
-    /// (v acc)` sampled with `v = 1` carried `v` as an i64 and deopted on every map it was
-    /// handed, 4 819 times per run, and a `SelfCall` arm has no deopt feedback to latch
+    /// (v acc)` sampled with `v = 1` would carry `v` as an i64 and deopt on every map it is
+    /// handed, and a `SelfCall` arm has no deopt feedback to latch
     /// it. After `ENTRY_DEOPT_RELOWER` such deopts the arm is reset to untried and re-tiers
     /// with the slot boxed: one recompile per polymorphic slot, never a bail.
     pub jit_poly_slots: std::sync::atomic::AtomicU32,
@@ -638,9 +632,8 @@ pub struct CompiledArm {
     /// deopted on a `Float` operand: the arm computes on floats that arrive through
     /// type-erased reads — `(nth a 0)` on a vector of floats — with no float param or
     /// literal to say so, which is every function of a 2D vector library (`(dot a b)`,
-    /// `(add a b)`). The tier-time profile types only params, so such an arm lowered its
-    /// `*` on the integer path, deopted on every call and latched BAILED at sixteen: a
-    /// 400 ns interpreted call for 6 ns of arithmetic. The next lowering takes the float
+    /// `(add a b)`). The tier-time profile types only params, so such an arm would lower
+    /// its `*` on the integer path, deopt on every call and latch BAILED. The next lowering takes the float
     /// context as if a param had profiled `Float` (`has_float_slot`), which is a guess the
     /// `as_f64` tag guards keep sound.
     pub jit_float_context: std::sync::atomic::AtomicBool,
@@ -690,7 +683,7 @@ pub struct CompiledArm {
     /// short loop called a million times pays the env lookup once per epoch, not once
     /// per activation. `u64::MAX` = never proven.
     pub self_bound_stamp: std::sync::atomic::AtomicU64,
-    /// Deopt-resume checkpoint layout (devlog 2026-07-16 fix): `u32::MAX` = no
+    /// Deopt-resume checkpoint layout: `u32::MAX` = no
     /// checkpointing (no non-tail calls in the chunk — a from-ip-0 re-run is
     /// then effect-free). Otherwise `ckpt_slot` is the frame slot holding the
     /// packed `(resume_ip << 16) | operand_depth` journal (a plain `Value::Int`,
@@ -734,7 +727,7 @@ pub struct CompiledArm {
     /// unambiguous `(id, argc)` key). When set, [`jit_tier`] installs an epoch-current
     /// entry from [`RuntimeCode`]'s shared cache instead of re-tiering + recompiling
     /// the arm in every process — without it, N spawned workers each recompile + swamp
-    /// the background compiler, so most run interpreted (the spawn-14× cause).
+    /// the background compiler, so most run interpreted.
     pub share_key: Option<(u64, u16)>,
     /// True once this process has published its native code to the shared cache (or
     /// installed the code *from* it) — so the publish costs one lock acquire per
@@ -763,8 +756,8 @@ pub struct CompiledArm {
     /// carried here so the error-position rule can tell generated code from a user's
     /// without touching the heap (KI-184: a contract shim's positions are never reported).
     pub module: Option<Symbol>,
-    /// Recursive self-inlining (Phase B, the two-stage tiering upgrade, devlog
-    /// 2026-06-17). `Some(name)` when this arm qualifies as a top-level no-capture
+    /// Recursive self-inlining (Phase B, the two-stage tiering upgrade).
+    /// `Some(name)` when this arm qualifies as a top-level no-capture
     /// recursive `defn` whose body the JIT can splice depth-1 of into its own frame
     /// (removing the per-call protocol for the inlined level — the fib lever). The
     /// VM keeps the ORIGINAL small `body`/`chunk`/`nslots`; the inlined body is
@@ -826,8 +819,7 @@ pub struct CompiledArm {
     /// The STATIC half of the i64/f64 register-worker eligibility (`arm_scalar_kind`):
     /// the arm's shape and body walk, which never change for an arm. `Ok(1)` Int, `Ok(2)`
     /// Float, `Err(reason)` refused. Cached because the eligibility is asked on every
-    /// VM→native entry of an arm awaiting its inline upgrade (`declines_inline_upgrade`),
-    /// and the walk used to sit behind a process-global mutex there.
+    /// VM→native entry of an arm awaiting its inline upgrade (`declines_inline_upgrade`).
     #[cfg(feature = "jit")]
     pub scalar_kind: std::sync::OnceLock<Result<u8, &'static str>>,
     /// Does this arm's own chunk call `%receive` directly? Asked per tree-walker→VM route
@@ -884,17 +876,14 @@ impl CompiledArm {
     /// therefore return a different size than the frame was built to, and the staged
     /// `[callee, args…]` region is then written at one offset and read at another.
     ///
-    /// That is **KI-48**, and it was live on 123 arms (`fold`: `nslots` 13 vs
-    /// `inline_nslots` 25, a 12-slot overshoot) with two captured crashes. It is also
-    /// KI-26 / the two ADR-210 bugs — the same anti-pattern, three times now.
+    /// That is **KI-48** (also KI-26 and the ADR-210 bugs — the same anti-pattern).
     ///
     /// The rule: whoever builds the frame captures this ONCE and **tells** every consumer
     /// (`jit_dispatch_tail` takes `frame_nslots`; the deopt-resume helpers are passed it).
     /// A consumer that re-derives it is a bug even when the sizes happen to agree today.
     /// `crates/lisp/tests/frame_size_callsites.rs` pins the permitted callers so a new one
-    /// has to be justified rather than merely compile.
-    ///
-    /// Renamed from `active_nslots` on 2026-08-21 so the hazard is visible at the call site.
+    /// has to be justified rather than merely compile. The name keeps the hazard visible at
+    /// the call site.
     #[inline]
     pub fn frame_size_for_new_entry(&self) -> usize {
         if self
@@ -985,8 +974,7 @@ impl CompiledClosure {
 /// non-tail call path then clones that `Arc` up to three times per call — the IC probe
 /// ([`Heap::vm_call_ic_probe`]), the `BcFrame` the driver pushes, and (for a
 /// handle-bearing arm) `live_arm_push` — so N worker threads RMW one refcount cache
-/// line per call. Measured cost: `pfib` 52.7 s against 17.6 s with sharing off, with the
-/// cores stalled at 769% instead of 1148%.
+/// line per call — a contention cost that can triple a parallel workload's runtime.
 ///
 /// The fix is to interpose an `Arc` that only **one** process ever clones. `ArmHandle`
 /// is created once per (process, call site) when an inline cache is filled and owns the
@@ -1391,7 +1379,8 @@ pub enum Inst {
         /// `head`/`site` stay populated when this is set, which is the whole point: the
         /// call-site IC still caches the resolved **arm** — the thing the elided head was
         /// really buying — and the staged value is validated against the IC's cached
-        /// callee. Dropping to the plain computed-callee path instead cost `json` 6×.
+        /// callee. Don't drop to the plain computed-callee path instead: it loses the IC
+        /// (~6x on `json`).
         staged: bool,
     },
     /// Direct `letrec` self-tail-call (always tail position): args have been pushed;

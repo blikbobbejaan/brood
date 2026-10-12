@@ -16716,3 +16716,34 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
 `docs/archive/known-issues-closed.md` (the index, filing rules and open entries stay in
 `known-issues.md`); `docs/archive/devlog-archive.md` is deleted (git keeps it);
 `docs/handoff.md` is one current-state page instead of 4.5k lines of dated sections.
+
+## 2026-10-12 — the cleanup's follow-through: tcp/close, error positions, the last curated overlap
+
+- **`tcp/close` on a listener is synchronous.** It only queued the close on the reactor, so
+  for a moment after it returned the listener still accepted — a peer could connect to a port
+  the program believed closed. The listener fd is now shared by the registry entry and the
+  reactor (`ListenerSlot`); `close` empties and closes it on the calling thread, and the
+  reactor treats an emptied slot as gone. No blocking round-trip, so the worker never waits.
+  Guarded by 300 close-then-connect rounds in `tests/tcp_test.blsp` (red 3/3 with the queued
+  close restored, on one core). Streams are unchanged on purpose: a closing stream keeps
+  reading through its linger so `send` + `close` never truncates a response.
+- **A raise inside a `nest mcp` tool reports where it came from again.** `catch` binds the
+  thrown VALUE, so a thrown string had nowhere to carry its position once the dispatcher moved
+  into Brood. New kernel primitive `(%try-described thunk handler)` calls
+  `(handler caught description)`, the description being the full
+  `{:kind :message :file :line :col :trace}` map for ANY thrown value; MCP's error mapping uses
+  it, so `error.data` carries `file`/`line`/`col`/`trace` for user throws as it did in Rust.
+  The compiler only inlines one-parameter handlers, so the VM's catch path is untouched.
+- **No curated signature duplicates a std declaration.** The derivation now types a
+  self-call's arguments under the function's own parameter demands (the induction step: the
+  calling activation was itself entered inside that domain), which proves `keyed-loop`'s
+  `(- i 1)` an int; `nest/main` declares the fact only it knows, `((list string) -> int)`.
+  With those, `math/even?`, `math/odd?`, `string/starts-with?`, `string/ends-with?` and
+  `index-of` leave the curated table and `no_curated_name_is_declared_in_std` admits no
+  exceptions.
+- **The dated-comment sweep is finished** across `std/` and every crate (~810 more lines):
+  history became the rule and its reason; invariants and safety arguments stayed.
+- Proven: the distribution suite 3× on four cores, eight concurrency-heavy files under
+  `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, a fuzz-differential pass (180 programs, six
+  generators, zero divergences), the network files 90× across tiers and boot paths, both
+  checker gates at zero, and bedit's three gates.

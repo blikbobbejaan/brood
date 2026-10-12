@@ -236,16 +236,12 @@ pub(crate) fn vm_resume_deopt(
 /// process; a park under a native→native chain latches the innermost enclosing arm per
 /// occurrence and converges outward over successive parks.
 ///
-/// Found during the §7.1 step 2 experiment (admitting named defns to the general
-/// lowering), where `live_migration`'s 12-way load harness went 28/36 liveness failures
-/// without it, 0/36 with. Step 2 was measured and rejected, and on today's tree the
-/// latch is mostly LATENT: the `%receive` fence only catches a direct `%receive` call,
-/// but the shapes that would host one indirectly are fenced by other means — a `def`-
+/// The latch is mostly LATENT today: the `%receive` fence only catches a direct `%receive`
+/// call, and the shapes that would host one indirectly are fenced by other means — a `def`-
 /// named closure gate-bails like any named defn, and a single-non-tail-call anonymous
-/// closure gets no spill slots (`jit_spill_reserve`'s measured-load-bearing rule) and
-/// bails mid-emit. The latch stays as the scheduler's safety net for any future
-/// admission (partial lowering, a wider subset): whatever lowers a receive-hosting arm
-/// next will find the liveness failure already guarded rather than rediscovering it.
+/// closure gets no spill slots (`jit_spill_reserve`) and bails mid-emit. Keep it as the
+/// scheduler's safety net: admitting such arms (partial lowering, a wider subset) without
+/// it causes liveness failures under load.
 #[cfg(feature = "jit")]
 pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
     use std::sync::atomic::Ordering::Release;
@@ -373,7 +369,7 @@ fn arm_name(arm: &CompiledArm) -> &'static str {
 /// re-profiles and re-lowers — the reset the operator-rebind and depth-cap paths use.
 fn reset_arm_untried(heap: &Heap, arm: &CompiledArm) {
     // The published copy IS the code being replaced: retract it, or the reset arm simply
-    // adopts it back at its next call (measured: it did). Both caches — the inlined copy
+    // adopts it back at its next call. Both caches — the inlined copy
     // too, or a peer re-adopts the very upgrade whose deopts asked for this re-tier.
     if let Some(key) = arm.share_key {
         heap.jit_shared_retract(key);
@@ -391,12 +387,11 @@ fn reset_arm_untried(heap: &Heap, arm: &CompiledArm) {
 /// Put an arm's native state back to "untried, already proven hot": the ONE reset, shared
 /// by the epoch invalidation in `jit_tier` and the deopt-feedback re-lowering above.
 ///
-/// It must clear the inlined upgrade's state as well as `jit_code` (KI-189). The re-lowering
-/// used to clear only `jit_code`/`jit_calls`/`shared_published`, leaving `inline_installed`
-/// set: the next entry then sized the frame to `inline_nslots` while the recompiled SMALL
-/// native ran in it, journalling to the small layout's `ckpt_slot`; a deopt read the frame
-/// size as the leaf-spliced layout, found no journal in the leaf slot, and re-ran the arm
-/// from ip 0 — repeating every effect before the deopt (`tests/jit_effect_once_test.blsp`
+/// It must clear the inlined upgrade's state as well as `jit_code` (KI-189). Leaving
+/// `inline_installed` set sizes the next frame to `inline_nslots` while the recompiled SMALL
+/// native runs in it, journalling to the small layout's `ckpt_slot`; a deopt then reads the
+/// frame size as the leaf-spliced layout, finds no journal in the leaf slot, and re-runs the
+/// arm from ip 0 — repeating every effect before the deopt (`tests/jit_effect_once_test.blsp`
 /// case 8). `jit_code` goes first, so a reader that still sees the inlined flags sees a
 /// null pointer and interprets.
 pub(super) fn reset_native_state(arm: &CompiledArm) {

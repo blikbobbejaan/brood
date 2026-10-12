@@ -85,8 +85,8 @@ module included), built from the whole `files` universe — the KI-17 reachabili
               with-own (if own (conj closed own) closed))
           ;; Sorted: the closure is stored in the verdict cache and compared with
           ;; `=` against the next run's, and set order follows symbol interning,
-          ;; which differs per process — unsorted, the comparison never held and
-          ;; every launch re-checked every file (2026-08-30).
+          ;; which differs per process — unsorted, the comparison never holds and
+          ;; every launch re-checks every file.
           (%map-assoc acc f (vec (sort with-own))))))))
 
 ;; Pair each file with its closure (from the map) — the `[file closure]` element the
@@ -147,15 +147,10 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; spawn overhead, no pool warm-up, stable (filename-sorted) output order.
 ; below this many files, check in-process
 (def *check-min-parallel* 2000)
-;; …or this many BYTES of source, whichever comes first. The file count alone was the
-;; whole test until 2026-09-22, and it measures the wrong thing: it was calibrated when a
-;; "huge project" meant 100 000 files averaging ~180 lines, so 2000 files ≈ 7 MB of source
-;; ≈ the point where the per-worker setup below amortises. A project of 1 000 files × 3 000
-;; lines is 60 MB of exactly that work and reads as "small" — measured on a 302-file ×
-;; 3 067-line rig (18 MB): `nest check` 60.3 s wall against 70.0 s user, one core of
-;; twelve, because 302 < 2000. This threshold is the same calibration expressed in the
-;; quantity that drives the cost, so the old shape still decides the same way (2000 × 180
-;; lines is ~7 MB) and the big-file shape stops being invisible.
+;; …or this many BYTES of source, whichever comes first. Bytes are the quantity that drives
+;; the cost: a few hundred very large files are as much work as thousands of small ones and
+;; must not check on one core. 7 MB ≈ 2000 files of ~180 lines, the point where the
+;; per-worker setup below amortises.
 (def *check-min-parallel-bytes* 7000000)
 (sig *check-min-parallel-bytes* int)
 ; chunks per core (load-balancing headroom)
@@ -334,7 +329,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; deep-copied across process heaps (message passing), which on a warning-heavy
 ;; project costs more than the check itself. `io/puts` writes one line per call,
 ;; so lines from concurrent workers interleave only between warnings, never
-;; mid-line (like the test runner's `:trace`); warning *order* is no longer sorted
+;; mid-line (like the test runner's `:trace`); warning *order* is not sorted
 ;; by filename, which is fine for advisory GNU `FILE:LINE:COL` diagnostics. Honors
 ;; the `BROOD_NO_CHECK=1` opt-out — the same flag the `brood` CLI respects, so
 ;; callers' "exit non-zero on warning" gating gets 0 (no print) under it.
@@ -348,7 +343,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; warning severities (a fuller fix — see the roadmap).
 (defn- project-advisory-warning? (w)
   (or (includes? w "recursive call in non-tail position")
-    ;; A budget the checker ran out of (B6, 2026-09-17): the file WAS checked, with the
+    ;; A budget the checker ran out of: the file WAS checked, with the
     ;; part past the cap read as unknown — sound, and worth seeing, since "zero warnings"
     ;; would otherwise read as "checked". A file defining and using its own macro hits
     ;; the commonest one (the derivation declines) by construction, so it cannot gate.
@@ -400,10 +395,8 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; the set crosses to the worker ONCE instead of once per file.
 ;;
 ;; That is not a micro-optimisation. A chunk is captured by the spawned worker's body, and a
-;; `spawn` DEEP-COPIES what it captures — so pairing each file with the same 16 302-element
-;; list meant copying that list ~100 times per chunk. Measured on a cold `nest run` over
-;; 16 302 modules: the pre-flight cost 24 GB of the run's 26.5 GB peak, and its memory grew
-;; ~4x per doubling of the project (quadratic), while the check itself is ~3.7 ms/file.
+;; `spawn` DEEP-COPIES what it captures — so pairing each file with the same closure list
+;; copies that list once per file, which makes memory quadratic in the project size.
 (defn- project-check-chunk-shared (chunk)
   (let (cl (first chunk))
     (fold (rest chunk)
@@ -449,10 +442,9 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 ;; [mtime warnings dep-keys fp]}`, merged like the extract cache (anti-thrash).
 ;; The on-disk manifest name for a check-result cache, keyed by the CHECKING MODE.
 ;; A verdict depends on the mode that produced it, so a plain run's entries are not a
-;; strict run's to reuse — without this key `nest check` poisoned the cache and the
-;; following `nest check --strict` reported what the plain run had found (measured on a
-;; four-warning probe file: 1 warning instead of 5, and CI runs the two gates back to
-;; back over the same files). Two names rather than one invalidating key so each mode
+;; strict run's to reuse — without this key a plain `nest check` would poison the cache for
+;; a following `nest check --strict` (CI runs the two back to back). Two names rather than
+;; one invalidating key so each mode
 ;; keeps its own warm cache, the way `"checks"` and `"checks-run"` already do.
 (defn- project-check-manifest (base)
   (if (reflect/strict-checking?) (str base "-strict") base))
@@ -461,13 +453,10 @@ module included), built from the whole `files` universe — the KI-17 reachabili
   ;; `manifest` names the on-disk verdict manifest: `"checks"` for `nest check`,
   ;; `"checks-run"` for `nest run`'s pre-flight. Separate because the two commands check
   ;; different file sets against differently-populated heaps (the pre-flight materialises
-  ;; only the entry's closure), and one manifest had each command rewriting the other's
-  ;; entries on every invocation (2026-08-30). Each command is warm against itself.
-  ;; (Until 2026-09-21 a module materialised from the startup image also carried no
-  ;; definition site, so a global's fact read `F` from the image and `D<file>@<mtime>`
-  ;; from source — which made EVERY check after a cold build or an edit a full re-check,
-  ;; whatever the manifest. The image carries def sites now: `boot/image.rs`
-  ;; `KIND_DEF_SITE`, gated by `crates/nest/tests/check_incremental.rs`.)
+  ;; only the entry's closure), and one shared manifest would have each command rewriting
+  ;; the other's entries. Each command is warm against itself. (Fingerprints also rely on
+  ;; the startup image carrying definition sites — `boot/image.rs` `KIND_DEF_SITE`, gated
+  ;; by `crates/nest/tests/check_incremental.rs`.)
   ;;
   ;; `strict?` selects the reuse test. `nest check` (true) reuses an entry only when
   ;; the file's mtime, its dependency FINGERPRINT and its closure are all unchanged —
@@ -513,9 +502,8 @@ module included), built from the whole `files` universe — the KI-17 reachabili
         ;; Each fresh entry's fingerprint is re-stamped HERE, in this process, from the
         ;; dep-keys the worker returned: the reuse test above runs here too, and a
         ;; worker's view of the heap can differ from ours (a module a worker lazily
-        ;; loaded mid-check is bound there and not here, and before 2026-09-21 an imaged
-        ;; module carried no definition site in either). Stamped in the worker, `nest
-        ;; run`'s pre-flight re-checked every file on every launch.
+        ;; loaded mid-check is bound there and not here). Stamped in the worker, `nest
+        ;; run`'s pre-flight would re-check every file on every launch.
         fresh (fold (project-pcheck-deps recheck)
                 {}
                 (fn (m pair)
@@ -554,11 +542,9 @@ module included), built from the whole `files` universe — the KI-17 reachabili
 their closures (sorted, so the order is the same on every run), then materialise every
 module a loaded body names, to a fixpoint (`%check-materialise-referenced!`).
 
-A verdict can depend on what is loaded — `std/math.blsp` was clean in a fresh process and
-red in strict once `datetime` was, and `nest check` used to load modules as each file's check
-reached them, so the verdict raced the order files were checked in (KI-137: red on a merge,
-green seven runs later, red again from the pre-push hook, one binary throughout). Checking
-every file against the fully-loaded state is also what a live image would see. Returns nil."
+A verdict can depend on what is loaded, so loading modules as each file's check reaches them
+would make the verdict race the order files are checked in (KI-137). Checking every file
+against the fully-loaded state is also what a live image would see. Returns nil."
   ;; Three sources, all of which a check would otherwise load in whatever order it reached
   ;; them: the project's closures; the listed files' own header closures (`nest check
   ;; std/math.blsp` from a project root lists files outside the project, whose entries in
@@ -710,8 +696,8 @@ every file against the fully-loaded state is also what a live image would see. R
 
 ;; An **ambient** name — root regardless of any enclosing namespace, mirroring the
 ;; kernel resolver's `is_ambient`. It is a *declaration*, not a spelling: `defdyn`
-;; declares one (an `*earmuffed*` name no longer gets it for free — two modules that
-;; each wrote `(def *width* …)` used to share, and clobber, one root binding).
+;; declares one (an `*earmuffed*` name does not get it for free — otherwise two modules
+;; that each write `(def *width* …)` would share, and clobber, one root binding).
 (defn- project-ambient? (head name)
   (or (= head "defdyn") (reflect/dynamic? (symbol name))))
 
@@ -845,9 +831,8 @@ Returns nil when there is nothing to report."
 
 ;; Fold every `:symbol` node value in CST `node` into `acc` (name→count, keyed by the
 ;; symbol's *string* — node values may be symbols, but qualified names are built with
-;; `str`, so both sides normalise the same way). Since privacy is now a def-site fact
-;; with a CLEAN name (ADR-146 step 2), the count can no longer be restricted to `--`
-;; names: the verdict looks up each private's bare and qualified name, both ordinary
+;; `str`, so both sides normalise the same way). Privacy is a def-site fact with a
+;; CLEAN name (ADR-146 step 2), so the count cannot be restricted by spelling: the verdict looks up each private's bare and qualified name, both ordinary
 ;; symbols. The bare count is project-global — a name shared across modules reads as
 ;; "used" (a false negative, never a false positive — safe for the advisory
 ;; zero-false-positive contract). Recurses
@@ -885,9 +870,8 @@ Returns nil when there is nothing to report."
 ;;   - `def-names`: every top-level def's qualified global key (for duplicate-defs).
 ;; One parse feeds BOTH whole-project passes (unused-private + duplicate-defs) and
 ;; is what the on-disk cache stores per file. Delegates to the native
-;; `scan-source-extract` — the interpreted-Brood CST walk this replaced was ~120ms
-;; on a 1000-line file (the dominant cost of a cold whole-project check), vs a few
-;; ms in Rust. `project-node-syms-acc`/`project-def-name`/`project-qualify` (below)
+;; `scan-source-extract`, because an interpreted CST walk dominates a cold
+;; whole-project check. `project-node-syms-acc`/`project-def-name`/`project-qualify` (below)
 ;; remain as the interpreted reference the native path mirrors — dead in the live
 ;; check path (only the native `scan-source-extract` runs), kept for documentation.
 (defn- project-scan-file-entry (path)
@@ -953,8 +937,7 @@ Returns nil when there is nothing to report."
 ;;
 ;; The cache is keyed by a hash of the project ROOT, so every ephemeral project leaves a
 ;; directory behind for good — a test fixture in /tmp, a scratch build, a checkout that
-;; moved. Measured on one dev machine: 6458 directories and 83 MB accumulated over twelve
-;; days, none of them ever reachable again. The boot cache has always pruned by age
+;; moved — thousands of unreachable directories within days. The boot cache prunes by age
 ;; (`prelude_image_prune` in boot.rs); this is the same policy for its sibling.
 ;;
 ;; Once per run, not per file: `*project-cache-pruned*` latches. Never prunes the directory
@@ -1073,8 +1056,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; Above this many files the on-disk cache is SKIPPED and the fast from-scratch
 ;; parallel path runs instead. The single manifest is a `pr-str`/`reflect/read-string`
 ;; s-expression whose read+write cost (and the per-entry dep-keys it holds) grows
-;; with the file count; measured on 1000-line files a ~10K-entry manifest turned
-;; the cache into a net loss (cold slower + multi-GB RSS + a pathologically slow
+;; with the file count; a manifest of ~10K entries turns the cache into a net loss (cold slower + multi-GB RSS + a pathologically slow
 ;; warm read). So the ceiling is deliberately low — the cache is for the common
 ;; small-project edit→recheck loop, where its manifest stays tiny; large projects
 ;; ride the from-scratch path (fast now that the per-file scan is native —
@@ -1166,9 +1148,8 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; ── whole-project verdict replay (ADR-382) ───────────────────────────────────
 ;; The per-file cache (below) needs the heap: a verdict is reused only when every global
 ;; fact it observed still holds, and a fact is read from a loaded module. So an UNCHANGED
-;; project still paid to materialise every module, parse every file's requires, scan every
-;; file for the lints and re-fingerprint every entry — 15 s at 1 000 × 3k-line files, of
-;; which the answer was 0 s (measured 2026-09-21, phase trace). Every one of those inputs is
+;; project would still pay to materialise every module, parse every file's requires, scan
+;; every file for the lints and re-fingerprint every entry. Every one of those inputs is
 ;; a function of the same things the startup image is keyed on: the source and test files
 ;; (path, size, mtime), the dependency files, the binary — plus the checking mode and the
 ;; walk flags the stamp carries, and the LIST of files asked about. When that key is the one
@@ -1228,8 +1209,8 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
             _ (project-ensure-loaded root)
             _ (project-check-trace "ensure-loaded" t1)
             ;; ABSOLUTE, as `all-files` spells them: the per-file manifest is keyed by the
-            ;; path string, so `nest check src/a.blsp` never reused the verdict `nest check`
-            ;; had just recorded for `/…/src/a.blsp` (every listed file re-checked, 2026-09-21).
+            ;; path string, so a relative `nest check src/a.blsp` must reuse the verdict
+            ;; recorded for `/…/src/a.blsp`.
             files (if paths (map paths path/absolute) (all-files root))
             t2 (os/now-ns)
             ;; Phase 1: the whole-project lints. Phase 2 (per-file type-check): the
@@ -1316,18 +1297,17 @@ and the pre-flight would 'check' the manifest and warn on it."
 ;; passed through. Walks OUTWARD from the entry through module headers, so it costs one
 ;; `%module-direct-requires` parse per module *in the closure* — never one per file in the
 ;; project, which is what `project-require-closures` costs and why the pre-flight cannot
-;; use it (parsing 16 300 headers to check eleven files measured 34 s of a 35 s run).
+;; use it (on a large project, parsing every header dwarfs checking a few files).
 ;;
 ;; A name that resolves outside `srcdirs` — a std module, a dependency, an unresolvable
 ;; name — terminates the walk rather than failing it: its contents are its own project's
 ;; business, and it cannot require one of ours back. It stays in the returned name set,
 ;; because that set is the KI-17 reachability closure and a reference to it is legitimate.
 ;;
-;; Why this is not `(keys *features*)`, which it replaced. On a WARM start the loaded
-;; features really are the entry's closure and reading them off is exact. On a COLD start
-;; `load-sources-cached` has just loaded every module to build the startup image,
-;; so `*features*` is the whole project — and the pre-flight silently checked all of it
-;; (~3.7 ms/file, uncached: ~50 s of an 85 s cold run on 16 302 modules). The closure has
+;; Why this is not `(keys *features*)`. On a WARM start the loaded features really are the
+;; entry's closure. On a COLD start `load-sources-cached` has just loaded every module to
+;; build the startup image, so `*features*` is the whole project and the pre-flight would
+;; silently check all of it. The closure has
 ;; to be DERIVED from the requires graph, or the same command checks a different file set
 ;; depending on whether an image happened to be fresh, which is a cache leaking into
 ;; advisory output.
@@ -1370,9 +1350,8 @@ reaches is `nest check`/`nest test`'s business."
             ;; in it is reachable from the entry, so the entry's closure is a superset of each
             ;; member's own — sound in the permissive direction, and it crosses to each check
             ;; worker once per CHUNK instead of once per file (`project-check-files-shared`).
-            ;; Pairing a closure per file made this quadratic in project size — a `spawn`
-            ;; deep-copies its captured chunk, so the list was copied ~100 times per chunk.
-            ;; Measured on 16 302 modules: 24 GB of a 26.5 GB peak.
+            ;; A closure per file would make this quadratic in project size — a `spawn`
+            ;; deep-copies its captured chunk.
             )
         (project-check-duplicate-defs extracts source-set)
         (if (or (project-cache-off?) (>= (count want) (project-cache-max-files)))
@@ -1589,17 +1568,9 @@ goes on.
 
 **Below, not above** (KI-162). `crates/lisp/tests/sig_placement.rs` holds every `.blsp`
 in this tree to that placement, because under `BROOD_CONTRACTS=1` a `sig` is an action
-rather than a declaration — it rebinds the name to a checking wrapper — and a forward
-one took whole modules down when the adoption sweep wrote 211 of them (KI-81, KI-113).
-This writer produced exactly what that gate forbids, and the two never met only because
-the tree does not run `--fix-sigs` on itself; a downstream project that does got files
-its own gate would reject.
-
-Worth knowing before trusting the `would not load` half of that story: on 2026-09-17 it
-did NOT reproduce on a minimal module — a forward `sig` over a `defn`, a `defn-`, or a
-`check-allow`-wrapped pair all loaded under contracts and enforced the contract. So what
-is certainly true today is the RULE; whether the loader still fails a forward sig, and
-under what shape, is unverified. Either way the writer obeying the rule is the fix.
+rather than a declaration — it rebinds the name to a checking wrapper (KI-81, KI-113).
+This writer must produce what that gate accepts, or a downstream project running
+`--fix-sigs` gets files its own gate rejects.
 
 Only a TOP-LEVEL definition is a site — a root child, which is structural rather than a
 column-0 reading. `file-signatures` reports a `defn` wrapped in `(check-allow …)` too

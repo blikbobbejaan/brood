@@ -469,15 +469,10 @@ A no-op when the ring is empty."
 ;; with `string/lower` instead would shift every offset after the first `İ`.
 
 ;; Both searches stream the ROPE (`%rope-find` / `%rope-rfind`) rather than asking the buffer
-;; for its text. They used to read
-;;
-;;     (index-of (string/fold-case (buffer-text buf)) needle from)
-;;
-;; which is three whole-buffer passes — flatten the rope to a string, fold that to a second
-;; string, then scan — per call, and incremental search calls this on every keystroke. On a
-;; 5,700-line file that measured **148 ms a character**; the cost is the document's size, so
-;; it is unbounded in exactly the buffers where search matters most. Nothing whole-buffer is
-;; allocated now, and the fold happens per character as the scan passes it.
+;; for its text: `(index-of (string/fold-case (buffer-text buf)) needle from)` is three
+;; whole-buffer passes per call, and incremental search calls this on every keystroke, so
+;; its cost would grow with exactly the buffers where search matters most. Nothing
+;; whole-buffer is allocated; the fold happens per character as the scan passes it.
 
 (defn buffer-search-forward (buf needle from &optional (fold? false))
   "The char index of the first occurrence of `needle` in `buf`'s text at or after
@@ -854,16 +849,10 @@ fresh run into a redo) — lives in cmd-undo / cmd-redo, which call `undo-start`
 ;; must survive, a tutorial whose prose explains and whose boxes you may break — narrows to
 ;; the regions the user owns, and everything outside them is read-only by construction.
 ;;
-;; **Editable regions, not protected spans.** This used to store the COMPLEMENT: the ranges
-;; that are frozen. That encoding cannot say what a form buffer needs to say, and the
-;; boundary rules it forced were wrong in a way no amount of checking fixes. An insert
-;; happens BETWEEN two characters, so at every boundary "is this position protected?" has no
-;; answer from the complement alone, and the old predicate carried three special cases to
-;; guess one — strictly-interior, buffer-start, buffer-end — plus a deliberate hole at the
-;; junction of two spans, because a junction is also how an emptied region had to be spelled.
-;; The result: with characters 0-3 frozen, stamping `[0 2] [2 4]` ALLOWED an insert at 2 and
-;; stamping `[0 4]` refused it. Same text, same protection, different answer — decided by how
-;; the producer happened to split its list.
+;; **Editable regions, not protected spans.** Storing the COMPLEMENT (the frozen ranges)
+;; cannot answer the boundary question: an insert happens BETWEEN two characters, so "is
+;; this position protected?" needs special cases to guess, and the answer then depends on
+;; how the producer happened to split its span list.
 ;;
 ;; Editable regions have no such ambiguity, and need no special cases:
 ;;
@@ -873,7 +862,7 @@ fresh run into a redo) — lives in cmd-undo / cmd-redo, which call `undo-start`
 ;;                      case, said directly instead of encoded as a junction)
 ;;   delete `[lo hi)`   allowed when some region CONTAINS it
 ;;
-;; That is the whole rule. Both are enforced at the same choke point as before — every
+;; That is the whole rule. Both are enforced at one choke point — every
 ;; mutator asks before it touches the rope — so protection holds on every edit path by
 ;; construction (key, mouse, held-key repeat, keyboard macro, a programmatic edit), never a
 ;; reactive after-the-fact comparison a caller can forget to run.
@@ -1027,7 +1016,7 @@ width."
 (sig buffer-adjust-editable (buffer keyword int int -> buffer))
 
 ;; ---- the complement view (compatibility) ------------------------------------
-;; `read-only-spans` was the old vocabulary and still reads fine as a QUERY — "which ranges
+;; `read-only-spans` reads fine as a QUERY — "which ranges
 ;; are frozen?" — so it stays, derived. `set-read-only-spans` stays too, but it is lossy by
 ;; nature and says so: the complement cannot express an empty editable region, so a producer
 ;; that has regions should call `narrow-to` with them instead of computing a complement for this
@@ -1647,11 +1636,8 @@ shared buffer: key your marker by your pid and it is cleaned up with you) — an
 changed the buffer, survivors get a push (they see the cursor vanish)."
   (let (rec (or recent ()))
     (receive
-      ;; one arm for both tagged and untagged closure edits (origin nil when untagged).
-      ;; This merge used to be forced by a 12-arm budget — a 13th receive arm fell off a
-      ;; compile cliff (KI-10). That cliff no longer reproduces (re-measured 2026-07-25:
-      ;; +1 arm and +8 arms are both flat, buffer suite and full suite), so the budget is
-      ;; gone; the single arm stays because one arm for both shapes is simply simpler.
+      ;; one arm for both tagged and untagged closure edits (origin nil when untagged) —
+      ;; simpler than two; there is no receive-arm budget (KI-10 no longer reproduces).
       ([:edit f origin] (let (nb (f buf) v (inc version))
                           (do (buffer-push subs v nb origin) (buffer-serve nb subs v rec))))
       ;; A read-then-decide edit in ONE round-trip: `f` returns `[new-buf value]` — the

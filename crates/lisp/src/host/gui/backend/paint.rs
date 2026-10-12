@@ -1965,8 +1965,8 @@ mod strip_diff_tests {
 
     /// An `frect` inside a scroll region rides with the text: a gutter's change bar
     /// painted half a cell up lands where a text op at the same row does, both in the
-    /// raster and in the rows the diff marks dirty. It used to stay put while the
-    /// lines glided — the bar jumped a row each time the top advanced.
+    /// raster and in the rows the diff marks dirty, so a bar never jumps a row while
+    /// the lines glide.
     #[test]
     fn an_frect_inside_a_scroll_region_shifts_with_the_text() {
         let bar = Op::FRect {
@@ -2392,9 +2392,8 @@ mod cell_region_tests {
         );
     }
 
-    /// The gap this closes: inside a `CellRegion` a zone used to be dropped entirely, so
-    /// a link in a zoomed pane showed no hand. Now it is placed at the region's origin
-    /// (parent cells) and sized in the REGION's cells — bigger at a bigger px.
+    /// A zone inside a `CellRegion` (a link in a zoomed pane) is placed at the region's
+    /// origin (parent cells) and sized in the REGION's cells — bigger at a bigger px.
     #[test]
     fn a_zone_inside_a_region_is_sized_in_that_regions_cells() {
         let (cw, ch) = window_cell();

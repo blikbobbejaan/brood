@@ -4,9 +4,8 @@
 ;; under this module's name the way `string/length` and `bit/and` are: Rust supplies the
 ;; mechanism, the namespace is Brood's. This file declares the namespace.
 ;;
-;; They were bare (`decimal`, `->decimal`, `decimal->string`, `decimal->float`) until
-;; 2026-08-26. `decimal?` stays bare, with every other type predicate — a predicate belongs
-;; beside `int?`/`float?`/`ratio?`, not behind a prefix.
+;; `decimal?` stays bare, with every other type predicate — a predicate belongs beside
+;; `int?`/`float?`/`ratio?`, not behind a prefix.
 ;;
 ;; Names follow the conversion idiom the rest of the library uses: inside module `M`,
 ;; `M/->x` reads "M to x" and `M/x->` reads "x to M". So `decimal/->string` is a decimal to

@@ -684,6 +684,10 @@ pub(super) struct Ctx {
     /// sense the impossible-predicate lint reports — the author wrote it for the callers
     /// that are not here yet. Dropped by `bind` (a shadow), like every binding fact.
     derived_locals: HashSet<Symbol>,
+    /// The function whose body this scope is in, when its parameters are unknown, with
+    /// each parameter's body DEMAND — the induction hypothesis a self-call's arguments are
+    /// typed under (see [`Ctx::under_self_demands`]). Dropped per parameter by `bind`.
+    self_demands: Option<Arc<(Symbol, Vec<(Symbol, Ty)>)>>,
     /// Parameters whose type was **seeded from the enclosing function's `(sig …)`
     /// declaration** — the subset of `types` we trust enough to flag a *dead
     /// clause* on. A guard that narrows one of these to the empty type means a
@@ -1044,6 +1048,13 @@ impl Ctx {
         c.sig_params.retain(|p| *p != sym);
         c.let_fn_sigs.remove(&sym);
         c.derived_locals.remove(&sym);
+        if let Some(hypothesis) = &c.self_demands {
+            if hypothesis.1.iter().any(|(param, _)| *param == sym) {
+                let (name, params) = &**hypothesis;
+                let kept = params.iter().filter(|(param, _)| *param != sym).cloned();
+                c.self_demands = Some(Arc::new((*name, kept.collect())));
+            }
+        }
         c.dead_clause_locals.retain(|p| *p != sym);
         if let Some(neighbours) = c.aliases.remove(&sym) {
             for n in neighbours {
@@ -1366,6 +1377,30 @@ impl Ctx {
         let mut c = self.bind(sym, ty);
         c.derived_locals.insert(sym);
         c
+    }
+    /// Enter the body of `name`, whose `params` are unknown but demanded (see the
+    /// `self_demands` field).
+    pub(super) fn with_self_demands(&self, name: Symbol, params: Vec<(Symbol, Ty)>) -> Ctx {
+        let mut c = self.clone();
+        c.self_demands = Some(Arc::new((name, params)));
+        c
+    }
+    /// The scope a call to `callee` types its arguments in: this one, or — for a SELF-call
+    /// inside a body entered through [`Ctx::with_self_demands`] — this one with each
+    /// parameter not rebound since narrowed to its demand. The induction step: the
+    /// activation making the call was entered inside the domain every checked call is held
+    /// to, so its parameters lie in it (a narrowing already in scope is kept, met with it).
+    pub(super) fn under_self_demands(&self, callee: Symbol) -> Option<Ctx> {
+        let hypothesis = self.self_demands.as_ref().filter(|h| h.0 == callee)?;
+        let mut c = self.clone();
+        for (param, demand) in hypothesis.1.iter().filter(|(_, demand)| !demand.is_any()) {
+            let met = match self.types.get(param) {
+                Some(current) => current.clone().intersect(demand.clone()),
+                None => demand.clone(),
+            };
+            c.types.insert(*param, met);
+        }
+        Some(c)
     }
     /// Was `sym` bound to a caller-derived type (and not rebound since)?
     pub(super) fn is_derived_local(&self, sym: Symbol) -> bool {

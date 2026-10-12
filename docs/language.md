@@ -1727,6 +1727,17 @@ as **JIT-compiled native code** when the error passed through it is recorded too
 the caller's instruction stream, which native code does not keep — so a trace
 through hot code has the same frames as through cold code, less those positions.
 A user `(throw v)` carries `v` verbatim (no map, so no `:trace` on the caught value).
+The position and trace still exist — the raise collected them as it unwound — and
+**`(%try-described thunk handler)`** is how a handler reads them for any thrown value:
+it calls `(handler caught error)`, where `caught` is exactly what `catch` would bind and
+`error` the raise's description, `{:kind :message [:code :file :line :col :hint :trace]}`
+(for a built-in error the two are the same map). Tooling that reports a failure it did
+not raise — `nest mcp` answering a tool handler's `throw` — uses it:
+
+```clojure
+(%try-described (fn () (error "bad input"))
+  (fn (caught error) [caught (get error :line)]))   ; → ["bad input" 1]
+```
 
 Because a caught value has no single shape, **`(error-message e)`** is the
 shape-agnostic accessor: a raised string as-is, the `:message` of an error map,

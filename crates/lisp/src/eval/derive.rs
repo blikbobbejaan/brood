@@ -38,11 +38,11 @@
 //! [`global_miss`], which every engine's unbound arm calls — or, for an arm about to go
 //! native, at its tiering election (`preload_arm_globals`). A macro head, or a head into a
 //! module no image describes, still loads at expansion. Under the EAGER policy
-//! ([`EagerLoadScope`], `%eager-loads!`, `BROOD_NO_LAZY_LOAD=1`) the hooks load as they
-//! always did; the checker runs eager so its unbound verdict sees the modules a file names.
+//! ([`EagerLoadScope`], `%eager-loads!`, `BROOD_NO_LAZY_LOAD=1`) the hooks load at once;
+//! the checker runs eager so its unbound verdict sees the modules a file names.
 //! Either way an inferred load records no require-edge ([`take_skip_next_edge`]): the image
 //! replays edges so a materialised module has what its source load pulled in, and a body
-//! reference no longer pulls anything in.
+//! reference pulls nothing in.
 //!
 //! See `docs/auto-derived-imports.md`.
 
@@ -414,24 +414,19 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
     // A module we have already failed to FIND, with nothing loaded since: skip it. Resolving
     // a module name is a filesystem search, and the miss path runs it on every lookup of an
     // unbound qualified name — so `(mod/nope)` in a loop, which is what error-testing code
-    // is, pays that search per iteration. Measured under the tree-walker, 2000 lookups:
-    // 1.22 s for an absent module against 0.07 s for an unbound name in a module that IS
-    // loaded (there `require-one` short-circuits on `*features*`) and 0.12 s for an unbound
-    // bare name. That 10x is what turned the tree-walker suite job red.
+    // is, pays that search per iteration (~10x an unbound name in a loaded module).
     //
-    // ADR-335 declined a negative memo because "a module absent now may exist later", which
-    // is true and is why this one is not permanent: any successful load clears it (below),
-    // as does a load-path change ([`clear_absent_modules`], called from `set-load-path`).
-    // What it removes is only the repeat of a search whose inputs have not changed since it
-    // failed.
+    // The memo is not permanent because a module absent now may exist later (ADR-335):
+    // any successful load clears it (below), as does a load-path change
+    // ([`clear_absent_modules`], called from `set-load-path`).
     if module_known_absent(module) {
         return Ok(Value::nil());
     }
     let root = heap.env_root(env);
     // An INFERRED load records no require-edge (ADR-335): the edges exist so a module
     // materialised from an image gets the modules its source load would have pulled in, and
-    // a body reference no longer pulls anything in — the miss path loads it on first use,
-    // imaged or not. Only the header clauses (`:use`/`:alias`) are load-time edges now. The
+    // a body reference pulls nothing in — the miss path loads it on first use, imaged or
+    // not. Only the header clauses (`:use`/`:alias`) are load-time edges. The
     // flag is one-shot and consumed by the loader's FIRST `%require-record-edge!` — the one
     // for `module` itself — so the edges of everything `module` in turn loads are kept.
     SKIP_NEXT_EDGE.with(|skip| skip.set(true));

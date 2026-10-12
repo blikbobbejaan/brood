@@ -17,11 +17,9 @@ use std::path::Path;
 /// `target/release/`, `target/release-fast/` (what `make release-brood` writes) and
 /// `$PREFIX/bin` (what `make install` writes) — and nothing about a wrong one looks wrong: an
 /// A/B against it reads +0.0%, a lowering-witness diff comes back empty, and a binary that
-/// predates a flag *ignores* that flag rather than rejecting it. A `BROOD_TIER` sweep run
-/// against a pre-ADR-222 `brood` reported `1.0x` on all 23 rows, which reads as a finding
-/// about the tiers rather than a mistake about the binary (2026-08-13). `--version` printing
-/// only the semver could not tell those two builds apart; with the sha, `make doctor`
-/// diffs it against `git rev-parse --short HEAD` and says so.
+/// predates a flag *ignores* that flag rather than rejecting it — which reads as a finding
+/// rather than a mistake about the binary. The semver alone cannot tell two builds apart;
+/// with the sha, `make doctor` diffs it against `git rev-parse --short HEAD` and says so.
 ///
 /// `BROOD_GIT_SHA` is set by this crate's `build.rs`, so it is only in scope here — hence a
 /// const in the shared crate rather than `env!` at each binary's clap attribute.
@@ -109,12 +107,10 @@ pub fn install_crash_dump() {
 /// Append a **green process's death** to `.brood_crash_dump`, the same durable place a
 /// Rust panic goes.
 ///
-/// The runtime already prints `process N died: …` to stderr, and for two sessions that was
-/// believed not to happen at all (KI-72): **libtest captures a test's stderr and discards
-/// it when the test never completes**, so the one line naming the cause was written and
-/// thrown away. The same loss happens under a TUI, under `nest run --watch`'s animation,
-/// and anywhere else stderr is a scrolling region — which is exactly the reasoning that
-/// produced `.brood_crash_dump` for panics in the first place.
+/// The runtime already prints `process N died: …` to stderr, but **libtest captures a
+/// test's stderr and discards it when the test never completes** (KI-72), and the same
+/// loss happens under a TUI, under `nest run --watch`'s animation, and anywhere else
+/// stderr is a scrolling region — the reasoning behind `.brood_crash_dump` for panics.
 ///
 /// A green process dying from a Brood error is not a Rust panic, so the panic hook never
 /// covered it — and it is the *more* likely of the two to be lost, because a crashing
@@ -352,14 +348,13 @@ where
 }
 
 /// Warn once if this binary's baked-in standard library is **older than the tree it is
-/// running in** — the trap that has cost this project three separate sessions, in three
-/// disguises.
+/// running in** — a trap that comes in several disguises.
 ///
 /// `std/**/*.blsp` is `include_str!`'d into the binary, so an edited module is invisible to
 /// the running program while sitting plainly on disk. The failure does not look like
 /// staleness: a function the file clearly defines reports as *unbound*, a docstring fix
-/// "doesn't take", a suite reads as failing when it passes. Every time, the conclusion drawn
-/// was about the code rather than about the binary.
+/// "doesn't take", a suite reads as failing when it passes — each read as a fact about the
+/// code rather than about the binary.
 ///
 /// The binary already knows the answer — `BROOD_STDLIB_HASH` is a content hash of every
 /// baked-in `.blsp`, computed by `build.rs`. This recomputes it from the tree and compares.
@@ -378,7 +373,7 @@ pub fn warn_if_stdlib_is_stale() {
 }
 
 /// **Refuse** to run a checker from a binary whose baked-in standard library is older than
-/// the tree it is running in (B7, 2026-09-17). Exits 2 with the reason.
+/// the tree it is running in. Exits 2 with the reason.
 ///
 /// The checker resolves every `:use`d std module from the binary's baked-in copy, so a
 /// `nest` built before a `sig` edit checks every caller against the OLD declaration: the
@@ -474,11 +469,9 @@ fn stdlib_tree_hash(root: &Path) -> Option<String> {
 /// `stdlib_tree_hash`'s note above; `the_runtime_and_build_time_stdlib_hashes_agree` is the
 /// gate that keeps the two honest.
 ///
-/// A byte at a time cost 4.4 instructions per byte over 3 MB of `std/`, which callgrind put
-/// at **13.6M instructions — 14.5% of a release `brood --check`** on a one-line file, with
-/// the whole guard at 15.0M (measured 2026-09-19, KI-150; the estimate it replaced, in
-/// `build.rs`'s comment, was "~1 ms of a ~23 ms boot" and had never been checked). Same
-/// function shape over 1/8 the iterations, measured back at **2.2M**.
+/// Words, not bytes, because hashing all of `std/` a byte at a time was a double-digit
+/// share of a release `brood --check` on a one-line file (KI-150); the same function shape
+/// over 1/8 the iterations removes most of it.
 ///
 /// The length is mixed in first because a word tail makes concatenation
 /// ambiguity easier to reach than a pure byte stream did (a path's last partial word and a
@@ -571,11 +564,9 @@ impl Drop for RawTermGuard {
 // A hit replays the check's LOADS as well as its warnings. The pre-flight loads the file's
 // own references eagerly (ADR-370's drain), and those loads survive into the run (ADR-339:
 // a module load is a runtime-wide fact); a run that skipped the walk would instead load
-// them lazily at first use, which is correct and — since KI-167 — no slower, but the body
-// compiled before the load is marked stale and recompiled (ADR-366), and that churn
-// measured **+4 MB peak RSS** on the `startup` row (`(io/puts 0)`: 46.0 MB with the walk,
-// 49.9 MB replaying only the warnings; `BROOD_NO_LAZY_LOAD=1` closed the gap, which is how
-// it was attributed). So the entry records the embedded modules `*features*` gained during
+// them lazily at first use, which is correct (KI-167), but the body compiled before the
+// load is marked stale and recompiled (ADR-366), and that churn costs peak RSS on even a
+// trivial program. So the entry records the embedded modules `*features*` gained during
 // the walk, and a hit `require`s them first — from the image, a millisecond — leaving the
 // runtime in the state a walk would have left it.
 //

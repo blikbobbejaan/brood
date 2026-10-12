@@ -15,10 +15,7 @@ use super::*;
 /// Brood indexes strings by Unicode scalar, but they are stored as UTF-8, so every
 /// char index has to be converted to a byte offset. Done on demand that is O(index)
 /// — `chars().count()` for the length, `char_indices().nth(k)` for the offset — which
-/// silently makes any per-character or incremental-search loop quadratic. It has cost
-/// real time here more than once: `url.blsp` and `csv.blsp` both had to switch to
-/// code-point vectors, `ansi.blsp` was 1.58 s on 90 KB, and `index-of`'s `from` offset
-/// stayed quadratic even after its suffix copy was removed.
+/// silently makes any per-character or incremental-search loop quadratic.
 ///
 /// Caching the count fixes the class rather than the instances. It is free to compute
 /// (construction already walks the bytes to copy them) and it buys two things:

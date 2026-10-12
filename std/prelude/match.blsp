@@ -440,10 +440,9 @@ NON-LINEAR patterns (the same name twice) work.
 ;; the power forms — general `{:key subpattern}` nesting and `:as` are deferred
 ;; (ADR-011: ship the simple shape, add the rest on a concrete need).
 ;; A map pattern understands exactly two keys: `:keys` and `:or`. Any other key
-;; is REJECTED rather than ignored (ADR-152). Ignoring it was the worst kind of
-;; wrong: `{:a v}` degenerated to "is the target a map?", so the clause matched
-;; anything, bound nothing, and the body then died on an unbound `v` — a
-;; diagnostic pointing at the body, nowhere near the cause. (`{}` stays legal: no
+;; is REJECTED rather than ignored (ADR-152): ignored, `{:a v}` would degenerate to
+;; "is the target a map?", match anything, bind nothing, and the body would die on an
+;; unbound `v` — a diagnostic nowhere near the cause. (`{}` stays legal: no
 ;; keys to misread, so it is the honest "any map" pattern.)
 ;; `:as` stays rejected. With general `{key subpattern}` support (ADR-160) a stray
 ;; `:as` would otherwise read as "this map must have an `:as` key", silently matching
@@ -574,12 +573,12 @@ NON-LINEAR patterns (the same name twice) work.
 ;; A pattern deeper than this cannot lower: the expansion cap (256 levels) refuses the code
 ;; it becomes, and the compiler's per-level walks (`%match-count-sym` over the generated
 ;; code, `%pattern-vars` over the pattern) make the work BEFORE that refusal quadratic in
-;; the depth — a 100 000-level pattern built at runtime asked for 6 GB and aborted the
-;; runtime before reaching the cap (2026-09-30). Checked first, in O(min(depth, cap)):
+;; the depth — a huge pattern built at runtime would exhaust memory and abort before
+;; reaching the cap. Checked first, in O(min(depth, cap)):
 ;; the walk stops descending the moment it is past the cap.
 ;; 64 levels deep and 80 elements wide — under what the 256-level expansion cap admits for
-;; every shape (measured 2026-09-30: a vector pattern lowers to 125 levels or 126
-;; elements, a map or list pattern to 84 of either), so the message a too-large pattern
+;; every shape (a vector pattern lowers to 125 levels or 126 elements, a map or list
+;; pattern to 84 of either), so the message a too-large pattern
 ;; gets is this one, which names the pattern, never the cap's, which names the code.
 (def- %match-max-depth 64)
 (def- %match-max-width 80)
@@ -690,7 +689,7 @@ NON-LINEAR patterns (the same name twice) work.
 ;; a big one → bind it once as `(let (k (fn () rest-code)) …)`. The `(k)` call
 ;; is in tail position wherever fail was, so match stays TCO-safe.
 ;;
-;; `nil-fail?` is the `receive` matcher's escape from the thunk (2026-09-17). A receive
+;; `nil-fail?` is the `receive` matcher's escape from the thunk. A receive
 ;; clause's "body" is its result vector `[idx var…]` (`%receive-result-clause`) — always
 ;; truthy — and a no-match is `nil`, so where a `match` would bind a thunk, the clause is
 ;; compiled against the CONSTANT `nil` as its fail-continuation (spliced at every failure
@@ -698,13 +697,12 @@ NON-LINEAR patterns (the same name twice) work.
 ;; closure, no call per failing clause. `match` cannot take this route: its clause bodies
 ;; are arbitrary code (`nil` is a legal answer) that must stay in tail position.
 ;;
-;; Only the THUNK case takes it. The splice cases above stay exactly as they are, for a
-;; reason that was measured: a spliced small rest is pure control flow, while the `or`
-;; form makes the result vector cross an `if` join as an operand, and an arm with no
-;; non-tail call has no block-argument spill slot for a handle (`jit_spill_reserve`), so
-;; the native tier deopts on it every message — `pingpong` +6% when the `or` was used for
-;; every clause. The 7-clause supervisor loop, whose thunks the `or` replaces, could never
-;; lower anyway (`MakeClosure` is outside the JIT subset), so it only gains.
+;; Only the THUNK case takes it. The splice cases above stay as they are: a spliced small
+;; rest is pure control flow, while the `or` form makes the result vector cross an `if`
+;; join as an operand, and an arm with no non-tail call has no block-argument spill slot
+;; for a handle (`jit_spill_reserve`), so the native tier would deopt on it every message.
+;; A thunk arm could never lower anyway (`MakeClosure` is outside the JIT subset), so the
+;; `or` only gains there.
 (defn- %match-build-clause (clause target rest-code nil-fail?)
   (let (k (gensym "mfail")
         compiled (%match-compile-clause clause target (list k))

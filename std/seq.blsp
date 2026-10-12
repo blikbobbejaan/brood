@@ -16,10 +16,8 @@
 ;; not a second public spelling.
 ;;
 ;; `distinct`, `zip`, `find` and `flatten` are NOT bare either — they live here, as
-;; `seq/distinct` and friends. This comment and the module docstring below both listed
-;; them among the bare core until 2026-08-27, which sent a reader to write `(distinct xs)`
-;; and get an unbound symbol. `(bound? 'distinct)` is `false`; check before adding a name
-;; to either list.
+;; `seq/distinct` and friends; `(bound? 'distinct)` is `false`. Check before adding a name
+;; to either list here or in the module docstring.
 (defmodule seq
   "Sequence helpers — the derived enumeration API over the bare collection protocol.
 
@@ -60,8 +58,8 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
     (seq/frequencies [1 1 2])   → {1 2, 2 1}"
   ;; The tally as a user writes it — deliberately: the compiler recognises this exact
   ;; shape in a `fold` literal and builds the map in place on a table (ADR-360 §6), where
-  ;; the kernel-op spelling it replaced (`%map-assoc` over `%map-get`) is not recognised
-  ;; and path-copied the map per element: 523 → 98 ms on 750k keys.
+  ;; a kernel-op spelling (`%map-assoc` over `%map-get`) is not recognised and would
+  ;; path-copy the map per element.
   (fold coll {} (fn (m x) (assoc m x (+ (get m x 0) 1)))))
 
 ;; dedupe: collapse only *consecutive* runs of equal items (no "seen" set needed).
@@ -253,10 +251,9 @@ vector comes FIRST here, unlike the rest of this module — see the note above.
 ;; EXIT, not a returned box: the stage throws a `%reduced` record and `transduce` catches
 ;; it. Clojure returns a box and has every reducing loop test for it per element; here
 ;; the loops are `fold`'s native counted walks (`%range-reduce`, `%vector-reduce`), and a
-;; per-element test in them was measured against a throw: a `try` costs ~100 ns per
-;; `transduce` CALL and a throw out of a fold ~1 µs ONCE, where a box test would cost
-;; every element of every fold, transducer or not. So the loops stay as they are, and a
-;; `reduced` outside a `transduce` is an unhandled throw with a clear payload — it is a
+;; throw costs once per `transduce` call (the `try`) and once at the exit, where a box test
+;; would cost every element of every fold, transducer or not. So the loops stay as they
+;; are, and a `reduced` outside a `transduce` is an unhandled throw with a clear payload — it is a
 ;; transducer protocol, not a `fold` one.
 (defrecord %reduced (value))
 
@@ -336,9 +333,8 @@ when the caller needs indexed access. The complement of [[filterv]].
     (seq/find [1 3 4] math/even?)   → 4"
   (cond (empty? coll) nil (pred (first coll)) (first coll) else (seq/find (rest coll) pred)))
 ;; No `(seqable ?A)` here: `find` walks anything `first`/`rest` accept — a MAP included, as
-;; `[k v]` entries — and `(seqable T)` excludes maps by design (ADR-365). Declared that way
-;; it false-positived on bedit's `(seq/find notes …)` over a map the day it landed
-;; (2026-09-20). The element-precise result comes from the checker's by-name rule; the
+;; `[k v]` entries — and `(seqable T)` excludes maps by design (ADR-365), so declaring it
+;; would false-positive on a find over a map. The element-precise result comes from the checker's by-name rule; the
 ;; bare `seqable` domain admits every collection the combinators walk.
 (sig find (seqable (any -> any) -> any))
 
@@ -346,10 +342,8 @@ when the caller needs indexed access. The complement of [[filterv]].
 ;; acts as the "seen" set, so membership is O(1)-ish rather than the O(n²) a
 ;; `member?`-per-item scan would cost. State is the 2-vector [seen result-rev].
 ;;
-;; This helper lived in the PRELUDE as `%distinct-step` until 2026-08-27, with its only
-;; caller here — one of four helpers stranded there when their public functions moved out.
-;; A prelude-resident helper that only a module uses costs boot-image size and reads as a
-;; core primitive in `reflect/global-names`; it belongs beside its caller.
+;; Here, not in the prelude: a prelude-resident helper that only a module uses costs
+;; boot-image size and reads as a core primitive in `reflect/global-names`.
 (defn- distinct-step (state x)
   ;; the "seen" map only ever stores `true`, so a single `%map-get` (default `false`)
   ;; distinguishes present from absent — no need for `contains?`'s two-sentinel probe
@@ -521,15 +515,11 @@ travels as a handle; a view must be realised first).
         [(nth items (math/rem s n)) s]))))
 (sig sample (int seqable -> (tuple any int)))
 
-;; Fisher–Yates, which is what the docstring always claimed — the implementation was
-;; not it. The old `shuffle-acc` rebuilt the remaining collection on every step: two
-;; `count` walks plus `take` + `drop` + `append` + `nth`, each O(n), for each of the n
-;; elements. That is O(n²) in both time and allocation — 20 000 elements took 33 s,
-;; which is not a shuffle anyone can use on real data.
+;; Fisher–Yates: O(n log n) overall. Rebuilding the remaining collection per step
+;; (`take` + `drop` + `append`) would be O(n²) in time and allocation.
 ;;
 ;; The working structure is a **map** index→item, not a vector: `assoc` on a vector
-;; copies the whole vector (O(n) per swap, so real Fisher–Yates over one is no better
-;; than what it replaced — measured, it exhausts a 2 GB budget at n = 20 000), while
+;; copies the whole vector (O(n) per swap, so Fisher–Yates over one is quadratic too), while
 ;; `assoc` on a CHAMP map shares structure and is O(log₃₂ n). Nothing mutates either
 ;; way; this is just the immutable structure with the right update cost.
 (defn- shuffle-swap (m i j)

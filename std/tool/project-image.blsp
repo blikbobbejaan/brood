@@ -12,13 +12,8 @@ takes; everything else is the mechanism behind it.")
 ;; `*methods*`, `*module-docs*`, … They already exist after the prelude, so the "names that
 ;; appeared" diff below cannot see them, and an image without them is silently wrong.
 ;;
-;; They used to be NAMED here, and that list went stale three times with no error to show for
-;; it:
-;; `declared_sigs` first (the checker quietly weakened from `expects int` to
-;; `expects number | map`), then an audit found seven ability/multimethod registries missing,
-;; and `*method-from*` after that (cross-module `defmethod` conflicts stopped being
-;; reported). A hand-maintained inclusion list fails in the silent direction every time,
-;; because nothing about adding a registry reminds you it exists.
+;; Never NAME them here: a hand-maintained inclusion list fails in the silent direction,
+;; because nothing about adding a registry reminds you the list exists.
 ;;
 ;; So the set is DERIVED: `%registry-update!` / `%registry-cas!` are the only ways a registry
 ;; is written, and the kernel records the names they write (`%registry-names`). A registry
@@ -97,11 +92,9 @@ come from `*module-files*`).
                              (fn (entry) (not (project-image-dep-module? (first entry)))))
                         second))))
 
-;; `before` as a SET. As a list, `member?` is a linear scan run once per global — ~4000 x
-;; ~313 000 on a big project, which measured 7 s of a 9 s image write and was invisible
-;; until the phase trace showed the time landing outside every measured phase. Exactly the
-;; shape ADR-216 removed from `*features*`. Built once and passed to both users below: a
-;; second set of the same size costs ~3% of the cold path, measured.
+;; `before` as a SET. As a list, `member?` is a linear scan run once per global —
+;; quadratic on a big project, the shape ADR-216 removed from `*features*`. Built once
+;; and passed to both users below.
 (defn- project-image-seen (before)
   (fold before {} (fn (m n) (assoc m n true))))
 

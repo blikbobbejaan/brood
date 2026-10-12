@@ -28,9 +28,8 @@ read+write primitive for compare-and-swap-style patterns.")
 ;; A synchronous op runs the caller's `f` INSIDE the agent, so a throwing `f` is the
 ;; caller's error, not the agent's: `agent-apply` catches it, the reply carries it back
 ;; (`[:raised problem]`, beside `[:ok value]`), `agent-result` re-raises it in the caller,
-;; and the agent carries on with its OLD state. `update` used to reply `:ok` BEFORE
-;; applying `f`, so a throwing `f` reported success and then killed the agent — every
-;; later call raised "server died" for an update the caller had been told succeeded.
+;; and the agent carries on with its OLD state. So `update` replies only AFTER applying
+;; `f` — replying first would report success for an update that then kills the agent.
 ;; A `cast` has no caller to tell, so a throwing cast `f` still crashes the agent loudly.
 (defn- agent-apply (f state)
   (try [:ok (f state)] (catch problem [:raised problem])))

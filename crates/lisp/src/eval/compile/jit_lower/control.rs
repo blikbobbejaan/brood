@@ -117,8 +117,8 @@ pub(super) fn resolve_edges(
     let depth = first.stack.len();
     // The prepass sized the leader's params from ITS depth model; the emit loop's stack is
     // the truth. A disagreement is a lowering bug (the two models differ on some
-    // instruction's stack effect), and used to surface only as a Cranelift verifier
-    // rejection at `define_function` — name it, with the ip and both depths.
+    // instruction's stack effect), which would otherwise surface only as a Cranelift
+    // verifier rejection at `define_function` — name it, with the ip and both depths.
     let want = b.block_params(target).len();
     if edges.iter().any(|e| e.stack.len() != depth) || depth != want {
         if crate::diagnostics::debug_flags::jit_bail_trace() {
@@ -152,8 +152,8 @@ pub(super) fn resolve_edges(
         }
     }
     if !widened_slots.is_empty() || words_extra > 0 {
-        // Under the bail trace, name the join that widened: the arm now lowers where it
-        // used to deopt-thrash, and a widened entry is read back through tag checks, so
+        // Under the bail trace, name the join that widened: the arm lowers where it would
+        // otherwise deopt-thrash, and a widened entry is read back through tag checks, so
         // this is the line to read when a row moves after a lowering change.
         if crate::diagnostics::debug_flags::jit_bail_trace() {
             eprintln!(

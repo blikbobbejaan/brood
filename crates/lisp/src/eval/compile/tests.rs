@@ -28,9 +28,9 @@ fn pair_idx(v: Value) -> usize {
 /// Regression: a swapped `(op Const Local)` `Prim2SlotInt` must keep inlining after an
 /// epoch bump. The fusion stores an *inverted* arg-map (so the inline operand pick is
 /// correct); `prim2_inline_exec` revalidates against the head's *natural* map, so the
-/// `swapped` call site must un-invert it. Before the fix it compared the inverted map,
-/// which never matched `resolve_prim`'s natural map — so every such prim silently fell
-/// to the slow path forever after the first `def` bumped the epoch.
+/// `swapped` call site must un-invert it; comparing the inverted map never matches
+/// `resolve_prim`'s natural map, so every such prim would silently fall to the slow path
+/// forever after the first `def` bumped the epoch.
 #[test]
 fn swapped_prim2slotint_reinlines_after_epoch_bump() {
     let mut interp = crate::Interp::new();
@@ -377,9 +377,8 @@ fn run_arm(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize) -> (i64, Value
 
 /// The `%receive` fence (see `chunk_in_jit_subset`): a chunk that calls `%receive` must
 /// never enter the JIT subset, because a park inside the native boundary surfaces as an
-/// uncatchable empty `runtime error:` that kills the receiver. The fence used to exist by
-/// accident (every receive's matcher is a `MakeClosure`, which was out of subset); admitting
-/// `MakeClosure` made it load-bearing on its own. Deterministic where the runtime repro
+/// uncatchable empty `runtime error:` that kills the receiver. With `MakeClosure` in the
+/// subset, the fence is load-bearing on its own. Deterministic where the runtime repro
 /// (`local_send_race` on a 2-worker pool) is contention-shaped: this asserts the predicate
 /// itself, on a real compiled receive-bearing arm — and, non-vacuously, that the SAME arm
 /// with the receive removed IS in the subset (so a predicate that rejects everything cannot
@@ -952,13 +951,6 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
     // applies only to self-recursive arms (a pure thin delegator lowers fine since
     // outcome-4 follow-through); this chunk is `(defn f (n) (if (= n 0) (f 9)
     // (fb (- n 1))))` — a SelfCall loop whose exit is a thin tail call.
-    //
-    // (History: this case used to be a non-self-recursive delegator whose `is_none`
-    // came not from the gate but from a malformed hand-written join — a `Jump` into
-    // the middle of the else block with mismatched stack depths — that failed the
-    // Cranelift verifier. The 2026-07-19 type-mixed-join fix routes a disagreeing
-    // edge to deopt, producing *valid* IR, so that accidental bail disappeared and
-    // the test now exercises the real gate.)
     let thin = Chunk {
         code: vec![
             Inst::Local(0),                            // 0: n
@@ -1042,8 +1034,8 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
 
 /// JIT Stage-1.5: the **fused** `Prim2Slot*` variants — which `emit_node` actually
 /// produces for real loop bodies (`(- i 1)`, `(+ acc i)`, `(< i 1)`) — lower and run.
-/// Before this, the JIT bailed on every fused prim, so it never fired on real
-/// compiled code. Also pins the two correctness fixes that came with the coverage:
+/// Without them the JIT would never fire on real compiled code. Also pins two
+/// correctness rules:
 /// `map` (the `>`/swapped-operand case) and overflow → deopt (so the JIT matches the
 /// VM's BigInt promotion instead of silently wrapping).
 #[cfg(feature = "jit")]
@@ -1318,17 +1310,15 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
     // bare `Heap::new()` has no global env. One heap, reused across poll iterations
     // (truncate the frame each time), keeps the epoch stable so the arm stays tiered.
     let mut interp = crate::Interp::new();
-    // Compilation is async now (the background compiler thread), so a hot arm returns
+    // Compilation is async (the background compiler thread), so a hot arm returns
     // None until the native pointer is installed. Poll past the threshold, giving the
     // compiler time to land the code, and assert it eventually runs native.
     crate::process::yield_now(); // prime the reduction budget (short loops)
     let mut ran_native = 0;
-    // A generous WALL-CLOCK bound, not an iteration deadline. The 400 × 2 ms version gave
-    // the background compiler ~0.8 s to schedule, which is plenty on a quiet box and not
-    // under load — this was KI-74: 1-in-40 failures under a 4-core spin + parallel libtest
-    // (whose single shared process also queues every other test's compiles ahead of this
-    // one; nextest's process-per-test never sees it). A compiler that never lands the code
-    // still fails, just on a bound a loaded box can meet — the KI-43 stopwatch lesson.
+    // A generous WALL-CLOCK bound, not an iteration deadline: a short budget starves under
+    // load, especially in libtest's single shared process, which queues every other test's
+    // compiles ahead of this one (KI-74). A compiler that never lands the code still fails,
+    // just on a bound a loaded box can meet (KI-43).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         crate::process::yield_now(); // keep the budget topped up across calls
@@ -1367,9 +1357,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
 
     // An out-of-subset arm is marked BAILED and never runs native. A coverage-instrumented
     // arm (`RecordLine`) is the one shape the lowering refuses BY DESIGN and always will:
-    // native code would run without the recording. (Every earlier example here stopped
-    // being one — scalar `Const`s, a bare `Global`, and on 2026-09-18 `MakeMap`, which
-    // lowers like `MakeVector` now.)
+    // native code would run without the recording.
     let bailing = Arc::new(mk_arm(
         Chunk {
             code: vec![Inst::RecordLine(1)],
@@ -1379,8 +1367,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
     ));
     // Generous poll cap: under plain `cargo test` (one process, every test
     // sharing the single background compiler thread) the queue ahead of this
-    // arm can take seconds — 400×2ms flaked there. nextest (the canonical
-    // runner) isolates per process and never sees it.
+    // arm can take seconds. nextest (the canonical runner) isolates per process.
     for _ in 0..5000 {
         let base = interp.heap.roots_len();
         interp.heap.push_root(Value::int(0));
@@ -1506,7 +1493,7 @@ fn vm_run_bc_runs_a_tiered_arm_via_the_hook() {
     crate::process::yield_now();
     let mut tiered = false;
     // Wall-clock bound, not an iteration deadline — same KI-74 hazard as the tiering test
-    // above (see its comment): 400 x 2 ms starves under load in libtest's shared process.
+    // above (see its comment).
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while std::time::Instant::now() < deadline {
         crate::process::yield_now();
@@ -2014,7 +2001,7 @@ fn tier_order_is_treewalk_lowest_and_native_highest() {
 /// green process's inline cache points at ONE allocation; the VM then clones that handle
 /// up to three times per call (the IC probe, the `BcFrame`, `live_arm_push`). If those
 /// clones land on the *shared* `Arc`, N worker threads RMW one cache line per call and
-/// `pfib` runs 3.2x slower — while still computing the right answer, so `make test`, the
+/// parallel code runs several times slower — while still computing the right answer, so `make test`, the
 /// differential and the lowering witness all stay green and **only a benchmark moves**
 /// (the same blind spot ADR-221 hit). Hence an assertion on the refcount itself.
 #[test]
@@ -2133,9 +2120,9 @@ fn every_inlinable_head_still_reaches_its_primitive() {
         ("-", PrimOp::Sub),
         ("*", PrimOp::Mul),
         ("cons", PrimOp::Cons),
-        // `%max`/`%min`, not `max`/`min`: those are `math/max`/`math/min` since 2026-08-27,
-        // and the KERNEL halves took the `%` prefix every other primitive has so the prelude
-        // can do arithmetic without loading a module. `resolve_prim` keys on the call-site
+        // `%max`/`%min`, not `max`/`min`: those are `math/max`/`math/min`, and the KERNEL
+        // halves carry the `%` prefix so the prelude can do arithmetic without loading a
+        // module. `resolve_prim` keys on the call-site
         // name, so this is the name a hot loop actually writes.
         ("%max", PrimOp::Max),
         ("%min", PrimOp::Min),
@@ -2144,10 +2131,8 @@ fn every_inlinable_head_still_reaches_its_primitive() {
         ("bit/or", PrimOp::BitOr),
         ("bit/xor", PrimOp::BitXor),
         ("nth", PrimOp::VectorRef),
-        // The native itself, by its CURRENT name. The entry read `vector-ref` from the
-        // `seq/` refactor that renamed the native until 2026-09-17, so every element read
-        // the pattern compiler emits (`%vector-ref`) was a full native call — `nth`'s
-        // head-keyed inline above survived alone and hid the gap.
+        // The native itself, by its CURRENT name: a stale entry makes every element read
+        // the pattern compiler emits a full native call, hidden by `nth`'s inline above.
         ("%vector-ref", PrimOp::VectorRef),
         ("get", PrimOp::MapGet),
         ("table/get", PrimOp::TableGet),
@@ -2242,11 +2227,9 @@ fn type_predicate_inline_is_structural_not_nominal() {
 }
 
 /// The 3-arg `table-put` call-site inline survives the namespacing that turned it into a
-/// `std/table.blsp` wrapper. `resolve_prim3` used to accept only a *direct* native binding,
-/// on the stated grounds that `table-put` "has no prelude wrapper to follow" — true when it
-/// was written, false once the head became `table/put`. Nothing errored; the call just
-/// stopped inlining and became an ordinary `Call` in the hot arm, worth **11.6× on `sieve`**
-/// with no failing test anywhere. This is that missing test.
+/// `std/table.blsp` wrapper: if `resolve_prim3` stops following the wrapper nothing errors —
+/// the call just becomes an ordinary `Call` in the hot arm (an order of magnitude on
+/// `sieve`).
 ///
 /// The second half is the miscompile guard, and it is the reason the identity map is
 /// *required* rather than applied: `Node::Prim3` carries no argument permutation (unlike
@@ -2318,7 +2301,7 @@ fn table_put_call_site_inline_recognizes_the_namespaced_wrapper() {
 /// KI-44: the `sqrt` call-site inline survives its move out of the prelude (ADR-227). The head
 /// is now the qualified `math/sqrt`, a RUNTIME closure, so `resolve_prim1` identifies the
 /// canonical wrapper STRUCTURALLY rather than by the old sealed-PRELUDE identity. This guards
-/// both halves at once: the canonical wrapper still resolves to `PrimOp1::Sqrt` (so the ~1.8×
+/// both halves at once: the canonical wrapper still resolves to `PrimOp1::Sqrt` (so the
 /// `nbody` win is not silently lost the next time `std/math`'s `sqrt` is reworded), and a user's
 /// OWN `…/sqrt` — which the `/sqrt` name-gate also matches — does NOT inline unless it is
 /// genuinely the `%f64-sqrt` wrapper. The latter is the real miscompile guard: the x>0 shortcut
@@ -2362,10 +2345,10 @@ fn sqrt_call_site_inline_recognizes_the_moved_math_wrapper() {
     );
 }
 
-/// KI-48, fourth appearance: the caller sizes the frame, then `jit_tier` re-loads the code
+/// KI-48: the caller sizes the frame, then `jit_tier` re-loads the code
 /// pointer — and a peer can swap the inlined body in between (`CompiledArm` is shared across
 /// a runtime's processes since ADR-215). Running the inlined native against the small frame
-/// is a raw write past the frame top (measured overshoot: 12 slots on `fold`).
+/// is a raw write past the frame top.
 ///
 /// The guard is `jit_tier_in_frame`: the caller states the size the frame was BUILT to, and
 /// the native entry is declined when the installed code wants a bigger one. This test stages
@@ -2485,9 +2468,8 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
 /// moves them, and every later read then reads freed memory. Garbage `Value` words with
 /// valid-looking tags, invisible to the per-deref tripwire (the read bypasses `Heap`).
 ///
-/// The gate used to name only `Call`/`MakeVector`/`Cons`, leaving out the table ops that
-/// `inst_may_allocate` lists — the same omission that already produced one use-after-free on
-/// the pair path. This pins the predicate itself, which the end-to-end shape cannot: a stale
+/// The gate must cover every op `inst_may_allocate` lists, the table ops included (the same
+/// omission produced a use-after-free on the pair path). This pins the predicate itself, which the end-to-end shape cannot: a stale
 /// read returns *freed-but-intact* memory far more often than it returns garbage, so a
 /// behavioural test passes with the bug live (verified: `tests/jit_vector_hoist_alloc_test.blsp`
 /// passes either way).
@@ -2573,21 +2555,12 @@ fn the_vector_base_hoist_is_off_for_any_allocating_arm() {
     );
 }
 
-/// ADR-333: a self-tail loop is elected for tiering within its FIRST activation, whatever
-/// `TIER_THRESHOLD` says. The call threshold is 128, but a loop reaches the compiler through
-/// the back-edge boundary exits (every 256 iterations), each worth `BACKEDGE_TIER_WEIGHT`
-/// calls — so eight boundaries, 2048 iterations, elect it. This runs the loop through the
-/// real entry point (`eval_str` → the VM → `exec_chunk`'s boundary → `jit_tier_in_frame`)
-/// for 3000 iterations and asserts the arm left the untried state. Sabotage-verified: with
-/// the weight at 1 the same loop has counted 11 of 128 and `jit_code` is still null.
-#[cfg(feature = "jit")]
 /// A `letrec`-bound loop's tail self-call is a `SelfCall`, not a call through the
 /// captured closure. `#3 lexical addressing` binds every capture to a frame slot — and the
 /// self-name IS a capture (the frame binds it to the closure) — so the self-call rule's
-/// "not shadowed by a local" check saw the name bound and declined every letrec loop in
-/// the language: `(letrec (lp (fn (i acc) … (lp …))))` ran at 100 ns per iteration
-/// against a `defn` loop's 2.3 ns (found 2026-09-17). The rule now admits the self-name's
-/// own capture slot; a `let` that rebinds the name inside the body still declines.
+/// "not shadowed by a local" check must admit the self-name's own capture slot, or every
+/// letrec loop runs as a slow call through the closure. A `let` that rebinds the name
+/// inside the body still declines.
 #[cfg(feature = "jit")]
 #[test]
 fn a_letrec_loop_is_a_self_call_and_a_shadowed_name_is_not() {
@@ -2651,6 +2624,13 @@ fn a_letrec_loop_is_a_self_call_and_a_shadowed_name_is_not() {
     );
 }
 
+/// ADR-333: a self-tail loop is elected for tiering within its FIRST activation, whatever
+/// `TIER_THRESHOLD` says. The call threshold is 128, but a loop reaches the compiler through
+/// the back-edge boundary exits (every 256 iterations), each worth `BACKEDGE_TIER_WEIGHT`
+/// calls — so eight boundaries, 2048 iterations, elect it. This runs the loop through the
+/// real entry point (`eval_str` → the VM → `exec_chunk`'s boundary → `jit_tier_in_frame`)
+/// for 3000 iterations and asserts the arm left the untried state. Sabotage-verified: with
+/// the weight at 1 the same loop has counted 11 of 128 and `jit_code` is still null.
 #[test]
 fn a_self_tail_loop_is_elected_for_tiering_within_one_activation() {
     use std::sync::atomic::Ordering::Acquire;
@@ -2688,13 +2668,10 @@ fn a_self_tail_loop_is_elected_for_tiering_within_one_activation() {
 
 /// A native loop's PREEMPT must capture the loop's own frame at ip 0, not its callee's.
 ///
-/// Before the fix in `vm_run_bc`'s outcome-2 arm, a preempted native loop was handed to the
-/// interpreter "until its loop-top noticed the spent budget"; the first safepoint that run
-/// reached was inside the callee's entry, so the capture landed on the callee at ip 0, the
-/// resume ran the callee natively and returned into the loop MID-BODY, and the loop then
-/// interpreted up to 256 iterations before its back-edge boundary re-tiered it — measured
-/// as 839 607 interpreted iterations across 3 252 preempts of a 5M-iteration loop (−36%
-/// instructions with preemption disabled). This drives the real capture-mode driver through
+/// Handed to the interpreter "until its loop-top notices the spent budget", a preempted
+/// native loop's first safepoint is inside the callee's entry, so the capture lands on the
+/// callee at ip 0 and the resume returns into the loop MID-BODY, interpreting up to 256
+/// iterations before its back-edge re-tiers it (see `vm_run_bc`'s outcome-2 arm). This drives the real capture-mode driver through
 /// the real entry point with a 300-reduction budget and asserts that once the loop is native
 /// every capture is the loop's frame at ip 0. Sabotage-verified: with the outcome-2 capture
 /// removed, the captures land on `pre-g`.

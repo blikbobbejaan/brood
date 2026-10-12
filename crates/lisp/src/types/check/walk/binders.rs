@@ -509,6 +509,33 @@ pub(super) fn check_def(
                 }
             }
         }
+        // …and one whose callers are not all here (escaped, or public): its parameters
+        // stay unknown, but its own body DEMANDS a domain of them, which every checked call
+        // — the self-call included — is held to. A self-call's arguments are therefore
+        // typed under that domain (`Ctx::with_self_demands`): it is the induction step,
+        // since the activation making the call was itself entered inside the domain. So
+        // `(loop (- i 1))` under a demand of `int` on `i` hands the recursion an `int`, not
+        // the `number` an unknown `i` reads. Only the self-call's arguments see it: read
+        // anywhere else, the domain — an over-approximation — would be taken by strict
+        // inclusion as positive knowledge of a parameter nothing here constrains.
+        if let Some(demands) = demand_domains(heap, name, value_form, ctx) {
+            if let Some(fn_items) = fn_form_items(heap, value_form) {
+                let params = fn_params(heap, fn_items[1]);
+                let mut scope = ctx.clone();
+                for &p in &params {
+                    scope = scope.bind(p, None);
+                }
+                scope = scope.with_self_demands(name, params.into_iter().zip(demands).collect());
+                let body_start = match (fn_items.get(2), fn_items.get(3)) {
+                    (Some(Value::Str(_)), Some(_)) => 3,
+                    _ => 2,
+                };
+                for &body_form in &fn_items[body_start..] {
+                    check_into(heap, body_form, &scope, out);
+                }
+                return;
+            }
+        }
         // Gradual-assignment check (the first `GradualTy` consumer): when `name`
         // carries a non-arrow `(sig name T)`, the assigned value must be
         // *consistent* with `T`. A dynamic value (a redefinable global, an
@@ -537,6 +564,25 @@ pub(super) fn check_def(
     // is a reference error, same rule as a call operand.
     check_value_leaf(heap, value_form, form, ctx, out);
     check_into(heap, value_form, ctx, out);
+}
+
+/// A same-file inference candidate's body DEMANDS (ADR-190), one per parameter — `None`
+/// for anything but a plain single-clause positional parameter list (an `&optional` or
+/// rest position's demand is not the parameter's binding) and when nothing is demanded.
+fn demand_domains(heap: &Heap, name: Symbol, value_form: Value, ctx: &Ctx) -> Option<Vec<Ty>> {
+    ctx.fn_form(name)?;
+    let items = fn_form_items(heap, value_form)?;
+    if crate::eval::macros::fn_is_arity_multi_clause(heap, &items) {
+        return None;
+    }
+    let demands = crate::types::check::sigs::infer_params_from_form(heap, value_form, ctx)?;
+    if !demands.optional.is_empty()
+        || demands.rest.is_some()
+        || demands.params.len() != fn_params(heap, *items.get(1)?).len()
+    {
+        return None;
+    }
+    (!demands.params.iter().all(Ty::is_any)).then_some(demands.params)
 }
 
 /// `(defn name (params...) docstring? body...)` and the structurally identical

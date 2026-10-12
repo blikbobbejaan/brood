@@ -1,0 +1,83 @@
+;; `%try-described` — a handler that reads the raise's position and trace for ANY thrown
+;; value. `catch` binds a user `throw`'s value verbatim, which has nowhere to carry them;
+;; `nest mcp` needs them to tell a client where its tool call failed.
+
+(defmodule try-described-test (:use test))
+
+(defn tdt-raise (x)
+  "Raise a bare string from a named function, through a non-tail call."
+  (+ 1 (error "tdt: bad " x)))
+
+(defn tdt-described (thunk)
+  "`[caught error]` for whatever `thunk` raises, `[:returned value]` when it does not."
+  (%try-described (fn () [:returned (thunk)]) (fn (caught error) [caught error])))
+
+(defn tdt-here? (error)
+  "Does raise description `error` name a line of this file?"
+  (and (string/ends-with? (or (get error :file) "") "try_described_test.blsp")
+    (int? (get error :line))
+    (int? (get error :col))))
+
+(defn tdt-through-raise? (error)
+  "Does raise description `error`'s trace show a frame of `tdt-raise`?"
+  (any? (or (get error :trace) ())
+    (fn (frame) (string/ends-with? (or (get frame :fn) "") "tdt-raise"))))
+
+(describe "%try-described"
+  (test "a thrown string is caught verbatim, and its description carries the position"
+    (let ([caught error] (tdt-described (fn () (tdt-raise 3))))
+      (assert= caught "tdt: bad 3")
+      (assert= (get error :kind) :user)
+      (assert= (get error :message) "tdt: bad 3")
+      (is (tdt-here? error))))
+  (test "the description's trace names the function the raise passed through"
+    (let ([_ error] (tdt-described (fn () (tdt-raise 4))))
+      (is (tdt-through-raise? error))))
+  (test "any thrown value is described — a keyword, a vector, a map without a position"
+    (let ([caught error] (tdt-described (fn () (throw :oops))))
+      (assert= caught :oops)
+      (is (tdt-here? error)))
+    (let ([caught error] (tdt-described (fn () (throw [:tag 1]))))
+      (assert= caught [:tag 1])
+      (is (tdt-here? error)))
+    (let ([caught error] (tdt-described (fn () (throw {:reason :mine}))))
+      (assert= caught {:reason :mine})
+      (is (tdt-here? error))))
+  (test "a built-in error is the same map as caught and as described"
+    (let ([caught error] (tdt-described (fn () (/ 1 0))))
+      (assert= (get caught :code) "E0040")
+      (assert= caught error)))
+  (test "a thunk that returns never reaches the handler"
+    (assert= (tdt-described (fn () 42)) [:returned 42]))
+  (test "a raise after a receive inside the thunk is still described"
+    (let (me (self)
+          worker (spawn (send me
+                          [:described
+                            (tdt-described (fn () (receive (value (tdt-raise value)))))])))
+      (send worker 7)
+      (receive
+        ([:described [caught error]] (assert= caught "tdt: bad 7")
+          (is (tdt-here? error)))
+        (after 5000 (is false))))))
+
+(describe "%try-described across processes"
+  (test "many workers raise at once; each description crosses back by message intact"
+    (let (me (self)
+          workers 16)
+      (map (range workers)
+        (fn (index)
+          (spawn (send me [:described index (tdt-described (fn () (tdt-raise index)))]))))
+      (letrec (collect (fn (remaining acc)
+                         (if (= remaining 0)
+                           acc
+                           (receive
+                             ([:described index result] (collect (dec remaining)
+                                                          (assoc acc index result)))
+                             (after 5000 acc)))))
+        (let (results (collect workers {}))
+          (assert= (count results) workers)
+          (map results
+            (fn ([index [caught error]])
+              (assert= caught (str "tdt: bad " index))
+              (is (tdt-here? error))
+              (is (tdt-through-raise? error)))))))))

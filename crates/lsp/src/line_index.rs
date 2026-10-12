@@ -299,10 +299,10 @@ mod tests {
         assert_eq!(idx.offset(text, Position::new(0, 2)), 4); // boundary → `b`
     }
 
-    /// Regression: `position` must be total. An offset landing *inside* a
-    /// multibyte character used to slice `&text[..offset]` and panic — which on
-    /// the stdio transport killed the whole server. Reached for real by
-    /// `folding.rs`'s `span.end - 1` over an unclosed `(é`.
+    /// `position` must be total: an offset landing *inside* a multibyte character
+    /// must not slice `&text[..offset]` and panic, which on the stdio transport
+    /// kills the whole server. Reachable via `folding.rs`'s `span.end - 1` over an
+    /// unclosed `(é`.
     #[test]
     fn position_snaps_an_interior_byte_back_to_the_char_start() {
         let text = "(é"; // bytes: '(' 0, 'é' 1..3

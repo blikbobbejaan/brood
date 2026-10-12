@@ -40,10 +40,8 @@ Per-language face tables + keymaps are policy in the editor. `(require
 ;;
 ;; It is data so that both sides can read it instead of remembering it: a registration
 ;; can refuse a language that does not answer the required set, and a test can enumerate
-;; the set × the languages rather than listing the pairs by hand. Three times a command
-;; written to be language-agnostic turned out to be reachable in only one language — RET,
-;; indentation, then `C-M-SPC` — and each time it was found by someone pressing the key,
-;; because nothing anywhere said what the full set was.
+;; the set × the languages rather than listing the pairs by hand — otherwise a command
+;; written to be language-agnostic can silently be reachable in only one language.
 
 (def language-contract
   {
@@ -303,14 +301,11 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
 ;; asking what is still OPEN — the reader leaves an unclosed form as an unclosed node. That
 ;; trick does not transfer: tree-sitter's error recovery collapses an unterminated `do` into
 ;; an ERROR node rather than an open block, so a truncated slice knows nothing about the
-;; nesting (measured on Elixir: 7 of 9 lines).
+;; nesting.
 ;;
 ;; The level is how many block nodes enclose the line, and [[chain]] answers that from the
-;; real root in O(depth). This used to slice the text into WINDOWS and parse each — one by
-;; the column-0 convention, one a fixed span either side — and keep the deeper reading,
-;; because a slice beginning inside a form loses enclosing blocks while a whole-file parse
-;; cost a projection of every node. Both of those problems are gone: there is no slice to
-;; be wrong about, and the query builds ten nodes rather than nine thousand. What remains
+;; real root in O(depth) — no slice that could begin inside a form and lose enclosing
+;; blocks, and no projection of every node. What remains
 ;; is the one case no tree can answer — text that does not parse yet, which is the ordinary
 ;; state of a line being typed — and there the lexical fallback carries the previous line.
 
@@ -600,10 +595,8 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
 (defn- ts-root? (node root)
   (and (= (get node :start) (get root :start)) (= (get node :end) (get root :end))))
 
-;; Each motion is one positional query. They used to parse the whole text into Brood
-;; maps and walk it — 9,561 nodes for a 22 KB Elixir file — to read a single list of
-;; siblings, which is why structural motion felt slower the bigger the file got.
-;; `%tree-sitter-kids` hands over exactly that list.
+;; Each motion is one positional query: `%tree-sitter-kids` hands over exactly the list of
+;; siblings, so motion cost does not grow with the file as projecting the whole tree would.
 
 (defdyn *comment-kinds*
   ;; Node kinds that a structural motion steps OVER rather than stopping at. A comment is

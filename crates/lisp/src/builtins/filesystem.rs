@@ -725,8 +725,7 @@ pub(super) fn gid_name(_gid: u32) -> Option<String> {
 /// This is the mechanism behind a safe read-modify-write of a file whose "modify"
 /// step is Brood code — `nest add` editing `project.blsp`, say. Without it, two
 /// concurrent editors both read the original, both append, and the second write
-/// erases the first while both report success (measured: three concurrent
-/// `nest add`s landed between one and three of them).
+/// erases the first while both report success.
 ///
 /// Two properties make it work, and both are load-bearing:
 ///

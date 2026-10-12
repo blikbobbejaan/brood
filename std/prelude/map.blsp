@@ -14,9 +14,9 @@
 ;;   - an integer-indexed collection asked for by a non-integer key (`(get v :name)`,
 ;;     almost always a map/sequence mix-up: `deps` where `dep` was meant);
 ;;   - something that isn't a collection at all (`(get 5 :k)`).
-;; Both used to leak an error from an internal the caller never wrote — `-`, `>=`, or
-;; `empty?` — and `(get "s" :k)` was worse than either: it silently returned nil, so a
-;; typo'd accessor produced a plausible-looking absent value. The `default` argument
+;; Both are named here rather than leaking an error from an internal the caller never
+;; wrote, and `(get "s" :k)` raises rather than silently returning nil, which would make a
+;; typo'd accessor look like a plausible absent value. The `default` argument
 ;; deliberately does NOT suppress these: a default means "the key is absent", not
 ;; "the key is the wrong type".
 (defn- %get-unanswerable (coll k)
@@ -39,9 +39,9 @@
   ;; contents are not its fields, else keep `fallback` — which is what `%map-get` ALREADY
   ;; answered, so a map storing `nil` under a key keeps that nil and does not fall to the
   ;; caller's default. (`(get {:a nil} :a 99)` is `nil`; `maps_test` guards it.) Split out of `get` deliberately —
-  ;; `get`'s map branch is the hottest path in the language (4796 call sites) and a previous
-  ;; refactor that moved its kind test behind a CALL cost 1.8x. So the call happens only on
-  ;; a miss; a present key pays one `nil?` test.
+  ;; `get`'s map branch is the hottest path in the language, and moving its kind test
+  ;; behind a CALL nearly doubles its cost. So the call happens only on a miss; a present
+  ;; key pays one `nil?` test.
   ;;
   ;; Raw prims and a `bound?` guard, as in `seq`: this file loads six before `*impls*`.
   ;; `%identity-of` is the obvious way to get the dispatch id and it uses bare `get`, so it
@@ -73,17 +73,12 @@ a wrong-typed one.
     (get #{:x} :x)           → :x     ; a set looks up by membership"
   ;; Branch order is load-bearing, not stylistic: map (much the most common), then
   ;; set, then the two cheap `nil?`/`string?` prim checks, then ONE fallthrough to
-  ;; `nth` for every integer-indexed kind — the shape the pre-2026-07-26 version had.
-  ;; Factoring the kind test into a `get-indexed?` helper (four type checks behind a
-  ;; call) measured a ~1.8x slowdown on `(get v i)`: 1130ms → 2050ms per 2M.
+  ;; `nth` for every integer-indexed kind. Factoring the kind test into a helper (type
+  ;; checks behind a call) nearly doubles the cost of `(get v i)`.
   ;;
-  ;; MEASURED COST of the diagnostics (2M calls, release+JIT): `(get m :k)` 735 → 739ms
-  ;; (noise), `(get v i)` 1130 → 1432ms (~27%). Accepted deliberately: the keyword-key
-  ;; form is 4796 call sites in the workspace and is unaffected, while the integer-key
-  ;; form is 124 — and positional access in hot code goes through `nth`/`vector-ref`
-  ;; (720 sites), whose wall time is unchanged. ~115ms of the delta is `nth`'s own
-  ;; entry check showing up through this call (an inlining-boundary effect, not
-  ;; instruction cost — `nth` measured standalone is identical either way).
+  ;; The diagnostics cost the integer-key form ~25% and the keyword-key form nothing.
+  ;; Accepted deliberately: keyword keys are the overwhelming majority of call sites, and
+  ;; positional access in hot code goes through `nth`/`vector-ref`, which is unaffected.
   ((coll k) (cond
               (map? coll)
                 (let (v (%map-get coll k nil))
@@ -162,8 +157,7 @@ A multi-key result prints in the map's internal order, not the order given."
 
 ;; `%map-pairs` (kernel) is the single map enumerator: the entries as a list of
 ;; [k v] vectors, in one O(n) pass. `keys`/`vals`/`contains?`/`reduce-kv` are all
-;; Brood over it — no per-key `get`, so no O(n²) (this replaced the old `map-keys`
-;; primitive + get-per-key `vals`).
+;; Brood over it — no per-key `get`, so no O(n²).
 ;; `seq` (not `%map-pairs`) so a record's keys/vals are its fields — no internal `:__id__`.
 (defn keys (m)
   "The keys of map `m` (a record's are its fields, id-free). A record that stores its
@@ -254,9 +248,8 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 ;; so it can create intermediate maps; `update-in` is `get-in` then `assoc-in`.
 ;;
 ;; A step answers the way `get` does, so a vector along the path is indexed by
-;; position: `(get-in {:a [1 2]} [:a 1])` used to be nil because the walk stepped
-;; into maps only, while `(get (get m :a) 1)` was 2 — and `assoc-in` turned the
-;; vector into `{1 …}`, so `update-in` on a vector path built a map.
+;; position — `(get-in {:a [1 2]} [:a 1])` is 2, as `(get (get m :a) 1)` is — and
+;; `assoc-in` keeps a vector a vector rather than turning it into `{1 …}`.
 (defn- %get-in-has? (m k)
   (cond
     (map? m) (contains? m k)
@@ -304,9 +297,8 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
     (update-in {:a [1 2]} [:a 0] inc)     → {:a [2 2]}"
   (assoc-in m path (apply f (get-in m path) args)))
 
-;; The nested-access family was `get-in`/`assoc-in`/`update-in` with no removal —
-;; so deleting a nested key meant a hand-written `(update-in m parent dissoc k)`,
-;; which every caller re-derived. Completes the set.
+;; The removal member of the nested-access family, so deleting a nested key is not a
+;; hand-written `(update-in m parent dissoc k)` at every caller.
 ;; check-allow: deliberately non-tail — depth = (count path) — a few keys, never data scale.
 (check-allow :non-tail-recursion
   (defn dissoc-in (m path)
@@ -333,9 +325,9 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 ;; long before it could TEST for one: `=` reports NaN as equal to nothing (the
 ;; IEEE rule), which is simultaneously the only way to detect it. Naming that
 ;; removes the puzzle.
-;; `nan?` / `infinite?` are `math/nan?` / `math/infinite?` now — float-domain questions
-;; belong with `math/even?` and `math/positive?`, and each was `(and (float? x) …)`, which
-;; ANSWERED `false` for a string, a nil, a vector. See the `Numeric` ability (ADR-254).
+;; `nan?` / `infinite?` live in `math/` — float-domain questions belong with `math/even?`
+;; and `math/positive?`, and must not answer `false` for a string, a nil, a vector. See
+;; the `Numeric` ability (ADR-254).
 ;; (math/quot a b) — truncated integer division (toward zero), the quotient partner to
 ;; `rem`. (a - (math/rem a b)) is exactly divisible by b, so `/` returns an exact int
 ;; (no float round-trip — correct even for large i64, unlike (math/floor (/ a b))).

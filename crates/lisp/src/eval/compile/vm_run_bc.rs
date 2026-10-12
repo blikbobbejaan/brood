@@ -30,12 +30,9 @@ pub(crate) fn run_process_body(
         // **block** the worker (the dirty-scheduler carve-out, §7.4); it returns Done/
         // Err and never suspends. Either way: no coroutine.
         None => match body.unpack() {
-            // Resolve ONCE. This was a guard calling `compiled_arm_for` and a body
-            // re-calling it under an `expect` — two independent resolutions of the same
-            // closure, which ran the cold compile path twice and, worse, could disagree:
-            // a peer process advancing `free_epoch` between them clears this process's
-            // `vm_cache`, so `is_some()` then `expect` was a live panic vector on a
-            // process body that compiles perfectly well.
+            // Resolve ONCE: two resolutions (`is_some()` then `expect`) can disagree — a
+            // peer process advancing `free_epoch` between them clears this process's
+            // `vm_cache` — so the second would be a panic vector on a body that compiles.
             ValueRef::Fn(id) => match compiled_arm_for(heap, id, 0) {
                 Some(arm) => {
                     let cenv = heap.closure(id).env.unwrap_or_else(|| heap.global());
@@ -74,15 +71,11 @@ pub struct ProgramExit {
     /// Whether anyone will ever READ `result`. Only `run_program_repr` does; `run_program`
     /// discards it. Set once at construction, so there is no race with the program starting.
     ///
-    /// This exists because ungating the result path (7a72135b) made `finish_form` render
-    /// EVERY top-level form's value to a string on the native path, where nothing reads it.
-    /// That is proportional to the value's size, and a program whose top level binds one
-    /// huge structure pays it in full: the `sort` benchmark (`(def data (sort …))` over a
-    /// 375k-element list) went 132ms -> 146ms, **+10.6%**, measured interleaved against a
-    /// 0.7% control. The ungating was measured at the time, but over 200 forms holding
-    /// small vectors — many small values, never one large one, which is the shape that
-    /// bites. Keep the path ungated (that is what makes it testable on the host); just
-    /// don't do the work when the answer is thrown away.
+    /// Without it `finish_form` would render EVERY top-level form's value to a string on the
+    /// native path, where nothing reads it — cost proportional to the value's size, paid in
+    /// full by a program whose top level binds one huge structure (`(def data (sort …))`).
+    /// Keep the path ungated (that is what makes it testable on the host); just don't do
+    /// the work when the answer is thrown away.
     want_result: bool,
 }
 
@@ -344,7 +337,7 @@ impl ProgramState {
         // already set) so `located()` renders the canonical `file:LINE:COL: msg` — NOT
         // string-prepend `file: ` onto an already-located `LINE:COL: msg`, which emits a
         // stray space (`file: LINE:COL:`) that diverges from the tree-walker's editor-
-        // parseable form. (Found by the differential fuzzer, 2026-07-16.)
+        // parseable form.
         let mut e = match &self.file {
             Some(f) => e.or_file(f.clone()),
             None => e,
@@ -385,12 +378,10 @@ fn settle_native_frame(
     // the resize, once to resume — is wrong two ways: the second read
     // comes from an already-truncated frame and indexes past the root
     // stack, and the two reads can disagree about which engine ran the
-    // frame. (That was a real out-of-bounds `root_at`, found by
-    // `live_migration` under contention.) The `roots_len` test is purely
+    // frame. The `roots_len` test is purely
     // the bounds condition: every slot this reads — the journal slot and
     // the operand journal above it — lies below `frame_nslots`. It is
-    // `>=`, not `==`, so a native that left the stack dirty still resumes
-    // exactly as it did before.
+    // `>=`, not `==`, so a native that left the stack dirty still resumes.
     let resume = if matches!(jit_outcome, Some(1) | Some(2))
         && heap.roots_len() >= cur_base + frame_nslots
     {
@@ -402,10 +393,9 @@ fn settle_native_frame(
     // leave `roots` as `jit_tier` found them; if it grew, the `exec_chunk` re-run starts
     // on a corrupt operand stack. It runs HERE, before the small-top restore below — that
     // restore is this function's own, deliberate resize of an inlined frame, not the
-    // native's doing. It used to run after it, so every deopt/preempt of a self- or
-    // leaf-inlined arm read as dirty by exactly `inline_nslots - nslots` (1432 of 1462
-    // preempts on a self-tail loop calling a leaf-spliced callee, 2026-09-17), which made
-    // the counter useless for the class it exists to catch.
+    // native's doing. Run after it, every deopt/preempt of a self- or leaf-inlined arm
+    // would read as dirty by exactly `inline_nslots - nslots`, making the counter useless
+    // for the class it exists to catch.
     if matches!(jit_outcome, Some(1) | Some(2)) {
         let now = heap.roots_len();
         if now != pre_roots {
@@ -646,9 +636,8 @@ pub(crate) fn vm_run_bc(
     // arm against the current slot state": a preempted self-tail loop parks with its
     // frame already reset (carried slots in place, ip 0), so handing it straight back
     // to its native code is exactly resuming the loop. Without this, every scheduler
-    // preempt of a native loop resumed INTERPRETED and only re-tiered at the next
-    // 256th back-edge — sieve's `mark` preempted ~1030 times and paid ~256 interpreted
-    // iterations each (~260k, ~20% of the row). A mid-`receive` resume rewinds to its
+    // preempt of a native loop would resume INTERPRETED and only re-tier at the next
+    // 256th back-edge. A mid-`receive` resume rewinds to its
     // `Inst::Call` at a nonzero ip and still (correctly) never tiers.
     #[cfg(feature = "jit")]
     let mut try_jit = fresh || cur_ip == 0;
@@ -726,9 +715,9 @@ pub(crate) fn vm_run_bc(
             // the next mint (retaining one extra generation over a fully idle interval is
             // bounded and harmless). That report is O(1) per frame only because
             // `runtime_gen_referenced_private` short-circuits a cached verdict — the probe
-            // itself is O(this process's roots), i.e. O(recursion depth). This comment used to
-            // assert a flat "O(1) drain self-report", which is what let KI-14 hide: a deep
-            // process was re-walking 1.7M roots per report.
+            // itself is O(this process's roots), i.e. O(recursion depth) — do not assume a
+            // flat O(1) report; without the cache a deep process re-walks its roots per
+            // report (KI-14).
             if heap.rt_dirty() && !crate::process::macro_block_active() {
                 heap.rt_dirty_clear();
                 if heap.rt_gc_due() {
@@ -754,8 +743,8 @@ pub(crate) fn vm_run_bc(
             }
             // Once per quantum, at the reduction rollover: the soft memory limit, the mailbox
             // bound (ADR-307) and a pending hard kill — see `loop_safepoint` in `exec_chunk`,
-            // which splits the inline loop's safepoint the same way. They used to run at every
-            // frame boundary, i.e. twice per non-tail call.
+            // which splits the inline loop's safepoint the same way. Per frame boundary they
+            // would cost twice per non-tail call.
             if crate::process::tick_capture() {
                 if let Err(mut e) = super::quantum_checks(heap) {
                     unwind(heap);
@@ -828,13 +817,13 @@ pub(crate) fn vm_run_bc(
                     {
                         jit_compile_now(heap, cur_arm.arc(), cur_base);
                     }
-                    // Per-engine frame sizing (two-stage tiering, devlog 2026-06-17): the VM
+                    // Per-engine frame sizing (two-stage tiering): the VM
                     // built the frame to the ORIGINAL `nslots` (small). ONLY when this arm's
                     // *installed* native version is the deferred inlined upgrade does the
                     // native entry need the larger `inline_nslots` frame (the spliced blocks'
                     // shifted slot ranges). `inline_installed` is false for every arm that
                     // doesn't inline (the overwhelming common case — fib is the exception),
-                    // so the hot path pays nothing: it calls `jit_tier` exactly as before.
+                    // so the hot path pays nothing: it just calls `jit_tier`.
                     // Only the inlined arm grows `roots` and restores the small top on a
                     // non-`Done` outcome (deopt re-runs the ORIGINAL small body from params).
                     let inlined_active = cur_arm
@@ -940,13 +929,10 @@ pub(crate) fn vm_run_bc(
                                 // "until its own loop-top notices". That interpreter run
                                 // reaches its first safepoint inside the CALLEE's entry (a
                                 // loop body's `Call` pushes a frame before its `SelfCall`
-                                // ticks), so the capture landed on the callee at ip 0, the
-                                // resume ran the callee natively and returned into this loop
-                                // MID-BODY, and the loop then interpreted up to 256
-                                // iterations before its back-edge boundary re-tiered it.
-                                // Measured 2026-09-12 on a 5M-iteration native loop with one
-                                // call: 3 252 preempts, 839 607 interpreted iterations,
-                                // −36% instructions with preemption disabled. Captured here
+                                // ticks), so the capture would land on the callee at ip 0,
+                                // the resume would return into this loop MID-BODY, and the
+                                // loop would interpret up to 256 iterations before its
+                                // back-edge re-tiered it. Captured here
                                 // the frame is at ip 0 (or at the journal's resume point,
                                 // applied just above), which is exactly what a resume re-tiers.
                                 Ok(ChunkExit::Preempt)

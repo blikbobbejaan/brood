@@ -128,15 +128,11 @@ pub(super) fn emit_call(
     }
     // ---- Batch staging (BEAM X-register style) ----
     // Operands are written **straight into `roots`**: one `brood_rt_push_room` reserves the
-    // block and hands back its address, and the same stores that used to fill a per-site
-    // stack slot now land in place. Layout: [callee?][arg0..arg_{argc-1}], 24 bytes each,
-    // all three words written (a whole-`Value` copy must carry the third).
-    //
-    // It used to go via a stack slot and then one `brood_rt_push_n` block copy. LBR put that
-    // copy at 4.4% of `bintree` on its own — 24-72 bytes per call, so almost entirely libc
-    // `memmove`'s size-class dispatch, ~8M times — with the stack stores on top. Inlining
-    // the copy for small arities was tried first and moved ~1% (inside the floor): the bytes
-    // still had to move. This deletes the copy instead. See docs/compute-frontier.md §2j.
+    // block and hands back its address, and the stores land in place. Layout:
+    // [callee?][arg0..arg_{argc-1}], 24 bytes each, all three words written (a whole-`Value`
+    // copy must carry the third). No intermediate stack slot + block copy: at 24–72 bytes
+    // per call that copy is almost entirely `memmove`'s size-class dispatch
+    // (docs/compute-frontier.md §2j).
     //
     // The reserved slots are live roots holding uninitialised memory until the stores below
     // complete, so **nothing between here and them may allocate or collect** — they are pure
@@ -363,16 +359,12 @@ pub(super) fn emit_call(
             b.ins().brif(env_glob, xc_depth, &[], ff_blk, &[]);
 
             // Guard 2: `depth < 64` — from 64 on, the stacker headroom probe
-            // (JIT_HEADROOM_PROBE_FROM) lives on the callback path. Depth 0 used to be
-            // excluded too, "because it would need the stack-limit stamp": it does not.
-            // The stamp is an absolute stack address, laid down when the OUTERMOST native
-            // frame is entered (`jit_tier_in_frame`, `hof_apply_native`, the scheduler on
-            // resume), and a call from that frame cannot move the line. Excluding depth 0
-            // sent every call from a program's top-level loop — the frame most programs
-            // spend their time in — down the FFI path, where `jit_run_fast_link` also
-            // re-stamped through `stacker` per call: 40% of a call-loop's samples
-            // (`jit_run_fast_link` 20%, `brood_rt_fast_frame` 8%, `stacker` 6%, …) with
-            // the blob installed and idle. Measured 2026-09-12, see §7.12.
+            // (JIT_HEADROOM_PROBE_FROM) lives on the callback path. Depth 0 is included:
+            // the stack-limit stamp is an absolute address laid down when the OUTERMOST
+            // native frame is entered (`jit_tier_in_frame`, `hof_apply_native`, the
+            // scheduler on resume), and a call from that frame cannot move the line.
+            // Excluding it would send every call from a program's top-level loop down the
+            // FFI path (§7.12).
             b.switch_to_block(xc_depth);
             // The caller's own depth, from its activation context (rung A1) — the heap
             // field is asserted only by callbacks now, so between two native frames it may
@@ -420,10 +412,9 @@ pub(super) fn emit_call(
                 .store(MemFlagsData::trusted(), frame_end, heap, roots_len_off);
             // Rung A1: no heap-field saves. The callee's activation context is built in a
             // stack slot and passed by pointer; every callback that consults activation
-            // state asserts it from there (`JitCallCtx::assert_into`), so the ceremony that
-            // used to run here — env, dbg name, depth, force-VM flag, the two IC cursors
-            // and the gateway token saved before the call and restored after, ~22 memory
-            // operations — is gone from the hot path. What remains per call: the seven
+            // state asserts it from there (`JitCallCtx::assert_into`), so no save/restore of
+            // env, dbg name, depth, force-VM flag, IC cursors or gateway token runs around
+            // the call. What remains per call: the seven
             // stores that fill the ctx, and the gateway counter bump (the token must be
             // unique among live activations — frame bases repeat across time and Rust
             // gateways use the same counter, so the counter stays; only its

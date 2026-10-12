@@ -8,10 +8,8 @@
 ;; checker can verify that a module whose header says `(:implements bname)` defines each
 ;; one at the right arity (`types/check/protocol.rs`).
 ;;
-;; This seam used to also carry `defprotocol`/`defimpl` — open generic functions
-;; dispatching on `type-of`. Those were RETIRED in favour of `std/ability.blsp`, which
-;; unifies value polymorphism and drivers-as-values with nominal dispatch. Behaviours stay
-;; because a module-as-implementor contract — a namespace with no dispatch value, e.g. a
+;; Value polymorphism lives in `std/ability.blsp` (nominal dispatch). Behaviours stay
+;; separate because a module-as-implementor contract — a namespace with no dispatch value, e.g. a
 ;; live view the router calls by name — is genuinely different from value dispatch.
 
 ; ---- the behaviour/interface registry (read by the checker + LSP) ------------

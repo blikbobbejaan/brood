@@ -290,13 +290,11 @@ pub(crate) fn fn_rest_is_stable(v: Value) -> bool {
 /// LOCAL heap handle (e.g. a freshly-read `Value::Str` in a top-level form, which
 /// `run()` never `promote`s) would dangle after a collection *during that form's own
 /// evaluation* and be read as freed/moved memory by a later sub-form — a
-/// use-after-GC (the bug fixed 2026-05-31; it's why `(do (doc-search …) "lit")`
-/// crashed under GC stress). `promote` freezes a LOCAL string/heap literal into the
+/// use-after-GC. `promote` freezes a LOCAL string/heap literal into the
 /// immovable RUNTIME code region (the same freeze a `def`/`defn` body's literals
 /// get) and is a no-op for inline atoms, interned keywords, and already-shared
 /// PRELUDE/RUNTIME handles. **Route every literal `Const` through here** — the
-/// invariant is easy to bypass with a bare `Node::Const(form)` (which is exactly how
-/// the `Value::Str` arm originally introduced the bug); the sibling `MakeClosure`
+/// invariant is easy to bypass with a bare `Node::Const(form)`; the sibling `MakeClosure`
 /// path guards the same hazard via [`fn_rest_is_stable`] (deferring instead of
 /// freezing).
 /// The truthiness of a node whose value is known at compile time, or `None` when it
@@ -978,9 +976,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     // nested `if`s, so `(cond … :else x)` ends in `(if :else x nil)`;
                     // without this fold that emits a keyword constant + a branch, which
                     // drops the whole arm out of the unboxed-i64 register worker's
-                    // subset — measured at **12×** on `ackermann` and ~1.7× on
-                    // `collatz`/`primes` once ADR-154 stopped special-casing `:else`.
-                    // The fold is general (`(if true a b)`, `(cond … 42 x)` alike), so
+                    // subset. The fold is general (`(if true a b)`, `(cond … 42 x)` alike), so
                     // no spelling is privileged and no caller has to know the rule.
                     if let Some(t) = const_truthiness(&cond) {
                         return Some(if t { then } else { els });
@@ -1085,12 +1081,10 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     }
                     // Unary `(- x)` / `(/ x)`: the prelude's one-argument arms are exactly
                     // `(%sub 0 x)` and `(%div 1 x)`, so lower them as that `Prim2` with the
-                    // identity as the left operand. Before this a negation was a generic
-                    // `Call` to the variadic wrapper — one native→native link per call,
-                    // and, being a NON-tail call, a GC safepoint that kept the arm from
-                    // hoisting its pair-slab bases: `nqueens`'s `safe?` walked `placed`
-                    // through `brood_rt_car`/`_cdr` callbacks (16% of the row) because of
-                    // the `(- dist)` beside it. Same guard discipline as the 2-arg case —
+                    // identity as the left operand. As a generic `Call` to the variadic
+                    // wrapper it would be a native→native link and, being a NON-tail call,
+                    // a GC safepoint that keeps the arm from hoisting its pair-slab bases.
+                    // Same guard discipline as the 2-arg case —
                     // `head` stays `-`, so a deopt dispatches the real wrapper with
                     // `(0 x)`, which is the same answer the 1-arg arm gives.
                     if let Some((op @ (PrimOp::Sub | PrimOp::Div), [0, 1])) = resolve_prim(heap, h)
@@ -1204,9 +1198,8 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // Multi-pair `(assoc coll k1 v1 k2 v2 …)` (ADR-368 follow-up, handoff item 2):
                 // unrolled at compile time into nested single-pair calls, `(assoc (assoc coll
                 // k1 v1) k2 v2)`, each of which `inline::lower_map_prim3` then makes a
-                // `PrimOp3::MapAssoc`. The wrapper's variadic arm built a rest list and looped
-                // `%assoc-map-pairs` over it — 1.1 µs of a supervised child's 16 µs was the
-                // three-pair `(assoc st :children … :ids …)`. Semantics are the wrapper's: a
+                // `PrimOp3::MapAssoc`, instead of the wrapper's variadic arm building a rest
+                // list and looping `%assoc-map-pairs` over it. Semantics are the wrapper's: a
                 // map path-copies per pair, a vector goes through the single-pair arm's
                 // `%vector-assoc` branch per pair, a duplicate key is last-wins, the
                 // operands evaluate in source order and each pair's assoc happens before the
@@ -1247,11 +1240,10 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             //
             // "Not shadowed by a local" must admit the self-name's OWN capture slot: a
             // letrec closure captures the frame that binds its name to itself, and `#3
-            // lexical addressing` binds every capture to a frame slot — so `lookup` found
-            // the name bound and this rule declined every letrec loop in the language
-            // (`(letrec (lp (fn (i acc) … (lp …))))` compiled to a `Call` through the
-            // captured closure: 100 ns per iteration against a `defn` loop's 2.3 ns,
-            // found 2026-09-17). A `let` that rebinds the name inside the body still
+            // lexical addressing` binds every capture to a frame slot — so `lookup` finds
+            // the name bound, and treating that as shadowing would decline every letrec
+            // loop (a `Call` through the captured closure, far slower than a `defn` loop).
+            // A `let` that rebinds the name inside the body still
             // resolves to ITS slot, not `self_slot`, and still declines.
             if tail {
                 if let (ValueRef::Sym(h), Some((name, arity))) = (head.unpack(), scope.self_call) {
@@ -1312,9 +1304,8 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             // everything the language ships: prelude, builtins, embedded std modules — is
             // refused by `def` (ADR-166), so its resolution cannot change mid-call and the
             // elided head stays correct. That exemption is what keeps the cost off the
-            // prelude-heavy rows: staging every call regressed `regex` 31%, `wordcount` 11%
-            // and `sieve` 9%, almost all of it calls to `first`/`rest`/`str`-class names
-            // that were never rebindable.
+            // prelude-heavy rows, whose calls to `first`/`rest`/`str`-class names can never
+            // be rebound.
             //
             // (A module load is the one context allowed to define its own reserved surface,
             // and `is_reserved_global` already reports false while one is in progress, so
@@ -1366,18 +1357,15 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             // literal is a constant: build it once and share that instance. Sound
             // *because Brood data is immutable* — no one can tell a shared vector from
             // a freshly built one, since neither can be mutated. Without this, a
-            // literal like `[:a :b]` in a hot path allocates on every evaluation
-            // (measured 2026-07-29: the `receive` tag-filter vector cost `pingpong`
-            // +3.6% / `ring` +2.4% purely in per-call allocation).
+            // literal like `[:a :b]` in a hot path (a `receive` tag-filter vector)
+            // allocates on every evaluation.
             //
             // Folding to `form` is only valid when every element *evaluates to itself* —
             // i.e. its compiled constant is structurally what the source element already
             // was. That holds for the self-evaluating literals this is for (`[:a :b]`,
-            // `[1 2]`, nested literals of them) and excludes the case that made the first
-            // version of this a real bug: `'go` compiles to the symbol `go` while the
-            // source element is still the *list* `(quote go)`, so folding the raw form
-            // produced `[:tag (quote go)]` — which broke quoted-symbol patterns and
-            // `'foo` dependency names. `compile_node` only holds `&Heap`, so building a
+            // `[1 2]`, nested literals of them) and excludes `'go`, which compiles to the
+            // symbol `go` while the source element is still the *list* `(quote go)` —
+            // folding the raw form would produce `[:tag (quote go)]`. `compile_node` only holds `&Heap`, so building a
             // fresh constant from the compiled values isn't available here; requiring
             // self-evaluation keeps the win without needing it.
             let self_evaluating = nodes

@@ -165,8 +165,8 @@ const STRANDED_REPORT_LOCK_PATIENCE: std::time::Duration = std::time::Duration::
 /// [`STRANDED_REPORT_LOCK_PATIENCE`]. A single `try_lock` lost to ordinary traffic: while
 /// `STEALABLE` is over-counted every parked worker re-probes on the 10 ms `STEAL_BACKOFF`,
 /// and they parked together, so they wake together — the reporter's scan coincides with its
-/// peers' own-queue re-checks and steal probes, and a CI run (2026-09-24) printed
-/// `w0: <locked>` for the very worker the report exists to show. It cannot block outright:
+/// peers' own-queue re-checks and steal probes, and would print `<locked>` for the very
+/// worker the report exists to show. It cannot block outright:
 /// the reporter holds its own queue lock, so waiting unboundedly on a peer's is the one
 /// shape that could deadlock the pool being diagnosed. `None` after the patience runs out.
 fn stranded_report_queue(lock: &std::sync::Mutex<VecDeque<Box<Process>>>) -> Option<Vec<u64>> {
@@ -212,7 +212,7 @@ pub(crate) fn enqueue(mut proc: Box<Process>) {
     // queue). `Condvar::notify_one` is an unconditional `futex_wake` syscall on Linux, but
     // the current worker can't be parked on its own cv while it's here executing the
     // enqueue — it will drain its own queue before it ever parks. On a `send`-then-`receive`
-    // ping-pong this removes ~1 futex syscall per message (measured ~2/round-trip → ~0).
+    // ping-pong this removes ~1 futex syscall per message.
     // Any OTHER worker that might steal this process wakes via its own cv / steal-backoff,
     // not ours, so the elision is invisible to them.
     let on_current_worker = CURRENT_WORKER.with(|c| c.get()) == Some(wid);
@@ -475,9 +475,7 @@ pub fn set_test_no_workers(on: bool) {
 ///
 /// It is now safe to call from the spawner's own thread: a quantum RESTORES the context it
 /// displaced rather than clearing it (see `save_ctx`), which is what lets wasm drive the run
-/// queue on the caller at all. It used to clobber the caller's ctx, and the standing advice
-/// was to drive from a fresh thread to dodge that — see KI-115 for what it cost on wasm,
-/// where a fresh thread is not an option.
+/// queue on the caller at all, where a fresh thread is not an option (KI-115).
 #[doc(hidden)]
 pub fn test_drive_quanta(max: usize) -> usize {
     let mut ran = 0;
@@ -572,10 +570,9 @@ pub(crate) fn ensure_workers() {
                 // likely thing to be refused, and a worker with a small stack is far
                 // better than no worker (a deep native recursion on it trips the stack
                 // guard, which is a clean Brood error). `Builder::spawn` again, NOT
-                // `thread::spawn` — the panicking variant here used to unwind inside
-                // `call_once`, which both poisoned `WORKERS_STARTED` (every later
-                // `ensure_workers` then panicked) and blew up whichever caller happened
-                // to start the pool.
+                // `thread::spawn` — the panicking variant would unwind inside
+                // `call_once`, poisoning `WORKERS_STARTED` (every later `ensure_workers`
+                // then panics) and blowing up whichever caller started the pool.
                 || std::thread::Builder::new()
                     .name(format!("brood-worker-{wid}"))
                     .spawn(move || worker_loop(wid))
@@ -782,13 +779,11 @@ fn run_one_timed(mut proc: Box<Process>) {
     drop(_sg);
     // The tail is caught too, not just `drive()`. A panic in HERE — a bad handle in
     // `save_ctx`/`store_resume`, an OOB slab index, a broken invariant in the outcome
-    // routing — used to unwind straight through `worker_loop`, which has no catch: the
-    // worker thread died for good (the pool silently shrank, and nothing restarts it)
-    // and the unwind dropped the `Box<Process>` on the way out, so the process vanished
-    // with no `deregister` — no death line, no monitors fired, no `[:down …]`. Anything
-    // waiting on it then waited forever, so ONE tail panic hung the whole runtime.
-    // Verified by fault injection: pre-fix, `BROOD_FAULT_QUANTUM_TAIL` on the chaos2
-    // gen-server wedges the program at P47 until it is killed.
+    // routing — would otherwise unwind straight through `worker_loop`, which has no
+    // catch: the worker thread dies for good (the pool silently shrinks) and the unwind
+    // drops the `Box<Process>`, so the process vanishes with no `deregister` — no death
+    // line, no monitors, no `[:down …]` — and anything waiting on it hangs forever.
+    // `BROOD_FAULT_QUANTUM_TAIL` injects exactly this fault.
     //
     // That shape is also, exactly, KI-88's recorded signature (`run` with no `end`, the
     // ledger holding a pid no thread is inside, no death line, the collector timing out)
@@ -944,10 +939,9 @@ fn handle_capture_outcome(
             // :message … :trace}]`, see `message::error_reason` — so a monitor /
             // trapping link / supervisor gets BEAM's `{Reason, Stacktrace}`
             // rather than a flattened string.
-            // …and durably, not only to stderr. KI-72 spent two sessions believing this
-            // line was never printed: libtest discards a never-completing test's stderr,
-            // so the one message naming the cause was written and thrown away. A TUI or
-            // `nest run --watch` loses it the same way.
+            // …and durably, not only to stderr (KI-72): libtest discards a
+            // never-completing test's stderr, and a TUI or `nest run --watch` loses it
+            // the same way.
             let who = proc_descr(proc.pid);
             let why = e.located();
             // The one-liner yields to a subscriber listening for abnormal exits (the

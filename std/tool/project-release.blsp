@@ -234,10 +234,10 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
             ;; `dep-pairs` is exactly the dependency modules — the root project's own `web/…`
             ;; modules are in `project-pairs`, so they never leak in here as a bogus package.
             ;; Baked into the manifest as `:bundled-packages` so `run-bundle` roots every one,
-            ;; fixing the transitive-dep case the old direct-deps-only rooting missed.
+            ;; transitive deps included.
             dep-packages (seq/distinct (map dep-pairs (fn (p) (bundle-key-package (first p))))))
-        ;; With deps rooted, a same-named module in two deps no longer clashes. This guard now
-        ;; only catches a genuine bundle-key collision — two of your own source files declaring
+        ;; With deps rooted, a same-named module in two deps does not clash. This guard only
+        ;; catches a genuine bundle-key collision — two of your own source files declaring
         ;; the same module, or a root-project module keyed identically to a dep's rooted name —
         ;; a loud stop beats the silent last-embedded-wins clobber.
         (bundle-reject-duplicate-names (map pairs first))

@@ -9,8 +9,7 @@
 //! is about FRAME SIZES, which the build decides. Under AddressSanitizer every local
 //! gets its own slot plus redzones, so frames grow several-fold: the checker's
 //! `seq_aware_call_ty` is 4 KiB in a release build and 94 KiB under ASan, past the
-//! 64 KiB red zone its call site asked for, and the nightly ASan job overflowed in the
-//! middle of a segment from 2026-10-01 on. So the ASan build raises every red zone and
+//! 64 KiB red zone its call site asks for. So the ASan build raises every red zone and
 //! segment to a floor here, once, instead of at sixty call sites. `clippy.toml` refuses
 //! a direct `stacker::maybe_grow`, so a new walker cannot bypass the floor.
 

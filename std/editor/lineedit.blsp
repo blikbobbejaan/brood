@@ -553,9 +553,8 @@ next (newer) history entry (↓ / C-n)."
   "Request a screen clear + redraw (C-l)."
   (assoc state :clear true))
 ;; ---- auto-indent (pure) -----------------------------------------------------
-;; A continuation line used to start at column 0, which for a multi-line `defn` meant
-;; every body line was hand-spaced or left ragged — and then M-q or `nest format` moved
-;; it anyway.
+;; A continuation line starts at the column `nest format` would give it, so typing never
+;; leaves a line that M-q or the formatter then moves.
 ;;
 ;; The indent rule is not invented here: it is *read off* `std/format.blsp`'s output, so
 ;; typing and reformatting cannot disagree. The formatter breaks a `(…)` call or a

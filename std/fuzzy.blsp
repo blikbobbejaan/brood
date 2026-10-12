@@ -103,12 +103,12 @@ redefining it moves every ranking at once."
 ;;   * positions are consed as it goes, so a score and a highlight come out of the same
 ;;     walk rather than out of two implementations of the same rules.
 ;;
-;; A score-only walk beside a score-and-positions one measured 8% faster. Nowhere near
-;; enough to pay for stating the rules twice.
+;; A separate score-only walk would be only marginally faster — not enough to pay for
+;; stating the rules twice.
 ;;
 ;; `index-of` is the native scan: Brood has no O(1) char access, so a per-char Brood
-;; recursion here would be quadratic. Measured per phase, though, the scan is NOT the cost
-;; — the interpreted per-candidate work is (see `top`).
+;; recursion here would be quadratic. The scan is not the cost, though — the interpreted
+;; per-candidate work is (see `top`).
 
 (defn- fuzzy-walk (qchars qi qn clow cand ci prev score positions)
   "`[score positions]` for the greedy match of prepared query `qchars` within `clow` (the
@@ -229,19 +229,16 @@ still `:default`. The one place the sentinel is resolved."
 ;; ---- ranking a whole set ----------------------------------------------------
 ;; This is the per-keystroke pass, and at project scale (tens of thousands of paths, where
 ;; a short query matches nearly all of them) it is where a completion UI lives or dies.
-;; Two things make it affordable without leaving Brood. Measured over 27k repo-style paths,
-;; where `filter` took 1183 ms:
+;; Two things make it affordable without leaving Brood:
 ;;
-;;   1. TOP-K, NOT A SORT. A UI shows ~20 rows; sorting 26k matches to throw 26k of them
-;;      away was ~700 ms of that. `fuzzy-fold` keeps the best k instead: one int compare
-;;      rejects the common candidate, and nothing is allocated until one actually places.
+;;   1. TOP-K, NOT A SORT. A UI shows ~20 rows; sorting tens of thousands of matches to
+;;      throw nearly all away dominates. `fuzzy-fold` keeps the best k instead: one int
+;;      compare rejects the common candidate, and nothing is allocated until one places.
 ;;   2. ONE PASS, NOTHING PREPARED PER CANDIDATE. See `fuzzy-walk` above.
 ;;
-;; Together: 1183 → 711 ms on that corpus and 469 → 194 ms on a realistic one, with
-;; identical results. What remains is the interpreter's own floor — roughly 0.35 µs per
-;; operation, against a handful of operations per candidate — so ranking is also SHARDED
-;; ACROSS PROCESSES past `*fuzzy-parallel-min*` candidates (`fuzzy-parallel`): 711 → 254 ms
-;; on eight (103 ms on the realistic one). Concurrency is the lever Brood has that a native
+;; What remains is the interpreter's per-operation floor, so ranking is also SHARDED ACROSS
+;; PROCESSES past `*fuzzy-parallel-min*` candidates (`fuzzy-parallel`). Concurrency is the
+;; lever Brood has that a native
 ;; rewrite would have skipped, and unlike that rewrite it leaves the rules above
 ;; redefinable at runtime (ADR-357).
 
@@ -309,8 +306,8 @@ placing re-sorts the kept list.)"
 ;; to ranking the whole set in one process.
 ;;
 ;; The workers are spawned per ranking rather than pooled: a shard is only meaningful for
-;; one candidate set, `spawn` plus the slice measured ~3 ms for 27k candidates against the
-;; ~400 ms it parallelises, and a pool would need invalidating every time the set changed —
+;; one candidate set, `spawn` plus the slice is cheap next to the ranking it parallelises,
+;; and a pool would need invalidating every time the set changed —
 ;; state to get wrong for no gain.
 ;;
 ;; Two things this has to get right, because the caller is an editor's loop and its mailbox
@@ -329,8 +326,8 @@ placing re-sorts the kept list.)"
 ;; single-process.
 
 (defdyn *fuzzy-workers* 8)
-;; How many processes a big ranking shards across. Eight measured best on a 28-core box —
-;; past that the per-shard fixed cost grows faster than the parallelism pays back.
+;; How many processes a big ranking shards across. Past about eight the per-shard fixed
+;; cost grows faster than the parallelism pays back.
 
 (defdyn *fuzzy-worker-timeout-ms* 1000)
 ;; How long to wait for a shard before killing that worker and ranking its slice here. A
@@ -449,9 +446,7 @@ Prefer this over `filter` whenever the caller shows a fixed number of rows: the 
       (default-rules?) (%fuzzy-top query cands limit)
       (not bounded) (fuzzy-all ((scorer-in-force) query) cands)
       (> n *fuzzy-parallel-min*) (fuzzy-parallel ((scorer-in-force) query) cands k)
-      ;; The bounded fold only pays once the sort it replaces is mostly waste. Measured
-      ;; (sort+take vs fold, best-20 of a repo-like corpus): 200 → 1.7/3.2 ms, 1000 →
-      ;; 7.4/11.0, 2000 → 14.1/16.8, 4000 → 29.6/27.5, 16000 → 118.7/93.7 ms. So the
+      ;; The bounded fold only pays once the sort it replaces is mostly waste. The
       ;; crossover is around a hundred candidates per row shown — under that the native
       ;; sort beats an interpreted fold, over it the fold pulls away. A ratio, not a size:
       ;; what matters is how many candidates get sorted per row actually displayed.

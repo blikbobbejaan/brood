@@ -96,17 +96,16 @@
 ;; `types/check.rs::top_level_defs` identifies a private definition by exactly this shape —
 ;; a `do` carrying a `%mark-private` call — and unwraps it so the definition inside is
 ;; inferred and its call sites checked. Most definitions in a real module are private (40 of
-;; `std/json.blsp`'s 42), so a rewrite that nests the `def` anywhere else silently stops the
-;; checker seeing them: collapsing this to `(%mark-private (def …))` on 2026-09-05 turned
-;; `nest check --strict std/` from clean to ten warnings, in files the change never touched.
+;; `std/json.blsp`'s 42), so a rewrite that nests the `def` anywhere else — e.g.
+;; `(%mark-private (def …))` — silently stops the checker seeing them, and warnings appear in
+;; files the change never touched.
 ;;
 ;; A known hazard, deliberately left: `%mark-private` re-resolves the quoted name against the
 ;; namespace loading at CALL time, while `def` resolved its head at COMPILE time. The two
 ;; disagree for a prelude function that assigns a root private while a module is loading —
 ;; it binds `*x*` and marks `mod/*x*`. Harmless today because nothing takes that path (the
 ;; stdlib-image setters are called from the image BUILDER, whose marks are then re-derived
-;; from the built image), and the two real cases it looked like were KI-111's other halves,
-;; in `registry_cas` and `define_image_entry`. Fixing it properly means qualifying at
+;; from the built image; compare KI-111). Fixing it properly means qualifying at
 ;; expansion time, which needs `qualify_name`'s ambient/already-qualified rules restated in
 ;; Brood — a second copy of a kernel rule, for a case with no live symptom.
 (defmacro defn- (name & clauses)
@@ -120,8 +119,7 @@
 ;; The bootstrap append helpers above are defined before `def-` exists (they are plain
 ;; `(def name (fn …))` because `defn` itself is not available that early), so they are
 ;; marked private here instead — the same `%mark-private` fact `def-` records, just stated
-;; once the macro layer is up. Without this they were published as core vocabulary: three
-;; internal list builders nobody can meaningfully call.
+;; once the macro layer is up, so they are not published as core vocabulary.
 (%mark-private '%append-empty?)
 (%mark-private '%append-rev)
 (%mark-private '%append-2)
@@ -157,8 +155,8 @@
 ;;
 ;; A symbol or keyword yields its SPELLING, with no sigil: `(->string :foo)` is "foo".
 ;; This is the one kind where `->string` and `str` deliberately disagree — `(str :foo)`
-;; is ":foo", and `pr-str` must also stay ":foo" because it has to round-trip. It was
-;; the bare `name` primitive until 2026-08-27; that spelling is now a user's to take.
+;; is ":foo", and `pr-str` must also stay ":foo" because it has to round-trip. The bare
+;; `name` is deliberately left free for user code.
 (defn ->string (x)
   "The display string of `x`: a symbol or keyword yields its spelling with no sigil
 (`(->string :foo)` → \"foo\"), and everything else is `str`. A record may customise
@@ -186,9 +184,8 @@ this by implementing the `Display` ability, which takes over this name below.
     (seq nil)         → nil"
   ;; DISPATCH ORDER IS LOAD-BEARING, as in `fold`: a vector IS its own seq view and
   ;; answers first, before the two predicate calls, the three `%eq`s, `bound?` and the
-  ;; `%map-get` keyed by a vector that the chain below costs — 586 ns of dispatch to
-  ;; return itself (measured 2026-09-21: `(mapv [1 2 3 4] f)` was 4.3 µs, most of it here
-  ;; and in `reverse`'s own `seq`). Every eager sequence op calls `seq` once.
+  ;; `%map-get` keyed by a vector that the chain below costs — dispatch that would
+  ;; dominate a small `mapv`. Every eager sequence op calls `seq` once.
   (if (%eq (type-of coll) :vector)
     coll
     (if (range? coll)
@@ -198,8 +195,7 @@ this by implementing the `Display` ability, which takes over this name below.
         (let (t (type-of coll))
           ;; A `bytes` value is realised to a list ONCE here: without this, fold/map/
           ;; filter/reduce would walk it with `first`/`rest`, and `(rest bytes)` copies
-          ;; all-but-the-first byte — O(n) per step, O(n^2) total (a 50k-byte reduce
-          ;; spiked ~1.3 GB RSS). `bytes->list` is a single O(n) native pass.
+          ;; all-but-the-first byte — O(n) per step, O(n^2) total. `bytes->list` is a single O(n) native pass.
           (if (%eq t :map)
             ;; A record (a map carrying `:__id__`) takes its `Seqable` view — the fields,
             ;; id-free, by default — so it never leaks `:__id__` into map/fold/keys and a
@@ -212,8 +208,8 @@ this by implementing the `Display` ability, which takes over this name below.
               (%bytes->list coll)
               ;; Lists and nil ARE their own seq view and take the hot path untouched. Any
               ;; other kind reaching here is one `seq` has no native view of — a rope, a
-              ;; table — and used to be returned UNCHANGED, so `(seq rope)` silently answered
-              ;; the rope itself. Consult `Seqable`, but only where an impl exists for that
+              ;; table — and must not be returned UNCHANGED (`(seq rope)` would silently
+              ;; answer the rope itself). Consult `Seqable`, but only where an impl exists for that
               ;; kind SPECIFICALLY: its `:default` is a record's fields, meaningless here.
               ;;
               ;; ONLY what is available at line 106 of the prelude. `get` and `%identity-of`
@@ -234,10 +230,9 @@ this by implementing the `Display` ability, which takes over this name below.
                     (%seq-passthrough coll t)))))))))))
 
 ;; What `seq` answers for a kind with no sequence view of its own. A scalar — an int, a
-;; float, a keyword, a function — can never be walked, and used to pass through here to
-;; die in the caller as "empty?: expected collection" (2026-09-30); the error now names
-;; `seq` and the value. Everything else (a set, a string, a socket handle, a kind a later
-;; impl may cover) still passes through, as before. `throw` + `str` only — this is line
+;; float, a keyword, a function — can never be walked, so it raises here naming `seq` and
+;; the value, rather than dying later in the caller under another name. Everything else (a
+;; set, a string, a socket handle, a kind a later impl may cover) passes through. `throw` + `str` only — this is line
 ;; ~230 of the prelude and `error` lives in control.blsp.
 (defn- %seq-passthrough (coll t)
   (if (if (%eq t :int)
@@ -271,17 +266,8 @@ this by implementing the `Display` ability, which takes over this name below.
   ;; DISPATCH ORDER IS LOAD-BEARING. A vector is tested first, with the one-call
   ;; `vector?` predicate rather than `type-of` + `%eq` from the bottom of the chain.
   ;; The branches are disjoint (`type-of` is `:vector` for a vector and `:pair` for a
-  ;; range, a seq-view AND a list), so no value changes branch — this is pure ordering.
-  ;;
-  ;; Measured 2026-08-10, 300k small folds of a 16-cell container, containers hoisted
-  ;; out of the loop so only dispatch + reduce is timed (median of 3):
-  ;;
-  ;;     vector 533 -> 410 ns   range 230 -> 183 ns   list 3595 -> 3248 ns
-  ;;
-  ;; Note the range row IMPROVES even though a range now pays an extra `vector?` first:
-  ;; flattening the chain is worth more than the check costs. That is why this is not
-  ;; the trade it looks like — nothing regresses. On the spawn-live shape (each unit
-  ;; folds a 16-cell payload in a cold process) the rung went 28.3 -> 27.1 us/unit.
+  ;; range, a seq-view AND a list), so no value changes branch — this is pure ordering,
+  ;; and the flat chain is cheaper for every kind, ranges and lists included.
   (if (vector? coll)
     (%vector-reduce f acc coll)
     (if (range? coll)
@@ -300,7 +286,7 @@ this by implementing the `Display` ability, which takes over this name below.
   ;; caller, so there is no binding or pipe step to put a sentinel on. Without it, a
   ;; callback that returns a failure hands it to the NEXT step, which raises
   ;; (`conj: not a collection`) one item later, naming the wrong thing. This is the
-  ;; short-circuiting fold ADR-312 deferred pending evidence; the calculator is it.
+  ;; short-circuiting fold ADR-312 deferred.
   ;;
   ;; Spelled with the kernel prims, NOT `failure?`. This is the workhorse behind `map`,
   ;; `filter`, `reduce`, `conj` and `into`, so the guard runs once per ELEMENT: `failure?`
@@ -330,8 +316,8 @@ this by implementing the `Display` ability, which takes over this name below.
     (reverse nil)      → nil
 
 A string is not a sequence here — reverse its `string/->list` if you need that."
-  ;; A vector reduces natively (`fold`'s own vector path): walking it with `rest` built a
-  ;; view per step, 88 ns each, where the list walk is one `cons`.
+  ;; A vector reduces natively (`fold`'s own vector path): walking it with `rest` would
+  ;; build a view per step, where the list walk is one `cons`.
   ;; A plain list skips `seq`'s dispatch too — it is the shape every `%defseq` op
   ;; reverses at the end.
   (let (t (type-of coll))
@@ -365,10 +351,9 @@ splice it back in front of the remainder."
   ;; `(append (reverse acc) tail)` it costs four passes — `reverse` walks `acc`, then
   ;; `append` folds both lists onto nil and reverses the result — and the checker's
   ;; non-tail-recursion advice produces more of these every time it is followed. So
-  ;; the idiom gets a name and one pass. Measured, 20k splices of a 500-element
-  ;; prefix: `(append (reverse acc) tail)` 2739 ms, `(fold %flip-cons tail acc)`
-  ;; 1674 ms, this 601 ms (4.6x). The `fold` form loses because of the per-element
-  ;; `%flip-cons` apply frame, which is exactly why `%reverse-acc` is a dedicated loop.
+  ;; the idiom gets a name and one pass. `(fold %flip-cons tail acc)` is one pass too but
+  ;; pays a per-element `%flip-cons` apply frame, which is why `%reverse-acc` is a
+  ;; dedicated loop.
   (%reverse-acc (seq coll) tail))
 
 ;; Realise a lazy seq-view to a concrete list by running its transducer. Folding
@@ -470,7 +455,7 @@ fewer than two items.
 ;; the swapped/negated ones get a named Brood helper (still policy in Brood).
 (defn- %cmp-gt (a b) (%lt b a))
 ;; `(if … false true)` rather than `(not …)`: `not` is a prelude closure, so the negation
-;; was a Brood call on every `<=`/`>=` that reaches the fallback (KI-182's lesson, swept).
+;; would be a Brood call on every `<=`/`>=` that reaches the fallback (KI-182).
 (defn- %cmp-le (a b) (if (%lt b a) false true))
 (defn- %cmp-ge (a b) (if (%lt a b) false true))
 
@@ -501,7 +486,7 @@ something that CAN be ordered: `(< '(1 2))` raises rather than silently answerin
     (<= 1 1 2)   → true    ; equal neighbours are allowed
     (<= 2 1)     → false"
   ;; 2-arg body is a direct primitive call (a <= b) so the ADR-069 thin-wrapper
-  ;; elision reaches it — the old `(not (%lt b a))` was a nested call it couldn't.
+  ;; elision reaches it — `(not (%lt b a))` would be a nested call it can't.
   ((a b) (%le a b))
   ((a) (do (%le a a) true))
   ((& xs) (%chain? %cmp-le xs)))
@@ -543,8 +528,7 @@ inlines, while this wrapper stays a call — and it does not mislead past two ar
 ;;      `Prim2Slot*`; `not`'s body is a leaf, so the leaf inliner splices it. `not=`'s body
 ;;      is a NESTED call — the exact shape the `<=` note above says the elision cannot reach,
 ;;      and not a leaf either — so it stays a boxed `Call` forever and the caller never gets
-;;      the inlined upgrade. Measured on a 5M-iteration tail loop: 218 ms vs 132 ms native
-;;      (1.65x), 1067 ms vs 771 ms on the VM (1.38x).
+;;      the inlined upgrade.
 ;;   3. Its variadic reading is a trap. `(not= 1 2 1)` is TRUE — `=` chains pairwise and
 ;;      `not=` negates the whole chain, so the name reads "pairwise different" and means
 ;;      "not all equal". Written out, the scope of the negation is on the page.
@@ -680,8 +664,8 @@ self-call decreases an argument, and no `match` in the body can fail).
         type (if typed (first spec) nil)
         props (if typed (rest spec) spec))
     ;; A type-form is a list (`(int -> int)`, `(list int)`) or a name (`int`, an alias);
-    ;; anything else was registered silently and checked by nothing — `(sig f 5)` passed
-    ;; (2026-09-30). `%eq`/`if` only: this expands before `or`/`cond` exist.
+    ;; anything else is an error, not a declaration checked by nothing (`(sig f 5)`).
+    ;; `%eq`/`if` only: this expands before `or`/`cond` exist.
     (if typed
       (if (%eq (type-of type) :pair)
         nil
@@ -766,11 +750,9 @@ no-op; the marker is read only by the type checker (`nest check`)."
 ;; cond: flat test/expr pairs (ADR-004); a final `else` is the catch-all.
 ;;
 ;; `else` needs the special case below: a bare symbol would otherwise be an unbound
-;; reference. `:else` never did — a keyword is self-evaluating and truthy, so it
-;; already worked the way `true` or any other truthy test does. Special-casing it
-;; too made the language carry a second blessed spelling for no gain, so that case
-;; is gone (2026-07-26). `(cond … :else x)` still returns `x` — as an ordinary
-;; truthy test, via `if` — but `else` is the spelling the language knows.
+;; reference. `:else` needs none — a keyword is self-evaluating and truthy — and is
+;; deliberately NOT special-cased, so the language has one blessed spelling.
+;; `(cond … :else x)` still returns `x` as an ordinary truthy test, via `if`.
 ;; Bootstrap helper for cond's guard: walks clauses two at a time, returning
 ;; the orphan last element when count is odd, nil when even. Uses only
 ;; `if`/`empty?`/`first`/`rest` — all kernel primitives — so it's safe to call
@@ -841,13 +823,11 @@ no-op; the marker is read only by the type checker (`nest check`)."
 ;; Defined HERE, at the end of core.blsp, and not in contracts.blsp with the rest of the
 ;; contract machinery, for two reasons that pull in opposite directions. It must come AFTER
 ;; `and`/`or`/`cond` (above): a prelude closure keeps a call to a macro defined after it
-;; unexpanded, and the VM then defers the whole closure to the tree-walker for good — this
-;; function sat above those macros for a year and `(type-matches? 'string "x")` cost 210 µs
-;; (2026-09-21). And it must come BEFORE tools.blsp: an ability op with a declared `:->`
-;; return checks its result through this function whenever contracts are armed, and the
-;; prelude's own `->string` is called while later prelude forms EXPAND — with this defined
-;; in the last file, an armed source boot died at `(defability Inspect …)` with `unbound
-;; symbol: type-matches?`.
+;; unexpanded, and the VM then defers the whole closure to the tree-walker for good (~200×
+;; slower). And it must come BEFORE tools.blsp: an ability op with a declared `:->` return
+;; checks its result through this function whenever contracts are armed, and the prelude's
+;; own `->string` is called while later prelude forms EXPAND — defined any later, an armed
+;; source boot dies with `unbound symbol: type-matches?`.
 
 ;; `lo`/`hi` are ints or the open end `_`, as the interval grammar spells them (ADR-350).
 (defn- %interval-admits? (lo hi n)
@@ -885,10 +865,9 @@ no-op; the marker is read only by the type checker (`nest check`)."
 ;; The NOMINAL reading of a type name that is not a base name and not a `deftype` alias —
 ;; what the checker means by it (ADR-186): a SEALED ability is the union of its member
 ;; identities; a `defrecord` name is that record's identity; anything else (an OPEN
-;; ability, which the checker reads as `any`, or a name nothing defines) accepts. Until
-;; 2026-10-02 every one of these fell to the alias lookup's "unknown → accept", so
-;; `(sig area (point -> int))` let `(area 5)` through at runtime while `nest check`
-;; rejected it. A sealed name is looked up as written and by its last segment, since
+;; ability, which the checker reads as `any`, or a name nothing defines) accepts. Treating
+;; them all as unknown would let `(sig area (point -> int))` admit `(area 5)` at runtime
+;; while `nest check` rejects it. A sealed name is looked up as written and by its last segment, since
 ;; `defability` registers the name its author wrote.
 (defn- %nominal-type-matches? (t v)
   (let (ts (->string t))
@@ -923,7 +902,7 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
         (cond
           ;; An ARROW type — `(map -> int)`, `(-> any)` — describes a callable, and it is
           ;; checked BEFORE the head dispatch below: its head is whatever its first parameter
-          ;; type is, so `(map -> int)` used to fall into the `map` branch and fail every
+          ;; type is, so `(map -> int)` would fall into the `map` branch and fail every
           ;; callback argument under BROOD_CONTRACTS=1 (KI-113). Callability is all a
           ;; contract can check of a function value.
           (%le 0 (%sig-pos t '-> 0)) (fn? v)
@@ -933,9 +912,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
           (%eq h 'or) (any? (rest t) (fn (s) (type-matches? s v seen)))
           (%eq h 'and) (every? (rest t) (fn (s) (type-matches? s v seen)))
           (%eq h 'not) (if (any? (rest t) (fn (s) (type-matches? s v seen))) false true)
-          ;; `(int lo hi)` — an int within the interval, `_` an open end (ADR-350). The
-          ;; contract checked the tag alone until 2026-09-17, so a declaration the checker
-          ;; trusted could lie at runtime.
+          ;; `(int lo hi)` — an int within the interval, `_` an open end (ADR-350). Checked
+          ;; here, not just the tag, so a declaration the checker trusts cannot lie at runtime.
           (%eq h 'int)
             (and (int? v)
               (%interval-admits? (second t) (third t) v))
@@ -967,12 +945,9 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
               (let (elem (first (rest t)))
                 (or (nil? elem)
                   (every? v (fn (x) (type-matches? elem x))))))
-          ;; `(set T)` — the sibling of `(vector T)`, and it had NO arm until 2026-09-17:
-          ;; the grammar has accepted it since element types shipped, so a declared
-          ;; `(set int)` fell through to the `else true` below and the contract accepted
-          ;; anything at all. "Unknown compound → accept" is right for a type this
-          ;; function cannot interpret; it is the trusted-declaration problem (A5) for one
-          ;; it can.
+          ;; `(set T)` — the sibling of `(vector T)`. Every compound the grammar accepts
+          ;; needs an arm: "unknown compound → accept" (the `else true` below) is right for
+          ;; a type this function cannot interpret, and a lie for one it can.
           (%eq h 'set)
             (and (set? v)
               (let (elem (first (rest t)))
@@ -990,8 +965,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
                   (every? v (fn (x) (type-matches? elem x))))))
           ;; A record instance is a map whose identity rides in a hidden `:__id__` entry —
           ;; hidden from `count`, `seq`, `keys` and the checker alike — so its entries here
-          ;; are its FIELDS: `(point 1 2)` is a `(map keyword int)` (2026-10-02; the
-          ;; identity's keyword VALUE failed `int` and the contract rejected it).
+          ;; are its FIELDS: `(point 1 2)` is a `(map keyword int)` (the identity's keyword
+          ;; VALUE must not be checked against `int`).
           (%eq h 'map)
             (and (map? v)
               (let (ktype (first (rest t))
@@ -1061,11 +1036,9 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
     (%eq t 'list) (list? v)
     (%eq t 'vector) (vector? v)
     ;; The rest of the grammar's base names (`types/check/annot.rs`), each the tag set the
-    ;; checker gives it. Until 2026-09-21 the eleven below were not here: they fell to the
-    ;; alias lookup, which answered "not an alias" after scanning EVERY declared signature
-    ;; (allocating as it went), and then to `else true` — so `(conj (or list vector set map)
-    ;; …)` cost three such scans per call and admitted a string, while the checker rejected
-    ;; it. `seqable` and `countable` are the checker's unions exactly: a string is NOT
+    ;; checker gives it — answered here, before the alias lookup (which scans every
+    ;; declared signature) and the `else true` (which would admit what the checker
+    ;; rejects). `seqable` and `countable` are the checker's unions exactly: a string is NOT
     ;; seqable (it is countable).
     (%eq t 'set) (set? v)
     (%eq t 'bytes) (bytes? v)
@@ -1081,10 +1054,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
     (%eq t 'table) (table? v)
     (%eq t 'socket) (%eq (type-of v) :socket)
     (%eq t 'subprocess) (%eq (type-of v) :subprocess)
-    ;; A `deftype` ALIAS name (ADR-327): match the type it names, in its place. Until
-    ;; 2026-09-18 an alias was just an unknown symbol here, so it fell to the `else true`
-    ;; below and a `sig!` over one accepted ANY value — every alias since ADR-327, while
-    ;; the checker enforced all of them statically (KI-165).
+    ;; A `deftype` ALIAS name (ADR-327): match the type it names, in its place — never
+    ;; the `else true` below, or a `sig!` over an alias accepts ANY value (KI-165).
     ;;
     ;; Termination has two halves, and the split between them is why `seen` is threaded
     ;; through some recursive calls and not others.
@@ -1092,9 +1063,8 @@ cyclic alias (`(deftype a b)` `(deftype b a)`) stops instead of looping."
     ;;   • A recursion that CONSUMES VALUE always terminates, because a Brood value is
     ;;     finite and acyclic (data is immutable, so there are no cycles to walk). Every
     ;;     call that descends into an element, a field or a position therefore starts with
-    ;;     a FRESH `seen` — passing the accumulated one instead was the first cut of this
-    ;;     fix, and it accepted a bad leaf at depth 2: `tree`'s `:l` field is `tree`, so
-    ;;     the legitimate descent looked exactly like a cycle and the guard swallowed it.
+    ;;     a FRESH `seen` — passing the accumulated one would accept a bad leaf at depth 2:
+    ;;     `tree`'s `:l` field is `tree`, so the legitimate descent looks like a cycle.
     ;;   • A recursion that does NOT consume value — `or`/`and`/`not`/`len`/`rec` and an
     ;;     alias expansion, all of which re-ask about the SAME `v` — is where a cycle can
     ;;     live: `(deftype a b)` with `(deftype b a)`, or `(deftype loop loop)`. Those
@@ -1114,10 +1084,8 @@ list at all. Expansion-time helper for `sig!` that predates `index-of` in the pr
 load order.
 
 The non-list answer is load-bearing: a `(sig *name* int)` declares a VALUE's type, so `sig!`
-asks where its `->` is and must hear \"nowhere\" — it used to call `first` on the symbol and
-fail the module, which under BROOD_CONTRACTS=1 took down every module loading `project`,
-`test` or `editor/lineedit` from source (2026-09-06; invisible with a stdlib image, whose
-materialised modules never evaluate their sigs)."
+asks where its `->` is and must hear \"nowhere\" — calling `first` on the symbol would fail
+the module under BROOD_CONTRACTS=1."
   (cond
     (nil? xs) -1
     (pair? xs) (if (%eq (first xs) x) n (%sig-pos (rest xs) x (%add n 1)))

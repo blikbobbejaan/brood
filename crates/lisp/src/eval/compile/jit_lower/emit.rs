@@ -45,9 +45,8 @@ pub(super) fn deopt_code_with(
 
 /// The current `roots` data pointer, read straight off the heap: `Heap.roots` is a
 /// `RootsBuf` whose header is (ptr, len, cap) at +0/+8/+16 (pinned by
-/// `RootsBuf::header_offsets`), the same load the §7.5 inline call blob makes. This
-/// used to be an FFI call (`brood_rt_roots_base`) at every arm entry and after every
-/// call — one `call`/`ret` plus the callback, per activation, for one pointer load.
+/// `RootsBuf::header_offsets`), the same load the §7.5 inline call blob makes — one
+/// pointer load rather than an FFI round trip at every arm entry and after every call.
 pub(super) fn load_roots_base(
     b: &mut FunctionBuilder,
     heap: cranelift_codegen::ir::Value,
@@ -219,13 +218,12 @@ pub(super) struct Frame<'a> {
 
 /// How one operand-stack entry crosses a block boundary. Block params are `I64`, so the
 /// representation has to be agreed by every predecessor (`record_block_flags`); a
-/// disagreeing edge is routed to `deopt`, exactly as it was when this was a plain `bool`.
+/// disagreeing edge is routed to `deopt`.
 ///
-/// `Slot` is the KI-49 fix. Previously every carried operand went through `as_int`, which
-/// tag-checks `Int` and deopts otherwise — so an arm carrying a non-Int value across a
-/// merge (any tagged-tuple matcher: it tests `vector?`, then `vector-length`, then `nth`
-/// on the same message) deopted on *every* activation and was latched to the interpreter.
-/// Carrying "the value is in frame slot k" instead needs no unboxing and cannot deopt.
+/// `Slot` exists because of KI-49: carrying every operand through `as_int` (tag-check `Int`,
+/// deopt otherwise) makes an arm carrying a non-Int value across a merge — any tagged-tuple
+/// matcher — deopt on every activation and latch to the interpreter. Carrying "the value is
+/// in frame slot k" needs no unboxing and cannot deopt.
 ///
 /// Int is kept as the default for profiled-`Int` slots so the unboxed integer carry —
 /// what makes `fib`/`collatz` fast — is untouched.
@@ -245,12 +243,10 @@ pub(super) enum ParamRepr {
     /// tagged words, the entry's own param plus two extra block params appended for the
     /// `n`th widened entry (`control::resolve_edges`), and the target rebuilds an
     /// `Op::Handle`. Unification assigns `n`; [`param_repr`] asks for it with the
-    /// [`WORDS_WANTED`] placeholder for a `Handle` it cannot spill — before 2026-09-17 such
-    /// a handle fell through to `Int`, and when every predecessor agreed on that (a
-    /// `[1]` literal on one edge, `nil` on the other — the `receive` matcher's inner
-    /// join) nothing widened and `as_int` deopted on the vector every message. It was
-    /// masked while the matcher's `vector?`/`%vector-length` were CALLS: two of them
-    /// funded a spill window. The moment they became prims the window vanished.
+    /// [`WORDS_WANTED`] placeholder for a `Handle` it cannot spill. Letting such a handle fall
+    /// through to `Int` deopts whenever every predecessor agrees on it (a `[1]` literal on one
+    /// edge, `nil` on the other — the `receive` matcher's inner join): nothing widens and
+    /// `as_int` deopts on the vector every message.
     Words(usize),
 }
 
@@ -722,18 +718,15 @@ pub(super) fn store_words(
 /// **A boolean is not a number here, and must not be admitted as one.** Every boxed shape
 /// (`Slot`, `Handle`, `HoistedVec`) is tag-checked and `Float` deopts, but `Op::Bool` and an
 /// `i8`-typed `Op::Int` (a comparison result — `icmp`/`fcmp` produce `i8`, and `box_scalar`
-/// boxes those as `Value::Bool`) used to pass through raw. That was two bugs at once:
+/// boxes those as `Value::Bool`) must not pass through raw, for two reasons:
 ///
-///   * **an engine divergence.** A `Const` boolean materialises as `Op::Bool(iconst 0/1)`
-///     (`jit_lower.rs`), so a lowered `(+ acc true)` computed `acc + 1` where the tree-walker
-///     and the VM both raise `+: expected number, got bool` (the VM's `prim_apply` returns
-///     `None` for a non-numeric operand and dispatches the real `+` native, which errors).
-///     Guarded by `tests/jit_bool_arith_test.blsp`.
-///   * **an `i8` into `i64` arithmetic.** A comparison used directly as an arithmetic operand
-///     (`(+ (< x 0) 1)`) reached `emit_arith` as `sadd_overflow(i8, i64)`, which Cranelift
-///     refuses — the whole arm then declined to lower with no diagnostic beyond
-///     `reason=lowering-returned-none`, so a cold nonsense branch silently cost the *hot* arm
-///     its native code.
+///   * **engine divergence.** A `Const` boolean materialises as `Op::Bool(iconst 0/1)`
+///     (`jit_lower.rs`), so a raw `(+ acc true)` would compute `acc + 1` where the tree-walker
+///     and the VM both raise `+: expected number, got bool`. Guarded by
+///     `tests/jit_bool_arith_test.blsp`.
+///   * **`i8` into `i64` arithmetic.** `(+ (< x 0) 1)` would reach `emit_arith` as
+///     `sadd_overflow(i8, i64)`, which Cranelift refuses — so a cold nonsense branch would
+///     silently cost the *hot* arm its native code.
 ///
 /// Deopting is right for both: the VM re-runs the arm and produces the real type error (or,
 /// for a branch that never actually executes, never gets there). A bool crossing a block
@@ -994,8 +987,8 @@ fn classify_float_operand(b: &mut FunctionBuilder, op: Op, f: Frame) -> FOperand
     }
 }
 
-/// Read BOTH operands of a float arithmetic/compare as f64 — the sound form of what two
-/// separate [`as_f64`] calls used to do.
+/// Read BOTH operands of a float arithmetic/compare as f64 — the sound alternative to two
+/// separate [`as_f64`] calls.
 ///
 /// The float path is chosen by `op_is_float`, which reads `slot_float` — a single-pass
 /// approximation whose stated contract is that *a wrong guess is safe: a deopt, not a
@@ -1201,17 +1194,11 @@ pub(super) fn set_slot_flags(b: &FunctionBuilder, dst: i64, op: Op, f: Frame) {
 /// The arm's **return** store: write the single result `Value` to `addr` as one 16-byte
 /// vector store of `[tag, payload]` plus an 8-byte store of the third word.
 ///
-/// `addr` is the caller-supplied `out` pointer, not a frame slot. Returning through
-/// `roots[base]` and having `jit_run_fast_link` load it straight back cost **16.4% of that
-/// function** on a single `movups` — measured with `cycles:pp`, so it is the load and not
-/// skid from the `callq` before it (docs/compute-frontier.md §2h).
-///
-/// **The obvious explanation is wrong, and it was tested.** A 16-byte load straddling
-/// `store_int`'s 1-byte tag + 8-byte payload cannot store-forward, which predicts exactly
-/// this symptom — but widening the store to a single 16-byte vector store while still going
-/// through `roots[base]` left the instruction at 16.4% (from 16.4%) and bought 1.3% of the
-/// row, against a 1.0% floor. So the cost is the memory round trip itself, not the width
-/// mismatch. The wide store is kept because it matches the consumer's width for free.
+/// `addr` is the caller-supplied `out` pointer, not a frame slot: returning through
+/// `roots[base]` and having `jit_run_fast_link` load it straight back is a costly memory
+/// round trip (docs/compute-frontier.md §2h). That cost is the round trip itself, not a
+/// store-forwarding width mismatch — widening the store alone did not help. The wide store
+/// is kept because it matches the consumer's width for free.
 pub(super) fn store_result(
     b: &mut FunctionBuilder,
     op: Op,
@@ -1221,7 +1208,7 @@ pub(super) fn store_result(
     let [w0, w1, w2] = read_words(b, op, f);
     // An `I64X2` vector store, NOT `iconcat` + `store.i128`: Cranelift's x64 backend keeps
     // an `i128` in a GPR *pair*, so that form legalizes back into two 8-byte `mov`s and the
-    // load still straddles them (measured: no change). A vector store is one `movups`.
+    // load still straddles them. A vector store is one `movups`.
     // Lane 0 lands at +0 and lane 1 at PAYLOAD_OFFSET on little-endian, which is the layout
     // `repr(C, u8)` gives every `Value` (see `jit_layout`).
     let v0 = b.ins().scalar_to_vector(types::I64X2, w0);
@@ -1532,9 +1519,8 @@ pub(super) fn table_prim(
 ///     (status 2) deopts, since realising it needs the evaluator.
 /// This is what keeps keyword-dispatching arms (`(= (get st :t) :split)` — the regex
 /// NFA walkers, any tagged-map code) running native instead of deopting per compare.
-/// The residual case used to deopt outright, which made a string compare per activation
-/// (the highlighter's `(= open "(")`, KI-132) a guaranteed deopt-thrash latch: sixteen
-/// activations, then the arm and every helper of its shape ran interpreted for good.
+/// Deopting on the residual case would make a string compare per activation a guaranteed
+/// deopt-thrash latch, leaving the arm interpreted for good (KI-132).
 pub(super) fn eq_dispatch(
     b: &mut FunctionBuilder,
     wa: [cranelift_codegen::ir::Value; 3],
@@ -1685,12 +1671,9 @@ pub(super) fn inline_vec_ref(
     b.switch_to_block(c1);
     // Region: high 2 bits of the handle == 0 (LOCAL). PRELUDE/RUNTIME take the FFI
     // (`brood_rt_vector_ref`, which reads any region) rather than deopting: the shared
-    // slabs are chunked `boxcar::Vec`s with no single base to index, and deopting here
-    // was the pair path's "70x cliff on `def`'d data" (see `PrimOp1::First`'s lowering)
-    // for vectors — an arm destructuring a literal or `def`'d vector deopted on every
-    // activation and was latched off the native tier after sixteen. Latent while
-    // `%vector-ref` compiled as a call; live the moment it became `VectorRef`
-    // (2026-09-17: two `jit_eq_join_test` arms bailed on their literal argument).
+    // slabs are chunked `boxcar::Vec`s with no single base to index. Deopting here instead
+    // would latch any arm destructuring a literal or `def`'d vector off the native tier
+    // (the vector form of the pair path's cliff — see `PrimOp1::First`'s lowering).
     let high2 = b.ins().ushr_imm_s(w1, 62);
     let is_local = b.ins().icmp_imm_s(IntCC::Equal, high2, 0);
     let c2 = b.create_block();

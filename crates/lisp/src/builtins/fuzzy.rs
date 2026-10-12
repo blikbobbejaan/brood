@@ -4,11 +4,9 @@
 //! stay redefinable at runtime (`*fuzzy-scorer*`). That decision is kept: this primitive
 //! implements the DEFAULT rules only, and `fuzzy/top` calls it only while `*fuzzy-scorer*`
 //! is still `fuzzy/scorer`. Bind your own and every ranking in the image goes back through
-//! the Brood walk, exactly as before. What changes is the price of NOT redefining them,
-//! which is what an editor pays on every keystroke: ranking 27,310 repo paths measured
-//! 334 ms in one Brood process and 117 ms sharded across eight — against single-digit ms
-//! here, with no shard fan-out and so no copy of the candidate set across process
-//! boundaries per keystroke.
+//! the Brood walk. What this buys is the price of NOT redefining them, which an editor
+//! pays on every keystroke: ranking tens of thousands of paths in single-digit ms, with no
+//! shard fan-out and so no copy of the candidate set across processes per keystroke.
 //!
 //! The rules are `std/fuzzy.blsp`'s, ported term for term — `fuzzy-bonus` (match, boundary,
 //! contiguous, gap, lead), the greedy `fuzzy-walk`, the contiguous-run second alignment
@@ -72,8 +70,8 @@ fn is_upper(c: char) -> bool {
 ///
 /// The ASCII branch is not a micro-optimisation: this runs once per character of every
 /// candidate, so on a 27k-path project it is ~1.1M calls per keystroke, and `to_lowercase`
-/// is a Unicode table walk returning an iterator. Taking the ASCII path first measured the
-/// whole ranking 26 ms → 6 ms, and paths, module names and symbols are ASCII almost always.
+/// is a Unicode table walk returning an iterator, while paths, module names and symbols
+/// are ASCII almost always.
 fn lower_char(c: char) -> char {
     if c.is_ascii() {
         return c.to_ascii_lowercase();

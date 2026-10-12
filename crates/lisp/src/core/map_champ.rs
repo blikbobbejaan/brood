@@ -1,9 +1,8 @@
 //! CHAMP — *Compressed Hash-Array Mapped Prefix-tree* — backing for
-//! `Value::Map` (ADR-040). Replaces ADR-030's insertion-ordered association
-//! vector with a 16-way branching, path-copying, structurally-immutable
-//! trie. Lookup / assoc / dissoc are O(log₁₆ N) — effectively O(1) up to
-//! billions of entries — and assoc no longer copies the whole entries
-//! vector (only the O(log N) nodes on the path from root to the touched
+//! `Value::Map` (ADR-040): a 16-way branching, path-copying,
+//! structurally-immutable trie. Lookup / assoc / dissoc are O(log₁₆ N) —
+//! effectively O(1) up to billions of entries — and assoc never copies the
+//! whole map (only the O(log N) nodes on the path from root to the touched
 //! leaf are reallocated; the rest is structurally shared).
 //!
 //! Why CHAMP and not vanilla Clojure HAMT: same big-O, but the *two

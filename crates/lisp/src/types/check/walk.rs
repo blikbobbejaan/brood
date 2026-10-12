@@ -973,9 +973,14 @@ fn check_args_against_sig(
     ctx: &Ctx,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
+    // A self-call's arguments are typed under the caller's own demands (the induction
+    // step — `Ctx::under_self_demands`); every other call, and the callback checks
+    // below, in the scope as it is.
+    let hypothesis = ctx.under_self_demands(s);
+    let argument_ctx = hypothesis.as_ref().unwrap_or(ctx);
     for (i, &arg) in items[1..].iter().enumerate() {
         let Some(param) = sig.param(i) else { continue };
-        if !check_arg_against_param(heap, &name_of(s), i, arg, &param, form, ctx, out) {
+        if !check_arg_against_param(heap, &name_of(s), i, arg, &param, form, argument_ctx, out) {
             continue;
         }
 

@@ -11,8 +11,7 @@
 //! ([`Node`] below): `if`/`do`/`let`/`letrec`/`fn`/`quote` plus calls and vector/map
 //! literals, with `&optional` (nil- *or* real-default) and any capture (global *or*
 //! local — Stage 2c). Because `match`/`match*`/`and`/`or` are macros that expand to
-//! exactly these forms, **pattern-matching `fn`s and `match` run on the VM too** (the
-//! `quote`/literal in `match*`'s no-match arm used to force them to defer). Anything
+//! exactly these forms, **pattern-matching `fn`s and `match` run on the VM too**. Anything
 //! still outside the set — `def`/`quasiquote`/`defmacro`/`binding`, or a body built
 //! from movable (conased) forms — **defers to the tree-walker** (`eval::eval`)
 //! per-form, so partial compilation is always safe and the language is unchanged.
@@ -93,7 +92,7 @@ impl Tier {
     /// Every tier, highest first. Used by `crates/lisp/benches/eval.rs` to build its tier × size
     /// grid, so a new tier gets benchmark rows without touching each `#[divan::bench]` — and the
     /// tier-1 row is itself useful, since JIT-vs-no-JIT per row is a standing measurement the
-    /// frontier docs quote (`fib` 54×, `collatz` 40×) and previously had to be produced by hand.
+    /// frontier docs quote.
     ///
     /// **Deliberately not the differential set.** `tests/differential.rs` compares an explicit
     /// pair; iterating this there would add a third full suite run to every `make test-both` and
@@ -263,13 +262,10 @@ fn force(heap: &mut Heap, step: Step) -> LispResult {
 /// exactly as the 2-ary [`resolve_prim`] does. Read against the live global env — a
 /// redefined head simply doesn't match.
 ///
-/// This used to accept only a *direct* native binding, on the stated grounds that its one
-/// member `table-put` "has no prelude wrapper to follow". The namespacing waves made that
-/// premise false: the head is now `table/put`, a `std/table.blsp` closure whose whole body
-/// is `(%table-put t k v)`. Nothing errored — the call simply stopped inlining and became
-/// an ordinary `Call` inside the hot arm, which is what put `sieve` **11.6× slower**
-/// (34 → 394 ms) with no failing test anywhere. The 2-ary path kept following its wrapper,
-/// so `table/has?` went on inlining beside it and the asymmetry was invisible.
+/// Following the wrapper is load-bearing: `table/put` is a `std/table.blsp` closure whose
+/// whole body is `(%table-put t k v)`, and accepting only a direct native binding silently
+/// demotes it to an ordinary `Call` in the hot arm (an order-of-magnitude loss on `sieve`
+/// that no correctness test sees).
 ///
 /// The identity map is required rather than applied: `Node::Prim3` has no argument
 /// permutation (unlike `Node::Prim2`'s `map`), so a wrapper that reorders its parameters
@@ -380,8 +376,8 @@ const MAX_BC_FRAMES: usize = 1 << 20;
 /// The `entry_epoch` a FRESH frame starts at: never a real epoch, so the frame's first
 /// `Inst::SelfCall` takes the hot-reload guard's slow path and proves the arm's `dbg_name`
 /// still names this arm before looping on it. A frame entered through an alias of a
-/// rebound name would otherwise loop on the old body forever — the guard used to start at
-/// the CURRENT epoch, assuming the name still meant this arm at entry. The proof is
+/// rebound name would otherwise loop on the old body forever, so starting at the CURRENT
+/// epoch (assuming the name still means this arm at entry) is unsound. The proof is
 /// memoised on the arm ([`CompiledArm::self_bound_stamp`]), so the cost is one compare
 /// per activation while no `def` intervenes. Distinct from `u64::MAX` (the stale-arm and
 /// deopt-resume sentinel), which always re-resolves.

@@ -351,9 +351,8 @@ impl Conn {
 /// Free-standing so a caller can run it **without holding `NODES`**: the `Err` arm
 /// issues a `shutdown` syscall, and that must not run under the `NODES` lock or it
 /// delays every concurrent link registration and teardown for the syscall's
-/// duration — the rule [`broadcast_peer_table`] documents and follows, which
-/// `route` and `send_frame` used to violate by calling `Conn::enqueue` straight
-/// out of a `read(&NODES).get(..)`.
+/// duration — the rule [`broadcast_peer_table`] documents. So never call
+/// `Conn::enqueue` straight out of a `read(&NODES).get(..)`.
 fn enqueue_to(tx: &SyncSender<Arc<[u8]>>, sock: &Arc<Stream>, bytes: Arc<[u8]>) -> bool {
     match tx.try_send(bytes) {
         Ok(()) => true,
@@ -635,7 +634,7 @@ pub(crate) fn monitor_remote(target_node: Symbol, target_pid: u64, watcher_pid: 
     // The pending entry can't be orphaned in either branch. And it fires ONCE: when
     // the link drops after the record but before the send, `handle_node_down` has
     // already claimed the entry and fired, the send then fails, and the fallback finds
-    // nothing left to claim — it used to fire a second `[:down mref … :noconnection]`.
+    // nothing left to claim, so no second `[:down mref … :noconnection]` fires.
     process::record_pending_remote(target_node, target_pid, watcher_pid, mref);
     #[cfg(test)]
     tests::run_setup_gap_hook();
@@ -907,16 +906,12 @@ pub(crate) enum Target {
 /// The drop itself is correct and stays correct: Erlang semantics, and legitimate — the name
 /// may simply be gone, or never have existed. What this fixes is the **silence**. `send` is
 /// fire-and-forget, so the sender has already moved on and cannot be told; the receiving node
-/// is the only party that knows the message died, and until now it said nothing to anyone.
-///
-/// That silence is not hypothetical: it cost **KI-36** twelve days and three sightings. A test
-/// node opened its dist listener before registering the name its peer would immediately address,
-/// so the peer's message landed in this exact hole — and the only symptom available was a 20 s
-/// deadline expiring with no information anywhere. One line here would have named it instantly.
+/// is the only party that knows the message died. A silent drop otherwise surfaces only as a
+/// deadline expiring with no information anywhere (KI-36).
 ///
 /// **Default-on, deliberately.** A flag-gated trace is worth nothing for this class, because
-/// nobody arms a flag before the bug they have not diagnosed yet — the lesson of KI-39, whose
-/// retroactive self-reporting also failed to fire. Silence it with `BROOD_NO_DROP_WARN=1`.
+/// nobody arms a flag before the bug they have not diagnosed yet (KI-39). Silence it with
+/// `BROOD_NO_DROP_WARN=1`.
 ///
 /// **Deduplicated per name**, so a hot loop addressing a dead service warns once rather than
 /// flooding: the set is bounded by the number of distinct names, not by traffic.
@@ -1016,7 +1011,7 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
 /// leak the first. The *policy* (socket path, cookie source, transport choice)
 /// lives in `std/prelude.blsp`; this primitive is the mechanism (ADR-068).
 pub(crate) fn node_listen(name: Symbol, addr: &str, cookie: String) -> io::Result<()> {
-    // Guardrail (kernel audit 2026-06-03): the cookie is the *entire* trust
+    // Guardrail: the cookie is the *entire* trust
     // boundary — a holder has remote code execution by design — so refuse one
     // short enough to guess or brute-force online. The default policy
     // (`node/cookie`) generates `(rand/token 32)`; this only
@@ -1219,11 +1214,9 @@ const SHED_WARN_INTERVAL_MS: u64 = 60_000;
 /// [`SHED_WARN_INTERVAL_MS`], say so.
 ///
 /// The shed itself is correct and stays correct — past the cap, closing the
-/// socket is the whole response. What was wrong was the **silence**: hitting the
-/// cap means *every further inbound link is refused*, i.e. inbound distribution
-/// is effectively down, and the node said nothing to anyone. That is the KI-36
-/// lesson (a silent drop cost twelve days) applied to the one place left that
-/// still dropped without a word.
+/// socket is the whole response. It must not be **silent**: hitting the cap means
+/// *every further inbound link is refused*, i.e. inbound distribution is
+/// effectively down (the KI-36 lesson about silent drops).
 ///
 /// Rate-limited rather than per-shed, because the trigger is by definition a
 /// flood and a line each would be its own amplification vector — the same shape
@@ -1308,9 +1301,9 @@ fn spawn_acceptor(accept: impl FnMut() -> io::Result<Stream> + Send + 'static) {
                 // Shed past the in-flight-handshake cap *before* spawning a thread
                 // or reading a byte, so a flood of unauthenticated connections
                 // can't exhaust threads/memory. Closing the socket is the whole
-                // response — but it is no longer a *silent* one: reaching the cap
-                // means inbound links are being refused outright, which the node
-                // now reports (rate-limited — see `note_shed_handshake`).
+                // response, but not a *silent* one: reaching the cap means inbound
+                // links are being refused outright, which the node reports
+                // (rate-limited — see `note_shed_handshake`).
                 let permit = match HandshakeSlot::try_acquire() {
                     Some(p) => p,
                     None => {
@@ -1319,10 +1312,9 @@ fn spawn_acceptor(accept: impl FnMut() -> io::Result<Stream> + Send + 'static) {
                         continue;
                     }
                 };
-                // `spawn_bg`, not `thread::spawn`: a refused thread here used to panic
-                // *inside the accept loop*, unwinding the acceptor and closing the
-                // listener permanently. Now the connection is simply refused and the
-                // node keeps accepting.
+                // `spawn_bg`, not `thread::spawn`: a refused thread must not panic
+                // *inside the accept loop* (that would close the listener permanently);
+                // the connection is refused and the node keeps accepting.
                 spawn_bg("dist-conn", move || {
                     // Hold the slot until the handshake finishes (this thread ends
                     // right after `establish` hands off to the steady-state reader
@@ -2249,11 +2241,9 @@ mod tests {
 
     /// A peer that restarted (its old host vanished without a FIN, so the old link is
     /// still registered) and dials us again must get its new link — the old one reaches
-    /// a process that no longer exists. Before the incarnation, the new link had the
-    /// same connector as the old one and was refused as a duplicate, so the restarted
-    /// peer's `node/connect` returned and was immediately followed by `[:nodedown]`,
-    /// on every retry, until the heartbeat expired the stale link. The old life's
-    /// watchers get their node-down now.
+    /// a process that no longer exists. The incarnation is what tells the two lives
+    /// apart (same connector), so the new link is not refused as a duplicate; the old
+    /// life's watchers get their node-down.
     #[test]
     fn a_restarted_peer_replaces_its_previous_life_and_fires_its_node_down() {
         let me = process::self_pid();
@@ -2296,9 +2286,9 @@ mod tests {
     }
 
     /// The other half of the same decision: a second link to the SAME life of a live
-    /// peer — the shape a bare-name `node/connect` used to produce, and two dials
-    /// racing still can — must not disturb the link that is up. Same connector, same
-    /// incarnation: the registered link stays, and no monitor hears anything.
+    /// peer — the shape two dials racing can produce — must not disturb the link that is
+    /// up. Same connector, same incarnation: the registered link stays, and no monitor
+    /// hears anything.
     #[test]
     fn a_second_link_to_the_same_life_leaves_the_live_link_alone() {
         let me = process::self_pid();
@@ -2539,9 +2529,9 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
     }
 
-    /// Shedding at the cap is no longer silent, and no longer a flood vector
-    /// either: the first shed warns, an immediately following burst does not
-    /// (rate-limited), and every shed is counted regardless.
+    /// Shedding at the cap is neither silent nor a flood vector: the first shed warns, an
+    /// immediately following burst does not (rate-limited), and every shed is counted
+    /// regardless.
     #[test]
     fn shedding_counts_every_connection_and_warns_at_most_once_per_interval() {
         assert_eq!(SHED_HANDSHAKES.load(Ordering::Relaxed), 0);

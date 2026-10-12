@@ -29,15 +29,11 @@
 //! whose defs already fired the hook — and it survives an `%isolate` restore and a
 //! compaction, which a side table of handles would not.
 //!
-//! Why the kernel and not the `sig` macro: the macro used to *become* a rebinding under
-//! `BROOD_CONTRACTS=1` — the reinterpretation ADR-152 removed elsewhere — and every one of
-//! ADR-153's problems followed from that: the declaration had to sit BELOW its definition
-//! (KI-81, KI-113, `sig_placement.rs`), a `provide`-time queue patched the above-defn case
-//! for modules only, the prelude could not carry a contract, a module materialised from the
-//! image never evaluated its sigs and so was never contracted, and a hot reload of a
-//! contracted function silently dropped its contract. A binding-time hook has none of those:
-//! order does not matter, the image path and the source path meet at the same sweep, and a
-//! reload is a `def`.
+//! Why the kernel and not the `sig` macro: a macro that *becomes* a rebinding ties the
+//! contract to where the declaration sits relative to its definition (KI-81, KI-113), skips
+//! modules materialised from the image, and drops the contract on a hot reload. A
+//! binding-time hook has none of those: order does not matter, the image path and the
+//! source path meet at the same sweep, and a reload is a `def`.
 //!
 //! **Arming.** `BROOD_CONTRACTS=1` arms every declaration in the process; `nest run` and
 //! `nest test` arm it by default (the dev-mode default, ADR-381) and `BROOD_CONTRACTS=0`
@@ -168,8 +164,8 @@ pub fn contracts_armed() -> bool {
 /// Whether the PRELUDE's own declarations are enforced too — `BROOD_CONTRACTS=all`. Off
 /// under plain `1` on purpose: the prelude's sixteen signed names are the language's hottest
 /// vocabulary (`nth`, `conj`, `assoc`, `keys`, `into`, …), each a thin wrapper over a native
-/// that already raises the precise error, and a shim on `nth` is a 0.4 → 4.5 µs call — a
-/// `json/decode` measured 16× slower with them and 1.4× without (2026-09-21). `all` keeps
+/// that already raises the precise error, and a shim makes each of those calls roughly
+/// ten times dearer. `all` keeps
 /// the mechanism live and gated (`contracts_mode.rs`), for a run that wants every
 /// declaration in the process enforced.
 pub fn prelude_contracts_armed() -> bool {

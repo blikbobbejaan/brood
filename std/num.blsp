@@ -6,9 +6,8 @@
 ;; kernel's `%add`/`%sub`/`%mul`/`%div` call these on their cold fallback, so they have to
 ;; be bound before any module can load; a `require` would be too late.
 ;;
-;; They were `num-add`/`num-sub`/`num-mul`/`num-div` until 2026-08-28 — a hyphen prefix,
-;; which ADR-251 calls "a namespace spelled by hand: it groups the names for a reader and
-;; not for the language, while still spending four words of the bare vocabulary".
+;; A real namespace rather than a `num-` hyphen prefix, which (ADR-251) groups the names for
+;; a reader but not for the language while still spending bare vocabulary.
 (defmodule num
   "Arithmetic for record types — the `+`/`-`/`*`/`/` extension point (ADR-179).
 

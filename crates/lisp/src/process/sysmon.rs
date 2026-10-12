@@ -10,11 +10,9 @@
 //! observe`, the default crash reporter) lives in Brood (`std/telemetry.blsp`
 //! `watch-runtime`, `std/proc/crash-report.blsp`).
 //!
-//! **One subscription per subscriber pid** (ADR-305). The stream was a single
-//! last-wins slot until 2026-08-30, which made a *default* subscriber (the crash
-//! reporter) impossible: any later `watch-runtime` or MCP snapshot displaced it
-//! silently, and the MCP tool's clear-on-exit then left nothing armed. Now each
-//! subscriber owns its own selection; re-arming the same pid replaces that pid's
+//! **One subscription per subscriber pid** (ADR-305), so a *default* subscriber (the
+//! crash reporter) cannot be silently displaced by a later `watch-runtime` or MCP
+//! snapshot. Each subscriber owns its own selection; re-arming the same pid replaces that pid's
 //! entry only, and clearing names the pid it clears. Fan-out stays the kernel's
 //! (one `deliver` per interested subscriber) because there is no other place a
 //! second subscriber could get the event from.
@@ -291,12 +289,9 @@ pub fn emit_spawn(child: u64, parent: u64) {
 /// supervisor's `:shutdown` and `[:shutdown x]`. The same table as
 /// `crash-report-crash?` in `std/proc/crash-report.blsp`, kept here so the
 /// `:exit-abnormal` selection filters these BEFORE a message is built, as its doc says.
-/// Until 2026-09-21 only `:normal` was filtered: every `exit :kill` — the reason a
-/// supervisor tears a subtree down with — built a `[:system :exit pid :kill]` and
-/// delivered it to the default crash reporter, which read it and discarded it at
-/// ~14 µs a message; a parent killing 100 000 children in 80 ms left the reporter a
-/// 90 000-message backlog (~180 B each) that never drained faster than the next
-/// round refilled it — 309 000 queued after four rounds, read as a per-process leak.
+/// Filtering only `:normal` is not enough: a supervisor tearing down a large subtree
+/// with `:kill` would flood the crash reporter with events it discards, faster than it
+/// drains them — a backlog that reads as a per-process leak.
 fn is_clean(reason: &Message) -> bool {
     match reason {
         Message::Keyword(k) => {

@@ -586,7 +586,7 @@ impl Mailbox {
     /// bound again (`set_max_mailbox`) clears the latch and re-arms the protection.
     pub(super) fn take_overflow_hit(&self) -> Option<(usize, usize)> {
         // Take AND latch in one compare-exchange: a plain `swap(LATCHED)` would latch a
-        // mailbox that never breached, and a `swap(0)` is the race this replaced.
+        // mailbox that never breached, and a `swap(0)` would race a concurrent re-arm.
         loop {
             let v = self.overflow_hit.load(Ordering::Relaxed);
             if v == 0 || v == Self::OVERFLOW_LATCHED {
@@ -640,7 +640,7 @@ pub(super) struct Registry {
 
 /// The registry's per-shard map. Keyed by pid through [`PidHasher`], not std's SipHash:
 /// every `send` resolves its target here, and SipHash on one `u64` — a 128-bit state set
-/// up and finalized per lookup — was ~2.6% of `pingpong`'s instructions (2026-09-25).
+/// up and finalized per lookup — is a measurable share of a message-heavy workload.
 type PidMap = HashMap<u64, Arc<Mailbox>, BuildPidHasher>;
 
 /// A pid hash: the splitmix64 finalize the table/map path already uses for an int key

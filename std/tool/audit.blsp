@@ -47,14 +47,9 @@ otherwise, so it does not depend on an author's choice of spelling.")
   ;; convention breaches. Keyed on the module registry rather than a definition site,
   ;; because a Rust builtin has no site and neither does a materialised module.
   ;;
-  ;; The registry is the WHOLE answer. This used to admit, besides, any single-segment
-  ;; namespace whose binding had no definition site — meant for a kernel-registered
-  ;; namespace with no `.blsp` of its own (`table/*`, before ADR-251 gave every one a
-  ;; module that declares it). With everything loaded that clause admits no std name at
-  ;; all, and what it did admit was a `defn` a TEST ran inside a test body
-  ;; (`introspection-test/a-defined-name`: a nested def records no site), so the audit's
-  ;; "every public name carries a docstring" failed whenever that file ran before it in
-  ;; the same suite — an order-dependent red.
+  ;; The registry is the WHOLE answer (every kernel namespace has a declaring module,
+  ;; ADR-251). Admitting site-less bindings too would admit a `defn` a TEST ran inside a
+  ;; test body (a nested def records no site), making the audit order-dependent.
   ;; A BARE name is root/prelude — but only when the binary actually ships it. A test that
   ;; `def`s at RUNTIME (`mcp/eval-tool` evaluating a source string, a REPL session) binds a
   ;; bare global too, and those are not the surface: `mcpt-a` and `mcpt-b` were reported as
@@ -193,12 +188,10 @@ A name with no recognisable pair is vacuously true.
   ;; Split `text` on top-level commas — `(seqable, (any, any) -> any)` is TWO params,
   ;; not three. A naive `string/split` on "," reads a callback's own arity as extra
   ;; parameters, which is how a type-blind check misreads `fold`. Braces and brackets
-  ;; nest too: a record shape `{day: int, ...}` is ONE parameter, and counting only
-  ;; parens reported every record accessor in `datetime`/`editor/buffer` as a mismatch.
-  ;; Angle brackets too: a parametric type RENDERS as `map<any, nil | list<any>>`, one
-  ;; parameter with a comma inside — read as two, `multimap/multimap` (a one-field record
-  ;; whose field is such a map) was a mismatch the moment its sig said so (2026-09-17). The
-  ;; `>` of an arrow `->` is not a close; only a `>` not preceded by `-` nests out.
+  ;; nest too: a record shape `{day: int, ...}` is ONE parameter. Angle brackets too: a
+  ;; parametric type RENDERS as `map<any, nil | list<any>>`, one parameter with a comma
+  ;; inside. The `>` of an arrow `->` is not a close; only a `>` not preceded by `-`
+  ;; nests out.
   (if (>= acc (string/length text))
     (reverse (cons (string/trim current) out))
     (let (ch (string/char-at text acc)

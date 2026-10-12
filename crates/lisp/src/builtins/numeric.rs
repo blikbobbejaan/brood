@@ -97,9 +97,8 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         remainder,
     );
     // `%quot` — truncating integer division (toward zero), the kernel `quot`
-    // passes through to so the VM inlines it as one op. (It used to be Brood over
-    // `(/ (- a (math/rem a b)) b)` — three dispatched calls per use, which made tight
-    // integer loops like `collatz` pay rem+sub+div every step.)
+    // passes through to so the VM inlines it as one op, rather than three dispatched
+    // calls (`(/ (- a (math/rem a b)) b)`) per step of a tight integer loop.
     primitives.def(
         "%quot",
         Arity::exact(2),
@@ -508,10 +507,10 @@ fn is_rationalizable(v: Value) -> bool {
 /// any exact decimal path will materialise. Both the ratio conversion below and the
 /// decimal arm of [`num_bin`] turn a scale into a `scale`-digit bignum — `10ˢᶜᵃˡᵉ`, or
 /// the zero padding `with_scale` applies — so an unbounded scale is an unbounded
-/// *native* allocation, which the ADR-043 `BROOD_MEM_LIMIT` cap never sees: measured,
-/// `(+ 1/2 (decimal/of "1e-1000000000"))` sailed past 400MB and kept climbing with no
-/// error and no end. A million digits is already far past any real decimal; beyond it
-/// the operation raises a clean, catchable error.
+/// *native* allocation, which the ADR-043 `BROOD_MEM_LIMIT` cap never sees
+/// (`(+ 1/2 (decimal/of "1e-1000000000"))` would climb without end). A million digits is
+/// already far past any real decimal; beyond it the operation raises a clean, catchable
+/// error.
 const MAX_DEC_SCALE: i64 = 1_000_000;
 
 /// The out-of-range-scale error shared by the exact decimal paths.
@@ -691,7 +690,7 @@ pub(super) fn num_bin(
 /// True when `v` is an identity-carrying record — a map whose reserved `:__id__` key
 /// (`defrecord` bakes it in) holds a *truthy* id. A plain map, or a hand-written
 /// `{:__id__ nil}`, is not a record: this matches `record?`/`identity-of`, which
-/// dispatch a nil/false id as `:map` (devlog 2026-07-29).
+/// dispatch a nil/false id as `:map`.
 fn is_record(heap: &Heap, v: Value) -> bool {
     let Value::Map(m) = v else { return false };
     match heap.map_get(m, Value::Keyword(crate::core::value::intern("__id__"))) {
@@ -704,9 +703,9 @@ fn is_record(heap: &Heap, v: Value) -> bool {
 /// operand: `+`/`-`/`*`/`/` → `num/add`/`num/sub`/`num/mul`/`num/div`, each dispatching on
 /// BOTH operand identities. Reached ONLY on the cold fallback — the JIT/VM inlines int+int
 /// and float+float and never calls `%add` for them, so the numeric hot path is byte-for-byte
-/// untouched (a Brood `(record? a)` branch in `+` measured ~195×). A pair with no method
-/// raises the multimethod's loud `no-method` error, so mixed types are explicit, never
-/// silently coerced.
+/// untouched (a Brood `(record? a)` branch in `+` would cost orders of magnitude). A pair
+/// with no method raises the multimethod's loud `no-method` error, so mixed types are
+/// explicit, never silently coerced.
 fn num_multi_dispatch(heap: &mut Heap, who: &str, a: Value, b: Value) -> LispResult {
     let op = match who {
         "+" => "num/add",
@@ -1106,9 +1105,8 @@ pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// Floor toward negative infinity, returning an `Int` — the one Float→Int
 /// crossing the language can't bootstrap (no other primitive produces an `Int`
 /// from a `Float`). An `Int` passes through; a `Float` is floored. `NaN` and
-/// values whose floor doesn't fit in `i64` are runtime errors — pre-fix the
-/// `as i64` cast silently saturated, so `(math/floor (* 1e308 1e308))` returned
-/// `i64::MAX` and `(math/floor (/ 0.0 0.0))` returned `0`. `ceil`/`round`/`quot`/
+/// infinities are runtime errors, never a silently saturated `as i64` cast; a finite
+/// floor past `i64` promotes to a bignum. `ceil`/`round`/`quot`/
 /// `pow`/`sqrt` are all Brood over this + `rem`/`/`/`*`/`<` (std/prelude.blsp).
 pub(super) fn floor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     match arg(args, 0) {
@@ -1139,8 +1137,8 @@ pub(super) fn floor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
                 // Finite but past i64: PROMOTE, as `+`/`*` do on overflow. Every f64
                 // of that magnitude is already an integer, so the conversion is exact
                 // — `(math/floor 1e300)` is the 10^300-ish integer the double holds,
-                // not an error (it was one until 2026-09-30: a language that promotes
-                // on overflow had a cliff at 2^63 in its one float->int crossing).
+                // not an error: a language that promotes on overflow must not have a
+                // cliff at 2^63 in its one float->int crossing.
                 use num_traits::FromPrimitive;
                 let big = num_bigint::BigInt::from_f64(f).expect("a finite f64 converts");
                 return Ok(heap.alloc_bigint(big));
@@ -1498,12 +1496,10 @@ pub(super) fn math_atan2(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 ///
 /// **`radix` is how hex, octal or binary is read from DATA.** ADR-169 reserved
 /// `0x1F`/`0b1010`/`0o17` as syntax rather than names *on the grounds that this function
-/// covers the need at runtime* — and the reader's own hint, `syntax/atom.rs`'s
-/// `reserved_numeric_hint`, told people to call `(string/->number "1F" 16)`. It took two
-/// arguments nowhere: the arity was `exact(1)`, so the hint named a call that raised, and
-/// the language could not read a radix at all (found 2026-08-30). The *literals* arrived
-/// later (ADR-334): `0xFF` in source is the reader's job; this function reads text a
-/// program holds at runtime, and the two never overlap — see the prefix rule below.
+/// covers the need at runtime*, and the reader's own hint (`syntax/atom.rs`'s
+/// `reserved_numeric_hint`) names `(string/->number "1F" 16)`. The *literals* are the
+/// reader's job (ADR-334); this function reads text a program holds at runtime, and the
+/// two never overlap — see the prefix rule below.
 ///
 /// With a radix the parse is **integer-only**, for every radix including 10: a radix
 /// describes an integer notation, and `"3.5"` in base 16 is not a number anyone means.

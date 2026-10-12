@@ -16,10 +16,8 @@ the public entry point; the helpers are private (`--`).")
 
 ;; `v` below is a CODE-POINT VECTOR (built once in `strip`), and `n` its length,
 ;; threaded rather than recomputed. Both matter: `char-at` on a raw UTF-8 string is O(i)
-;; and `string-length` is `chars().count()`, i.e. O(n) — so the previous scan, which did
-;; one of each per character, was O(n²) twice over. Measured 7.6× then 14.0× per 4× of
-;; input (linear is 4×), and 1.58 s to strip ~90 KB of colourised output. Same fix as
-;; `url.blsp` / `csv.blsp`, which hit this before.
+;; and `string-length` is `chars().count()`, i.e. O(n) — so a scan doing one of each per
+;; character is O(n²) twice over. Same fix as `url.blsp` / `csv.blsp`.
 
 (defn- ansi-csi-end (v i n)
   "Index just past the CSI final byte, scanning `v` from `i` (clamped to `n`)."

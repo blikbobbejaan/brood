@@ -1125,3 +1125,43 @@ fn get_in_with_a_default_reads_the_default_for_absence_only() {
     assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :b])"), "2");
     assert_eq!(ty_str("(get-in {:a {:b 2}} [:a :c])"), "nil");
 }
+
+// A self-call's arguments are typed under the function's own parameter DEMANDS when its
+// callers are not all in the file (here it escapes as a value, so no caller-derived type
+// exists): the activation making the call was entered inside that domain, so `(- i 1)`
+// under a demand of `int` on `i` is an `int`. Before, `i` read unknown, `(- i 1)` read
+// `number`, and strict reported the recursion against the very demand it came from.
+// The hypothesis is the self-call's alone: a rebound parameter, a wrong argument and a
+// call to anything else are judged as before.
+#[test]
+fn a_self_call_is_typed_under_the_functions_own_demands() {
+    let clean = "\
+         (defmodule t)\n\
+         (defn countdown (i acc)\n\
+           (if (= i 0) acc (countdown (- i 1) (+ acc (if (math/odd? i) 1 0)))))\n\
+         (def escaped countdown)";
+    let strict = file_warnings_mode(clean, true);
+    assert!(strict.is_empty(), "{strict:?}");
+
+    let wrong = "\
+         (defmodule t)\n\
+         (sig want-int (int -> int))\n\
+         (defn want-int (n) n)\n\
+         (defn countdown (i acc)\n\
+           (cond (= i 0) acc\n\
+                 (= i 1) (countdown \"x\" acc)\n\
+                 (= i 2) (let (i 1.5) (countdown i acc))\n\
+                 else (countdown (- i 1) (+ (want-int (- i 1)) (if (math/odd? i) 1 0)))))\n\
+         (def escaped countdown)";
+    let strict = file_warnings_mode(wrong, true);
+    let about = |needle: &str| strict.iter().any(|w| w.contains(needle));
+    assert!(about("argument 1 expects int, got \"x\""), "{strict:?}");
+    assert!(
+        about("countdown: argument 1 expects int, got float (i)"),
+        "{strict:?}"
+    );
+    assert!(
+        about("want-int: argument 1 expects int, got number"),
+        "{strict:?}"
+    );
+}

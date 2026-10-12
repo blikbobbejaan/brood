@@ -323,11 +323,9 @@ pub(super) fn load(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     })?;
     // The file must be CURRENT before the READ, not just before the eval: the reader
     // stamps every form's position record with `current_file_arc` at read time, so a
-    // read-then-set ordering gave every loaded form the CALLER's file (or none) at birth.
-    // Invisible for months because the expander's rebuilds re-stamped positions with the
-    // by-then-correct ambient file during eval — until ADR-297 made rebuilds copy the
-    // original record faithfully, which faithfully preserved the wrong birth record and
-    // broke coverage/attribution for loaded modules (`coverage_lines`, 2026-08-29).
+    // read-then-set ordering would give every loaded form the CALLER's file (or none) at
+    // birth — and rebuilds copy that original record (ADR-297), breaking
+    // coverage/attribution for loaded modules.
     let prev = heap.set_current_file(Some(path.clone()));
     // Read positioned so errors point at a line; tag every error with the file
     // (`FILE:LINE:COL:`, see docs/tooling.md).
@@ -554,11 +552,11 @@ pub(super) fn eval_string_inner(
     // inline) inherits the current namespace and does neither (ADR-065).
     // The inheriting path keeps the caller's known-name set for the call and puts it back
     // afterwards (KI-196): the resolver adds every `def` head it qualifies to that set, so a
-    // `(defn map …)` evaluated here used to leave bare `map` "known" for the rest of the
-    // process — in EVERY namespace, since the set is not keyed by module — and a later
-    // `(reflect/eval-string "(defmodule other) (map …)")` compiled `other/map`. A name the
-    // call defined is bound once it returns, which is the evidence the resolver reads
-    // from then on, so nothing needs the addition to outlive the call.
+    // `(defn map …)` evaluated here would otherwise leave bare `map` "known" for the rest
+    // of the process — in EVERY namespace, since the set is not keyed by module — and a
+    // later `(reflect/eval-string "(defmodule other) (map …)")` would compile `other/map`.
+    // A name the call defined is bound once it returns, which is the evidence the resolver
+    // reads from then on, so nothing needs the addition to outlive the call.
     let inherited_known = if reset_ns {
         None
     } else {
@@ -880,8 +878,8 @@ fn isolate_impl(args: &[Value], env: EnvId, heap: &mut Heap, replay_loads: bool)
     let saved = heap.snapshot_globals();
     // The global *binding* table is not the whole image. Two mark registries live beside
     // it — the `defdyn` set (`value::DYNAMICS`) and the `defn-` private set — and neither
-    // is covered by `snapshot_globals`, so a mark made inside the thunk used to survive
-    // the rollback while its binding did not. That is not cosmetic: a leaked dynamic mark
+    // is covered by `snapshot_globals`, so without this a mark made inside the thunk would
+    // survive the rollback while its binding did not. That is not cosmetic: a leaked dynamic mark
     // makes the name permanently *ambient* for namespace resolution (`macros::is_ambient`,
     // so a later module's `(def *q* …)` stays bare instead of being qualified) and
     // permanently exempt from the reserved-name check (`heap::is_sealed` excludes

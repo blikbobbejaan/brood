@@ -26,9 +26,8 @@ absolute paths). Best-effort on disk: a read-only tree costs a parse, never a wr
 ;; rebuilt. Line 1 is `(brood-module-index VERSION)`, then one
 ;; `("path" size mtime (mods…) own-or-nil (requires…))` per file — every `defmodule` the file
 ;; opens, its own module name as the checker reads it, and the modules it directly requires
-;; (v2: the requires joined the entry so `nest check` learns the require graph from the
-;; index too, where it used to re-parse every file for it — 2.9 s of a 15 s warm check at
-;; 1 000 × 3k lines).
+;; (the requires are in the entry so `nest check` learns the require graph from the index
+;; rather than re-parsing every file for it).
 (def *index-version* 2)
 
 ;; The in-process view of each root's index: `root -> {path -> [size mtime modules own requires]}`. A

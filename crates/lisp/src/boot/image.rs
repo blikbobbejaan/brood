@@ -1,11 +1,10 @@
 //! The **startup image** mechanism (ADR-218): write a set of global bindings to a binary
 //! artifact, and restore them without re-reading or re-evaluating source.
 //!
-//! Loading a large project from source costs ~1.1 ms per file, essentially all of it
-//! evaluating and materialising code into the heap (measured: read 9%, macroexpand 20%,
-//! eval+promote 70%). Rebuilding the same bindings *structurally* is several times faster,
-//! because it skips parsing, macroexpansion, closure construction from source, and the
-//! promote walk.
+//! Loading a large project from source is dominated by evaluating and materialising code
+//! into the heap, not by reading it. Rebuilding the same bindings *structurally* is
+//! several times faster, because it skips parsing, macroexpansion, closure construction
+//! from source, and the promote walk.
 //!
 //! **The image is sectioned by module, and a section is loaded on demand.** A whole-image
 //! restore of a 16 300-file project costs seconds and hundreds of MB of resident code that
@@ -977,7 +976,7 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
     }
     // Everything just promoted is bound to a global, so it is all live. Tell the RUNTIME
     // collector that rather than let it find out by compacting the whole region at the next
-    // safepoint and reclaiming nothing — measured at 4.0 s of an 8.3 s whole-image restore.
+    // safepoint and reclaiming nothing — otherwise about half of a whole-image restore.
     heap.rt_gc_rebaseline_all_live();
     if trace() {
         eprintln!(

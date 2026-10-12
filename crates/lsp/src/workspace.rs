@@ -158,9 +158,8 @@ pub fn rename(
     // Cascade: renaming a record constructor must also rename its `foo-<field>`
     // accessors, which the `defrecord` macro synthesizes from the record name. Miss
     // them and they dangle — the re-expanded record defines `bar-<field>` while every
-    // `foo-<field>` call site still points at a name that no longer exists (the P0
-    // corruption this closes). An ability rename needs no cascade: its op names are
-    // independent of the ability name.
+    // `foo-<field>` call site still points at a name that no longer exists. An ability
+    // rename needs no cascade: its op names are independent of the ability name.
     let short = short_name(&target).to_string();
     for field in record_fields(interp, docs, current, &target) {
         let accessor_old = format!("{short}-{field}");

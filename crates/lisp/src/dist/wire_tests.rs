@@ -528,8 +528,8 @@ fn a_peer_cannot_mint_symbols_without_limit() {
 }
 
 /// The wire codec walks a message once per nesting level in both directions, on the
-/// dist threads' default 2 MiB stack. Since 2026-09-30 a message may be nested to the
-/// serialiser's million-level sanity bound, so both walks grow the stack as they go.
+/// dist threads' default 2 MiB stack. A message may be nested to the serialiser's
+/// million-level sanity bound, so both walks grow the stack as they go.
 #[test]
 fn a_deeply_nested_message_round_trips_on_a_small_stack() {
     std::thread::Builder::new()

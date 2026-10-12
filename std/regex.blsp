@@ -7,10 +7,8 @@
 ;; and only ever runs what the translation produced. Redefine the parser and every pattern
 ;; in the image means something else; the engine never needs to know.
 ;;
-;; It used to be both. An engine written here — a Thompson NFA with a bitset DFA for
-;; `match?` and a Pike VM for `find` — cost about half a millisecond to try a four-pattern
-;; `file:line` table on one short line (2026-09-23), and an editor tries such a table on
-;; every visible row. Natively it is microseconds.
+;; The engine is native because an editor tries a pattern table on every visible row: an
+;; interpreted NFA/DFA costs milliseconds there where the native one costs microseconds.
 ;;
 ;; The dialect:
 ;;
@@ -153,7 +151,7 @@ of) says what it looks like it says."
       [acc i])))
 ;; The one declaration on the parser chain: `pcs` is the pattern as a vector of
 ;; characters and `i` an index into it. `regex-seq`/`regex-alt` are top-level `defn-`s
-;; (under a `check-allow`, which since 2026-09-17 no longer hides them from inference), so
+;; (under a `check-allow`, which does not hide them from inference), so
 ;; the whole chain derives `int` from here and from `regex-parse`'s `0`.
 (sig regex-digits-at ((vector string) int string -> (tuple string int)))
 

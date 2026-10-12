@@ -93,10 +93,9 @@ suggestions\", never to an error on the user's command line."
 ;; The directories the manifest declares under `key`, as absolute paths, falling back
 ;; to `default` when it declares none.
 ;;
-;; This is also a fix, not just a move: the old code read the `*project-source-paths*`
-;; / `*project-test-paths*` ambients, which only `project`'s manifest loader ever sets
-;; — and completion never ran it. So a project declaring `:test-paths ["spec"]` got
-;; the `["tests"]` default and completed none of its own test files.
+;; Read from the manifest, not the `*project-source-paths*` / `*project-test-paths*`
+;; ambients: only `project`'s manifest loader sets those, and completion never runs it, so
+;; a project declaring `:test-paths ["spec"]` would complete none of its own test files.
 (defn- complete-manifest-dirs (root key default)
   (let (form (complete-manifest root)
         declared (if (nil? form) nil (complete-safely (fn () (complete-plist-get (rest form) key))))
@@ -164,7 +163,7 @@ suggestions\", never to an error on the user's command line."
           (or (< open 0) (< close 0)) acc
           ;; The `]` is on a LATER line, so this `[` never closes on this line —
           ;; almost certainly not a tag vector (an unclosed bracket, or a `:tags`
-          ;; mentioned in prose). Capturing to the far-away `]` used to swallow the
+          ;; mentioned in prose). Capturing to the far-away `]` would swallow the
           ;; rest of the file and offer every keyword in it as a "tag". Skip past
           ;; this occurrence and keep looking.
           (and (>= newline 0) (< newline close)) (complete-tags-in text acc (+ i 5))

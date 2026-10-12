@@ -956,19 +956,14 @@ pub(crate) fn exec_chunk(
                 }
                 // Hot-reload guard (ADR-013). `SelfCall` is the zero-lookup loop back-edge:
                 // it resets the frame and jumps to ip 0 without consulting the global at
-                // all. That is why a `def` of the very function a loop is running was never
-                // observed — `(defn loop1 …)` that redefines itself mid-loop ran the whole
-                // loop on the old body (8) where the tree-walker saw the new one
-                // (`:replaced`). For a long-lived `(defn serve (state) … (serve next))` that
-                // means the process can never be reloaded, which is the case hot reload
-                // exists for. The sibling `Inst::Call` tail path is already correct: its IC
-                // resolution is epoch-guarded, so a rebind fails its `ptr::eq(compiled, arm)`
-                // and falls through to a real dispatch.
+                // all, so without this guard a `def` of the very function a loop is running
+                // would never be observed — a long-lived `(defn serve (state) … (serve next))`
+                // could never be reloaded. (The sibling `Inst::Call` tail path is covered by
+                // its epoch-guarded IC.)
                 //
                 // Cost on the hot path is one relaxed u64 load and a compare per iteration —
-                // the epoch only moves on a `def`, so `loop`/`collatz` take the same path as
-                // before. On a bump we re-resolve once and, if the name still names this arm,
-                // re-arm and keep looping.
+                // the epoch only moves on a `def`. On a bump we re-resolve once and, if the
+                // name still names this arm, re-arm and keep looping.
                 let ep = heap.global_epoch();
                 if ep != *entry_epoch {
                     // A fresh frame (`SELF_UNCHECKED_EPOCH`) checks once too: it may have
@@ -1001,16 +996,10 @@ pub(crate) fn exec_chunk(
                             // The self-call is in TAIL position, so the rebound callee's
                             // value IS this frame's result. Hand it to the DRIVER as a tail
                             // call (this frame is reused, as for any `Inst::Call` in tail
-                            // position) — never applied nested here. This used to be a
-                            // nested `apply_value`, "one native frame for the transition
-                            // only", and the frame was not the cost: the recompiled body ran
-                            // the rest of the loop's life under it, where a `receive` cannot
-                            // be state-captured (20 000 of 20 000 receives parked their OS
-                            // worker dirty on an ADR-366 loop whose first iteration lazily
-                            // loaded a module) and a native preempt has no driver to yield
-                            // to, so the loop fell to the interpreter for up to 256
-                            // iterations per preempt (`collatz` +6.5% and `sort` +5.7%
-                            // instructions under lazy loading). A VM closure comes back
+                            // position) — never applied nested here: a nested apply would
+                            // run the rest of the loop's life under a native frame, where a
+                            // `receive` cannot be state-captured (it parks its worker dirty)
+                            // and a native preempt has no driver to yield to. A VM closure comes back
                             // un-run as `Step::Tail`; a native or tree-walked callee ran to
                             // `Done`, exactly as a tail `Inst::Call` resolves.
                             let callee = heap
@@ -1210,15 +1199,13 @@ pub(crate) fn attach_vm_trace(e: &mut LispError, cur_arm: &CompiledArm, frames: 
         });
     }
     // An error raised in code that carries no positions — the prelude's, and so every
-    // contract shim's (ADR-381) — used to escape UNTAGGED and take the position of whatever
-    // frame caught it: `(try (probe …) (catch e (get e :line)))` named the `try`'s line, two
-    // frames away from the `(table/has? t k)` that failed. Unarmed, the thin-wrapper elision
-    // hid this (the prim ran inline in the caller's frame, tagged there); a shim is not thin.
-    // Give it the innermost call site that HAS a position — the user form whose call led
-    // into the positionless code — which is what the elided shape reported and what the
-    // `:trace` already records. `or_pos`: a position a prim already tagged is never moved.
-    // A contract shim's own code is never the answer (KI-184). Since ADR-385 the shim
-    // templates live in `std/contract.blsp`, a positioned module. The ORIGINAL is thin, so
+    // contract shim's (ADR-381) — would otherwise escape UNTAGGED and take the position of
+    // whatever frame caught it (the `try`'s line, not the call that failed). Give it the
+    // innermost call site that HAS a position — the user form whose call led into the
+    // positionless code — which is what the `:trace` already records. `or_pos`: a position
+    // a prim already tagged is never moved.
+    // A contract shim's own code is never the answer (KI-184). The shim templates live in
+    // `std/contract.blsp` (ADR-385), a positioned module. The ORIGINAL is thin, so
     // its primitive runs INLINE in the shim's frame and its error is tagged with the shim's
     // `(%contract-orig …)` instruction — line 135 of a file the user never wrote; an original
     // that is not thin comes back through the same call, tagged by it. A shim is generated
@@ -1262,17 +1249,17 @@ pub(crate) fn attach_vm_trace(e: &mut LispError, cur_arm: &CompiledArm, frames: 
             // function was entered from a native boundary or the top level, which a driver
             // further out (or the file runner's enclosing form) accounts for. Leave the
             // error POSITIONLESS for them rather than keep the shim's own site: a kept
-            // position is never moved again (`or_pos`), and it was reported as
-            // `std/contract.blsp`'s line under the USER's file name — the runner fills the
-            // file, not the position (2026-10-02).
+            // position is never moved again (`or_pos`), and the runner would report
+            // `std/contract.blsp`'s line under the USER's file name (it fills the file, not
+            // the position).
             e.pos = None;
             e.file = None;
         }
     } else if e.file.is_none() && e.pos.is_some_and(|ep| chunk_owns(cur_arm, ep)) {
         // The running arm's own instruction tagged the error (`tag_pos` sets a position
-        // only): it happened in THIS arm's source file. Left unset, the file runner filled
-        // in the user's file — a `std/math.blsp` line reported under the script's name,
-        // with no excerpt — where the tree-walker (`or_form_pos`) names the right file.
+        // only): it happened in THIS arm's source file. Left unset, the file runner would
+        // report a `std/math.blsp` line under the script's name, unlike the tree-walker
+        // (`or_form_pos`), which names the right file.
         e.file = cur_arm.src_file.as_deref().map(str::to_string);
     }
     attach_vm_trace_callers(e, frames);
@@ -1283,7 +1270,7 @@ pub(crate) fn attach_vm_trace(e: &mut LispError, cur_arm: &CompiledArm, frames: 
 /// reported at, and never the call site a frame is said to have been entered from. The
 /// shim's compiled body is shared by every closure its template builds (ADR-175/215, keyed
 /// on the template's body form), so the name its arm recorded was whichever contracted
-/// function first ran through it — `at string/join` for a user's `add2` (2026-10-02); the
+/// function first ran through it (`at string/join` for a user's `add2`); the
 /// function the user called is the ORIGINAL's frame just inside, which names itself.
 #[inline]
 fn is_contract_arm(arm: &CompiledArm, contract_module: Symbol) -> bool {
@@ -1345,34 +1332,17 @@ pub(crate) fn attach_vm_trace_callers(e: &mut LispError, frames: &[BcFrame]) {
     }
 }
 
-/// Reset a frame in place for a self-tail iteration: params take the new args, the
-/// body's `let`/`letrec` slots go back to nil, and the **capture slots stay**.
-///
-/// The capture slots (`#3 lexical addressing`, right after the params — both self-tail
-/// paths require no optionals and no rest, so they begin at `nrequired`) hold the
-/// closure's enclosing lexicals, filled once by `push_frame` from the captured env. A
-/// self-tail iteration re-enters the same arm under the same env, so those values are
-/// still exactly right — and nil-ing them is not a reset, it is a loss: the next read of
-/// a captured name in the loop body sees `nil`. Found 2026-08-30 when the tree-walker→VM
-/// router (`tw_vm_route`) let a `defn`-inside-`let` loop reach the VM for the first time
-/// (`(let (me (self)) (defn drain (sock acc) … (send me …) … (drain sock …)))` — the
-/// breakage suite's P40 — sent to `nil` after one iteration). Neither self-tail path had
-/// ever run a captured arm: a `letrec` helper fills its captures on every `push_frame`,
-/// and the IC fast path's `cur_env == cenv` condition was, until then, only met by
-/// closures with nothing to capture.
 /// The safepoint of an inline self-tail loop iteration — the ONE copy shared by the
 /// `SelfCall` back-edge and the IC self-tail path (the driver's loop top in `vm_run_bc` is the
-/// frame-boundary twin, with the same split). They used to be two hand-kept copies of the
-/// driver's block, and had drifted: neither made the RUNTIME drain report, so an interpreted
-/// loop that never left `exec_chunk` (a nested run, whose rollover does not exit) never
-/// acked a drain and pinned the old generation for every process.
+/// frame-boundary twin, with the same split). Keep it one copy: hand-kept copies drift, and a
+/// loop that skips the RUNTIME drain report (a nested run never leaving `exec_chunk`) pins
+/// the old generation for every process.
 ///
 /// Per iteration: the process heap limit (a heap field) and the deadline (a `Cell` read).
 /// Once per quantum, at the reduction rollover: the soft memory limit (it sums 64 allocator
 /// shards when armed), the mailbox bound and a pending hard kill (each a thread-local
-/// `RefCell` borrow plus an atomic), and the drain report. They used to run every iteration;
-/// a kill or an overflow is now honoured within one quantum, which is the latency the
-/// capture-mode preempt already had and BEAM's model (checks at reduction boundaries).
+/// `RefCell` borrow plus an atomic), and the drain report. A kill or an overflow is honoured
+/// within one quantum — the latency the capture-mode preempt has anyway.
 #[inline(always)]
 fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, LispError> {
     if let Some(live) = heap.take_proc_limit_hit() {
@@ -1415,6 +1385,16 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
     Ok(())
 }
 
+/// Reset a frame in place for a self-tail iteration: params take the new args, the
+/// body's `let`/`letrec` slots go back to nil, and the **capture slots stay**.
+///
+/// The capture slots (`#3 lexical addressing`, right after the params — both self-tail
+/// paths require no optionals and no rest, so they begin at `nrequired`) hold the
+/// closure's enclosing lexicals, filled once by `push_frame` from the captured env. A
+/// self-tail iteration re-enters the same arm under the same env, so those values are
+/// still exactly right — and nil-ing them is not a reset, it is a loss: the next read of
+/// a captured name in the loop body sees `nil` (e.g. a `defn` inside a `let` that sends
+/// to a captured `me`).
 #[inline]
 fn reset_frame_keep_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, argv: &[Value]) {
     let capture_lo = arm.nrequired;

@@ -119,22 +119,13 @@ If no values remain under `k`, the key is dropped.
 ;; flattened `[k v]` associations (insertion order), so `count`/`map`/`filter`/`fold`/
 ;; `for`/`into`-from work over the associations directly. `Conjable` takes a `[k v]` PAIR
 ;; (or a map), exactly as `conj` on a plain map does — the pair convention is how one
-;; element carries two things, so the earlier "an association needs a key, which conj's
-;; single element can't carry" reasoning does not actually rule it out.
+;; element carries two things.
 ;;
-;; Joining `Seqable` makes every bare collection op resolve on a multimap. One of them used
-;; to answer WRONGLY and is now fixed; the other differs legitimately.
-;;
-;; `get` is FIXED (2026-08-27). It answered `nil` for a key holding values, because a
-;; multimap is a record and bare `get` took the record-FIELD path — reporting "no such
-;; field" as "no such key", a wrong value rather than an error (ADR-254). Bare `get` now
-;; consults the `Lookup` ability when a map lookup comes back empty, and this type
-;; implements it, so `(get mm k)` and `(multimap/get-all mm k)` agree.
-;;
-;; `keys` is fixed the same way, through `Lookup`'s `lookup-keys`: it read the `Seqable` view and
-;; answered one key per VALUE. `keys` and `vals` are GONE with it — bare
-;; `keys` and `vals` now give the same answers they did, so keeping them would be two names
-;; for one function.
+;; `Lookup` makes bare `get` and `keys` answer for the CONTENTS, not the record fields: a
+;; multimap is a record, and without it bare `get` takes the field path and reports "no
+;; such key" for a key holding values (ADR-254), while `keys` would read the `Seqable` view
+;; and answer one key per VALUE. So `(get mm k)` and `(multimap/get-all mm k)` agree, and
+;; the module needs no `keys`/`vals` of its own.
 (impl Lookup
   multimap/multimap
   (lookup-get [mm k] (get-all mm k))

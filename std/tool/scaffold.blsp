@@ -24,11 +24,8 @@ test discovery, lints, release, config)."
 ;; The module name the scaffolded LIBRARY module gets: the project's own name, made
 ;; safe to write as a bare symbol and as a filename.
 ;;
-;; It used to be the fixed name `hello`, which meant no two scaffolded projects could
-;; ever depend on each other — both provided `hello`, and `nest add` refused with a
-;; module-name collision (namespaces aren't package-rooted yet, ADR-070). Naming the
-;; library module after the package is both collision-free and the more idiomatic
-;; shape: a dependency called `greeter` provides `greeter`.
+;; Not a fixed name: two scaffolded projects must be able to depend on each other without
+;; a module-name collision (ADR-070). A dependency called `greeter` provides `greeter`.
 ;;
 ;; `project-valid-name?` only rejects path separators, whitespace and a leading dot,
 ;; so a legal project name can still hold punctuation a symbol shouldn't; anything

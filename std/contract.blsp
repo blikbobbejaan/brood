@@ -128,7 +128,7 @@ type; `i` is the position of the first rest argument."
 ;; for the trace a contract error prints; the bodies are deliberately alike.
 ;;
 ;; A result check makes the call to the original a NON-tail call, so a chain of contracted
-;; tail calls — `ping` → `pong` → `ping` … — used to stack one pending check per call and
+;; tail calls — `ping` → `pong` → `ping` … — would stack one pending check per call and
 ;; run out of frames where the same program unarmed runs flat (KI-216). So the call is
 ;; wrapped in `%contract-await`, a mark the VM recognises on a suspended frame, and before
 ;; calling, `(%contract-tail? ret)` asks whether the frame this one returns into is such a

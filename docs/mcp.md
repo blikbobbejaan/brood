@@ -206,6 +206,14 @@ at most 30s for its answer, then kills it (`(exit pid :kill)`) and replies with 
 JSON-RPC stream via a **process-scoped, spawn-inherited** capture buffer, so even a
 handler that spawns can't corrupt the channel.
 
+**A raise says where it came from.** A handler that raises is answered with a
+`-32603` whose `error.data` is the kernel's error map (`kind`, `code`, `message`,
+`file`/`line`/`col`, `trace`); a value the handler *threw* (`(throw "bad input")`,
+`(error …)`) is `{kind: "user", message, file, line, col, trace}`. A tool's own soft
+`error` field (`eval`, `load`, `write`, …) carries the same position, a thrown value as
+`{kind: :user, payload, file, line, col, trace}`. `catch` binds a thrown value verbatim, so
+the dispatcher reads the position through `%try-described` (see `language.md`).
+
 ## Resources
 
 URI-addressed read-only blobs, served directly by the dispatcher (no eval):
@@ -224,7 +232,7 @@ URI-addressed read-only blobs, served directly by the dispatcher (no eval):
   LLM-native; the status block at the bottom maps what's done vs open.
 - `brood://docs/error-codes` — stable error codes (`E0010`/`E0030`/etc.)
   and the structured `catch` shape (`{:kind :code :message :file :line
-  :col :hint}`). Agents branch on `:code` / `:kind` for programmatic
+  :col :hint :trace}`). Agents branch on `:code` / `:kind` for programmatic
   handling; the dispatcher mirrors the same fields into
   JSON-RPC `error.data`. See [`llm-native.md`](llm-native.md) §4.
 - `brood://docs/language` — language reference.

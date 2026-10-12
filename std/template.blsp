@@ -24,10 +24,8 @@ Keys in the template are trimmed of whitespace; both string and keyword keys are
 tried. Unknown keys render as empty string. Nested `{{` are not supported.
 
     (template/render \"{{a}}!\" {:a 1})   → \"1!\""
-  ;; One native split, then one join. This used to be a recursive scan that, per marker,
-  ;; sliced the REST of the template (`(string/substring s (+ open 2) …)`) and re-`str`'d the
-  ;; whole output so far — both O(remaining), so the whole render was O(n²): measured
-  ;; 12.0× then 13.4× per 4× of input across three points, where linear is 4×.
+  ;; One native split, then one join — linear. A recursive scan that slices the rest of the
+  ;; template and re-`str`s the output per marker is O(n²).
   ;;
   ;; Note an offset scan (`index-of s "{{" from`) would NOT have fixed it: for a string
   ;; with a non-zero `from`, `index-of` searches `(string/substring coll s0 n)` — it copies the
@@ -40,9 +38,8 @@ tried. Unknown keys render as empty string. Nested `{{` are not supported.
         (map (rest parts) (fn (p) (template-marker p data)))))))
 
 ;; One piece following a `{{`: `key}}rest` → the substituted value + `rest`. A piece with
-;; no closing `}}` is an unterminated marker, emitted verbatim (`{{` included) — the same
-;; "leave it alone" outcome the old scan produced, and `{{` nested inside a marker stays
-;; unsupported, as the docstring says.
+;; no closing `}}` is an unterminated marker, emitted verbatim (`{{` included), and `{{`
+;; nested inside a marker is unsupported, as the docstring says.
 (defn- template-marker (p data)
   (let (close (index-of p "}}"))
     (if (< close 0)

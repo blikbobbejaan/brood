@@ -88,7 +88,7 @@ pub(super) fn binding(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult
         names.push(sym);
     }
     // Matched lengths are a guarantee of the `binding` MACRO, not of this primitive —
-    // a raw `(%binding '(*x*) [] thunk)` used to read the missing value as `nil` via
+    // a raw `(%binding '(*x*) [] thunk)` would read the missing value as `nil` via
     // `arg`'s default and bind that silently. Reject the shape instead: like the
     // not-dynamic check above, this raises before anything is pushed, so the dynamic
     // stack is untouched.

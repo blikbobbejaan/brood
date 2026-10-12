@@ -21,22 +21,18 @@
 ;; char-based, matching `string-length`. The helpers below are tail-recursive
 ;; (stack-safe over long strings).
 ;;
-;; Cost note, corrected 2026-08-02: `substring` used to be O(index) — plus a copy of the
-;; WHOLE source string per call — so a char-by-char scan was O(n²) regardless of content.
-;; It now takes a byte-slice fast path when the string is pure ASCII (a char index is then
-;; its byte offset, tested in O(1) against the cached char count), making it O(result). So
-;; a full scan is **linear on ASCII text** and still O(n²) on text with any multi-byte
-;; character, where the `chars().skip(index)` walk remains. Measured, char-by-char over
-;; 4k/16k/64k chars: ASCII 6/7/27 ms (ratios 1.16, 3.85) vs non-ASCII 2/21/242 ms (10.50,
-;; 11.52). Either way the rope/buffer engine (M2) is still the home for large-text editing.
+;; Cost note: `substring` takes a byte-slice fast path when the string is pure ASCII (a
+;; char index is then its byte offset, tested in O(1) against the cached char count),
+;; making it O(result). So a char-by-char scan is **linear on ASCII text** and still O(n²)
+;; on text with any multi-byte character, where the `chars().skip(index)` walk remains.
+;; Either way the rope/buffer engine (M2) is the home for large-text editing.
 
 ;; Collect `coll`'s elements interleaved with `sep` into a parts list (tail-
 ;; recursively, reversed), then build the string in one `apply str` pass.
 
-;; `string-split` is now a native builtin (crates/lisp/src/builtins.rs) — one O(n)
-;; pass via Rust's `str::split`. The former pure-Brood version re-`substring`ed the
-;; tail each step, which is O(n²) (char-indexed substring is O(index)); a 174 KB
-;; `git ls-files` output took ~840 ms in the editor's project scan, now ~10 ms.
+;; `string-split` is a native builtin — one O(n) pass via Rust's `str::split`. A
+;; pure-Brood version re-`substring`s the tail each step, which is O(n²) on non-ASCII
+;; text (char-indexed substring is O(index)).
 
 ;; ---- string padding & repetition --------------------------------------------
 ;; Column formatting for tabular/console output. `pad-*` left unchanged when the

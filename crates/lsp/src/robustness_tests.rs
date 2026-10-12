@@ -85,11 +85,10 @@ fn diagnostics(client: &Connection) -> Vec<Diagnostic> {
 /// process — over stdio that is the editor's entire language support gone, with
 /// no response to the request that triggered it.
 ///
-/// The trigger used here is the real one that was found: `foldingRange` over an
-/// unclosed container whose span therefore runs to EOF, on a buffer ending in a
-/// multibyte character (`(é` — mid-`é` slice). `LineIndex::position` is total
-/// now, so this no longer panics at all; the case stays as the end-to-end proof
-/// that the request is *answered*, whichever way the fix holds.
+/// The trigger: `foldingRange` over an unclosed container whose span runs to EOF,
+/// on a buffer ending in a multibyte character (`(é` — mid-`é` slice).
+/// `LineIndex::position` is total, so this does not panic at all; the case is the
+/// end-to-end proof that the request is *answered*, whichever way the fix holds.
 #[test]
 fn a_half_typed_multibyte_buffer_does_not_kill_the_server() {
     let (server, client) = Connection::memory();

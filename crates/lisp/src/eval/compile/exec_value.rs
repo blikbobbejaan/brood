@@ -196,9 +196,9 @@ pub(crate) fn prim2_inline_exec(
     // common non-int comparison in Brood — every type predicate (`empty?`/`nil?`/
     // `cond`/…) runs it, and `type-of` yields a `Keyword`. Comparing two keywords
     // (or two symbols) is interned-id equality, exactly what `heap.equal` returns
-    // for them, with no heap touch and no native call. Without this, each one missed
-    // both `prim2_int_fast` and `prim_apply` (numeric-only) and took the full
-    // `prim2_dispatch_rooted` slow path (measured: 28% of nqueens' prim2 ops).
+    // for them, with no heap touch and no native call. Without this, each one misses
+    // both `prim2_int_fast` and `prim_apply` (numeric-only) and takes the full
+    // `prim2_dispatch_rooted` slow path.
     if op == PrimOp::Eq {
         let eq = match (x.unpack(), y.unpack()) {
             (ValueRef::Keyword(a), ValueRef::Keyword(b)) => Some(a == b),
