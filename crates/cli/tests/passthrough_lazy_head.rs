@@ -7,7 +7,7 @@
 //! (ADR-335) made an unbound qualified name a module LOAD, i.e. arbitrary evaluation and a
 //! collection. The arguments were not rooted across it, so the redirect bound relocated
 //! handles into the inner call's frame. Found as two `nest` tests failing intermittently
-//! under the tree-walker suite (`BROOD_VM=0`, a `bytes` argument reaching `seq`); with
+//! under the tree-walker suite (`BROOD_TIER=0`, a `bytes` argument reaching `seq`); with
 //! `BROOD_GC_STRESS=1` it is deterministic, which is what this pins.
 //!
 //! Sabotage-verified: with the rooted slow path removed, this reports
@@ -31,7 +31,7 @@ fn a_lazily_loaded_passthrough_head_keeps_the_arguments_rooted() {
     .expect("write probe");
     let out = Command::new(env!("CARGO_BIN_EXE_brood"))
         .arg(&file)
-        .env("BROOD_VM", "0")
+        .env("BROOD_TIER", "0")
         .env("BROOD_GC_STRESS", "1")
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")

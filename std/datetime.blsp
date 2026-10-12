@@ -262,14 +262,9 @@ milliseconds."
                         (string/char-at padded 2)))
       0)))
 
-;; The parsers used to check *shape* only — three `-`-separated integers, three
-;; `:`-separated integers — and hand whatever came out straight to the record
-;; constructor, which does no checking either. So "2026-02-31", "2026-13-05",
-;; "12:-5:00" and hour 99 all "parsed", producing a value that every later
-;; conversion silently NORMALISED (Feb 31 → Mar 3). A parser that accepts an
-;; impossible date and quietly moves it is worse than one that rejects it: the
-;; caller's validation looks like it passed. The calendar core underneath
-;; (`days-in-month`, `leap-year?`) is correct — only the input gate was missing.
+;; The parsers check RANGES, not just shape: the record constructor checks nothing, and an
+;; impossible date ("2026-02-31") would be silently normalised by every later conversion
+;; (Feb 31 → Mar 3) — worse than rejecting it, since the caller's validation looks passed.
 (defn- dt-in-range? (n lo hi)
   (and (int? n) (>= n lo) (<= n hi)))
 
@@ -281,8 +276,7 @@ milliseconds."
         parts (string/split hms-str ":"))
     (when (and (= (count parts) 3)
             (<= (count dot-parts) 2)
-            ;; a fractional part must itself be digits — "12:00:00.xyz" used to
-            ;; fall back to 0 ms and parse as a clean time
+            ;; a fractional part must itself be digits ("12:00:00.xyz" is no time)
             (or (= frac-str "") (dt-in-range? (dt-parse-int frac-str) 0 999999999)))
       ;; An unparsable component reads as -1 — never in range — so the values below are ints.
       (let (h (or (dt-parse-int (nth parts 0)) -1)
@@ -320,11 +314,8 @@ normalising to a March date).
     (failure "datetime/parse-time: not HH:MM:SS[.mmm][Z]: " (pr-str s))))
 
 ;; A numeric zone designator (`+02:00`) is as much a part of ISO 8601 as `Z`, and every
-;; timestamp a real API hands you carries one. It used to yield **nil** — indistinguishable
-;; from malformed input, and silent: the caller saw "not a datetime" for a perfectly good
-;; timestamp. This module is UTC-only and says so, but "UTC-only" is a statement about the
-;; values it *holds*, not about the inputs it can read: an offset names a real instant, so
-;; the honest reading is to shift it to UTC rather than refuse it.
+;; timestamp a real API hands you carries one. This module is UTC-only in the values it
+;; *holds*, not the inputs it reads: an offset names a real instant, so it is shifted to UTC.
 
 (defn- dt-offset-index (time-part)
   "Where a numeric zone designator starts in an ISO 8601 time part, or -1. A `-` cannot occur

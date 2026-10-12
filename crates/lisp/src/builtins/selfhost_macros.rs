@@ -197,9 +197,9 @@ fn check_file_at(
 /// by `(check)` in `std/tool/project.blsp` for the `nest test` / `nest run`
 /// pre-flight.
 pub(super) fn check_file_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let path = expect_string(heap, "check-file", arg(args, 0))?;
+    let path = expect_string(heap, "reflect/check-file", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        LispError::runtime(format!("check-file: cannot read {}: {}", path, e))
+        LispError::runtime(format!("reflect/check-file: cannot read {}: {}", path, e))
             .with_code(crate::error::error_codes::FILE_IO)
     })?;
     let forms = reader::read_all_positioned(heap, &src).map_err(|e| e.or_file(path.clone()))?;
@@ -226,7 +226,7 @@ pub(super) fn check_file_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -
 ///
 /// Reads but does not evaluate, exactly like `check-file`.
 pub(super) fn file_signatures_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let path = expect_string(heap, "file-signatures", arg(args, 0))?;
+    let path = expect_string(heap, "reflect/file-signatures", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
         LispError::runtime(format!("file-signatures: cannot read {}: {}", path, e))
             .with_code(crate::error::error_codes::FILE_IO)
@@ -246,7 +246,7 @@ pub(super) fn file_signatures_builtin(args: &[Value], _env: EnvId, heap: &mut He
 /// text, and shares one code path with the file variant so a buffer and the file it will
 /// be saved as can never disagree.
 pub(super) fn source_signatures(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "source-signatures", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/source-signatures", arg(args, 0))?;
     let forms = match reader::read_all_positioned(heap, &src) {
         Ok(fs) => fs,
         // unparsable (e.g. mid-edit) — no signatures rather than an error, matching
@@ -472,10 +472,13 @@ pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Hea
 ///     later run whose `(check-deps-fp dep-keys)` still equals this (and whose file
 ///     mtime is unchanged) may reuse `warnings` verbatim.
 pub(super) fn check_file_deps(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let path = expect_string(heap, "check-file-deps", arg(args, 0))?;
+    let path = expect_string(heap, "reflect/check-file-deps", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        LispError::runtime(format!("check-file-deps: cannot read {}: {}", path, e))
-            .with_code(crate::error::error_codes::FILE_IO)
+        LispError::runtime(format!(
+            "reflect/check-file-deps: cannot read {}: {}",
+            path, e
+        ))
+        .with_code(crate::error::error_codes::FILE_IO)
     })?;
     let forms = reader::read_all_positioned(heap, &src).map_err(|e| e.or_file(path.clone()))?;
     let just_forms: Vec<Value> = forms.into_iter().map(|(f, _)| f).collect();
@@ -553,10 +556,10 @@ pub(super) fn check_strict_set(args: &[Value], _env: EnvId, _heap: &mut Heap) ->
 /// by the `nest mcp` `check` tool (step 1c-a) and any other consumer that
 /// wants structured diagnostics rather than a GNU-line string to re-parse.
 pub(super) fn check_file_structured(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let path = expect_string(heap, "check-file-structured", arg(args, 0))?;
+    let path = expect_string(heap, "reflect/check-file-structured", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
         LispError::runtime(format!(
-            "check-file-structured: cannot read {}: {}",
+            "reflect/check-file-structured: cannot read {}: {}",
             path, e
         ))
         .with_code(crate::error::error_codes::FILE_IO)
@@ -596,7 +599,7 @@ pub(super) fn check_file_structured(args: &[Value], _env: EnvId, heap: &mut Heap
 /// unparsable input, matching `%check-string-structured`: both are read live, from a
 /// buffer that is mid-edit half the time.
 pub(super) fn expr_type(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "expr-type", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/expr-type", arg(args, 0))?;
     let forms = match reader::read_all_positioned(heap, &src) {
         Ok(fs) => fs,
         // unparsable (e.g. mid-edit) — no opinion rather than an error
@@ -622,7 +625,7 @@ pub(super) fn expr_type(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRes
 /// buffer; warnings reappear once it parses. Reuses the same checker as the file
 /// variant (`types::check::check_file`).
 pub(super) fn check_string_structured(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "check-string-structured", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/check-string-structured", arg(args, 0))?;
     check_string_as(heap, &src, false)
 }
 
@@ -630,7 +633,7 @@ pub(super) fn check_string_structured(args: &[Value], _env: EnvId, heap: &mut He
 /// what a REPL or an editor's eval-in-buffer wants, since that is how the form is about
 /// to be resolved (`types::check::check_forms_here`).
 pub(super) fn check_string_here(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "check-string-here", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/check-string-here", arg(args, 0))?;
     check_string_as(heap, &src, true)
 }
 

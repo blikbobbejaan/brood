@@ -382,7 +382,7 @@ pub(crate) fn exec_chunk(
                                 // Same key guard as the native — a closure/NaN key raises
                                 // the identical error; a non-Table first operand defers
                                 // below.
-                                crate::core::table::check_key("table-put", sb)
+                                crate::core::table::check_key("table/put", sb)
                                     .map_err(|e| tag_pos(e, *pos))?;
                                 crate::perf_bump!(prim2_inline);
                                 done = Some(
@@ -1395,9 +1395,6 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
             return Ok(Some(ChunkExit::Preempt));
         }
         crate::process::refill_nested_quantum();
-    }
-    if crate::process::deadline_exceeded() {
-        return Err(crate::eval::deadline_error());
     }
     Ok(None)
 }

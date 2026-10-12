@@ -176,7 +176,7 @@ fn value_sig_resolves_cross_module_via_the_heap_store() {
 fn defmodule_declared_arrow_sig_seeds_return_type_check() {
     // Regression: `(sig f (-> B))` declared inside a `defmodule` block
     // didn't seed `check_def`'s body-vs-declared-return-type check.
-    // Pass 2.5 (`annot::parse_sig_decl`) records a declared sig under the
+    // declaration registration (`annot::parse_sig_decl`) records a declared sig under the
     // symbol exactly as written in the un-expanded `(sig …)` form — bare
     // `f`. But `defn f` inside a `defmodule` expands to
     // `(def mod/f (fn …))`, so `check_def`'s seeding lookup

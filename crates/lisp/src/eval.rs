@@ -5,7 +5,7 @@
 //! the two are mutually recursive — the compile pass lowers the `fn`/`let`
 //! pattern surfaces the evaluator runs, and the evaluator falls back to it.
 
-pub mod compile; // the compiling-VM execution engine (ADR-076) — gated by BROOD_VM
+pub mod compile; // the compiling-VM execution engine (ADR-076) — gated by BROOD_TIER
 pub mod derive; // auto-derived stdlib imports (ADR-227 follow-up)
 pub mod macros;
 
@@ -414,13 +414,6 @@ fn eval_tail_loop(
             // Deliberately undecorated (no `or_form_pos`): a control signal is not a
             // user-visible error — it never prints, it only unwinds to the driver.
             return Err(LispError::kill_signal());
-        }
-        // Eval deadline (the `nest mcp` watchdog): abort a runaway that's exceeded
-        // its time budget so it can't wedge the server. Inline — propagates as an
-        // ordinary error through the dispatcher's existing handling. Cheap when no
-        // deadline is armed (one thread-local `Cell` get).
-        if crate::process::deadline_exceeded() {
-            return Err(deadline_error().or_form_pos(heap, expr));
         }
 
         let (head, rest) = match expr.unpack() {
@@ -989,7 +982,7 @@ fn eval_tail_loop(
                         // to be the only path, under a comment saying "a symbol lookup — no
                         // GC", and the load relocated the unrooted `cur_argv`: the redirect
                         // then bound stale handles into the inner call's frame (a `bytes`
-                        // arg reaching `seq` under `BROOD_VM=0 nest test`, deterministic with
+                        // arg reaching `seq` under `BROOD_TIER=0 nest test`, deterministic with
                         // `BROOD_GC_STRESS=1`). So the slow path roots the args across it.
                         // The shared `passthrough_redirect_ok` then gates the redirect
                         // (callable inner only), counts the reduction, and honours the
@@ -1277,33 +1270,13 @@ pub(crate) fn not_a_function_error(heap: &Heap, v: Value) -> LispError {
 /// mixed-eligibility mutual tail loop stays flat instead of recursing natively.
 pub(crate) const TW_REENTRY_BUDGET: u32 = 32;
 
-/// Is the tree-walker→VM router enabled? **Default ON since 2026-09-04; opt OUT via
-/// `BROOD_NO_TW_REENTRY=1`** (ADR-318). Measured 60× on the viral defer shape and
-/// `startup` −6.9% when it landed (2026-08-30), then parked opt-in because routing
-/// exposed KI-88 — a spawned process created, registered and promoted, yet never
-/// scheduled, one early spawn of a 50-burst under `breakage/chaos2_process_genserver`.
-/// KI-88 was never root-caused; it went dormant instead: 358 consecutive clean runs of
-/// that repro with the router live, across five timing regimes and three builds, and a
-/// default-on stranded-work watchdog (`process/scheduler/pool.rs`) that names the pid if
-/// the signature ever recurs. The default flipped on that evidence plus a fresh gate
-/// (full suite, whole breakage suite, the genserver file looped, `make ab --floor` and
-/// `make ab-vm`). The opt-out is the A/B lever, the bisect lever, and the stopgap if a
-/// routed shape is ever implicated again. Read once and cached.
-fn tw_reentry_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_TW_REENTRY").is_none())
-}
-
 /// Route a tree-walked closure application onto the VM when the callee has a
 /// VM-eligible arm for this arity. `None` = not routable — tree-walk it as before.
+/// Default ON (ADR-318); `BROOD_NO_TW_REENTRY=1` opts out.
 ///
-/// Why: the tree-walker never re-entered the VM, so ONE deferred call tree-walked
-/// everything beneath it transitively at ~10× cost — found 2026-08-30 as the mechanism
-/// behind §7.3's macro-expansion constant (`BROOD_DEFER_DBG` names the entry points).
-/// This is the general fix: a deferred arm still tree-walks its OWN body, but every
-/// VM-eligible callee it invokes runs at engine speed. The `def`-RHS routing at this
-/// file's `compile::run` call is the narrow precedent (it routes one special form; this
-/// routes the application path).
+/// Why: without it, ONE deferred call tree-walks everything beneath it transitively at
+/// ~10× cost (`BROOD_DEFER_DBG` names the entry points). A deferred arm still tree-walks
+/// its OWN body, but every VM-eligible callee it invokes runs at engine speed.
 ///
 /// Safety ledger:
 /// - **PTC**: bounded by [`TW_REENTRY_BUDGET`] — see [`Heap::tw_reentry_depth`].
@@ -1315,7 +1288,7 @@ fn tw_reentry_enabled() -> bool {
 ///   (IC-base save/restore, §8.1 suspend re-raise).
 fn tw_vm_route(heap: &mut Heap, id: ClosureId, argv: &[Value]) -> Option<LispResult> {
     if compile::tier_ceiling() < compile::Tier::Bytecode
-        || !tw_reentry_enabled()
+        || !crate::diagnostics::debug_flags::tree_walker_reentry()
         || heap.tw_reentry_depth.get() >= TW_REENTRY_BUDGET
     {
         return None;
@@ -1336,8 +1309,8 @@ fn tw_vm_route(heap: &mut Heap, id: ClosureId, argv: &[Value]) -> Option<LispRes
         return None;
     }
     {
-        static ROUTE_DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *ROUTE_DBG.get_or_init(|| std::env::var_os("BROOD_ROUTE_DBG").is_some()) {
+        // `BROOD_ROUTE_DBG`: name each routed callee.
+        if crate::diagnostics::debug_flags::route_debug() {
             let name = heap
                 .closure(id)
                 .name
@@ -1925,7 +1898,7 @@ pub(crate) fn passthrough_redirect_ok(inner: Value) -> Result<bool, LispError> {
     }
     // The same tick also honours an untrappable hard `:kill` (checked only on the
     // reduction rollover — `tick_reporting_hard_kill`). This site is load-bearing for
-    // killability exactly as it is for the deadline below: in a tree-walked loop whose
+    // killability: in a tree-walked loop whose
     // operators are thin wrappers (`>`/`-`/`+` are Brood defns over `%`-prims), the
     // hot path ticks *here*, so a check only at the `'tail:` loop top can be starved —
     // which is how a process spinning inside `eval`/`reflect/eval-string` escaped `(exit pid
@@ -1934,16 +1907,13 @@ pub(crate) fn passthrough_redirect_ok(inner: Value) -> Result<bool, LispError> {
     if crate::process::tick_reporting_hard_kill() {
         return Err(LispError::kill_signal());
     }
-    if crate::process::deadline_exceeded() {
-        return Err(deadline_error());
-    }
     Ok(true)
 }
 
-/// The three runaway-guard errors both engines (`eval` here and the VM's
-/// `vm_apply_inner`) raise — one constructor each so their message/code/hint
-/// stay byte-identical and can't drift. The caller adds engine-specific
-/// trimmings (`eval` attaches `or_form_pos`; the VM truncates its root stacks).
+// The three runaway-guard errors both engines (`eval` here and the VM's
+// `vm_apply_inner`) raise — one constructor each so their message/code/hint
+// stay byte-identical and can't drift. The caller adds engine-specific
+// trimmings (`eval` attaches `or_form_pos`; the VM truncates its root stacks).
 
 /// "recursion too deep …" — the VM's call-frame-count guard (`MAX_BC_FRAMES`) for
 /// runaway non-tail recursion. Distinct from [`stack_depth_error`], whose `used` is
@@ -2039,11 +2009,6 @@ pub(crate) fn memory_limit_error(used: usize) -> LispError {
         crate::core::alloc::soft_limit()
     ))
     .with_code(crate::error::error_codes::MEMORY_LIMIT)
-}
-
-/// "evaluation exceeded its time limit …" — the `nest mcp` deadline watchdog.
-pub(crate) fn deadline_error() -> LispError {
-    LispError::runtime("evaluation exceeded its time limit (MCP tool watchdog)")
 }
 
 /// Render an arity error — `"{who}: expected {N | N to M | at least N}

@@ -1,19 +1,13 @@
 //! The `BROOD_*` diagnostic-flag catalogue — what `brood --debug-flags` prints.
 //!
-//! The runtime has ~75 environment flags, and they *are* the performance toolkit: which
-//! one to reach for was tribal knowledge, discoverable only by reading `CLAUDE.md`'s
-//! table, which is not shipped in the binary. This makes the answer available from the
-//! binary itself (`docs/backend-seams.md` §5).
+//! The runtime's environment flags *are* its diagnostic and performance toolkit, and this
+//! catalogue is their one reference, shipped in the binary (`docs/backend-seams.md` §5).
+//! A flag's description belongs here, not in a doc that drifts from it; the measurement
+//! history behind a default lives in its ADR or devlog entry.
 //!
-//! **The complete list, in triage order.** It began as a curated performance subset, on
-//! the reasoning that a GUI or REPL flag does not belong in a list you consult while
-//! chasing a regression. What that produced instead was a gap of 43 flags out of 101 —
-//! including the worker count, the reduction budget and every GC tuning knob, none of
-//! which is anything but performance. A flag nothing documents is a flag nobody reaches
-//! for, so the answer is ordering, not omission: the triage groups print first
-//! ([`GROUP_ORDER`]) and the environment ones last. `CLAUDE.md`'s table remains the long
-//! form — it carries the measurement history behind each default, which is what you want
-//! when deciding whether to flip one, and is far too long to print.
+//! **The complete list, in triage order.** A flag nothing documents is a flag nobody
+//! reaches for, so the answer is ordering, not omission: the triage groups print first
+//! ([`GROUP_ORDER`]) and the environment ones last.
 //!
 //! Both directions are gated by the tests below. A catalogued flag must still appear in
 //! the source, so a rename cannot leave a line telling a reader to set something the
@@ -154,12 +148,12 @@ pub const FLAGS: &[DebugFlag] = &[
     f(
         "BROOD_JIT_BAIL_TRACE",
         JIT,
-        "name each arm the profitability gate refuses, and why — the complement of DUMP_IR; `[jit-relower]` lines say when deopt feedback re-tiers an arm (a polymorphic param boxed, or float context for floats read out of vectors, ADR-378), and a `deopt-thrash-latched` line carries its `last-deopt` reason. Also reports what HOT ADMISSION (BROOD_XADMIT=1) then did with a refused arm (`[jit-xadmit] … admitted` / `declined: …`), which is the difference between a lever that ran and one that silently skipped the case under test",
+        "name each arm the profitability gate refuses, and why — the complement of DUMP_IR; `[jit-relower]` lines say when deopt feedback re-tiers an arm (a polymorphic param boxed, or float context for floats read out of vectors, ADR-378), and a `deopt-thrash-latched` line carries its `last-deopt` reason",
     ),
     f(
         "BROOD_DEOPT_TRACE",
         JIT,
-        "print each type-deopt's arm — finds an arm that lowers and then keeps falling back",
+        "print each type-deopt's arm and the guard that fired (`reason=<name>`, a `DeoptReason` — one per guard site) — finds an arm that lowers and then keeps falling back; needs `make perf-brood`",
     ),
     f(
         "BROOD_DUMP_CODE",
@@ -177,45 +171,15 @@ pub const FLAGS: &[DebugFlag] = &[
         "log every JIT'd call to this function with each arg's type — for value-level corruption",
     ),
     f(
-        "BROOD_NO_JIT",
-        JIT,
-        "alias for BROOD_TIER=1 — no native tiering, interpret on the VM; rules a JIT-only miscompile in or out",
-    ),
-    f(
-        "BROOD_FLOAT_VETO",
-        JIT,
-        "restore the pre-2026-09-20 profitability veto on a named self-tail arm with a profiled float slot and non-tail calls (`row-sum`) — the bisect lever",
-    ),
-    f(
         "BROOD_NO_JIT_COMPUTED",
         JIT,
-        "bail only arms containing a computed jump — narrower bisect than NO_JIT",
+        "bail only arms containing a computed jump — narrower bisect than BROOD_TIER=1",
     ),
     // ---- optimizer opt-outs ----
     f(
         "BROOD_NO_I64",
         OPTOUT,
         "disable the unboxed-scalar register worker (fib/pfib's path)",
-    ),
-    f(
-        "BROOD_NO_INLINE",
-        OPTOUT,
-        "disable the JIT's recursive self-inliner (the two-stage deferred upgrade)",
-    ),
-    f(
-        "BROOD_NO_LEAF_INLINE",
-        OPTOUT,
-        "disable leaf-callee splicing",
-    ),
-    f(
-        "BROOD_NO_PARTIAL_LEAF",
-        OPTOUT,
-        "revert to all-or-nothing leaf splicing (no residual call beside the spliced leaves)",
-    ),
-    f(
-        "BROOD_NO_FLOAT_GLOBAL",
-        OPTOUT,
-        "disable unboxing float-valued global reads (nbody's silent-interpretation bug)",
     ),
     f(
         "BROOD_NO_INT_SLOT_CACHE",
@@ -233,14 +197,9 @@ pub const FLAGS: &[DebugFlag] = &[
         "disable the higher-order-function fast path (per-element callback routing)",
     ),
     f(
-        "BROOD_NO_SHARED_ARMS",
-        OPTOUT,
-        "every process compiles its own copy of every closure — costs spawn-live ~25% CPU",
-    ),
-    f(
         "BROOD_INLINE_DBG",
         OPTOUT,
-        "trace which arms qualify for self/leaf inlining (pairs with the two NO_*INLINE flags)",
+        "trace which arms qualify for self/leaf inlining",
     ),
     f(
         "BROOD_NO_LAZY_LOAD",
@@ -268,24 +227,9 @@ pub const FLAGS: &[DebugFlag] = &[
         "opt OUT of the hot re-lowering / inline fast-frame call path (§7.5, default ON): a hot arm's body is recompiled on the deferred queue with the Brood-to-Brood call ceremony emitted inline (bintree -10.6%, -19% at 2x run length; short runs unaffected). The A/B and bisect lever",
     ),
     f(
-        "BROOD_XCALL",
-        JIT,
-        "=1: additionally emit the inline call path in EVERY body's first compile (the experiment lever) — measured as a ~115M-instruction per-run compile constant, so not the default; the default arms it only in hot re-lowerings",
-    ),
-    f(
-        "BROOD_XADMIT",
-        JIT,
-        "=1: admit profitability-gate-refused named defns at the HOT stage (deferred compile, inline call blob, frame cap). Measured NEGATIVE 2026-08-31 — nqueens +7.6% cycles, pipeline +7.6%: a call-dominated boxed arm is better interpreted even on the cheapest native call path we have. Kept as the one-env-var re-test for when the call convention changes (§7.5 increment 4)",
-    ),
-    f(
-        "BROOD_XADMIT_MAX_NSLOTS",
-        JIT,
-        "=N: the frame cap hot admission (BROOD_XADMIT=1) applies, default 8. Raise it to reach an arm the experiment would otherwise decline silently — mandelbrot's `row-sum` is nslots=14, so every A/B of the lever on that row compared identical code. Not the only condition: `row-sum` is ALSO declined for having an inline variant, which `BROOD_JIT_BAIL_TRACE=1` now says out loud",
-    ),
-    f(
         "BROOD_MONO",
         OPTOUT,
-        "opt IN to ability-dispatch monomorphization (off by default — it trades late binding)",
+        "opt IN to ability-dispatch monomorphization: a literal or record-constructor first arg skips `identity-of` (off by default). Sound (ADR-294): resolution still goes through the epoch-stamped `%dispatch` cache, so a re-registered impl is seen",
     ),
     f(
         "BROOD_MONO_DBG",
@@ -301,7 +245,7 @@ pub const FLAGS: &[DebugFlag] = &[
     f(
         "BROOD_GC_VERIFY",
         GC,
-        "walk the live graph each collection and name the root->cell path to a stale handle",
+        "before each collection, walk the live LOCAL graph and panic on a stale (old-epoch) handle, naming it and the cell that holds it — catches a stale handle STORED rather than dereferenced; works in plain release",
     ),
     f("BROOD_GC_TRACE", GC, "log each minor collection's stats (debug builds)"),
     f(
@@ -328,16 +272,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "backlog at which a spawn stops going to the spawner's own worker (default 1)",
     ),
     f(
-        "BROOD_SPAWN_RR",
-        SCHED,
-        "force round-robin spawn placement — the A/B endpoint showing why the threshold exists",
-    ),
-    f(
-        "BROOD_NO_HANDOFF",
-        SCHED,
-        "disable the scheduler's direct-handoff wake policy",
-    ),
-    f(
         "BROOD_NO_RECV_MARK",
         SCHED,
         "disable the receive-mark (O(1) ref-pinned receive instead of O(backlog))",
@@ -345,17 +279,12 @@ pub const FLAGS: &[DebugFlag] = &[
     f(
         "BROOD_NO_SHARE_FN",
         SCHED,
-        "deep-copy an already-shared closure across a local send instead of passing it by handle",
+        "deep-copy an already-shared closure across a local send (L1 and serialised) instead of passing it by handle",
     ),
     f(
         "BROOD_L1_BUDGET",
         SCHED,
-        "copy-work units the L1 fast path may spend under the mailbox lock (0 = unlimited, the pre-KI-56 behaviour)",
-    ),
-    f(
-        "BROOD_NO_MSGTAG",
-        SCHED,
-        "drop the L1 fast path's leading-keyword tag, defeating the selective-receive pre-filter",
+        "copy-work units (one heap node each, default 4096) the L1 send copy and the selective-receive rebuild may spend under the mailbox lock; past it a message takes the wire path (0 = unlimited, the pre-KI-56 behaviour)",
     ),
     f(
         "BROOD_NO_DROP_WARN",
@@ -374,11 +303,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "the tier ceiling: 0 tree-walk, 1 bytecode VM, 2 native (ADR-222). Measured 57.4s/3.2s/0.12s",
     ),
     f(
-        "BROOD_VM",
-        ENGINE,
-        "alias for BROOD_TIER=0 — `=0` runs the tree-walker (~10x slower; the differential reference)",
-    ),
-    f(
         "BROOD_NO_PRELUDE_IMAGE",
         OPTOUT,
         "opt OUT of the prelude image (ADR-314, default ON since 2026-09-04): neither read nor written, so every boot is the full source boot (a cold boot is ~11x a warm one). The only boot-artifact knob since the ADR-138 text cache was deleted (2026-09-12). KI-105/KI-106 were the image's two same-day reverts, both fixed and gated",
@@ -395,9 +319,9 @@ pub const FLAGS: &[DebugFlag] = &[
         "`=<ms>`: report any GC pause, scheduler quantum or GUI paint at or over this — the lag tracer",
     ),
     f(
-        "BROOD_COMPILE_TRACE",
+        "BROOD_TRACE_LOWER",
         ATTRIBUTION,
-        "time each JIT lowering (`[compile] <dur> arm=… inlined=…`); needs `make perf-brood`",
+        "time each JIT lowering (`[lower] <dur> arm=… inlined=…`); needs `make perf-brood`",
     ),
     f(
         "BROOD_EVAL_TRACE",
@@ -419,11 +343,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "BROOD_DBG_CONST",
         JIT,
         "trace JIT constant-pool decisions — for diagnosing a wrong-constant miscompile",
-    ),
-    f(
-        "BROOD_MKCLO",
-        JIT,
-        "opt IN to admitting `MakeClosure` to the JIT subset; default OFF (`docs/compute-frontier.md`)",
     ),
     f(
         "BROOD_NO_MAPGET",
@@ -450,11 +369,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "BROOD_NO_JIT_ICALL",
         OPTOUT,
         "opt out of the in-IR call-site fast-link; every call takes `brood_rt_call_slow` (fib ~20%)",
-    ),
-    f(
-        "BROOD_NO_DEOPT_RESUME",
-        OPTOUT,
-        "chicken switch: drop deopt checkpoints and re-run a deopted arm from ip 0 instead",
     ),
     f(
         "BROOD_INLINE_DEPTH",
@@ -519,21 +433,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "`=<ns>`: a spawner's first refusal on its own child before a peer may steal it (default 5000; 0 off)",
     ),
     f(
-        "BROOD_NO_STEAL_WAKE",
-        SCHED,
-        "opt out of the spawn-time peer wake; idle workers wait for their own steal re-probe",
-    ),
-    f(
-        "BROOD_NO_IDLE_BACKOFF",
-        SCHED,
-        "opt out of the empty-pool park backoff; every parked worker re-probes every 10 ms forever",
-    ),
-    f(
-        "BROOD_NO_SHARE_FN_MSG",
-        SCHED,
-        "opt out of handing a shared closure by handle on the SERIALISED send (BROOD_NO_SHARE_FN's sibling)",
-    ),
-    f(
         "BROOD_NO_MESH",
         SCHED,
         "point-to-point node links only — no automatic mesh to every node a peer already knows",
@@ -547,7 +446,7 @@ pub const FLAGS: &[DebugFlag] = &[
     f(
         "BROOD_CONTRACTS",
         DIAG,
-        "turn every `sig` into a runtime checking shim — the static checker's runtime counterpart",
+        "turn every `sig` into a runtime checking shim — the static checker's runtime counterpart. The `nest run`/`nest test` default (ADR-381); `=0` opts a run out, `=all` also enforces the prelude's own sigs; a released bundle never arms",
     ),
     f(
         "BROOD_NO_CONTRACT_BOUNDARY",
@@ -593,11 +492,6 @@ pub const FLAGS: &[DebugFlag] = &[
         "BROOD_NO_SHADOW_WARN",
         DIAG,
         "silence the warning that a `(:use …)` import shadows a prelude/root global",
-    ),
-    f(
-        "BROOD_TEST_NO_SCOPE",
-        DIAG,
-        "revert `nest test` to load-all-then-run-all instead of the per-file `%isolate` scope",
     ),
     f(
         "BROOD_TEST_TRACE",
@@ -675,14 +569,169 @@ pub const FLAGS: &[DebugFlag] = &[
 #[cfg(test)]
 const NON_FLAGS: &[&str] = &["BROOD_GIT_SHA", "BROOD_STDLIB_HASH", "BROOD_EMBED_RUNTIME"];
 
-/// Print the catalogue, grouped, for `brood --debug-flags`.
 /// `BROOD_JIT_BAIL_TRACE` is set — read once. The one reader: the trace is asked at twenty
-/// sites across the tiering code, which each used to carry its own cached copy.
+/// sites across the tiering code.
 pub fn jit_bail_trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("BROOD_JIT_BAIL_TRACE").is_some())
 }
 
+/// `BROOD_TRACE_COMPILE` is set — read once. Asked on every closure compile and at each
+/// stale-bindings mark (`[compile] …` lines).
+pub fn trace_compile() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BROOD_TRACE_COMPILE").is_some())
+}
+
+/// `BROOD_TRACE_LOWER` is set — read once. Times each JIT lowering (`[lower] …` lines).
+pub fn trace_lower() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("BROOD_TRACE_LOWER").is_some())
+}
+
+// ---- The evaluator's and JIT's toggles, each read once and cached. A lever that is ON by
+// default answers `true` unless its `BROOD_NO_*` opt-out is set. One reader per flag, so the
+// catalogue above and the runtime cannot disagree about which flags exist.
+
+/// `name` is set (to anything) — read once into `cell`.
+fn is_set(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
+    *cell.get_or_init(|| std::env::var_os(name).is_some())
+}
+
+/// `name` is set to something other than empty or `0` — read once into `cell`.
+fn is_armed(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
+    *cell.get_or_init(|| std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0"))
+}
+
+/// `BROOD_DEFER_DBG`: name each closure call that defers to the tree-walker.
+pub fn defer_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_DEFER_DBG")
+}
+
+/// `BROOD_ROUTE_DBG`: name each closure the tree-walker routes back to the VM.
+pub fn route_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_ROUTE_DBG")
+}
+
+/// `BROOD_INLINE_DBG`: trace which arms qualify for self/leaf inlining.
+pub fn inline_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_INLINE_DBG")
+}
+
+/// `BROOD_JIT_CB_TRACE`: trace each runtime callback from native code (debug builds).
+pub fn jit_callback_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_armed(&ON, "BROOD_JIT_CB_TRACE")
+}
+
+/// `BROOD_DBG_CONST`: trace JIT constant-pool decisions.
+pub fn debug_constants() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_DBG_CONST")
+}
+
+/// `BROOD_DEOPT_TRACE`: print each JIT type-deopt's arm and guard (`perf-stats` builds).
+pub fn deopt_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_DEOPT_TRACE")
+}
+
+/// `BROOD_JIT_DUMP_IR`: dump each lowered arm's bytecode fingerprint and CLIF.
+pub fn jit_dump_ir() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_armed(&ON, "BROOD_JIT_DUMP_IR")
+}
+
+/// `BROOD_JIT_VERIFY`: scan every JIT'd call's staged args for a stale LOCAL handle.
+pub fn jit_verify() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_JIT_VERIFY")
+}
+
+/// `BROOD_JIT_VERIFY_FN=<fn>`: the function whose JIT'd calls log each staged arg's type.
+pub fn jit_verify_function() -> Option<&'static str> {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| std::env::var("BROOD_JIT_VERIFY_FN").ok())
+        .as_deref()
+}
+
+/// `BROOD_NO_JIT_COMPUTED`: keep arms with a computed-head non-tail call on the VM.
+pub fn no_jit_computed() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_NO_JIT_COMPUTED")
+}
+
+/// The tree-walker routes VM-eligible callees back to the VM (ADR-318); `BROOD_NO_TW_REENTRY`
+/// opts out.
+pub fn tree_walker_reentry() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_TW_REENTRY")
+}
+
+/// `(get m k)` lowers to `PrimOp::MapGet` (ADR-296); `BROOD_NO_MAPGET` opts out.
+pub fn map_get_lowering() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_MAPGET")
+}
+
+/// `(assoc m k v)` lowers to `PrimOp3::MapAssoc` (ADR-368); `BROOD_NO_MAPASSOC` opts out.
+pub fn map_assoc_lowering() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_MAPASSOC")
+}
+
+/// The in-IR call-site fast link; `BROOD_NO_JIT_ICALL` opts out.
+pub fn jit_inline_call() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_JIT_ICALL")
+}
+
+/// The higher-order-function cached-arm fast path; `BROOD_NO_HOF` opts out.
+pub fn higher_order_fast_path() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_HOF")
+}
+
+/// The higher-order call's native fast frame; `BROOD_NO_HOF_JIT` opts out.
+pub fn higher_order_native() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_HOF_JIT")
+}
+
+/// The unboxed-scalar register worker; `BROOD_NO_I64` opts out.
+pub fn jit_scalar_worker() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_I64")
+}
+
+/// The JIT's per-slot i64 cache; `BROOD_NO_INT_SLOT_CACHE` opts out.
+pub fn int_slot_cache() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_INT_SLOT_CACHE")
+}
+
+/// The inline fast-frame call path in hot re-lowerings; `BROOD_NO_XCALL` opts out.
+pub fn inline_fast_frame() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_XCALL")
+}
+
+/// Lazy module loading (ADR-335); `BROOD_NO_LAZY_LOAD` pins the eager policy.
+pub fn lazy_load() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_LAZY_LOAD")
+}
+
+/// Signatures from the stdlib image (ADR-370); `BROOD_NO_IMAGE_SIGS` opts out.
+pub fn image_signatures() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !is_set(&OFF, "BROOD_NO_IMAGE_SIGS")
+}
+
+/// Print the catalogue, grouped, for `brood --debug-flags`.
 pub fn print_catalogue() {
     println!(
         "BROOD_* environment flags — all {} the runtime reads, triage groups first.",

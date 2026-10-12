@@ -132,26 +132,29 @@ pub(super) fn take_dep_keys(heap: &mut Heap) -> Value {
         .map(|&s| value::symbol_name(s).to_string())
         .collect();
     syms.sort_unstable();
-    let mut kns: Vec<String> = dep.known_ns.into_iter().collect();
-    kns.sort_unstable();
-    let mut exp: Vec<String> = dep.exports.into_iter().collect();
-    exp.sort_unstable();
+    let mut known_namespaces: Vec<String> = dep.known_ns.into_iter().collect();
+    known_namespaces.sort_unstable();
+    let mut exports: Vec<String> = dep.exports.into_iter().collect();
+    exports.sort_unstable();
 
-    let syms_v: Vec<Value> = syms.iter().map(|s| heap.alloc_string(s)).collect();
-    let syms_l = heap.list(syms_v);
-    let kns_v: Vec<Value> = kns.iter().map(|s| heap.alloc_string(s)).collect();
-    let kns_l = heap.list(kns_v);
-    let exp_v: Vec<Value> = exp.iter().map(|s| heap.alloc_string(s)).collect();
-    let exp_l = heap.list(exp_v);
+    let syms_list = string_list(heap, &syms);
+    let known_namespaces_list = string_list(heap, &known_namespaces);
+    let exports_list = string_list(heap, &exports);
     heap.map_from_pairs(vec![
-        (Value::keyword(value::intern(K_SYMS)), syms_l),
-        (Value::keyword(value::intern(K_KNS)), kns_l),
-        (Value::keyword(value::intern(K_EXP)), exp_l),
+        (Value::keyword(value::intern(K_SYMS)), syms_list),
+        (Value::keyword(value::intern(K_KNS)), known_namespaces_list),
+        (Value::keyword(value::intern(K_EXP)), exports_list),
         (
             Value::keyword(value::intern(K_PROTO)),
             Value::Bool(dep.protocols),
         ),
     ])
+}
+
+/// A Brood list of `strings`.
+fn string_list(heap: &mut Heap, strings: &[String]) -> Value {
+    let items: Vec<Value> = strings.iter().map(|s| heap.alloc_string(s)).collect();
+    heap.list(items)
 }
 
 /// Read a `:key`'d list-of-strings field from the dep-keys map.
@@ -205,8 +208,7 @@ fn fact_of_sym(heap: &Heap, sym: Symbol) -> String {
     };
     // The sig's PRINTED form, not `hash_value`: that hashes symbols by interned id, which
     // depends on interning order and so differs from process to process — `nest check`
-    // and `nest run` could never agree on a declared function's fact, and each rewrote
-    // the other's cache entries (2026-08-30).
+    // and `nest run` must agree on a declared function's fact.
     match heap.declared_sig_value(sym) {
         Some(v) => format!(
             "{base}|S{:016x}",

@@ -961,12 +961,12 @@ pub(in crate::builtins) fn gui_texture_free(
 /// when there's no audio device, or when muted (`BROOD_AUDIO=0` /
 /// `BROOD_GUI_HEADLESS`). Returns nil.
 pub(in crate::builtins) fn audio_beep(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let freq = num_to_f64(heap, "audio-beep", arg(args, 0))?;
-    let ms = num_to_f64(heap, "audio-beep", arg(args, 1))?;
+    let freq = num_to_f64(heap, "audio/beep", arg(args, 0))?;
+    let ms = num_to_f64(heap, "audio/beep", arg(args, 1))?;
     // Optional 3rd arg is peak amplitude; 0.0 (also the default) means "use the
     // backend's default volume".
     let vol = if args.len() >= 3 {
-        num_to_f64(heap, "audio-beep", arg(args, 2))? as f32
+        num_to_f64(heap, "audio/beep", arg(args, 2))? as f32
     } else {
         0.0
     };

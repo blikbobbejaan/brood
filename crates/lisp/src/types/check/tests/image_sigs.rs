@@ -295,17 +295,13 @@ fn a_defseq_definition_is_indexed() {
 #[test]
 fn a_type_variable_declaration_rides() {
     // `math/max` declares `(& ?A -> ?A)`. Its flat reading has an `any` return (`?A` parses
-    // to `any`), so the writer declined it and the checker loaded `math` for it — behind 47
-    // of 100 corpus checks (2026-09-20). A variable-bearing declaration is resolved per call
-    // from the arguments, which is the reading a call site takes FIRST for a declared name;
-    // the footer now carries it and `image_heap_sig_with_vars` reads it back.
+    // to `any`); a variable-bearing declaration is resolved per call from the arguments,
+    // so the footer must carry it for `image_heap_sig_with_vars` to read back.
     //
     // The VERDICT is not asserted here on purpose: an extremum has a by-name rule
     // (`is_extremum`) that answers `(math/max 1 2)` from its operands with no declaration
-    // at all, so a verdict on it passed with the footer fallback removed (sabotage,
-    // 2026-09-20) — and std declares no other variable-bearing signature. The call-site
-    // reader is gated in its own process by `tests/image_sig_type_variables.rs`, which
-    // plants a footer entry no rule knows.
+    // at all, so a verdict on it would pass with the footer fallback removed. The call-site
+    // reader is gated in its own process by `tests/image_sig_type_variables.rs`.
     let interp = interp_with_image();
     let sym = value::intern("math/max");
     assert!(
@@ -361,10 +357,8 @@ fn a_curated_name_reads_the_same_loaded_or_not() {
         );
         // A call site reads an OVERLOAD (`declared_heap_overload`) and a type-variable
         // declaration (`declared_heap_sig_with_vars`) ahead of `sig_of`, and neither goes
-        // through `as_arrow`, so `sig_of` agreeing proves nothing about them: the first
-        // shape of this gate passed with `math/pow` — a four-arm overload — curated
-        // (sabotage, 2026-09-20). Loaded, those readers must find nothing the footer does
-        // not also carry.
+        // through `as_arrow`, so `sig_of` agreeing proves nothing about them. Loaded, those
+        // readers must find nothing the footer does not also carry.
         assert!(
             sigs::declared_heap_overload(&interp.heap, *sym).is_none(),
             "{name}: curated AND declared as an overload — loaded, a call resolves per arm; \

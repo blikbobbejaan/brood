@@ -300,8 +300,8 @@ fn get_with_a_default_replaces_the_absence_nil_by_the_default_type() {
 fn an_inferred_return_sees_the_truthy_half_of_an_or_default() {
     // `(or E -1)` where E is `number | failure` yields `number | failure`: a failure is
     // TRUTHY, so `or` hands it back rather than silently defaulting it away. The inferred
-    // return (`expr_ty`, not the walk) used to union both branches of the expansion's `if`
-    // under the unnarrowed scope and report `nil | number`.
+    // return (`expr_ty`, not the walk) must narrow the expansion's `if`, not union both
+    // branches under the unnarrowed scope (`nil | number`).
     let interp = crate::Interp::new();
     let ret = |src: &str| {
         let mut heap = crate::core::heap::Heap::with_regions(

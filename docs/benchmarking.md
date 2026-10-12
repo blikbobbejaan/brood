@@ -28,19 +28,19 @@ engine (`set_forced_engine`, the `engine_grid!` macro), so size `N` is measured 
 *together*, so their ratio holds where the absolutes wander. The tree-walker is a
 stable in-process reference — you don't even need a baseline binary. (Divan sorts
 rows by label when printing, so `(Vm, N)` and `(Tw, N)` are not necessarily printed
-next to each other; `scripts/bench_ratio.py` pairs them by `(bench, size)`. What
+next to each other; `scripts/bench-ratio.awk` pairs them by `(bench, size)`. What
 matters is one process, not one screen line.)
 
 The grid is built from `Tier::ALL` and the labels come from `Tier::short()`
 (`eval/compile.rs`), so a new tier gets rows in every eval bench and a column in
-`bench_ratio.py` without either being edited. `Tw` stays the reference — it is the stable
+`bench-ratio.awk` without either being edited. `Tw` stays the reference — it is the stable
 baseline the method rests on, not a tier under test.
 
 Since ADR-222 there are **three** rows per size, not two: `Jit` (ceiling 2), `Vm` (ceiling 1 —
 the VM with native tiering off) and `Tw` (ceiling 0). The middle one is the addition, and it is
 the useful one for JIT work: `Jit`÷`Vm` per row is exactly the JIT-vs-no-JIT ratio the frontier
 docs quote (`fib` 54×, `collatz` 40×, and `nbody`'s 3.2× is what exposed a silently bailing arm),
-which previously had to be produced by hand with `BROOD_NO_JIT`.
+which previously had to be produced by hand with `BROOD_TIER=1`.
 
 ```bash
 scripts/bench-ratio.sh                 # the whole eval grid, VM/TW per workload
@@ -232,15 +232,80 @@ fixing one without the other fails in a way that looks like a different problem:
 
    ```sh
    make perf-symbols               # same flags as release-brood, but unstripped + debug=1
-   perf record --call-graph dwarf -- target/release-fast/brood bench.blsp
+   perf record --call-graph dwarf -- target/release-symbols/brood bench.blsp
    perf report --no-children       # self time — what the frontier tables quote
    ```
 
-**`make perf-symbols` overwrites the timing binary**, exactly as `make perf-brood` does — same
-path, same trap. Re-run `make release-brood` before timing anything, or you time a build with
-debug info and no strip and charge your change for it. `file target/release-fast/brood` says
-`stripped` / `not stripped` if you are unsure which one you have.
+`make perf-symbols` and `make perf-brood` build into their own profiles
+(`target/release-symbols/`, `target/release-perf/`), so neither overwrites the timing binary
+`target/release-fast/brood`.
 
 Why the same flags matter: `perf-symbols` keeps `PERF_RUSTFLAGS` (`debug-assertions=off`,
 `overflow-checks=off`) and `RUN_FEATURES`, so it profiles the binary `make ab` measures. A profile
 of a differently-built binary answers a question nobody asked.
+
+## 6. Measuring a change with `make ab` — the rules, and the runs that taught them
+
+These were the `Commands` section of `CLAUDE.md` until 2026-10-09; `CLAUDE.md` now keeps only
+the one-line rules and points here.
+
+**`make ab` (`scripts/ab-bench.sh`), never a hand-rolled A/B.** It builds the baseline ref in a
+throwaway worktree and the working tree through the *same* `make release-brood` target (so
+profile and features cannot drift), warms each binary's build-id-keyed boot cache, pins with
+`taskset`, and reports best-of-N per row against `../brood-benchmarks/bench/brood/*.blsp`. It
+aborts if the two binaries are byte-identical — what a silently no-op'd build looks like.
+`make ab BASE=HEAD~3`, `make ab N=11 ROWS="fib pfib"`, `./scripts/ab-bench.sh --all` for the
+regression sweep, `--list` for the row names, `--json <path>` for machine-readable rows,
+`make ab-clean` to drop the worktrees. It measures brood against brood; the published
+cross-language numbers come from `bench/harness.py` in `brood-benchmarks`.
+
+**`--floor` for any row that moves a few percent.** It runs the baseline twice and reports the
+row's own base-vs-base spread; the verdict calls a regression only past `max(5%, 2 × floor)`.
+
+**Gate at the tier the change runs on — `make ab-vm` (ceiling 1) for anything on the VM's call
+path.** At the default ceiling a hot arm is native and `exec_chunk`/`dispatch`/`vm_run_bc` never
+execute, so a cost added there reads flat: KI-40 was a 3.19× regression `make ab` reported as
++1.3%. Run `make doctor` first — a stale binary fails by agreeing with the baseline.
+
+**A sweep's few-percent row deserves a solo re-run; a drifting row needs a fixed baseline.**
+Interleaving A and B shifts thermal/cache state (`persistent-map` read +3.7% in a sweep, 82 vs
+81 ms directly). Some rows drift between whole invocations: `pingpong`'s baseline wandered
+209 → 230 ms across one day, so a "+5.3% solo confirmation" was measuring drift twice. Keep the
+`target/ab/<sha>/…/brood` binary (or use `make ab-pin`), run `taskset`-pinned best-of-15 for
+base, base again, then new, and read base-vs-base as the floor — that change measured +0.9%
+against a +0.5% floor. Do not report a regression within a couple of multiples of an unmeasured
+floor.
+
+**Pinned rows charge the benchmark for background JIT compilation.** `make ab` pins compute
+rows to one core, so the compiler thread competes with the benchmark. Right for generated-code
+quality, wrong for a change that alters *how much* gets compiled: ADR-175's shared code tiered
+more prelude arms (18 lowered vs 7), read `collatz` +8% pinned and zero unpinned. Re-run such a
+row unpinned; `BROOD_JIT_DUMP_IR=1 … | grep -c '^\[jit-ir\]'` counts the compiles.
+
+**Measure both a short and a long run.** A tiered runtime has two steady states: thousands of
+calls (interpreted / not yet tiered — what a `nest check`, a script or a fresh request handler
+pays) and millions (fully tiered, including the deferred inlined upgrade). Sweep the call count
+across two orders of magnitude and check whether the *gap between the arms* moves. Cross-check
+with `BROOD_JIT_DUMP_IR=1` (did it lower?) and `BROOD_JIT_BAIL_TRACE=1` (was it refused?); a
+bailed arm never reaches the IR dump, so absence there is the signal. Relatedly, timing whole
+`brood` invocations in a shell loop only ever measures the cold path (a JSON round-trip: round 1
+~300 ms, warm ~224 ms) — time rounds inside one process to see both.
+
+**Count the calls before optimising anything.** A code reading is evidence about what a
+function does, never about how often it runs. `compute-frontier.md` §7.8's top-ranked item was
+implemented, measured flat on every row, and reverted: a five-line probe showed the function ran
+21 times on `fib` against billions of activations. A `static AtomicUsize` and an `eprintln!` at
+the call site, one run, then decide.
+
+**Attribution: `make perf-brood`, then `(perf/summary)`.** `perf/report` gives a map,
+`(perf/measure thunk)` a window narrower than the process — the counters are cumulative from
+start and boot is expansion-heavy (the same program read an 84% tree-walker defer rate on a cold
+boot cache and 0.8% warm). `(vm-stats-reset)` is the primitive underneath. `perf/report` never
+concludes `:alloc-bound` (a native arm's iterations stop being counted while its allocations do
+not) and refuses to judge a rate resting on under 1000 samples.
+
+**A published benchmark run installs the LEAN build**: `make install
+INSTALL_FEATURES='$(RUN_FEATURES)'`. The harness runs whatever `brood` is on `PATH`, and
+`RUN_FEATURES` is what `make ab` measures and `nest release` embeds — one build for all three.
+(Lean and dev-tools startup measured identical, 10 ms / 18.8 MB: the DEV_MODULES load on demand.)
+Reinstall with plain `make install` to get `nest test`/`repl` back.

@@ -549,8 +549,8 @@ fn encode_msg_inner(w: &mut Vec<u8>, m: &Message) -> io::Result<()> {
             w.push(M_STR);
             put_str(w, s);
         }
-        // Shared blobs cannot cross a runtime boundary — separate runtimes
-        // have independent `Arc<BlobHeap>` lifetimes. Encode the bytes inline
+        // Shared blobs cannot cross a runtime boundary — a handle means
+        // nothing to another runtime. Encode the bytes inline
         // as a plain string; the receiver's `from_message` re-routes through
         // `alloc_string`, so anything still at-or-above
         // `SHARED_BLOB_THRESHOLD` rebecomes Shared on the destination side

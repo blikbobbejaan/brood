@@ -1,6 +1,6 @@
 ;; Cross-language differential: run a seeded table op sequence and print a
-;; digest. stress/table_oracle.py runs the IDENTICAL sequence against a python
-;; dict; run.sh compares the two outputs. Idempotent ops only (see xfail note).
+;; digest. stress/table_oracle.sh runs the IDENTICAL sequence against a bash
+;; associative array; run.sh compares the two outputs. Idempotent ops only (see xfail note).
 (def t (table/new))
 (defn lcg (s) (math/rem (+ (* s 1103515245) 12345) 2147483648))
 (defn one (s)

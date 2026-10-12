@@ -1,10 +1,10 @@
-//! The walk survives what a program can throw at it: pathologically deep forms, the 2026-08-30 audit's recursion shapes, depth-capped bodies.
+//! The walk survives what a program can throw at it: pathologically deep forms, deep recursion shapes, depth-capped bodies.
 
 use super::*;
 
 #[test]
 fn checker_survives_pathologically_deep_forms() {
-    // Host-panic hardening (2026-07-23): a deeply-nested-but-legal form —
+    // Host-panic hardening: a deeply-nested-but-legal form —
     // the same class as the kernel's 60k-deep-value tests — must be
     // *checked*, not blow the checker's native stack. check_into grows the
     // stack in heap-backed segments (stacker), so this returns normally.
@@ -33,8 +33,8 @@ fn checker_survives_pathologically_deep_forms() {
     let _ = check_file(&mut interp.heap, &[top]);
 }
 
-// The 2026-08-30 audit's four shapes, each a recursion that ran INSIDE `expr_ty`'s
-// 1 MB segment (or beside it) with no growth of its own. One test per shape so a
+// Four recursion shapes that run INSIDE `expr_ty`'s 1 MB stack segment (or beside it)
+// and must grow the stack themselves. One test per shape so a
 // regression names itself. The two chains `expr_ty` re-asks at every level are 8k
 // deep (a chain of n is O(n²) there) — still several segments' worth of frames when
 // the wrap is removed; the other two are the kernel's 30k.
@@ -93,11 +93,10 @@ fn checker_survives_a_deep_negated_guard() {
 
 #[test]
 fn a_depth_capped_body_walk_is_not_memoized_as_the_callees_signature() {
-    // `g`'s inferred signature used to be whatever `expr_ty` answered the FIRST time
-    // anyone asked — and asked from deep inside another walk, the depth cap tripped
-    // inside `g`'s body, `g` read `(string -> any)`, and that was memoized for the rest
-    // of the file: the misuse below went unreported whenever a deep enough form came
-    // first. A callee's body is a fresh question (`infer::with_fresh_depth`).
+    // `g`'s inferred signature must not be whatever `expr_ty` answered the FIRST time
+    // anyone asked: asked from deep inside another walk, the depth cap trips inside `g`'s
+    // body, `g` reads `(string -> any)`, and memoizing that hides the misuse below. A
+    // callee's body is a fresh question (`infer::with_fresh_depth`).
     let mut interp = crate::Interp::new();
     // A body Tier-2 inference has to WALK (a single direct call would be read off the
     // callee's signature without `expr_ty`, and never meet the cap), with a rest
@@ -121,7 +120,7 @@ fn a_depth_capped_body_walk_is_not_memoized_as_the_callees_signature() {
             let t1 = interp.heap.alloc_pair(Value::Bool(true), t2);
             form = interp.heap.alloc_pair(if_sym, t1);
         }
-        // `(def dN <chain>)`: Pass 2.7 types every `def`'s right-hand side, which is
+        // `(def dN <chain>)`: global value inference types every `def`'s right-hand side, which is
         // what carries the ask down to `(g "a")` — a bare top-level form is walked, not
         // typed from the outside in.
         let name = Value::Sym(crate::core::value::intern(&format!("d{depth}")));
@@ -144,5 +143,38 @@ fn a_depth_capped_body_walk_is_not_memoized_as_the_callees_signature() {
         ws.iter()
             .any(|w| w.contains("string/length") && w.contains("int")),
         "g's int return must survive a depth-capped first ask: {ws:?}"
+    );
+}
+
+#[test]
+fn a_caller_derived_recursive_parameter_does_not_hang_the_check() {
+    // `object`'s parameter is derived from its callers: `data`'s JSON-ish return, and a
+    // reply whose error records carry that return as `data`. The derivation folds the two
+    // into `μX. … | {error: … | {code: 2, data: X}}`, and asking `(map? value)` of it
+    // never returned — the relation re-unrolled the type to canonicalise its own
+    // unrolling. Whole-file, as `nest check` runs it; asserted on the unrolling budget
+    // (which bounds the relation even then) never being reached, not on time.
+    let before = crate::types::rec_budget_exhaustions();
+    let ws = file_warnings(
+        r#"
+(sig data (any -> (or string (map string any))))
+(defn data (v) v)
+(defn reply (line)
+  (cond (= line "a") {:error {:code 1 :data (str line)}}
+    (= line "b") {:error {:code line}}
+    else {:error {:code 2 :data (data line)}}))
+(defn object (value) (if (map? value) value (error "no")))
+(defn use-data (x) (object (data x)))
+(defn use-reply (x) (object (reply x)))
+"#,
+    );
+    assert!(
+        ws.iter().all(|w| !w.starts_with("checker gave up:")),
+        "{ws:?}"
+    );
+    let exhausted = crate::types::rec_budget_exhaustions() - before;
+    assert_eq!(
+        exhausted, 0,
+        "the unrolling budget cut {exhausted} relations short"
     );
 }

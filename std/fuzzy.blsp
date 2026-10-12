@@ -556,3 +556,69 @@ is dropped with the mailbox.
     (let (r (fuzzy/ranker [\"a\"]) m (monitor r)) (fuzzy/ranker-stop r) (receive ([:down ^m _ reason] reason)))   → :normal"
   (send session [:stop]))
 (sig ranker-stop (pid -> any))
+
+;; ---- nearest names: "did you mean" ------------------------------------------
+;; Not the subsequence matcher above: a typo drops, doubles or swaps a character, which a
+;; subsequence test misses, so this ranks by edit distance. Tooling that answers an unbound
+;; name with a suggestion asks here, so every surface suggests the same names.
+
+(defn- edit-row (previous-row character other-characters row-index)
+  "One row of the Levenshtein table: the cost of turning the first `row-index + 1`
+characters of one string into each prefix of `other-characters` (a vector)."
+  (let (width (count other-characters))
+    (letrec (go (fn (column left row)
+                  (if (= column width)
+                    row
+                    (let (cost (if (= character (nth other-characters column)) 0 1)
+                          cell (math/min (+ (nth previous-row (+ column 1) 0) 1)
+                                 (+ left 1)
+                                 (+ (nth previous-row column 0) cost)))
+                      (go (+ column 1) cell (conj row cell))))))
+      (go 0 (+ row-index 1) [(+ row-index 1)]))))
+
+(defn- characters-distance (characters other-characters)
+  "The edit distance between two codepoint lists — one immutable row per character of
+`characters`, O(n·m) time."
+  (let (others (vec other-characters)
+        first-row (vec (range 0 (+ (count others) 1))))
+    (letrec (go (fn (remaining row-index row)
+                  (if (empty? remaining)
+                    (nth row (count others) 0)
+                    (go (rest remaining)
+                      (+ row-index 1)
+                      (edit-row row (first remaining) others row-index)))))
+      (go characters 0 first-row))))
+
+(defn edit-distance (a b)
+  "The Levenshtein distance between `a` and `b`: the fewest single-character insertions,
+deletions and substitutions turning one into the other, counted in codepoints.
+
+    (fuzzy/edit-distance \"kitten\" \"sitting\")   → 3
+    (fuzzy/edit-distance \"reduc\" \"reduce\")   → 1
+    (fuzzy/edit-distance \"\" \"abc\")   → 3"
+  (characters-distance (string/->list a) (string/->list b)))
+(sig edit-distance (string string -> int))
+
+(defn nearest (name candidates)
+  "The \"did you mean\" for `name`: at most three of `candidates` within edit distance
+`max(1, length/3)` of it, nearest first, ties alphabetical. `name` itself and duplicates
+are never offered, and the threshold grows with the name, so a short unrelated candidate
+(`x` for `frobnicate`) is not.
+
+    (fuzzy/nearest \"reduc\" [\"reduce\" \"reduced\" \"map\"])   → (\"reduce\")
+    (fuzzy/nearest \"cat\" [\"cot\" \"bat\" \"cat\" \"cab\" \"bat\"])   → (\"bat\" \"cab\" \"cot\")
+    (fuzzy/nearest \"zzqqxx\" [\"reduce\" \"map\"])   → ()"
+  (let (characters (string/->list name)
+        length (count characters)
+        limit (math/max 1 (math/quot length 3))
+        scored (fold (into #{} candidates)
+                 '()
+                 (fn (acc candidate)
+                   (let (candidate-characters (string/->list candidate))
+                     (if (or (= candidate name)
+                           (> (math/abs (- (count candidate-characters) length)) limit))
+                       acc
+                       (let (distance (characters-distance characters candidate-characters))
+                         (if (> distance limit) acc (cons [distance candidate] acc))))))))
+    (map (take (sort scored) 3) second)))
+(sig nearest (string seqable -> list))

@@ -4,7 +4,7 @@
 ;; code); it now takes the same compile→VM path the file loader uses, falling back to the
 ;; tree-walker per-form for anything outside the VM's vocabulary. A miscompile here fails
 ;; SILENTLY (a wrong value, not an error), so this file pins RESULTS across the tricky
-;; shapes deferred.md named — and the whole suite also runs under `BROOD_VM=0`, so these
+;; shapes deferred.md named — and the whole suite also runs under `BROOD_TIER=0`, so these
 ;; double as a compiled-vs-tree-walked differential.
 (defmodule eval-vm-test (:use test))
 

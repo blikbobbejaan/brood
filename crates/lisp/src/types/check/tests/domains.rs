@@ -194,9 +194,9 @@ fn a_same_file_callback_is_checked_from_its_inferred_signature() {
 
 #[test]
 fn a_stdlib_callback_is_held_to_the_elements_it_is_handed() {
-    // `map`'s curated arrow is `(any) -> any`, disjoint from nothing — so this read as
-    // silent until 2026-10-03, when a named callback began to be held to the ELEMENT seed
-    // (`callback_shapes`): `string/length` over ints raises, and now says so. A callback
+    // `map`'s curated arrow is `(any) -> any`, disjoint from nothing — so a named callback
+    // is held to the ELEMENT seed instead (`callback_shapes`): `string/length` over ints
+    // raises, and says so. A callback
     // that takes what it is handed stays silent.
     let ws = file_warnings("(defn c () (map [1 2 3] string/length))");
     assert!(
@@ -218,11 +218,8 @@ fn the_domain_walk_survives_a_pathologically_deep_body() {
     // walk a function's BODY: a body this deep can only arrive by construction (the
     // reader caps nesting at 256), which is exactly what a macro expansion can produce.
     // The property under test is "returns instead of crashing the host".
-    //
-    // It found one on its first run, and not in the pass it was written for: the
-    // non-tail-recursion lint's `walk` recursed unguarded, so a deep body inside a
-    // `(def n (fn …))` aborted the process — the 2026-07-23 host-panic pass hardened
-    // that lint's entry point and not the recursion that descends the body.
+    // That includes the non-tail-recursion lint's `walk`, which descends a deep body
+    // inside a `(def n (fn …))` — guarding only a pass's entry point is not enough.
     let interp = crate::Interp::new();
     let mut heap =
         crate::core::heap::Heap::with_regions(interp.heap.prelude_arc(), interp.heap.runtime_arc());
@@ -235,7 +232,7 @@ fn the_domain_walk_survives_a_pathologically_deep_body() {
         let tail = heap.alloc_pair(body, Value::Nil);
         body = heap.alloc_pair(Value::Sym(identity), tail);
     }
-    // (def deep (fn (x) <body>)) — the shape Pass 2.8 infers a parameter domain from.
+    // (def deep (fn (x) <body>)) — the shape same-file inference infers a parameter domain from.
     let params = heap.alloc_pair(Value::Sym(x), Value::Nil);
     let fn_tail = heap.alloc_pair(body, Value::Nil);
     let fn_parts = heap.alloc_pair(params, fn_tail);
@@ -552,7 +549,7 @@ fn a_bare_local_test_narrows_by_truthiness() {
 // The inferencer a cross-module caller consults (`sig_of` over the loaded closure) had a
 // "Tier 1" ahead of the domain walk: a body that was one call to a primitive/curated callee
 // read its parameters off that call — direct parameter arguments only — and returned. So
-// `(defn v (s) (+ 1 (string/length s)))` inferred `(string)` in its own file (Pass 2.8
+// `(defn v (s) (+ 1 (string/length s)))` inferred `(string)` in its own file (same-file inference
 // never had the tier) and `(any)` from every other module, and the reversed call the
 // signature exists to catch was accepted in silence everywhere but at home. Verified by
 // sabotage: restoring the tier fails every case below.

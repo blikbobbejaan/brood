@@ -199,11 +199,11 @@ pub(crate) fn enqueue(mut proc: Box<Process>) {
     }
     proc.queued_at = now_nanos();
     set_status(&proc.mailbox, ST_RUNNABLE); // queued, awaiting a worker turn
-                                            // Count it as stealable runnable work (the `try_steal` fast-path hint). Balanced by
-                                            // the single decrement in `run_one` when it's pulled to run (by its owner or a thief).
-                                            // SeqCst (not Relaxed) so the dirty-block / drainer exhaustion checks reliably observe
-                                            // this newly-queued work in the same total order as their `LIVE_EXECUTORS` updates —
-                                            // the guarantee that work is never stranded with no live executor (see `dirty_block`).
+                                            // Count it as stealable runnable work (the `try_steal` fast-path hint), balanced by
+                                            // the single decrement in `run_one`. SeqCst so the dirty-block / drainer exhaustion
+                                            // checks see this work in the same total order as their `LIVE_EXECUTORS` updates (work
+                                            // is never stranded with no live executor — see `dirty_block`), and as the store half
+                                            // of the `wake_a_parked_peer` handshake.
     STEALABLE.fetch_add(1, Ordering::SeqCst);
     let (lock, cv) = &WORKERS[wid].0;
     crate::core::sync::lock(lock).push_back(proc);
@@ -238,34 +238,17 @@ pub(crate) fn enqueue(mut proc: Box<Process>) {
 /// **dirty** block — it reads busy (its `run_one` hasn't returned) and `assign_worker`
 /// excludes it, so the woken process is moved off it. (Preempt re-enqueue uses plain
 /// [`enqueue`] instead, to keep a hot process local.)
-/// `BROOD_NO_HANDOFF=1` disables the direct-handoff wake policy in [`wake_enqueue`]
-/// (reverts to waking the woken process's home worker). Cached — read once.
-fn handoff_disabled() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("BROOD_NO_HANDOFF").is_some())
-}
-
 pub(crate) fn wake_enqueue(mut proc: Box<Process>) {
-    // Direct handoff (BEAM-style, the message-passing latency win): when a *running
-    // worker* wakes a process — the overwhelmingly common case is a `send` that readies
-    // a parked receiver — enqueue it onto THIS worker's own run queue instead of waking
-    // the receiver's (parked) home worker. The dominant message shape is
-    // send-then-block (`(send q …)` immediately followed by `(receive …)`): running `q`
-    // next on the same worker turns a cross-thread futex wake + OS context switch (~2 per
-    // ping-pong round-trip, ~40% of wall in `sys`) into a userspace green-process switch.
-    // `notify_one` on our own cv is a no-op (we're running, not parked), and the worker
-    // loop drains its queue before parking, so `q` runs the moment our process yields.
-    // Work-stealing still rebalances a genuinely parallel fan-out (an idle peer steals),
-    // and reduction preemption bounds how long `q` waits if we DON'T block. The
-    // root/timer threads (no `CURRENT_WORKER`) fall through to the load-based path.
-    // `BROOD_NO_HANDOFF=1` opts out (the A/B / safety lever), reverting to the
-    // wake-the-home-worker policy.
-    if !handoff_disabled() {
-        if let Some(cur) = CURRENT_WORKER.with(|c| c.get()) {
-            proc.worker_id = cur;
-            enqueue(proc);
-            return;
-        }
+    // Direct handoff: when a *running worker* wakes a process — almost always a `send`
+    // readying a parked receiver — enqueue it onto THIS worker's queue, not the
+    // receiver's parked home worker. Send-then-block is the dominant shape, so running
+    // the receiver next here turns a cross-thread futex wake + context switch into a
+    // userspace switch. Stealing still rebalances a genuine fan-out, and preemption bounds
+    // the wait if we don't block. Root/timer threads (no `CURRENT_WORKER`) fall through.
+    if let Some(current) = CURRENT_WORKER.with(|c| c.get()) {
+        proc.worker_id = current;
+        enqueue(proc);
+        return;
     }
     if WORKER_BUSY[proc.worker_id].load(Ordering::Relaxed) {
         let new_wid = assign_worker();
@@ -278,18 +261,21 @@ pub(crate) fn wake_enqueue(mut proc: Box<Process>) {
 }
 
 /// Wake one parked worker so it can come and steal, skipping `wid` (the worker that just
-/// enqueued). Gated on `PARKED_COUNT` so a busy pool pays a single relaxed load and issues
-/// no syscall: if nobody is parked there is no one to tell, and the work will be picked up
-/// by whichever worker frees up first.
+/// enqueued). Gated on `PARKED_COUNT` so a busy pool pays a single load and issues no
+/// syscall: if nobody is parked there is no one to tell.
 ///
-/// **Called only from the spawn path**, deliberately. It was first wired into `enqueue`
-/// itself, which also carries the *direct-handoff* wake (`send` readying a receiver, run
-/// next on this very worker). That is the hot message path, and the handoff exists
-/// precisely to avoid a cross-thread wake: adding one back cost `pingpong` 1.6×, `ring`
-/// 2.2× and `supervisor` 4.9×. A send-woken receiver must stay where the handoff put it;
-/// only a freshly *spawned* child is a candidate for an idle peer.
+/// The gate is one side of a store-then-load handshake with a parking worker, which
+/// bumps `PARKED_COUNT` and then reads `STEALABLE`, while the spawn path bumps
+/// `STEALABLE` (in `enqueue`) and then reads `PARKED_COUNT` here. All four are SeqCst so
+/// at least one side sees the other: either this wake fires, or the parker sees the work
+/// and parks on the short `STEAL_BACKOFF` rather than the idle backoff.
+///
+/// **Called only from the spawn path**, deliberately: on `enqueue` it would also fire
+/// on the direct-handoff path (`send` readying a receiver run next on this worker), which
+/// exists precisely to avoid a cross-thread wake — that cost `pingpong` 1.6× and
+/// `supervisor` 4.9×. Only a freshly *spawned* child is a candidate for an idle peer.
 pub(crate) fn wake_a_parked_peer(wid: usize) {
-    if steal_wake_disabled() || PARKED_COUNT.load(Ordering::Relaxed) == 0 {
+    if PARKED_COUNT.load(Ordering::SeqCst) == 0 {
         return;
     }
     let n = WORKERS.len();
@@ -308,25 +294,6 @@ pub(crate) fn wake_a_parked_peer(wid: usize) {
             return;
         }
     }
-}
-
-/// `BROOD_NO_STEAL_WAKE=1` disables the spawn-time peer wake, leaving idle workers to
-/// discover stealable work on their own `STEAL_BACKOFF` re-probe (the pre-2026-08-02
-/// behaviour). The A/B lever for attributing a latency or throughput change to the wake
-/// itself rather than to the first-refusal grace. Read once.
-fn steal_wake_disabled() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("BROOD_NO_STEAL_WAKE").is_some())
-}
-
-/// `BROOD_NO_IDLE_BACKOFF=1` pins a parked worker's backstop at `STEAL_BACKOFF` even when
-/// the pool is provably empty — the pre-2026-09-09 behaviour, where an idle runtime woke
-/// every worker 100×/s forever and cost 6-8% of a core doing nothing. The A/B lever for
-/// attributing a latency change to the backoff, the bisect switch, and the stopgap if a
-/// long park is ever implicated in a missed wake. Read once.
-fn idle_backoff_disabled() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("BROOD_NO_IDLE_BACKOFF").is_some())
 }
 
 /// Steal one queued process from a backed-up peer's queue, re-assigning it to
@@ -635,8 +602,8 @@ pub(crate) fn ensure_workers() {
 /// How long to park this time. Split out of the worker loop so the policy is testable
 /// without a scheduler: the loop supplies the two facts, this decides.
 ///
-/// `pool_empty` is `STEALABLE == 0` with both opt-outs clear — nothing is queued on any
-/// worker, so the re-probe this timeout exists to trigger has nothing to find.
+/// `pool_empty` is `STEALABLE == 0` — nothing is queued on any worker, so the re-probe
+/// this timeout exists to trigger has nothing to find.
 fn park_wait(pool_empty: bool, idle_backoff: std::time::Duration) -> std::time::Duration {
     if pool_empty {
         idle_backoff
@@ -707,23 +674,22 @@ fn worker_loop(wid: usize) {
             // A full find-nothing cycle: own queue empty, steal empty, nothing deferred.
             // Feeds the stranded-work detector above; healthy runs reset it in `run_one`.
             stranded_probe(wid);
-            // Publish that we are parked BEFORE releasing the queue lock in `wait_timeout`,
-            // so an enqueuer that takes the lock after us is guaranteed to see the flag and
-            // send the wake. Clearing it after we wake keeps the count honest.
+            // Advertise the park to `wake_a_parked_peer` (the spawn path's peer wake, which
+            // never takes our queue lock). The `PARKED_COUNT` bump and the `STEALABLE` read
+            // below are this side of its SeqCst store-then-load handshake: a spawner either
+            // sees us parked and wakes us, or we see its work here and keep the short
+            // backstop. The flag's Relaxed store is published by the SeqCst bump after it.
+            // An enqueue onto OUR queue needs neither — it takes this lock and notifies.
             WORKER_PARKED[wid].store(true, Ordering::Relaxed);
-            PARKED_COUNT.fetch_add(1, Ordering::Relaxed);
+            PARKED_COUNT.fetch_add(1, Ordering::SeqCst);
             // Nothing queued anywhere: a re-probe has nothing to find, so the only thing a
             // short timeout buys is the wake. Back off toward `IDLE_BACKOFF_MAX` while that
-            // stays true. With work queued somewhere — or with the spawn-time peer wake
-            // disabled, which is what leaves discovery to this timeout — hold the original
-            // `STEAL_BACKOFF` cadence, so the loaded scheduler is bit-for-bit unchanged.
-            let pool_empty = STEALABLE.load(Ordering::SeqCst) == 0
-                && !steal_wake_disabled()
-                && !idle_backoff_disabled();
+            // stays true; with work queued somewhere hold the `STEAL_BACKOFF` cadence.
+            let pool_empty = STEALABLE.load(Ordering::SeqCst) == 0;
             let _ = cv.wait_timeout(q, park_wait(pool_empty, idle_backoff));
             idle_backoff = next_backoff(pool_empty, idle_backoff);
             WORKER_PARKED[wid].store(false, Ordering::Relaxed);
-            PARKED_COUNT.fetch_sub(1, Ordering::Relaxed);
+            PARKED_COUNT.fetch_sub(1, Ordering::SeqCst);
         }
     }
 }

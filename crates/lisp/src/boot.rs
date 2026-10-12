@@ -1,10 +1,9 @@
 //! **Boot**: how a runtime comes to hold the prelude — the shared code region every
 //! process reads and the global bindings that seed each one. Built once per OS process,
-//! lazily, by whichever of three paths applies (fastest first): the **prelude image**
-//! (ADR-314), the expanded-prelude **text cache** (ADR-138), or the full **source boot**
-//! (read + expand + eval + freeze), which also writes the two artifacts for next time.
-//! [`boot_source`] says which path THIS process took; the `Interp` in `lib.rs` only
-//! seeds itself from [`SHARED`].
+//! lazily, by one of two paths: the **prelude image** (ADR-314), which materialises the
+//! prelude's bindings from disk, or the full **source boot** (read + expand + eval +
+//! freeze), which also writes the image for next time. [`boot_source`] says which path
+//! THIS process took; the `Interp` in `lib.rs` only seeds itself from [`SHARED`].
 
 use std::sync::{Arc, LazyLock};
 
@@ -32,23 +31,17 @@ pub(crate) struct SharedBundle {
 }
 
 pub(crate) static SHARED: LazyLock<SharedBundle> = LazyLock::new(|| {
-    // Two boot paths (2026-09-12; there were three until the ADR-138 expanded-prelude TEXT
-    // cache was deleted). The prelude image (ADR-314) materialises the prelude's bindings
-    // structurally from `~/.cache/brood/prelude-expanded-<build-id-hash>.img`; any miss —
-    // no file, a different build, a torn or undecodable artifact — falls through to the
-    // full source boot, which rewrites the image. A bad artifact therefore costs a slower
-    // boot and never a wrong one.
+    // The prelude image (ADR-314) materialises the prelude's bindings structurally from
+    // `~/.cache/brood/prelude-expanded-<build-id-hash>.img`; any miss — no file, a
+    // different build, a torn or undecodable artifact, a failed replay — falls through to
+    // the full source boot, which rewrites the image. A bad artifact therefore costs a
+    // slower boot and never a wrong one. `BROOD_NO_PRELUDE_IMAGE=1` neither reads nor
+    // writes it.
     //
-    // `BROOD_NO_PRELUDE_IMAGE=1` is the ONE knob: neither read nor written. (It used to
-    // sit beside `BROOD_NO_BOOT_CACHE`, and the two meant different subsets of a
-    // three-artifact chain; with one artifact there is one switch.)
-    //
-    // The image shipped default-on twice before and was reverted the same day both times
-    // (KI-105, KI-106), each on a fact the evaluation RECORDS rather than binds. Both are
-    // fixed with sabotage-verified guards and the boot differential
-    // (`prelude_image_matches_source.rs`) compares image against source. The gensym floor
-    // is now such a fact carried IN the image header — it used to be read from the text
-    // cache's header, which is the coupling that made the text cache impossible to delete.
+    // The trap is a fact the evaluation RECORDS rather than binds (KI-105, KI-106): the
+    // image restores bindings only, so every such fact (the gensym floor, the registry
+    // set, …) is carried explicitly, and `prelude_image_matches_source.rs` compares image
+    // against source.
     if std::env::var_os("BROOD_NO_PRELUDE_IMAGE").is_none() {
         if let Some(bundle) = boot_from_prelude_image() {
             set_boot_source(BOOT_PRELUDE_IMAGE);
@@ -62,21 +55,11 @@ pub(crate) static SHARED: LazyLock<SharedBundle> = LazyLock::new(|| {
 /// **The install's own bookkeeping** — globals that record which artifacts *this process*
 /// loaded, rather than anything a module or the prelude defines.
 ///
-/// They differ between an imaged and a source boot **by design**: that is the whole content
-/// of these names, and item 2 of this area's cleanup made one of them (`%boot-source`) more
-/// visible rather than less. A boot differential must therefore skip them, and the reason it
-/// skips them matters: *because of what they are*, not because the arms disagree about them.
-/// Excluding a global because two arms disagree is excluding the evidence — that is how
-/// ADR-314's prelude differential passed with the bug in its own exclusion list, and how
-/// `*std-image-installed*` sat in this set for a day while being exactly what it hid.
-///
-/// The facts these carry are asserted elsewhere, positively: `%boot-source` and the suite
-/// summary line say which artifacts a run used, and `stdimage_reporting.rs` drives all three
-/// states end to end. So they are covered, just not by equality.
-///
-/// One definition, in the runtime, because the tests that need it live in three different
-/// crates and a per-crate copy is the "fixed in one file, left in two" failure this repo
-/// already keeps a shared harness to avoid.
+/// They differ between an imaged and a source boot **by design**, so a boot differential
+/// skips them — *because of what they are*, never merely because two arms disagree about
+/// them (excluding a disagreement is excluding the evidence). The facts they carry are
+/// asserted positively elsewhere: `%boot-source`, the suite summary line, and
+/// `stdimage_reporting.rs`. One definition here because tests in three crates need it.
 pub const INSTALL_BOOKKEEPING: &[&str] = &[
     "*image-sources*",
     "*image-path*",
@@ -92,15 +75,9 @@ pub const INSTALL_BOOKKEEPING: &[&str] = &[
 /// Which of the two boot paths actually ran, as an atomic so it can be read after the
 /// fact from anywhere without threading it through the bundle.
 ///
-/// **This exists because "was that run imaged?" had no answer, and guessing it wrong is the
-/// single most expensive habit in this area.** Every rebuild changes `build-id`, so the
-/// FIRST run after any build is a source boot and every run after it is not — which means a
-/// developer verifying an image fix sees the un-imaged path exactly when they are least
-/// expecting it. That has now corrupted the diagnosis of an image bug repeatedly: ADR-314
-/// records it happening to a session already caught by it twice, and three separate "it is
-/// fixed" readings during KI-106 were cold boots. `BROOD_BOOT_TRACE=1` could always show it,
-/// but only to someone who armed it BEFORE the run and already suspected the answer. A fact
-/// you must predict in order to observe is not a diagnostic.
+/// It answers "was that run imaged?" after the fact: every rebuild changes `build-id`, so
+/// the FIRST run after any build is a source boot and every later one is not, and a
+/// developer verifying an image fix sees the un-imaged path exactly when least expecting it.
 // 0 is "not yet decided" — the shared prelude is built lazily, so a reader that beats it
 // gets `unknown` rather than a plausible-looking lie.
 static BOOT_SOURCE_KIND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -146,9 +123,6 @@ fn prelude_image_path() -> Option<std::path::PathBuf> {
 /// Bounded by COUNT and not only by age, for the reason the stdlib image's `prune` records:
 /// on a machine that is editing the standard library — the only kind that writes these —
 /// every rebuild mints a new file and nothing is ever old enough for an age rule to catch.
-/// One artifact per build now; this used to prune a `.blsp`/`.img` PAIR by shared stem and
-/// once dropped the text half while keeping the image (boot.rs history), a hazard that
-/// disappeared with the second artifact.
 fn prelude_image_prune(dir: &std::path::Path, keep: &std::path::Path) {
     const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
     const MAX_KEEP: usize = 16;
@@ -156,110 +130,104 @@ fn prelude_image_prune(dir: &std::path::Path, keep: &std::path::Path) {
         return;
     };
     let mut others: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
-    for e in entries.flatten() {
-        let p = e.path();
-        let name = e.file_name();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("prelude-expanded-") && name.ends_with(".img")) || p == keep {
+        if !(name.starts_with("prelude-expanded-") && name.ends_with(".img")) || path == keep {
             continue;
         }
-        match e.metadata().and_then(|m| m.modified()) {
-            Ok(modified) => others.push((modified, p)),
+        match entry.metadata().and_then(|metadata| metadata.modified()) {
+            Ok(modified) => others.push((modified, path)),
             // Unreadable metadata: not worth keeping around.
             Err(_) => {
-                let _ = std::fs::remove_file(&p);
+                let _ = std::fs::remove_file(&path);
             }
         }
     }
-    others.sort_unstable_by_key(|a| std::cmp::Reverse(a.0));
-    for (i, (modified, p)) in others.iter().enumerate() {
+    others.sort_unstable_by_key(|other| std::cmp::Reverse(other.0));
+    for (rank, (modified, path)) in others.iter().enumerate() {
         let stale = modified.elapsed().ok().is_some_and(|age| age > MAX_AGE);
-        if i >= MAX_KEEP || stale {
-            let _ = std::fs::remove_file(p);
+        if rank >= MAX_KEEP || stale {
+            let _ = std::fs::remove_file(path);
         }
     }
 }
 
+/// Run the prelude's `(%std-image-reinstall!)` in the builder heap, returning its result
+/// (the installed section count). `None` if reading or evaluating it fails — the imaged
+/// boot then falls back to the source boot rather than continue without the replay, which
+/// would leave a stale stdlib section directory installed (KI-105).
+fn replay_std_image_install(heap: &mut Heap, root: core::value::EnvId) -> Option<Value> {
+    let forms = syntax::reader::read_all(heap, "(%std-image-reinstall!)").ok()?;
+    let mut sections = Value::Nil;
+    for form in forms {
+        sections = eval::eval(heap, form, root).ok()?;
+    }
+    Some(sections)
+}
+
 /// Boot the shared bundle by **materialising** the prelude's bindings (ADR-314) rather
 /// than reading and evaluating its forms. `None` for any miss — absent, stale, truncated,
-/// or a value that will not decode — and the caller falls back to the text cache.
+/// a value that will not decode, or a failed install replay — and the caller falls back to
+/// the source boot.
 ///
-/// The tail is identical to the other two paths: a builder heap with the natives
-/// registered, the bindings installed, then `freeze_as_shared_code`. Only *how the
-/// bindings arrive* differs, which is what keeps the three paths interchangeable.
+/// The tail is identical to the source boot: a builder heap with the natives registered,
+/// the bindings installed, then `freeze_as_shared_code`. Only *how the bindings arrive*
+/// differs, which is what keeps the two paths interchangeable.
 fn boot_from_prelude_image() -> Option<SharedBundle> {
     // Stand aside under coverage, exactly as the stdlib image does (ADR-281): coverage
     // instruments the COMPILER, and a materialised binding is never compiled, so an imaged
-    // prelude would report as uninstrumented and — worse — take the attribution machinery
-    // down a path the source boot never takes. The text cache still evaluates real forms,
-    // so falling through to it keeps coverage honest.
+    // prelude would report as uninstrumented. The source boot evaluates real forms.
     if std::env::var_os("BROOD_COVERAGE").is_some() {
         return None;
     }
-    let t_start = web_time::Instant::now();
+    let started = web_time::Instant::now();
     let path = prelude_image_path()?;
     let mut heap = Heap::new();
     let root = heap.new_env(None);
     heap.set_global(root);
     builtins::register(&mut heap, root);
-    let t_register = t_start.elapsed();
-    // Parity with the text path: materialise the on-disk prelude copy the def sites name,
-    // so stdlib `M-.` can actually open the file the image points at.
+    let registered = started.elapsed();
+    // Like the source boot: materialise the on-disk prelude copy the def sites name, so
+    // stdlib `M-.` can actually open the file the image points at.
     heap.set_current_file(prelude_source_path());
-    let (n, gensym_floor) =
+    let (entries, gensym_floor) =
         image::load_prelude_image(&mut heap, root, &path, &builtins::build_id_string())?;
     heap.set_current_file(None);
     // REPLAY what the prelude's evaluation DID, not just what it recorded. The prelude has a
     // top-level form that runs `%std-image-install`, and the imaged path never evaluates it —
-    // so without this the boot restores a *snapshot* of a previous install: `*image-sources*`
-    // comes back holding the section directory of whatever stdlib image existed when this
-    // prelude image was written. That file is keyed on `stdlib-id`, so a rebuild with
-    // different module coverage (a lean `nest` vs a full one — exactly what
-    // `scripts/build-std-image.sh` can do) reuses the same PATH with different offsets, and
-    // every section read then lands on garbage. Observed as `unbound symbol: io/puts` on a
-    // tree where nothing was wrong with `io`.
-    //
-    // Re-running the install is the faithful replay: it is what the source and text paths do
-    // at this point, and it overwrites the stale directory with the current one.
-    //
-    // The trace line is emitted HERE rather than left to the prelude's own `when` form: that
-    // form is Brood, this replay is Rust, and with the image default-on the Brood one never
-    // runs. `BROOD_IMAGE_TRACE` is documented as the thing to reach for before believing any
-    // image measurement, so a default boot that silently stops printing its install line
-    // would take the diagnostic down on exactly the path everyone now uses.
+    // so without this `*image-sources*` comes back holding the section directory of whatever
+    // stdlib image existed when this prelude image was written. That file is keyed on
+    // `stdlib-id`, so a rebuild with different module coverage reuses the same PATH with
+    // different offsets, and every section read lands on garbage (KI-105). The trace line is
+    // emitted here because the prelude's own Brood `when` form never runs on this path.
     let trace = std::env::var_os("BROOD_IMAGE_TRACE").is_some();
-    let t_install = web_time::Instant::now();
-    let install = syntax::reader::read_all(&mut heap, "(%std-image-reinstall!)").ok()?;
-    let mut sections = Value::Nil;
-    for form in install {
-        if let Ok(v) = eval::eval(&mut heap, form, root) {
-            sections = v;
-        }
-    }
+    let install_started = web_time::Instant::now();
+    let sections = replay_std_image_install(&mut heap, root)?;
     if trace {
         eprintln!(
             "[image] install: {} sections, {} ns (replayed under the prelude image)",
             crate::syntax::printer::display(&heap, sections),
-            t_install.elapsed().as_nanos()
+            install_started.elapsed().as_nanos()
         );
     }
-    let t_load = t_start.elapsed();
+    let loaded = started.elapsed();
     // The names baked into the image's closures were minted by the boot that wrote it, so
     // a runtime `gensym` must start ABOVE that counter or a fresh name could collide with a
-    // baked one. The image carries the floor in its header (it used to be read from the
-    // deleted text cache's header — the one fact that tied the two artifacts together).
+    // baked one. The image carries the floor in its header.
     core::value::gensym_floor(gensym_floor);
     let private = heap.private_names_snapshot();
     let name_meta = heap.name_meta_snapshot();
-    let t_pre_freeze = t_start.elapsed();
+    let before_freeze = started.elapsed();
     let (code, bindings) = heap.freeze_as_shared_code(root);
     if std::env::var_os("BROOD_BOOT_TRACE").is_some() {
         eprintln!(
-            "[boot] register={:?} image={:?} ({n} entries) freeze={:?} — total={:?} (prelude image)",
-            t_register,
-            t_load - t_register,
-            t_start.elapsed() - t_pre_freeze,
-            t_start.elapsed()
+            "[boot] register={:?} image={:?} ({entries} entries) freeze={:?} — total={:?} (prelude image)",
+            registered,
+            loaded - registered,
+            started.elapsed() - before_freeze,
+            started.elapsed()
         );
     }
     Some(SharedBundle {
@@ -300,24 +268,13 @@ fn boot_from_source() -> SharedBundle {
     let t_read = t_mark.elapsed();
     let t_mark = web_time::Instant::now();
     let mut t_expand = std::time::Duration::ZERO;
-    // The boot cache's payload: each compiled form, printed. A form whose
-    // print→read→print round-trip isn't a fixpoint poisons the whole cache
-    // (never write a file we can't provably re-read into the same forms).
     let write_image = std::env::var_os("BROOD_NO_PRELUDE_IMAGE").is_none();
     for (form, pos) in forms {
-        // Try the raw form first — catches `defn`/`defmacro` before lowering
-        // discards their source positions. Then also try the expanded form so
-        // user-defined def-like macros (e.g. `defseq`) whose raw head isn't
-        // `def`/`defn`/`defmacro` but whose expansion IS a `defn` still get
-        // their call-site position recorded. Both calls are no-ops when the
-        // form isn't recognisably a definition, or no file is set.
-        // Recording variant: the cache-hit boot does not read the raw prelude, so
-        // the names this *un-expanded* form contributes are captured here and
-        // written into the cache line below.
-        // Records the RAW form's definition sites (LSP navigation into the prelude is
-        // identical on both boot paths because of this). Its returned names fed the
-        // deleted text cache; the side effect is what matters.
-        heap.note_definition_recording(form, pos);
+        // Record definition sites from the raw form first — catches `defn`/`defmacro`
+        // before lowering discards their source positions — and again from the expanded
+        // form below, so a def-like macro (`defseq`) whose expansion IS a `defn` still
+        // gets its call-site position. Both are no-ops for a non-definition or no file.
+        heap.note_definition(form, pos);
         // Compile pass (expand macros, then namespace-resolve — a no-op here since
         // the prelude is the root namespace), then evaluate. Form-by-form so a
         // macro defined by one form is visible to the next.
@@ -344,16 +301,20 @@ fn boot_from_source() -> SharedBundle {
     // addition; every later boot skips the read+eval this one just did. Best-effort: a
     // failure leaves the next boot on the source path, which is where it was before.
     if write_image {
-        if let Some(img) = prelude_image_path() {
+        if let Some(image_path) = prelude_image_path() {
             let _ = image::write_prelude_image(
                 &mut heap,
                 root,
                 &builtin_names,
-                &img,
+                &image_path,
                 &builtins::build_id_string(),
                 core::value::gensym_counter(),
             )
-            .map(|()| img.parent().map(|d| prelude_image_prune(d, &img)));
+            .map(|()| {
+                image_path
+                    .parent()
+                    .map(|directory| prelude_image_prune(directory, &image_path))
+            });
         }
     }
     let (code, bindings) = heap.freeze_as_shared_code(root);
@@ -382,9 +343,7 @@ fn boot_from_source() -> SharedBundle {
 /// `std/prelude/*.blsp` for navigability and concatenated **in order** here — the pieces are
 /// bare-root prelude source, so evaluation order is load-bearing (macros before use, forward
 /// references). **This list is the authoritative order**; a new prelude file must be added at
-/// the right position here. The concatenation is byte-identical to the former single
-/// `std/prelude.blsp`, so runtime behaviour, source positions, and the materialized
-/// `prelude.blsp` copy are unchanged.
+/// the right position here.
 pub const PRELUDE: &str = concat!(
     include_str!("../../../std/prelude/core.blsp"),
     include_str!("../../../std/prelude/predicates.blsp"),
@@ -396,8 +355,8 @@ pub const PRELUDE: &str = concat!(
     include_str!("../../../std/prelude/string.blsp"),
     include_str!("../../../std/prelude/tools.blsp"),
     // Runtime contracts (ADR-381) come LAST among the prelude files: a prelude closure whose
-    // body calls a macro defined after it is deferred to the tree-walker for good, and this
-    // machinery — every contract check — sat above `and`/`or`/`cond` in core.blsp for a year.
+    // body calls a macro defined after it is deferred to the tree-walker for good, and every
+    // contract check runs through this machinery.
     include_str!("../../../std/prelude/contracts.blsp"),
     // Behaviour contracts are CORE (defbehaviour / %register-protocol / ops / *protocols*).
     // After tools.blsp, which defines the `swap-registry!` macro protocol uses.
@@ -495,13 +454,11 @@ mod prelude_hygiene {
         assert!(!is_prelude_source("/project/src/core.blsp"));
     }
 
-    // There is no allowed-module list. The prelude used to force-load `string` and `seq` at
-    // boot, which cost 12.1 ms of a 26 ms boot on every invocation (KI-61); then it carried
-    // hand-declared `%autoload` stubs for the names it references; since ADR-335 a qualified
-    // reference simply loads its module at the first lookup that misses, and the stubs are
-    // gone. What the lint checks now: every qualified name the prelude references is either
-    // bound at boot (a registered primitive, a prelude definition) or names a module this
-    // binary embeds — so a typo cannot hide behind "loads later".
+    // There is no allowed-module list: since ADR-335 a qualified reference loads its module
+    // at the first lookup that misses. What the lint checks: every qualified name the
+    // prelude references is either bound at boot (a registered primitive, a prelude
+    // definition) or names a module this binary embeds — so a typo cannot hide behind
+    // "loads later".
 
     /// Every name `builtins::register` binds — the always-available set, slash-named
     /// primitives included.
@@ -575,11 +532,6 @@ mod prelude_hygiene {
             "defdyn",
             "defability",
             "defrecord",
-            // `defmulti` binds a name exactly as the others do. It was missing until
-            // 2026-08-28 and nothing noticed, because no prelude multimethod had a
-            // slash in its name — the lint only inspects QUALIFIED references, so a bare
-            // `num-add` never reached it. `num/add` did, and read as an unloaded module
-            // wrapper.
             "defmulti",
         ];
         let mut out = std::collections::HashSet::new();
@@ -799,6 +751,27 @@ mod prelude_hygiene {
                 "numeric.rs no longer names `{op}` — update this test with the table"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+
+    /// The imaged boot's install replay must FAIL the imaged boot when the replay itself
+    /// fails, so `boot_from_prelude_image` (which `?`s it) falls back to the source boot
+    /// rather than run on a stale section directory. A builder heap whose bindings lack
+    /// `%std-image-reinstall!` (natives only, no prelude) is that failure on demand.
+    #[test]
+    fn a_failed_install_replay_fails_the_imaged_boot() {
+        let mut heap = Heap::new();
+        let root = heap.new_env(None);
+        heap.set_global(root);
+        builtins::register(&mut heap, root);
+        assert!(
+            replay_std_image_install(&mut heap, root).is_none(),
+            "an install replay that raised was treated as a successful boot step"
+        );
     }
 }
 

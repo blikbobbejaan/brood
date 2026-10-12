@@ -74,111 +74,117 @@
 
 ;; ---- reading the answer ------------------------------------------------------
 
+;; Every read below is bounds-checked against the reply, so a truncated or lying reply
+;; decodes to nothing rather than raising: malformed input is an ordinary answer here.
+
 (defn- skip-name (msg off)
-  "The offset just past the name at `off`.
+  "The offset just past the name at `off`, or nil when the name runs off the end of `msg`.
 
   A name ends at a zero length byte, or at a two-byte COMPRESSION POINTER (top bits set) that
   points back into the message — the pointer is the end of the name here, since we only need to
   step over it. Without handling pointers this walks off into the middle of a record: every
   answer after the first uses one."
-  (let (b (bytes/at msg off))
-    (cond
-      (= b 0) (+ off 1)
-      (>= b 192) (+ off 2)
-      else (skip-name msg (+ off 1 b)))))
-;; `off` declared: an undeclared offset infers `number`, and every `(+ off …)` handed to
-;; `bytes/at`/`bytes/uint` then reads as number-where-int under `nest check --strict`.
+  (when (< off (bytes/length msg))
+    (let (b (bytes/at msg off))
+      (cond
+        (= b 0) (+ off 1)
+        (>= b 192) (+ off 2)
+        else (skip-name msg (+ off 1 b))))))
+(sig skip-name (bytes int -> (or int nil)))
 
 (defn- ipv4 (msg off)
   (string/join (map (range 0 4) (fn (i) (->string (bytes/at msg (+ off i))))) "."))
 (sig ipv4 (bytes int -> string))
 
-(defn- hex4 (n)
-  "One IPv6 group, lowercase hex, no leading zeros — the form every tool prints."
-  (let (digits "0123456789abcdef"
-        nib (fn (shift)
-              (string/char-at digits (bit/and (bit/shift-right n shift) 0xF)))
-        s (str (nib 12) (nib 8) (nib 4) (nib 0))
-        trimmed (letrec (drop (fn (i)
-                                (if (and (< i 3) (= (string/char-at s i) "0"))
-                                  (drop (+ i 1))
-                                  i)))
-                  (drop 0)))
-    (string/substring s trimmed 4)))
-
 (defn- ipv6 (msg off)
-  "The full eight-group form. Not the `::`-compressed one: this is fed to a connect string,
-  where being unambiguous matters more than being short."
-  (string/join (map (range 0 8) (fn (i) (hex4 (bytes/uint msg (+ off (* i 2)) 2)))) ":"))
+  "The full eight-group form, each group lowercase hex without leading zeros. Not the
+  `::`-compressed one: this is fed to a connect string, where being unambiguous matters more
+  than being short."
+  (string/join (map (range 0 8) (fn (i) (string/number-> (bytes/uint msg (+ off (* i 2)) 2) 16)))
+    ":"))
 (sig ipv6 (bytes int -> string))
 
 (defn- read-answers (msg off n qtype acc)
-  "Walk `n` answer records from `off`, collecting the ones matching `qtype`.
+  "Walk `n` answer records from `off`, collecting the ones matching `qtype` — nil if a record
+  runs past the end of `msg`.
 
   Every record is stepped over by its own RDLENGTH whether or not we want it — a response
   carries CNAMEs and other types alongside the answer, and skipping only the ones we recognise
   would desynchronise the walk."
-  (if (<= n 0)
-    (reverse acc)
-    (let (after-name (skip-name msg off)
-          rtype (bytes/uint msg after-name 2)
-          rdlen (bytes/uint msg (+ after-name 8) 2)
-          rdata (+ after-name 10)
-          next (+ rdata rdlen)
-          value (cond
-                  (and (= rtype *a*) (= qtype *a*)) (ipv4 msg rdata)
-                  (and (= rtype *aaaa*) (= qtype *aaaa*)) (ipv6 msg rdata)
-                  else nil))
-      (read-answers msg next (- n 1) qtype (if value (cons value acc) acc)))))
+  (let (after-name (when (> n 0) (skip-name msg off)))
+    (cond
+      (<= n 0) (reverse acc)
+      (or (nil? after-name) (> (+ after-name 10) (bytes/length msg))) nil
+      else
+        (let (rtype (bytes/uint msg after-name 2)
+              rdlen (bytes/uint msg (+ after-name 8) 2)
+              rdata (+ after-name 10)
+              value (cond
+                      (> (+ rdata rdlen) (bytes/length msg)) :truncated
+                      (not (= rtype qtype)) nil
+                      (and (= rtype *a*) (= rdlen 4)) (ipv4 msg rdata)
+                      (and (= rtype *aaaa*) (= rdlen 16)) (ipv6 msg rdata)
+                      else nil))
+          (cond
+            (= value :truncated) nil
+            value (read-answers msg (+ rdata rdlen) (- n 1) qtype (cons value acc))
+            else (read-answers msg (+ rdata rdlen) (- n 1) qtype acc))))))
+
+(defn- decode-reply (body qtype)
+  "The addresses in reply `body`, or the empty list for one too short to hold them."
+  ;; the question is echoed back before the answers; step over it
+  (let (after-question (when (>= (bytes/length body) 12) (skip-name body 12)))
+    (if after-question
+      (read-answers body (+ after-question 4) (bytes/uint body 6 2) qtype (list))
+      (list))))
 
 ;; ---- the query ---------------------------------------------------------------
 
 (defn- read-body (sock len surplus timeout-ms)
-  "`len` bytes of body, using whatever `read-n` already handed back before asking for more."
+  "`len` bytes of body, using whatever `read-n` already handed back before asking for more —
+  or `:closed`/`:timeout` when the rest never arrives."
   (let (have (bytes/length surplus))
-    (cond
-      (>= have len) (bytes/slice surplus 0 len)
-      else
-        (let ([more _] (tcp/read-n sock (- len have) {:timeout-ms timeout-ms}))
-          (bytes/concat surplus more)))))
+    (if (>= have len)
+      (bytes/slice surplus 0 len)
+      (let ([more _] (tcp/read-n sock (- len have) {:timeout-ms timeout-ms}))
+        (if (bytes? more) (bytes/concat surplus more) more)))))
+
+(defn- exchange (sock host qtype timeout-ms)
+  "Send one query on `sock` and decode the reply; the empty list when no whole reply arrives."
+  ;; Binary BEFORE the send: text mode would UTF-8-decode the reply, turning every byte over
+  ;; 0x7F into U+FFFD, and the record offsets would stop meaning anything (KI-102).
+  (tcp/set-binary sock true)
+  (let (msg (query-message host qtype)
+        sent (check-allow :discarded-catch
+               (try
+                 (tcp/send sock (bytes/concat (u16 (bytes/length msg)) msg))
+                 true
+                 (catch _e false)))
+        ;; TCP framing: two bytes of length, then the message. `read-n`'s surplus is
+        ;; already-arrived body; dropping it would wait forever for bytes we have.
+        [len-bytes surplus] (if sent (tcp/read-n sock 2 {:timeout-ms timeout-ms}) [:closed nil])
+        body (if (bytes? len-bytes)
+               (read-body sock (bytes/uint len-bytes 0 2) surplus timeout-ms)
+               len-bytes))
+    (if (bytes? body) (decode-reply body qtype) (list))))
+
+(defn- ask (server port host qtype timeout-ms)
+  ;; Only the connect and the send are caught — a refused or broken connection is an
+  ;; answer. Anything else raising is a bug, and propagates.
+  (let (sock (check-allow :discarded-catch (try (tcp/connect server port) (catch _e nil))))
+    (if sock
+      (try (exchange sock host qtype timeout-ms) (finally (tcp/close sock)))
+      (list))))
 
 (defn lookup (host &optional (qtype *a*) (server nil) (timeout-ms 5000))
-  "The addresses `host` resolves to, as strings — `[]` when the name does not resolve, when
-  the resolver is unreachable, or when the response is malformed.
+  "The addresses `host` resolves to, as strings — the empty list when the name does not
+  resolve, the resolver is unreachable or silent, or the response is malformed.
 
-  Never raises: a name that does not resolve is an ordinary answer to an ordinary question, and
-  a caller enumerating cluster peers wants an empty list rather than an exception on every poll
-  while a peer is down.
+  Those are ordinary answers, not raises: a caller enumerating cluster peers polls, and wants
+  an empty list rather than an exception on every tick while a peer is down.
 
   (dns/lookup \"localhost\") ;=> (\"127.0.0.1\")"
-  (or
-    (check-allow :discarded-catch
-      (try
-        (let (sock (tcp/connect (or server (nameserver)) 53)
-              ;; BEFORE the send, so the reply is decoded as bytes. Text mode is the default
-              ;; and would UTF-8-decode a binary DNS response — every byte over 0x7F becomes
-              ;; U+FFFD and the record offsets stop meaning anything (the runtime's own
-              ;; KI-102). Nothing about the failure says "wrong mode": the bytes simply
-              ;; arrive wrong.
-              _ (tcp/set-binary sock true)
-              msg (query-message host qtype)
-              _ (tcp/send sock (bytes/concat (u16 (bytes/length msg)) msg))
-              ;; TCP framing: two bytes of length, then exactly that many bytes. `read-n`
-              ;; answers `[data surplus]` — the surplus is already-arrived body, and dropping
-              ;; it would deadlock waiting for bytes we have.
-              [len-bytes surplus] (tcp/read-n sock 2 {:timeout-ms timeout-ms})
-              ;; `[:closed acc]` / `[:timeout acc]`: no length arrived — no answer.
-              len (if (bytes? len-bytes)
-                    (bytes/uint len-bytes 0 2)
-                    (error (str "dns: no reply length (" len-bytes ")")))
-              body (read-body sock len surplus timeout-ms)
-              _ (tcp/close sock)
-              ancount (bytes/uint body 6 2)
-              ;; the question is echoed back before the answers; step over it
-              after-q (+ (skip-name body 12) 4))
-          (read-answers body after-q ancount qtype (list)))
-        (catch _e nil)))
-    (list)))
+  (ask (or server (nameserver)) 53 host qtype timeout-ms))
 
 (defn lookup-all (host &optional (server nil))
   "Every address for `host`, IPv6 first — the order a dual-stack caller should try them in, and

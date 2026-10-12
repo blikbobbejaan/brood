@@ -113,7 +113,7 @@ const BYTES_BIT: u32 = 1u32 << bit(Tag::Bytes);
 /// `list_shape`, see [`PAIR_BIT`].
 const VECTOR_BIT: u32 = 1u32 << bit(Tag::Vector);
 
-/// The pair tag alone — the one tag a *positional* LIST shape refines (2026-09-13).
+/// The pair tag alone — the one tag a *positional* LIST shape refines.
 /// `(list m '(…))` is a two-element list whose first is a map and whose second a pair,
 /// and `(first …)` of it is the map, not `pair | map`: the element union threw the
 /// positions away exactly as it did for vectors before ADR-128. `nil` — the empty list
@@ -702,7 +702,7 @@ pub struct Ty {
     /// says so. What `(count xs)` reads, what `(= (count xs) 3)` and `(empty? xs)` narrow,
     /// and what `(nth xs 1)` consults to drop its `nil` arm.
     len: Option<Range>,
-    /// **The self-reference of a recursive type** (2026-09-14, ADR-349). A term with this
+    /// **The self-reference of a recursive type** (ADR-349). A term with this
     /// set stands for the whole `Ty` whose [`mu`](Ty::mu) is set — `X` in `μX. nil |
     /// vector<X>`. Its tags are `UNIVERSE`, so a reader that does not resolve it sees
     /// `any` (sound); the set relations treat it as an UNKNOWN set: nothing but `any`
@@ -916,7 +916,7 @@ impl Ty {
         // The excluded set must BE the literal set — `as_lit_int` reads the int member's
         // literals and ignores the other tags, so `any ∖ (int ∖ 0)`, which is `0 | (not
         // int)`, answered `Some({0})` and a positively-known `(int and (not 0))` read as
-        // known only by exclusion (2026-09-17).
+        // known only by exclusion.
         let only_literals = (without_falsy.as_lit().is_some()
             && without_falsy.is_subtype(&Ty::of(Tag::Keyword)))
             || (without_falsy.as_lit_int().is_some()
@@ -1315,7 +1315,7 @@ impl Ty {
         this.tuple.as_deref()
     }
 
-    /// The type at tuple position `n` — exact over a UNION of tuple terms too (2026-09-12):
+    /// The type at tuple position `n` — exact over a UNION of tuple terms too:
     /// `(tuple 0 nil) | (tuple int pair)` at position 0 is `0 | int`, since each term is
     /// nothing but a vector of a known shape and position `n` of the union is the union of
     /// the positions. `None` when any term is not such a tuple, or is too short — the same
@@ -1579,7 +1579,7 @@ impl Ty {
             return Range::at_least(1);
         }
         // A string literal set knows its lengths — chars, as `string/length` counts — so
-        // `"abc"` fits `(len string _ 3)` and `(into [] "abc")` has a length (2026-09-17).
+        // `"abc"` fits `(len string _ 3)` and `(into [] "abc")` has a length.
         if self.tags & COUNT_BITS == STR_BIT {
             if let Some(LitSet::In(set)) = self.lit_str.as_deref() {
                 let lengths = set.iter().map(|s| s.chars().count() as i64);
@@ -1623,7 +1623,7 @@ impl Ty {
                 // several, the one this term GREW from: the previous term that is a subtype
                 // of it. `(tuple "(" int[1..k] nil bool) | (tuple "(" 0 nil false)` — a
                 // parser state beside its seed — matched two previous tuples by tag alone,
-                // widened neither, and ran the derivation out of rounds (2026-09-17).
+                // widened neither, and ran the derivation out of rounds.
                 let same_tags: Vec<&Ty> = theirs
                     .iter()
                     .filter(|p| p.tags & !NIL_BIT == term.tags & !NIL_BIT)
@@ -3917,59 +3917,60 @@ impl Ty {
         if self.mu {
             return self.clone();
         }
-        let terms: Vec<Ty> = self
-            .body_terms()
+        self.body_terms()
             .into_iter()
             .map(|term| {
                 if term.mu {
-                    return term;
+                    term
+                } else {
+                    term.map_term_slots(f)
                 }
-                let mut out = term.clone();
-                out.elem = term.elem.as_ref().map(|e| Arc::new(f(e)));
-                out.map_kv = term
-                    .map_kv
-                    .as_ref()
-                    .map(|kv| Arc::new((f(&kv.0), f(&kv.1))));
-                out.fields = term.fields.as_ref().map(|shape| {
-                    Arc::new(RecordShape {
-                        fields: shape
-                            .fields
-                            .iter()
-                            .map(|(k, (t, req))| (*k, (f(t), *req)))
-                            .collect(),
-                        rest: f(&shape.rest),
-                    })
-                });
-                out.tuple = term
-                    .tuple
-                    .as_ref()
-                    .map(|ts| Arc::new(ts.iter().map(&mut *f).collect()));
-                out.list_shape = term
-                    .list_shape
-                    .as_ref()
-                    .map(|ts| Arc::new(ts.iter().map(&mut *f).collect()));
-                let map_sig = |s: &Sig, f: &mut dyn FnMut(&Ty) -> Ty| Sig {
-                    params: s.params.iter().map(&mut *f).collect(),
-                    rest: s.rest.as_ref().map(&mut *f),
-                    ret: f(&s.ret),
-                    ..s.clone()
-                };
-                out.arrow = term.arrow.as_ref().map(|s| Arc::new(map_sig(s, f)));
-                out.overload = term
-                    .overload
-                    .as_ref()
-                    .map(|o| Arc::new(o.iter().map(|s| map_sig(s, f)).collect()));
-                out.neg = term
-                    .neg
-                    .as_ref()
-                    .map(|ns| Arc::new(ns.iter().map(&mut *f).collect()));
-                out
             })
-            .collect();
-        let mut out = terms.into_iter().fold(Ty::NEVER, Ty::union);
-        if self.mu {
-            out.mu = true;
-        }
+            .fold(Ty::NEVER, Ty::union)
+    }
+
+    /// This single term with every directly nested Ty replaced by `f` of it — no
+    /// re-union, so the term's own shape is kept as it is.
+    fn map_term_slots(&self, f: &mut dyn FnMut(&Ty) -> Ty) -> Ty {
+        let mut out = self.clone();
+        out.elem = self.elem.as_ref().map(|e| Arc::new(f(e)));
+        out.map_kv = self
+            .map_kv
+            .as_ref()
+            .map(|kv| Arc::new((f(&kv.0), f(&kv.1))));
+        out.fields = self.fields.as_ref().map(|shape| {
+            Arc::new(RecordShape {
+                fields: shape
+                    .fields
+                    .iter()
+                    .map(|(k, (t, req))| (*k, (f(t), *req)))
+                    .collect(),
+                rest: f(&shape.rest),
+            })
+        });
+        out.tuple = self
+            .tuple
+            .as_ref()
+            .map(|ts| Arc::new(ts.iter().map(&mut *f).collect()));
+        out.list_shape = self
+            .list_shape
+            .as_ref()
+            .map(|ts| Arc::new(ts.iter().map(&mut *f).collect()));
+        let map_sig = |s: &Sig, f: &mut dyn FnMut(&Ty) -> Ty| Sig {
+            params: s.params.iter().map(&mut *f).collect(),
+            rest: s.rest.as_ref().map(&mut *f),
+            ret: f(&s.ret),
+            ..s.clone()
+        };
+        out.arrow = self.arrow.as_ref().map(|s| Arc::new(map_sig(s, f)));
+        out.overload = self
+            .overload
+            .as_ref()
+            .map(|o| Arc::new(o.iter().map(|s| map_sig(s, f)).collect()));
+        out.neg = self
+            .neg
+            .as_ref()
+            .map(|ns| Arc::new(ns.iter().map(&mut *f).collect()));
         out
     }
 
@@ -3977,6 +3978,22 @@ impl Ty {
     /// type itself. Not a binder afterwards — the copies inside are. A non-recursive
     /// type is its own unrolling.
     pub fn unroll(&self) -> Ty {
+        self.unroll_with(true)
+    }
+
+    /// [`Ty::unroll`] for a RELATION ([`with_rec_assumption`]) to compare: the same set,
+    /// but the unions the substitution creates are written down as they stand instead of
+    /// re-canonicalised. Canonicalising a union asks `⊆` of its terms, and those terms
+    /// hold the recursive type — so unrolling for one relation ran relations that unrolled
+    /// the same type again, each level with a pair the coinductive assumptions did not
+    /// hold yet. That nesting is exponential in the type's alternatives: a reply type of
+    /// three error records whose `data` is the type itself never finished one `⊆ map`. A
+    /// relation needs only the set; a slot with no self-reference is left as it is.
+    fn unroll_for_relation(&self) -> Ty {
+        self.unroll_with(false)
+    }
+
+    fn unroll_with(&self, canonical: bool) -> Ty {
         if !self.mu {
             return self.clone();
         }
@@ -3985,31 +4002,72 @@ impl Ty {
             mu: false,
             ..self.clone()
         };
-        body.subst_rec(&whole)
+        body.subst_rec(&whole, canonical)
     }
 
-    /// Every self-reference in this type (outside a nested binder) replaced by `with`.
-    fn subst_rec(&self, with: &Ty) -> Ty {
+    /// Every self-reference in this type (outside a nested binder) replaced by `with`;
+    /// the unions it rebuilds canonical, or as written (see [`Ty::unroll_for_relation`]).
+    fn subst_rec(&self, with: &Ty, canonical: bool) -> Ty {
         if self.mu {
             return self.clone(); // a nested binder's references are its own
         }
+        if !canonical && !self.has_rec_ref() {
+            return self.clone();
+        }
         // A self-reference TERM is replaced by the whole of `with` (a union), so the
-        // terms are rebuilt through `union`.
-        let mut terms: Vec<Ty> = Vec::new();
-        for term in self.body_terms() {
-            if term.rec_ref {
-                terms.push(with.clone());
-            } else if term.mu {
-                terms.push(term);
-            } else {
-                terms.push(term.map_nested(&mut |t| t.subst_rec(with)));
+        // terms are rebuilt as a union.
+        let terms: Vec<Ty> = self
+            .body_terms()
+            .into_iter()
+            .map(|term| {
+                if term.rec_ref {
+                    with.clone()
+                } else if term.mu {
+                    term
+                } else {
+                    term.map_term_slots(&mut |t| t.subst_rec(with, canonical))
+                }
+            })
+            .collect();
+        if canonical {
+            terms.into_iter().fold(Ty::NEVER, Ty::union)
+        } else {
+            Ty::from_terms_as_written(terms)
+        }
+    }
+
+    /// A union of `terms` with nothing absorbed or merged — only `never` and exact
+    /// duplicates dropped: the same SET as [`Ty::from_terms`], in a form only a relation
+    /// may see. Falls back to the canonical union where a bare term list cannot hold the
+    /// operand: a binder over a union, or binders alone.
+    fn from_terms_as_written(terms: Vec<Ty>) -> Ty {
+        let mut kept: Vec<Ty> = Vec::with_capacity(terms.len());
+        for term in terms {
+            if term.alts.is_some() && term.mu {
+                kept.push(term);
+                return Ty::from_terms(kept);
+            }
+            for inner in term.terms_vec() {
+                if !inner.is_never() && !kept.contains(&inner) {
+                    kept.push(inner);
+                }
             }
         }
-        let mut out = terms.into_iter().fold(Ty::NEVER, Ty::union);
-        if self.mu {
-            out.mu = true;
+        if kept.is_empty() {
+            return Ty::NEVER;
         }
-        out
+        // As in `from_terms`: a binder at the head of a union would range over all of it.
+        if kept.len() > 1 && kept[0].mu {
+            match kept.iter().position(|t| !t.mu) {
+                Some(plain) => kept.swap(0, plain),
+                None => return Ty::from_terms(kept),
+            }
+        }
+        let mut head = kept.remove(0);
+        if !kept.is_empty() {
+            head.alts = Some(Arc::new(kept));
+        }
+        head
     }
 
     /// **Fold an ascent into a recursive type** (ADR-349). When one round of a fixpoint
@@ -4560,7 +4618,7 @@ fn term_is_subtype_of_union(a: &Ty, others: &[Ty]) -> bool {
                 }
             }
         }
-        // And a record shape (C9, 2026-09-17): its declared keys are the positions of a
+        // And a record shape (C9): its declared keys are the positions of a
         // product, so `{a: int|string}` is covered by `{a: int} | {a: string}` the way a
         // 1-tuple is. The undeclared remainder is not a position — see `record_covered_by`.
         if tag_bit == MAP_BIT {
@@ -4733,6 +4791,33 @@ thread_local! {
     /// The pairs of recursive types under comparison right now — the coinductive
     /// assumptions of [`with_rec_assumption`].
     static REC_ASSUMPTIONS: std::cell::RefCell<Vec<(Ty, Ty)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Unrollings spent by the outermost [`with_rec_assumption`] in progress (reset when
+    /// one starts) — the budget [`MAX_REC_UNROLLS`] bounds, and what a test reads.
+    static REC_UNROLLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How often [`MAX_REC_UNROLLS`] cut a relation short on this thread.
+    static REC_BUDGET_EXHAUSTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many unrollings one recursive relation may spend. Far past any shape inference
+/// builds — a pair repeats within a few levels — so it never decides a real question; it
+/// exists so that no recursive type, however its alternatives multiply, can keep the
+/// checker from finishing.
+const MAX_REC_UNROLLS: usize = 2_000;
+
+/// The unrollings the last outermost recursive relation on this thread spent.
+#[cfg(test)]
+pub(crate) fn rec_unrolls_spent() -> usize {
+    REC_UNROLLS.with(std::cell::Cell::get)
+}
+
+/// How often the unrolling budget has cut a relation short on this thread.
+#[cfg(test)]
+pub(crate) fn rec_budget_exhaustions() -> usize {
+    REC_BUDGET_EXHAUSTED.with(std::cell::Cell::get)
 }
 
 /// Compare `a` and `b` — at least one recursive — through their unrollings, under the
@@ -4740,13 +4825,32 @@ thread_local! {
 /// pair inside answers `assumed` (true for an inclusion, false for a disjointness —
 /// the answer that is sound when the question rests on itself). Regular types have
 /// finitely many distinct pairs of subterms, so the descent terminates.
+///
+/// Bounded twice over: the assumptions cut every cycle, and [`MAX_REC_UNROLLS`] caps the
+/// unrollings one outermost question may spend, past which the answer is `false` — "not
+/// a subtype" / "not disjoint", the sound reading of a question left undecided.
 fn with_rec_assumption(a: &Ty, b: &Ty, assumed: bool, relate: impl Fn(&Ty, &Ty) -> bool) -> bool {
-    let seen = REC_ASSUMPTIONS.with(|s| s.borrow().iter().any(|(x, y)| x == a && y == b));
+    let (seen, outermost) = REC_ASSUMPTIONS.with(|s| {
+        let s = s.borrow();
+        (s.iter().any(|(x, y)| x == a && y == b), s.is_empty())
+    });
     if seen {
         return assumed;
     }
+    let spent = REC_UNROLLS.with(|count| {
+        let spent = if outermost { 1 } else { count.get() + 1 };
+        count.set(spent);
+        spent
+    });
+    if spent > MAX_REC_UNROLLS {
+        #[cfg(test)]
+        REC_BUDGET_EXHAUSTED.with(|count| count.set(count.get() + 1));
+        return false;
+    }
     REC_ASSUMPTIONS.with(|s| s.borrow_mut().push((a.clone(), b.clone())));
-    let out = crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || relate(&a.unroll(), &b.unroll()));
+    let out = crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
+        relate(&a.unroll_for_relation(), &b.unroll_for_relation())
+    });
     REC_ASSUMPTIONS.with(|s| {
         s.borrow_mut().pop();
     });

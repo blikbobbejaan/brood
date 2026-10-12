@@ -502,9 +502,6 @@ re-solve keeps existing pins instead of upgrading the whole graph to newest."
   (let (pin (get (get ctx :preferred) pkg))
     (if (and pin (includes? allowed pin)) pin (first allowed))))
 
-(defn- pg-min-by (f items)
-  (fold (rest items) (first items) (fn (best x) (if (< (f x) (f best)) x best))))
-
 ;; --- error rendering: the derivation (pub-style structured proof) ----------------
 ;; The failing incompatibility's CAUSE is a left-leaning tree of resolution steps —
 ;; `[:derived accumulated satisfier-cause]`, deepest-left being the original conflict — whose

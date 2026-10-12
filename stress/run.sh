@@ -3,7 +3,7 @@
 #   make stress          — everything below, across 3 engines
 # Coverage: property-based table model vs an immutable-map oracle, multi-process
 # races across migrations/drops, VM/JIT loop preempt-resume checksums, match
-# lowering vs a cond oracle, a cross-language (python) differential, and GC-stress
+# lowering vs a cond oracle, a cross-language (bash) differential, and GC-stress
 # reruns. Known-bug repros live in xfail_*; they are EXPECTED to fail and are
 # reported separately (an xfail that PASSES means a known bug got fixed — promote
 # it to tests/).
@@ -24,18 +24,18 @@ run_one() { # file, env-prefix, label
 }
 
 for f in stress/*_test.blsp; do
-  run_one "$f" "BROOD_VM=1" "jit    "
+  run_one "$f" "" "jit    "
   # xfail repros are JIT-only bugs — a no-jit pass is expected, not a promotion signal
-  [[ $f == */xfail_* ]] || run_one "$f" "BROOD_VM=1 BROOD_NO_JIT=1" "no-jit "
+  [[ $f == */xfail_* ]] || run_one "$f" "BROOD_TIER=1" "no-jit "
 done
 # GC-stress pass on the table suites (the GC-sensitive ones); loops are too slow under stress
 for f in stress/table_model_test.blsp stress/match_props_test.blsp stress/core_semantics_test.blsp stress/collections_test.blsp; do
-  run_one "$f" "BROOD_VM=1 BROOD_GC_STRESS=1" "gc-str "
+  run_one "$f" "BROOD_GC_STRESS=1" "gc-str "
 done
 
 # Random-program differential fuzzer (engine/GC/chaos-preempt configs must agree)
-if python3 stress/fuzz_programs.py --seeds 25 >/dev/null 2>&1; then
-  echo "pass  program fuzzer (25 seeds x 4 configs)"; pass=$((pass+1))
+if BROOD="$BROOD" "$BROOD" stress/fuzz_programs.blsp -- --seeds 25 >/dev/null 2>&1; then
+  echo "pass  program fuzzer (25 seeds x 5 configs)"; pass=$((pass+1))
 else
   echo "FAIL  program fuzzer — divergent seeds kept in stress/fuzz_out/"; fail=$((fail+1))
 fi
@@ -43,7 +43,7 @@ fi
 # Chaos-preemption pass: a tiny prime reduction budget forces preempt/resume
 # storms through every loop — the capture machinery's torture test.
 for f in stress/table_model_test.blsp stress/vm_loops_test.blsp; do
-  run_one "$f" "BROOD_VM=1 BROOD_REDUCTIONS=97" "chaos  "
+  run_one "$f" "BROOD_REDUCTIONS=97" "chaos  "
 done
 
 # Checker soundness corpus: every program must RUN clean and CHECK clean —
@@ -59,14 +59,14 @@ done
 
 # Cross-language differential
 a=$("$BROOD" stress/table_digest.blsp 2>/dev/null)
-b=$(python3 stress/table_oracle.py)
+b=$(stress/table_oracle.sh)
 if [ "$a" = "$b" ]; then echo "pass  x-lang table digest ($a)"; pass=$((pass+1));
-else echo "FAIL  x-lang: brood='$a' python='$b'"; fail=$((fail+1)); fi
+else echo "FAIL  x-lang: brood='$a' bash='$b'"; fail=$((fail+1)); fi
 
 # Reader/evaluator ROBUSTNESS: adversarial mostly-invalid input must fail
-# gracefully — never a crash signal, Rust panic, or hang. (fuzz_programs.py only
+# gracefully — never a crash signal, Rust panic, or hang. (fuzz_programs.blsp only
 # makes VALID programs; this covers the error paths it can't reach.)
-if BROOD="$BROOD" python3 stress/fuzz_reader.py --seeds 1500 >/dev/null 2>&1; then
+if BROOD="$BROOD" stress/fuzz_reader.sh --seeds 1500 >/dev/null 2>&1; then
   echo "pass  reader robustness (1500 adversarial inputs, all graceful)"; pass=$((pass+1))
 else
   echo "FAIL  reader robustness — a crash/panic/hang on malformed input (see stress/fuzz_out/reader_*)"; fail=$((fail+1))

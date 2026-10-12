@@ -221,7 +221,7 @@ pub(super) fn source_location(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "source-location",
+                "reflect/source-location",
                 "symbol",
                 other,
             ))
@@ -279,7 +279,7 @@ pub(super) fn type_signature(args: &[Value], _env: EnvId, heap: &mut Heap) -> Li
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "type-signature",
+                "reflect/type-signature",
                 "symbol or string",
                 other,
             ))
@@ -308,7 +308,7 @@ pub(super) fn declared_sig(args: &[Value], _env: EnvId, heap: &mut Heap) -> Lisp
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "declared-sig",
+                "reflect/declared-signature",
                 "symbol or string",
                 other,
             ))
@@ -348,7 +348,7 @@ pub(super) fn function_effect(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "function-effect",
+                "%function-effect",
                 "symbol or string",
                 other,
             ))
@@ -387,7 +387,7 @@ pub(super) fn type_alias(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRe
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "type-alias",
+                "%type-alias",
                 "symbol or string",
                 other,
             ))
@@ -473,13 +473,13 @@ pub(super) fn references_in_source(args: &[Value], _env: EnvId, heap: &mut Heap)
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "references-in-source",
+                "reflect/references-in-source",
                 "symbol or string",
                 other,
             ))
         }
     };
-    let src = expect_string(heap, "references-in-source", arg(args, 1))?;
+    let src = expect_string(heap, "reflect/references-in-source", arg(args, 1))?;
     let root = cst::parse(&src);
     let tree = crate::syntax::scope::analyze(&root, &src);
     let starts = line_starts(&src);
@@ -551,7 +551,7 @@ fn is_private_def_head(name: &str) -> bool {
 /// Pure: it parses the string and holds no project state, exactly like
 /// [`references_in_source`].
 pub(super) fn source_deps(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "source-deps", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/source-deps", arg(args, 0))?;
     let root = cst::parse(&src);
     let tree = crate::syntax::scope::analyze(&root, &src);
     let defines_kw = Value::Keyword(value::intern("defines"));

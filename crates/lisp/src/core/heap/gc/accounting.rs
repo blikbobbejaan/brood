@@ -25,16 +25,8 @@ impl Heap {
     /// Nursery growth factor: the next collection triggers at `growth × live`. Default **2.0**,
     /// overridable with `BROOD_GC_GROWTH` — the A/B lever this had no way to measure before.
     ///
-    /// **Measured 2026-07-30 and it is NOT a lever — do not re-run this experiment.** The GC
-    /// review named the `2 × live` growth as the dominant term in `sort`'s ~190 MB peak. It is
-    /// not: sweeping 2.0 → 1.5 → 1.25 → 1.1 moves that row not at all (183–187 MB, inside
-    /// noise), and `bintree` likewise. The peak is structural instead — ~750 000 cons cells live
-    /// at once (the input list plus the new sorted one) at 48 bytes each, doubled by the copying
-    /// collector's to-space and again by `Vec` capacity growth — and it is shared with every
-    /// persistent-structure language (Elixir 160 MB, Clojure 124 MB on the same row).
-    ///
-    /// Kept as a knob because it made that refutation possible and costs one `OnceLock` read per
-    /// collection, not because lowering it is known to help.
+    /// Lowering it is known NOT to reduce peak memory on large-structure rows (the peak
+    /// there is the live structure itself, doubled by to-space); it stays a knob for A/B.
     pub(super) fn gc_growth() -> f64 {
         static G: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
         *G.get_or_init(|| {
@@ -67,47 +59,16 @@ impl Heap {
         slab_bytes(&self.local)
     }
 
-    /// **Trim a process that is about to park.** Returns the bytes of retained capacity
-    /// handed back, or `0` if the process was below the threshold and nothing was done.
+    /// **`(hibernate)` — the opt-in deep shrink.** Unconditionally does everything
+    /// [`trim_parked`](Self::trim_parked) does — collect, shrink the slabs, shrink the root
+    /// vectors — and additionally **drops this process's inline-cache tables**, which the
+    /// automatic path deliberately does not.
     ///
-    /// A parked process is quiescent and may stay so for the life of the program, so the
-    /// two things a *running* heap is right to keep are exactly wrong here:
-    ///
-    /// 1. **Uncollected garbage.** A process that allocates and then parks never reaches
-    ///    another safepoint, so its dead data is pinned indefinitely. Measured 2026-07-28:
-    ///    100k processes that consed 1,000 pairs and parked cost **54.1 KB each**; the same
-    ///    with an explicit collection first cost **19.0 KB**.
-    /// 2. **Retained capacity.** After collecting, the slab `Vec`s still hold their
-    ///    high-water capacity (a nursery flip deliberately preserves it — see
-    ///    `Slabs::with_capacity_like`). That is the 19.0 KB against **5.4 KB** for a process
-    ///    that never allocated at all.
-    ///
-    /// So: collect, then shrink. This is Erlang's `hibernate/0` move, applied automatically
-    /// at the one moment we know the process has nothing to do.
-    ///
-    /// **Soundness.** The captured continuation (`Suspended`) holds only *control* state —
-    /// its frames reference the operand stack and frame slots by index, and those live on
-    /// this heap's own `roots`/`env_roots`, which `collect` traces. That is the same
-    /// invariant a running process relies on at every safepoint, so collecting here is no
-    /// more dangerous than collecting one instruction earlier.
-    ///
-    /// **Threshold.** Skipped entirely below `PARK_TRIM_MIN_BYTES` of retained capacity, so
-    /// a latency-sensitive process that parks constantly with a tiny heap (a ping-pong
-    /// responder, a `gen` server handling small messages) pays one integer comparison and
-    /// nothing else.
-    /// **`(hibernate)` — the opt-in deep shrink** (Erlang's `erlang:hibernate/3`).
-    /// Unconditionally does everything [`trim_parked`] does — collect, shrink the slabs,
-    /// shrink the root vectors — and additionally **drops this process's inline-cache
-    /// tables**, which the automatic path deliberately does not.
-    ///
-    /// Why this is a *builtin* and not a policy: dropping the ICs was measured
-    /// (2026-07-29) at 4.53 → 3.89 KB per parked process, but doing it automatically on
-    /// park costs `pingpong` +26% and `ring` +18% — a process that parks in a loop must
-    /// keep the caches it built entering its hot loop. Restricting it to the first park
-    /// barely helped (+11.5%). ERTS reached the same fork and resolved it the same way:
-    /// the *programmer* says when a process is going idle for a long time. This is that
-    /// call. Use it in a process about to wait a long while (a pooled connection, an idle
-    /// session actor); do not use it in a request loop.
+    /// Why this is a *builtin* and not a policy: dropping the ICs on every park would cost
+    /// a process that parks in a loop the caches it built entering its hot loop. The
+    /// *programmer* says when a process is going idle for a long time: use it in a process
+    /// about to wait a long while (a pooled connection, an idle session actor); do not use
+    /// it in a request loop.
     ///
     /// Sound because the IC tables are pure caches — every entry is validated against
     /// `(sym, argc, epoch)` before use, so discarding them costs a miss and a
@@ -137,18 +98,14 @@ impl Heap {
         // Blocks index the tables just dropped, so they go in lockstep; the next
         // activation re-resolves a fresh block.
         self.arm_ic_blocks.borrow_mut().clear();
-        // M2b: base counters reset in lockstep with the registry + tables, so
-        // recycled site-id space starts at 0 exactly as it did when bases came
-        // from `table.len()` (ADR-096's guards rely on the epoch/sym checks, not
-        // on unique ids).
+        // Base counters reset in lockstep with the registry + tables (ADR-096's guards
+        // rely on the epoch/sym checks, not on unique ids).
         self.next_ic_base.set(0);
         self.next_gic_base.set(0);
         self.arm_ic_blocks.borrow_mut().shrink_to_fit();
         // The ability-dispatch ICs are caches on exactly the same terms (every entry is
         // validated against `global_epoch` before use), so "drop the caches" has to
-        // include them — leaving them behind was an inconsistency, not a decision. Memory
-        // only: a long-idle actor that dispatched over an ability keeps a `HashMap` of
-        // per-op ways alive for nothing.
+        // include them.
         self.dispatch_ics.borrow_mut().clear();
         self.dispatch_ics.borrow_mut().shrink_to_fit();
         // The compiled-body cache is a cache too, and by far the largest thing a
@@ -163,6 +120,25 @@ impl Heap {
         before.saturating_sub(after)
     }
 
+    /// **Trim a process that is about to park.** Returns the bytes of retained capacity
+    /// handed back, or `0` if the process was below the threshold and nothing was done.
+    ///
+    /// A parked process is quiescent and may stay so for the life of the program, so the
+    /// two things a *running* heap is right to keep are exactly wrong here: uncollected
+    /// garbage (a process that allocates and then parks never reaches another safepoint)
+    /// and the slab `Vec`s' high-water capacity (which a nursery flip deliberately
+    /// preserves — see `Slabs::with_capacity_like`). So: collect, then shrink, at the one
+    /// moment we know the process has nothing to do.
+    ///
+    /// **Soundness.** The captured continuation (`Suspended`) holds only *control* state —
+    /// its frames reference the operand stack and frame slots by index, and those live on
+    /// this heap's own `roots`/`env_roots`, which `collect` traces. That is the same
+    /// invariant a running process relies on at every safepoint, so collecting here is no
+    /// more dangerous than collecting one instruction earlier.
+    ///
+    /// **Threshold.** Skipped unless capacity grew by `PARK_TRIM_GROWTH_SLOTS` since the
+    /// last trim, so a latency-sensitive process that parks constantly with a small heap
+    /// pays one integer comparison and nothing else.
     pub fn trim_parked(&mut self) -> usize {
         // The gate runs on EVERY park, so it is three loads and a compare — see
         // `park_trim_probe`. Only capacity accumulated *since the last trim* counts; an
@@ -185,7 +161,7 @@ impl Heap {
         // Mark the **pre-trim high-water**, not the shrunken size. Marking `after` (the
         // obvious choice) makes the gate oscillate: the process shrinks to X, regrows to
         // X + 4 KiB, trims again, and a busy responder pays a collection every few
-        // messages — measured as `pingpong` +8.5%. Against the high-water, a process only
+        // messages. Against the high-water, a process only
         // trims when it accumulates *beyond a size it has already reached*, so a steady
         // working set trims once and never again.
         self.park_trim_mark = probe;
@@ -259,8 +235,8 @@ impl Heap {
     /// GC observability counters (Tier-1; `docs/memory-review.md` §7), as a
     /// `(runs, copied, reclaimed)` triple of cumulative figures since process
     /// start: collections performed, LOCAL objects relocated, LOCAL objects
-    /// dropped. Backs the `(dev/gc-stats)` builtin. Counts both Stage-B safepoint
-    /// collections and bare [`flush`](Self::flush) calls (they share [`arena_flip`]).
+    /// dropped. Backs the `(dev/gc-stats)` builtin. Minor and major collections
+    /// each count as one run.
     pub fn gc_counters(&self) -> (u64, u64, u64) {
         (self.gc_runs, self.gc_copied, self.gc_reclaimed)
     }

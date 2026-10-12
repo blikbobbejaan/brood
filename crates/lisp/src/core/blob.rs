@@ -1,88 +1,79 @@
-//! Shared, refcounted heap for large immutable byte blobs.
+//! Shared, refcounted storage for large immutable byte blobs.
 //!
 //! Strings allocated in a process LOCAL heap above [`SHARED_BLOB_THRESHOLD`]
-//! bytes are routed here instead of being copied inline. Send between
-//! processes then bumps an atomic refcount instead of deep-copying the bytes;
-//! handle death (process exit, a collection dropping a non-surviving slot) drops
-//! the `Arc` and frees the blob when the last reference goes.
+//! bytes, and every `Value::Bytes`, live in a [`SharedBlob`] behind an `Arc`
+//! instead of inline. Send between processes then bumps an atomic refcount
+//! instead of deep-copying the bytes; handle death (process exit, a collection
+//! dropping a non-surviving slot) drops the `Arc` and frees the blob when the
+//! last reference goes. An `Arc<SharedBlob>` never leaves its runtime: the dist
+//! wire deep-copies the bytes.
 //!
 //! ADR-026 makes data immutable, so there are no cycles — a plain `Arc` is
-//! sound (no `Weak`, no cycle collector). ADR-033's closure-as-data already
-//! proved cross-process handle retag works for immutable code; this is the
-//! same pattern for bulk byte data.
+//! sound (no `Weak`, no cycle collector).
 
 use std::sync::Arc;
 
-#[cfg(debug_assertions)]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Strings of this size or larger route through [`BlobHeap`] instead of being
-/// stored inline in the per-process slab. Below the threshold, inline storage
-/// is cheaper than the atomic refcount traffic + extra indirection. Mid-range
-/// starting value; tunable from one place.
+/// Strings of this size or larger are stored as a [`SharedBlob`] instead of
+/// inline in the per-process slab. Below the threshold, inline storage is
+/// cheaper than the atomic refcount traffic + extra indirection.
 pub const SHARED_BLOB_THRESHOLD: usize = 256;
 
 /// An immutable byte blob shared across processes within one runtime.
 ///
-/// The bytes are always valid UTF-8 by construction — every allocation site
-/// goes through [`crate::core::heap::Heap::alloc_string`] which accepts only
-/// `&str`. Readers may rely on this invariant.
+/// A blob is either **text** — built only by [`SharedBlob::from_text`], so its bytes
+/// are valid UTF-8 by construction and [`as_str`](Self::as_str) can hand them out as
+/// a `&str` with no check — or **raw bytes** from [`SharedBlob::new`], which holds
+/// arbitrary data and has no `&str` view at all. The two are one type because both
+/// cross processes the same way (an `Arc` bump), but a string slot only ever holds a
+/// text blob.
 pub struct SharedBlob {
-    pub(crate) bytes: Box<[u8]>,
+    contents: Contents,
+}
+
+enum Contents {
+    Text(Box<str>),
+    Bytes(Box<[u8]>),
 }
 
 impl SharedBlob {
+    /// A raw-bytes blob: any data, no UTF-8 guarantee (`Value::Bytes`).
     pub fn new(bytes: &[u8]) -> Arc<Self> {
         Arc::new(SharedBlob {
-            bytes: bytes.into(),
+            contents: Contents::Bytes(bytes.into()),
+        })
+    }
+
+    /// A text blob — the only constructor a string's storage may use.
+    pub fn from_text(text: &str) -> Arc<Self> {
+        Arc::new(SharedBlob {
+            contents: Contents::Text(text.into()),
         })
     }
 
     pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+        match &self.contents {
+            Contents::Text(text) => text.as_bytes(),
+            Contents::Bytes(bytes) => bytes,
+        }
+    }
+
+    /// The blob as text, or `None` for a raw-bytes blob.
+    pub fn as_str(&self) -> Option<&str> {
+        match &self.contents {
+            Contents::Text(text) => Some(text),
+            Contents::Bytes(_) => None,
+        }
+    }
+
+    pub fn is_text(&self) -> bool {
+        matches!(self.contents, Contents::Text(_))
     }
 
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.as_bytes().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
-/// Per-runtime registry for shared blobs. Phase 1 holds only a debug-only
-/// liveness counter; future phases may add interning, content-addressed
-/// dedup, or cross-runtime serialization hooks here without churning
-/// callers.
-///
-/// Lives behind `Arc<BlobHeap>` alongside `Arc<RuntimeCode>` and
-/// `Arc<SharedCode>`, so every spawned process in the runtime sees the same
-/// heap. Crossing a runtime boundary (dist wire) deep-copies the bytes;
-/// `Arc<SharedBlob>` never escapes its originating runtime.
-#[derive(Default)]
-pub struct BlobHeap {
-    #[cfg(debug_assertions)]
-    live_count: AtomicUsize,
-}
-
-impl BlobHeap {
-    pub fn new() -> Arc<Self> {
-        Arc::new(BlobHeap::default())
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn note_alloc(&self) {
-        self.live_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn note_free(&self) {
-        self.live_count.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    #[cfg(debug_assertions)]
-    pub fn live_count(&self) -> usize {
-        self.live_count.load(Ordering::Relaxed)
+        self.as_bytes().is_empty()
     }
 }

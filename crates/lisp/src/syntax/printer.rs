@@ -281,9 +281,8 @@ fn write_list(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u3
             ValueRef::Nil => break,
             // A lazy range in the TAIL stands for the list it denotes, so it
             // splices into the spine — `(cons 9 (range 2))` is `(9 0 1)`, not the
-            // dotted `(9 . (0 1))` that the catch-all below used to print (a value
-            // that didn't read back as itself, and `=`/`count` already treated the
-            // spine as proper).
+            // dotted `(9 . (0 1))` — which would not read back as itself, and
+            // `=`/`count` treat the spine as proper.
             ValueRef::Range(id) => {
                 let (lo, hi, step) = heap.range_parts(id);
                 let mut i = lo;
@@ -313,9 +312,7 @@ fn write_list(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u3
 fn format_float(f: f64) -> String {
     // Non-finite floats print as `inf`/`-inf`/`nan` — which the READER parses
     // back as float literals (see float_roundtrip_test.blsp), so the round-trip
-    // holds. (2026-07-16: briefly switched to Clojure's ##-spellings on a probe
-    // that checked printing but not read-back — the bare spellings were already
-    // reader-known floats. Lesson kept in the devlog: probe the FULL round trip.)
+    // holds. Any change here must be checked through the FULL round trip.
     if f.is_nan() {
         return "nan".to_string();
     }
@@ -401,7 +398,7 @@ mod tests {
     /// Readable output of a string must re-read to the same value: every
     /// control char the reader can decode must print in a form the reader
     /// understands. This guards the reader/printer round-trip for ESC, NUL,
-    /// and other C0 controls (kernel audit: they used to print as raw bytes).
+    /// and other C0 controls.
     #[test]
     fn readable_strings_round_trip_through_the_reader() {
         let mut heap = Heap::new();

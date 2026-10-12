@@ -1,26 +1,14 @@
-//! Declared-vs-curated precision (2026-08-28): a declaration beats the curated table, and the std corpus stays warning-free under both.
+//! Signature sources and lattice precision: the curated table holds only names nothing
+//! else types, and the std corpus stays warning-free.
 
 use super::*;
 
-/// A declared `(sig …)` in `std/` must never be **less precise** than the curated
-/// signature it shadows.
-///
-/// A declaration is authoritative — `annot.rs` reads it ahead of primitive / curated /
-/// inferred — so widening one silently switches off every finding that rested on the
-/// curated version. Nothing warns and nothing fails: during the ADR-276/277 adoption
-/// rounds `string/capitalize` shipped as `(string -> any)` over a curated
-/// `(string -> string)`, which disabled the `(+ 1 (string/capitalize "x"))` finding.
-/// `type_check_catalog` caught that one only because that exact expression happened to be
-/// in the catalog — a shadowed name nobody had written an example for would have gone
-/// unchecked in silence. This gate is structural instead: it needs no example per name.
-///
-/// **Returns only.** A declaration that *narrows* a parameter (`math/even?` declares
-/// `int` over a curated `number`) is a tightening, not a loss — it can only produce a
-/// warning the curated sig would have missed, and `nest check`'s zero-warning gate over
-/// `std/` + `tests/` is where that surfaces. Widening a *return* is the direction that
-/// loses checking silently, so that is the direction asserted.
+/// No name `std/` declares a `(sig …)` for is also curated. A declaration outranks the
+/// table, so an entry beside one is dead weight at best — and at worst a second, drifting
+/// statement of the contract, consulted wherever the declaration is not (a module the
+/// check did not load, a lookup chain that reads the table first).
 #[test]
-fn no_declared_std_sig_widens_its_curated_signature() {
+fn no_curated_name_is_declared_in_std() {
     let interp = crate::Interp::new();
     let std_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../std");
 
@@ -34,8 +22,6 @@ fn no_declared_std_sig_widens_its_curated_signature() {
         files.len(),
         std_root.display()
     );
-
-    let mut compared = 0usize;
 
     let mut inspected: Vec<String> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
@@ -55,7 +41,7 @@ fn no_declared_std_sig_widens_its_curated_signature() {
         };
 
         for form in &forms {
-            let Some((name, declared)) = super::annot::parse_sig_decl(&heap, *form) else {
+            let Some((name, _)) = super::annot::sig_decl_parts(&heap, *form) else {
                 continue;
             };
             let bare = crate::core::value::symbol_name(name);
@@ -63,46 +49,39 @@ fn no_declared_std_sig_widens_its_curated_signature() {
                 Some(m) if !bare.contains('/') => format!("{m}/{bare}"),
                 _ => bare.clone(),
             };
-            let Some(curated) = super::sigs::curated_sig(crate::core::value::intern(&qualified))
-            else {
-                continue;
-            };
-            compared += 1;
             inspected.push(qualified.clone());
-            if !declared.ret.is_subtype(&curated.ret) {
+            if super::sigs::curated_sig(crate::core::value::intern(&qualified)).is_some()
+                && !super::sigs::CURATED_DECLARED_EXCEPTIONS.contains(&qualified.as_str())
+            {
                 violations.push(format!(
-                    "  {qualified} ({}): declared return `{}` is WIDER than the curated `{}`",
+                    "  {qualified} ({}): declared in std AND curated — delete the curated entry",
                     path.file_name().unwrap_or_default().to_string_lossy(),
-                    declared.ret,
-                    curated.ret
                 ));
             }
         }
     }
 
-    // The gate must not be satisfiable by doing nothing (docs/handoff.md: "a gate whose
-    // pass condition can be satisfied by doing nothing is worse than no gate, because it
-    // is believed"). The first form of this guard was a COUNT — `compared >= 8`, calibrated
-    // when `std/` declared a sig for ten curated names — and the 2026-09-16 wave that
-    // removed 323 redundant std sigs left five, so the guard fired on a tree whose walk was
-    // fine (`main` red on `fedda6c4`). A count measures how many sigs std chooses to keep,
-    // not whether the walk works. The guard is now BY NAME: `math/abs` is a curated name
-    // whose std sig the wave KEPT (`scripts/redundant-sigs.blsp` measures the gate, and the
-    // checker does not derive `(number -> number)` for it verbatim), so it must be among the
-    // inspected — if the sig walk or the qualification (`math` + `abs` → `math/abs`) breaks,
-    // it is missing and this fires. `compared >= 1` beside it keeps the "did anything run"
-    // half. Should a later wave drop that sig too, move the anchor to another kept name
-    // rather than back to a count.
+    // The gate must not be satisfiable by doing nothing: `math/abs` is declared in
+    // `std/math.blsp`, so if the sig walk or the qualification (`math` + `abs`) breaks it
+    // is missing from the inspected names and this fires.
     assert!(
-        compared >= 1 && inspected.iter().any(|n| n == "math/abs"),
-        "the declared/curated walk inspected {compared} collision(s) and `math/abs` was not \
-         among them ({inspected:?}) — the sig walk or the module qualification broke, and a \
-         green result here would mean nothing"
+        inspected.iter().any(|name| name == "math/abs"),
+        "the std sig walk did not reach `math/abs` ({} names inspected) — the walk or the \
+         module qualification broke, and a green result here would mean nothing",
+        inspected.len()
     );
+    // An exception that is no longer both declared and curated is stale: drop it.
+    for exception in super::sigs::CURATED_DECLARED_EXCEPTIONS {
+        assert!(
+            inspected.iter().any(|name| name == exception)
+                && super::sigs::curated_sig(crate::core::value::intern(exception)).is_some(),
+            "`{exception}` is listed in CURATED_DECLARED_EXCEPTIONS but is no longer both \
+             declared in std and curated — remove it from the list"
+        );
+    }
     assert!(
         violations.is_empty(),
-        "{} declared std sig(s) are less precise than the curated signature they shadow \
-         (this silently disables lints — see the doc comment):\n{}",
+        "{} std-declared name(s) are also curated:\n{}",
         violations.len(),
         violations.join("\n")
     );
@@ -725,10 +704,9 @@ fn length_preserving_combinators_over_a_non_empty_list_drop_the_nil() {
 
 // A module's OWN qualified definition of a name the by-name rules describe is that function:
 // `math/max` defined in `std/math.blsp` is `math`'s `max`, not a shadow of it, so the
-// extremum rule applies to the module's own call. Without this `clamp`'s body read `max`'s
+// extremum rule applies to the module's own call. Otherwise `clamp`'s body reads `max`'s
 // inferred return — the registry-derived `ordered` cover, which grows with every record a
-// loaded module registers `compare-to` for — and the strict gate over `std/` was clean
-// with `math.blsp` checked alone and red with the project loaded (2026-09-13).
+// loaded module registers `compare-to` for — and the verdict depends on what is loaded.
 #[test]
 fn a_modules_own_qualified_definition_is_the_function_the_rule_names() {
     let strict = file_warnings_mode(

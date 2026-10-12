@@ -4,7 +4,7 @@ Differential + chaos stress tools used to hunt GC/VM/JIT and distribution bugs.
 Re-runnable. Build the armed binary first (per-deref GC tripwire + heap verifier):
 
 ```
-RUSTFLAGS="-C debug-assertions=on" cargo build --release --features jit --bin brood
+RUSTFLAGS="-C debug-assertions=on" cargo build --release --bin brood
 ```
 
 ## Differential / oracle fuzzing
@@ -13,22 +13,19 @@ RUSTFLAGS="-C debug-assertions=on" cargo build --release --features jit --bin br
 scripts/fuzz/run.sh <generator> [count] [base-seed]
 ```
 
-Generates `count` programs and runs each under the tree-walker (reference),
-VM-no-JIT (`BROOD_NO_JIT=1`), VM+JIT (default), and GC-stress
-(`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`); flags any output **divergence** between
-engines, any `BAD` line (oracle generators self-check), or any **crash** (a
+Generates `count` programs and runs each under the tree-walker (reference,
+`BROOD_TIER=0`), the VM without the JIT (`BROOD_TIER=1`), VM+JIT (default), and
+GC-stress (`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`); flags any output **divergence**
+between engines, any `BAD` line (oracle generators self-check), or any **crash** (a
 crashing input is copied next to this README).
 
-**A differential is evidence only when the programs run — and for weeks they did not.**
-After the ADR-302/ADR-330 rename waves every generator still emitted `println`, `rem`,
-`concat`, `rope-insert`, …; each program died on its first form, all four engines agreed on an
-empty stdout, and `run.sh` reported "0 divergences" on 1850 programs (2026-09-15). Two things
-now hold the line: `run.sh` counts a program as **`STALE GENERATOR`** (and exits nonzero) when
-the reference engine reports an unbound symbol or prints nothing — for every generator but
-`syntax`/`checker`, whose programs are meant to be rejected — and
-`crates/cli/tests/fuzz_generators_live.rs` runs one program per generator in the ordinary
-test suite, so a rename wave reds CI here instead of hollowing the harness out silently.
-A generator writes Brood from Python; no `nest check` sweep can see it. Grep the Python too.
+**A differential is evidence only when the programs run.** `run.sh` counts a program as
+**`STALE GENERATOR`** (and exits nonzero) when the reference engine reports an unbound
+symbol or prints nothing — for every generator but `syntax`/`checker`, whose programs are
+meant to be rejected — and `crates/cli/tests/fuzz_generators_live.rs` runs one program per
+generator in the ordinary test suite, so a rename wave reds CI instead of silently
+hollowing the harness out. The generators are Brood, but the programs they emit live in
+string templates no `nest check` sweep reads — grep the templates after a rename.
 
 **An engine differential cannot see a bug in a heap-level cache** — the string slot's
 char→byte index (ADR-213) and the form-start safepoint table (ADR-214) are shared by every
@@ -48,8 +45,11 @@ Reach for an oracle whenever the thing under test is memoised below the engine. 
 | `syntax` | malformed source — the reader must never crash (only clean errors) |
 | `checker` | random/malformed `(sig …)` — the checker must never panic/hang |
 | `strings` | char-indexed string ops + the form-start scanner vs a code-point oracle |
+| `linmap` | the linear-map rewrite vs an untouched named-function reference |
+| `pipeline` | `seq/l*` pipeline fusion + counted range loops vs a pre-built view |
 
-Each generator is `python3 generators/<g>.py <count> <base-seed> <outdir>`.
+Each generator is a Brood script, seeded through `rand`:
+`brood generators/<g>.blsp -- <count> <base-seed> <outdir>`.
 
 ## Distribution chaos
 

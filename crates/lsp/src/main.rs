@@ -341,18 +341,26 @@ fn main_loop(
             Message::Response(_) => {} // we issue no server→client requests yet
             // `exit` reaching the loop means it arrived on its own: a `shutdown`
             // first would have had `handle_shutdown` swallow the pair above.
-            Message::Notification(not) if not.method == lsp_types::notification::Exit::METHOD => {
+            Message::Notification(notification)
+                if notification.method == lsp_types::notification::Exit::METHOD =>
+            {
                 return Ok(false);
             }
-            Message::Notification(not) => {
+            Message::Notification(notification) => {
                 // A notification has no reply to salvage; contain and carry on,
                 // so one poisonous buffer doesn't end the session. The `send`
                 // failure inside still propagates (the client is gone).
-                let method = not.method.clone();
-                if let Some(res) = contain_panic(&method, || {
-                    handle_notification(connection, &mut docs, &mut interp, &mut bootstrapped, not)
+                let method = notification.method.clone();
+                if let Some(result) = contain_panic(&method, || {
+                    handle_notification(
+                        connection,
+                        &mut docs,
+                        &mut interp,
+                        &mut bootstrapped,
+                        notification,
+                    )
                 }) {
-                    res?;
+                    result?;
                 }
             }
         }
@@ -420,6 +428,37 @@ fn extract<P: serde::de::DeserializeOwned>(req: Request) -> Result<(RequestId, P
     })
 }
 
+impl Document {
+    /// The byte offset of an LSP `position` in this document.
+    fn offset(&self, position: lsp_types::Position) -> u32 {
+        self.analysis.line_index.offset(&self.text, position)
+    }
+}
+
+/// Answer a request about one open document: decode its params, look up the document
+/// `uri_of` names, and run `handle` on it. A document that is not open answers
+/// `R::default()` — null or empty, the spec's "no information".
+fn on_document<P, R>(
+    request: Request,
+    docs: &Documents,
+    uri_of: fn(&P) -> &Uri,
+    handle: impl FnOnce(&Document, P) -> R,
+) -> Response
+where
+    P: serde::de::DeserializeOwned,
+    R: serde::Serialize + Default,
+{
+    let (id, params) = match extract::<P>(request) {
+        Ok(decoded) => decoded,
+        Err(response) => return response,
+    };
+    let result = match docs.get(uri_of(&params)) {
+        Some(doc) => handle(doc, params),
+        None => R::default(),
+    };
+    Response::new_ok(id, result)
+}
+
 /// Dispatch a client request to its Tier-1 feature handler, producing the
 /// response to send. An unknown method gets `MethodNotFound`; a request for a
 /// document we don't have gets a null result (the spec's "no information").
@@ -430,350 +469,293 @@ fn handle_request(
     req: Request,
 ) -> Response {
     match req.method.as_str() {
-        HoverRequest::METHOD => {
-            let (id, p) = match extract::<HoverParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position_params;
-            let result = docs.get(&pos.text_document.uri).and_then(|doc| {
+        HoverRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &HoverParams| &params.text_document_position_params.text_document.uri,
+            |doc, params| {
                 let a = &doc.analysis;
-                let offset = a.line_index.offset(&doc.text, pos.position);
+                let offset = doc.offset(params.text_document_position_params.position);
                 hover::hover(interp, &doc.text, &a.cst, &a.scope, &a.line_index, offset)
-            });
-            Response::new_ok(id, result)
-        }
-        Completion::METHOD => {
-            let (id, p) = match extract::<CompletionParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position;
-            let result = docs.get(&pos.text_document.uri).map(|doc| {
+            },
+        ),
+        Completion::METHOD => on_document(
+            req,
+            docs,
+            |params: &CompletionParams| &params.text_document_position.text_document.uri,
+            |doc, params| {
                 let a = &doc.analysis;
-                let offset = a.line_index.offset(&doc.text, pos.position);
-                completion::completions(interp, &a.scope, &a.cst, &doc.text, offset, caps.snippet)
-            });
-            Response::new_ok(id, result)
-        }
-        DocumentSymbolRequest::METHOD => {
-            let (id, p) = match extract::<DocumentSymbolParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).map(|doc| {
+                let offset = doc.offset(params.text_document_position.position);
+                Some(completion::completions(
+                    interp,
+                    &a.scope,
+                    &a.cst,
+                    &doc.text,
+                    offset,
+                    caps.snippet,
+                ))
+            },
+        ),
+        DocumentSymbolRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &DocumentSymbolParams| &params.text_document.uri,
+            |doc, _| {
                 let a = &doc.analysis;
-                symbols::document_symbols(&a.cst, &doc.text, &a.line_index)
-            });
-            Response::new_ok(id, result)
-        }
-        GotoDefinition::METHOD => {
-            let (id, p) = match extract::<GotoDefinitionParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position_params;
-            let uri = pos.text_document.uri;
-            // Not a closure: goto-definition needs `&mut interp` (for the
-            // cross-file `source-location` fallback) alongside the immutable
-            // `docs` borrow, so inline the lookup to keep both borrows separate.
-            let result = match docs.get(&uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    let offset = a.line_index.offset(&doc.text, pos.position);
-                    definition::definition(
-                        interp,
-                        &uri,
+                Some(symbols::document_symbols(&a.cst, &doc.text, &a.line_index))
+            },
+        ),
+        GotoDefinition::METHOD => on_document(
+            req,
+            docs,
+            |params: &GotoDefinitionParams| &params.text_document_position_params.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                let position = params.text_document_position_params;
+                definition::definition(
+                    interp,
+                    &position.text_document.uri,
+                    &doc.text,
+                    &a.cst,
+                    &a.scope,
+                    &a.line_index,
+                    doc.offset(position.position),
+                )
+            },
+        ),
+        SelectionRangeRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &SelectionRangeParams| &params.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                Some(selection_range::selection_ranges(
+                    &a.cst,
+                    &doc.text,
+                    &a.line_index,
+                    &params.positions,
+                ))
+            },
+        ),
+        DocumentLinkRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &DocumentLinkParams| &params.text_document.uri,
+            |doc, _| {
+                let a = &doc.analysis;
+                document_link::document_links(interp, &doc.text, &a.cst, &a.line_index)
+            },
+        ),
+        SignatureHelpRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &SignatureHelpParams| &params.text_document_position_params.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                let offset = doc.offset(params.text_document_position_params.position);
+                signature::signature_help(interp, &doc.text, &a.cst, &a.scope, offset)
+            },
+        ),
+        // A local → single-file (its own scope). A global / free name → the whole project
+        // (flat module model, ADR-019), via `workspace`.
+        References::METHOD => on_document(
+            req,
+            docs,
+            |params: &ReferenceParams| &params.text_document_position.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                let uri = &params.text_document_position.text_document.uri;
+                let offset = doc.offset(params.text_document_position.position);
+                Some(match a.scope.resolve_at(&a.cst, &doc.text, offset) {
+                    Resolution::Defined {
+                        kind: BindingKind::Local,
+                        ..
+                    } => references::references(
+                        uri,
                         &doc.text,
                         &a.cst,
                         &a.scope,
                         &a.line_index,
                         offset,
-                    )
-                }
-                None => None,
-            };
-            Response::new_ok(id, result)
-        }
-        SelectionRangeRequest::METHOD => {
-            let (id, p) = match extract::<SelectionRangeParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).map(|doc| {
-                let a = &doc.analysis;
-                selection_range::selection_ranges(&a.cst, &doc.text, &a.line_index, &p.positions)
-            });
-            Response::new_ok(id, result)
-        }
-        DocumentLinkRequest::METHOD => {
-            let (id, p) = match extract::<DocumentLinkParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            // Like goto-definition, this needs `&mut interp` (module resolution runs
-            // `%require-find`) alongside the `docs` borrow — inline the lookup.
-            let result = match docs.get(&p.text_document.uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    document_link::document_links(interp, &doc.text, &a.cst, &a.line_index)
-                }
-                None => Vec::new(),
-            };
-            Response::new_ok(id, result)
-        }
-        SignatureHelpRequest::METHOD => {
-            let (id, p) = match extract::<SignatureHelpParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position_params;
-            let result = docs.get(&pos.text_document.uri).and_then(|doc| {
-                let a = &doc.analysis;
-                let offset = a.line_index.offset(&doc.text, pos.position);
-                signature::signature_help(interp, &doc.text, &a.cst, &a.scope, offset)
-            });
-            Response::new_ok(id, result)
-        }
-        References::METHOD => {
-            let (id, p) = match extract::<ReferenceParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position;
-            let uri = pos.text_document.uri;
-            // A local → single-file (its own scope). A global / free name → the
-            // whole project (flat module model, ADR-019), via `workspace`.
-            let result = match docs.get(&uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    let offset = a.line_index.offset(&doc.text, pos.position);
-                    Some(match a.scope.resolve_at(&a.cst, &doc.text, offset) {
-                        Resolution::Defined {
-                            kind: BindingKind::Local,
-                            ..
-                        } => references::references(
-                            &uri,
-                            &doc.text,
-                            &a.cst,
-                            &a.scope,
-                            &a.line_index,
-                            offset,
-                        ),
-                        Resolution::Defined { .. } | Resolution::Free => {
-                            match workspace::symbol_at(&a.cst, &doc.text, offset) {
-                                Some(name) => {
-                                    let name = name.to_string();
-                                    workspace::references(interp, docs, &uri, &name)
-                                }
-                                None => Vec::new(),
+                    ),
+                    Resolution::Defined { .. } | Resolution::Free => {
+                        match workspace::symbol_at(&a.cst, &doc.text, offset) {
+                            Some(name) => {
+                                let name = name.to_string();
+                                workspace::references(interp, docs, uri, &name)
                             }
+                            None => Vec::new(),
                         }
-                        Resolution::NotASymbol => Vec::new(),
-                    })
-                }
-                None => None,
-            };
-            Response::new_ok(id, result)
-        }
-        DocumentHighlightRequest::METHOD => {
-            let (id, p) = match extract::<DocumentHighlightParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position_params;
-            let result = docs.get(&pos.text_document.uri).map(|doc| {
+                    }
+                    Resolution::NotASymbol => Vec::new(),
+                })
+            },
+        ),
+        DocumentHighlightRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &DocumentHighlightParams| {
+                &params.text_document_position_params.text_document.uri
+            },
+            |doc, params| {
                 let a = &doc.analysis;
-                let offset = a.line_index.offset(&doc.text, pos.position);
-                references::document_highlights(&doc.text, &a.cst, &a.scope, &a.line_index, offset)
-            });
-            Response::new_ok(id, result)
-        }
-        PrepareRenameRequest::METHOD => {
-            let (id, p) = match extract::<TextDocumentPositionParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).and_then(|doc| {
+                let offset = doc.offset(params.text_document_position_params.position);
+                Some(references::document_highlights(
+                    &doc.text,
+                    &a.cst,
+                    &a.scope,
+                    &a.line_index,
+                    offset,
+                ))
+            },
+        ),
+        PrepareRenameRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &TextDocumentPositionParams| &params.text_document.uri,
+            |doc, params| {
                 let a = &doc.analysis;
-                let offset = a.line_index.offset(&doc.text, p.position);
+                let offset = doc.offset(params.position);
                 rename::prepare_rename(&doc.text, &a.cst, &a.scope, &a.line_index, offset)
                     .map(PrepareRenameResponse::Range)
-            });
-            Response::new_ok(id, result)
-        }
-        Rename::METHOD => {
-            let (id, p) = match extract::<RenameParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let pos = p.text_document_position;
-            let uri = pos.text_document.uri;
-            // Local → single-file edit; global → a project-wide `WorkspaceEdit`.
-            // Whatever comes back is sanitized + version-stamped before it goes
-            // on the wire (see `finish_workspace_edit`) — a rename is the one
-            // request whose result rewrites the user's files.
-            let result = match docs.get(&uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    let offset = a.line_index.offset(&doc.text, pos.position);
-                    match a.scope.resolve_at(&a.cst, &doc.text, offset) {
-                        Resolution::Defined {
-                            kind: BindingKind::Local,
-                            ..
-                        } => rename::rename(
-                            &uri,
-                            &doc.text,
-                            &a.cst,
-                            &a.scope,
-                            &a.line_index,
-                            offset,
-                            &p.new_name,
-                        ),
-                        Resolution::Defined { .. } | Resolution::Free => {
-                            match workspace::symbol_at(&a.cst, &doc.text, offset) {
-                                Some(name) => {
-                                    let name = name.to_string();
-                                    workspace::rename(interp, docs, &uri, &name, &p.new_name)
-                                }
-                                None => None,
+            },
+        ),
+        // Local → single-file edit; global → a project-wide `WorkspaceEdit`. Whatever comes
+        // back is sanitized + version-stamped before it goes on the wire (see
+        // `finish_workspace_edit`) — a rename is the one request that rewrites user files.
+        Rename::METHOD => on_document(
+            req,
+            docs,
+            |params: &RenameParams| &params.text_document_position.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                let uri = &params.text_document_position.text_document.uri;
+                let offset = doc.offset(params.text_document_position.position);
+                let edit = match a.scope.resolve_at(&a.cst, &doc.text, offset) {
+                    Resolution::Defined {
+                        kind: BindingKind::Local,
+                        ..
+                    } => rename::rename(
+                        uri,
+                        &doc.text,
+                        &a.cst,
+                        &a.scope,
+                        &a.line_index,
+                        offset,
+                        &params.new_name,
+                    ),
+                    Resolution::Defined { .. } | Resolution::Free => {
+                        match workspace::symbol_at(&a.cst, &doc.text, offset) {
+                            Some(name) => {
+                                let name = name.to_string();
+                                workspace::rename(interp, docs, uri, &name, &params.new_name)
                             }
+                            None => None,
                         }
-                        Resolution::NotASymbol => None,
                     }
-                }
-                None => None,
-            };
-            Response::new_ok(id, result.map(|e| finish_workspace_edit(docs, caps, e)))
-        }
-        SemanticTokensFullRequest::METHOD => {
-            let (id, p) = match extract::<SemanticTokensParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).map(|doc| {
+                    Resolution::NotASymbol => None,
+                };
+                edit.map(|edit| finish_workspace_edit(docs, caps, edit))
+            },
+        ),
+        SemanticTokensFullRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &SemanticTokensParams| &params.text_document.uri,
+            |doc, _| {
                 let a = &doc.analysis;
-                SemanticTokensResult::Tokens(semantic_tokens::semantic_tokens(
-                    &doc.text,
-                    &a.cst,
-                    &a.scope,
-                    &a.line_index,
+                Some(SemanticTokensResult::Tokens(
+                    semantic_tokens::semantic_tokens(&doc.text, &a.cst, &a.scope, &a.line_index),
                 ))
-            });
-            Response::new_ok(id, result)
-        }
-        SemanticTokensRangeRequest::METHOD => {
-            let (id, p) = match extract::<SemanticTokensRangeParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).map(|doc| {
+            },
+        ),
+        SemanticTokensRangeRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &SemanticTokensRangeParams| &params.text_document.uri,
+            |doc, params| {
                 let a = &doc.analysis;
-                SemanticTokensRangeResult::Tokens(semantic_tokens::semantic_tokens_range(
-                    &doc.text,
-                    &a.cst,
-                    &a.scope,
-                    &a.line_index,
-                    p.range,
+                Some(SemanticTokensRangeResult::Tokens(
+                    semantic_tokens::semantic_tokens_range(
+                        &doc.text,
+                        &a.cst,
+                        &a.scope,
+                        &a.line_index,
+                        params.range,
+                    ),
                 ))
-            });
-            Response::new_ok(id, result)
-        }
+            },
+        ),
         ResolveCompletionItem::METHOD => {
             let (id, item) = match extract::<CompletionItem>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
+                Ok(decoded) => decoded,
+                Err(response) => return response,
             };
             Response::new_ok(id, completion::resolve(interp, item))
         }
-        Formatting::METHOD => {
-            let (id, p) = match extract::<DocumentFormattingParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            // `&mut interp` (source evaluates the Brood formatter) plus the
-            // immutable `docs` borrow — inline like goto-definition to keep both.
-            let result = match docs.get(&p.text_document.uri) {
-                Some(doc) => formatting::formatting(interp, &doc.text, &doc.analysis.line_index),
-                None => None,
-            };
-            Response::new_ok(id, result)
-        }
+        Formatting::METHOD => on_document(
+            req,
+            docs,
+            |params: &DocumentFormattingParams| &params.text_document.uri,
+            |doc, _| formatting::formatting(interp, &doc.text, &doc.analysis.line_index),
+        ),
         WorkspaceSymbolRequest::METHOD => {
-            let (id, p) = match extract::<WorkspaceSymbolParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
+            let (id, params) = match extract::<WorkspaceSymbolParams>(req) {
+                Ok(decoded) => decoded,
+                Err(response) => return response,
             };
-            let symbols = workspace_symbols::workspace_symbols(interp, docs, &p.query);
+            let symbols = workspace_symbols::workspace_symbols(interp, docs, &params.query);
             Response::new_ok(id, WorkspaceSymbolResponse::Nested(symbols))
         }
-        CodeActionRequest::METHOD => {
-            let (id, p) = match extract::<CodeActionParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = match docs.get(&p.text_document.uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    // Resolve a diagnostic's range to the byte offset of its
-                    // start — where the unbound name sits, for `names_in_scope`.
-                    let offset_of = |r: Range| a.line_index.offset(&doc.text, r.start);
-                    // The request's own range too: not every action hangs off a
-                    // diagnostic — "declare this signature" is offered wherever the
-                    // cursor sits inside a `defn`.
-                    let at = a.line_index.offset(&doc.text, p.range.start);
-                    code_actions::code_actions(
-                        interp,
-                        &p.text_document.uri,
-                        &a.cst,
-                        &doc.text,
-                        &a.scope,
-                        &a.line_index,
-                        offset_of,
-                        &p.context.diagnostics,
-                        at,
-                    )
-                }
-                None => Vec::new(),
-            };
-            Response::new_ok(id, result)
-        }
-        FoldingRangeRequest::METHOD => {
-            let (id, p) = match extract::<FoldingRangeParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = docs.get(&p.text_document.uri).map(|doc| {
+        CodeActionRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &CodeActionParams| &params.text_document.uri,
+            |doc, params| {
                 let a = &doc.analysis;
-                folding::folding_ranges(&a.cst, &doc.text, &a.line_index)
-            });
-            Response::new_ok(id, result)
-        }
-        InlayHintRequest::METHOD => {
-            let (id, p) = match extract::<InlayHintParams>(req) {
-                Ok(v) => v,
-                Err(resp) => return resp,
-            };
-            let result = match docs.get(&p.text_document.uri) {
-                Some(doc) => {
-                    let a = &doc.analysis;
-                    let range = (
-                        a.line_index.offset(&doc.text, p.range.start),
-                        a.line_index.offset(&doc.text, p.range.end),
-                    );
-                    Some(inlay_hints::inlay_hints(
-                        interp,
-                        &a.cst,
-                        &doc.text,
-                        &a.scope,
-                        &a.line_index,
-                        range,
-                    ))
-                }
-                None => None,
-            };
-            Response::new_ok(id, result)
-        }
+                // A diagnostic's range resolves to the byte offset of its start — where
+                // the unbound name sits, for `names_in_scope`. The request's own range
+                // too: "declare this signature" hangs off no diagnostic.
+                let offset_of = |range: Range| doc.offset(range.start);
+                code_actions::code_actions(
+                    interp,
+                    &params.text_document.uri,
+                    &a.cst,
+                    &doc.text,
+                    &a.scope,
+                    &a.line_index,
+                    offset_of,
+                    &params.context.diagnostics,
+                    doc.offset(params.range.start),
+                )
+            },
+        ),
+        FoldingRangeRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &FoldingRangeParams| &params.text_document.uri,
+            |doc, _| {
+                let a = &doc.analysis;
+                Some(folding::folding_ranges(&a.cst, &doc.text, &a.line_index))
+            },
+        ),
+        InlayHintRequest::METHOD => on_document(
+            req,
+            docs,
+            |params: &InlayHintParams| &params.text_document.uri,
+            |doc, params| {
+                let a = &doc.analysis;
+                let range = (doc.offset(params.range.start), doc.offset(params.range.end));
+                Some(inlay_hints::inlay_hints(
+                    interp,
+                    &a.cst,
+                    &doc.text,
+                    &a.scope,
+                    &a.line_index,
+                    range,
+                ))
+            },
+        ),
         // Nothing else is advertised: reply method-not-found rather than leave
         // the client waiting on a response.
         _ => Response::new_err(
@@ -886,19 +868,19 @@ fn handle_notification(
     docs: &mut Documents,
     interp: &mut Interp,
     bootstrapped: &mut HashSet<PathBuf>,
-    not: ServerNotification,
+    notification: ServerNotification,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     // Bad params must not tear down the connection: a malformed (or
     // unexpectedly-shaped) notification is logged and dropped, never fatal.
     // Only `send` failures below propagate — those mean the client is gone.
-    match not.method.as_str() {
+    match notification.method.as_str() {
         DidOpenTextDocument::METHOD => {
-            let Some(p) = params::<lsp_types::DidOpenTextDocumentParams>(not) else {
+            let Some(opened) = params::<lsp_types::DidOpenTextDocumentParams>(notification) else {
                 return Ok(());
             };
-            let uri = p.text_document.uri;
-            let text = p.text_document.text;
-            let version = p.text_document.version;
+            let uri = opened.text_document.uri;
+            let text = opened.text_document.text;
+            let version = opened.text_document.version;
             // Cache the analysis once per document version — every later
             // request against this URI reads from `doc.analysis` rather than
             // re-parsing the source.
@@ -914,7 +896,8 @@ fn handle_notification(
             publish(connection, docs, interp, bootstrapped, &uri)?;
         }
         DidChangeTextDocument::METHOD => {
-            let Some(p) = params::<lsp_types::DidChangeTextDocumentParams>(not) else {
+            let Some(changed) = params::<lsp_types::DidChangeTextDocumentParams>(notification)
+            else {
                 return Ok(());
             };
             // Incremental sync: start from the current buffer and apply each
@@ -923,15 +906,15 @@ fn handle_notification(
             // send). Edits within one batch compound, so each resolves its range
             // against the text the prior edit produced. Re-parse ONCE after all
             // edits — incremental *sync* does not require incremental *parse*.
-            let uri = p.text_document.uri;
-            let version = p.text_document.version;
+            let uri = changed.text_document.uri;
+            let version = changed.text_document.version;
             let Some(doc) = docs.get(&uri) else {
                 // A change for a document we never saw a didOpen for — ignore
                 // (the protocol guarantees open before change).
                 return Ok(());
             };
             let mut text = doc.text.clone();
-            for change in &p.content_changes {
+            for change in &changed.content_changes {
                 apply_content_change(&mut text, change);
             }
             let analysis = analyze(&text);
@@ -946,10 +929,10 @@ fn handle_notification(
             publish(connection, docs, interp, bootstrapped, &uri)?;
         }
         DidCloseTextDocument::METHOD => {
-            let Some(p) = params::<lsp_types::DidCloseTextDocumentParams>(not) else {
+            let Some(closed) = params::<lsp_types::DidCloseTextDocumentParams>(notification) else {
                 return Ok(());
             };
-            let uri = p.text_document.uri;
+            let uri = closed.text_document.uri;
             docs.remove(&uri);
             // Clear diagnostics for the closed document.
             send_diagnostics(connection, &uri, Vec::new(), None)?;
@@ -962,10 +945,10 @@ fn handle_notification(
             // `publish` re-run `bootstrap_project`, which re-evaluates the
             // project's source set into the live `Interp`. Per-source-file
             // saves don't need this — the buffer text already drives publish.
-            let Some(p) = params::<lsp_types::DidSaveTextDocumentParams>(not) else {
+            let Some(saved) = params::<lsp_types::DidSaveTextDocumentParams>(notification) else {
                 return Ok(());
             };
-            let uri = p.text_document.uri;
+            let uri = saved.text_document.uri;
             if let Some(path) = uri_to_path(&uri) {
                 if path.file_name().and_then(|n| n.to_str()) == Some("project.blsp") {
                     if let Some(root) = path.parent() {
@@ -985,12 +968,12 @@ fn handle_notification(
 /// Deserialize a notification's params, logging and dropping it on failure.
 /// The method has already been matched, so the only error is a params-shape
 /// mismatch — which we tolerate rather than let kill the server.
-fn params<P: serde::de::DeserializeOwned>(not: ServerNotification) -> Option<P> {
-    let method = not.method.clone();
-    match not.extract::<P>(&method) {
-        Ok(p) => Some(p),
-        Err(e) => {
-            eprintln!("brood-lsp: ignoring malformed `{method}`: {e:?}");
+fn params<P: serde::de::DeserializeOwned>(notification: ServerNotification) -> Option<P> {
+    let method = notification.method.clone();
+    match notification.extract::<P>(&method) {
+        Ok(decoded) => Some(decoded),
+        Err(error) => {
+            eprintln!("brood-lsp: ignoring malformed `{method}`: {error:?}");
             None
         }
     }
@@ -1007,19 +990,18 @@ mod uri_tests;
 #[path = "diagnostic_tests.rs"]
 mod diagnostic_tests;
 
-/// Walk up from `file_path` looking for a directory containing `project.blsp`,
-/// the project root marker. `None` if the file isn't inside a Brood project.
-fn find_project_root(file_path: &Path) -> Option<PathBuf> {
-    let mut dir = file_path.parent()?;
-    loop {
-        if dir.join("project.blsp").exists() {
-            return Some(dir.to_path_buf());
-        }
-        match dir.parent() {
-            Some(p) if p != dir => dir = p,
-            _ => return None,
-        }
-    }
+/// The project root above `file_path` — the nearest directory holding a `project.blsp` —
+/// asked of `project/find-root`, the walk `nest` uses. `None` outside a Brood project.
+fn find_project_root(interp: &mut Interp, file_path: &Path) -> Option<PathBuf> {
+    let directory = file_path.parent()?.to_string_lossy().into_owned();
+    let form = brood::introspect::call_form("project/find-root", &[&directory]);
+    let checkpoint = interp.heap.checkpoint();
+    let root = match interp.eval_str(&form) {
+        Ok(Value::Str(id)) => Some(PathBuf::from(interp.heap.string(id).to_string())),
+        _ => None,
+    };
+    interp.heap.reset_local_to(checkpoint);
+    root
 }
 
 /// Bootstrap the project rooted at the file in `uri` — once per project root
@@ -1033,19 +1015,18 @@ fn bootstrap_project(interp: &mut Interp, bootstrapped: &mut HashSet<PathBuf>, u
     let Some(file_path) = uri_to_path(uri) else {
         return;
     };
-    let Some(root) = find_project_root(&file_path) else {
+    let Some(root) = find_project_root(interp, &file_path) else {
         return;
     };
     if bootstrapped.contains(&root) {
         return;
     }
     // Load the project image for tooling through the shared seam, so the LSP
-    // and `nest mcp` can't drift on which frameworks a tooling image carries
-    // (this used to inline `project-setup`/`load-sources`/`require 'test` and
-    // omitted `'format`). Policy lives in Brood (`setup-tooling-image`).
-    if let Err(e) = brood::introspect::load_tooling_image(interp, &root.display().to_string()) {
+    // and `nest mcp` can't drift on which frameworks a tooling image carries.
+    // Policy lives in Brood (`setup-tooling-image`).
+    if let Err(error) = brood::introspect::load_tooling_image(interp, &root.display().to_string()) {
         eprintln!(
-            "brood-lsp: project bootstrap failed for {}: {e}",
+            "brood-lsp: project bootstrap failed for {}: {error}",
             root.display()
         );
     }
@@ -1132,11 +1113,9 @@ fn is_manifest_uri(uri: &Uri) -> bool {
 ///
 /// When the READER refuses the text, there is nothing to check — and that refusal is
 /// itself the diagnostic: the CST is deliberately more tolerant than the reader (a
-/// stray `#'`, a `\c` escape, an odd-count map all parse as tooling nodes), so a file
-/// the runtime cannot even read used to show no diagnostic at all, every checker
-/// warning silently gone with it. The reader's error is published as an `ERROR` at its
-/// position — unless `syntax_reported`, i.e. the Tier-0 CST pass already flagged the
-/// text, in which case it is almost always the same fault said twice.
+/// stray `#'`, a `\c` escape, an odd-count map all parse as tooling nodes). The reader's
+/// error is published as an `ERROR` at its position — unless `syntax_reported`, i.e. the
+/// Tier-0 CST pass already flagged the text, in which case it is the same fault twice.
 fn typecheck_diagnostics(
     interp: &mut Interp,
     text: &str,
@@ -1145,7 +1124,7 @@ fn typecheck_diagnostics(
     syntax_reported: bool,
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let cp = interp.heap.checkpoint();
+    let checkpoint = interp.heap.checkpoint();
     let read = reader::read_all_positioned(&mut interp.heap, text);
     if let Err(error) = &read {
         if !syntax_reported {
@@ -1165,50 +1144,45 @@ fn typecheck_diagnostics(
     }
     if let Ok(positioned) = read {
         let forms: Vec<Value> = positioned.into_iter().map(|(f, _)| f).collect();
-        for (pos_opt, msg) in check_file(&mut interp.heap, &forms) {
-            if let Some(pos) = pos_opt {
-                // The checker reports a reader `Pos`: 1-based line, 1-based
-                // **character** column. LSP wants 0-based line + UTF-16 column,
-                // so the projection goes `Pos → byte offset → Position` through
-                // the `LineIndex` — never `Pos.col` used *as* a `character`,
-                // which drifts by one per astral char ahead of the column and
-                // put both the squiggle and the quick-fix edit anchored to it on
-                // the wrong text (an emoji in a string earlier on the line was
-                // enough).
-                let off = index.offset_of_char_pos(text, pos);
-                // Refine from the form start to the *offending token* where we
-                // can read it off the CST (the named symbol in an "unbound
-                // symbol: X", or a call's operator) — else fall back to a
-                // one-character marker the editor widens.
-                let range = refine_diagnostic_range(cst_root, text, index, off, &msg)
-                    .unwrap_or_else(|| {
-                        Range::new(
-                            index.position(text, off),
-                            index.position(text, index.next_char(text, off)),
-                        )
-                    });
-                // A deprecation is carried as a TAG as well as a warning, so the client
-                // strikes the name through instead of only colouring it yellow — which is
-                // the difference between a diagnostic you read and one you see. ADR-283
-                // keeps deprecations advisory, so the severity stays WARNING.
-                //
-                // Recognised by the checker's own wording (`types/check/walk.rs`
-                // `stability_msg`). That coupling is deliberate — `check_file` returns
-                // `(Option<Pos>, String)` and has no category channel — and it is pinned by
-                // `a_deprecated_call_is_tagged_deprecated_not_only_warned`, which fails if
-                // either side is reworded.
-                let deprecated = msg.contains(" is deprecated since ");
-                let mut diag = Diagnostic::new_simple(range, msg);
-                diag.severity = Some(DiagnosticSeverity::WARNING);
-                diag.source = Some("brood".to_string());
-                if deprecated {
-                    diag.tags = Some(vec![DiagnosticTag::DEPRECATED]);
+        for (position, message) in check_file(&mut interp.heap, &forms) {
+            // The checker reports a reader `Pos`: 1-based line, 1-based **character**
+            // column. LSP wants 0-based line + UTF-16 column, so the projection goes
+            // `Pos → byte offset → Position` through the `LineIndex` — never `Pos.col`
+            // used *as* a `character`, which drifts by one per astral char.
+            //
+            // A finding with no position (a file-level one, like an unused `:use`) is
+            // anchored at the start of the document rather than dropped: the CLI prints it.
+            let range = match position {
+                Some(position) => {
+                    let offset = index.offset_of_char_pos(text, position);
+                    // Refine from the form start to the *offending token* where the CST
+                    // shows it — else a one-character marker the editor widens.
+                    refine_diagnostic_range(cst_root, text, index, offset, &message).unwrap_or_else(
+                        || {
+                            Range::new(
+                                index.position(text, offset),
+                                index.position(text, index.next_char(text, offset)),
+                            )
+                        },
+                    )
                 }
-                out.push(diag);
+                None => Range::new(index.position(text, 0), index.position(text, 0)),
+            };
+            // A deprecation is carried as a TAG as well as a warning, so the client
+            // strikes the name through (ADR-283 keeps it advisory: severity WARNING).
+            // Recognised by the checker's wording (`types/check/walk.rs` `stability_msg`),
+            // pinned by `a_deprecated_call_is_tagged_deprecated_not_only_warned`.
+            let deprecated = message.contains(" is deprecated since ");
+            let mut diag = Diagnostic::new_simple(range, message);
+            diag.severity = Some(DiagnosticSeverity::WARNING);
+            diag.source = Some("brood".to_string());
+            if deprecated {
+                diag.tags = Some(vec![DiagnosticTag::DEPRECATED]);
             }
+            out.push(diag);
         }
     }
-    interp.heap.reset_local_to(cp);
+    interp.heap.reset_local_to(checkpoint);
     out
 }
 
@@ -1252,8 +1226,10 @@ fn send_diagnostics(
     version: Option<i32>,
 ) -> Result<(), Box<dyn Error + Sync + Send>> {
     let params = PublishDiagnosticsParams::new(uri.clone(), diagnostics, version);
-    let not = ServerNotification::new(PublishDiagnostics::METHOD.to_string(), params);
-    connection.sender.send(Message::Notification(not))?;
+    let notification = ServerNotification::new(PublishDiagnostics::METHOD.to_string(), params);
+    connection
+        .sender
+        .send(Message::Notification(notification))?;
     Ok(())
 }
 

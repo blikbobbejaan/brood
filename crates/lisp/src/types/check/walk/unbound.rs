@@ -9,10 +9,6 @@ use super::*;
 /// `try` / `error-of` / `assert-error` body (KI-67).
 pub(in crate::types::check) const UNBOUND_PREFIX: &str = "unbound symbol: ";
 
-/// The `unbound symbol: …` diagnostic text for `nm`, with the foreign-construct
-/// hint appended when `nm` names a construct from another Lisp that Brood lacks
-/// (so the Brood way is visible at write-time). Shared by the call-head and the
-/// value-leaf unbound checks so the two messages can't drift apart.
 /// The advisory diagnostic for referencing a name a `(meta …)` marks deprecated or beta
 /// (ADR-283), or `None` for an ordinary name.
 ///
@@ -41,9 +37,7 @@ pub(super) fn stability_msg(heap: &Heap, sym: Symbol) -> Option<String> {
 
 /// Clip `s` to `max` characters with a trailing ellipsis. A diagnostic names the *reason*;
 /// it is not a place to print a type in full. An inferred record shape runs to hundreds of
-/// characters — hive's `docs/runnable` rendered a 700-character tuple-of-tuples into one
-/// warning, which is unreadable on any terminal and buries the sentence that matters. The
-/// full type is a hover away.
+/// characters, which buries the sentence that matters. The full type is a hover away.
 pub(super) fn elide(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -52,6 +46,10 @@ pub(super) fn elide(s: &str, max: usize) -> String {
     format!("{head}…")
 }
 
+/// The `unbound symbol: …` diagnostic text for `nm`, with the foreign-construct
+/// hint appended when `nm` names a construct from another Lisp that Brood lacks
+/// (so the Brood way is visible at write-time). Shared by the call-head and the
+/// value-leaf unbound checks so the two messages can't drift apart.
 pub(super) fn unbound_msg(nm: &str) -> String {
     let mut msg = format!("{}{}", UNBOUND_PREFIX, nm);
     // A deliberate rename says where the name went (ADR-304) — the same suffix the

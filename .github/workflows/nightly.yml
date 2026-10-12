@@ -53,13 +53,9 @@ jobs:
       - name: Test (nextest)
         run: cargo nextest run --no-fail-fast --features brood/treesit-grammars
 
-  # `make gcstress` runs nowhere else. The breakage job arms the GC tripwire but collects
-  # on a threshold, so a handle held across a collection is only caught when a collection
-  # happens to land inside the window — which is how KI-57 survived every green run and
-  # that job both. GC_STRESS collects at every safepoint, which makes the window a
-  # certainty; GC_VERIFY adds the whole-graph walk that catches a handle *stored* stale
-  # rather than dereferenced. The target builds DEBUG on purpose (see its comment: an
-  # optimised build reports KI-57 clean on the faithful pre-fix code).
+  # `make gcstress` runs nowhere else: GC_STRESS collects at every safepoint, so a handle
+  # held across a collection is caught every time rather than when a threshold collection
+  # happens to land in the window (KI-57). The target builds DEBUG on purpose.
   gcstress:
     name: GC stress + verify (concurrency and mailbox tests)
     runs-on: ubuntu-latest
@@ -84,19 +80,9 @@ jobs:
           path: /tmp/gcstress.*.log
           if-no-files-found: warn
 
-  # The manual gates. Everything here was previously run only when someone remembered,
-  # and on 2026-09-02 all three turned out to have been broken for days or weeks —
-  # silently, because a gate nobody runs reports nothing:
-  #
-  #   * `make asan` could not pass at all (its `BROOD_STACK_BUDGET` workaround was larger
-  #     than the stack, which a test added later correctly rejects — four days red);
-  #   * the program fuzzer emitted a pre-ADR-302 argument order, so 14 of 25 seeds
-  #     "diverged" on checker warnings and buried any real signal;
-  #   * the parallel-scaling probe called three renamed-away names, printed nothing, and
-  #     had reported "no timing" to nobody since the rename wave.
-  #
-  # None of that is a runtime bug and all of it is a hole in the net. Nightly turns
-  # "broken for weeks" into "broken for a day".
+  # The manual gates. A gate nobody runs reports nothing, so these rotted silently for
+  # weeks when they were run only by hand; nightly turns "broken for weeks" into
+  # "broken for a day".
   stress:
     name: stress suite (fuzz differential, scaling, property/race, 3 engines)
     runs-on: ubuntu-latest
@@ -124,6 +110,44 @@ jobs:
           name: stress-fuzz-seeds
           path: stress/fuzz_out/
           if-no-files-found: warn
+
+  # The `perf-stats` feature compiles counter increments into the VM/JIT hot paths
+  # (vm_run_bc, deopt, the JIT call lowering, the background compiler). No other job
+  # builds it, so a cfg'd seam there could rot — or a counter could perturb an engine —
+  # unnoticed. A targeted set: the JIT and engine-differential binaries, which drive
+  # exactly those paths, plus the in-language perf triage tests on a counter-armed brood
+  # (where `perf/report` must report real counters, not its no-data branch).
+  perf-stats:
+    name: perf-stats build (JIT + differential + perf triage)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.143
+
+      - name: Test (nextest, --features brood/perf-stats, targeted)
+        run: >-
+          cargo nextest run -p brood --features brood/perf-stats --no-fail-fast
+          -E 'binary(jit) | binary(differential) | binary(jit_suspend_latch) | binary(jit_tier_frame_pairing)'
+
+      - name: perf triage tests on a counter-armed brood
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p cli --features brood/perf-stats
+          target/debug/brood --test tests/perf_test.blsp
+          # The counters must actually be compiled in and dumped: a perf-stats build that
+          # prints the "counters not compiled in" hint is the failure this job exists for.
+          echo '(io/puts (fold (range 1000) 0 (fn (total x) (+ total x))))' > perf-smoke.blsp
+          out=$(BROOD_PERF_STATS=1 target/debug/brood perf-smoke.blsp 2>&1)
+          printf '%s\n' "$out"
+          printf '%s\n' "$out" | grep -Eq '\[vm-perf\] +vm_apply +[1-9]' \
+            || { echo "::error::BROOD_PERF_STATS dumped no non-zero vm_apply counter"; exit 1; }
 
   # ASAN over the kernel-exercising tests: genuine OOB / use-after-free in the unsafe
   # substrate (the mmap table, the JIT codegen buffers) that TSAN and the logical GC

@@ -136,9 +136,9 @@ is consulted before body inference — honest as a type, and load-bearing. Full 
 scaling table and likely fix in `docs/known-issues.md`.
 
 **A gap in the engine-differential gate (2026-07-26).** Wiring this suite turned up
-something about the *harness* rather than the language: `BROOD_VM=0` does not give the
+something about the *harness* rather than the language: `BROOD_TIER=0` does not give the
 in-language test suite tree-walker coverage. A test body run by `nest test` (or
-`brood --test`) under `BROOD_VM=0` shows no slowdown at all, and `BROOD_JIT_DUMP_IR=1`
+`brood --test`) under `BROOD_TIER=0` shows no slowdown at all, and `BROOD_JIT_DUMP_IR=1`
 lists its arms reaching the JIT — the env var gates how a *top-level form* is run, while
 the test framework invokes each test as an already-compiled closure. The same function at
 top level (`brood file.blsp`) correctly interprets and produces zero JIT arms, and is ~10x

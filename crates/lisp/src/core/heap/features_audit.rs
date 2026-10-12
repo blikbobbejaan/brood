@@ -1,8 +1,7 @@
 //! `BROOD_FEATURES_AUDIT=1` — catch the write that leaves `*features*` listing a module
 //! whose bindings are gone.
 //!
-//! That state is the end of KI-119, KI-120, KI-170 and the 2026-09-23 wave (KI-193's
-//! entry): `require-one` trusts `*features*`, so a module listed there with nothing bound is
+//! That state is the end of KI-119, KI-120, KI-170 and KI-193: `require-one` trusts `*features*`, so a module listed there with nothing bound is
 //! never reloaded, every `(:use m)` after it imports nothing, and each bare use dies
 //! `unbound symbol` in some other process, long after and far from the write that caused it.
 //! `%refer`'s `[refer] … imported NOTHING` line reports the symptom; this reports the cause.

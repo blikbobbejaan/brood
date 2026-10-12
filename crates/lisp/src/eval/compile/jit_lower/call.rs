@@ -5,12 +5,13 @@
 //! `Break` the caller's inner loop, non-tail → `Fall` through); `SelfCall` is always a
 //! terminator, so the caller `break`s after it. `None` bails the whole arm to the VM.
 #![cfg(feature = "jit")]
-use super::emit::{box_scalar, read_words, store_int, store_op, Frame, Funcs, TICK_BATCH};
+use super::emit::{
+    box_scalar, deopt_code, read_words, store_int, store_op, DeoptReason, Frame, Funcs, TICK_BATCH,
+};
 use super::Op;
 use super::OrBail;
 use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_BOOL, TAG_FLOAT};
 use crate::core::value::Symbol;
-use crate::eval::compile::inline::icall_enabled;
 use cranelift_codegen::ir::BlockArg;
 use cranelift_codegen::ir::{
     condcodes::IntCC, types, Block, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value,
@@ -32,159 +33,19 @@ pub(super) enum Flow {
 /// call) becomes direct CLIF loads/stores, deleting the `brood_rt_fast_frame` →
 /// `jit_dispatch_fast_frame` → `jit_run_fast_link` frames from the steady state.
 ///
-/// **Opt-in (`BROOD_XCALL=1`), emitted in every general-lowered body.** Two refinements
-/// were tried and rejected on 2026-08-30 before settling here:
-/// - *Default-on gated to the inlined-upgrade body* (riding the deferred compile so
-///   short runs never pay the fatter IR): free, but winless — the upgrade body's
-///   callees are spliced, so its residual call sites are few, and the arms that make
-///   the millions of fast-frame calls (`bintree`'s `check-node`, two non-tail
-///   self-calls) never derive an upgrade at all. Measured warmed, same binary:
-///   bintree ±0.3%.
-/// - *Emitted everywhere by default*: bintree −11.4% wall (unpinned, script-warmed),
-///   but a ~115M-instruction per-run compile CONSTANT (fib +6% at default N, +2% at
-///   N=38 — fixed, not per-call: the step-1 MKCLO cost class) and spawn +19% through
-///   contention on the fatter compiles.
-/// The shipped shape is the **hot re-lowering stage** (`hot = true`): recompile the SAME
-/// small body with this blob on the deferred queue once the arm's small native is
-/// installed and it activates again — zero compile cost to short runs (the deferred
-/// queue drains only after every initial tier), the full win for long-running arms; the
-/// deferred inlined-upgrade bodies carry it too. `BROOD_NO_XCALL=1` kills all of it.
-/// Excluded wherever the callback path carries diagnostics the inline path does not
-/// replicate (debug builds' staged-arg validation, `BROOD_JIT_VERIFY`/`_FN`'s scans,
-/// `perf-stats`' counters).
-///
-/// **Measurement trap (cost a wrong conclusion today):** the first `perf stat -r N`
-/// batch after ANY rebuild pays the build-id-keyed boot-cache rebuild (~215M
-/// instructions smeared into the average) — warm each binary once before an A/B, the
-/// way `scripts/ab-bench.sh` footgun 4 already prescribes.
+/// Emitted only in the **hot re-lowering stage** (`hot = true`): the SAME small body is
+/// recompiled with this blob on the deferred queue once the arm's small native is installed
+/// and it activates again — so short runs never pay the fatter compile, and long-running
+/// arms get the win; the deferred inlined-upgrade bodies carry it too. Emitting it in every
+/// first compile costs a large per-run compile constant, which is why it is not done.
+/// `BROOD_NO_XCALL=1` disables all of it. Also excluded wherever the callback path carries
+/// diagnostics the inline path does not replicate (debug builds' staged-arg validation,
+/// `BROOD_JIT_VERIFY`/`_FN`'s scans, `perf-stats`' counters).
 pub(super) fn xcall_emit(hot: bool) -> bool {
-    // Master enable: the diagnostics exclusions + the BROOD_NO_XCALL kill switch.
-    static OK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    // BROOD_XCALL=1: additionally arm EVERY body (the experiment/A-B lever) — the
-    // measured per-run compile constant makes this unsuitable as a default.
-    static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let ok = *OK.get_or_init(|| {
-        std::env::var_os("BROOD_NO_XCALL").is_none()
-            && !cfg!(debug_assertions)
-            && !cfg!(feature = "perf-stats")
-            && !crate::eval::compile::inline::jit_verify_active()
-            && std::env::var_os("BROOD_JIT_VERIFY_FN").is_none()
-    });
-    ok && (hot || *ALL.get_or_init(|| std::env::var_os("BROOD_XCALL").is_some_and(|v| v == "1")))
-}
-
-/// Report a mid-emit refusal under `BROOD_JIT_BAIL_TRACE=1`, same line shape as
-/// `jit_lower`'s `trace_lower_bail` so one grep covers both. These sites used to return
-/// `None` silently, and the runtime's generic `lowering-returned-none` line cannot say
-/// *which* instruction refused — `call-spill-exhausted` on nqueens' `solve` cost a whole
-/// bisect to find (the spill reserve undercounted; see `jit_spill_reserve`). The arm name
-/// is not in scope here; the generic line that follows carries it.
-fn trace_call_bail<T>(reason: &'static str) -> Option<T> {
-    // Recorded unconditionally (a Cell store): the arm-named decline line in
-    // `jit_runtime::trace_lower_declined` picks this up, so grepping `arm=` sees the
-    // specific reason — the bare `(mid-emit)` line below has no arm name and a filtered
-    // trace read used to lose it.
-    // Record only: the arm-named line `trace_lower_declined` prints carries this. The
-    // bare `(mid-emit)` line this used to print had no `arm=` and read as a second,
-    // unattributed refusal.
-    super::bail(reason)
-}
-
-/// `Inst::MakeClosure` — a `(fn …)` literal. The callback runs `exec_chunk`'s arm verbatim,
-/// so this only has to put the world in the shape that arm expects: the `ncap` capture
-/// values staged on top of `roots` (where the VM's operand stack leaves them), then one
-/// `brood_rt_make_closure(heap, out, inst)` call, then the fresh closure read back from
-/// `out` as a `Handle`.
-///
-/// The callback is a **safepoint** (it allocates, and `make_closure_cached` can promote),
-/// so it takes the same two disciplines a non-tail `Call` does: every live `Handle` deeper
-/// on the operand stack is spilled to a reserved frame slot first (GC-visible; `jit_spill_reserve`
-/// counts `MakeClosure` as a producer, so the reserve exists), and the roots base is
-/// re-fetched after the call (the staging `push_room` may have reallocated `roots`).
-#[allow(clippy::too_many_arguments)]
-pub(super) fn emit_make_closure(
-    b: &mut FunctionBuilder,
-    stack: &mut Vec<Op>,
-    spill_next: &mut usize,
-    ncap: usize,
-    inst: *const crate::eval::compile::Inst,
-    spill_base: usize,
-    reserve: usize,
-    frame: Frame,
-    funcs: Funcs,
-) -> Option<()> {
-    let ptr_ty = funcs.ptr_ty;
-    let heap = funcs.heap;
-    let out_slot = funcs.out_slot;
-    // Spill deeper live Handles across the safepoint — same loop, same reasoning as
-    // `emit_call` above.
-    let below = stack
-        .len()
-        .checked_sub(ncap)
-        .or_bail("operand-stack-underflow")?;
-    for d in 0..below {
-        if matches!(stack[d], Op::Handle(..)) {
-            if *spill_next >= reserve {
-                return trace_call_bail("mkclo-spill-exhausted");
-            }
-            let slot = spill_base + *spill_next;
-            *spill_next += 1;
-            store_op(b, slot as i64, stack[d], frame);
-            stack[d] = Op::Slot(slot);
-        }
-    }
-    // Pop the captures (top of stack = last in source order), read all words BEFORE the
-    // staging push (push_room may realloc `roots`, so no slot read after it).
-    let mut ops: Vec<Op> = Vec::with_capacity(ncap);
-    for _ in 0..ncap {
-        ops.push(stack.pop().or_bail("operand-stack-underflow")?);
-    }
-    ops.reverse(); // back to `names` order — the order exec_chunk reads them in
-    let mut worded: Vec<[Value; 3]> = Vec::with_capacity(ncap);
-    for &op in &ops {
-        worded.push(read_words(b, op, frame));
-    }
-    if ncap > 0 {
-        let stage_n = b.ins().iconst(types::I64, ncap as i64);
-        let prc = b.ins().call(funcs.pushroom, &[heap, stage_n]);
-        let stage_ptr = b.inst_results(prc)[0];
-        for (i, w) in worded.iter().enumerate() {
-            let off = (i * STRIDE as usize) as i32;
-            b.ins().store(MemFlagsData::trusted(), w[0], stage_ptr, off);
-            b.ins().store(
-                MemFlagsData::trusted(),
-                w[1],
-                stage_ptr,
-                off + PAYLOAD_OFFSET as i32,
-            );
-            b.ins().store(
-                MemFlagsData::trusted(),
-                w[2],
-                stage_ptr,
-                off + PAYLOAD_OFFSET as i32 + 8,
-            );
-        }
-    }
-    let out_addr = b.ins().stack_addr(ptr_ty, out_slot, 0);
-    let inst_v = b.ins().iconst(ptr_ty, inst as i64);
-    let c = b.ins().call(funcs.mkclo, &[heap, out_addr, inst_v]);
-    let status = b.inst_results(c)[0];
-    // The callback (and the staging push before it) may have reallocated `roots`.
-    let rb = super::emit::load_roots_base(b, heap);
-    b.def_var(frame.rb_var, rb);
-    let cont = b.create_block();
-    b.ins().brif(status, funcs.error, &[], cont, &[]);
-    b.seal_block(cont);
-    b.switch_to_block(cont);
-    let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-    stack.push(Op::Handle(w0, w1, w2));
-    Some(())
+    hot && crate::diagnostics::debug_flags::inline_fast_frame()
+        && !cfg!(debug_assertions)
+        && !cfg!(feature = "perf-stats")
+        && !crate::eval::compile::inline::jit_verify_active()
 }
 
 /// `Inst::Call` — a general combination. Spills any live `Handle` below the call's
@@ -245,7 +106,7 @@ pub(super) fn emit_call(
     for d in 0..below {
         if matches!(stack[d], Op::Handle(..)) {
             if *spill_next >= reserve {
-                return trace_call_bail("call-spill-exhausted");
+                return super::bail("call-spill-exhausted");
             }
             let slot = spill_base + *spill_next;
             *spill_next += 1;
@@ -348,7 +209,7 @@ pub(super) fn emit_call(
         // exactly `[callee, args]`). Return outcome 4; `vm_run_bc` dispatches the staged
         // call with `tail = true` and reuses this frame, so the native stack never grows.
         if !stack.is_empty() {
-            return trace_call_bail("tail-nonempty-stack");
+            return super::bail("tail-nonempty-stack");
         }
         b.ins().jump(tailcall, &[]);
         return Some(Flow::Break);
@@ -385,7 +246,9 @@ pub(super) fn emit_call(
         b.ins().brif(status, error, &[], cont, &[]);
     };
 
-    if icall_enabled() && head.is_some() {
+    // The in-IR call-site fast link: an epoch-guarded flat-table fast path ahead of the
+    // `brood_rt_call_slow` miss path (`BROOD_NO_JIT_ICALL=1` opts out).
+    if crate::diagnostics::debug_flags::jit_inline_call() && head.is_some() {
         // ---- Track B / Technique A: in-IR epoch-guarded fast link ----
         // Read the flat-table base + length (re-fetched here, like the roots base, since a
         // cold nested call may have grown + reallocated it).
@@ -476,7 +339,7 @@ pub(super) fn emit_call(
 
         b.switch_to_block(brood_blk);
         if funcs.xcall {
-            // ---- §7.5 BROOD_XCALL: the inline fast-frame hit path ----
+            // ---- §7.5: the inline fast-frame hit path ----
             // Preconditions the callback path re-derives are guarded here; ANY failure
             // falls to `ff_blk` (the unchanged callback), which re-checks everything —
             // so a fall-through is only ever slower, never wrong.
@@ -939,9 +802,9 @@ pub(super) fn emit_self_call(
         let now_ep = b.ins().load(types::I64, MemFlagsData::trusted(), ep_ptr, 0);
         let changed = b.ins().icmp(IntCC::NotEqual, now_ep, entry_ep);
         let ck = b.create_block();
-        let __dr = b.ins().iconst(types::I32, 36);
+        let deopt_reason = deopt_code(b, DeoptReason::BackEdgeEpochChanged);
         b.ins()
-            .brif(changed, deopt, &[BlockArg::Value(__dr)], ck, &[]);
+            .brif(changed, deopt, &[BlockArg::Value(deopt_reason)], ck, &[]);
         b.switch_to_block(ck);
     }
     let batch = b.ins().iconst(types::I64, TICK_BATCH);
@@ -955,8 +818,13 @@ pub(super) fn emit_self_call(
     b.ins().brif(yld, go_on, &[], loop_top, &[]);
     b.switch_to_block(go_on);
     let is_limit = b.ins().icmp_imm_s(IntCC::Equal, yld, 2);
-    let __dr = b.ins().iconst(types::I32, 37);
-    b.ins()
-        .brif(is_limit, deopt, &[BlockArg::Value(__dr)], preempt, &[]);
+    let deopt_reason = deopt_code(b, DeoptReason::BackEdgeLimitPending);
+    b.ins().brif(
+        is_limit,
+        deopt,
+        &[BlockArg::Value(deopt_reason)],
+        preempt,
+        &[],
+    );
     Some(())
 }

@@ -181,9 +181,8 @@ pub(super) fn check_fn(
 /// parameter, `(type, sig-authoritative)` — and the sig itself when its shape fits the
 /// parameter list (else `None`, and every entry is unknown). The ONE rule for seeding a
 /// body from its declaration, shared by the walk (`check_fn_seeded`) and the caller-derived
-/// site collector (`sigs::collect_private_sites`): the collector used to bind an
-/// `&optional` function's parameters to nothing, so a site inside one handed every
-/// callee unknowns where the walk saw the declared ints.
+/// site collector (`sigs::collect_private_sites`), so a site inside an `&optional`
+/// function hands its callees the declared types the walk sees.
 ///
 /// The closure's actual param count must fall inside the declared sig's arity range for
 /// seeding to make sense: at least `params.len()` required, at most `params.len() +
@@ -384,7 +383,7 @@ pub(super) fn check_fn_seeded(
                 // The declaration is TRUSTED here, not verified: the body's result is the
                 // unknown, so nothing was checked against the declared return, and every
                 // caller reads it as fact (ADR-259). Outside contracts mode that is the one
-                // way a wrong declaration goes unreported; strict says so (2026-09-17).
+                // way a wrong declaration goes unreported; strict says so.
                 out.push((
                     heap.form_pos_only(ret_form),
                     format!(
@@ -427,7 +426,7 @@ pub(super) fn check_def(
         } else {
             ctx
         };
-        // `ctx.declared_sig` is keyed by the *bare* name Pass 2.5 recorded from
+        // `ctx.declared_sig` is keyed by the *bare* name declaration registration recorded from
         // the file's un-expanded `(sig …)` text; `name` here is `defn`'s
         // *expanded* def head, which is module-qualified inside a `defmodule`
         // block. The two only match at the root namespace — so a
@@ -453,9 +452,8 @@ pub(super) fn check_def(
         }
         // A declared OVERLOAD (ADR-116) is an intersection: the body must satisfy every
         // arm, so it is walked once under each arm's domain and its return checked
-        // against that arm's result. Nothing checked this before 2026-09-17 — the
-        // declaration bound nothing in the walk — and since the arms MEET at a call, a
-        // wrong arm was trusted everywhere. A finding the arms share (an unbound name,
+        // against that arm's result — since the arms MEET at a call, an unchecked wrong
+        // arm would be trusted everywhere. A finding the arms share (an unbound name,
         // a misuse under every domain) is reported once.
         let overload = ctx
             .declared_overload(name)
@@ -486,7 +484,7 @@ pub(super) fn check_def(
             }
         }
         // A module-PRIVATE function with no declaration: its parameters are what its
-        // callers in this file hand it (Pass 2.9, ADR-341) — bound plainly, not as a
+        // callers in this file hand it (the caller-derived parameter pass, ADR-341) — bound plainly, not as a
         // sig-authoritative contract, so a defensive guard the callers never exercise
         // is not reported as a dead clause.
         if let Some(derived) = ctx.derived_params(name).cloned() {
@@ -1095,10 +1093,8 @@ pub(super) fn check_let(
                     if !preceding_used && !following_used && !body_used {
                         // Only warn for user-written `let`s. Compiler-generated lets (from
                         // match/pattern expansion) are exempt: their names are user-chosen
-                        // but the "unused" status is an expansion artifact. They used to be
-                        // told apart by having no source position; the expander now gives
-                        // generated code the position of the form it came from, so the
-                        // question is asked directly (`is_synthetic`).
+                        // but the "unused" status is an expansion artifact. Generated code
+                        // carries its source form's position, so ask `is_synthetic`.
                         if !heap.is_synthetic(form) {
                             if let Some(pos) = heap.form_pos_only(form) {
                                 out.push((Some(pos), format!("unused let binding: {}", nm)));

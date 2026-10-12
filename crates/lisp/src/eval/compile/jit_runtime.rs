@@ -27,37 +27,13 @@ pub(crate) use dispatch::*;
 pub(crate) use link::*;
 pub(crate) use support::*;
 
-/// Tiering entry (ADR-101 1b). `frame_nslots` is **the size the caller already built this
-/// frame to**, and the native entry is declined (`None` — run the VM this activation) when
-/// the installed code turns out to want a *bigger* frame than that. There is deliberately no
-/// size-free spelling: a caller that cannot say what it built cannot be entered safely.
-///
-/// The KI-48 family, fourth appearance. The rule KI-48 wrote down — "the caller captures
-/// the size once and TELLS every consumer" — does not cover this one, because here the
-/// caller tells correctly and it is the **code pointer** that gets re-derived underneath:
-/// `vm_run_bc`/`dispatch` read `inline_installed` first (to size the frame), then call
-/// `jit_tier`, which Acquire-loads `jit_code` *again*. The two-stage swap stores
-/// `inline_installed` before `jit_code` precisely so a reader that sees the inlined pointer
-/// also sees the flag — but only if it reads code *first*. Read flag-then-code and the
-/// Release/Acquire chain guarantees nothing: a peer process swapping in the inlined body in
-/// that window leaves the caller holding a small frame while `jit_tier` runs the inlined
-/// native, which raw-writes slots past the frame top (measured overshoot: 12 slots on
-/// `fold`, `nslots` 13 vs `inline_nslots` 25).
-///
-/// (The other native entries — `jit_dispatch_call`, `hof_apply_native`, `jit_run_fast_link` —
-/// do not come through here at all: each loads the code pointer itself and sizes from THAT,
-/// via [`frame_size_for_code`], which is the same rule spelled the other way round.)
 /// Activations before an arm is handed to the background compiler.
 ///
-/// This is a CALL threshold, and it is deliberately high. Boot alone tiers ~139 prelude
-/// arms at a threshold of 8 (`startup` runs 18 ms and queues 139 compiles), and the
-/// compiler drains a FIFO — so a row's own hot function waited behind tens of milliseconds
-/// of boot-path code that ran eight times and never again. Measured 2026-09-12 (interleaved
-/// best-of-7, unpinned, same-binary control ±4%): 8 → 128 is `fib` −18%, `bintree` −14%,
-/// `spawn` −31%, `collatz` −14%, `pipeline` −11%, `nqueens` −9%, `base64` −8%, `nbody` −7%,
-/// every other row within the control; 64 is the same within noise; 256 and 512 start
-/// losing `sort`/`sieve`/`persistent-map` (+4–25%). What this threshold is NOT for is a
-/// loop's iteration count — see [`BACKEDGE_TIER_WEIGHT`].
+/// This is a CALL threshold, and it is deliberately high: boot alone tiers ~139 prelude
+/// arms at a threshold of 8, and the compiler drains a FIFO — so a program's own hot
+/// function waited behind boot-path code that ran eight times and never again. 64–128 is
+/// the measured plateau; 256+ starts delaying short loops. What this threshold is NOT for
+/// is a loop's iteration count — see [`BACKEDGE_TIER_WEIGHT`].
 #[cfg(feature = "jit")]
 pub(crate) const TIER_THRESHOLD: u32 = 128;
 
@@ -202,15 +178,12 @@ pub(crate) fn vm_direct_eligible(heap: &Heap, arm: &CompiledArm, argc: usize) ->
 /// Would [`jit_tier_in_frame`] return `None` for `arm` without touching anything — and so
 /// may the driver skip the tier check (and the frame bookkeeping around it) outright?
 /// True for the two early exits every interpreted activation of a refused arm takes: the
-/// over-deep drain (`jit_force_vm`) and a `BAILED` arm with no deferred hot install waiting
-/// in `inline_code`. The caller has already ruled out a ceiling below Native.
+/// over-deep drain (`jit_force_vm`) and a `BAILED` arm. The caller has already ruled out a
+/// ceiling below Native.
 ///
-/// Exists because the driver paid the tier check on EVERY non-tail call into an arm the JIT
-/// had refused — `jit_tier_in_frame`'s preamble (a TLS ceiling read, two `OnceLock`s, the
-/// `BAILED` probe) plus `settle_native_frame` on a `None` outcome: ~90 instructions of a
-/// ~1100-instruction interpreted call (2026-09-25, `perf stat` on a call-only loop at
-/// `BROOD_TIER=1`). Must mirror `jit_tier_in_frame`'s early returns: anything it would do
-/// for a `BAILED` arm with an `inline_code` staged, this must answer `false` for.
+/// Lets the driver skip `jit_tier_in_frame`'s preamble and `settle_native_frame` on every
+/// non-tail call into an arm the JIT refused. Must mirror `jit_tier_in_frame`'s early
+/// returns: anything it would do for a `BAILED` arm, this must answer `false` for.
 #[cfg(feature = "jit")]
 #[inline]
 pub(crate) fn jit_tier_declines(heap: &Heap, arm: &CompiledArm) -> bool {
@@ -219,12 +192,24 @@ pub(crate) fn jit_tier_declines(heap: &Heap, arm: &CompiledArm) -> bool {
         return true;
     }
     arm.jit_code.load(Acquire) == crate::jit::BAILED
-        && (!xadmit_enabled() || {
-            let ic = arm.inline_code.load(Acquire);
-            ic.is_null() || ic == crate::jit::BAILED || ic == crate::jit::QUEUED
-        })
 }
 
+/// Tiering entry (ADR-101 1b). `frame_nslots` is **the size the caller already built this
+/// frame to**, and the native entry is declined (`None` — run the VM this activation) when
+/// the installed code turns out to want a *bigger* frame than that. There is deliberately no
+/// size-free spelling: a caller that cannot say what it built cannot be entered safely.
+///
+/// The code pointer must be read BEFORE the frame size is trusted (KI-48 family):
+/// `vm_run_bc`/`dispatch` read `inline_installed` first (to size the frame), then call
+/// this, which Acquire-loads `jit_code` *again*. The two-stage swap stores
+/// `inline_installed` before `jit_code` so a reader that sees the inlined pointer also sees
+/// the flag — but only if it reads code *first*. Read flag-then-code and a peer swapping in
+/// the inlined body in that window leaves the caller holding a small frame while the
+/// inlined native raw-writes slots past the frame top.
+///
+/// (The other native entries — `jit_dispatch_call`, `hof_apply_native`, `jit_run_fast_link` —
+/// do not come through here: each loads the code pointer itself and sizes from THAT, via
+/// [`frame_size_for_code`], which is the same rule spelled the other way round.)
 #[cfg(feature = "jit")]
 pub(crate) fn jit_tier_in_frame(
     arm: &Arc<CompiledArm>,
@@ -240,16 +225,15 @@ pub(crate) fn jit_tier_in_frame(
     if heap.jit_force_vm {
         return None;
     }
-    // Tier ceiling below Native (ADR-222; `BROOD_TIER=1`, or its `BROOD_NO_JIT` alias): never
-    // compile or run native — interpret on the (correct) tier 1. Returns before the hotness
-    // count + the background-compile enqueue CAS, so no arm is ever handed to the compiler and
-    // no native pointer is installed, so the fast-link / dispatch paths have nothing to call
-    // either. This used to be its own `BROOD_NO_JIT` read here, unrelated to the engine
-    // selector — one ceiling now answers both.
+    // Tier ceiling below Native (ADR-222, `BROOD_TIER=1`): never compile or run native —
+    // interpret on the (correct) tier 1. Returns before the hotness count + the
+    // background-compile enqueue CAS, so no arm is ever handed to the compiler and no native
+    // pointer is installed, so the fast-link / dispatch paths have nothing to call either.
     if tier_ceiling() < Tier::Native {
         return None;
     }
-    if no_jit_computed() {
+    // `BROOD_NO_JIT_COMPUTED=1` (bisect): keep arms with a computed-head non-tail call on the VM.
+    if crate::diagnostics::debug_flags::no_jit_computed() {
         if let Some(c) = arm.chunk.as_ref() {
             if c.code.iter().any(|i| {
                 matches!(
@@ -267,31 +251,7 @@ pub(crate) fn jit_tier_in_frame(
     }
     let mut code = arm.jit_code.load(Acquire);
     if code == crate::jit::BAILED {
-        // §7.1 hot admission: a gate-refused arm's deferred hot compile may have landed
-        // (staged in `inline_code` by the bg thread) — install it, the same plain swap
-        // the relower uses (same chunk/frame/checkpoint as the small body would have
-        // had). The next activation runs it through the normal installed path, whose
-        // epoch guard covers a `def` since the compile.
-        if xadmit_enabled() {
-            let ic = arm.inline_code.load(Acquire);
-            if !ic.is_null() && ic != crate::jit::BAILED && ic != crate::jit::QUEUED {
-                arm.inline_code.store(std::ptr::null_mut(), Release);
-                arm.jit_code.store(ic, Release);
-                if let Some(sym) = arm.dbg_name {
-                    heap.invalidate_fast_links_for(sym);
-                }
-                {
-                    if crate::diagnostics::debug_flags::jit_bail_trace() {
-                        let name = arm
-                            .dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>");
-                        eprintln!("[jit-ir] arm={name} xadmit-installed nslots={}", arm.nslots);
-                    }
-                }
-            }
-        }
-        return None; // out of subset (or awaiting the hot install) — run the VM
+        return None; // out of subset — run the VM
     }
     // Shared-JIT install (the spawn lever): before this process spends TIER_THRESHOLD
     // interpreted calls + a background compile on its OWN copy of a RUNTIME/PRELUDE
@@ -384,7 +344,7 @@ pub(crate) fn jit_tier_in_frame(
             preload_arm_globals(arm, heap, heap.read_root_env(env));
             if heap.global_epoch() != epoch {
                 heap.mark_arm_stale(arm);
-                if std::env::var_os("BROOD_TRACE_COMPILE").is_some() {
+                if crate::diagnostics::debug_flags::trace_compile() {
                     let name = arm
                         .dbg_name
                         .map(crate::core::value::symbol_name_ref)

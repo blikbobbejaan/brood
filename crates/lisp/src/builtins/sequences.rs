@@ -1144,7 +1144,7 @@ pub(super) fn vector(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 
 pub(super) fn vector_ref(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
-    let n = expect_int(heap, "vector-ref", arg(args, 1))?;
+    let n = expect_int(heap, "%vector-ref", arg(args, 1))?;
     match v {
         Value::Vector(id) if n >= 0 && (n as usize) < heap.vector(id).len() => {
             Ok(heap.vector(id)[n as usize])
@@ -1155,7 +1155,7 @@ pub(super) fn vector_ref(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
             heap.vector(id).len()
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE)),
-        _ => Err(LispError::wrong_type(heap, "vector-ref", "vector", v)),
+        _ => Err(LispError::wrong_type(heap, "%vector-ref", "vector", v)),
     }
 }
 
@@ -1163,7 +1163,7 @@ pub(super) fn vector_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     let v = arg(args, 0);
     match v {
         Value::Vector(id) => Ok(Value::int(heap.vector(id).len() as i64)),
-        _ => Err(LispError::wrong_type(heap, "vector-length", "vector", v)),
+        _ => Err(LispError::wrong_type(heap, "%vector-length", "vector", v)),
     }
 }
 
@@ -1174,7 +1174,7 @@ pub(super) fn vector_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// the cloned handles stay valid across `alloc_vector`.
 pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
-    let i = expect_int(heap, "vector-assoc", arg(args, 1))?;
+    let i = expect_int(heap, "%vector-assoc", arg(args, 1))?;
     let x = arg(args, 2);
     match v {
         Value::Vector(id) if i >= 0 && (i as usize) < heap.vector(id).len() => {
@@ -1188,7 +1188,7 @@ pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             heap.vector(id).len()
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE)),
-        _ => Err(LispError::wrong_type(heap, "vector-assoc", "vector", v)),
+        _ => Err(LispError::wrong_type(heap, "%vector-assoc", "vector", v)),
     }
 }
 
@@ -1203,7 +1203,7 @@ pub(super) fn vector_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     let v = arg(args, 0);
     let id = match v {
         Value::Vector(id) => id,
-        _ => return Err(LispError::wrong_type(heap, "vector-concat", "vector", v)),
+        _ => return Err(LispError::wrong_type(heap, "%vector-concat", "vector", v)),
     };
     let tail = heap.seq_items(arg(args, 1))?;
     let head = heap.vector(id);
@@ -1221,12 +1221,12 @@ pub(super) fn subvec(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
     let id = match v {
         Value::Vector(id) => id,
-        _ => return Err(LispError::wrong_type(heap, "subvec", "vector", v)),
+        _ => return Err(LispError::wrong_type(heap, "seq/subvec", "vector", v)),
     };
     let len = heap.vector(id).len() as i64;
-    let start = expect_int(heap, "subvec", arg(args, 1))?;
+    let start = expect_int(heap, "seq/subvec", arg(args, 1))?;
     let end = if args.len() > 2 {
-        expect_int(heap, "subvec", arg(args, 2))?
+        expect_int(heap, "seq/subvec", arg(args, 2))?
     } else {
         len
     };

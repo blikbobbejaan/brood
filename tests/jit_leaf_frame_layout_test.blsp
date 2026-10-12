@@ -29,7 +29,7 @@
 ;;; need the iteration count to be high enough that the deferred leaf compile installs
 ;;; mid-activation, which is why they run in the hundreds of thousands rather than the
 ;;; usual hundreds. They pass on every tier; before the fix the default build failed and
-;;; `BROOD_TIER=1` / `BROOD_NO_LEAF_INLINE=1` / `BROOD_NO_DEOPT_RESUME=1` passed.
+;;; `BROOD_TIER=1` passed.
 
 (defmodule jit-leaf-frame-layout-test (:use test))
 

@@ -32,7 +32,27 @@
     (assert= nil (get (nest/parse "grammar" ["emacs"]) :error)))
 
   (test "a command with no positional rejects one"
-    (is (includes? (get (nest/parse "format" ["a.blsp"]) :error) "unexpected argument 'a.blsp'"))))
+    (is (includes? (get (nest/parse "format" ["a.blsp"]) :error) "unexpected argument 'a.blsp'")))
+
+  (test "a boolean flag given an inline value is a usage error"
+    (is (includes? (get (nest/parse "doc" ["--all=x"]) :error) "unexpected value 'x' for '--all'"))
+    (is (includes? (get (nest/parse "check" ["--strict="]) :error) "unexpected value"))))
+
+(describe "nest — --help is nest's only where nest reads its own flags"
+  (test "--help or -h among nest's flags asks for usage"
+    (is (get (nest/parse "check" ["a.blsp" "--help"]) :help))
+    (is (get (nest/parse "test" ["-h"]) :help))
+    (assert= 0 (nest/main (list "grammar" "--help"))))
+
+  (test "after `--`, or among a trailing command's program words, it is the program's"
+    (let (options (nest/parse "run" ["prog.blsp" "--help" "-h"]))
+      (assert= nil (get options :help))
+      (assert= (list "prog.blsp" "--help" "-h") (get options :positionals)))
+    (assert= nil (get (nest/parse "check" ["--" "--help"]) :help)))
+
+  (test "`nest run FILE --help` runs FILE rather than printing nest's usage"
+    ;; A missing FILE is the boundary's exit 2; printing usage instead would be exit 0.
+    (assert= 2 (nest/main (list "run" "/nonexistent/brood-nest-help.blsp" "--help")))))
 
 (describe "nest/parse — the clap constraints, as table data"
   (test ":requires — --dry-run needs --fix-renames"

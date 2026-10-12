@@ -258,7 +258,7 @@ pub(super) fn file_exists(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 /// (`std/tool/mcp.blsp`).
 pub(super) fn path_canonicalize(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     use std::path::{Component, Path, PathBuf};
-    let path = expect_string(heap, "canonicalize", arg(args, 0))?;
+    let path = expect_string(heap, "os/canonicalize", arg(args, 0))?;
     let raw = Path::new(&path);
     let abs = if raw.is_absolute() {
         raw.to_path_buf()
@@ -409,10 +409,10 @@ pub(super) fn spit_bytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 
 pub(super) fn append_bytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     use std::io::Write;
-    let path = expect_string(heap, "append-bytes", arg(args, 0))?;
+    let path = expect_string(heap, "file/spit-bytes-append", arg(args, 0))?;
     // Any iolist (ADR-139) — see `spit_bytes`.
     let mut bytes = Vec::new();
-    flatten_iolist(heap, "append-bytes", arg(args, 1), &mut bytes)?;
+    flatten_iolist(heap, "file/spit-bytes-append", arg(args, 1), &mut bytes)?;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -563,9 +563,9 @@ pub(super) fn fit_within(
 /// decompression bomb (≤ 16384² px, ≤ 512 MB alloc). The one image primitive;
 /// rendering (half-block cells, a GUI texture, …) is Brood policy over this buffer.
 pub(super) fn image_thumb(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let bytes = collect_bytes("image-thumb", arg(args, 0), heap)?;
-    let max_w = expect_int(heap, "image-thumb", arg(args, 1))?;
-    let max_h = expect_int(heap, "image-thumb", arg(args, 2))?;
+    let bytes = collect_bytes("gui/image-thumb", arg(args, 0), heap)?;
+    let max_w = expect_int(heap, "gui/image-thumb", arg(args, 1))?;
+    let max_h = expect_int(heap, "gui/image-thumb", arg(args, 2))?;
     if max_w <= 0 || max_h <= 0 {
         return Ok(Value::nil());
     }

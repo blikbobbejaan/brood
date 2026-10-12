@@ -380,22 +380,24 @@ its face. Unclosed markers are literal characters, as in the highlighter."
 (defn- md-words (runs)
   "Cut `runs` into words at spaces: a list of words, each a list of `[text face]`
 fragments, in order, with empty words (runs of spaces) dropped."
-  (let ([cur done] (fold runs
-                     ['() '()]
-                     (fn (acc run)
-                       (let ([cur done] acc
-                             [text face] run
-                             pieces (string/split text " ")
-                             ;; the first piece continues the current word; each later piece starts one
-                             cur1 (if (= (first pieces) "") cur (cons [(first pieces) face] cur))
-                             [cur2 done2] (fold (rest pieces)
-                                            [cur1 done]
-                                            (fn (a p)
-                                              (let ([c d] a
-                                                    d1 (if (empty? c) d (cons (reverse c) d)))
-                                                [(if (= p "") '() (list [p face])) d1]))))
-                         [cur2 done2]))))
-    (reverse (if (empty? cur) done (cons (reverse cur) done)))))
+  (let ([current done] (fold runs
+                         ['() '()]
+                         (fn (acc run)
+                           (let ([current done] acc
+                                 [text face] run
+                                 pieces (string/split text " ")
+                                 ;; the first piece continues the current word; each later piece starts one
+                                 cur1 (if (= (first pieces) "")
+                                        current
+                                        (cons [(first pieces) face] current))
+                                 [cur2 done2] (fold (rest pieces)
+                                                [cur1 done]
+                                                (fn (a p)
+                                                  (let ([c d] a
+                                                        d1 (if (empty? c) d (cons (reverse c) d)))
+                                                    [(if (= p "") '() (list [p face])) d1]))))
+                             [cur2 done2]))))
+    (reverse (if (empty? current) done (cons (reverse current) done)))))
 (sig md-words (list -> list))
 
 (defn- md-word-spans (word at acc)
@@ -404,8 +406,8 @@ fragments, in order, with empty words (runs of spaces) dropped."
   ;; (so `**a b**` is ONE bold span across its space, the way the source marked it).
   (fold word
     [at acc]
-    (fn (st frag)
-      (let ([pos acc] st
+    (fn (state frag)
+      (let ([pos acc] state
             [text face] frag
             end (+ pos (string/length text))
             prev (first acc))
@@ -434,8 +436,8 @@ keeps its own line). The first line opens with `first-prefix`, every later one w
                                          (list [0
                                                  (string/length (string/trimr (first prefix)))
                                                  (second prefix)]))]
-                                     (fn (st w)
-                                       (let ([pos acc] st
+                                     (fn (state w)
+                                       (let ([pos acc] state
                                              [pos1 acc1] (if (= pos (pre-len prefix))
                                                            [pos acc]
                                                            [(inc pos) acc])
@@ -444,21 +446,22 @@ keeps its own line). The first line opens with `first-prefix`, every later one w
                        text (str (first prefix)
                               (string/join (map ws (fn (w) (string/join (map w first) ""))) " ")))
                    [text (reverse spans)]))
-        [cur cur-len done] (fold words
-                             ['() (pre-len first-prefix) '()]
-                             (fn (st w)
-                               (let ([cur cur-len done] st
-                                     wl (md-word-len w)
-                                     sep (if (empty? cur) 0 1))
-                                 (if (or (empty? cur) (<= (+ cur-len sep wl) width))
-                                   [(cons w cur) (+ cur-len sep wl) done]
-                                   [(list w)
-                                     (+ (pre-len rest-prefix) wl)
-                                     (cons (finish (if (empty? done) first-prefix rest-prefix) cur)
-                                       done)])))))
-    (reverse (if (empty? cur)
+        [current cur-len done] (fold words
+                                 ['() (pre-len first-prefix) '()]
+                                 (fn (state w)
+                                   (let ([current cur-len done] state
+                                         wl (md-word-len w)
+                                         sep (if (empty? current) 0 1))
+                                     (if (or (empty? current) (<= (+ cur-len sep wl) width))
+                                       [(cons w current) (+ cur-len sep wl) done]
+                                       [(list w)
+                                         (+ (pre-len rest-prefix) wl)
+                                         (cons (finish (if (empty? done) first-prefix rest-prefix)
+                                                 current)
+                                           done)])))))
+    (reverse (if (empty? current)
                (if (empty? done) (list (finish first-prefix '())) done)
-               (cons (finish (if (empty? done) first-prefix rest-prefix) cur) done)))))
+               (cons (finish (if (empty? done) first-prefix rest-prefix) current) done)))))
 (sig md-fill-words (list int vector vector -> list))
 
 ;; ---- block shapes -------------------------------------------------------------
@@ -524,8 +527,8 @@ preview following the cursor lands in the right part of a long paragraph."
         span (inc (- to from))
         [_ out] (fold rendered
                   [0 '()]
-                  (fn (st line)
-                    (let ([j acc] st
+                  (fn (state line)
+                    (let ([j acc] state
                           [text spans] line)
                       [(inc j) (cons [text spans (+ from (math/quot (* j span) k))] acc)]))))
     (reverse out)))
@@ -612,8 +615,8 @@ accumulating rendered `[text spans src]` lines in reverse, one block at a time."
   ;; `[text spans src]` lines → `{:text :spans :lines}`, the spans shifted to absolute offsets
   (let ([off spans] (fold rendered
                       [0 '()]
-                      (fn (st line)
-                        (let ([off acc] st
+                      (fn (state line)
+                        (let ([off acc] state
                               [text sp src] line)
                           [(+ off (string/length text) 1)
                             (fold sp

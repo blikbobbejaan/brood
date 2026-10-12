@@ -1,9 +1,8 @@
 //! The unboxed scalar (`i64`/`f64`) register worker — the JIT's fast tier for
 //! arithmetic/comparison arms that stay in unboxed scalars (overflow-checked i64
-//! with deopt-to-BigInt, or f64). Split out of `jit_lower.rs`: this cluster is a
-//! self-contained set of functions used only by the `jit_lower_arm` dispatcher (it
-//! never touches `jit_lower_arm_inner`), so it moves cleanly. Reaches the parent's
-//! items (IR types, `jit_i64_enabled`, subset helpers, cranelift) via `use super::*`.
+//! with deopt-to-BigInt, or f64). Used only by the `jit_lower_arm` dispatcher; it never
+//! touches `jit_lower_arm_inner`. Reaches the parent's items (IR types,
+//! `jit_i64_enabled`, subset helpers, cranelift) via `use super::*`.
 use super::OrBail;
 use super::*;
 
@@ -391,7 +390,7 @@ fn lower_i64_arith(
     x: cranelift_codegen::ir::Value,
     y: cranelift_codegen::ir::Value,
 ) -> cranelift_codegen::ir::Value {
-    use cranelift_codegen::ir::{condcodes::IntCC, InstBuilder};
+    use cranelift_codegen::ir::InstBuilder;
     // Float: plain IEEE ops, no *overflow* (inf/NaN are valid float results) — far simpler
     // than int. Division still needs the ÷0 guard: Brood's `/` **raises** "division by
     // zero" rather than yielding IEEE infinity (`prim_div` tests `b == 0.0` before
@@ -413,64 +412,13 @@ fn lower_i64_arith(
             _ => unreachable!("float checker restricts arith ops to +,-,*,/"),
         };
     }
-    match op {
-        PrimOp::Add => {
-            let (r, ov) = b.ins().sadd_overflow(x, y);
-            i64_guard_overflow(b, cx, ov);
-            r
-        }
-        PrimOp::Sub => {
-            let (r, ov) = b.ins().ssub_overflow(x, y);
-            i64_guard_overflow(b, cx, ov);
-            r
-        }
-        PrimOp::Mul => {
-            let (r, ov) = b.ins().smul_overflow(x, y);
-            i64_guard_overflow(b, cx, ov);
-            r
-        }
-        PrimOp::Max => {
-            let c = b.ins().icmp(IntCC::SignedGreaterThanOrEqual, x, y);
-            b.ins().select(c, x, y)
-        }
-        PrimOp::Min => {
-            let c = b.ins().icmp(IntCC::SignedLessThanOrEqual, x, y);
-            b.ins().select(c, x, y)
-        }
-        // `rem`/`quot`/`div`: `sdiv`/`srem` TRAP on a zero divisor and on `i64::MIN / -1`, so guard
-        // both → sentinel + unwind (the wrapper deopts; the VM raises the ÷0 error / does the
-        // edge, staying bit-identical). Reuses `i64_guard_overflow` with the bail condition.
-        PrimOp::Rem | PrimOp::Quot | PrimOp::Div => {
-            let zero = b.ins().iconst(cranelift_codegen::ir::types::I64, 0);
-            let div0 = b.ins().icmp(IntCC::Equal, y, zero);
-            i64_guard_overflow(b, cx, div0);
-            let min = b.ins().iconst(cranelift_codegen::ir::types::I64, i64::MIN);
-            let neg1 = b.ins().iconst(cranelift_codegen::ir::types::I64, -1);
-            let x_min = b.ins().icmp(IntCC::Equal, x, min);
-            let y_m1 = b.ins().icmp(IntCC::Equal, y, neg1);
-            let ov = b.ins().band(x_min, y_m1);
-            i64_guard_overflow(b, cx, ov);
-            match op {
-                PrimOp::Rem => b.ins().srem(x, y),
-                PrimOp::Quot => b.ins().sdiv(x, y),
-                // `/` on two ints is an Int result only when it divides evenly (matching
-                // `prim_apply`'s inline fast path, `compile.rs`); a nonzero remainder
-                // means the VM would build a Float, which this worker can't return — guard
-                // it as inexact and deopt (the VM recomputes with full generality).
-                PrimOp::Div => {
-                    let r = b.ins().srem(x, y);
-                    let inexact = b.ins().icmp(IntCC::NotEqual, r, zero);
-                    i64_guard_overflow(b, cx, inexact);
-                    b.ins().sdiv(x, y)
-                }
-                _ => unreachable!(),
-            }
-        }
-        PrimOp::BitAnd => b.ins().band(x, y),
-        PrimOp::BitOr => b.ins().bor(x, y),
-        PrimOp::BitXor => b.ins().bxor(x, y),
-        _ => unreachable!("i64 checker restricts arith ops"),
-    }
+    // Every int guard — overflow, ÷0, `i64::MIN / -1`, an inexact `/` — sets the sentinel
+    // and unwinds; the wrapper deopts and the VM recomputes with full generality.
+    let mut guard = |b: &mut cranelift_frontend::FunctionBuilder, _kind, condition| {
+        i64_guard_overflow(b, cx, condition)
+    };
+    super::emit::emit_int_arith(b, op, x, y, &mut guard)
+        .expect("i64 checker restricts arith ops to the shared int table")
 }
 
 /// Lower a value-position node of the i64 subset to an `i64` SSA value. Leaves `b` switched
@@ -1028,7 +976,7 @@ pub(super) fn jit_lower_i64_arm(
     // (Exactly the trap `plan_general_lowering`'s ordering note describes.) The `insts:` shape
     // matches the general dump so one grep covers both; there is no CLIF here because the
     // worker's IR is built and finalized in one pass rather than kept for a dump.
-    if jit_dump_ir_enabled() {
+    if crate::diagnostics::debug_flags::jit_dump_ir() {
         let insts = arm
             .chunk
             .as_ref()

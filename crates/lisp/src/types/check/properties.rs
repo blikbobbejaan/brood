@@ -38,8 +38,6 @@ use super::ctx::Ctx;
 use super::sigs::{declared_heap_sig, self_call_sites};
 use super::walk::{fn_params, is_fn_head, list_items};
 
-/// Entry: the declared properties of every `(def name (fn …))` in the expanded forms, and
-/// every `ui-memo` thunk.
 /// The effect a call to the loaded global `name` reaches, described — or `None` when the
 /// walk finds none (C15).
 ///
@@ -84,6 +82,8 @@ pub(crate) fn effect_of(heap: &Heap, name: Symbol) -> Option<String> {
     purity.effect_in_forms(&bodies)
 }
 
+/// Entry: the declared properties of every `(def name (fn …))` in the expanded forms, and
+/// every `ui-memo` thunk.
 pub(super) fn check_properties(
     heap: &Heap,
     expanded: &[Value],
@@ -240,7 +240,6 @@ const EFFECTFUL_EXACT: &[&str] = &[
     "%env-all",
     "%now",
     "%random-bytes",
-    "%random-token",
     "%clipboard-get",
     "%clipboard-set",
 ];
@@ -418,10 +417,10 @@ impl Purity<'_> {
         }
         for &arg in &items[1..] {
             let found = match list_items(heap, arg).as_deref() {
-                Some([Value::Sym(h), ..]) if is_fn_head(*h) => {
+                Some([Value::Sym(h), rest @ ..]) if is_fn_head(*h) => {
                     let mut inner = locals.clone();
-                    for p in fn_params(heap, list_items(heap, arg).unwrap()[1]) {
-                        inner.insert(p);
+                    if let Some(&params) = rest.first() {
+                        inner.extend(fn_params(heap, params));
                     }
                     let bodies = fn_bodies(heap, arg);
                     bodies.iter().find_map(|&b| self.effect_in(b, &inner))
@@ -465,7 +464,7 @@ fn fn_bodies(heap: &Heap, fn_form: Value) -> Vec<Value> {
 
 /// Every symbol a binding pattern binds (a bare name, or the names inside a
 /// destructuring vector/list/map).
-fn collect_pattern_names(heap: &Heap, pat: Value, out: &mut HashSet<Symbol>) {
+pub(super) fn collect_pattern_names(heap: &Heap, pat: Value, out: &mut HashSet<Symbol>) {
     let mut work = vec![pat];
     while let Some(v) = work.pop() {
         match v {
@@ -671,5 +670,32 @@ fn decreases(heap: &Heap, arg: Value, param: Symbol, scope: &Ctx) -> bool {
         ("+", [x, k]) | ("+", [k, x]) if is_param(x) && negative_literal(k) => bounded_below(),
         ("+", [x, k]) | ("+", [k, x]) if is_param(x) && positive_literal(k) => bounded_above(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The purity walk reads a form as it is handed: a bare `(fn)` argument — no parameter
+    /// list — is a callback binding nothing, never an index past the form's end. (The file
+    /// checker's expansion normalises `(fn)` before this walk sees it; `effect_in` is also
+    /// reached with forms that were not expanded here, so it must not assume that.)
+    #[test]
+    fn a_bare_fn_argument_is_walked_without_a_parameter_list() {
+        let interp = crate::Interp::new();
+        let mut heap = Heap::with_regions(interp.heap.prelude_arc(), interp.heap.runtime_arc());
+        heap.set_global(crate::core::value::EnvId::GLOBAL);
+        let form = crate::syntax::reader::read_all(&mut heap, "(map xs (fn))").expect("parse")[0];
+        let defs = HashMap::new();
+        let ctx = Ctx::default();
+        let mut purity = Purity {
+            heap: &heap,
+            ctx: &ctx,
+            defs: &defs,
+            memo: HashMap::new(),
+            trail: HashSet::new(),
+        };
+        assert_eq!(purity.effect_in_forms(&[form]), None);
     }
 }

@@ -3,7 +3,7 @@
 //!
 //! `tests/conformance_gabriel_test.blsp` already checks every ported program against its
 //! vendored oracle — but only on whichever engine the in-language runner happens to use,
-//! and that is **always the VM**. Measured 2026-07-26: with `BROOD_VM=0` set, a test body
+//! and that is **always the VM**. With `BROOD_TIER=0` set, a test body
 //! run by `nest test` still JIT-compiles (`BROOD_JIT_DUMP_IR=1` lists its arms) and shows
 //! no tree-walker slowdown, because the env var gates how a *top-level form* is run while
 //! the framework invokes each test as an already-compiled closure. So the env var cannot

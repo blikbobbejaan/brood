@@ -351,7 +351,7 @@ fn arrow_renders_as_an_arrow() {
         "(int, string) -> number"
     );
     // A bare "any function" (no refinement) prints as the one word the language has.
-    // It used to print `fn | native`, naming a kind no Brood program can observe:
+    // Not `fn | native`, which names a kind no Brood program can observe:
     // `(type-of inc)` is `:fn` and `(fn? inc)` is true for a builtin and a closure
     // alike. See `the_two_function_members_render_as_the_one_word_the_language_has`.
     assert_eq!(Ty::of_tags(&[Tag::Fn, Tag::Native]).to_string(), "fn");
@@ -613,8 +613,8 @@ fn record_subtyping_is_width_and_depth_but_conservative() {
 #[test]
 fn record_is_a_subtype_of_map_with_keyword_keys() {
     // A closed record IS a map with keyword keys, so it satisfies a
-    // `map<keyword, any>` annotation (config maps / option bags). Regression:
-    // the checker used to flag `(config/window-mode {:fullscreen :maximized})`.
+    // `map<keyword, any>` annotation (config maps / option bags), e.g.
+    // `(config/window-mode {:fullscreen :maximized})`.
     let r = rec(&[("fullscreen", Ty::of_value(value::kw("maximized")), true)]);
     let map_kw_any = Ty::map_of(Ty::of(Tag::Keyword), Ty::ANY);
     assert!(r.is_subtype(&map_kw_any));
@@ -690,12 +690,8 @@ fn negate_of_a_refined_type_is_a_sound_overapproximation() {
 
 #[test]
 fn double_negation_round_trips_a_refined_type() {
-    // This test used to pin the opposite, and the opposite was a real loss: a structural
-    // refinement cannot be complemented in place, so `¬(vector int)` widened to `any`,
-    // `¬¬` then collapsed to `never`, and `(vector int) ∩ ¬(vector int)` came out
-    // `(vector int)` — a guard's else branch learning nothing at all.
-    //
-    // A term subtracts now (ADR-288), so the complement is exact and `¬¬` restores it.
+    // A term subtracts (ADR-288), so the complement is exact and `¬¬` restores it; an
+    // inexact `¬(vector int)` widened to `any` would teach a guard's else branch nothing.
     let vi = Ty::vector_of(Ty::of(Tag::Int));
     let once = vi.clone().negate();
     assert_ne!(once, Ty::ANY, "¬(vector<int>) is no longer everything");
@@ -1328,8 +1324,7 @@ fn property_corpus() -> Vec<Ty> {
         Ty::of(Tag::Fn)
             .union(Ty::of(Tag::Native))
             .union(Ty::of(Tag::Keyword)),
-        // ---- the STRUCTURED half (review 2026-10-02): every refinement the flat corpus
-        // above never exercised, each of which hid a lattice defect it would have shown.
+        // ---- the STRUCTURED half: the refinements the flat corpus above never exercises.
         // lengths and intervals
         src_ty("(len string 3 3)"),
         src_ty("(len (vector int) 2 7)"),
@@ -1375,11 +1370,10 @@ fn src_ty(src: &str) -> Ty {
         .unwrap_or_else(|| panic!("`{src}` is not a type expression"))
 }
 
-// ---- the lattice LAWS over the whole corpus (review 2026-10-02) ----
+// ---- the lattice LAWS over the whole corpus ----
 //
 // The relations are separate code paths that must agree with each other; each law below
-// is one way they can drift, and each was violated by some term the corpus above now
-// carries. Violations are collected rather than failed one at a time, so a regression
+// is one way they can drift. Violations are collected rather than failed one at a time, so a regression
 // reads as the whole list of pairs it broke.
 
 /// Every pair `(a, b)` of the corpus, with the operations already applied.
@@ -1462,7 +1456,7 @@ fn the_lattice_laws_hold_over_the_structured_corpus() {
 
 #[test]
 fn a_term_may_be_covered_by_several_alternatives_at_once() {
-    // The completeness direction cross-term subtyping used to miss. `int | vector<int>`
+    // The completeness direction of cross-term subtyping. `int | vector<int>`
     // merges into ONE term (the union is exact), and it fits inside the three-way union
     // only because its `int` half and its `vector` half land in DIFFERENT alternatives.
     // Requiring a single alternative to cover the whole term rejected it — a false
@@ -2068,7 +2062,7 @@ fn tuples_of_one_arity_merge_by_position() {
     assert!(!eight.is_subtype(&Ty::tuple_of(vec![int.clone(), Ty::of(Tag::Str)])));
 }
 
-// ---- list shapes: the positional list, the sibling of the vector tuple (2026-09-13) ----
+// ---- list shapes: the positional list, the sibling of the vector tuple ----
 
 #[test]
 fn a_list_shape_is_a_non_empty_list_of_exactly_its_positions() {
@@ -2386,7 +2380,7 @@ fn an_interval_widens_to_its_infinity_when_it_moves() {
     );
 }
 
-// ---- C9 (2026-09-17): a record is a product too, and a small interval is its listing ----
+// ---- C9: a record is a product too, and a small interval is its listing ----
 
 #[test]
 fn a_record_can_be_covered_by_several_alternatives_together() {
@@ -2518,7 +2512,7 @@ fn a_seqable_of_is_recognised_back_for_display_and_source() {
     );
 }
 
-/// C16 (2026-09-18) — a CLOSED record shape knows how many keys it has, the way a tuple
+/// C16 — a CLOSED record shape knows how many keys it has, the way a tuple
 /// knows its arity: the shape declares every key the value carries, so `(count p)` over
 /// `(record :x int :y int)` is exactly 2 where the length slot says `int[0..]`. An OPEN
 /// shape declines (a value may carry keys it does not declare) and an OPTIONAL field may be
@@ -2564,7 +2558,7 @@ fn a_closed_record_knows_its_field_count() {
     assert!(Ty::of(Tag::Map).is_consistent_subtype(&closed));
 }
 
-// ---- regressions from the lattice review (2026-10-02), one per defect ----
+// ---- lattice regressions, one per defect ----
 
 /// The checker's warnings for a whole file, the way `brood --check` reports them.
 fn checker_warnings(src: &str, strict: bool) -> Vec<String> {
@@ -2584,8 +2578,8 @@ const JSON_DEFTYPE: &str =
 
 #[test]
 fn two_recursive_types_meet_without_diverging() {
-    // `μ ∩ μ` re-meets its own pair one level down; it used to recurse until the stack
-    // overflowed (exit 134). The meet must terminate AND be a lower bound of both.
+    // `μ ∩ μ` re-meets its own pair one level down, so a naive meet recurses until the
+    // stack overflows. The meet must terminate AND be a lower bound of both.
     // Neither operand inside the other (keywords on one side, strings on the other), so
     // no inclusion shortcut answers it: the meet itself must tie the knot.
     let json = src_ty(JSON_SRC);
@@ -2851,5 +2845,28 @@ fn a_deep_alias_chain_does_not_overflow_the_checker() {
     assert!(
         warnings.iter().all(|w| !w.contains("overflow")),
         "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_recursive_relation_does_not_unroll_while_unrolling() {
+    // The shape the caller-parameter fold builds for a reply-reading helper: a JSON-ish
+    // base beside error records whose `data` is the whole type. Unrolling it for a
+    // relation must not re-canonicalise its unions: that asks `⊆` of terms holding the
+    // type, which unrolls it again — exponential in the alternatives, a hang. Asserted on the unrollings spent, not on time.
+    let reply = parse_ty(
+        "(rec X (or string (map string any) (record :error (or (record :code 1 :data string) (record :code \"b\") (record :code 2 :data X)))))",
+    );
+    assert!(!reply.is_subtype(&Ty::of(Tag::Map)), "a string is no map");
+    let spent = super::rec_unrolls_spent();
+    assert!(spent <= 8, "`⊆ map` spent {spent} unrollings");
+    assert!(reply.is_subtype(&reply));
+    let spent = super::rec_unrolls_spent();
+    assert!(spent <= 8, "`⊆ itself` spent {spent} unrollings");
+    assert!(reply.is_subtype(&reply.unroll()) && reply.unroll().is_subtype(&reply));
+    let maps = reply.clone().intersect(Ty::of(Tag::Map));
+    assert!(
+        maps.is_subtype(&reply) && !maps.is_subtype(&Ty::of(Tag::Str)),
+        "{maps}"
     );
 }

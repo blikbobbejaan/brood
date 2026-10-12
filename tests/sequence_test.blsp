@@ -144,7 +144,7 @@
   (test "sort is stable (equal elements keep input order)"
     ;; sort by first component; the second tags the original position.
     (let (pairs (list [1 :a] [0 :b] [1 :c] [0 :d]))
-      (assert= (sort pairs (fn (x y) (< (seq/vector-ref x 0) (seq/vector-ref y 0))))
+      (assert= (sort pairs (fn (x y) (< (first x) (first y))))
         (list [0 :b] [0 :d] [1 :a] [1 :c]))))
   (test "sort-by orders by a key function"
     (assert= (sort-by (list "ccc" "a" "bb") (fn (s) (string/length s))) (list "a" "bb" "ccc"))

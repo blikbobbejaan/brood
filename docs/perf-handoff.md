@@ -31,12 +31,10 @@ These have each cost a wrong verdict in this repo. They are not general advice.
    convincing possible way to be wrong. `make ab` aborts if the two binaries come out
    byte-identical, which is what a silently no-op'd build looks like, but it cannot catch a
    binary that is merely old.
-2. **`make release-brood` before any timing — never time after `make perf-brood`.** They
-   write the *same path* (`target/release-fast/brood`), so the moment you profile anything,
-   the binary you go on to time is the counter-armed one and your change is charged ~10% for
-   atomics it never introduced. This needs no command-line slip: profile, then time, and the
-   bias is there. On 2026-08-27 it showed two behaviourally identical binaries at 958 vs
-   1018 ms.
+2. **Time the `release-fast` binary, never the profiling ones.** `make perf-brood` writes
+   `target/release-perf/brood` (counter atomics on the hot path, ~10% slower) and
+   `make perf-symbols` writes `target/release-symbols/brood`; neither overwrites
+   `target/release-fast/brood`, which `make ab` and every timing compare against.
 3. **Prove the floor before believing a delta.** `make ab --floor` runs the baseline twice
    and reports that row's own base-vs-base spread; a regression counts only past
    `max(5%, 2 × floor)`. For a suspicious row, keep the `target/ab/<sha>/…/brood` binary and
@@ -76,8 +74,7 @@ number. The order to try:
    `[jit-ir]`)? Was it refused, and for which reason (`BROOD_JIT_BAIL_TRACE=1`)? Did it lower
    and then fall back (`BROOD_DEOPT_TRACE=1`, needs `perf-stats`)? These are binary and
    load-immune, and the counter-armed build's overhead does not matter because nothing is being
-   timed — so the `make perf-brood`/`make release-brood` same-path trap is also irrelevant here.
-   Task 1 above was answered this way after being queued as unanswerable.
+   timed. Task 1 above was answered this way after being queued as unanswerable.
 2. **Trust large ratios, never small deltas.** Measured on this box 2026-09-09, mandelbrot,
    3 runs each: JIT arm spread **5%**, VM arm spread **12%**. So an order-of-magnitude
    comparison (tier ladder `BROOD_TIER=0|1|2`, a feature's on/off lever, JIT vs VM) is solid;
@@ -387,7 +384,8 @@ checked. This is hygiene, not a suspicion.
 forever; it now doubles that backstop to 500 ms **while `STEALABLE == 0`** and resets to
 10 ms the moment it runs anything. Motivation was not throughput: an idle runtime was
 costing 0.25% of a core per worker (6-8% on 28 cores, 10 h of CPU on a five-day-idle `nest
-mcp`). See the devlog entry and `BROOD_NO_IDLE_BACKOFF` in `CLAUDE.md`.
+mcp`). See the devlog entry. (Its opt-out, `BROOD_NO_IDLE_BACKOFF`, was removed 2026-10-09;
+an A/B control now means building the commit before the change.)
 
 **Why it should be flat, and why that still needs checking.** With work queued anywhere the
 cadence is bit-for-bit the old one, and work is discovered by direct condvar wake
@@ -400,8 +398,7 @@ cannot resolve the `latency` row: `BROOD_SPAWN_SPILL`'s own tuning notes record 
 **Do.** `make ab --floor BASE=<the commit before the change>` over the message/scheduler
 rows — `latency`, `pingpong`, `ring`, `spawn`, `spawn-live`, `supervisor` — and read
 `latency` p50/p99 as medians over 11 runs, the protocol `BROOD_SPAWN_SPILL` was tuned with.
-Then repeat the two interesting rows with `BROOD_NO_IDLE_BACKOFF=1` as the A/B control; the
-flag exists for exactly this.
+The base-vs-new comparison is the A/B control (the opt-out flag is gone).
 
 **Pass.** Every row within `max(5%, 2 × floor)`, and `latency` p50/p99 not worse than the
 control beyond that band. **Fail.** Any message row outside it — report the row, the floor

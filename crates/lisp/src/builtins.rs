@@ -81,7 +81,7 @@ mod wasm;
 pub use build_info::compiled_features;
 pub(crate) use build_info::{build_id_string, stdlib_id_string};
 
-pub use io::{arm_mcp_progress, begin_stdout_capture, disarm_mcp_progress, take_captured_stdout};
+pub use io::{begin_stdout_capture, take_captured_stdout};
 // The checker specializes `(string/->number "1")` to the literal `1`, and may only do so by
 // deciding parseability exactly as the runtime does — so it calls the runtime's own
 // classifier rather than growing a second one that could drift (`types::check::infer`).
@@ -181,11 +181,261 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     regex_native::register(&mut primitives);
 }
 
-// (The doc comment and `#[rustfmt::skip]` that used to sit here belonged to the
-// `PRIMITIVE_DOCS` table, which the v0.10.0 namespacing removed — a primitive's
-// docstring now rides on its `NativeFn` (see `builtins/tooling.rs`). The attribute was
-// left behind attached to nothing, which clippy reports as "empty lines after outer
-// attribute". The test module below is unrelated and still live.)
+#[cfg(test)]
+mod who_label_tests {
+    //! Every error label a primitive passes as `who` must name something a user can call:
+    //! a registered primitive, or a global (bound at boot or in a std module). A label left
+    //! behind by a rename points the reader at a function that does not exist.
+    //!
+    //! The label-taking helpers are discovered, not listed: any `fn` under `src/` with a
+    //! `who: &str` parameter, at that parameter's position. Its call sites under
+    //! `src/builtins/` whose argument there is a string literal are the labels checked.
+
+    use crate::Interp;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    fn rust_files(directory: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read source dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Split `text` (the inside of a parenthesised list) at top-level commas, skipping over
+    /// nested brackets and string / char literals.
+    fn split_top_level(text: &str) -> Vec<String> {
+        let mut parts = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0i32;
+        let mut chars = text.chars().peekable();
+        while let Some(character) = chars.next() {
+            match character {
+                '"' => {
+                    current.push(character);
+                    while let Some(inner) = chars.next() {
+                        current.push(inner);
+                        if inner == '\\' {
+                            if let Some(escaped) = chars.next() {
+                                current.push(escaped);
+                            }
+                        } else if inner == '"' {
+                            break;
+                        }
+                    }
+                }
+                '(' | '[' | '{' | '<' => {
+                    depth += 1;
+                    current.push(character);
+                }
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    current.push(character);
+                }
+                // `->` is not a closing angle bracket.
+                '>' if !current.ends_with('-') => {
+                    depth -= 1;
+                    current.push(character);
+                }
+                ',' if depth == 0 => parts.push(std::mem::take(&mut current)),
+                _ => current.push(character),
+            }
+        }
+        if !current.trim().is_empty() {
+            parts.push(current);
+        }
+        parts
+            .into_iter()
+            .map(|part| part.trim().to_string())
+            .collect()
+    }
+
+    /// The text between the `(` at `open` and its matching `)`, or `None` if unbalanced.
+    fn parenthesised(source: &str, open: usize) -> Option<&str> {
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        let mut index = open;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'"' => {
+                    index += 1;
+                    while index < bytes.len() && bytes[index] != b'"' {
+                        if bytes[index] == b'\\' {
+                            index += 1;
+                        }
+                        index += 1;
+                    }
+                }
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open + 1..index]);
+                    }
+                }
+                _ => {}
+            }
+            index += 1;
+        }
+        None
+    }
+
+    fn is_identifier_byte(byte: u8) -> bool {
+        byte.is_ascii_alphanumeric() || byte == b'_'
+    }
+
+    /// Every free function under `src/` with a `who: &str` parameter, by name, with the
+    /// position(s) of that parameter.
+    fn label_taking_functions(files: &[(PathBuf, String)]) -> BTreeMap<String, BTreeSet<usize>> {
+        let mut functions: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        for (_, source) in files {
+            for (start, _) in source.match_indices("fn ") {
+                if start > 0 && is_identifier_byte(source.as_bytes()[start - 1]) {
+                    continue;
+                }
+                let rest = &source[start + 3..];
+                let name: String = rest
+                    .bytes()
+                    .take_while(|&byte| is_identifier_byte(byte))
+                    .map(char::from)
+                    .collect();
+                if name.is_empty() {
+                    continue;
+                }
+                let Some(open) = rest[name.len()..].find('(') else {
+                    continue;
+                };
+                let open = start + 3 + name.len() + open;
+                let Some(parameters) = parenthesised(source, open) else {
+                    continue;
+                };
+                let parameters = split_top_level(parameters);
+                if parameters
+                    .iter()
+                    .any(|parameter| parameter.contains("self"))
+                {
+                    continue;
+                }
+                if let Some(position) = parameters
+                    .iter()
+                    .position(|parameter| parameter.replace(' ', "") == "who:&str")
+                {
+                    functions.entry(name).or_default().insert(position);
+                }
+            }
+        }
+        functions
+    }
+
+    /// `(file:line, label)` for every literal label passed to a label-taking function.
+    fn literal_labels(
+        files: &[(PathBuf, String)],
+        functions: &BTreeMap<String, BTreeSet<usize>>,
+    ) -> Vec<(String, String)> {
+        let mut labels = Vec::new();
+        for (path, source) in files {
+            for (name, positions) in functions {
+                let call = format!("{name}(");
+                for (start, _) in source.match_indices(&call) {
+                    if start > 0 && is_identifier_byte(source.as_bytes()[start - 1]) {
+                        continue;
+                    }
+                    // Skip the definition itself.
+                    if source[..start].ends_with("fn ") {
+                        continue;
+                    }
+                    let Some(arguments) = parenthesised(source, start + name.len()) else {
+                        continue;
+                    };
+                    let arguments = split_top_level(arguments);
+                    for &position in positions {
+                        let Some(argument) = arguments.get(position) else {
+                            continue;
+                        };
+                        if argument.len() >= 2
+                            && argument.starts_with('"')
+                            && argument.ends_with('"')
+                        {
+                            let line = source[..start].lines().count();
+                            let file = path.file_name().unwrap().to_string_lossy();
+                            labels.push((
+                                format!("{file}:{line}"),
+                                argument[1..argument.len() - 1].to_string(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        labels
+    }
+
+    fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
+        let mut paths = Vec::new();
+        rust_files(directory, &mut paths);
+        paths.sort();
+        paths
+            .into_iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(&path).expect("read source");
+                (path, text)
+            })
+            .collect()
+    }
+
+    /// Whether `label` names something a user can call. A qualified name is evaluated, which
+    /// loads its std module on first reference.
+    fn callable(interp: &mut Interp, label: &str) -> bool {
+        // A label may name the option it is about after the function: `os/cmd :cwd`.
+        let label = label.split(' ').next().unwrap_or_default();
+        let not_a_symbol = label.is_empty()
+            || label.starts_with([':', '"', '\''])
+            || label.starts_with(|character: char| character.is_ascii_digit())
+            || label.contains(|character: char| {
+                character.is_whitespace() || "()[]{}".contains(character)
+            });
+        if not_a_symbol {
+            return false;
+        }
+        crate::core::value::intern_existing(label)
+            .is_some_and(|symbol| interp.heap.env_get(interp.heap.global(), symbol).is_some())
+            || interp.eval_str(label).is_ok()
+    }
+
+    #[test]
+    fn builtins_error_labels_name_callable_functions() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let all_files = sources(&source_root);
+        let functions = label_taking_functions(&all_files);
+        assert!(
+            functions.contains_key("expect_int") && functions.contains_key("expect_string"),
+            "label-taking function discovery found nothing: {functions:?}"
+        );
+        let builtin_files = sources(&source_root.join("builtins"));
+        let labels = literal_labels(&builtin_files, &functions);
+        assert!(
+            labels.len() > 100,
+            "label extraction found only {} labels — the scanner has broken",
+            labels.len()
+        );
+        let mut interp = Interp::new();
+        let stale: Vec<String> = labels
+            .iter()
+            .filter(|(_, label)| !callable(&mut interp, label))
+            .map(|(site, label)| format!("{site}: {label:?}"))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "error labels that name no primitive or global — use the name the user calls:\n  {}",
+            stale.join("\n  ")
+        );
+    }
+}
+
 #[cfg(test)]
 mod primitive_docs_tests {
     use super::*;

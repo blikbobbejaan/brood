@@ -6,7 +6,7 @@
 ;;; bumps both, so such code must MISS and raise `unbound symbol` — never go on calling the
 ;;; removed value. The hot-caller cases drive the caller until its arm settles NATIVE before
 ;;; removing its callee, so the check runs the lowered code; under a lower tier ceiling
-;;; (`BROOD_TIER=1`, `BROOD_VM=0`) there is no native tier to settle on and the same checks
+;;; (`BROOD_TIER=1`, `BROOD_TIER=0`) there is no native tier to settle on and the same checks
 ;;; run on whatever engine is live — `make test-both` runs this file on both.
 ;;;
 ;;; Each test builds its own module through `reflect/eval-string`, under a name no other

@@ -202,12 +202,12 @@ the colours live in one place (`:observer/*`)."
       " (peak "
       (humanize/byte-size (get node :mem-peak))
       ")"
-      (let (ps (get node
-                 :peers))
-        (if (empty? ps)
+      (let (processes (get node
+                        :peers))
+        (if (empty? processes)
           ""
           (str " · peers "
-            (count ps)))))])
+            (count processes)))))])
 
 (defn- observe-window-start (sel cap n)
   "First visible index of a `cap`-row window over `n` items that keeps row `sel`
@@ -497,7 +497,7 @@ runtime (locally inline, or on the peer when remote-attached); Ctrl-C cancels.
 Seeds the line editor with the session's command history (↑/↓ recall, C-r search)."
   (assoc state
     :mode :command
-    :edit (editor/lineedit/lineedit-init "λ " "" (get state :history))
+    :edit (editor/lineedit/lineedit-init "λ " (get state :history))
     :msg nil))
 
 (defn observe-cmd-tree (state _)
@@ -578,15 +578,16 @@ body height (`(math/max 1 (- rows 5))`, as in `observe-frame`)."
         procs (get state :procs)
         n (get state :n)
         sel (get state :sel)
-        st (assoc state :msg nil))
+        cleared (assoc state :msg nil))
     (cond
-      (= action :scroll-up) (observe-select st procs (math/max 0 (dec sel)))
-      (= action :scroll-down) (observe-select st procs (math/min (math/max 0 (dec n)) (inc sel)))
+      (= action :scroll-up) (observe-select cleared procs (math/max 0 (dec sel)))
+      (= action :scroll-down)
+        (observe-select cleared procs (math/min (math/max 0 (dec n)) (inc sel)))
       (and (= action :press) (= button :left))
         (let (idx (observe-mouse-row->sel row sel cap n))
           (if (nil? idx)
             state
-            (observe-select st procs idx)))
+            (observe-select cleared procs idx)))
       else state)))
 
 ;; ---- display frontends + app loop now live in `ui` (std/editor/ui.blsp) ------------
@@ -693,13 +694,14 @@ the minibuffer UI state. Paints to whatever frontend `ui-run` holds."
 ;; (ADR-094). A `:confirm` is kept as a *pre-mouse* guard (any input, even a click,
 ;; resolves the pending kill rather than shifting the list under it), so it stays an
 ;; explicit branch above the mouse case rather than another routed overlay.
-(def- observe-key-overlays
-  (list
-    {:active? (fn (m) (= (get m :mode) :command))
-     ; the eval minibuffer captures every key
-     :owns? nil
-     :handle (fn (m input) (observe-command-key m (get m :backend) input))
-     :exit nil}))
+(defrecord command-overlay ())
+(impl editor/ui/Overlay
+  command-overlay
+  (overlay-active? [_overlay model] (= (get model :mode) :command))
+  ;; no overlay-owns? — the eval minibuffer captures every key
+  (overlay-handle [_overlay model input] (observe-command-key model (get model :backend) input)))
+
+(def- observe-key-overlays (list (command-overlay)))
 
 (defn- observe-update (model input cols rows)
   "The observer's `ui-run` **update**: fold one input into the next model. `:tick`

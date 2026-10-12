@@ -21385,8 +21385,7 @@ recorded-not-bound fact (KI-105, KI-106). Fewer artifacts, fewer of those.
 
 **Consequences.** −263 lines; one file per build in `~/.cache/brood`. A cold boot (first run
 after any build) does the full source boot as before and writes the image. Anything that read
-the text cache's header — only the image's own floor read did — is gone. `scripts/ki38/` is
-archival and still describes the deleted cache; left as history.
+the text cache's header — only the image's own floor read did — is gone. (`scripts/ki38/`, the archival tooling for the deleted cache, was removed 2026-10-09.)
 
 **Supersedes** ADR-138 (the artifact); ADR-314's design is unchanged except the header.
 
@@ -25532,3 +25531,27 @@ owner's death each release a waiting reader, and the exit drain never waits, so 
   loosen one socket's bound to about 2 MiB for the instant it takes effect.
 - Found on the way: a TLS server silently dropped bytes once more than rustls's default
   64 KiB was pending (KI-221).
+
+## ADR-398 — One name per operation, one tier knob, no retired levers
+
+**Status:** implemented (2026-10-12). The 2026-10-09 whole-project cleanup (devlog).
+
+**Context.** The review found the same operation reachable under two names
+(`seq/vector-ref` / `seq/vector-length` were `nth` / `count`), two tier knobs that aliased a
+third (`BROOD_VM=0`, `BROOD_NO_JIT=1` for `BROOD_TIER`), and about twenty `BROOD_*` switches
+that guarded either a rejected experiment or a feature default-on for months. Each is a name a
+reader has to learn and a code path a change has to keep working.
+
+**Decision.**
+- A duplicate public name is deleted, not aliased: `seq/vector-ref` → `nth`,
+  `seq/vector-length` → `count`, recorded in the rename ledger so a downstream
+  `nest check` names the replacement. `nth` answers `nil` out of range where `vector-ref`
+  raised; a caller that wants the raise uses `seq/subvec`.
+- `BROOD_TIER=0|1|2` is the only tier knob.
+- A `BROOD_*` switch is kept only while it is a live lever: an A/B or bisect lever for a
+  default that is recent or unmeasured here, or a stopgap whose failure mode is silent
+  (`BROOD_NO_RECV_MARK`, `BROOD_NO_SHARE_FN` — a wrong skip is an undelivered message, not a
+  crash). A rejected experiment's switch is deleted with its code path.
+
+**Consequences.** Fewer names and paths; a bisect into an old default now needs a build of an
+older commit rather than an env var. The removed list is in the 2026-10-09 devlog entry.

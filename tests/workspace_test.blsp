@@ -1,0 +1,58 @@
+;; `nest ws` (std/tool/workspace.blsp): which siblings count as repos, and that a failed
+;; step in any repo is counted — the count is `nest ws`'s exit status.
+(defmodule workspace-test (:use test) (:use-internals workspace))
+
+(purge-stale-temp "brood-ws-")
+
+(defn- ws-git (dir & args) (os/cmd "git" (append (list "-C" dir) args)))
+
+(defn- ws-repo (parent name &optional manifest?)
+  "A git repo `parent/name` with one commit, plus a `project.blsp` when `manifest?`."
+  (let (dir (path/join parent name))
+    (file/mkdir dir)
+    (file/spit (path/join dir "README") "x\n")
+    (when manifest? (file/spit (path/join dir "project.blsp") "(project :name \"x\")\n"))
+    (ws-git dir "init" "-q" "-b" "main")
+    (ws-git dir "config" "user.email" "t@example.com")
+    (ws-git dir "config" "user.name" "Test")
+    (ws-git dir "config" "commit.gpgsign" "false")
+    (ws-git dir "add" "-A")
+    (ws-git dir "commit" "-q" "-m" "init")
+    dir))
+
+(defn- ws-dirty? (dir) (not (= "" (string/trim (get (ws-git dir "status" "--short") :stdout)))))
+
+(describe "workspace: nest ws"
+  :serial (test "a repo counts only with both .git and project.blsp"
+    (let (parent (temp-dir "brood-ws-"))
+      (ws-repo parent "app" true)
+      (ws-repo parent "no-manifest" false)
+      (file/mkdir (path/join parent "no-git"))
+      (file/spit (path/join parent "no-git" "project.blsp") "(project)\n")
+      (assert= (workspace/brood-repos parent) (list (path/join parent "app")))))
+
+  (test "commit counts every repo whose add or commit failed, and commits the rest"
+    (let (parent (temp-dir "brood-ws-")
+          good (ws-repo parent "good" true)
+          hooked (ws-repo parent "hooked" true)
+          locked (ws-repo parent "locked" true))
+      (doseq (dir (list good hooked locked)) (file/spit (path/join dir "new.txt") "change\n"))
+      ;; A pre-commit hook that refuses the commit …
+      (file/spit (path/join hooked ".git" "hooks" "pre-commit") "#!/bin/sh\nexit 1\n")
+      (os/cmd "chmod" ["+x" (path/join hooked ".git" "hooks" "pre-commit")])
+      ;; A global `core.hooksPath` would bypass `.git/hooks`; pin it for this repo.
+      (ws-git hooked "config" "core.hooksPath" (path/join hooked ".git" "hooks"))
+      ;; … and an index lock that makes `git add` fail.
+      (file/spit (path/join locked ".git" "index.lock") "")
+      (assert= (workspace/run "commit" "ws test" parent) 2)
+      (refute (ws-dirty? good))
+      (is (ws-dirty? hooked))
+      (is (ws-dirty? locked))))
+
+  (test "a clean workspace commits nothing and reports no failure"
+    (let (parent (temp-dir "brood-ws-"))
+      (ws-repo parent "app" true)
+      (assert= (workspace/run "commit" "nothing" parent) 0)))
+
+  (test "commit without a message is a failure"
+    (assert= (workspace/run "commit" nil (temp-dir "brood-ws-")) 1)))

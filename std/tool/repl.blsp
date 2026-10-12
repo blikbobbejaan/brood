@@ -271,9 +271,9 @@ forms into the eval rather than fail cleanly."
   (repl-call
     (fn ()
       (try
-        (let (t0 (os/now)
+        (let (started (os/now)
               v (reflect/eval-string expr)
-              ms (- (os/now) t0))
+              ms (- (os/now) started))
           ; value shown only interactively (piped ,time reports just the
           ; timing, as before) — and bounded, like any printed result
           (when (os/stdout-tty?) (io/puts (repl-colorize (pr-str-bounded v))))
@@ -478,9 +478,9 @@ was slow — `:more` if `src` is an incomplete form (read another line), or `:er
 reporting a real error. Never lets an error escape the loop."
   (try
     (let (_ (repl-warn src)
-          t0 (os/now)
+          started (os/now)
           v (reflect/eval-string src)
-          ms (- (os/now) t0))
+          ms (- (os/now) started))
       (repl-remember-value v)
       (repl-print-value v)
       (when (and (os/stdout-tty?) (>= ms *repl-slow-ms*))
@@ -707,14 +707,13 @@ Returns `{:eof false :history h}`."
 (Enter inserts a newline while the form is incomplete, repainting every line in place
 so bracket matches light up across lines), then we act on it. Ctrl-D on an empty line
 ends input; Ctrl-C drops the form and re-prompts."
-  (let (r (lineedit-read *repl-prompt*
-            ""
-            history
-            {:cont-prompt *repl-cont-prompt* :complete? repl-complete?}))
+  (let (result (lineedit-read *repl-prompt*
+                 history
+                 {:cont-prompt *repl-cont-prompt* :complete? repl-complete?}))
     (cond
-      (get r :eof) {:eof true :history history}
-      (get r :cancel) {:eof false :history history}
-      else (repl-submit true (get r :line) history))))
+      (get result :eof) {:eof true :history history}
+      (get result :cancel) {:eof false :history history}
+      else (repl-submit true (get result :line) history))))
 
 (defn- repl-read-eval-piped (acc history)
   "Piped/redirected read: accumulate physical lines (no editor) until the form is

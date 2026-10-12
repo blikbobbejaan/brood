@@ -1,6 +1,6 @@
 //! The background JIT compiler (ADR-101 1b): one lazily-spawned OS thread draining a
 //! queue of arms to lower, the synchronous `jit_compile_now` for the cases that cannot
-//! wait, and the float-global profile a lowering reads (`BROOD_NO_FLOAT_GLOBAL`).
+//! wait, and the float-global profile a lowering reads.
 
 use super::*;
 
@@ -108,15 +108,6 @@ pub(crate) fn jit_arm_for_code(code: *const u8) -> Option<Arc<CompiledArm>> {
         .cloned()
 }
 
-/// Is float-global unboxing enabled? **Default ON** (`BROOD_NO_FLOAT_GLOBAL` opts out —
-/// the A/B baseline lever). Read once: all processes of a runtime share an arm's compiled
-/// code, so the eligibility decision must be deterministic across them.
-#[cfg(feature = "jit")]
-pub(super) fn float_global_unbox_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_FLOAT_GLOBAL").is_none())
-}
-
 /// Load, before `arm` is handed to the compiler, every module a qualified global in its
 /// chunk names that is not yet bound (ADR-335 item 4). **Native code never loads a module**:
 /// a runtime callback runs with the arm's live values unspilled, so it cannot run
@@ -184,6 +175,11 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
         if crate::core::value::symbol_name_ref(sym).contains('/') {
             let env = heap.read_root_env(env_root);
             if heap.env_get(env, sym).is_none() {
+                // The result is discarded on purpose: this is a best-effort pre-load, and
+                // nothing here depends on the name resolving. A load error or a name that
+                // stays unbound just leaves the arm as it was — its own global read raises
+                // (or deopts to the VM, which raises) at the point the program reaches it,
+                // with the same error it would have had without the pre-load.
                 let _ = crate::eval::derive::global_miss(heap, env, sym);
             }
         }
@@ -199,7 +195,7 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
 /// lowering deterministic across the processes of a runtime.
 #[cfg(feature = "jit")]
 pub(super) fn record_float_globals(arm: &CompiledArm, heap: &Heap, env: EnvId) {
-    if !float_global_unbox_enabled() || arm.float_globals.get().is_some() {
+    if arm.float_globals.get().is_some() {
         return;
     }
     let Some(chunk) = arm.chunk.as_ref() else {
@@ -349,10 +345,6 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
     use std::sync::mpsc::{sync_channel, TryRecvError};
     let (ptx, prx) = sync_channel::<Option<JitWorkItem>>(256);
     let (dtx, drx) = sync_channel::<JitWorkItem>(256);
-    // The bg thread's own handle to the deferred queue, for the §7.1 hot-admission
-    // re-enqueue (a gate-refused arm handed straight to the hot stage). It must not
-    // touch `JIT_COMPILER` — the thread starts inside this LazyLock's initializer.
-    let dtx_bg = dtx.clone();
     std::thread::Builder::new()
         .name("brood-jit".into())
         .spawn(move || {
@@ -474,9 +466,10 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     }
                 }));
                 #[cfg(feature = "perf-stats")]
-                if std::env::var_os("BROOD_COMPILE_TRACE").is_some() {
+                // `BROOD_TRACE_LOWER`: time each lowering.
+                if crate::diagnostics::debug_flags::trace_lower() {
                     eprintln!(
-                        "[compile] {:?} arm={} inlined={}",
+                        "[lower] {:?} arm={} inlined={}",
                         t0.elapsed(),
                         arm.dbg_name
                             .map(crate::core::value::symbol_name_ref)
@@ -515,44 +508,6 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     Ok(None) => {
                         trace_lower_declined(arm, inlined);
                         slot.store(crate::jit::BAILED, Release);
-                        // §7.1 hot admission (`BROOD_XADMIT=1`, experiment): an arm the
-                        // profitability gate refused keeps running on the VM, but is
-                        // handed to the HOT stage — the deferred queue, gate skipped,
-                        // frame-size capped — where both of step 2's measured costs are
-                        // absent (the compile is deferred; the calls emit the inline
-                        // blob). Its pointer stages in `inline_code`; `jit_tier`'s
-                        // BAILED path installs it. `inline_queued` is the once latch;
-                        // `dtx_bg` (not `JIT_COMPILER.deferred`) because this thread
-                        // starts inside that LazyLock's initializer.
-                        // Say whether hot admission fired, and if not, which condition
-                        // refused. Without this the lever is unfalsifiable: an arm it
-                        // silently declines makes both sides of an A/B run identical code
-                        // and the result reads as "no effect" — which is how KI-109 came to
-                        // record lever 3 as *measured noise* for `row-sum`, an arm whose
-                        // frame (nslots=14) the cap (8) had always excluded.
-                        if xadmit_enabled() {
-                            xadmit_trace(arm, inlined);
-                        }
-                        if !inlined
-                            && xadmit_enabled()
-                            && arm.inline_name.is_none()
-                            && arm.leaf.is_none()
-                            && arm.dbg_name.is_some()
-                            && arm.nslots <= xadmit_max_nslots()
-                            && crate::eval::compile::jit_plan::codegen::plan_general_lowering(
-                                arm, slot_tags,
-                            )
-                            .is_err()
-                            && !arm
-                                .inline_queued
-                                .swap(true, std::sync::atomic::Ordering::AcqRel)
-                            && dtx_bg
-                                .try_send((arm.clone(), slot_tags.to_vec(), rt_tag))
-                                .is_err()
-                        {
-                            arm.inline_queued
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                        }
                     }
                     Err(_) => {
                         // The panic that poisons the compiler for the rest of the process.

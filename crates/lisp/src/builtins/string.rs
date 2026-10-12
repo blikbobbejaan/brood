@@ -447,39 +447,31 @@ pub(super) fn to_keyword(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 /// Errors if out of range.
 
 pub(super) fn substring(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    // The hot one: `char-at`, `starts-with?` and `ends-with?` are all Brood over this
-    // (`std/prelude.blsp`), so its per-call cost is the floor for most string code. It had
-    // three separate O(whole string) steps for what is usually a tiny result — an owned
-    // `expect_string` copy, a `chars().count()` length, and a `chars().skip()` walk. With
-    // a 216 KB haystack, `(string/char-at s 3)` cost ~11.5 µs and did not care that it was reading
-    // the 4th character: measured with the CALL COUNT FIXED, the cost tracked the string's
-    // size (1/6/23 ms as it grew 13.5k → 54k → 216k chars).
-    let v = arg(args, 0);
+    // The hot one: `char-at`, `starts-with?` and `ends-with?` are all Brood over this, so
+    // its per-call cost is the floor for most string code. It must stay O(result): a
+    // borrowed string, the cached char count, and a direct byte slice — never a copy, a
+    // `chars().count()` or a `chars().skip()` walk, each O(whole string).
+    let string_value = arg(args, 0);
     let start = expect_int(heap, "string/substring", arg(args, 1))?;
-    let sub: String = {
-        let h: &Heap = heap;
-        let a = expect_str_arg(h, "string/substring", v)?;
-        // The cached char count, O(1) — it used to be a `chars().count()` per call.
-        let len = a.chars as i64;
+    let substring: String = {
+        let shared_heap: &Heap = heap;
+        let string = expect_str_arg(shared_heap, "string/substring", string_value)?;
+        let length = string.chars as i64;
         let end = match args.get(2) {
-            Some(_) => expect_int(h, "string/substring", arg(args, 2))?,
-            None => len,
+            Some(_) => expect_int(shared_heap, "string/substring", arg(args, 2))?,
+            None => length,
         };
-        if start < 0 || end < start || end > len {
+        if start < 0 || end < start || end > length {
             return Err(LispError::runtime(format!(
-                "string/substring: range [{}, {}) out of bounds for length {}",
-                start, end, len
+                "string/substring: range [{start}, {end}) out of bounds for length {length}"
             ))
             .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE));
         }
-        // Both ends converted, so this is a direct slice — O(result) rather than O(end),
-        // on multi-byte text as well. `chars().skip(start)` used to walk from byte 0 on
-        // every call, which is what made a per-character scan quadratic off the ASCII path.
-        let lo = a.char_to_byte(h, start as usize);
-        let hi = a.char_to_byte(h, end as usize);
-        a.s[lo..hi].to_string()
+        let start_byte = string.char_to_byte(shared_heap, start as usize);
+        let end_byte = string.char_to_byte(shared_heap, end as usize);
+        string.s[start_byte..end_byte].to_string()
     };
-    Ok(heap.alloc_string(&sub))
+    Ok(heap.alloc_string(&substring))
 }
 
 /// Shared body of `string-span` / `string-span-until`: from char `start`, count the
@@ -680,44 +672,47 @@ pub(super) fn str_last_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 /// string `repl`. The common prefix and suffix are trimmed off (the suffix never
 /// overlaps the prefix), so the span is minimal; equal strings give `[n n ""]`.
 /// One native byte-level pass snapped to char boundaries. Genuinely needs Rust:
-/// this runs per keystroke on every process-hosted editor buffer (the myedit
-/// flip), where the pure-Brood per-char scan (fn call + `char-at` per char) cost
-/// ~40 ms/keystroke on a 300-line buffer — ~100× this pass.
+/// this runs per keystroke on every process-hosted editor buffer, where a pure-Brood
+/// per-char scan is ~100× slower.
 pub(super) fn str_splice_diff(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    // Borrowed, not owned: this runs per keystroke over the WHOLE buffer text (twice),
-    // and `expect_string` copied both. The result is three small values, so the borrows
-    // end before the allocation below — the pattern every convertible `expect_string`
-    // site takes (`seam`: the ones that allocate per piece *while* scanning, like
-    // `string-split` and `scan-tokens`, cannot use it).
-    let h: &Heap = heap;
-    let old = expect_string_ref(h, "%str-splice-diff", arg(args, 0))?;
-    let new = expect_string_ref(h, "%str-splice-diff", arg(args, 1))?;
-    let ob = old.as_bytes();
-    let nb = new.as_bytes();
+    // Borrowed, not owned: this runs per keystroke over the WHOLE buffer text (twice).
+    // The result is three small values, so the borrows end before the allocation below.
+    let shared_heap: &Heap = heap;
+    let old = expect_string_ref(shared_heap, "%str-splice-diff", arg(args, 0))?;
+    let new = expect_string_ref(shared_heap, "%str-splice-diff", arg(args, 1))?;
+    let old_bytes = old.as_bytes();
+    let new_bytes = new.as_bytes();
     // Common byte prefix, snapped BACK to a char boundary in both (a boundary in
     // one is a boundary in the other: the prefixes are byte-identical).
-    let mut p = ob.iter().zip(nb.iter()).take_while(|(a, b)| a == b).count();
-    while p > 0 && !old.is_char_boundary(p) {
-        p -= 1;
+    let mut prefix = old_bytes
+        .iter()
+        .zip(new_bytes.iter())
+        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
+        .count();
+    while prefix > 0 && !old.is_char_boundary(prefix) {
+        prefix -= 1;
     }
     // Common byte suffix over the remainders (capped so it can't overlap the
     // prefix), snapped FORWARD (shrunk) to a char boundary in both.
-    let max_suf = (ob.len() - p).min(nb.len() - p);
-    let mut s = ob
+    let max_suffix = (old_bytes.len() - prefix).min(new_bytes.len() - prefix);
+    let mut suffix = old_bytes
         .iter()
         .rev()
-        .zip(nb.iter().rev())
-        .take(max_suf)
-        .take_while(|(a, b)| a == b)
+        .zip(new_bytes.iter().rev())
+        .take(max_suffix)
+        .take_while(|(old_byte, new_byte)| old_byte == new_byte)
         .count();
-    while s > 0 && !(old.is_char_boundary(ob.len() - s) && new.is_char_boundary(nb.len() - s)) {
-        s -= 1;
+    while suffix > 0
+        && !(old.is_char_boundary(old_bytes.len() - suffix)
+            && new.is_char_boundary(new_bytes.len() - suffix))
+    {
+        suffix -= 1;
     }
-    let lo = old[..p].chars().count() as i64;
-    let hi = lo + old[p..ob.len() - s].chars().count() as i64;
-    let repl_str = new[p..nb.len() - s].to_string();
-    let repl = heap.alloc_string(&repl_str);
-    Ok(heap.alloc_vector(vec![Value::int(lo), Value::int(hi), repl]))
+    let start = old[..prefix].chars().count() as i64;
+    let end = start + old[prefix..old_bytes.len() - suffix].chars().count() as i64;
+    let replacement_text = new[prefix..new_bytes.len() - suffix].to_string();
+    let replacement = heap.alloc_string(&replacement_text);
+    Ok(heap.alloc_vector(vec![Value::int(start), Value::int(end), replacement]))
 }
 
 /// `(string/split s &optional sep)` — split `s` into a list of substrings on each
@@ -966,8 +961,8 @@ pub(super) fn string_normalize(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
 /// `0.015873015873015872`), which is wrong for tabular/console output. An int `x`
 /// is promoted, so `(math/->fixed 3 2)` is `"3.00"`. `n` must be non-negative.
 pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let x = num_to_f64(heap, "->fixed", arg(args, 0))?;
-    let n = expect_int(heap, "->fixed", arg(args, 1))?;
+    let x = num_to_f64(heap, "math/->fixed", arg(args, 0))?;
+    let n = expect_int(heap, "math/->fixed", arg(args, 1))?;
     if n < 0 {
         return Err(LispError::runtime(format!(
             "->fixed: decimal places must be non-negative, got {}",
@@ -1033,7 +1028,7 @@ pub(super) fn int_to_char(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 }
 
 pub(super) fn string_to_utf8_bytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "string->utf8-bytes", arg(args, 0))?;
+    let s = expect_string(heap, "string/->bytes", arg(args, 0))?;
     let bytes = s.as_bytes().to_vec();
     Ok(super::bytes::bytes_to_value(&bytes, heap))
 }

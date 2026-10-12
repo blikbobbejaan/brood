@@ -126,7 +126,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// `(%getenv name)` — the value of environment variable `name` as a string, or nil
 /// if it is unset. Lets Brood locate things like the user config directory.
 pub(super) fn getenv(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let name = expect_string(heap, "getenv", arg(args, 0))?;
+    let name = expect_string(heap, "os/env", arg(args, 0))?;
     match std::env::var(&name) {
         Ok(val) => Ok(heap.alloc_string(&val)),
         Err(_) => Ok(Value::nil()),
@@ -277,27 +277,27 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let key = |k: &'static str| Value::keyword(value::intern(k));
         if let Some(v) = heap.map_get(opts, key("cwd")) {
             if !matches!(v, Value::Nil) {
-                cmd.current_dir(expect_string(heap, "%os-cmd :cwd", v)?);
+                cmd.current_dir(expect_string(heap, "os/cmd :cwd", v)?);
             }
         }
         if let Some(Value::Map(e)) = heap.map_get(opts, key("env")) {
             for (k, v) in heap.map_entries(e) {
-                let name = expect_string(heap, "%os-cmd :env key", k)?;
+                let name = expect_string(heap, "os/cmd :env key", k)?;
                 if matches!(v, Value::Nil) {
                     cmd.env_remove(name);
                 } else {
-                    cmd.env(name, expect_string(heap, "%os-cmd :env value", v)?);
+                    cmd.env(name, expect_string(heap, "os/cmd :env value", v)?);
                 }
             }
         }
         if let Some(v) = heap.map_get(opts, key("stdin")) {
             if !matches!(v, Value::Nil) {
-                stdin_text = Some(expect_string(heap, "%os-cmd :stdin", v)?.to_string());
+                stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?.to_string());
             }
         }
         if let Some(v) = heap.map_get(opts, key("timeout-ms")) {
             if !matches!(v, Value::Nil) {
-                let ms = expect_int(heap, "%os-cmd :timeout-ms", v)?;
+                let ms = expect_int(heap, "os/cmd :timeout-ms", v)?;
                 timeout = Some(std::time::Duration::from_millis(ms.max(0) as u64));
             }
         }
@@ -704,7 +704,7 @@ pub(super) fn run_process(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         _ => {
             return Err(LispError::wrong_type(
                 heap,
-                "run-process",
+                "os/run-process",
                 "string program",
                 pv,
             ))

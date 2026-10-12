@@ -105,18 +105,18 @@ key]` appended, `key` being `:key` when given and the value otherwise.
                acc1
                (:acc (fold children
                        {:acc acc1 :i 0}
-                       (fn (st child)
-                         {:i (inc (:i st))
+                       (fn (state child)
+                         {:i (inc (:i state))
                           :acc (if (string? child)
-                                 (emit (:acc st)
+                                 (emit (:acc state)
                                    child
                                    {:id id
                                     :type (:type s)
                                     :value (:value s)
                                     :heading? false
                                     :depth kid-depth
-                                    :line (:i st)})
-                                 (render-into (:acc st) child id kid-depth visibility ellipsis))}))))
+                                    :line (:i state)})
+                                 (render-into (:acc state) child id kid-depth visibility ellipsis))}))))
         acc3 (assoc acc2 :extents (assoc (:extents acc2) id [start (:n acc2)])))
     (if (:separator s) (emit acc3 "" nil) acc3)))
 

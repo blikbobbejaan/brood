@@ -124,17 +124,6 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         with_load_journal,
     );
-    // The quiescence mechanism `%isolate`'s own soundness note asks for: an isolate is sound
-    // only while nothing else mutates globals concurrently, and this is how a runner checks
-    // before entering one. See `system::scope_live_pids`.
-    primitives.def(
-        "%scope-live-pids",
-        Arity::exact(0),
-        Sig::new(vec![], list_ty),
-        &[],
-        "",
-        scope_live_pids,
-    );
     // The debugger's eval-in-paused-context primitives (ADR-174) — capture a
     // breakpoint's locals and evaluate expressions in that scope. `dev-tools` only.
     #[cfg(feature = "dev-tools")]
@@ -612,7 +601,7 @@ pub(super) fn eval_string_inner(
     for i in 0..forms.len() {
         let form = heap.root_at(base + i);
         // Same as `eval_builtin`/the file loader: compile then run on the VM when enabled
-        // (deferred.md #9), tree-walker under `BROOD_VM=0`. `compile::run` falls back to the
+        // (deferred.md #9), tree-walker under `BROOD_TIER=0`. `compile::run` falls back to the
         // tree-walker per-form, so a form outside the VM's vocabulary still evaluates.
         match crate::eval::macros::compile(heap, form, root)
             .and_then(|f| crate::eval::compile::run_top_form(heap, f, root))
@@ -838,104 +827,6 @@ fn wait_for_inflight_loads(heap: &Heap) {
         }
     }
 }
-/// `(%isolate thunk)` — call `thunk` (no args) with a *private copy* of the
-/// runtime's global bindings: any `def` it makes is rolled back when it
-/// returns, so it cannot affect other code. The test framework wraps each
-/// `:isolated` test in this so a test's definitions never leak to another test.
-/// Restores the bindings even if the thunk raises (the error then propagates).
-///
-/// It also reaps processes the thunk left running, so an orphan can't outlive the
-/// bindings it was written against. **Blast radius: descendants of this call only.**
-/// A process is reaped when it is alive at return, was not alive when the isolate
-/// started, and its spawn-ancestry chain reaches a *newly spawned* direct child of
-/// this process — i.e. the thunk spawned it, directly or transitively. Bystanders
-/// spawned concurrently by anyone else are left alone. The one thing it misses is a
-/// grandchild whose intermediate parent already exited (the ancestry link dies with
-/// that process), which leaks rather than over-kills — see the filter below.
-///
-/// **What this does NOT isolate.** Only the global *binding* table is snapshotted
-/// and rolled back. Three kinds of leak survive an isolate:
-/// - *Memory-only:* the shared code slabs and the symbol interner still grow.
-/// - **Behavioural — the `defdyn` mark.** A `defdyn` inside the thunk leaves its
-///   name permanently marked dynamic in the process-wide registry
-///   (`core::value::DYNAMICS`), even though the binding itself is rolled back. The
-///   name is then ambient forever for namespace resolution
-///   (`eval::macros::is_ambient`) and permanently exempt from the reserved-name
-///   check (`heap::is_sealed` excludes dynamics), so an isolate can silently widen
-///   what later code is allowed to define. Fixing this needs an un-mark/restore
-///   API on the registry, which it does not currently expose.
-/// - **Behavioural — the `private` mark.** A `defn-`/`def-` inside the thunk leaves
-///   its qualified name in the runtime's recorded-private set (`RuntimeCode::private`)
-///   after the binding is gone, so the now-unbound name still reads as module-private.
-///   Same cause: `Heap` exposes `mark_private`/`private_names_snapshot` but no
-///   restore.
-///
-/// (The `sealed` set leaks the same way but benignly — the `in_module_load`
-/// exemption means a stale seal never rejects a legitimate def.)
-///
-/// It is sound only with no other process mutating globals concurrently, which the
-/// runner ensures by running isolated tests alone.
-/// `(%scope-live-pids)` — the OTHER live processes spawned under the `%isolate` scope this
-/// process is currently running in, as a list of pids.
-///
-/// The mechanism behind "an isolated unit runs alone". `%isolate` is sound only while nothing
-/// else mutates globals concurrently — its own doc says so — and the test runner was
-/// violating that: an `:isolated` unit enters its isolate and rolls the global table back
-/// while the file's parallel workers, and anything they spawned, are still running. A
-/// straggler's `defrecord` in that window lands its `%record-register` (locked, so it survives
-/// the swap) while the constructor `def` beside it does not, which is KI-89's orphaned
-/// record id.
-///
-/// **Scope, not ancestry.** Every process spawned inside a scope carries it, and so does
-/// everything they spawn, however many processes in between have since exited — so this needs
-/// no live parent chain, which is the same durability argument as the reap's `isolate_owner`.
-///
-/// **Scope `0` answers empty, and that is not a shortcut.** Zero is not an ownership group; it
-/// is the default bucket every process spawned outside any isolate shares, root and
-/// infrastructure included. Counting it asks "is the world quiet?", which is never true — an
-/// earlier version did, so the caller's bounded wait timed out every time and cost the suite
-/// 5x its wall clock while fixing nothing.
-///
-/// Policy — how long to wait and what to do when the wait runs out — belongs to the runner, in
-/// Brood, not here.
-pub(super) fn scope_live_pids(_args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let scope = crate::process::self_isolate_scope();
-    if scope == 0 {
-        return Ok(Value::nil());
-    }
-    let me = crate::process::self_pid();
-    // Exclude our own ANCESTORS, and this is the whole difference between a useful answer
-    // and a guaranteed timeout. The test runner's shape is root → per-file driver → unit
-    // worker, and the driver is parked in `receive` waiting for the very unit that is
-    // asking. Counting it says "someone else is live" forever, so a bounded wait on this
-    // predicate always ran out — which is exactly what an earlier attempt measured, at 5x
-    // the suite's wall clock, and wrongly read as "quiescence is unaffordable".
-    //
-    // An ancestor cannot be the hazard anyway. The processes that can mutate globals under
-    // an isolate are the ones running BESIDE us; the ones we were spawned from are, by
-    // construction, blocked on our result.
-    let mut ancestors = std::collections::HashSet::new();
-    let mut cur = me;
-    // Bounded: a parent pid always predates its child so a cycle is impossible, but the
-    // walk reads a live table, so cap it rather than trust that.
-    for _ in 0..10_000 {
-        match crate::process::parent_of(cur) {
-            Some(p) => {
-                ancestors.insert(p);
-                cur = p;
-            }
-            None => break,
-        }
-    }
-    let items: Vec<Value> = crate::process::list_local_pids()
-        .into_iter()
-        .filter(|p| {
-            *p != me && !ancestors.contains(p) && crate::process::isolate_owner_of(*p) == scope
-        })
-        .map(crate::process::pid_value)
-        .collect();
-    Ok(heap.list(items))
-}
 
 /// `(%with-load-journal thunk)` — run `thunk` (a module load) with this process marked as
 /// loading, so every global define and registry update it performs is journalled and
@@ -956,8 +847,21 @@ pub(super) fn with_load_journal(args: &[Value], env: EnvId, heap: &mut Heap) -> 
     result
 }
 
-/// `(%isolate thunk)`: run `thunk` against a private view of the globals and roll back what
-/// it defined — except module loads, which are replayed (KI-134, ADR-339).
+/// `(%isolate thunk)` — call `thunk` (no args) with a *private copy* of the runtime's global
+/// bindings: any `def` it makes is rolled back when it returns, except module loads, which
+/// are replayed (KI-134, ADR-339). The test framework wraps each `:isolated` test in this.
+/// Restores the bindings even if the thunk raises (the error then propagates).
+///
+/// It also reaps processes the thunk left running, so an orphan can't outlive the bindings
+/// it was written against. **Blast radius: what the thunk spawned only**, identified by the
+/// isolate-owner stamp every process inherits at spawn; bystanders are left alone.
+///
+/// **What this does NOT isolate.** Only the global *binding* table is snapshotted and rolled
+/// back. The shared code slabs and the symbol interner still grow; a `defdyn` mark, a
+/// `private` mark and a `sealed` mark made inside the thunk outlive its binding.
+///
+/// It is sound only with no other process mutating globals concurrently, which the runner
+/// ensures by running isolated tests alone.
 pub(super) fn isolate(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     isolate_impl(args, env, heap, true)
 }

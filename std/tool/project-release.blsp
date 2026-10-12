@@ -220,8 +220,8 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
             ;; rebuilds the matching `*package-modules-of*` at boot and loads each under context.
             dep-pairs (fold (seq *module-files*)
                         nil
-                        (fn (acc kv)
-                          (let (rooted-key (first kv) path (second kv))
+                        (fn (acc pair)
+                          (let (rooted-key (first pair) path (second pair))
                             (if (bundle-dep-file? path dep-dirs)
                               (cons (list rooted-key
                                       (bundle-source path

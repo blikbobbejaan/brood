@@ -33,8 +33,8 @@ fn no_false_positives_when_type_is_unknown_or_right() {
 
 #[test]
 fn propagates_primitive_result_types() {
-    // string-length returns int — the literal `1` here, a literal's length being known
-    // (2026-09-17); first wants a list/vector → flag it.
+    // string-length returns int — the literal `1` here, a literal's length being known;
+    // first wants a list/vector → flag it.
     assert!(warnings("(first (string/length \"a\"))")
         .iter()
         .any(|w| w.contains("first") && w.contains("got 1")));
@@ -263,7 +263,7 @@ fn optional_sig_params_parse_and_check() {
     );
 
     // Malformed order (`&` before `&optional`) is still never *misparsed* into
-    // something incorrect — but since Pass 2.85 the author is told, rather than
+    // something incorrect — but since the declaration check the author is told, rather than
     // the declaration vanishing silently (an annotation that is ignored when
     // wrong is a gate that cannot fail). Nothing about `k` itself is checked.
     let w = file_warnings("(sig k (int & number &optional string -> int))\n(defn k (a) a)");
@@ -495,9 +495,8 @@ fn curated_helper_sigs_catch_misuse() {
     //
     // `even?`/`odd?` are reported against `int`, not the curated `number`: `std/math.blsp`
     // DECLARES them `(int -> bool)`, and a declaration outranks the curated table whether
-    // it is read from the loaded module or from the stdlib image's footer (ADR-370 —
-    // `sig_of` reads the footer in the declaration's slot since 2026-09-20, so a check
-    // that never loads `math` says what one that did always said).
+    // it is read from the loaded module or from the stdlib image's footer (ADR-370), so a
+    // check that never loads `math` says what one that did says.
     assert!(warnings("(math/even? \"x\")")
         .iter()
         .any(|w| w.contains("even?") && w.contains("int")));
@@ -612,10 +611,9 @@ fn curated_output_and_numeric_sigs() {
 
 #[test]
 fn a_record_whose_field_is_a_union_passes_a_split_union_of_shapes() {
-    // C9 (2026-09-17): `{a: int|string}` against `(or (record :a int) (record :a string))`
-    // was a false positive — no single alternative covered the argument, and the lattice
-    // did not yet know a record is a product. Sabotage: drop the `MAP_BIT` arm of
-    // `term_is_subtype_of_union` and this warns again.
+    // C9: `{a: int|string}` against `(or (record :a int) (record :a string))` — no single
+    // alternative covers the argument, but a record is a product, so the split union does.
+    // Sabotage: drop the `MAP_BIT` arm of `term_is_subtype_of_union` and this warns.
     let w = file_warnings(
         "(sig f ((or (record :a int) (record :a string)) -> any))
          (defn f (r) r)

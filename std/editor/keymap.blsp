@@ -123,8 +123,8 @@ Pure apart from the symbol resolution; testable without a terminal."
     ;; `map?` FIRST: a nested keymap is a prefix, never a command — so passing a
     ;; sub-keymap as `command` finds nothing rather than matching by structural `=`.
     (mapcat keymap
-      (fn (kv)
-        (let ([k v] kv)
+      (fn (entry)
+        (let ([k v] entry)
           (cond
             (map? v) (map (keymap-where-is v command) (fn (seq) (into [k] seq)))
             (= v command) (list [k])
@@ -164,8 +164,8 @@ Pure apart from the symbol resolution; testable without a terminal."
 
     (into #{} (editor/keymap/keymap-bindings {:a 'save :x {:q 'quit}}))   → #{[save [:a]] [quit [:x :q]]}"
     (mapcat keymap
-      (fn (kv)
-        (let ([k v] kv)
+      (fn (entry)
+        (let ([k v] entry)
           (cond
             (map? v) (map (keymap-bindings v) (fn (pair) (let ([c s] pair) [c (into [k] s)])))
             (symbol? v) (list [v [k]])
@@ -185,8 +185,8 @@ Pure apart from the symbol resolution; testable without a terminal."
   help listing, or an `M-x`-style by-name runner that would otherwise offer only what
   happens to be in memory. Pure over the keymap data — no dispatch, no eval, no load."
     (seq/distinct (mapcat keymap
-                    (fn (kv)
-                      (let ([k v] kv)
+                    (fn (entry)
+                      (let ([k v] entry)
                         (cond
                           (map? v) (keymap-commands v)
                           (symbol? v) (list v)

@@ -11,7 +11,7 @@
 ;;; that reaches the slot some other way — a global read (a boxed handle), a slot copy, a
 ;;; float — and then reads it as an int. Each arm is driven until it SETTLES NATIVE before
 ;;; the answer is checked, so the check runs the lowered code, not the VM. Under a ceiling
-;;; below Native (`BROOD_VM=0`, `BROOD_TIER=1`) there is no tier to settle on, and the value
+;;; below Native (`BROOD_TIER=0`, `BROOD_TIER=1`) there is no tier to settle on, and the value
 ;;; checks run on whatever engine is live.
 ;;;
 ;;; Sabotage-verified (2026-09-25): letting a handle store keep the slot's cached int

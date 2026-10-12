@@ -6,7 +6,7 @@
 //! under which VM coverage can be widened (variadic arms, etc.).
 //!
 //! The ceiling is pinned per-eval via `compile::set_forced_ceiling`, which overrides
-//! the `BROOD_VM` env / build default (so this test is independent of how the suite
+//! the `BROOD_TIER` env / build default (so this test is independent of how the suite
 //! is being run). A *fresh* interpreter per (expr, engine) keeps side effects
 //! (`def`, `print`, `spawn`) from leaking across the two runs.
 

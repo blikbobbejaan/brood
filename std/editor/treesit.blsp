@@ -339,10 +339,6 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
       (reverse (cons (get node :kind) acc))
       (ts-chain hit p (cons (get node :kind) acc)))))
 
-(defn- ts-first-token (line)
-  ;; the first whitespace-delimited word of `line`, or ""
-  (let (t (string/triml line)) (or (first (string/split t " ")) "")))
-
 (defn- ts-opens-with? (line token)
   "Does `line` begin with `token` at a WORD BOUNDARY? `end)` closes a block and `endless`
 does not, and splitting on whitespace cannot tell them apart — which is how the closing
@@ -591,10 +587,6 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
 ;; any node with `:kids`; a "form" is a NAMED node (anonymous tokens — keywords,
 ;; punctuation — are skipped, like sexp skips whitespace/comments).
 (defn- ts-container? (node) (get node :kids))
-
-(defn- ts-named-kids (node)
-  "The named children of `node` (grammar nodes, not anonymous tokens)."
-  (seq/filter (or (get node :kids) []) :named))
 
 (defn- ts-enclosing (node point)
   "The deepest container node strictly containing `point`; `node` if none."

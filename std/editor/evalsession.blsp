@@ -150,7 +150,7 @@ Accounts for QUEUE POSITION, and has to: the child answers strictly one request 
 time, so this one cannot even start until every earlier inflight deadline could have
 passed. Measured from `t` alone, one legitimately slow request pushed the next past its
 deadline and the watchdog killed a perfectly healthy child."
-  (let (base (fold inflight t (fn (acc kv) (math/max acc (second kv)))))
+  (let (base (fold inflight t (fn (acc entry) (math/max acc (second entry)))))
     (+ base
       (or timeout-ms (spec-opt spec :default-timeout-ms *default-timeout-ms*))
       (spec-opt spec :grace-ms *default-grace-ms*))))
@@ -179,8 +179,8 @@ respawn), which must not resurrect it as an outstanding request."
   ;; Oldest first: the queue was consed, so fold over its reverse.
   (fold (reverse (:queue state))
     (assoc state :queue ())
-    (fn (st req)
-      (let ([id timeout-ms payload] req) (session-send-request st id timeout-ms payload)))))
+    (fn (session-state req)
+      (let ([id timeout-ms payload] req) (session-send-request session-state id timeout-ms payload)))))
 
 (defn- session-handle-line (state line)
   "Fold one complete stdout line: the ready banner flips `:ready` (flushing the queue and
@@ -228,8 +228,8 @@ complete line through [[session-handle-line]]."
 every respawn path, because a request that vanishes without an answer leaves its caller
 waiting on one that is never coming, and a caller that thinks an answer is in flight
 does not re-send."
-  (doseq (kv (:inflight state))
-    (let ([id _] kv)
+  (doseq (entry (:inflight state))
+    (let ([id _] entry)
       (session-reply state (merge {:id id :ok false} why))))
   (assoc state
     :inflight {}
@@ -244,21 +244,21 @@ does not re-send."
   "A fresh child and a new generation; inflight requests are answered `{:timeout true}`
 first, since they died with the old session. `:session-stopped` (after a `:spawn-failed`
 event) when a new child cannot be spawned at all."
-  (let (st (session-fail-inflight state {:timeout true}))
-    (session-close-child st)
+  (let (session-state (session-fail-inflight state {:timeout true}))
+    (session-close-child session-state)
     ;; Each respawn is a later ATTEMPT, and the backend is told so: this one is happening
     ;; because the last child did not work out, and it may want to start the next one
     ;; differently.
-    (let (attempt (inc (or (:attempt st) 0))
-          child (spec-call (:spec st) :spawn (list (:root st) attempt)))
+    (let (attempt (inc (or (:attempt session-state) 0))
+          child (spec-call (:spec session-state) :spawn (list (:root session-state) attempt)))
       (if (nil? child)
-        (do (session-emit st :down :spawn-failed) :session-stopped)
-        (merge st
+        (do (session-emit session-state :down :spawn-failed) :session-stopped)
+        (merge session-state
           {:proc child
            :buf ""
            :ready false
            :inflight {}
-           :gen (inc (:gen st))
+           :gen (inc (:gen session-state))
            :attempt attempt
            :spawned-at (os/now)})))))
 
@@ -271,18 +271,19 @@ its listener every half second until the machine is rebooted."
     (if (>= strikes (spec-opt (:spec state) :max-strikes *default-max-strikes*))
       (do
         (session-emit state :down :gave-up)
-        (let (st (session-fail-inflight state {:timeout true}))
-          (session-close-child st)
+        (let (session-state (session-fail-inflight state {:timeout true}))
+          (session-close-child session-state)
           :session-stopped))
-      (let (st (session-respawn state))
-        (if (= st :session-stopped) st (assoc st :strikes strikes))))))
+      (let (session-state (session-respawn state))
+        (if (= session-state :session-stopped) session-state (assoc session-state :strikes strikes))))))
 
 (defn- session-wedged? (state)
   "Whether any inflight request has outlived its deadline — the child stopped answering
 entirely. A child with its own per-request timeout should have replied long before this
 trips, so reaching it means the child could not stop what it was doing."
   (let (t (os/now))
-    (not (empty? (seq/filter (:inflight state) (fn (kv) (let ([_ deadline] kv) (> t deadline))))))))
+    (not (empty? (seq/filter (:inflight state)
+                   (fn (entry) (let ([_ deadline] entry) (> t deadline))))))))
 
 (defn- session-boot-overdue? (state)
   "Whether a spawned child has gone past its boot budget without announcing itself."
@@ -309,8 +310,10 @@ trips, so reaching it means the child could not stop what it was doing."
     ;; ends exactly as a reset ends it), and a no-op when it is already there.
     ([:reroot root] (if (= root (:root state))
                       state
-                      (let (st (session-respawn (assoc state :root root)))
-                        (if (= st :session-stopped) st (merge st {:strikes 0 :attempt 0})))))
+                      (let (session-state (session-respawn (assoc state :root root)))
+                        (if (= session-state :session-stopped)
+                          session-state
+                          (merge session-state {:strikes 0 :attempt 0})))))
     ([:proc p data] (if (= p (:proc state)) (session-feed state data) state))
     ;; Child stderr is not protocol — but it is the only trace a child that failed to
     ;; boot leaves behind, so it is logged rather than discarded.
@@ -337,8 +340,10 @@ trips, so reaching it means the child could not stop what it was doing."
         state))
     ;; User-initiated, so the strikes are forgiven: asking for a restart is not evidence
     ;; that the child is broken.
-    ([:reset] (let (st (session-respawn state))
-                (if (= st :session-stopped) st (merge st {:strikes 0 :attempt 0}))))
+    ([:reset] (let (session-state (session-respawn state))
+                (if (= session-state :session-stopped)
+                  session-state
+                  (merge session-state {:strikes 0 :attempt 0}))))
     ([:shutdown] (do (session-close-child state) :session-stopped))
     (_ state)))
 
@@ -346,12 +351,12 @@ trips, so reaching it means the child could not stop what it was doing."
   "Take request `id` from a client whose answer goes to `reply-to`: give it the next WIRE
 id, remember the route back, and send it — or queue it until the child is up."
   (let (wire (or (:next-id state) 1)
-        st (assoc state
-             :next-id (inc wire)
-             :routes (assoc (or (:routes state) {}) wire [id reply-to])))
-    (if (:ready st)
-      (session-send-request st wire timeout-ms payload)
-      (update st :queue (fn (q) (cons [wire timeout-ms payload] q))))))
+        session-state (assoc state
+                        :next-id (inc wire)
+                        :routes (assoc (or (:routes state) {}) wire [id reply-to])))
+    (if (:ready session-state)
+      (session-send-request session-state wire timeout-ms payload)
+      (update session-state :queue (fn (q) (cons [wire timeout-ms payload] q))))))
 
 (defn- session-loop (state)
   (cond

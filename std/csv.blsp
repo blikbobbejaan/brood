@@ -1,7 +1,4 @@
 ;; std/csv.blsp — CSV decoding and encoding, written entirely in Brood.
-;;
-;; Handles quoted fields (commas and newlines inside quotes), "" for escaped
-;; quote, both \n and \r\n line endings.
 
 (defmodule csv
   "CSV decoding and encoding, written entirely in Brood (pure; opt-in).
@@ -20,185 +17,44 @@ Both \\n and \\r\\n line endings are accepted on input; \\n is emitted. Malforme
 input — a quoted field that never closes, or text after a closing quote — raises,
 as `json/decode` does, rather than decoding to rows that look right and aren't.")
 
-;; ---- CSV parsing ------------------------------------------------------------
+;; ---- decoding ---------------------------------------------------------------
 ;;
-;; State machine over a character index. States:
-;;   :field-start   — start of a new field
-;;   :unquoted      — inside an unquoted field (accumulating chars)
-;;   :quoted        — inside a quoted field
-;;   :quote-seen    — just saw a quote inside a quoted field (may be "" or end)
-;;
-;; Result: a list of rows; each row is a vector of strings.
-;; `s` is a CODE-POINT VECTOR (built once in `decode` via `string->list`), so
-;; `csv-at` indexes with O(1) `nth` — `char-at` on a raw UTF-8 string is O(i), which
-;; made the whole scan O(n^2). A field is a REVERSED LIST of chars, materialised once
-;; via `csv-field` at each field boundary — `(str acc c)` per char was O(field^2).
+;; A state machine over a CODE-POINT VECTOR (O(1) `nth`; `char-at` on a UTF-8 string is
+;; O(i)). States: `:unquoted` (an unquoted field, or the start of any field), `:quoted`,
+;; and `:quote-seen` (a quote inside a quoted field: `""` or the closing quote). A field
+;; is a REVERSED char list, joined once at its end; `row` is a vector of finished fields.
 
-(defn- csv-at (s i n)
-  "The char at position `i`, or nil at/after end."
+(defn- at (s i n)
   (if (< i n) (nth s i) nil))
 
-(defn- csv-field (field-acc)
-  "Materialise a reversed char-list field accumulator into a string."
-  (apply str (reverse field-acc)))
+(defn- end-field (row field)
+  (conj row (apply str (reverse field))))
 
-;; Forward declarations (mutual recursion between state functions is expressed
-;; as a single loop via explicit state passing — a Brood pattern for state machines).
-
-(defn- csv-parse-loop (s i n state field-acc row-acc rows-acc)
-  "Core parser loop. Returns a list of rows (each a vector of strings)."
-  (let (c (csv-at s i n))
+(defn- parse (s i n state field row rows)
+  (let (c (at s i n)
+        ;; a CR is a line break only as half of CRLF; a bare one is data
+        crlf (and (= c "\r") (= (at s (+ i 1) n) "\n")))
     (cond
-      ;; ── end of input inside a quoted field ────────────────────────────────
-      ;; The quote never closed. Returning the rows swallowed everything after the
-      ;; opening quote into one field — `a,"b\n1,2` read as ONE row — which looks like
-      ;; data and isn't.
-      (and (nil? c) (= state :quoted)) (error "csv/decode: unterminated quoted field")
-
-      ;; ── end of input ──────────────────────────────────────────────────────
-      (nil? c)
-        (let (row (into [] (reverse (cons (csv-field field-acc) row-acc))))
-          ;; If the last row is a single empty field (trailing newline), drop it.
-          (let (all-rows (cons row rows-acc))
-            (let (result (reverse all-rows))
-              ;; Drop trailing empty row produced by a trailing newline
-              (if (and (not (empty? result))
-                    (let (last-row (nth (into [] result) (dec (count result))))
-                      (and (= (count last-row) 1)
-                        (= (nth last-row 0 nil) "")))
-                    ;; Only drop if non-empty rows exist before it
-                    (> (count result) 1))
-                (reverse (rest (reverse result)))
-                result))))
-
-      ;; ── :field-start ─────────────────────────────────────────────────────
-      (= state :field-start)
-        (cond
-          ;; opening quote → enter quoted state
-          (= c "\"") (csv-parse-loop s (+ i 1) n :quoted nil row-acc rows-acc)
-          ;; comma → empty field, move to next field
-          (= c ",")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :field-start nil
-              (cons (csv-field field-acc) row-acc)
-              rows-acc)
-          ;; newline \n → empty field, end of row
-          (= c "\n")
-            (let (row (into []
-                        (reverse (cons (csv-field field-acc) row-acc))))
-              (csv-parse-loop s
-                (+ i 1)
-                n
-                :field-start nil
-                nil
-                (cons row rows-acc)))
-          ;; \r\n — skip the \r, the \n will be processed on the next call
-          (= c "\r")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :field-start field-acc
-              row-acc
-              rows-acc)
-          ;; any other char → start unquoted field
-          else
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :unquoted (cons c field-acc)
-              row-acc
-              rows-acc))
-
-      ;; ── :unquoted ─────────────────────────────────────────────────────────
-      (= state :unquoted)
-        (cond
-          (= c ",")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :field-start nil
-              (cons (csv-field field-acc) row-acc)
-              rows-acc)
-          (= c "\n")
-            (let (row (into []
-                        (reverse (cons (csv-field field-acc) row-acc))))
-              (csv-parse-loop s
-                (+ i 1)
-                n
-                :field-start nil
-                nil
-                (cons row rows-acc)))
-          (= c "\r") (csv-parse-loop s (+ i 1) n :unquoted field-acc row-acc rows-acc)
-          else
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :unquoted (cons c field-acc)
-              row-acc
-              rows-acc))
-
-      ;; ── :quoted ───────────────────────────────────────────────────────────
       (= state :quoted)
         (cond
-          ;; quote in quoted field → could be "" (escaped) or closing quote
-          (= c "\"") (csv-parse-loop s (+ i 1) n :quote-seen field-acc row-acc rows-acc)
-          ;; \r inside a quoted field is DATA, not a line ending —
-          ;; RFC 4180 §2.6: a field enclosed in quotes may contain
-          ;; CRLF, and it is content. Swallowing the \r here silently
-          ;; rewrote every embedded CRLF to LF, so a CSV with a
-          ;; multi-line quoted cell did not round-trip (csv-spectrum
-          ;; newlines_crlf). Line-ending normalisation belongs in the
-          ;; :unquoted / :quote-seen states, which is where it is.
-          ;; Falls through to the accumulate branch below.
-          ;; any other char (including \r, \n, comma) → accumulate
-          else (csv-parse-loop s (+ i 1) n :quoted (cons c field-acc) row-acc rows-acc))
-
-      ;; ── :quote-seen ───────────────────────────────────────────────────────
+          (nil? c) (error "csv/decode: unterminated quoted field")
+          (= c "\"") (parse s (+ i 1) n :quote-seen field row rows)
+          ;; everything else, CR and LF included, is content (RFC 4180 §2.6)
+          else (parse s (+ i 1) n :quoted (cons c field) row rows))
+      ;; nothing since the last line break: a trailing newline, not an empty row
+      (nil? c)
+        (if (and (= state :unquoted) (nil? field) (empty? row))
+          (reverse rows)
+          (reverse (cons (end-field row field) rows)))
+      (and (= state :quote-seen) (= c "\"")) (parse s (+ i 1) n :quoted (cons c field) row rows)
+      (= c ",") (parse s (+ i 1) n :unquoted nil (end-field row field) rows)
+      (or crlf (= c "\n"))
+        (parse s (if crlf (+ i 2) (+ i 1)) n :unquoted nil [] (cons (end-field row field) rows))
+      ;; RFC 4180 §2.7: only a separator may follow a closing quote
       (= state :quote-seen)
-        (cond
-          ;; "" → escaped quote, add one " and back to :quoted
-          (= c "\"")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :quoted (cons "\"" field-acc)
-              row-acc
-              rows-acc)
-          ;; comma after closing quote → end of field
-          (= c ",")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :field-start nil
-              (cons (csv-field field-acc) row-acc)
-              rows-acc)
-          ;; newline after closing quote → end of row
-          (= c "\n")
-            (let (row (into []
-                        (reverse (cons (csv-field field-acc) row-acc))))
-              (csv-parse-loop s
-                (+ i 1)
-                n
-                :field-start nil
-                nil
-                (cons row rows-acc)))
-          ;; \r after closing quote → skip (wait for \n)
-          (= c "\r")
-            (csv-parse-loop s
-              (+ i 1)
-              n
-              :quote-seen field-acc
-              row-acc
-              rows-acc)
-          ;; anything else after a closing quote is malformed (RFC 4180 §2.7). It used
-          ;; to be merged into the field (`"a"b` → `ab`), which silently invents a value.
-          else (error "csv/decode: unexpected " (pr-str c) " after a closing quote at index " i))
-
-      else
-      ;; Should never happen — fall back to unquoted
-        (csv-parse-loop s (+ i 1) n :unquoted (cons c field-acc) row-acc rows-acc))))
+        (error "csv/decode: unexpected " (pr-str c) " after a closing quote at index " i)
+      (and (nil? field) (= c "\"")) (parse s (+ i 1) n :quoted nil row rows)
+      else (parse s (+ i 1) n :unquoted (cons c field) row rows))))
 
 (defn decode (s)
   "Parse a CSV string → a list of rows, where each row is a vector of strings.
@@ -208,70 +64,28 @@ An empty string returns an empty list. Malformed input — a quoted field that n
 closes, or anything but a separator after a closing quote — **raises**.
 
     (csv/decode \"a,b\n1,2\")   → ([\"a\" \"b\"] [\"1\" \"2\"])"
-  (if (= s "")
-    nil
-    (let (v (into [] (string/->list s)))
-      ; index a code-point vector: O(1) nth, O(n) scan
-      (csv-parse-loop v 0 (count v) :field-start nil nil nil))))
-
-;; ---- parse-maps ---------------------------------------------------------
-
-(defn- csv-rows->maps (headers rows acc)
-  "Build a list of maps from `rows`, using `headers` (a vector of strings) as keys."
-  (if (empty? rows)
-    (reverse acc)
-    ;; `(into [] row)` was INSIDE the fold, so a row was rebuilt into a fresh vector
-    ;; once per COLUMN — O(cols²) per row, quadratic in the header count (400 columns
-    ;; measured 517 ms). `decode` already hands back vectors, so hoisting it out of the
-    ;; fold is enough; the `into` stays only to tolerate a hand-built list row.
-    (let (row (first rows)
-          cells (if (vector? row) row (into [] row))
-          m (fold (range (count headers))
-              {}
-              (fn (acc i) (assoc acc (nth headers i "") (nth cells i "")))))
-      (csv-rows->maps headers (rest rows) (cons m acc)))))
+  (let (chars (into [] (string/->list s)))
+    (parse chars 0 (count chars) :unquoted nil [] nil)))
 
 (defn decode-maps (s)
   "Parse a CSV string where the first row is a header row. Returns a list of
 maps from header→value strings. An empty or header-only CSV returns nil/empty;
 malformed input raises, as `decode` does."
-  (let (rows (decode s))
-    (if (or (nil? rows) (empty? rows))
-      nil
-      (let (headers (into [] (first rows))
-            data (rest rows))
-        (if (empty? data)
-          nil
-          (csv-rows->maps headers data nil))))))
+  (let (rows (decode s)
+        headers (first rows))
+    (map (rest rows)
+      (fn (row)
+        (fold (range (count headers)) {} (fn (m i) (assoc m (nth headers i) (nth row i ""))))))))
 
-;; ---- CSV encoding -----------------------------------------------------------
+;; ---- encoding ---------------------------------------------------------------
 
-(defn- csv-field-needs-quoting? (s)
-  "True if field `s` must be quoted in CSV output: contains comma, quote, newline, or CR."
-  (or (includes? s ",")
-    (includes? s "\"")
-    (includes? s "\n")
-    (includes? s "\r")))
-
-(defn- csv-emit-field (v)
-  "Emit a single CSV field, quoting it if necessary. Interior quotes are doubled.
-A non-string cell is rendered with `->string` (the `Display` protocol) first — so a number
-emits as its digits, and a record emits as the string its type defines rather than as its
-field map (or, as before `->string`, a type error out of the quoting scan)."
+(defn- emit-field (v)
+  "One CSV field, quoted when it holds a comma, quote, CR or LF, interior quotes doubled. A
+non-string cell is rendered with `->string` (the `Display` protocol) first."
   (let (s (if (string? v) v (->string v)))
-    (if (csv-field-needs-quoting? s)
+    (if (any? ["," "\"" "\n" "\r"] (fn (special) (includes? s special)))
       (str "\"" (string/replace s "\"" "\"\"") "\"")
       s)))
-
-(defn- csv-emit-row (fields)
-  "Emit a single CSV row as a string (no trailing newline)."
-  (string/join (map (seq fields) csv-emit-field) ","))
-
-(defn- csv-emit-rows (rows acc)
-  "Emit a list of rows into a newline-separated string."
-  (if (empty? rows)
-    (string/join (reverse acc) "\n")
-    (csv-emit-rows (rest rows) (cons (csv-emit-row (first rows)) acc))))
 
 (defn encode (rows)
   "Serialize a list of rows (each a list or vector of cells) to a CSV string. A cell that
@@ -281,34 +95,19 @@ Fields containing commas, quotes, or newlines are quoted; interior quotes are
 doubled. Rows are separated by `\\n`.
 
     (csv/encode [[\"a\" \"b\"]])   → \"a,b\""
-  (if (or (nil? rows) (empty? rows))
-    ""
-    (csv-emit-rows (seq rows) nil)))
+  (string/join (map rows (fn (row) (string/join (map row emit-field) ","))) "\n"))
 
-;; ---- emit-maps ----------------------------------------------------------
-
-(defn- csv-cell (m h)
-  ;; Presence, not truthiness. The `(or (get m h) (get m (keyword h) ""))` this
-  ;; replaced was wrong for every FALSY value Brood has: `false` is falsy here, so a
-  ;; legitimately-stored `false` fell through the `or` and emitted an EMPTY field —
-  ;; `(emit-maps (list {"a" false}) (list "a"))` gave `,` instead of `false`, silently
-  ;; corrupting boolean columns. `contains?` asks the question actually meant.
-  ;; A key present but holding `nil` still emits an empty field (nil = no value).
-  (cond
-    (contains? m h) (let (v (get m h)) (if (nil? v) "" v))
-    (contains? m (keyword h)) (let (v (get m (keyword h))) (if (nil? v) "" v))
-    else ""))
-
-(defn- csv-map->row (m headers)
-  "Extract values from map `m` in the order given by `headers`."
-  (map headers (fn (h) (csv-cell m h))))
+(defn- cell (m h)
+  ;; Presence, not truthiness: a stored `false` emits `false`; a key holding nil, or
+  ;; absent, emits an empty field.
+  (let (k (if (contains? m h) h (keyword h))
+        v (get m k))
+    (if (nil? v) "" v)))
 
 (defn encode-maps (maps headers)
   "Serialize a list of maps to CSV, with the given `headers` list determining
 column order. The header row is written first. Missing keys produce empty fields.
 
     (csv/encode-maps (list {:a 1 :b \"x\"} {:a 2}) [\"a\" \"b\"])   → \"a,b\\n1,x\\n2,\""
-  (let (header-row (into [] headers)
-        data-rows (map maps (fn (m) (into [] (csv-map->row m headers)))))
-    (encode (cons header-row (into [] data-rows)))))
+  (encode (cons headers (map maps (fn (m) (map headers (fn (h) (cell m h))))))))
 (sig encode-maps (seqable any -> string))

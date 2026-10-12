@@ -1,0 +1,160 @@
+;; Linear-map rewrite fuzzer (LINMAP, `eval/compile/inline.rs` + `eval/macros.rs`).
+;;
+;; Each program folds a random tally over a random key stream TWICE: once as a self-tail
+;; `defn` — the shape the rewrite turns into an in-place `Table` loop — and once as a
+;; `fold` over a closure, which the rewrite never touches. Both are the same source
+;; arithmetic, so the oracle is in the program: a difference prints `BAD`. The engines must
+;; also agree on the printed result (value or error sentinel), and none may crash.
+;;
+;; What varies: the spelling (`%map-int-add`, the idiomatic `(assoc m k (+ (get m k 0) e))`
+;; in either operand order, and the near-misses that must NOT fuse — a non-zero default, a
+;; 2-arity `get`, a different read key), the key expression (a local, `(first xs)`, a
+;; keyword, an arithmetic expression), the addend (int, float, bignum-sized, a read of the
+;; map), the seed map (empty; ints; a float or a string under a key that is hit — the float
+;; must add as `+` does and the string must be `+`'s error), and a base case that returns
+;; the map, a read of it, or its count.
+;;
+;;   brood scripts/fuzz/generators/linmap.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- the grammar
+;; [key-form let-init]: a let-bound local, an inlined prelude prim over a local, a constant
+;; key, an arithmetic key expression read twice
+(def keys-and-inits
+  [["k" "(math/rem i 5)"]
+    ["(first xs)" nil]
+    [":hot" nil]
+    ["(math/rem i 3)" nil]])
+
+(def addends
+  ["1" "2" "-1" "0.5" "9223372036854775807" "(get m :other 0)" "(+ 1 (math/rem i 2))"])
+
+(def seed-maps
+  ["{}"
+    "{:hot 10 :other 3}" "{0 1.5 :hot 2.5}" "{1 \"s\"}" "{:hot 9223372036854775807}"
+    "{2 100000000000000000000}" "{:hot -9223372036854775808}"
+    ;; seeds a table cannot stand in for: the wrapper must run the loop as written
+    "{:r (text/from-string \"x\") :hot 1}" "{:f string/length}"
+    "{:v (seq/lmap (list 0 1 2) inc) :hot 2}" "(lm-rec 5)"])
+
+(def base-cases ["m" "(get m :hot :none)" "(count m)" "(get m 0)"])
+
+(defn update-form (key)
+  "The map-update form for one step, on accumulator `m` with key form `key`."
+  (let (addend (draw-choice addends) roll (draw-float))
+    (cond
+      (< roll 0.15)
+        (str "(%map-int-add m "
+          key
+          " "
+          (if (or (= addend "0.5") (= addend "(get m :other 0)")) "1" addend)
+          ")")
+      (< roll 0.45) (str "(assoc m " key " (+ (get m " key " 0) " addend "))")
+      (< roll 0.75) (str "(assoc m " key " (+ " addend " (get m " key " 0)))")
+      (< roll 0.8)
+        (draw-choice
+          [(str "(assoc m " key " (inc (get m " key " 0)))")
+            (str "(assoc m " key " (dec (get m " key " 0)))")
+            (str "(assoc m " key " (- (get m " key " 0) " addend "))")
+            ;; addend minus the count: no fuse
+            (str "(assoc m " key " (- " addend " (get m " key " 0)))")])
+      ;; non-zero default: no fuse
+      (< roll 0.85) (str "(assoc m " key " (+ (get m " key " 1) " addend "))")
+      ;; 2-arity get: raises on a miss
+      (< roll 0.93) (str "(assoc m " key " (+ (get m " key ") " addend "))")
+      ;; different read key: no fuse
+      :else (str "(assoc m " key " (+ (get m :other 0) " addend "))"))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let ([key let-init] (draw-choice keys-and-inits)
+        update (update-form key)
+        base-case (draw-choice base-cases)
+        seed-map (draw-choice seed-maps)
+        steps (str (draw-choice [7 40 300]))
+        step (if let-init (str "(let (k " let-init ") " update ")") update)
+        ;; The same tally through a `fold` LITERAL — rewritten too (ADR-360 §6) — against
+        ;; the named-function reference, which the rewrite never touches. Only for keys that
+        ;; do not read `xs`: the fold's element is `i`, counting up where `go` counts down,
+        ;; and a tally is order-independent.
+        fold-arm (if (= key "(first xs)")
+                   ""
+                   (str "(defn ref-fold-step (m i) "
+                     step
+                     ")
+(def c (try (show (fold (range 1 (+ "
+                     steps " 1)) " seed-map " (fn (m i) " step
+                     "))) (catch e (str \"E:\" (error-message e)))))
+(def d (try (show (fold (range 1 (+ "
+                     steps " 1)) " seed-map
+                     " ref-fold-step)) (catch e (str \"E:\" (error-message e)))))
+(io/puts (if (= c d) \"fold-ok\" (str \"BAD fold=\" c \" ref=\" d)))")))
+    ;; xs is a list of ints so `(first xs)` is a key; `i` counts down.
+    (str
+      "(defrecord lm-rec (hits))
+(impl Lookup lm-rec (lookup-get [c k] (if (= k :hits) (get c :hits) 100)) (lookup-keys [c] (list :hits)))
+(defn go (i xs m)
+  (if (= i 0)
+    "
+      base-case
+      "
+    (go (- i 1) (rest xs) "
+      step
+      ")))
+(defn ref-step (m i xs) "
+      step
+      ")
+(defn ref-go (i xs m)
+  (if (= i 0)
+    "
+      base-case
+      "
+    (ref-go (- i 1) (rest xs) (ref-step m i xs))))
+(def xs (map (range 0 "
+      steps
+      ") (fn (i) (math/rem (* i 7) 4))))
+(defn show (m) (if (map? m) (pr-str (sort (map (seq m) (fn (kv) (str (nth kv 0) \"=\" (let (v (nth kv 1)) (cond (rope? v) (text/->string v) (seqview? v) (pr-str (seq v)) (fn? v) \"fn\" else (pr-str v)))))))) (pr-str m)))
+(def a (try (show (go "
+      steps " xs " seed-map
+      ")) (catch e (str \"E:\" (error-message e)))))
+(def b (try (show (ref-go "
+      steps " xs " seed-map
+      ")) (catch e (str \"E:\" (error-message e)))))
+"
+      fold-arm
+      "
+(io/puts (if (= a b) a (str \"BAD split=\" a \" ref=\" b)))
+")))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/lm_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "linmap programs"))

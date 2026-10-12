@@ -88,7 +88,7 @@ pub(super) fn scan_atom_kind(t: &str) -> &'static str {
 /// here in Rust, leaving the consumer to apply policy (faces, head-position) over
 /// O(tokens), not O(chars). Strings honour `\\` escapes; a comment runs to end-of-line.
 pub(super) fn scan_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "scan-tokens", arg(args, 0))?;
+    let s = expect_string(heap, "reflect/scan-tokens", arg(args, 0))?;
     let chars: Vec<char> = s.chars().collect();
     let n = chars.len();
     let kw = |k: &'static str| Value::keyword(value::intern(k));
@@ -389,11 +389,11 @@ fn form_scan_table(heap: &Heap, v: Value, len: usize) -> Option<std::sync::Arc<F
 }
 
 pub(super) fn scan_form_start_2(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pos = expect_int(heap, "scan-form-start-2", arg(args, 1))?;
+    let pos = expect_int(heap, "reflect/scan-form-start-2", arg(args, 1))?;
     let (best, prev) = {
         let h: &Heap = heap;
         let v = arg(args, 0);
-        let s = expect_string_ref(h, "scan-form-start-2", v)?;
+        let s = expect_string_ref(h, "reflect/scan-form-start-2", v)?;
         if s.is_empty() || pos < 0 {
             (0, 0)
         } else {
@@ -483,11 +483,11 @@ fn scan_form_end_bytes(s: &str, start_byte: usize, start_ch: usize, nforms: i64)
 /// neighbourhood of point (previous, enclosing, next form) in one native pass, where it used
 /// an interpreted `char-at` loop — the dominant cost of every keystroke-driven motion.
 pub(super) fn scan_form_end(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let from = expect_int(heap, "scan-form-end", arg(args, 1))?.max(0) as usize;
-    let nforms = expect_int(heap, "scan-form-end", arg(args, 2))?;
+    let from = expect_int(heap, "reflect/scan-form-end", arg(args, 1))?.max(0) as usize;
+    let nforms = expect_int(heap, "reflect/scan-form-end", arg(args, 2))?;
     let h: &Heap = heap;
     let v = arg(args, 0);
-    let s = expect_string_ref(h, "scan-form-end", v)?;
+    let s = expect_string_ref(h, "reflect/scan-form-end", v)?;
     // `from` is a char index; convert to a byte offset in O(1)+bounded via the string's
     // ADR-213 char↔byte index (a fresh `Vec<char>` walk would reintroduce the O(pos) cost
     // this primitive exists to remove). A non-`Str` value can't reach here — the ref check
@@ -501,10 +501,10 @@ pub(super) fn scan_form_end(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 }
 
 pub(super) fn scan_form_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pos = expect_int(heap, "scan-form-start", arg(args, 1))?;
+    let pos = expect_int(heap, "reflect/scan-form-start", arg(args, 1))?;
     let h: &Heap = heap;
     let v = arg(args, 0);
-    let s = expect_string_ref(h, "scan-form-start", v)?;
+    let s = expect_string_ref(h, "reflect/scan-form-start", v)?;
     if s.is_empty() || pos < 0 {
         return Ok(Value::int(0));
     }
@@ -598,11 +598,11 @@ pub(super) fn read_spans(
 /// highlight`'s `fontify-runs`) in Rust — it runs per visible line every frame. Faces
 /// are opaque maps, merged via `into` semantics and compared with `equal` to coalesce.
 pub(super) fn span_runs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let text = expect_string(heap, "span-runs", arg(args, 0))?;
-    let base = expect_int(heap, "span-runs", arg(args, 1))?;
-    let spans = read_spans(heap, "span-runs", arg(args, 2))?;
+    let text = expect_string(heap, "%span-runs", arg(args, 0))?;
+    let base = expect_int(heap, "%span-runs", arg(args, 1))?;
+    let spans = read_spans(heap, "%span-runs", arg(args, 2))?;
     let ranges = match args.get(3) {
-        Some(r) => read_spans(heap, "span-runs", *r)?,
+        Some(r) => read_spans(heap, "%span-runs", *r)?,
         None => Vec::new(),
     };
     let chars: Vec<char> = text.chars().collect();

@@ -1,20 +1,8 @@
 #!/usr/bin/env bash
 # Does every program in `examples/` still RUN against this build?
 #
-# Why this exists. `examples/` is outside `make test`, `nest check` and the breakage suite,
-# so nothing ever executed it — and it rotted three separate ways without anyone noticing:
-#
-#   * `examples/editor` has called `eval-command/eval-last-sexp` since 2026-05-31, two and a
-#     half months after that module moved to the sibling `brood-edit` project (KI-45 — the
-#     example was deleted rather than repaired, `brood-edit` being the real one).
-#   * ADR-227 moved `sqrt`/`frequencies` out of the prelude; `examples/life.blsp` needed a
-#     `(:use …)` and would have died on a bare name.
-#   * ADR-229 removed `require`; `examples/{webserver,hot-reload,editor}` all opened with a
-#     `(require '…)` line and stopped loading entirely.
-#
-# That is the same pattern as KI-42 (breakage), KI-43 (a suite outside the gate) and KI-44
-# (the benchmarks repo): a migration sweep covers what the gates cover, and everything else
-# rots quietly. This is the cheap counter for `examples/`.
+# `examples/` is outside `make test`, `nest check` and the breakage suite, so a rename
+# sweep that misses it lets it rot silently (KI-45). This is the cheap counter.
 #
 # What it checks, and why that and not "exit 0". Several examples cannot COMPLETE in a
 # sandbox — `webserver`/`node_server` are servers that run until killed, `node_client` needs
@@ -54,6 +42,15 @@ matches() {
   local n="$1" w
   for w in "${want[@]}"; do [ "$w" = "$n" ] && return 0; done
   return 1
+}
+
+# A project suite passed only when `nest test` exited 0 AND printed its summary line with
+# exactly zero failures. Matching a bare `0 failed` accepted "10 failed"; a missing summary
+# (the runner died before printing) must fail too.
+project_suite_passed() {
+  local exit_status="$1" output="$2"
+  [ "$exit_status" -eq 0 ] || return 1
+  printf '%s\n' "$output" | grep -qE '^[0-9]+ tests, [0-9]+ passed, 0 failed([,( ]|$)'
 }
 
 fail=0
@@ -103,7 +100,8 @@ for p in "$ROOT"/examples/*/project.blsp; do
     echo "  skip    $name/ (no nest binary at $NEST)"; continue
   fi
   out="$(cd "$dir" && timeout 120 "$NEST" test 2>&1)"
-  if printf '%s\n' "$out" | grep -qE '0 failed'; then
+  status=$?
+  if project_suite_passed "$status" "$out"; then
     echo "  ok      $name/ ($(printf '%s\n' "$out" | grep -oE '[0-9]+ tests, [0-9]+ passed' | head -1))"
   else
     fail=1

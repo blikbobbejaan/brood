@@ -244,9 +244,8 @@ fn check_arg_against_param(
 /// **A computed callee** — `((cur 1) "x")`, `((get handlers :k) msg)`: a head that is itself
 /// a form. When its TYPE is an arrow, that arrow describes the call exactly as a named
 /// function's signature does — the arity is exact and each argument meets its parameter
-/// (`check_arg_against_param`); `infer::expr_ty` reads the result from the same arrow. An
-/// arrow in head position used to be inert: a curried `(sig cur (int -> (string -> int)))`
-/// typed `(cur 1)` and then nothing checked what it was applied to. A `fn` literal in head
+/// (`check_arg_against_param`); `infer::expr_ty` reads the result from the same arrow, so a
+/// curried `(sig cur (int -> (string -> int)))` checks what `(cur 1)` is applied to. A `fn` literal in head
 /// position — an immediate application — is checked against its parameters' domains and
 /// arity here; `infer.rs` types its result by its body.
 fn check_computed_call(
@@ -262,7 +261,7 @@ fn check_computed_call(
     let head_ty = expr_ty(heap, head, ctx);
     // An immediately-applied `fn` literal gets what a `let`-bound one gets at its call
     // sites: each parameter's domain over the body, and the literal's arity — its own
-    // arrow carries neither, so `((fn (y) (string/length y)) 5)` used to pass unread.
+    // arrow carries neither, so `((fn (y) (string/length y)) 5)` would pass unread.
     let Some(sig) = super::sigs::let_bound_lambda_sig(heap, head, head_ty.as_ref(), ctx)
         .or_else(|| head_ty.as_ref().and_then(Ty::as_arrow).cloned())
     else {
@@ -313,13 +312,7 @@ fn indexed_collection(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Symbol>
 
 fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<Pos>, String)>) {
     // A vector or map **literal in value position is evaluated code**: `[:tag (f x)]`
-    // calls `f`, and so does `{:k (f x)}`. This walk used to return here for anything
-    // that is not a `Pair`, so every form nested inside `[…]` / `{…}` was invisible to
-    // every lint — and Hiccup-shaped code (hive's entire web layer, `std/editor/*`) is
-    // written that way. `(str (max 2 …))` sat in hive's `/docs` renderer long after
-    // `max` moved to `math`, with `nest check` green the whole time; only rendering the
-    // page raised it. Same class as KI-67, one level out: not a form that suppressed the
-    // lint, a form the walk never reached.
+    // calls `f`, and so does `{:k (f x)}`, so the walk descends into both.
     //
     // Descending is safe on both counts that would otherwise cost false positives:
     // the checker runs on **macroexpanded** forms, so a `match` pattern vector has
@@ -376,170 +369,18 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
         }
     }
 
-    // **Ability op on a record-typed variable with no impl** (Slice 3, inference hook).
-    // The syntactic pass in `protocol` already covers literal / direct-ctor args; this
-    // uses the inferred type of a *symbol* argument (a `let`-bound record, a sig-typed
-    // param) — so `(let (c (circle 2)) (size c))` is flagged when `Size` has no impl for
-    // circle. Gated: file has abilities, head is a known op fn, arg is a symbol.
-    if let (Some(info), Value::Sym(h)) = (ctx.ability(), head) {
-        if let Some((ability, op)) = info.op_of(h) {
-            if let Some(&Value::Sym(_)) = items.get(1) {
-                if let Some(ty) = super::infer::expr_ty(heap, items[1], ctx) {
-                    super::protocol::check_ability_call_inferred(
-                        info,
-                        h,
-                        &ty,
-                        heap.form_pos_only(form),
-                        out,
-                    );
-                }
-            }
-            // **Typed op params** (ADR-180): check each argument against the op's declared
-            // `(name T)` parameter type — the argument-side sibling of the `:-> RET` flow.
-            // Same gradual relation as the sig-param check (`gradual_of` + `consistent_with`
-            // + `relax_param_for_arg`), so it is false-positive-clean: a precise arg is
-            // checked `⊆`, a dynamic arg `∩ ≠ ⊥`, and an unknown/NEVER arg defers. Param `i`
-            // corresponds to argument `items[i + 1]` (`self` is param 0 / `items[1]`).
-            if let Some(params) = info.op_params_of(h) {
-                for (i, pty) in params.iter().enumerate() {
-                    let Some(pty) = pty else { continue };
-                    let Some(&arg) = items.get(i + 1) else { break };
-                    let g = gradual_of(heap, arg, ctx);
-                    if !g.bound.is_never()
-                        && !g
-                            .clone()
-                            .consistent_with_mode(relax_param_for_arg(pty), ctx.strict())
-                        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                    {
-                        out.push((
-                            arg_pos(heap, arg, form),
-                            format!(
-                                "ability {}/{}: argument {} expects {}, got {} ({})",
-                                ability,
-                                op,
-                                i + 1,
-                                pty,
-                                g.bound,
-                                crate::syntax::printer::print(heap, arg),
-                            ),
-                        ));
-                    }
-                }
+    match head {
+        Value::Keyword(key) => {
+            check_keyword_accessor(heap, form, key, &items, ctx, out);
+            return;
+        }
+        Value::Sym(s) => {
+            check_dispatch_hooks(heap, form, s, &items, ctx, out);
+            if value::symbol_is(s, "get") {
+                check_keyword_get(heap, form, &items, ctx, out);
             }
         }
-    }
-
-    // **Multimethod generic call whose args' identities come (partly) from inference** — the
-    // `defmulti` analogue of the ability hook above (ADR-179). Fires when a `defmulti` generic
-    // is applied with at least one symbol arg (so the syntactic pass in `protocol` deferred);
-    // resolves each arg's identity syntactically or from its inferred record type.
-    // Both are type findings — an argument tuple no method accepts — so `:type-mismatch` is
-    // their category, as for any other argument a callee does not take. They had none.
-    if let (Some(info), Value::Sym(h), false) = (
-        ctx.multi(),
-        head,
-        ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH),
-    ) {
-        if info.generic_of(h).is_some() {
-            super::protocol::check_multi_call_inferred(
-                heap,
-                h,
-                &items,
-                info,
-                ctx,
-                heap.form_pos_only(form),
-                out,
-            );
-        }
-        // **Operator sugar on a record operand** (ADR-179): `(+ (usd 1) 2.5)` / `(< money 5)`
-        // route to `num-*`/`compare-to`; warn when the routed multimethod has no method for the
-        // pair. A record operand is required, so pure `(+ 1 2)` / `(< 1 2)` is never touched.
-        super::protocol::check_operator_sugar(
-            heap,
-            h,
-            &items,
-            info,
-            ctx,
-            heap.form_pos_only(form),
-            out,
-        );
-    }
-
-    // **Keyword accessor** `(:key coll [default])` (ADR-165). A keyword head is not a
-    // `Sym`, so none of the sig/arity machinery below sees it — the form was entirely
-    // unchecked, including the misuse ADR-165 itself calls the most likely: `(:name
-    // deps)` where `deps` is a *list* of maps. Two checks, both false-positive-free:
-    // the arity, and whether the receiver's type can possibly be keyed.
-    if let Value::Keyword(k) = head {
-        let shown = format!(":{}", value::symbol_name_ref(k));
-        let argc = items.len() - 1;
-        if argc == 0 || argc > 2 {
-            out.push((
-                heap.form_pos_only(form),
-                format!("{shown}: a keyword accessor takes 1 or 2 arguments, got {argc}"),
-            ));
-        } else {
-            // The receivers `apply_keyword` accepts: a map (by key), a set (by
-            // membership), or nil (empty). Warn only when the argument's type is
-            // *provably* none of those — `is_disjoint` against the dynamic reading, so
-            // an inferred/redefinable value never misfires.
-            use crate::types::Tag;
-            let keyed = Ty::of(Tag::Map)
-                .union(Ty::of(Tag::Set))
-                .union(Ty::of(Tag::Nil));
-            let g = gradual_of(heap, items[1], ctx);
-            if !g.bound.is_never()
-                && g.bound.is_disjoint(&keyed)
-                && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-            {
-                out.push((
-                    arg_pos(heap, items[1], form),
-                    format!(
-                        "{shown}: expected a map, set or nil to look up in, got {} ({})",
-                        g.bound,
-                        crate::syntax::printer::print(heap, items[1]),
-                    ),
-                ));
-            }
-        }
-        for &arg in &items[1..] {
-            check_into(heap, arg, ctx, out);
-        }
-        return;
-    }
-
-    // **`(get recv :literal-keyword …)` on an integer-indexed receiver** — the `get`
-    // spelling of the check above, and the write-time half of ADR-164's runtime error.
-    // A keyword key can only address something keyed, so a vector/list/string/bytes
-    // receiver is a provable mistake (`(get deps :name)` where `deps` is a *list* of
-    // maps). The curated signature can't express this: it constrains each argument
-    // independently, and `countable` legitimately includes both keyed and indexed
-    // kinds — the conflict is in the *relationship* between the two arguments.
-    // Literal-keyword keys only, so a computed key is never guessed at.
-    if let Value::Sym(s) = head {
-        if value::symbol_is(s, "get") && items.len() >= 3 {
-            if let Value::Keyword(_) = items[2] {
-                use crate::types::Tag;
-                let keyed = Ty::of(Tag::Map)
-                    .union(Ty::of(Tag::Set))
-                    .union(Ty::of(Tag::Nil));
-                let g = gradual_of(heap, items[1], ctx);
-                if !g.bound.is_never()
-                    && g.bound.is_disjoint(&keyed)
-                    && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                {
-                    out.push((
-                        arg_pos(heap, items[1], form),
-                        format!(
-                            "get: a keyword key needs a map, set or nil, got {} ({}) — \
-                             an integer-indexed collection is indexed by position",
-                            g.bound,
-                            crate::syntax::printer::print(heap, items[1]),
-                        ),
-                    ));
-                }
-            }
-        }
+        _ => {}
     }
 
     // Special-cased forms that introduce scope or refine types. Each handles
@@ -621,459 +462,418 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
                 }
             }
         }
-        // Resolve the callee's signature + arity (separate concerns; either
-        // may be available without the other). Both take `Symbol` directly —
-        // no `symbol_name` round-trip — so the success path doesn't allocate.
-        // A user `(sig …)` declaration wins over primitive/curated/inferred sigs
-        // (it's the author's stated contract). For arity, the real callable's
-        // arity stays authoritative; the declared param count only fills in when
-        // the callee can't be inspected (a file-local `defn` in --check mode).
-        let declared = if ctx.is_lexical_local(s) {
-            None // a fn/let local shadows the name → not the declared global
-        } else {
-            ctx.declared_sig(s)
-        };
-        // A name this file `def`s/`defn`s supersedes whatever the image currently
-        // binds (the file is checked *before* it loads, so a heap binding — a
-        // builtin like `check`, a prelude closure — is by definition the OLD
-        // value; ADR-123: a def always wins). Only the file-local declared sig
-        // may describe it; never the stale heap signature.
-        // `is_lexical_local` guards the heap fallback too: a shadowing local is not
-        // the global, so its arg/return types are unknown — never the primitive's.
-        // **A variable whose own type is an arrow describes the call it heads.** A
-        // parameter declared `(sig apply-it ((int -> string) -> any))` carries a full
-        // signature, and `(f "x")` inside the body is the only site that can use it —
-        // without this the arrow was inert in both directions: the result had no type
-        // (`infer.rs`) and the arguments went unchecked here, so declaring one bought
-        // nothing at all. Checked FIRST because a local shadows any global of the same
-        // name, and `ctx.get` only answers for a variable actually in scope.
-        let local_ty = ctx.get(s);
-        let local_arrow = local_ty.as_ref().and_then(Ty::as_arrow).cloned();
-        // A `let`-bound `fn` LITERAL carries its parameter domains as a per-name fact
-        // (`sigs::let_bound_lambda_sig`) — read ahead of the arrow, which types only the
-        // result; same arity either way.
-        let sig = ctx
-            .let_fn_sig(s)
-            .or_else(|| local_arrow.clone())
-            .or_else(|| declared.clone())
-            .or_else(|| {
-                (!ctx.is_lexical_local(s) && !ctx.is_file_global(s))
-                    .then(|| sig_of(heap, s))
-                    .flatten()
-            })
-            .or_else(|| {
-                // A same-file function's inferred sig (Pass 2.8, ADR-190) — now carrying param
-                // demands, so a same-file caller's args are checked (the file isn't loaded, so
-                // `sig_of`'s heap path above can't see it). A lexical local shadows the global.
-                (!ctx.is_lexical_local(s))
-                    .then(|| ctx.inferred_fn_sig(s))
-                    .flatten()
-            });
-        // The real callable's arity is authoritative when known (a `sig!` wrapper
-        // preserves the wrapped fn's arity); fall back to the declared param count
-        // for a file-local defn the read-only checker can't inspect. A declared
-        // sig with a `&` rest type uses `Arity::at_least`; `&optional` params widen
-        // a fixed sig to a range instead of an exact count; a fixed-arity sig that
-        // applies to a known-variadic global is suppressed (the sig's fixed count
-        // is an undercount, so using it as an exact arity would be a false positive).
-        //
-        // A **lexical local shadows the global** — a `let`/`fn` binding named like a
-        // builtin (`(let (exit (get o :exit)) (exit model))`) is the local, not the
-        // primitive, so its arity is unknown here. Skip the whole computation, exactly
-        // as the declared-sig lookup above does (`is_lexical_local` → `None`);
-        // otherwise `arity_of` reads the global's arity and false-flags the call.
-        // **An arrow parameter's arity is exact.** `is_lexical_local` skips the whole
-        // computation below because a local's arity is normally unknown — but when the
-        // local's own TYPE is an arrow, the arrow says precisely how many arguments it
-        // takes. `(sig apply-it ((int -> string) -> any))` then catches `(f 1 2)` in the
-        // body, which is a certain error rather than a gradual one: the caller of
-        // `apply-it` had to supply a one-argument function to satisfy that parameter, so
-        // calling it with two always raises. Without this the arrow described the call's
-        // types (ADR-273) but not its shape, which is half a contract.
-        let arity = if let Some(sg) = ctx.let_fn_sig(s).as_ref().or(local_arrow.as_ref()) {
-            Some(arity_of_sig(sg))
-        } else if ctx.is_lexical_local(s) {
-            None
-        } else {
-            (!ctx.is_file_global(s))
-                .then(|| arity_of(heap, s))
+        check_named_call(heap, form, s, &items, ctx, out);
+    }
+
+    check_computed_call(heap, form, &items, ctx, out);
+    walk_operands(heap, form, &items, ctx, out);
+}
+
+/// The dispatch hooks at a call headed by `head`, read through the inferred types the
+/// syntactic pass in `protocol` cannot see:
+///
+/// - an **ability op** on a record-typed variable with no impl (`(let (c (circle 2))
+///   (size c))` when `Size` has none for circle), and each argument against the op's
+///   declared `(name T)` parameter type (ADR-180) — the gradual relation the sig-param
+///   check uses, so a precise arg is checked `⊆`, a dynamic one `∩ ≠ ⊥`;
+/// - a **multimethod generic** applied with at least one symbol argument, each argument's
+///   identity resolved syntactically or from its inferred record type (ADR-179);
+/// - the **operator sugar** on a record operand — `(+ (usd 1) 2.5)` routes to `num/add`.
+///
+/// A lexical local named like an op or a generic shadows it.
+fn check_dispatch_hooks(
+    heap: &Heap,
+    form: Value,
+    head: Symbol,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    let shadowed = ctx.is_lexical_local(head);
+    if let (Some(info), false) = (ctx.ability(), shadowed) {
+        if let Some((ability, op)) = info.op_of(head) {
+            if let Some(&Value::Sym(_)) = items.get(1) {
+                if let Some(ty) = super::infer::expr_ty(heap, items[1], ctx) {
+                    super::protocol::check_ability_call_inferred(
+                        info,
+                        head,
+                        &ty,
+                        heap.form_pos_only(form),
+                        out,
+                    );
+                }
+            }
+            // Param `i` corresponds to argument `items[i + 1]` (`self` is param 0).
+            for (i, param_ty) in info.op_params_of(head).into_iter().flatten().enumerate() {
+                let Some(param_ty) = param_ty else { continue };
+                let Some(&arg) = items.get(i + 1) else { break };
+                let gradual = gradual_of(heap, arg, ctx);
+                if !gradual.bound.is_never()
+                    && !gradual
+                        .clone()
+                        .consistent_with_mode(relax_param_for_arg(param_ty), ctx.strict())
+                    && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+                {
+                    out.push((
+                        arg_pos(heap, arg, form),
+                        format!(
+                            "ability {}/{}: argument {} expects {}, got {} ({})",
+                            ability,
+                            op,
+                            i + 1,
+                            param_ty,
+                            gradual.bound,
+                            crate::syntax::printer::print(heap, arg),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    // An argument tuple no method accepts is a type finding: `:type-mismatch` silences it.
+    if let (Some(info), false) = (
+        ctx.multi(),
+        ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH),
+    ) {
+        if info.generic_of(head).is_some() && !shadowed {
+            super::protocol::check_multi_call_inferred(
+                heap,
+                head,
+                items,
+                info,
+                ctx,
+                heap.form_pos_only(form),
+                out,
+            );
+        }
+        super::protocol::check_operator_sugar(
+            heap,
+            head,
+            items,
+            info,
+            ctx,
+            heap.form_pos_only(form),
+            out,
+        );
+    }
+}
+
+/// The receivers a keyword lookup can address: a map (by key), a set (by membership), or
+/// nil (empty).
+fn keyed_receiver() -> Ty {
+    use crate::types::Tag;
+    Ty::of(Tag::Map)
+        .union(Ty::of(Tag::Set))
+        .union(Ty::of(Tag::Nil))
+}
+
+/// A **keyword accessor** `(:key coll [default])` (ADR-165): a keyword head is not a
+/// `Sym`, so none of the sig/arity machinery sees it. Its arity, and whether the
+/// receiver's type can possibly be keyed — `(:name deps)` where `deps` is a *list* of
+/// maps. Warns only when the receiver is *provably* none of those.
+fn check_keyword_accessor(
+    heap: &Heap,
+    form: Value,
+    key: Symbol,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    let shown = format!(":{}", value::symbol_name_ref(key));
+    let argc = items.len() - 1;
+    if argc == 0 || argc > 2 {
+        out.push((
+            heap.form_pos_only(form),
+            format!("{shown}: a keyword accessor takes 1 or 2 arguments, got {argc}"),
+        ));
+    } else {
+        let gradual = gradual_of(heap, items[1], ctx);
+        if !gradual.bound.is_never()
+            && gradual.bound.is_disjoint(&keyed_receiver())
+            && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+        {
+            out.push((
+                arg_pos(heap, items[1], form),
+                format!(
+                    "{shown}: expected a map, set or nil to look up in, got {} ({})",
+                    gradual.bound,
+                    crate::syntax::printer::print(heap, items[1]),
+                ),
+            ));
+        }
+    }
+    for &arg in &items[1..] {
+        check_into(heap, arg, ctx, out);
+    }
+}
+
+/// `(get recv :literal-keyword …)` on an integer-indexed receiver — the `get` spelling of
+/// the keyword accessor's check (the write-time half of ADR-164's runtime error). A
+/// per-argument signature cannot say this: `countable` includes both keyed and indexed
+/// kinds, and the conflict is in the relationship between the two arguments. Literal
+/// keyword keys only, so a computed key is never guessed at.
+fn check_keyword_get(
+    heap: &Heap,
+    form: Value,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    if items.len() < 3 || !matches!(items[2], Value::Keyword(_)) {
+        return;
+    }
+    let gradual = gradual_of(heap, items[1], ctx);
+    if !gradual.bound.is_never()
+        && gradual.bound.is_disjoint(&keyed_receiver())
+        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+    {
+        out.push((
+            arg_pos(heap, items[1], form),
+            format!(
+                "get: a keyword key needs a map, set or nil, got {} ({}) — an \
+                 integer-indexed collection is indexed by position",
+                gradual.bound,
+                crate::syntax::printer::print(heap, items[1]),
+            ),
+        ));
+    }
+}
+
+/// A call whose head is a symbol: resolve the callee's signature and arity (separate
+/// concerns — either may be known without the other) and check the call against them,
+/// plus the lints that read a named call's shape. A `(sig …)` declaration wins over
+/// primitive / curated / inferred sigs; for arity the real callable stays authoritative,
+/// and the declared parameter count only fills in when the callee cannot be inspected.
+fn check_named_call(
+    heap: &Heap,
+    form: Value,
+    s: Symbol,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    let declared = if ctx.is_lexical_local(s) {
+        None // a fn/let local shadows the name → not the declared global
+    } else {
+        ctx.declared_sig(s)
+    };
+    // A name this file `def`s/`defn`s supersedes whatever the image currently
+    // binds (the file is checked *before* it loads, so a heap binding — a
+    // builtin like `check`, a prelude closure — is by definition the OLD
+    // value; ADR-123: a def always wins). Only the file-local declared sig
+    // may describe it; never the stale heap signature.
+    // `is_lexical_local` guards the heap fallback too: a shadowing local is not
+    // the global, so its arg/return types are unknown — never the primitive's.
+    // **A variable whose own type is an arrow describes the call it heads.** A
+    // parameter declared `(sig apply-it ((int -> string) -> any))` carries a full
+    // signature, and `(f "x")` inside the body is the only site that can use it —
+    // without this the arrow was inert in both directions: the result had no type
+    // (`infer.rs`) and the arguments went unchecked here, so declaring one bought
+    // nothing at all. Checked FIRST because a local shadows any global of the same
+    // name, and `ctx.get` only answers for a variable actually in scope.
+    let local_ty = ctx.get(s);
+    let local_arrow = local_ty.as_ref().and_then(Ty::as_arrow).cloned();
+    // A `let`-bound `fn` LITERAL carries its parameter domains as a per-name fact
+    // (`sigs::let_bound_lambda_sig`) — read ahead of the arrow, which types only the
+    // result; same arity either way.
+    let sig = ctx
+        .let_fn_sig(s)
+        .or_else(|| local_arrow.clone())
+        .or_else(|| declared.clone())
+        .or_else(|| {
+            (!ctx.is_lexical_local(s) && !ctx.is_file_global(s))
+                .then(|| sig_of(heap, s))
                 .flatten()
-                // The def site of a same-file function — the file isn't loaded, so
-                // `arity_of` above can't see it. Read *before* the declared sig, so a
-                // `(sig …)` that disagrees with the definition can't supply a wrong
-                // arity: the definition is what the call actually meets at run time.
-                .or_else(|| ctx.file_arity(s))
-                .or_else(|| {
-                    declared
-                        .filter(|sg| sg.rest.is_some() || !ctx.is_variadic_global(s))
-                        .map(|sg| arity_of_sig(&sg))
-                })
-        };
-        // Unbound-symbol diagnostic: warn only when the head is **truly not
-        // resolvable** — not local, not a syntactic keyword, not in the global
-        // env (which includes `Value::Macro`s like `test` / `assert=` that
-        // `arity_of` doesn't describe), and not in the curated stdlib table.
-        // The unbound check is independent of "is the sig informative" —
-        // a macro is bound even though it has no value-type sig.
-        //
-        // `is_syntactic_keyword` is the one piece that still wants the
-        // spelling — but only when every other short-circuit has failed.
-        // Compute it lazily.
-        // A CALLED name gets the same stability diagnostic a referenced one does — the
-        // call is the commoner shape by far, and the value-slot check above never sees it.
-        if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED) {
-            if let Some(msg) = stability_msg(heap, s) {
-                out.push((heap.form_pos_only(form), msg));
-            }
+        })
+        .or_else(|| {
+            // A same-file function's inferred sig (same-file inference, ADR-190) — now carrying param
+            // demands, so a same-file caller's args are checked (the file isn't loaded, so
+            // `sig_of`'s heap path above can't see it). A lexical local shadows the global.
+            (!ctx.is_lexical_local(s))
+                .then(|| ctx.inferred_fn_sig(s))
+                .flatten()
+        });
+    // The real callable's arity is authoritative when known (a `sig!` wrapper
+    // preserves the wrapped fn's arity); fall back to the declared param count
+    // for a file-local defn the read-only checker can't inspect. A declared
+    // sig with a `&` rest type uses `Arity::at_least`; `&optional` params widen
+    // a fixed sig to a range instead of an exact count; a fixed-arity sig that
+    // applies to a known-variadic global is suppressed (the sig's fixed count
+    // is an undercount, so using it as an exact arity would be a false positive).
+    //
+    // A **lexical local shadows the global** — a `let`/`fn` binding named like a
+    // builtin (`(let (exit (get o :exit)) (exit model))`) is the local, not the
+    // primitive, so its arity is unknown here. Skip the whole computation, exactly
+    // as the declared-sig lookup above does (`is_lexical_local` → `None`);
+    // otherwise `arity_of` reads the global's arity and false-flags the call.
+    // **An arrow parameter's arity is exact.** `is_lexical_local` skips the whole
+    // computation below because a local's arity is normally unknown — but when the
+    // local's own TYPE is an arrow, the arrow says precisely how many arguments it
+    // takes. `(sig apply-it ((int -> string) -> any))` then catches `(f 1 2)` in the
+    // body, which is a certain error rather than a gradual one: the caller of
+    // `apply-it` had to supply a one-argument function to satisfy that parameter, so
+    // calling it with two always raises. Without this the arrow described the call's
+    // types (ADR-273) but not its shape, which is half a contract.
+    let arity = if let Some(sg) = ctx.let_fn_sig(s).as_ref().or(local_arrow.as_ref()) {
+        Some(arity_of_sig(sg))
+    } else if ctx.is_lexical_local(s) {
+        None
+    } else {
+        (!ctx.is_file_global(s))
+            .then(|| arity_of(heap, s))
+            .flatten()
+            // The def site of a same-file function — the file isn't loaded, so
+            // `arity_of` above can't see it. Read *before* the declared sig, so a
+            // `(sig …)` that disagrees with the definition can't supply a wrong
+            // arity: the definition is what the call actually meets at run time.
+            .or_else(|| ctx.file_arity(s))
+            .or_else(|| {
+                declared
+                    .filter(|sg| sg.rest.is_some() || !ctx.is_variadic_global(s))
+                    .map(|sg| arity_of_sig(&sg))
+            })
+    };
+    // Unbound-symbol diagnostic: warn only when the head is **truly not
+    // resolvable** — not local, not a syntactic keyword, not in the global
+    // env (which includes `Value::Macro`s like `test` / `assert=` that
+    // `arity_of` doesn't describe), and not in the curated stdlib table.
+    // The unbound check is independent of "is the sig informative" —
+    // a macro is bound even though it has no value-type sig.
+    //
+    // `is_syntactic_keyword` is the one piece that still wants the
+    // spelling — but only when every other short-circuit has failed.
+    // Compute it lazily.
+    // A CALLED name gets the same stability diagnostic a referenced one does — the
+    // call is the commoner shape by far, and the value-slot check above never sees it.
+    if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED) {
+        if let Some(msg) = stability_msg(heap, s) {
+            out.push((heap.form_pos_only(form), msg));
         }
-        if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
-            out.push((heap.form_pos_only(form), unbound_msg(&name_of(s))));
-            // Still recurse into args below — they may carry their own issues.
-        } else if !ctx.is_suppressed(super::ctx::SUPPRESS_UNREQUIRED) {
-            if let Some(m) = unrequired_module(heap, ctx, s) {
-                out.push((heap.form_pos_only(form), unrequired_msg(&m)));
-            }
+    }
+    if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
+        out.push((heap.form_pos_only(form), unbound_msg(&name_of(s))));
+        // Still recurse into args below — they may carry their own issues.
+    } else if !ctx.is_suppressed(super::ctx::SUPPRESS_UNREQUIRED) {
+        if let Some(m) = unrequired_module(heap, ctx, s) {
+            out.push((heap.form_pos_only(form), unrequired_msg(&m)));
         }
+    }
 
-        // Operand-position unbound symbols. When the head evaluates its arguments
-        // (primitive / known closure / lexical local — never a macro), a bare
-        // symbol operand is a value reference, so an unresolvable one is genuinely
-        // unbound. Gated by `evaluates_args` so an unexpanded macro argument or a
-        // forward reference under an unknown head is never mistaken for one. The
-        // bottom recursion walks Pair operands; this only adds the leaf case (a
-        // bare `Sym`, which `check_into` itself skips), so no double-reporting.
-        if evaluates_args(heap, ctx, s) {
-            for &arg in &items[1..] {
-                check_value_leaf(heap, arg, form, ctx, out);
-            }
+    // Operand-position unbound symbols. When the head evaluates its arguments
+    // (primitive / known closure / lexical local — never a macro), a bare
+    // symbol operand is a value reference, so an unresolvable one is genuinely
+    // unbound. Gated by `evaluates_args` so an unexpanded macro argument or a
+    // forward reference under an unknown head is never mistaken for one. The
+    // bottom recursion walks Pair operands; this only adds the leaf case (a
+    // bare `Sym`, which `check_into` itself skips), so no double-reporting.
+    if evaluates_args(heap, ctx, s) {
+        for &arg in &items[1..] {
+            check_value_leaf(heap, arg, form, ctx, out);
         }
+    }
 
-        // Arity check (independent of sig — they're separate concerns).
-        if let Some(a) = arity {
-            let argc = items.len() - 1;
-            // A deliberately wrong call — the failure a test exercises inside a `try` — opts
-            // out under `:type-mismatch`, the category every call-shape finding shares.
-            if !a.accepts(argc) && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) {
-                // Same wording as the RUNTIME's arity error (`eval::arity_message`), and
-                // the same parameter names: the checker used to say "wrong number of
-                // arguments — expected 1, got 0" where running it said "expected 1
-                // argument, got 0", so one defect read as two unrelated messages.
-                // The SAME function the runtime raises with, not a second implementation
-                // of the same sentence. The checker used to say "wrong number of arguments
-                // — expected 1, got 0" where running it said "expected 1 argument, got 0";
-                // a comment promising the two will not drift is not a mechanism, calling
-                // one function is.
-                out.push((
-                    heap.form_pos_only(form),
-                    crate::eval::arity_message(
-                        &name_of(s),
-                        a.min,
-                        a.max,
-                        argc,
-                        &super::sigs::param_names_of(heap, s).unwrap_or_default(),
-                    ),
-                ));
-            }
+    // Arity check (independent of sig — they're separate concerns).
+    if let Some(a) = arity {
+        let argc = items.len() - 1;
+        // A deliberately wrong call — the failure a test exercises inside a `try` — opts
+        // out under `:type-mismatch`, the category every call-shape finding shares.
+        if !a.accepts(argc) && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) {
+            // The SAME function the runtime's arity error raises with
+            // (`eval::arity_message`), same parameter names, so one defect never reads
+            // as two unrelated messages.
+            out.push((
+                heap.form_pos_only(form),
+                crate::eval::arity_message(
+                    &name_of(s),
+                    a.min,
+                    a.max,
+                    argc,
+                    &super::sigs::param_names_of(heap, s).unwrap_or_default(),
+                ),
+            ));
         }
+    }
 
-        // **Function-as-value lint** (advisory). A bare reference to a known
-        // zero-arity global passed to an output sink (`print`/`println`/`str`/
-        // `format`) is almost always a missing call: it stringifies the function
-        // itself (`#<fn name>`) instead of its result. The classic
-        // `(print ansi-clear)`-for-`(print (ansi-clear))` slip — otherwise
-        // silent (it's legal, types fine, and runs). Restricted to the sinks and
-        // to *globals* (a same-named local is left alone — `arity_of` only reads
-        // the global env, but `is_local` keeps a shadowing binding quiet) so it
-        // stays false-positive-free, per the checker's "rather miss than
-        // misfire" rule. Only zero-arity is flagged: a fn that takes args is a
-        // plausible intentional callback value.
-        // A `(comp f g)` stage handed what it cannot take (`comp_stage_mismatch`).
-        if value::symbol_is(s, "comp")
-            && !ctx.is_local(s)
-            && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-        {
-            for msg in comp_stage_mismatch(heap, form, ctx) {
-                out.push((heap.form_pos_only(form), msg));
-            }
+    // **Function-as-value lint** (advisory). A bare reference to a known
+    // zero-arity global passed to an output sink (`print`/`println`/`str`/
+    // `format`) is almost always a missing call: it stringifies the function
+    // itself (`#<fn name>`) instead of its result. The classic
+    // `(print ansi-clear)`-for-`(print (ansi-clear))` slip — otherwise
+    // silent (it's legal, types fine, and runs). Restricted to the sinks and
+    // to *globals* (a same-named local is left alone — `arity_of` only reads
+    // the global env, but `is_local` keeps a shadowing binding quiet) so it
+    // stays false-positive-free, per the checker's "rather miss than
+    // misfire" rule. Only zero-arity is flagged: a fn that takes args is a
+    // plausible intentional callback value.
+    // A `(comp f g)` stage handed what it cannot take (`comp_stage_mismatch`).
+    if value::symbol_is(s, "comp")
+        && !ctx.is_local(s)
+        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+    {
+        for msg in comp_stage_mismatch(heap, form, ctx) {
+            out.push((heap.form_pos_only(form), msg));
         }
-        // …and `(apply f … xs)` handing `f` what it cannot take (`apply_spread_mismatch`).
-        if value::symbol_is(s, "apply")
-            && !ctx.is_local(s)
-            && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-        {
-            for msg in apply_spread_mismatch(heap, form, ctx) {
-                out.push((heap.form_pos_only(form), msg));
-            }
+    }
+    // …and `(apply f … xs)` handing `f` what it cannot take (`apply_spread_mismatch`).
+    if value::symbol_is(s, "apply")
+        && !ctx.is_local(s)
+        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+    {
+        for msg in apply_spread_mismatch(heap, form, ctx) {
+            out.push((heap.form_pos_only(form), msg));
         }
-        if is_output_sink(s) {
-            for &arg in &items[1..] {
-                if let Value::Sym(a) = arg {
-                    if !ctx.is_local(a)
+    }
+    if is_output_sink(s) {
+        for &arg in &items[1..] {
+            if let Value::Sym(a) = arg {
+                if !ctx.is_local(a)
                         && !ctx.is_file_global(a) // a file redefinition supersedes the heap's arity
                         && matches!(arity_of(heap, a), Some(ar) if ar.min == 0 && ar.max == Some(0))
-                    {
-                        let n = name_of(a);
-                        out.push((
+                {
+                    let n = name_of(a);
+                    out.push((
                             heap.form_pos_only(form),
                             format!(
                                 "{n}: function used as a value — did you mean ({n})? \
                                  the bare zero-arg function stringifies as #<fn {n}>, not its result"
                             ),
                         ));
-                    }
                 }
             }
         }
+    }
 
-        // **Match-exhaustiveness lint** (ADR-118). `match` compiles a no-catch-
-        // all form's failure to `(throw [:match-error 'context target
-        // 'patterns])` — recognising that exact shape here (the generic
-        // `throw` call path, not a dedicated `match`/`SPECIAL_HEAD` entry,
-        // since by now `match` has already macroexpanded to this) is enough
-        // to flag a literal-enum scrutinee whose clauses don't cover every
-        // member. See `guards::match_coverage`.
-        // A SPECIAL FORM's name sitting in an ARGUMENT slot: the commonest paren slip in
-        // the language. `(reduce xs '() fn (acc token) acc)` reported only
-        // `unbound symbol: acc`, twice — a symptom two levels down — and said nothing about
-        // the `fn` that lost its parentheses. `is_unbound` deliberately exempts a syntactic
-        // keyword (it is not a global and never will be), which is why nothing spoke up.
-        //
-        // Checked HERE, in the call walk, rather than in `check_value_leaf`: that path is
-        // gated on whole-file operand checking and on `evaluates_args`, and the editor's
-        // entry (`check-string-structured`, which is what bedit's `:diagnostics` service
-        // calls) did not reach it — the diagnostic would have shown on the command line and
-        // not where the slip is actually made. A local of that name is exempt: several
-        // keyword names are ordinary words, and both `std/editor/keymap.blsp` and
-        // `std/prelude/control.blsp` bind a local called `binding`.
-        if !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
-            for &arg in &items[1..] {
-                if let Value::Sym(a) = arg {
-                    let nm = name_of(a);
-                    if !ctx.is_local(a) && super::guards::is_syntactic_keyword(&nm) {
-                        out.push((
-                            arg_pos(heap, arg, form),
-                            format!(
-                                "{nm} is a special form, not a value — it has to be called, \
+    // **Match-exhaustiveness lint** (ADR-118). `match` compiles a no-catch-
+    // all form's failure to `(throw [:match-error 'context target
+    // 'patterns])` — recognising that exact shape here (the generic
+    // `throw` call path, not a dedicated `match`/`SPECIAL_HEAD` entry,
+    // since by now `match` has already macroexpanded to this) is enough
+    // to flag a literal-enum scrutinee whose clauses don't cover every
+    // member. See `guards::match_coverage`.
+    // A SPECIAL FORM's name sitting in an ARGUMENT slot: the commonest paren slip in
+    // the language. `(reduce xs '() fn (acc token) acc)` reported only
+    // `unbound symbol: acc`, twice — a symptom two levels down — and said nothing about
+    // the `fn` that lost its parentheses. `is_unbound` deliberately exempts a syntactic
+    // keyword (it is not a global and never will be), which is why nothing spoke up.
+    //
+    // Checked HERE, in the call walk, rather than in `check_value_leaf`: that path is
+    // gated on whole-file operand checking and on `evaluates_args`, and the editor's
+    // entry (`check-string-structured`, which is what bedit's `:diagnostics` service
+    // calls) did not reach it — the diagnostic would have shown on the command line and
+    // not where the slip is actually made. A local of that name is exempt: several
+    // keyword names are ordinary words, and both `std/editor/keymap.blsp` and
+    // `std/prelude/control.blsp` bind a local called `binding`.
+    if !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
+        for &arg in &items[1..] {
+            if let Value::Sym(a) = arg {
+                let nm = name_of(a);
+                if !ctx.is_local(a) && super::guards::is_syntactic_keyword(&nm) {
+                    out.push((
+                        arg_pos(heap, arg, form),
+                        format!(
+                            "{nm} is a special form, not a value — it has to be called, \
                                  as `({nm} …)`; a missing pair of parentheses turns its own \
                                  parts into arguments here"
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-
-        if value::symbol_is(s, "throw") && items.len() == 2 {
-            match super::guards::match_coverage(heap, items[1], ctx) {
-                // Its category is `:type-mismatch`: the scrutinee's (literal) type has
-                // members no pattern accepts — a test provoking the match failure on
-                // purpose says so with that directive. It had none before, so nothing
-                // but `:generated` could silence it.
-                Some(super::guards::MatchCoverage::Missing(msg))
-                    if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) =>
-                {
-                    out.push((heap.form_pos_only(form), msg));
-                }
-                Some(super::guards::MatchCoverage::Missing(_)) => {}
-                // A `:total` function (ADR-351) may not reach a `match` failure the
-                // checker cannot prove unreachable: a scrutinee that is not a closed
-                // literal type, or a pattern that is not a literal, is a case the
-                // declaration promised and nothing here establishes.
-                Some(super::guards::MatchCoverage::Unknown) => {
-                    if let Some(total) = ctx
-                        .total_fn()
-                        .filter(|_| !ctx.is_suppressed(super::ctx::SUPPRESS_TOTAL))
-                    {
-                        out.push((
-                            heap.form_pos_only(form),
-                            format!(
-                                "{} is declared :total but a match in its body has no \
-                                 catch-all clause and the checker cannot prove it covers \
-                                 every case",
-                                name_of(total)
-                            ),
-                        ));
-                    }
-                }
-                Some(super::guards::MatchCoverage::Covered) | None => {}
-            }
-        }
-
-        // A type predicate whose argument CANNOT hold that type: the test can never be
-        // true, so the branch behind it is dead. This is the check ADR-315 wanted for the
-        // failure channel — `(failure? n)` on something that has no way to be a failure is
-        // a guard the author believes is doing work and is not — and it costs nothing to
-        // ask it of every predicate in the table, since `Ty::tested_by` already names what
-        // each one proves.
-        //
-        // Sound because `GradualTy::bound` is an UPPER bound ("every materialisation is
-        // ⊆ bound", asserted by `soundness_oracle`): if the bound is disjoint from the
-        // tested type, no runtime value can satisfy the predicate. A `dynamic` bound is
-        // therefore fine to judge — dynamic means it may materialise NARROWER, never
-        // wider. `ANY` and `NEVER` are skipped: the first knows nothing, the second marks
-        // a branch a guard already proved unreachable.
-        // A GENSYM argument is not the author's test. `ok->`, `with` and the `match`
-        // lowering all emit `(if (pred g__N) …)` over a temporary they made up: where the
-        // checker can prove that step's value is not of the tested type, the guard is
-        // indeed dead — but the macro had to emit it and there is nothing to fix. Ten of
-        // the first run's `failure?` hits were `ok->`/`with`'s own expansion and twelve
-        // `pair?` hits were `match`'s. Same exemption the unused-binder lints already make.
-        //
-        // And only a NAME or a computed expression is worth judging. A predicate applied
-        // to a written-out literal — `(decimal? 1.5)`, `(ref? 0)` — is either a deliberate
-        // negative assertion (which is what 53 of the first run's 57 remaining hits were,
-        // in the predicate test files) or a mistake already visible on the line. The lint
-        // earns its keep where the type came from INFERENCE and the reader cannot see it.
-        // …though only for the WIDER predicate set. `failure?` had no literal hits at all
-        // across std/ + tests/, and `(failure? 42)` is precisely the "checked where it
-        // cannot exist" case worth naming, so the literal skip does not apply to it.
-        // Its category is `:type-mismatch` — a statement about the argument's type. Where the
-        // call is the TEST of a branch the dead-clause lint proves dead, the finding is the
-        // dead clause instead: `drop_unwanted_dead_clause` drops this warning and reports
-        // the clause once, naming the symbol the author tested, under `:unreachable-clause`.
-        if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) {
-            if let Some(message) = never_true_predicate(heap, &items, ctx) {
-                out.push((arg_pos(heap, items[1], form), message));
-            }
-        }
-
-        if let Some(sig) = sig {
-            for (i, &arg) in items[1..].iter().enumerate() {
-                let Some(param) = sig.param(i) else { continue };
-                if !check_arg_against_param(heap, &name_of(s), i, arg, &param, form, ctx, out) {
-                    continue;
-                }
-
-                // Callback-arity check (ADR-078 arrows): when the parameter is a
-                // function arrow with a fixed arity — a higher-order combinator
-                // (`map`/`filter`/`reduce`/`fold`) that calls its callback with a
-                // known argument count — flag a callback that provably can't
-                // accept that count. Conservative: only fires when the callback's
-                // arity is *known* (a named global fn, or a simple single-clause
-                // lambda literal); a local, variadic, or multi-clause callback is
-                // skipped — no false positives.
-                if let Some(expected) = param.as_arrow() {
-                    if expected.rest.is_none() {
-                        let wanted = expected.params.len();
-                        if let Some(cb) = callback_arity(heap, arg, ctx) {
-                            if !cb.accepts(wanted) {
-                                let msg = format!(
-                                    "{}: argument {} is a callback called with {} \
-                                     argument{}, but {} takes {}",
-                                    name_of(s),
-                                    i + 1,
-                                    wanted,
-                                    if wanted == 1 { "" } else { "s" },
-                                    callback_desc(arg),
-                                    arity_str(cb),
-                                );
-                                out.push((arg_pos(heap, arg, form), msg));
-                            }
-                        }
-                        // Callback **parameter-type** check. The arity check above asks
-                        // whether the callback can be called at all; this asks whether it
-                        // can accept what it will be handed. A `sig`-declared higher-order
-                        // parameter (`(sig g (((int -> int)) -> int))`) was annotated and
-                        // then not enforced — passing `string/length` to it was silent.
-                        //
-                        // Disjointness only, per position, and never on the *result*: an
-                        // inferred return over-approximates, so comparing results would
-                        // false-positive at every call site (a `(any) -> any` callback is
-                        // not a subtype of `(int) -> int`, but it is perfectly valid).
-                        // Sound with an inferred callback sig too: an inferred parameter
-                        // demand is a *superset* of what the function really accepts, so
-                        // disjoint-from-the-superset is disjoint from the truth.
-                        if let Some(cb) = callback_sig(heap, arg, ctx)
-                            .or_else(|| lambda_sig_under(heap, arg, expected, ctx))
-                        {
-                            for (k, wanted) in expected.params.iter().enumerate() {
-                                let Some(accepts) = cb.param(k) else { continue };
-                                if wanted.is_never()
-                                    || accepts.is_never()
-                                    || !wanted.is_disjoint(&accepts)
-                                    || ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                                {
-                                    continue;
-                                }
-                                let msg = format!(
-                                    "{}: argument {} is a callback handed {} at position {}, \
-                                     but {} takes {} there",
-                                    name_of(s),
-                                    i + 1,
-                                    wanted,
-                                    k + 1,
-                                    callback_desc(arg),
-                                    accepts,
-                                );
-                                out.push((arg_pos(heap, arg, form), msg));
-                            }
-                            // …and the **result**. This was left out on the grounds that
-                            // an inferred return over-approximates, so comparing it by
-                            // *subtyping* would false-positive at every call site — a
-                            // `(any) -> any` callback is not a subtype of `(int) -> int`
-                            // and is perfectly valid. Disjointness has no such problem
-                            // and is sound in the same way the parameter direction is:
-                            // the inferred return is a superset of the truth, so if the
-                            // superset shares nothing with what the caller will do with
-                            // it, neither does the truth.
-                            let (wants, gives) = (&expected.ret, &cb.ret);
-                            if !wants.is_any()
-                                && !gives.is_any()
-                                && !wants.is_never()
-                                && !gives.is_never()
-                                && wants.is_disjoint(gives)
-                                && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                            {
-                                let msg = format!(
-                                    "{}: argument {} is a callback whose result is used as \
-                                     {}, but {} returns {}",
-                                    name_of(s),
-                                    i + 1,
-                                    wants,
-                                    callback_desc(arg),
-                                    gives,
-                                );
-                                out.push((arg_pos(heap, arg, form), msg));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // **Overload argument check** (ADR-116 completion). A callee with a
-        // declared overload (`(sig f (and (int -> int) (bool -> bool)))`) has no
-        // single `sig` — its arms live in `declared_overload` — so the per-arg
-        // loop above skipped it. Flag a call whose arguments match *no* arm.
-        // Sound by construction (see `overload_arg_mismatch`): disjointness, not
-        // subtyping, and only when every arity-relevant arm is ruled out.
-        if !ctx.is_lexical_local(s) {
-            if let Some(arms) = ctx
-                .declared_overload(s)
-                .cloned()
-                .or_else(|| declared_heap_overload(heap, s))
-                // …and, failing a declaration, the arms *inferred* from a multi-arm
-                // definition: same-file first (the file isn't loaded), else the loaded
-                // closure's. A multi-arm callee used to escape argument checking
-                // entirely, since it has no single `Sig` for the per-argument loop.
-                .or_else(|| ctx.inferred_overload(s))
-                .or_else(|| {
-                    (!ctx.is_file_global(s))
-                        .then(|| infer_overload_of(heap, s))
-                        .flatten()
-                })
-            {
-                let arg_tys: Vec<Option<Ty>> =
-                    items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
-                if overload_arg_mismatch(&arms, &arg_tys)
-                    && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                {
-                    out.push((
-                        heap.form_pos_only(form),
-                        format!(
-                            "{}: no clause accepts these arguments — the clauses take {}",
-                            name_of(s),
-                            clause_domains_desc(&arms, items.len() - 1),
                         ),
                     ));
                 }
@@ -1081,12 +881,259 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
         }
     }
 
-    check_computed_call(heap, form, &items, ctx, out);
+    if value::symbol_is(s, "throw") && items.len() == 2 {
+        match super::guards::match_coverage(heap, items[1], ctx) {
+            // Its category is `:type-mismatch`: the scrutinee's (literal) type has
+            // members no pattern accepts — a test provoking the match failure on
+            // purpose says so with that directive. It had none before, so nothing
+            // but `:generated` could silence it.
+            Some(super::guards::MatchCoverage::Missing(msg))
+                if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) =>
+            {
+                out.push((heap.form_pos_only(form), msg));
+            }
+            Some(super::guards::MatchCoverage::Missing(_)) => {}
+            // A `:total` function (ADR-351) may not reach a `match` failure the
+            // checker cannot prove unreachable: a scrutinee that is not a closed
+            // literal type, or a pattern that is not a literal, is a case the
+            // declaration promised and nothing here establishes.
+            Some(super::guards::MatchCoverage::Unknown) => {
+                if let Some(total) = ctx
+                    .total_fn()
+                    .filter(|_| !ctx.is_suppressed(super::ctx::SUPPRESS_TOTAL))
+                {
+                    out.push((
+                        heap.form_pos_only(form),
+                        format!(
+                            "{} is declared :total but a match in its body has no \
+                                 catch-all clause and the checker cannot prove it covers \
+                                 every case",
+                            name_of(total)
+                        ),
+                    ));
+                }
+            }
+            Some(super::guards::MatchCoverage::Covered) | None => {}
+        }
+    }
 
-    // Recurse into arguments (and nested forms) — unless the head is an
-    // unexpandable macro, whose operands are opaque syntax, not evaluated code
-    // (see `resolves_to_macro`). Walking a macro's args as code would false-flag a
-    // template's spliced binders (`(wp v (+ a b))` where `wp` binds `a`/`b`).
+    // A type predicate whose argument CANNOT hold that type: the test can never be
+    // true, so the branch behind it is dead. This is the check ADR-315 wanted for the
+    // failure channel — `(failure? n)` on something that has no way to be a failure is
+    // a guard the author believes is doing work and is not — and it costs nothing to
+    // ask it of every predicate in the table, since `Ty::tested_by` already names what
+    // each one proves.
+    //
+    // Sound because `GradualTy::bound` is an UPPER bound ("every materialisation is
+    // ⊆ bound", asserted by `soundness_oracle`): if the bound is disjoint from the
+    // tested type, no runtime value can satisfy the predicate. A `dynamic` bound is
+    // therefore fine to judge — dynamic means it may materialise NARROWER, never
+    // wider. `ANY` and `NEVER` are skipped: the first knows nothing, the second marks
+    // a branch a guard already proved unreachable.
+    // A GENSYM argument is not the author's test. `ok->`, `with` and the `match`
+    // lowering all emit `(if (pred g__N) …)` over a temporary they made up: where the
+    // checker can prove that step's value is not of the tested type, the guard is
+    // indeed dead — but the macro had to emit it and there is nothing to fix. Ten of
+    // the first run's `failure?` hits were `ok->`/`with`'s own expansion and twelve
+    // `pair?` hits were `match`'s. Same exemption the unused-binder lints already make.
+    //
+    // And only a NAME or a computed expression is worth judging. A predicate applied
+    // to a written-out literal — `(decimal? 1.5)`, `(ref? 0)` — is either a deliberate
+    // negative assertion (which is what 53 of the first run's 57 remaining hits were,
+    // in the predicate test files) or a mistake already visible on the line. The lint
+    // earns its keep where the type came from INFERENCE and the reader cannot see it.
+    // …though only for the WIDER predicate set. `failure?` had no literal hits at all
+    // across std/ + tests/, and `(failure? 42)` is precisely the "checked where it
+    // cannot exist" case worth naming, so the literal skip does not apply to it.
+    // Its category is `:type-mismatch` — a statement about the argument's type. Where the
+    // call is the TEST of a branch the dead-clause lint proves dead, the finding is the
+    // dead clause instead: `drop_unwanted_dead_clause` drops this warning and reports
+    // the clause once, naming the symbol the author tested, under `:unreachable-clause`.
+    if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) {
+        if let Some(message) = never_true_predicate(heap, items, ctx) {
+            out.push((arg_pos(heap, items[1], form), message));
+        }
+    }
+
+    if let Some(sig) = sig {
+        check_args_against_sig(heap, form, s, &sig, items, ctx, out);
+    }
+    check_overload_call(heap, form, s, items, ctx, out);
+}
+
+/// Each argument of a call against its parameter in the callee's `sig`, and a callback
+/// argument against the arrow its parameter declares: its arity, the types it will be
+/// handed (disjointness per position), and its result.
+fn check_args_against_sig(
+    heap: &Heap,
+    form: Value,
+    s: Symbol,
+    sig: &Sig,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    for (i, &arg) in items[1..].iter().enumerate() {
+        let Some(param) = sig.param(i) else { continue };
+        if !check_arg_against_param(heap, &name_of(s), i, arg, &param, form, ctx, out) {
+            continue;
+        }
+
+        // Callback-arity check (ADR-078 arrows): when the parameter is a
+        // function arrow with a fixed arity — a higher-order combinator
+        // (`map`/`filter`/`reduce`/`fold`) that calls its callback with a
+        // known argument count — flag a callback that provably can't
+        // accept that count. Conservative: only fires when the callback's
+        // arity is *known* (a named global fn, or a simple single-clause
+        // lambda literal); a local, variadic, or multi-clause callback is
+        // skipped — no false positives.
+        if let Some(expected) = param.as_arrow() {
+            if expected.rest.is_none() {
+                let wanted = expected.params.len();
+                if let Some(cb) = callback_arity(heap, arg, ctx) {
+                    if !cb.accepts(wanted) {
+                        let msg = format!(
+                            "{}: argument {} is a callback called with {} \
+                                     argument{}, but {} takes {}",
+                            name_of(s),
+                            i + 1,
+                            wanted,
+                            if wanted == 1 { "" } else { "s" },
+                            callback_desc(arg),
+                            arity_str(cb),
+                        );
+                        out.push((arg_pos(heap, arg, form), msg));
+                    }
+                }
+                // Callback **parameter-type** check. The arity check above asks
+                // whether the callback can be called at all; this asks whether it
+                // can accept what it will be handed. A `sig`-declared higher-order
+                // parameter (`(sig g (((int -> int)) -> int))`) was annotated and
+                // then not enforced — passing `string/length` to it was silent.
+                //
+                // Disjointness only, per position, and never on the *result*: an
+                // inferred return over-approximates, so comparing results would
+                // false-positive at every call site (a `(any) -> any` callback is
+                // not a subtype of `(int) -> int`, but it is perfectly valid).
+                // Sound with an inferred callback sig too: an inferred parameter
+                // demand is a *superset* of what the function really accepts, so
+                // disjoint-from-the-superset is disjoint from the truth.
+                if let Some(cb) = callback_sig(heap, arg, ctx)
+                    .or_else(|| lambda_sig_under(heap, arg, expected, ctx))
+                {
+                    for (k, wanted) in expected.params.iter().enumerate() {
+                        let Some(accepts) = cb.param(k) else { continue };
+                        if wanted.is_never()
+                            || accepts.is_never()
+                            || !wanted.is_disjoint(&accepts)
+                            || ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+                        {
+                            continue;
+                        }
+                        let msg = format!(
+                            "{}: argument {} is a callback handed {} at position {}, \
+                                     but {} takes {} there",
+                            name_of(s),
+                            i + 1,
+                            wanted,
+                            k + 1,
+                            callback_desc(arg),
+                            accepts,
+                        );
+                        out.push((arg_pos(heap, arg, form), msg));
+                    }
+                    // …and the **result**. This was left out on the grounds that
+                    // an inferred return over-approximates, so comparing it by
+                    // *subtyping* would false-positive at every call site — a
+                    // `(any) -> any` callback is not a subtype of `(int) -> int`
+                    // and is perfectly valid. Disjointness has no such problem
+                    // and is sound in the same way the parameter direction is:
+                    // the inferred return is a superset of the truth, so if the
+                    // superset shares nothing with what the caller will do with
+                    // it, neither does the truth.
+                    let (wants, gives) = (&expected.ret, &cb.ret);
+                    if !wants.is_any()
+                        && !gives.is_any()
+                        && !wants.is_never()
+                        && !gives.is_never()
+                        && wants.is_disjoint(gives)
+                        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+                    {
+                        let msg = format!(
+                            "{}: argument {} is a callback whose result is used as \
+                                     {}, but {} returns {}",
+                            name_of(s),
+                            i + 1,
+                            wants,
+                            callback_desc(arg),
+                            gives,
+                        );
+                        out.push((arg_pos(heap, arg, form), msg));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// **Overload argument check** (ADR-116). A callee with a declared overload (`(sig f (and
+/// (int -> int) (bool -> bool)))`) or inferred arms has no single `sig`, so the
+/// per-argument check skips it; flag a call whose arguments match *no* arm. Sound by
+/// construction (`overload_arg_mismatch`): disjointness, and only when every
+/// arity-relevant arm is ruled out.
+fn check_overload_call(
+    heap: &Heap,
+    form: Value,
+    s: Symbol,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    if !ctx.is_lexical_local(s) {
+        if let Some(arms) = ctx
+            .declared_overload(s)
+            .cloned()
+            .or_else(|| declared_heap_overload(heap, s))
+            // …and, failing a declaration, the arms *inferred* from a multi-arm
+            // definition: same-file first (the file isn't loaded), else the loaded
+            // closure's — a multi-arm callee has no single `Sig` for the per-argument loop.
+            .or_else(|| ctx.inferred_overload(s))
+            .or_else(|| {
+                (!ctx.is_file_global(s))
+                    .then(|| infer_overload_of(heap, s))
+                    .flatten()
+            })
+        {
+            let arg_tys: Vec<Option<Ty>> =
+                items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
+            if overload_arg_mismatch(&arms, &arg_tys)
+                && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+            {
+                out.push((
+                    heap.form_pos_only(form),
+                    format!(
+                        "{}: no clause accepts these arguments — the clauses take {}",
+                        name_of(s),
+                        clause_domains_desc(&arms, items.len() - 1),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// Recurse into a call's arguments (and nested forms) — unless the head is an
+/// unexpandable macro, whose operands are opaque syntax, not evaluated code (see
+/// `resolves_to_macro`): walking them as code would false-flag a template's spliced
+/// binders (`(wp v (+ a b))` where `wp` binds `a`/`b`). A `fold`/`map` callback is held
+/// to, or walked under, the types its combinator hands it.
+fn walk_operands(
+    heap: &Heap,
+    form: Value,
+    items: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
     let head_is_macro =
         matches!(items.first(), Some(&Value::Sym(s)) if resolves_to_macro(heap, ctx, s));
     // A `do`'s non-final forms are a body sequence, so a bare symbol among them is
@@ -1102,16 +1149,15 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
         // induction) and the element to the collection's element type. Unseeded, `h` in
         // `(fold s 5381 (fn (h c) (bit/xor (* h 31) …)))` read as `any` and `(* h 31)` as
         // `number`, while the fold as a whole was already known to be an int.
-        let seeded_callback = callback_seed(heap, form, &items, ctx, &literal_fits(heap));
+        let seeded_callback = callback_seed(heap, form, items, ctx, &literal_fits(heap));
         // A callback that is NOT a literal — a named function, a keyword, a `(comp …)` —
         // has a signature of its own, so it is not walked with seeded parameters; it is
-        // held to the seed instead: `(map xs inc)` over strings hands `inc` a string, and
-        // nothing said so (2026-10-03 — only literals were ever seeded). Disjointness per
-        // position, as every callback check is.
+        // held to the seed instead: `(map xs inc)` over strings hands `inc` a string.
+        // Disjointness per position, as every callback check is.
         // A RECORD collection is skipped: one with a `Seqable` impl iterates its own way
         // (`record_test`'s `stack` yields its `:items`), while the element type reads it as a
         // map's entries — a hint fine for seeding a literal, wrong as a reason to report.
-        let collection_may_iterate_itself = super::sigs::combinator_args(&items)
+        let collection_may_iterate_itself = super::sigs::combinator_args(items)
             .and_then(|(coll, _)| expr_ty(heap, coll, ctx))
             .is_some_and(|t| {
                 t.record_field_ty(value::intern("__id__"))
@@ -1124,8 +1170,8 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
                     matches!(f.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "comp"))
                 })
             };
-            if let Some((idx, seed)) = callback_seed(heap, form, &items, ctx, &named_fits) {
-                let arg = items[idx];
+            if let Some((index, seed)) = callback_seed(heap, form, items, ctx, &named_fits) {
+                let arg = items[index];
                 if let (Some(cb), Some(&Value::Sym(head))) =
                     (callback_sig(heap, arg, ctx), items.first())
                 {
@@ -1144,7 +1190,7 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
                                 "{}: argument {} is a callback handed {} at position {}, \
                                  but {} takes {} there",
                                 name_of(head),
-                                idx,
+                                index,
                                 handed,
                                 k + 1,
                                 callback_desc(arg),
@@ -1160,7 +1206,7 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
         // for its body, so `(nth xs i)` there reads the element (ADR-350's relation).
         let indexes = seeded_callback
             .as_ref()
-            .and_then(|_| indexed_collection(heap, &items, ctx));
+            .and_then(|_| indexed_collection(heap, items, ctx));
         // A body sequence threads its scope: a **guard that diverges** narrows every form
         // after it (see [`diverging_guard_scope`]). Only for a `do` — in any other form
         // the items are arguments, evaluated in one scope, and there is no "after".
@@ -1169,7 +1215,7 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
         for (i, &item) in items.iter().enumerate() {
             let item_ctx = if is_body { &seq_ctx } else { ctx };
             match &seeded_callback {
-                Some((idx, sig)) if *idx == i => {
+                Some((index, sig)) if *index == i => {
                     if let Some(fn_items) = list_items(heap, item) {
                         let tys: Vec<Option<Ty>> = sig.params.iter().cloned().map(Some).collect();
                         check_fn_bound_indexed(
@@ -1209,7 +1255,7 @@ fn never_true_predicate(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Strin
     }
     let (tested, _) = super::guards::predicate_guard_ty(heap, Some(ctx), predicate)?;
     let bound = gradual_of(heap, argument, ctx).bound;
-    // A parameter bound to what its in-file callers pass (Pass 2.9) is not judged here:
+    // A parameter bound to what its in-file callers pass (the caller-derived parameter pass) is not judged here:
     // the guard may be there for callers that do not exist yet.
     let derived = matches!(argument, Value::Sym(a) if ctx.is_derived_local(a));
     if derived || bound.is_never() || bound == Ty::ANY || !bound.is_disjoint(&tested) {

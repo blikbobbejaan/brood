@@ -1,0 +1,99 @@
+;; Type-checker crash-resistance fuzzer. The advisory checker must NEVER panic or hang on any
+;; form — it returns a (possibly empty) warning list. Generate forms with random AND
+;; malformed type annotations (sigs) + bodies, run them through `(reflect/check 'form)`, and
+;; assert it returns without crashing or hanging.
+;;
+;;   brood scripts/fuzz/generators/checker.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws (a table holds the stream so the recursive grammar needs no threading)
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- the grammar
+(def base-types
+  ["any"
+    "never" "int" "float" "number" "string" "symbol" "bool" "nil" "keyword" "list" "vector" "map"])
+
+;; Depth-bounded tree walks: the recursion is at most `depth` deep by construction.
+(check-allow :non-tail-recursion
+  (defn type-form (depth)
+    (if (or (<= depth 0) (< (draw-float) 0.4))
+      (let (roll (draw-float))
+        (cond
+          (< roll 0.5) (draw-choice base-types)
+          ;; a literal keyword, a type variable, garbage
+          (< roll 0.7) (str ":" (draw-choice ["a" "b" "ok" "x"]))
+          (< roll 0.85) (str "?" (draw-choice ["A" "B" "el"]))
+          :else (draw-choice ["foo" "Unknown" "123" "()"])))
+      (let (roll (draw-float) below (- depth 1))
+        (cond
+          (< roll 0.2)
+            (str "(" (type-form below) " " (type-form below) " -> " (type-form below) ")")
+          (< roll 0.35) (str "(list " (type-form below) ")")
+          (< roll 0.5) (str "(vector " (type-form below) ")")
+          (< roll 0.6) (str "(map " (type-form below) " " (type-form below) ")")
+          (< roll 0.75) (str "(or " (type-form below) " " (type-form below) ")")
+          (< roll 0.85) (str "(and " (type-form below) " " (type-form below) ")")
+          ;; malformed: empty / under-arity / bad arrows
+          :else
+            (case (draw-int 0 8)
+              0 "(or)"
+              1 "(and)"
+              2 "(list)"
+              3 "(map int)"
+              4 "(-> int)"
+              5 "(int -> )"
+              6 (str "(" (type-form below) " ->)")
+              7 "(or int int int int int)"
+              (str "(and " (type-form below) ")"))))))
+
+  (defn body-form (depth)
+    (if (or (<= depth 0) (< (draw-float) 0.5))
+      (draw-choice ["x" "1" "1.5" ":k" "\"s\"" "nil" "true" "[]" "{}"])
+      (let (operator (draw-choice ["+" "-" "*" "if" "let" "cons" "str" "vector"])
+            below (- depth 1))
+        (case operator
+          "if" (str "(if " (body-form below) " " (body-form below) " " (body-form below) ")")
+          "let" (str "(let (y " (body-form below) ") " (body-form below) ")")
+          (str "(" operator " " (body-form below) " " (body-form below) ")"))))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (arrow (str "(" (type-form 3) " -> " (type-form 3) ")")
+        form (str "(do (sig f " arrow ") (defn f (x) " (body-form 3) "))"))
+    ;; `check` must return (a list) without crashing; print a marker
+    (str "(io/puts (try (do (reflect/check (quote "
+      form
+      ")) \"OK\")
+  (catch e (str \"CAUGHT \" (get e :message)))))
+")))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/ck_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "checker programs"))

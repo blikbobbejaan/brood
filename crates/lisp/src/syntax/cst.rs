@@ -116,9 +116,8 @@ pub fn parse(src: &str) -> Node {
     };
     let mut children = Vec::new();
     // A first-line `#!…` shebang is trivia — a `Comment` node — so every re-emission
-    // of the tree (`nest format`, LSP formatting, code actions) keeps it: the reader
-    // skips it, and this parser used to start past it too, so the lossless tree had
-    // no node for it and formatting a script deleted its shebang.
+    // of the tree (`nest format`, LSP formatting, code actions) keeps it — without the
+    // node, formatting a script would delete its shebang.
     cst.s.skip_shebang();
     if cst.s.pos() > 0 {
         children.push(cst.leaf(NodeKind::Comment, 0));
@@ -604,8 +603,7 @@ mod tests {
         // The empty set is still one Set node (the case the demo hit).
         assert_eq!(parse("#{}").forms().next().unwrap().kind, NodeKind::Set);
 
-        // Any other `#`-led token is an Error, as the reader refuses it — the CST
-        // used to hand tooling `#q` as a symbol.
+        // Any other `#`-led token is an Error, as the reader refuses it.
         assert_eq!(parse("#q").forms().next().unwrap().kind, NodeKind::Error);
     }
 

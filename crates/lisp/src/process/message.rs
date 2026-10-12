@@ -52,9 +52,9 @@ pub enum Message {
     Str(String),
     /// A large string sent by handle. The sender bumps the `Arc` refcount
     /// once, both sides keep the same `SharedBlob` identity, and no bytes are
-    /// copied. Only used *within one runtime* (inner processes share an
-    /// `Arc<BlobHeap>`). The dist wire encoder downgrades this back to
-    /// `Str` because separate runtimes have independent blob lifetimes.
+    /// copied. Only used *within one runtime*; the dist wire encoder
+    /// downgrades this back to `Str`, since a handle means nothing to
+    /// another runtime.
     StrShared(Arc<SharedBlob>),
     /// **Raw bytes** sent by handle. Always
     /// Arc-backed, so within one runtime it crosses by reference (a refcount bump, no byte
@@ -352,14 +352,6 @@ pub fn to_message_image(heap: &Heap, v: Value) -> Result<Message, LispError> {
     to_message_rec(heap, v, &mut Vec::new(), 0, None)
 }
 
-/// `BROOD_NO_SHARE_FN_MSG=1` reverts a serialised same-runtime send to deep-copying the
-/// closure — the A/B lever and the stopgap if a shared handle is implicated in a fault. The
-/// sibling of `BROOD_NO_SHARE_FN`, which covers the L1 (parked-receiver) path.
-fn share_fn_msg_enabled() -> bool {
-    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var_os("BROOD_NO_SHARE_FN_MSG").is_none())
-}
-
 /// The death reason for a process killed by an uncaught error: `[:error {…}]`,
 /// where the map mirrors [`LispError::to_value_map`] — `{:kind :message [:code
 /// :file :line :col :hint :trace]}`, `:trace` a list of `{:fn [:file :line
@@ -565,12 +557,12 @@ fn to_message_rec_inner(
             // Share by handle when the destination is THIS runtime and the closure already
             // lives in the shared region — the serialised twin of ADR-194's L1 path, and the
             // guards mirror it exactly. RUNTIME only: never promote to make something
-            // shareable, which grows the append-only region per send (measured 541 MB vs
-            // 150 MB over 800k transient sends). Same runtime only: the process registry is
-            // global, so a second `Interp`'s handles must not cross. Plus an off-switch.
-            // `pin_gen_of` holds the handle's generation for the message's whole life.
+            // shareable, which grows the append-only region per send. Same runtime only:
+            // the process registry is global, so a second `Interp`'s handles must not
+            // cross. Plus the shared `BROOD_NO_SHARE_FN` off-switch. `pin_gen_of` holds the
+            // handle's generation for the message's whole life.
             if let Some(tag) = dest_runtime {
-                if share_fn_msg_enabled()
+                if share_fn_enabled()
                     && id.region() == crate::core::value::RUNTIME
                     && tag == heap.runtime_tag()
                 {
@@ -1421,10 +1413,11 @@ fn parse_l1_budget(raw: Option<&str>) -> i64 {
     }
 }
 
-/// Whether a closure crossing a **same-runtime** local send is handed over as a shared
-/// RUNTIME handle (the default) instead of being deep-copied into the receiver.
-/// `BROOD_NO_SHARE_FN=1` reverts to the copy — the A/B and bisect lever, and the
-/// stopgap if a shared handle is ever implicated in a fault. Read once and cached.
+/// Whether a closure crossing a **same-runtime** local send — the L1 parked-receiver copy
+/// or the serialised path — is handed over as a shared RUNTIME handle (the default)
+/// instead of being deep-copied into the receiver. `BROOD_NO_SHARE_FN=1` reverts both to
+/// the copy — the A/B and bisect lever, and the stopgap if a shared handle is ever
+/// implicated in a fault. Read once and cached.
 fn share_fn_enabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("BROOD_NO_SHARE_FN").is_none())
@@ -1587,46 +1580,22 @@ fn copy_cross_heap_rec_inner(
         // A closure that **already lives in the shared code region** crosses to a process
         // of the **same runtime** by handle, not by copy. Both processes read that region
         // through the same `Arc`, so the handle means the same thing in `dst` — this is
-        // what `spawn` relies on for its thunk. Copying instead gives the receiver a
-        // private duplicate of code its own runtime already has: measured at **436 bytes
-        // against 48** for the same trivial thunk, ~670 objects each, which is what made a
-        // supervisor retaining one `:start` closure per child spend two thirds of
-        // `start-child` in GC (docs/runtime-frontier.md A3).
+        // what `spawn` relies on for its thunk, and a copy duplicated code the receiver's
+        // runtime already has (docs/runtime-frontier.md A3). In practice: a closure that
+        // captures **no locals** (`(fn () (spawn-link (worker)))`) is already RUNTIME.
         //
-        // **It deliberately does NOT promote a local closure to make it shareable**, even
-        // though that would widen the win to inline `(fn () …)` specs. Promotion appends
-        // to the append-only RUNTIME region, and a *transient* closure — sent, used,
-        // dropped — then costs a whole aging/drain/free cycle to reclaim instead of dying
-        // at the next minor GC. Measured over N sent-and-discarded closures, peak RSS went
-        // 129 / 190 / 340 / 541 MB at N = 100k / 200k / 400k / 800k against a flat
-        // 112–180 MB for the copy: growth proportional to closures sent, which is a leak
-        // in any long-running receiver. Restricted to already-shared closures there is no
-        // new promotion and no growth at all: at N=800k, 150 MB against the copy's 181 MB for
-        // transient closures, and 121 vs 129 MB when the sent closure is already shared
-        // (best-of-3 peak RSS — single runs of this vary by tens of MB).
-        // Widening this needs the RUNTIME collector to reclaim promptly (ADR-091 stage 4),
-        // not a looser rule here.
-        //
-        // What this covers in practice: a closure that captures **no local variables**
-        // (it refers only to globals) is already a RUNTIME-region value, so the idiomatic
-        // supervisor spec `(fn () (spawn-link (worker)))` is handed over by handle —
-        // measured 6 µs against 54 µs per send for the same shape capturing a local.
-        // A closure that *does* capture a local is a LOCAL value and takes the copy, which
-        // is correct and unchanged; it simply does not get the win.
-        //
-        // Not covered yet: a **PRELUDE**-region closure (sending `map` itself, say) still
-        // copies. It is arguably safer than the RUNTIME case — the prelude is immutable and
-        // never collected — but it needs its own guard (the prelude is a second `Arc`, and
-        // `shares_runtime_with` only compares the runtime one) and its own validation run,
-        // so it is left as a follow-up rather than folded in untested.
+        // **It deliberately does NOT promote a local closure to make it shareable**:
+        // promotion appends to the append-only RUNTIME region, so transient sent closures
+        // would grow it in proportion to sends — a leak in any long-running receiver.
+        // A PRELUDE-region closure still copies (it would need its own guard: the prelude
+        // is a second `Arc`).
         //
         // Guards, all load-bearing:
         //  - `region() == RUNTIME` — the no-new-promotion rule above.
         //  - `shares_runtime_with` — the process REGISTRY is global, so a second `Interp`
         //    in the same OS process has a *different* region; its handles must not cross.
         //    Cross-**node** sends never reach here at all (they serialise via `Message`).
-        //  - `share_fn_enabled` — `BROOD_NO_SHARE_FN=1` reverts to the copy, so this is
-        //    A/B-able and instantly revertible without a rebuild.
+        //  - `share_fn_enabled` — `BROOD_NO_SHARE_FN=1` reverts to the copy.
         //  - anything else declines (`None`) to the existing `Message` path unchanged.
         //
         // Lifetime: a shared handle retained in `dst`'s LOCAL data pins its RUNTIME

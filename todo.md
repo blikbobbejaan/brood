@@ -230,6 +230,10 @@ back in the result content) instead of the raw fd. Test:
 
 ### C. MCP `eval`/`load` timeout = **30s** — ✅ DONE (2026-05-30, inline deadline)
 
+> Superseded 2026-10-09: the server is Brood (`std/tool/mcp.blsp`) and kills a handler
+> process that overruns 30 s; the inline deadline below (`set_deadline`,
+> `deadline_exceeded`) was deleted with the Rust dispatcher.
+
 A runaway MCP `eval`/`load` no longer wedges the server. **Not** via spawn-and-kill
 (that relocates execution and breaks the dispatcher's error/panic/output handling —
 proved: it failed 4 core MCP tests). Instead an **inline deadline**: the dispatcher

@@ -314,8 +314,8 @@ pub fn radix_invalid_hint(token: &str) -> &'static str {
 /// its own node.)
 pub fn is_trivia_ws(c: char) -> bool {
     // U+FEFF is the byte-order mark an editor may write at the top of a file (and a
-    // zero-width no-break space anywhere else): it used to read as a SYMBOL, so a file
-    // saved with one began with an unbound name (2026-09-30).
+    // zero-width no-break space anywhere else): trivia, or a file saved with one would
+    // begin with an unbound name.
     c.is_whitespace() || c == ',' || c == '\u{feff}'
 }
 
@@ -341,8 +341,7 @@ struct NumericShape {
     /// A **digit-led** token that isn't numeric is *not* a symbol either: `1+` and
     /// `2+3` fall through [`classify`] to [`AtomKind::ReservedNumeric`] and are a
     /// reader error, deliberately — the digit-led space is reserved for number
-    /// literals so future ones stay purely additive. (This comment used to claim
-    /// they read as symbols, which is the pre-`ReservedNumeric` behaviour.)
+    /// literals so future ones stay purely additive.
     numeric: bool,
     /// Has a `.`, `e`, or `E` — i.e. a fractional or exponent part, so it's
     /// float-shaped rather than integer-shaped. Only meaningful when `numeric`.

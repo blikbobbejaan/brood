@@ -136,7 +136,7 @@ compiled during construction, and a chunk compiled without the flag has no
 `RecordLine` in it. `nest` sets it in `main`, before subcommand dispatch. Getting this
 wrong fails silently, with no instrumentation and no error.
 
-`--cover-lines` also sets `BROOD_NO_JIT=1`. An instrumented arm bails JIT lowering
+`--cover-lines` also sets `BROOD_TIER=1` (unless the tree-walker was asked for). An instrumented arm bails JIT lowering
 anyway (`Inst::RecordLine` is not lowerable), but turning the JIT off outright keeps
 the measurement from depending on which arms happened to tier up. **A `--cover-lines`
 run is a diagnostic run, never a timing one.**
@@ -231,5 +231,5 @@ A branch is **fully covered** only when both a `true` and a `false` edge record 
 They answer different questions and can be used together. Function coverage needs no
 kernel support and no special build, which is why it ships as the default tier;
 `--cover-lines` and `--cover-branches` are stricter and share the instrumentation seam
-(both set `BROOD_COVERAGE`/`BROOD_NO_JIT`). With more than one on, `--cover-min` gates on
+(both set `BROOD_COVERAGE` and `BROOD_TIER=1`). With more than one on, `--cover-min` gates on
 the strictest number present: **branch > line > function**.

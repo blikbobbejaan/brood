@@ -111,7 +111,7 @@ const EVERY_BRANCH: &str = "\
 fn the_map_prim3_ops_answer_what_get_and_assoc_answer() {
     let (_dir, file) = fixture("mapprim3", EVERY_BRANCH);
     // The reference arms are pinned to the native ceiling: the `differential (tree-walker)`
-    // job runs the whole suite under `BROOD_VM=0`, where the 60 000-iteration loops would
+    // job runs the whole suite under `BROOD_TIER=0`, where the 60 000-iteration loops would
     // tree-walk for minutes on a 2-core runner; the tree-walker still covers every branch
     // through the `BROOD_TIER=0` run below.
     let pin = &[("BROOD_TIER", "2")];

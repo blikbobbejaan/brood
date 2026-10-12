@@ -9,7 +9,7 @@
 //! and re-tiers the arm in float context after four of them (`float_deopt_feedback`).
 //!
 //! Three assertions, on the real `brood` entry point, because the seam is the lowering:
-//! the result matches the VM's (`BROOD_NO_JIT=1`), `BROOD_JIT_BAIL_TRACE=1` names the
+//! the result matches the VM's (`BROOD_TIER=1`), `BROOD_JIT_BAIL_TRACE=1` names the
 //! re-tier, and it names no `deopt-thrash-latched` for the arm afterwards. The comparison
 //! arms need no re-tier at all: `<`/`<=` on operands nothing types dispatch by tag at
 //! runtime (`cmp_dispatch`), so `inside?` (four destructured floats, and a `count` against
@@ -43,12 +43,7 @@ fn run(no_jit: bool) -> (String, String) {
     cmd.env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_JIT_BAIL_TRACE", "1")
-        .env_remove("BROOD_NO_JIT")
-        .env_remove("BROOD_TIER")
-        .env_remove("BROOD_VM");
-    if no_jit {
-        cmd.env("BROOD_NO_JIT", "1");
-    }
+        .env("BROOD_TIER", if no_jit { "1" } else { "2" });
     let out = cmd.arg(&path).output().expect("run brood");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),

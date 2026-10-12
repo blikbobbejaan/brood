@@ -10,7 +10,7 @@
 ;; so a backlog from an earlier test would otherwise satisfy a later receive
 ;; (surfaced by BROOD_GC_STRESS flooding :gc events).
 ;;
-;; (These also pass under BROOD_VM=0 since the TreeWalkGuard fix — a
+;; (These also pass under BROOD_TIER=0 since the TreeWalkGuard fix — a
 ;; native-nested receive under the tree-walker used to re-run its thunk.)
 
 (defmodule sysmon-test (:use test))

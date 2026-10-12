@@ -207,11 +207,8 @@ leaves `s` unchanged.
   (if (= old "") s (join (string/split s old) new)))
 (sig replace (string string any -> string))
 
-;; `last-index-of` moved here from the prelude on 2026-08-27. It is STRING-ONLY — it calls
-;; `%str-last-index-of` and defaults `before` to `(string/length s)` — so by this module's
-;; own boundary rule (ADR-230: `string/*` is "the first argument is a string") it never
-;; belonged bare. Its forward partner `index-of` DOES stay bare, because that one is
-;; polymorphic over strings, lists and vectors; the pair looked symmetric and was not.
+;; String-only, so it lives here (ADR-230); its forward partner `index-of` stays bare
+;; because that one is polymorphic over strings, lists and vectors.
 (defn last-index-of (s needle &optional before)
   "The 0-based char index of the **last** occurrence of `needle` in string `s` whose
 start is strictly **before** `before` (default `(string/length s)`), or -1 if there is
@@ -222,14 +219,8 @@ incremental search rides on.
     (string/last-index-of \"a.b.c\" \".\" 3)   → 1
     (string/last-index-of \"xaaay\" \"aa\")   → 2
     (string/last-index-of \"abc\" \"z\")   → -1"
-  ;; One native pass. This used to walk forward in Brood calling `(index-of s needle i)`
-  ;; per match; every one of those re-derives a char offset (and, before `index-of` took a
-  ;; `from`, allocated a copy of the suffix), so a reverse search was O(matches × length) —
-  ;; measured 16.5× then 16.4× per 4× of input, where linear is 4×. It is on an editor hot
-  ;; path in both directions: `buffer`'s reverse search runs over whole buffer text, and
-  ;; `lineedit` finds the current line's start on every keystroke. The empty-needle rule
-  ;; (matches at every position, so the answer is `before - 1` clamped) lives in the
-  ;; primitive now, unchanged.
+  ;; One native pass: a forward walk over `index-of` is O(matches × length), and this is
+  ;; an editor hot path (reverse search, finding a line's start per keystroke).
   (%str-last-index-of s needle (or before (string/length s))))
 (sig last-index-of (any any &optional any -> int))
 
@@ -261,8 +252,7 @@ incremental search rides on.
 
     (string/blank? \"  \")   → true
     (string/blank? \" a \")  → false"
-  (let (n (string/length s))
-    (cond (= n 0) true (whitespace? (char-at s 0)) (blank? (string/substring s 1 n)) else false)))
+  (= (triml s) ""))
 (sig blank? (string -> bool))
 
 (defn- triml-from (s i n)
@@ -346,7 +336,7 @@ when it is wider, so a bar always spans its field.
     (if (>= n w) fitted (str fitted (repeat " " (- w n))))))
 (sig pad-right-cells (string int -> string))
 
-;; ---- fill: greedy word-wrap (was std/text.blsp) -----------------------------
+;; ---- fill: greedy word-wrap -------------------------------------------------
 
 (defn- fill-pack (acc word width)
   "Greedy line-accumulator step. `acc` is `[cur done]`: the current (in-progress) line and
@@ -414,16 +404,13 @@ the start of every line. Emacs's adaptive fill, for the common cases.
     (if (string? text) text "")))
 (sig fill-prefix (string -> string))
 
-;; (restored: this is string's repeat, not the sequence one)
 (defn repeat (s n)
   "The string `s` concatenated `n` times (the empty string if `n` <= 0).
 
     (string/repeat \"ab\" 3)   → \"ababab\""
-  ;; Doubling — O(log n) concatenations of O(n) total work. The `(apply str (map (range
-  ;; n) …))` this replaced built an n-element list AND an n-argument call: fifty million
-  ;; characters asked for 16 GB and died with an allocation failure (2026-09-30).
-  ;; A gibibyte is the ceiling: past it the answer is a single allocation that fails as
-  ;; an abort, not an error, and a width that large is a typo or an attack.
+  ;; Doubling — O(log n) concatenations of O(n) total work. A gibibyte is the ceiling:
+  ;; past it the allocation fails as an abort, not an error, and a width that large is a
+  ;; typo or an attack.
   (when (> (* (string/length s) (math/max 0 n)) 1073741824)
     (error "string/repeat: " (* (string/length s) n) " characters is too large (max 1073741824)"))
   (%repeat-doubling "" s n))
@@ -438,16 +425,7 @@ the start of every line. Emacs's adaptive fill, for the common cases.
 (sig repeat (string int -> string))
 
 ;; ---- interpolation and printf ------------------------------------------------
-;; Moved here from the prelude 2026-08-26. They were defined in `std/prelude/string.blsp`
-;; with qualified names, which WORKS — a qualified `defn` in a bare-root file defines that
-;; global — but the doc pipeline documents a module from its OWN source file, so neither
-;; appeared on the hosted reference at all. Living beside the rest of `string/` is also
-;; simply where a reader looks for them.
-;;
-;; Nothing in the prelude calls either, and `string` is force-loaded at boot, so the move
-;; costs no availability. `string/interp` is a MACRO: it expands at its call site, which is
-;; fine from a module (`test/describe` proves the pattern) as long as nothing needs it
-;; during the prelude's own expansion — nothing does.
+;; `string/interp` is a MACRO, so nothing in the prelude's own expansion may use it.
 
 ;; `(string/interp "…{expr}…")` builds a string from a template, splicing the value of each
 ;; `{expr}` hole — any Brood expression, read at macro-expansion time — between the
@@ -609,8 +587,7 @@ wrong), the way `%d` passes a float through."
     else
       (error (str "format: a precision takes f, got '" (string/char-at template i) "' at column " i))))
 
-;; `%d` takes an integer. It used to render anything with `str`, so `(string/format "%d"
-;; 1.5)` was "1.5" and a wrong argument went unreported (2026-09-30).
+;; `%d` takes an integer, and refuses anything else rather than rendering it with `str`.
 (defn- format-int (v i)
   (if (int? v)
     (str v)

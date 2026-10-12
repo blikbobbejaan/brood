@@ -716,8 +716,6 @@ pub const WALK_FLAGS: &[&str] = &[
     "BROOD_CONTRACTS",
     "BROOD_COVERAGE",
     "BROOD_TIER",
-    "BROOD_VM",
-    "BROOD_NO_JIT",
 ];
 
 /// `~/.cache/brood/run-check/<hash>` for `src` under this binary and checking mode; `None`

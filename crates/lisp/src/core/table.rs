@@ -161,17 +161,13 @@ fn slot_to_message(s: u64) -> Option<Message> {
 /// the hashed map. The dense region is `DENSE_KEY_MAX / CHUNK_SLOTS` chunks of
 /// `CHUNK_SLOTS` atomic words, each an anonymous mapping reserved the first time a key
 /// in its range is WRITTEN (the OS then commits 4 KB pages as slots are first touched),
-/// so both address space and RSS track the keys actually used — which is also why the
-/// old sparsity guard is gone: one far-out key costs one chunk and one page, not a
-/// resize.
+/// so both address space and RSS track the keys actually used: one far-out key costs
+/// one chunk and one page, not a resize.
 pub(crate) const DENSE_KEY_MAX: i64 = 1 << 23;
 
 /// Slots per dense chunk: 2^16 × 8 B = 512 KB of address space per chunk a table
-/// touches. The region used to be ONE 64 MB reservation per table, made on the first
-/// dense write whatever the key — so a memo table holding five small ints cost 64 MB of
-/// address space, and the regex DFA memos (two per compiled pattern) put `regex_test`
-/// alone at 100 such regions, 6.4 GB, which is what aborted the in-language suite under
-/// its documented `ulimit -v` (KI-142). A chunk is small enough that a table of a few
+/// touches — never one large reservation per table, which made many small tables
+/// exhaust a capped address space (KI-142). A chunk is small enough that a table of a few
 /// keys costs one, and large enough that a sieve over millions of keys maps at most 128.
 pub(crate) const CHUNK_SHIFT: u32 = 16;
 pub(crate) const CHUNK_SLOTS: usize = 1 << CHUNK_SHIFT;
@@ -726,10 +722,9 @@ pub fn get(heap: &mut Heap, id: u64, key: Value, default: Value) -> LispResult {
         let mut guard = lock(&store.hashed);
         let map = store.hashed_or_migrate(&mut guard)?;
         let hash = heap.hash_value(key);
-        // Rebuilt in the heap under the lock, straight from the stored form: the clone
-        // this used to take first (to release the lock sooner) cost an allocation and a
-        // deep copy per read of a compound value — a six-float vector read 200 ns, an
-        // int 50 — for a lock no other process holds in the common case.
+        // Rebuilt in the heap under the lock, straight from the stored form: cloning
+        // first to release the lock sooner would cost an allocation and a deep copy per
+        // read of a compound value, for a lock no other process holds in the common case.
         match map.get(&hash) {
             Some(bucket) => find_idx(heap, bucket, key).map(|i| from_message(heap, &bucket[i].1)),
             None => None,
@@ -825,15 +820,15 @@ pub fn incr(heap: &mut Heap, id: u64, key: Value, delta: i64) -> LispResult {
     match incr_int(heap, id, key, delta)? {
         Ok(next) => Ok(Value::int(next)),
         Err(IncrMiss::NotInt) => Err(LispError::type_err(
-            "table-incr: the value at this key is not an integer",
+            "table/incr: the value at this key is not an integer",
         )),
-        // A bignum *is* an integer in Brood, but table-incr deliberately works only
+        // A bignum *is* an integer in Brood, but table/incr deliberately works only
         // in the i64 range (a counter primitive) — say so precisely.
         Err(IncrMiss::BigInt) => Err(LispError::type_err(
-            "table-incr: the value at this key is an integer outside the ±2^63 range that table-incr supports",
+            "table/incr: the value at this key is an integer outside the ±2^63 range that table/incr supports",
         )),
         Err(IncrMiss::Overflow) => Err(LispError::runtime(
-            "table-incr: incrementing would exceed the ±2^63 range",
+            "table/incr: incrementing would exceed the ±2^63 range",
         )),
     }
 }

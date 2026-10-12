@@ -1,7 +1,7 @@
 ;; Per-call cost of a HOF step function — sizing the identity-keyed call-site IC.
 ;;
 ;;   N=3000000 brood scripts/fuzz/stress/hof_call.blsp
-;;   BROOD_NO_JIT=1 N=3000000 brood scripts/fuzz/stress/hof_call.blsp
+;;   BROOD_TIER=1 N=3000000 brood scripts/fuzz/stress/hof_call.blsp
 ;;
 ;; WHAT THIS ANSWERS. `compile_node` allocates a call-site inline-cache id only for a
 ;; **free-global** callee; a local/computed callee (`site = NO_SITE`) keeps the generic
@@ -92,7 +92,7 @@
   (let (t0 (os/now-ns) v (f) ns (math/quot (- (os/now-ns) t0) N))
     (io/puts (str label " " ns " ns/call   (cold, single pass, acc=" v ")"))))
 
-(io/puts (str "N=" N " jit=" (if (nil? (os/env "BROOD_NO_JIT")) "on" "off")))
+(io/puts (str "N=" N " tier-ceiling=" (or (os/env "BROOD_TIER") "2 (default)")))
 (row "inline    (no call)     " (fn () (loop-inline N 0)))
 (row "global    leaf step     " (fn () (loop-global N 0)))
 (row "computed  leaf step     " (fn () (loop-computed step N 0)))

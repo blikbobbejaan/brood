@@ -153,7 +153,7 @@ impl SigWithVars {
     /// `any`: the variable stands for THAT argument's values too, and nothing is known of
     /// them. Skipping the argument instead read `(math/min 3 x)` under `(& ?A -> ?A)` as
     /// exactly `3` — the known operand alone — where the value is `x` as often as not
-    /// (2026-09-13; the by-name extremum rule had always answered the unknown here).
+    /// (the by-name extremum rule answers the unknown here).
     pub(super) fn unify_args(&self, arg_tys: &[Option<Ty>]) -> HashMap<u32, Ty> {
         let mut subst: HashMap<u32, Ty> = HashMap::new();
         for (i, arg_ty) in arg_tys.iter().enumerate() {
@@ -370,7 +370,7 @@ pub(super) const SUPPRESS_TOTAL: u16 = 1 << 6;
 pub(super) const SUPPRESS_PURE: u16 = 1 << 7;
 /// `(check-allow :trusted …)` — a declared return the checker cannot verify because the
 /// body's result is the unknown (a kernel message, a primitive with no signature), which
-/// strict otherwise reports as "trusted, not verified" (2026-09-17). The author asserting
+/// strict otherwise reports as "trusted, not verified". The author asserting
 /// the return where the checker cannot see it — narrower than `:type-mismatch`, which
 /// also silences a body that provably contradicts its declaration.
 pub(super) const SUPPRESS_TRUSTED: u16 = 1 << 8;
@@ -428,7 +428,7 @@ impl Default for CtxId {
     }
 }
 
-/// The FILE-level half of a [`Ctx`] (2026-09-13): what a whole file's walk knows about the
+/// The FILE-level half of a [`Ctx`]: what a whole file's walk knows about the
 /// file — its globals, declared and inferred signatures, the forms of its functions — as
 /// opposed to what one SCOPE knows about its bindings. Behind an `Arc` so that extending a
 /// scope (`bind`, `narrow`, a branch of an `if`) shares it by reference: before the split
@@ -483,7 +483,7 @@ struct FileFacts {
     /// inferred counterpart of [`declared_overload`](Ctx::declared_overload). A
     /// multi-arm closure has no single `Sig`, so its callers' arguments went
     /// unchecked; each arm has one, and a call no arity-relevant arm accepts is a
-    /// provable error. Populated by `check_file`'s Pass 2.8.
+    /// provable error. Populated by `check_file`'s same-file inference.
     inferred_overload: HashMap<Symbol, Vec<Sig>>,
     declared: HashMap<Symbol, Sig>,
     /// The property keywords a `(sig name … :pure :total)` declared in THIS file
@@ -514,7 +514,7 @@ struct FileFacts {
     /// argument constraints. Redefinable-global caution is the caller's (treated as an
     /// over-approximation, like the loaded-inferred sigs).
     inferred_fn_sig: HashMap<Symbol, Sig>,
-    /// **Caller-derived parameter types** of this file's module-PRIVATE functions (Pass 2.9,
+    /// **Caller-derived parameter types** of this file's module-PRIVATE functions (the caller-derived parameter pass,
     /// ADR-341): per parameter, the union of what every call site in the file hands it —
     /// `None` for a position some site cannot type. A private function's callers are all in
     /// its file, so this is a sound binding for the walk of its body and for the return its
@@ -528,13 +528,13 @@ struct FileFacts {
     /// body, so `(< i n)` there bounds `(nth xs i)`. Absent (empty) for every function
     /// whose sites do not all say so.
     derived_count_aliases: HashMap<Symbol, Vec<(usize, usize)>>,
-    /// The `(fn …)` FORM of each same-file, single-def, undeclared function (the Pass 2.8
+    /// The `(fn …)` FORM of each same-file, single-def, undeclared function (the same-file inference
     /// candidates) — what call-site specialization (`sigs::specialized_ret`) re-types under
     /// a call's argument types. The file isn't loaded while it is checked, so this is the
     /// only way its bodies are reachable; a loaded function's arms come from the heap.
     fn_forms: HashMap<Symbol, Value>,
     /// The un-expanded clauses of each same-file multi-clause `defn` (pattern or arity
-    /// heads), keyed by the qualified name Pass 2.8 records overloads under. The expanded
+    /// heads), keyed by the qualified name same-file inference records overloads under. The expanded
     /// tree of such a definition is one variadic `fn` over `match*` (ADR-226) and says
     /// nothing about what each clause takes; the clauses do, so specialization reads them.
     clause_arms: HashMap<Symbol, Vec<Value>>,
@@ -642,7 +642,7 @@ pub(super) struct Ctx {
     /// index of `xs`. Sound under immutability: `xs` never changes, so `n` is its count
     /// for the whole scope. `bind` on either name drops it.
     count_aliases: HashMap<Symbol, Symbol>,
-    /// **Index bounds** (ADR-350, offsets 2026-09-17): `i → {xs → k}` when a guard
+    /// **Index bounds** (ADR-350): `i → {xs → k}` when a guard
     /// established `i + k < (count xs)` on this path — the relational fact `(nth xs i)`
     /// reads (with `i ≥ 0` from its interval) to drop the `nil` arm. `bind` on either name
     /// drops it.
@@ -678,7 +678,7 @@ pub(super) struct Ctx {
     /// Scoped like every binding: `bind` on the name drops it, and the scope clone the
     /// `let` body is walked in is discarded with the body.
     let_fn_sigs: HashMap<Symbol, Sig>,
-    /// Parameters bound to a CALLER-DERIVED type in the walk of a private body (Pass 2.9).
+    /// Parameters bound to a CALLER-DERIVED type in the walk of a private body (the caller-derived parameter pass).
     /// Such a binding is for checking the body's uses, not for judging its guards: a
     /// defensive `(nil? x)` the in-file callers never exercise is not "never true" in the
     /// sense the impossible-predicate lint reports — the author wrote it for the callers
@@ -693,7 +693,7 @@ pub(super) struct Ctx {
     /// (destructure / `match` lowering) never involves a sig-typed param, so it
     /// is never flagged. Shadowing removes a name (see [`bind`](Ctx::bind)).
     ///
-    /// A `Vec` in binding order, not a set (B8, 2026-09-17): `newly_dead_binding` names
+    /// A `Vec` in binding order, not a set (B8): `newly_dead_binding` names
     /// the FIRST one a guard killed, and a guard can kill two at once through an alias
     /// — from a set, which one the warning named was hash order.
     sig_params: Vec<Symbol>,
@@ -851,7 +851,7 @@ impl Ctx {
         // position, of the base's positional alternatives (`narrow_path`'s retention).
         // Every name the chain reached counts, not only `sym`: the pattern matcher binds a
         // destructured `tag` as `(let (el (%vector-ref g 0)) (let (tag el) …))`, so a guard
-        // on `tag` reaches the path only through its alias `el` (2026-10-03).
+        // on `tag` reaches the path only through its alias `el`.
         let mut paths: Vec<(Symbol, Vec<PathKey>)> = reached
             .iter()
             .filter_map(|s| c.path_aliases.get(s).cloned())
@@ -912,7 +912,7 @@ impl Ctx {
                 // A binder already holding ANOTHER position of the base — `v` in
                 // `(let ([tag v] r) (if (= tag :ok) … v …))` — was bound before the guard,
                 // from the union over every alternative. The alternatives the guard kept say
-                // what that position holds now, so narrow it to that (2026-10-03). Read
+                // what that position holds now, so narrow it to that. Read
                 // only when every kept term answers the position; a term that does not
                 // (`element_at_over_union` → `None`) leaves the binder as it was.
                 let siblings: Vec<(Symbol, usize)> = c
@@ -936,7 +936,7 @@ impl Ctx {
         // `(or (record :ok int) (record :error string))` the `:error` record reads `nil`
         // there, so it is not `r` in the then-branch, and the `:ok` record (whose `:ok` is
         // a required `int`, never falsy) is not `r` in the else-branch — where `(:error r)`
-        // is then a `string`, not `nil | string` (2026-10-02). A field the shape does not
+        // is then a `string`, not `nil | string`. A field the shape does not
         // declare reads `nil` only where no `Lookup` impl can answer the miss, so a
         // `defrecord` value (one carrying `:__id__`) keeps its alternative for an
         // undeclared field; an OPEN shape is kept likewise. An optional field may be absent.
@@ -1025,7 +1025,7 @@ impl Ctx {
         // A guard alias is about the binding its target named WHEN it was recorded: one
         // keyed by `sym` is stale, and so is one whose TARGET is `sym` — under
         // `(let (ok (int? x)) (let (x "s") (if ok …)))` the `ok` says nothing about the
-        // new `x` (2026-10-02: it narrowed it, and read a live branch as dead).
+        // new `x` (narrowing it would read a live branch as dead).
         c.guards
             .retain(|name, (target, ..)| *name != sym && *target != sym);
         c.count_aliases.retain(|n, xs| *n != sym && *xs != sym);
@@ -1211,7 +1211,7 @@ impl Ctx {
     pub(super) fn inferred_overload(&self, sym: Symbol) -> Option<Vec<Sig>> {
         self.file.inferred_overload.get(&sym).cloned()
     }
-    /// Record a same-file multi-arm function's per-arm signatures (Pass 2.8).
+    /// Record a same-file multi-arm function's per-arm signatures (same-file inference).
     pub(super) fn add_inferred_overload(&mut self, sym: Symbol, sigs: Vec<Sig>) {
         self.file_mut().inferred_overload.insert(sym, sigs);
     }
@@ -1308,7 +1308,7 @@ impl Ctx {
     pub(super) fn inferred_fn_sig(&self, sym: Symbol) -> Option<Sig> {
         self.file.inferred_fn_sig.get(&sym).cloned()
     }
-    /// Record a same-file inferred function sig (Pass 2.8). No-op if a sig is already
+    /// Record a same-file inferred function sig (same-file inference). No-op if a sig is already
     /// declared for `sym` — a declaration wins.
     pub(super) fn add_inferred_fn_sig(&mut self, sym: Symbol, sig: Sig) {
         if !self.file.declared.contains_key(&sym) {
@@ -1325,11 +1325,11 @@ impl Ctx {
         c.let_fn_sigs.insert(sym, sig);
         c
     }
-    /// The caller-derived parameter types of private function `sym`, if Pass 2.9 derived them.
+    /// The caller-derived parameter types of private function `sym`, if the caller-derived parameter pass derived them.
     pub(super) fn derived_params(&self, sym: Symbol) -> Option<&Vec<Option<Ty>>> {
         self.file.derived_params.get(&sym)
     }
-    /// Install Pass 2.9's caller-derived parameter types (replacing any earlier set).
+    /// Install the caller-derived parameter pass's caller-derived parameter types (replacing any earlier set).
     pub(super) fn set_derived_params(&mut self, derived: HashMap<Symbol, Vec<Option<Ty>>>) {
         self.file_mut().derived_params = derived;
     }
@@ -1371,12 +1371,12 @@ impl Ctx {
     pub(super) fn is_derived_local(&self, sym: Symbol) -> bool {
         self.derived_locals.contains(&sym)
     }
-    /// The `(fn …)` form of a same-file function recorded by Pass 2.8, for call-site
+    /// The `(fn …)` form of a same-file function recorded by same-file inference, for call-site
     /// specialization.
     pub(super) fn fn_form(&self, sym: Symbol) -> Option<Value> {
         self.file.fn_forms.get(&sym).copied()
     }
-    /// Record a same-file function's `(fn …)` form (Pass 2.8 candidates only).
+    /// Record a same-file function's `(fn …)` form (same-file inference candidates only).
     pub(super) fn add_fn_form(&mut self, sym: Symbol, form: Value) {
         self.file_mut().fn_forms.insert(sym, form);
     }

@@ -8,7 +8,9 @@
 > 2b (multi-arity), **2c (local-capturing closures — the GC-critical one)**, and
 > source-position threading are all merged. **Stage 3 cutover (done):
 > `eval::compile::vm_enabled` now defaults the VM *on*; `BROOD_VM=0` is the
-> tree-walker escape hatch (retained for ≥1 release).** A core-vocabulary closure
+> tree-walker escape hatch (retained for ≥1 release).** (`BROOD_VM` was removed 2026-10-09;
+> the one tier knob is `BROOD_TIER=0|1|2`, ADR-222. This document keeps the old name where
+> it records the rollout.) A core-vocabulary closure
 > runs on the VM; anything else transparently defers to the tree-walker per-form, so
 > the language is unchanged. **Differential test mode (done):**
 > `crates/lisp/tests/differential.rs` runs a corpus through *both* engines in one

@@ -3,13 +3,12 @@
 //!
 //! Every process carries a handful of these — its body cache, its global-lookup cache, its
 //! arm IC-block index — and a process that parks after one call holds ONE entry in each.
-//! `hashbrown` cannot hold one entry in less than four buckets, so a parked process paid
-//! 276 + 180 + 84 B for three maps of one entry apiece (the 2026-09-21 allocation histogram,
-//! `runtime-frontier.md` §B): 540 B of a 4 345 B floor. Here one entry costs one entry —
+//! `hashbrown` cannot hold one entry in less than four buckets, which made those three maps
+//! a large share of a parked process's floor (`runtime-frontier.md` §B). Here one entry
+//! costs one entry —
 //! the vector grows 1 → 2 → 4 → 8 by `reserve_exact`, never `Vec`'s four-minimum — and the
 //! probe is a linear scan of at most eight `Copy` keys, which is faster than hashing at that
-//! size. Past eight the entries move into a `HashMap` and the map behaves exactly as before,
-//! so a process running a large program pays nothing new.
+//! size. Past eight the entries move into a `HashMap`, so a large program pays nothing extra.
 //!
 //! Only the surface the three maps use is provided. Add to it when a fourth caller needs
 //! more; do not reach for `HashMap` again for something a process holds per instance.

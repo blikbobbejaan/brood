@@ -134,7 +134,7 @@ fn ty_str(src: &str) -> String {
 }
 
 /// The non-tail-recursion lint (`recursion::check_recursion`) over a
-/// macroexpanded form — what `check-file`'s Pass 3.5 runs.
+/// macroexpanded form — what `check-file`'s recursion lint runs.
 fn recursion_warnings(src: &str) -> Vec<String> {
     let mut interp = crate::Interp::new();
     let form = reader::read_one(&mut interp.heap, src).expect("parse");
@@ -208,7 +208,7 @@ fn signatures(src: &str) -> Vec<(String, String, bool)> {
         .collect()
 }
 
-// ---- declared-vs-curated precision (2026-08-28) -------------------------------------
+// ---- declared-vs-curated precision -------------------------------------------------
 
 /// Every `.blsp` under `dir`, recursively.
 fn blsp_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -228,7 +228,10 @@ fn blsp_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 /// The `(defmodule NAME …)` name, read textually so this gate does not depend on the
 /// module-form API it is checking around. `None` for a bare-rooted (prelude) file.
 fn declared_module_name(src: &str) -> Option<String> {
-    let rest = src.split_once("(defmodule")?.1;
+    // At the start of a line: a `(defmodule …)` quoted inside a docstring is not a header.
+    let rest = src
+        .lines()
+        .find_map(|line| line.strip_prefix("(defmodule"))?;
     let name: String = rest
         .trim_start()
         .chars()

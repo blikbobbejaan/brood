@@ -229,8 +229,8 @@ fn overload_resolves_cross_module_via_the_heap_store() {
 fn overlapping_overload_arms_meet_at_a_call() {
     // A declared `(and …)` of arrows is an INTERSECTION: an argument inside two arms'
     // domains yields a value inside BOTH results. `math/pow`'s shape — a sharp int arm
-    // beside a `number` catch-all — used to read the UNION, `number`, at every call the
-    // catch-all admitted, which is every call.
+    // beside a `number` catch-all — must not read the UNION, `number`, at every call the
+    // catch-all admits, which is every call.
     let sharp = "
 (defmodule t)
 (defn f (b e) (if (< e 0) (/ 1 b) (* b b)))
@@ -265,9 +265,8 @@ fn overlapping_overload_arms_meet_at_a_call() {
 #[test]
 fn a_declared_overload_is_checked_against_its_body_per_arm() {
     // An intersection is satisfied by the body under EVERY arm: walked once per arm,
-    // the return checked against that arm's result. Until 2026-09-17 the declaration
-    // bound nothing and checked nothing, and since the arms meet at a call, a wrong arm
-    // was trusted at every call site.
+    // the return checked against that arm's result. Since the arms meet at a call, an
+    // unchecked wrong arm would be trusted at every call site.
     let ok = "
 (defmodule t)
 (defn ok (x) (if (int? x) (inc x) (string/length x)))

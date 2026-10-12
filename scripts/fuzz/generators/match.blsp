@@ -1,0 +1,136 @@
+;; Pattern-match fuzzer with a value-derived oracle. Generate a random nested value V,
+;; derive a pattern P from V (each node: keep literal | wildcard `_` | bind), so we KNOW the
+;; match must succeed and exactly what each binder gets. Emit a self-checking program that
+;; prints OK / BAD. A second clause matches V against a different literal, so it must FAIL
+;; (fall to the catch-all). The same program runs under every engine; all must print OK.
+;;
+;;   brood scripts/fuzz/generators/match.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- values: {:kind k :value v :children [...]}
+(defn draw-leaf ()
+  (case (draw-choice [:int :keyword :string :bool :nil])
+    :int {:kind :int :value (draw-choice [0 1 -1 2 7 42 -5])}
+    :keyword {:kind :keyword :value (draw-choice ["a" "b" "ok" "err" "x"])}
+    :string {:kind :string :value (draw-choice ["" "hi" "yo" "z"])}
+    :bool {:kind :bool :value (draw-choice [true false])}
+    {:kind :nil}))
+
+;; Depth-bounded tree walks: the recursion is at most a few levels deep by construction.
+(check-allow :non-tail-recursion
+  (defn draw-value (depth)
+    (if (or (<= depth 0) (< (draw-float) 0.4))
+      (draw-leaf)
+      (let (kind (draw-choice [:vector :list])
+            child-count (draw-int 0 3))
+        {:kind kind
+         :children (map (range child-count) (fn (_) (draw-value (- depth 1))))})))
+
+  (defn render-value (node)
+    (case (:kind node)
+      :int (str (:value node))
+      :keyword (str ":" (:value node))
+      :string (str "\"" (:value node) "\"")
+      :bool (if (:value node) "true" "false")
+      :nil "nil"
+      :vector (str "[" (string/join (map (:children node) render-value) " ") "]")
+      (str "(list " (string/join (map (:children node) render-value) " ") ")")))
+
+  ;; Derive a pattern from `node`; returns [pattern-text binds], appending each
+  ;; [binder-name value-node] to `binds` in pre-order.
+  (defn render-pattern (node binds)
+    (let (roll (draw-float))
+      (cond
+        ;; bind the whole sub-value
+        (< roll 0.33)
+          (let (name (str "g" (count binds)))
+            [name (conj binds [name node])])
+        (< roll 0.5) ["_" binds]
+        ;; keep structure: recurse into a container, or a literal leaf
+        (contains? #{:vector :list} (:kind node))
+          (let ([texts final-binds] (fold (:children node)
+                                      [[] binds]
+                                      (fn (state child)
+                                        (let ([texts so-far] state
+                                              [text next-binds] (render-pattern child so-far))
+                                          [(conj texts text) next-binds])))
+                inner (string/join texts " "))
+            [(if (= (:kind node) :vector) (str "[" inner "]") (str "(" inner ")")) final-binds])
+        :else [(render-value node) binds]))))
+
+(defn literal-mutation (node)
+  "A scalar literal that differs from `node`, for the clause that must not match."
+  (case (:kind node)
+    :int (str (+ (:value node) 1000))
+    :keyword ":zzz_no"
+    :string "\"NOPE_xyz\""
+    :bool (if (:value node) "false" "true")
+    :nil ":not-nil"
+    nil))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (value (draw-value 3)
+        value-text (render-value value)
+        [pattern binds] (render-pattern value [])
+        [body expected] (if (empty? binds)
+                          [":MATCHED" ":MATCHED"]
+                          [(str "(list " (string/join (map binds first) " ") ")")
+                            (str "(list "
+                              (string/join (map binds (fn (bind) (render-value (nth bind 1)))) " ")
+                              ")")])
+        ;; A top-level bare variable is irrefutable, and a clause after it is a compile ERROR
+        ;; ("unreachable clause after a catch-all") rather than dead code — so emit no
+        ;; fall-through clause behind one.
+        irrefutable (or (= pattern "_") (and (= (count binds) 1) (= pattern (first (first binds)))))
+        fallthrough (if irrefutable "" " (_ :NOMATCH)")
+        different (literal-mutation value))
+    (str "(let (got (match "
+      value-text
+      " ("
+      pattern
+      " "
+      body
+      ")"
+      fallthrough
+      "))\n"
+      "  (io/puts (if (= got "
+      expected
+      ") \"OK\" (str \"BAD-match got=\" (pr-str got)))))\n"
+      (if different
+        (str "(io/puts (if (= :NOMATCH (match "
+          value-text " (" different " :HIT) (_ :NOMATCH))) \"OK\" \"BAD-nomatch\"))\n")
+        ""))))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/mt_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "match programs"))

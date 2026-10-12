@@ -255,8 +255,8 @@
     ;; `mod` is Brood over the `rem` primitive, so a ÷0 surfaces as a `rem` error.
     (assert= (error-of (math/mod 1 0)) "runtime error: rem: division by zero")
     (assert= (error-of (math/rem 1 0)) "runtime error: rem: division by zero")
-    (assert= (error-of (seq/vector-ref [1 2] 9))
-      "runtime error: vector-ref: index 9 out of range [0, 2)"))
+    (assert= (error-of (seq/subvec [1 2] 0 9))
+      "runtime error: subvec: range [0, 9) out of bounds for vector of length 2"))
   (test "unbound symbol echoes the name"
     (assert= (error-of undefined-name) "unbound error: unbound symbol: undefined-name"))
   (test "type errors name the op, the wanted type, and what arrived"

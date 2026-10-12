@@ -199,11 +199,9 @@ the ADR-006 part: agent surfaces are Brood, not Rust.
 
 **`eval`/`load` run under a 30s watchdog (2026-05-30).** They evaluate arbitrary
 code, so a runaway (an infinite loop) would otherwise wedge the single-threaded
-server. The dispatcher arms a 30s eval deadline around the call; eval's loop checks
-it (cheap when unarmed) and a runaway aborts as an ordinary `evaluation exceeded its
-time limit` error — inline, so the dispatcher's error / panic / output-capture
-handling is unchanged (ADR-063; a *native* blocking call still can't be interrupted).
-The other tools run unbounded (`run-tests` self-bounds per test). Handler output
+server. Every handler runs in its own process; for `eval`/`load` the dispatcher waits
+at most 30s for its answer, then kills it (`(exit pid :kill)`) and replies with an
+`evaluation exceeded its time limit` error. The other tools run unbounded (`run-tests` self-bounds per test). Handler output
 (`print`, and terminal escapes from `term-draw`/`term-emit`) is captured off the
 JSON-RPC stream via a **process-scoped, spawn-inherited** capture buffer, so even a
 handler that spawns can't corrupt the channel.
@@ -293,18 +291,14 @@ process-scoped and **spawn-inherited** — it lives in the process `Ctx`
 `spawn`s on other workers is captured too, not just the synchronous handler's.
 `eprint` (stderr) is untouched — it never shared the protocol channel.
 
-## The crate
+## Where it lives
 
-`nest mcp` lives as a module inside `crates/nest/` (`crates/nest/src/mcp.rs`),
-not a separate crate. Same logic as ADR-028's "thin Rust shell": the
-dispatcher is small; the *policy* is Brood. Promote to `crates/mcp/` only when
-something else needs to embed it (an editor host, a remote server) — the move
-is mechanical.
-
-**Protocol crates:** none, beyond `serde_json`. MCP's surface is small enough
-that a direct sync JSON-RPC loop stays under a few hundred lines, matching the
-`!Sync` `Heap` constraint with no `tokio`. (`rmcp` exists; the dep + async
-cost outweighs the saving here, same calculus as ADR-025 over `tower-lsp`.)
+Since 2026-10-09 the whole server — transport, dispatch, JSON, error mapping and the tool
+catalogue — is Brood (`std/tool/mcp.blsp`), routed like every other Brood `nest`
+subcommand. `crates/nest/src/mcp.rs` supplies only what the binary compiled in: the
+reference documents an agent reads as MCP resources, the prelude source and the
+`brood-task` prompt, bound as `*mcp-documents*` around the dispatcher call. No protocol
+crate is involved.
 
 **Transport — newline-delimited JSON, not LSP framing.** The MCP stdio transport
 frames each JSON-RPC message as one line of compact JSON terminated by `\n` (no
@@ -312,8 +306,8 @@ embedded newlines), **not** the `Content-Length` headers LSP uses. This matters:
 `brood-lsp` and `nest mcp` look alike (both sync JSON-RPC over stdio) but their
 wire framing differs, and using the LSP framing here silently breaks every real
 MCP client — the `initialize` handshake never completes because the client's
-newline-framed bytes aren't parsed. (`read_message`/`write_message` in
-`crates/nest/src/mcp.rs`; regression-tested.)
+newline-framed bytes aren't parsed. (The framing is in `std/tool/mcp.blsp`;
+regression-tested.)
 
 ## The `.mcp.json` scaffold
 
@@ -343,11 +337,13 @@ scaffolding work already done.
 **Progress notifications (Tier 2, shipped 2026-07-23).** A `tools/call` that
 carries an MCP `_meta.progressToken` gets live `notifications/progress`
 streamed on the stdout channel during the (synchronous) call: a Brood handler
-calls `(mcp-progress progress total message)` — a no-op without a token, so
+calls `(mcp/progress progress total message)` — a no-op without a token, so
 any handler can use it. The `check` tool reports per file
-(`checked foo.blsp`, 3/12). Mechanism: `%mcp-progress` (a dispatcher-armed
-sink) + the reentrant stdout lock, so the server streams from inside a
-blocking handler.
+(`checked foo.blsp`, 3/12). Mechanism: the handler runs in its own process with
+`*mcp-progress-sink*` bound; `mcp/progress` sends each report to the dispatcher,
+which writes the notification while it waits for the handler's answer.
+`project-check` calls it only when the `mcp` module is already loaded, so a plain
+`nest check` never loads it.
 
 Tier 0 is reachable now because the prerequisites — the introspection
 primitives (ADR-025), project bootstrap (ADR-020/028), hot reload (ADR-013) —
@@ -355,11 +351,9 @@ are all in place.
 
 ## The self-hosting boundary
 
-Per ADR-006, the Rust side is *mechanism* — JSON-RPC framing, schema
-validation, the `Interp` lifetime, resource file reads — the same category as
-the reader and the LSP transport. **Tool semantics are Brood**
-(`std/tool/mcp.blsp`), so a project can register its own tools without a Rust
-release. That's the part that makes `nest mcp` look like a language feature
+Per ADR-006 the server is Brood end to end (`std/tool/mcp.blsp`); the only Rust left
+is the binary's embedded documents. A project can register its own tools without a
+Rust release. That's the part that makes `nest mcp` look like a language feature
 rather than a one-off binary: when the future Brood-hosted editor (M2/M3)
 sprouts an MCP server, the Brood half ports unchanged; only the transport
 re-hosts inside the editor's event loop.

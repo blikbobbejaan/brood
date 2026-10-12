@@ -80,7 +80,7 @@ use core::value::{EnvId, Value};
 use error::LispError;
 
 /// The byte-counting allocator (see [`core::alloc`]) backs the whole process, so
-/// `(%)` / `(%)` see every Rust allocation. Declared here in the
+/// `(%mem-bytes)` / `(%mem-peak)` see every Rust allocation. Declared here in the
 /// library so the CLI and the integration-test binaries all share one.
 #[global_allocator]
 static GLOBAL: core::alloc::Counting = core::alloc::Counting;
@@ -316,7 +316,7 @@ impl Interp {
             }
             // Compile pass: expand macros once before evaluating (form-by-form, so
             // a macro a form defines is in scope for the forms after it), then
-            // route through the compiling VM (ADR-076) or, under BROOD_VM=0, the
+            // route through the compiling VM (ADR-076) or, under BROOD_TIER=0, the
             // tree-walker (Stage 0 defers, so the two are at parity).
             let outcome = eval::macros::compile(heap, form, root)
                 .and_then(|f| {

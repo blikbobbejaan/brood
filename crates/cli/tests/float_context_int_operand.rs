@@ -8,7 +8,7 @@
 //! own `i64 as f64`.
 //!
 //! Two assertions, on the real `brood` entry point, because the seam is the lowering:
-//! the result matches the VM's (`BROOD_NO_JIT=1`), and `BROOD_JIT_BAIL_TRACE=1` names no
+//! the result matches the VM's (`BROOD_TIER=1`), and `BROOD_JIT_BAIL_TRACE=1` names no
 //! `deopt-thrash-latched` for the arm. The second is the one that fails without the fix.
 
 use std::process::Command;
@@ -29,12 +29,7 @@ fn run(no_jit: bool) -> (String, String) {
     cmd.env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_JIT_BAIL_TRACE", "1")
-        .env_remove("BROOD_NO_JIT")
-        .env_remove("BROOD_TIER")
-        .env_remove("BROOD_VM");
-    if no_jit {
-        cmd.env("BROOD_NO_JIT", "1");
-    }
+        .env("BROOD_TIER", if no_jit { "1" } else { "2" });
     let out = cmd.arg(&path).output().expect("run brood");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),

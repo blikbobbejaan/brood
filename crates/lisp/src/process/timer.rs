@@ -8,31 +8,19 @@
 //! current) re-queues the parked waiter so it wakes, re-scans its mailbox,
 //! and notices the deadline has passed.
 //!
-//! **Lazy cancellation, with compaction.** An entry is not removed from the heap the
-//! moment its park is superseded — a `(receive … (after ms …))` woken by `send` each
-//! iteration would otherwise churn arm/disarm pairs, and a `BinaryHeap` cannot remove an
-//! interior element anyway. Instead each entry carries the park **generation** it was
-//! armed under; `wake_for_timeout` drops an entry whose gen the mailbox has since advanced
-//! past (see `Mailbox::timer_gen`).
-//!
-//! Firing-time reaping alone is **not** a bound worth relying on, though. It bounds a
-//! stale entry's *lifetime* by the deadline horizon, so the heap's size is bounded by
-//! `arm-rate × horizon`, not by the horizon — and the arm rate is the message rate. A
-//! gen-server looping `(receive … (after 3600000 …))` at 10k msg/s accrues ~36M dead
-//! entries (GB-scale, on one global heap behind one mutex) before the first one comes due,
-//! then reaps them in a burst. So [`arm_timer`] also **compacts**: when the heap has grown
-//! past twice its live size (and past a floor), it drops every entry whose generation the
-//! owning mailbox has moved on from, or whose process is gone. Amortized O(1) per arm —
-//! each compaction is paid for by at least as many pushes as it inspects — and it keeps
-//! the steady-state size proportional to the number of *currently parked* processes rather
-//! than to how many messages they have handled.
+//! **Lazy cancellation, with compaction.** A superseded entry is not removed the moment
+//! its park is superseded (a `BinaryHeap` cannot remove an interior element); each entry
+//! carries the park **generation** it was armed under, and `wake_for_timeout` drops one
+//! whose gen the mailbox has advanced past (see `Mailbox::timer_gen`). Reaping only at
+//! the deadline would bound the heap by `arm-rate × horizon` — the message rate times the
+//! timeout — so [`arm_timer`] also **compacts** once the heap passes twice its live size
+//! (and a floor): amortized O(1) per arm, and the steady-state size tracks the number of
+//! *currently parked* processes.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
-// Only the native timer thread has a start-once flag; wasm has no timer thread at all
-// (`fire_next_timer` is driven by the pump), so this import is unused there and the wasm
-// build warned. CI builds wasm without `-D warnings`, so it warned silently for a while.
+// Only the native timer thread has a start flag; wasm has no timer thread.
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, LazyLock, Mutex};
@@ -50,25 +38,15 @@ static TIMERS: LazyLock<(Mutex<TimerQueue>, Condvar)> =
 /// Whether the timer thread is running (native only — wasm has no timer thread; its
 /// cooperative pump fires due timers itself).
 ///
-/// **Not a `Once`, deliberately.** `Once::call_once` is *poisoned* by a panic inside it,
-/// and `std::thread::spawn` panics when the OS refuses a thread (EAGAIN under fd/thread
-/// pressure). One such refusal therefore made every later `call_once` panic — and this
-/// runs from `arm_timer`, which backs `sleep` and every `receive … (after ms …)`, so a
-/// single transient failure permanently broke all timeouts runtime-wide. KI-97 item 3.
-///
-/// A plain CAS instead: exactly one caller wins the right to spawn, and if the spawn
-/// fails it **releases the flag** so a later `arm_timer` retries. Deadlines armed in the
-/// meantime stay queued and are serviced once a spawn succeeds, so the degradation is
-/// "timeouts are late until threads are available" rather than "timeouts are dead".
+/// **Not a `Once`, deliberately** (KI-97 item 3): a `Once` is poisoned by a refused
+/// thread spawn, which would break every timeout runtime-wide for good. A plain CAS
+/// instead: one caller wins the right to spawn, and a failed spawn **releases the flag**
+/// so a later `arm_timer` retries; deadlines armed meanwhile stay queued (late, not dead).
 #[cfg(not(target_arch = "wasm32"))]
 static TIMER_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// How many timer threads have actually entered [`timer_loop`].
-///
-/// One relaxed increment for the life of a process, and it buys the only assertion that
-/// distinguishes "the flag is set" from "a thread is really running" — which is exactly
-/// the difference between the fixed code and a `Once`-shaped regression that marks itself
-/// started without starting anything.
+/// How many timer threads have actually entered [`timer_loop`] — what lets a test tell
+/// "the flag is set" from "a thread is really running".
 #[cfg(not(target_arch = "wasm32"))]
 static TIMER_THREADS_STARTED: AtomicUsize = AtomicUsize::new(0);
 
@@ -156,19 +134,11 @@ pub fn pending_timer_count() -> usize {
     crate::core::sync::lock(&TIMERS.0).len()
 }
 
-/// Fire the earliest pending receive-timeout, waking its parked process (wasm cooperative
-/// scheduler — there is no timer thread). Called by the pump when nothing else is runnable:
-/// the earliest deadline is then the only thing that can advance the program, so it fires in
-/// logical time (real delays aren't honored under wasm — fine for a playground). Messages
-/// still win over timeouts, since the pump drains all run queues before firing a timer. A
-/// superseded entry (its `gen` advanced) wakes nothing but is still removed. Returns whether
-/// an entry was fired.
-// The scheduler's clock for receive deadlines. On native this is the real monotonic
-// clock. On wasm there is no timer thread, so real time never advances *while a snippet
-// runs* — `fire_next_timer` advances this LOGICAL clock to the fired deadline instead, so a
-// woken receive sees its deadline as reached and takes its `after` clause at once (rather
-// than re-checking `Instant::now()`, finding almost no real time passed, and re-parking —
-// which spun the pump at 100% CPU for the full real delay, freezing the tab).
+/// The scheduler's clock for receive deadlines. On native this is the real monotonic
+/// clock. On wasm there is no timer thread, so real time never advances *while a snippet
+/// runs* — `fire_next_timer` advances this LOGICAL clock to the fired deadline instead, so
+/// a woken receive sees its deadline as reached and takes its `after` clause at once
+/// rather than re-parking and spinning the pump for the full real delay.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn sched_now() -> Instant {
     Instant::now()
@@ -289,17 +259,10 @@ fn timer_loop() {
 
 #[cfg(test)]
 mod tests {
-    /// KI-97 item 3: starting the timer thread must be **retryable**, not a `Once`.
-    ///
-    /// `Once::call_once` is poisoned by a panic inside it, and `std::thread::spawn` panics
-    /// when the OS refuses a thread (EAGAIN). Because `arm_timer` backs `sleep` and every
-    /// `receive … (after ms …)`, one transient refusal used to break *all* timeouts in the
-    /// runtime, permanently and unrecoverably.
-    ///
-    /// The OS cannot be made to refuse a thread on demand here, so this asserts the
-    /// property that makes recovery possible: the started-flag is a plain CAS that a
-    /// failed spawn releases, so `ensure_timer_thread` is safe to call repeatedly and
-    /// leaves the flag set once a thread is actually running.
+    /// KI-97 item 3: starting the timer thread must be **retryable**, not a `Once`. The OS
+    /// cannot be made to refuse a thread on demand, so this asserts the property recovery
+    /// rests on: `ensure_timer_thread` is safe to call repeatedly and leaves the flag set
+    /// once a thread is actually running.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_timer_thread_start_is_retryable_not_a_once() {
@@ -362,15 +325,9 @@ mod tests {
     /// Superseded timer entries must be **compacted**, not merely reaped at their
     /// deadlines.
     ///
-    /// Lazy cancellation stamps each entry with the park generation it was armed under and
-    /// drops a stale one when its deadline comes due. That bounds an entry's *lifetime* by
-    /// the deadline horizon — but the heap's *size* is then bounded by `arm-rate × horizon`,
-    /// and the arm rate is the message rate: a gen-server looping
-    /// `(receive … (after 3600000 …))` at 10k msg/s accrues ~36M dead entries (GB-scale, on
-    /// one global heap behind one mutex) before the first one is due, then reaps them in a
-    /// burst. Here every entry is stale by construction (the pid was never registered, so
-    /// `current_timer_gen` is `None`) with a deadline an hour out, so nothing can be reaped
-    /// by firing; only compaction can keep the heap bounded.
+    /// Every entry here is stale by construction (the pid was never registered) with a
+    /// deadline an hour out, so nothing can be reaped by firing; only compaction can keep
+    /// the heap bounded.
     #[test]
     fn superseded_entries_are_compacted_not_left_until_their_deadline() {
         let far = Instant::now() + std::time::Duration::from_secs(3600);

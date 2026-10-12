@@ -189,6 +189,20 @@
       (sleep 60)
       (assert= before (proc/mailbox-size (self)))))
 
+  (defserver double-replier
+    (s)
+    (defer :twice (do (gen/reply reply :first) (gen/reply reply :second) s)))
+
+  (test "a deferred call answered twice delivers only the first reply"
+    ;; the second reply is addressed to a ref the caller already consumed; it must be
+    ;; dropped at delivery, not left unmatchable in the mailbox
+    (let (s (start double-replier nil)
+          before (proc/mailbox-size (self)))
+      (assert= (call s :twice) :first)
+      (call s :twice)
+      (sleep 60)
+      (assert= (proc/mailbox-size (self)) before)))
+
   (test "a timed-out call does not poison the NEXT call on the same server"
     (let (s (start echoing nil))
       ;; 0 ms — give up before the server can possibly answer

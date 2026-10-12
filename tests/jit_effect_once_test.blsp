@@ -19,8 +19,8 @@
 ;;;
 ;;; Each test below drives an arm hot enough to tier, then forces a type deopt on every
 ;;; activation, and asserts the effect count equals the iteration count exactly. They are
-;;; sensitive: with `BROOD_NO_DEOPT_RESUME=1` (the from-ip-0 chicken switch) the first two
-;;; over-count, and with the leaf-inline exclusion removed the third does.
+;;; sensitive: with deopt checkpoints disabled (`jit_ckpt_depth` answering `None`) the first
+;;; two over-count, and with the leaf-inline exclusion removed the third does.
 
 (defmodule jit-effect-once-test (:use test))
 

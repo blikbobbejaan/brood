@@ -310,9 +310,9 @@ fn narrowing_on_the_wanted_type_silences_it() {
 /// The lint's own advice has to WORK on a collection, not only on a scalar.
 ///
 /// `(seq/filter xs int?)` keeps exactly the items `int?` admits, so nothing downstream of it can
-/// be a failure — but `filter` used to pass the element type straight through, so the lint
-/// fired on code that had narrowed exactly as its message tells you to ("narrow with the type
-/// you want (`int?` …)"). A diagnostic whose recommended remedy does not silence it is worse
+/// be a failure; passing the element type straight through would fire the lint on code that
+/// narrowed exactly as its message says ("narrow with the type you want (`int?` …)"). A
+/// diagnostic whose recommended remedy does not silence it is worse
 /// than no diagnostic: it teaches the reader to ignore the message.
 ///
 /// Found on bedit, where it reddened CI's downstream gate on correct code:

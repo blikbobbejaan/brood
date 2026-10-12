@@ -35,20 +35,20 @@ impl Heap {
     /// `docs/memory-review.md`). Fired by `eval::eval` when `gc_due()` *and* we are
     /// the outermost eval (`gc_block_depth() == 1`), so the only live LOCAL handles
     /// are the ones reachable from the roots below — see the safepoint's
-    /// rooting-completeness argument. A semi-space copy via [`arena_flip`]: relocate
-    /// every LOCAL object reachable from `extra_roots` (the eval's `expr`),
-    /// `extra_envs` (its `env`), the dynamic stack, and the explicit root stack into
-    /// fresh slabs; drop the rest; bump the generation epoch so any handle held
-    /// across this without being re-rooted trips the tripwire at its next deref.
+    /// rooting-completeness argument. A generational copy: a minor collection
+    /// ([`minor_collect`](Self::minor_collect)) relocates every nursery object
+    /// reachable from `extra_roots` (the eval's `expr`), `extra_envs` (its `env`), the
+    /// dynamic stack, and the explicit root stack — tenuring them into the old
+    /// generation or flipping them into a fresh nursery — and drops the rest; a
+    /// [`major_collect`](Self::major_collect) follows when the old generation has
+    /// grown enough. Each bumps its generation's epoch, so any handle held across this
+    /// without being re-rooted trips the tripwire at its next deref.
     ///
     /// Because it MOVES survivors, the caller **must** use the relocated handles
     /// written back into `extra_roots`/`extra_envs`. Recomputes the adaptive
     /// threshold so the next collection fires when the live set doubles (amortized
-    /// O(1) copying per allocation — standard semi-space; the threshold is the
-    /// slow/stable dial, `BROOD_GC_STRESS=1` ⇒ every safepoint). No-op while GC is
-    /// disabled (the builder heap during prelude construction). Shares all of its
-    /// machinery — and the no-slot-reuse safety — with the [`flush`](Self::flush) helper.
-    // (stall_guard defined at module scope, below)
+    /// O(1) copying per allocation; `BROOD_GC_STRESS=1` ⇒ every safepoint). No-op
+    /// while GC is disabled (the builder heap during prelude construction).
     pub fn collect(&mut self, extra_roots: &mut [Value], extra_envs: &mut [EnvId]) {
         // Pause-duration accounting (the observability timing tier): time the
         // whole collection and fold it into the per-process totals `(dev/gc-stats)`
@@ -59,10 +59,10 @@ impl Heap {
         // replaced can go (see `code_gen_ref`).
         self.release_retired_gens();
         let runs_before = self.gc_runs;
-        let t0 = web_time::Instant::now();
+        let started = web_time::Instant::now();
         self.collect_inner(extra_roots, extra_envs);
         if self.gc_runs != runs_before {
-            let ns = t0.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
             self.gc_ns_total = self.gc_ns_total.saturating_add(ns);
             self.gc_ns_max = self.gc_ns_max.max(ns);
             self.gc_ns_last = ns;
@@ -87,7 +87,7 @@ impl Heap {
     fn collect_inner(&mut self, extra_roots: &mut [Value], extra_envs: &mut [EnvId]) {
         // Stall trace (BROOD_STALL_MS=<n>): log if this minor collection takes ≥ n ms — to
         // pinpoint a gameplay lag spike. Works in release; zero cost unless the env is set.
-        let _sg = stall_guard("minor-gc");
+        let _stall = stall_guard("minor-gc");
         // GC trace (BROOD_GC_TRACE=1): log each minor collection's working set.
         #[cfg(debug_assertions)]
         {
@@ -147,32 +147,21 @@ impl Heap {
         let tenure = self.local_live_count() >= min_tenure();
         self.minor_collect(tenure, extra_roots, extra_envs);
         // Next minor fires when the *young* gen reaches `gc_threshold`. Scale it with
-        // the **total** live set (young + old), not just young: a tenuring build moves
-        // its survivors to the old gen, leaving young ≈ 0, so a young-only `live*2`
-        // collapsed to the floor and re-collected every floor-worth of allocations —
-        // O(n/floor) minor collects (and majors) while building one large structure.
-        // Counting old-gen live lets a process with a big live set earn a
-        // proportionally bigger nursery budget (memory bounded to ~a small multiple of
-        // live), so large-structure builds collect O(log n) times; a small-live churny
-        // process (e.g. a `spawn` fan-out worker) still sits at the floor. (2026-07-01)
-        // Capped at NURSERY_MAX: `should_collect` fires a minor when *young* reaches
-        // `gc_threshold`, so without a ceiling a process with a large live old gen that
-        // then *churns* transient young garbage would buffer ~2×old worth of it before
-        // collecting — young memory ballooning proportional to the old gen. The cap
-        // bounds that transient buffer while staying well above real build working sets
-        // (a lone process's floor is 64K; the cap is 8M ≈ a few hundred MB of nursery).
+        // the **total** live set (young + old): a tenuring build leaves young ≈ 0, so a
+        // young-only scale would collapse to the floor and collect O(n/floor) times
+        // while building one large structure; counting old live makes that O(log n).
+        // Capped at NURSERY_MAX so a process with a large old gen that churns transient
+        // garbage cannot buffer young memory proportional to the old gen.
         let live_total = self.local_live_count() + self.old_live_count();
         self.gc_threshold = std::cmp::max(
             gc_floor(),
             (((live_total as f64) * Self::gc_growth()) as usize).min(NURSERY_MAX),
         );
         // Escalate to a *major* (compact the old generation) only when it has grown
-        // MAJOR_GROWTH× since the last major — so majors stay rare while minors keep
-        // the nursery bounded. Grown 2×→4× (2026-07-01): during a large-structure
-        // build the old gen is nearly all-live, so a major copies the whole growing
-        // list and reclaims almost nothing; a larger factor makes those wasteful
-        // full-list compactions far rarer (fewer, at geometrically spaced sizes),
-        // trading retained-garbage memory for copy throughput.
+        // `major_growth()`× since the last major — so majors stay rare while minors keep
+        // the nursery bounded. During a large-structure build the old gen is nearly
+        // all-live, so a major reclaims little; a larger factor trades retained garbage
+        // for copy throughput.
         if self.old_live_count() >= self.major_threshold {
             self.major_collect(extra_roots, extra_envs);
             self.major_threshold = std::cmp::max(
@@ -189,6 +178,55 @@ impl Heap {
         self.old_opt().map_or(0, slab_live_count)
     }
 
+    /// Relocate every GC root through `forward`, from `source` into `dest`: the caller's
+    /// `value_roots`/`env_roots` (the eval frame's `expr`/`env`), this process's
+    /// dynamic-binding stack, and the operand stack (`roots` + `env_roots`). The
+    /// single place the GC root set is enumerated — minor and major collection
+    /// share it so the two can't drift (a divergent root set would be a
+    /// use-after-GC bug). `dest` is a *local* `Slabs` (never a `self` field) so the
+    /// `&mut self` for the stacks doesn't alias it.
+    fn flush_roots(
+        &mut self,
+        source: &Slabs,
+        dest: &mut Slabs,
+        forward: &mut FlushForward,
+        value_roots: &mut [Value],
+        env_roots: &mut [EnvId],
+    ) {
+        for v in value_roots.iter_mut() {
+            *v = flush_value(source, dest, forward, *v);
+        }
+        for e in env_roots.iter_mut() {
+            *e = flush_env(source, dest, forward, *e);
+        }
+        for (_, v) in self.dynamics.iter_mut() {
+            *v = flush_value(source, dest, forward, *v);
+        }
+        #[cfg(feature = "dev-tools")]
+        if let Some(v) = &mut self.trace_context {
+            *v = flush_value(source, dest, forward, *v);
+        }
+        for v in self.roots.iter_mut() {
+            *v = flush_value(source, dest, forward, *v);
+        }
+        // Delivered-message slots (L1): a message copied straight into this heap by a
+        // sender can sit queued through any number of collections before a selective
+        // `receive` reaches it, so the slots relocate in place like the operand stack.
+        for v in self
+            .msg_roots
+            .iter_mut()
+            .flat_map(|slots| slots.slots.iter_mut())
+        {
+            *v = flush_value(source, dest, forward, *v);
+        }
+        // The env half of the operand stack (ADR-061).
+        let mut operand_envs = std::mem::take(&mut self.env_roots);
+        for e in operand_envs.iter_mut() {
+            *e = flush_env(source, dest, forward, *e);
+        }
+        self.env_roots = operand_envs;
+    }
+
     /// A **minor collection**. `tenure` selects the destination of the nursery's
     /// survivors:
     /// - `true` (allocation pressure crossed `min_tenure`): survivors are copied
@@ -202,49 +240,6 @@ impl Heap {
     /// nursery whole, and the nursery epoch is bumped (stale young handles trip the
     /// tripwire). Roots, dynamics, the operand stack, and the write-barrier
     /// remembered set are relocated/rewritten in place.
-    /// Relocate every GC root through `fwd`, from `src` into `dest`: the caller's
-    /// `value_roots`/`env_roots` (the eval frame's `expr`/`env`), this process's
-    /// dynamic-binding stack, and the operand stack (`roots` + `env_roots`). The
-    /// single place the GC root set is enumerated — minor and major collection
-    /// share it so the two can't drift (a divergent root set would be a
-    /// use-after-GC bug). `dest` is a *local* `Slabs` (never a `self` field) so the
-    /// `&mut self` for the stacks doesn't alias it.
-    fn flush_roots(
-        &mut self,
-        src: &Slabs,
-        dest: &mut Slabs,
-        fwd: &mut FlushForward,
-        value_roots: &mut [Value],
-        env_roots: &mut [EnvId],
-    ) {
-        for v in value_roots.iter_mut() {
-            *v = flush_value(src, dest, fwd, *v);
-        }
-        for e in env_roots.iter_mut() {
-            *e = flush_env(src, dest, fwd, *e);
-        }
-        for (_, v) in self.dynamics.iter_mut() {
-            *v = flush_value(src, dest, fwd, *v);
-        }
-        #[cfg(feature = "dev-tools")]
-        if let Some(v) = &mut self.trace_context {
-            *v = flush_value(src, dest, fwd, *v);
-        }
-        for v in self.roots.iter_mut() {
-            *v = flush_value(src, dest, fwd, *v);
-        }
-        // Delivered-message slots (L1) — same reasoning as the nursery flush above: a
-        // queued Local message outlives arbitrarily many collections.
-        for v in self.msg_roots.iter_mut().flat_map(|t| t.slots.iter_mut()) {
-            *v = flush_value(src, dest, fwd, *v);
-        }
-        let mut er = std::mem::take(&mut self.env_roots);
-        for e in er.iter_mut() {
-            *e = flush_env(src, dest, fwd, *e);
-        }
-        self.env_roots = er;
-    }
-
     fn minor_collect(&mut self, tenure: bool, value_roots: &mut [Value], env_roots: &mut [EnvId]) {
         let before_young = self.local_live_count();
         let old_before = self.old_live_count();
@@ -264,11 +259,11 @@ impl Heap {
             // the Vec-doubling ladder (see `Slabs::with_capacity_like`).
             (Slabs::with_capacity_like(&young), self.local_epoch, false)
         };
-        let mut fwd = FlushForward::for_source(&young);
-        fwd.epoch = epoch;
-        fwd.src_old = false; // copy nursery objects
-        fwd.dest_old = dest_old;
-        self.flush_roots(&young, &mut dest, &mut fwd, value_roots, env_roots);
+        let mut forward = FlushForward::for_source(&young);
+        forward.epoch = epoch;
+        forward.src_old = false; // copy nursery objects
+        forward.dest_old = dest_old;
+        self.flush_roots(&young, &mut dest, &mut forward, value_roots, env_roots);
         // Write barrier: an old frame that gained a young binding (`env_define`
         // after a mid-bind tenure) holds an OLD->YOUNG edge not reachable from the
         // normal roots. Its frame lives in `dest` while tenuring (we took the old
@@ -287,7 +282,7 @@ impl Heap {
                 } else {
                     self.old().envs[e.index()].vars[i]
                 };
-                let nv = flush_value(&young, &mut dest, &mut fwd, v);
+                let nv = flush_value(&young, &mut dest, &mut forward, v);
                 if tenure {
                     dest.envs[e.index()].vars[i] = (s, nv);
                 } else {
@@ -317,7 +312,7 @@ impl Heap {
             cold.form_pos.retain(|&key, pos| {
                 if (key >> 32) & 1 == 1 {
                     true
-                } else if let Some(new_idx) = fwd.pairs.lookup(key as u32) {
+                } else if let Some(new_idx) = forward.pairs.lookup(key as u32) {
                     moved.push(((new_idx as u64) | new_age_bit, pos.clone()));
                     false
                 } else {
@@ -329,9 +324,7 @@ impl Heap {
             }
             // `retain` above drops dead entries but never releases their slots, and
             // `HashMap` never shrinks itself — so without this the map keeps its
-            // HIGH-WATER capacity for the whole process life. Measured 2026-08-20 on a
-            // 38-module stdlib load: 8 000 live entries sitting in 25 156 slots, i.e.
-            // 830 KB where 265 KB was live.
+            // high-water capacity for the whole process life.
             //
             // Shrinking has to stay RARE, because rebuilding this map is exactly the
             // O(all positions recorded so far) cost the retain-in-place above exists to
@@ -354,14 +347,11 @@ impl Heap {
         // nursery; the old gen was untouched.
         if tenure {
             self.old = Some(Box::new(dest));
-            // The nursery restarts EMPTY on a tenure — every survivor was moved into the
-            // old gen — so reserving the *outgoing* nursery's full length holds a
-            // peak-sized allocation the next cycle may never touch. That is the least
-            // justified of the two `with_capacity_like` uses: on the flip path below,
-            // `dest` genuinely holds the survivors, so its capacity is in use. `sort`
-            // builds a 375k-cell list and peaks at 191 MB against .NET's 30 MB and
-            // Ruby's 25 MB, and this reservation is a large part of the difference.
-            // `BROOD_GC_TENURE_RESERVE=1` restores the old behaviour for an A/B.
+            // The nursery restarts EMPTY on a tenure — every survivor moved into the old
+            // gen — so reserving the outgoing nursery's length would hold a peak-sized
+            // allocation the next cycle may never touch (unlike the flip path, whose
+            // `dest` really holds the survivors). `BROOD_GC_TENURE_RESERVE=1` reserves
+            // anyway, for an A/B.
             static RESERVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             self.local =
                 if *RESERVE.get_or_init(|| std::env::var_os("BROOD_GC_TENURE_RESERVE").is_some()) {
@@ -406,19 +396,19 @@ impl Heap {
         self.old_epoch = self.old_epoch.wrapping_add(1);
         let old_src = self.old.take().map(|b| *b).unwrap_or_default();
         let mut dest = Slabs::default();
-        let mut fwd = FlushForward::for_source(&old_src);
-        fwd.epoch = self.old_epoch;
-        fwd.src_old = true; // copy old-gen objects
-        fwd.dest_old = true; // into the fresh old space
-        self.flush_roots(&old_src, &mut dest, &mut fwd, value_roots, env_roots);
+        let mut forward = FlushForward::for_source(&old_src);
+        forward.epoch = self.old_epoch;
+        forward.src_old = true; // copy old-gen objects
+        forward.dest_old = true; // into the fresh old space
+        self.flush_roots(&old_src, &mut dest, &mut forward, value_roots, env_roots);
         // If the preceding minor was a flip (not a tenure) the nursery is
         // non-empty.  `flush_roots` updated handles in `self.roots` and
         // `self.env_roots`, but OLD handles *inside* nursery objects were
         // silently skipped by `flush_value`/`flush_env` (they gate on
-        // `fwd.copies`, which is false for nursery objects during a major).
+        // `forward.copies`, which is false for nursery objects during a major).
         // Rewrite those stale OLD handles in-place now, while `old_src` is
         // still live.
-        flush_nursery_old_refs(&mut self.local, &old_src, &mut dest, &mut fwd);
+        flush_nursery_old_refs(&mut self.local, &old_src, &mut dest, &mut forward);
         // Write barrier across a major. After a *tenure* minor `remembered` is
         // empty (the minor cleared it). But `collect()` can run a major right
         // after a *flip* minor, and a flip RETAINS `remembered` — old EnvIds for
@@ -426,42 +416,33 @@ impl Heap {
         // gen (the old->young edges persist; see `minor_collect`). This major just
         // relocated those frames into fresh slabs and bumped `old_epoch`, so every
         // retained entry is now a stale index *and* a stale epoch. Rewrite each
-        // through the env forwarding table (`fwd.envs`, populated by `flush_roots`)
+        // through the env forwarding table (`forward.envs`, populated by `flush_roots`)
         // and drop any whose frame wasn't copied — it was unreachable, so the major
-        // reclaimed it. Skipping this leaves the next `minor_collect` indexing
-        // `self.old().envs[e.index()]` with a stale handle and no bounds/epoch check
-        // (and `BROOD_GC_VERIFY`'s remembered walk uses a safe `.get()`, so it
-        // never flags it) — a silent use-after-GC.
+        // reclaimed it. The next `minor_collect` indexes `self.old().envs[e.index()]`
+        // with no bounds/epoch check, so a stale entry would be a silent use-after-GC.
         if !self.remembered.is_empty() {
             let remembered = std::mem::take(&mut self.remembered);
             self.remembered = remembered
                 .into_iter()
                 .filter_map(|e| {
-                    fwd.envs
+                    forward
+                        .envs
                         .lookup(e.index() as u32)
-                        .map(|n| fwd.mint_env(n as usize))
+                        .map(|n| forward.mint_env(n as usize))
                 })
                 .collect();
         }
         // form_pos re-key across a major: only the OLD generation moved, so an old entry
         // is re-keyed through the forwarding table (dropped if its pair died) and a
-        // NURSERY entry is kept exactly as it is.
-        //
-        // This used to `take` the whole map and reinsert only the entries whose age bit
-        // was set — silently discarding every young entry, i.e. the recorded position of
-        // every still-live *nursery* form, which a major does not move. A load that
-        // allocates heavily (flip minor, survivors stay young) followed by a major thus
-        // lost the positions of the forms it had just read: error messages, `(form-pos …)`
-        // and the test framework's line lookups all went blank for them. The minor path
-        // (`minor_collect`) has always retained in place correctly; this mirrors it, which
-        // also drops the O(all positions recorded so far) rehash the `take` cost per major.
+        // NURSERY entry — a live form a major does not move — is kept exactly as it is.
+        // Retained in place like `minor_collect`, not rebuilt.
         if self.cold.is_some() {
             let mut moved: Vec<(u64, crate::core::heap::FormPos)> = Vec::new();
             let cold = self.cold_mut();
             cold.form_pos.retain(|&key, pos| {
                 if (key >> 32) & 1 == 0 {
                     true // a nursery entry — a major leaves the nursery in place
-                } else if let Some(new_idx) = fwd.pairs.lookup(key as u32) {
+                } else if let Some(new_idx) = forward.pairs.lookup(key as u32) {
                     moved.push(((new_idx as u64) | (1 << 32), pos.clone()));
                     false
                 } else {
@@ -503,440 +484,298 @@ impl Heap {
     /// Debug heap verifier (`BROOD_GC_VERIFY`). Walk every LOCAL handle reachable
     /// from the supplied roots + the explicit root / env-root / dynamic stacks and
     /// assert each is (a) in-bounds for its slab and (b) stamped with the current
-    /// epoch. Between collections every *live* LOCAL handle must be current-epoch
-    /// (survivors are re-minted at the current epoch on each flip, new allocations
-    /// use it), so a reachable handle from an older epoch means it was held across
-    /// an earlier collection without being re-rooted and then **stored into the
-    /// live graph** — the use-after-GC class the per-deref tripwire misses because
-    /// the bad handle is written, not dereferenced. Panics with the
-    /// root→…→containing-cell path so the offending structure (hence the missed
-    /// rooting site) is obvious. O(live); only runs under the env flag. Available in
-    /// release (gated by `gc_verify_enabled`) — see its note.
+    /// epoch of its generation. Between collections every *live* LOCAL handle must be
+    /// current-epoch (survivors are re-minted at the current epoch, new allocations
+    /// use it), so a reachable handle from an older epoch was held across an earlier
+    /// collection without being re-rooted and then **stored into the live graph** —
+    /// the use-after-GC class the per-deref tripwire misses because the bad handle is
+    /// written, not dereferenced. Panics naming the bad handle and the raw handle of
+    /// the cell that holds it (`0` = a root), which with the offending op pinpoints the
+    /// missed rooting site. O(live nursery); only runs under the env flag, in release
+    /// too (see `gc_verify_enabled`).
+    ///
+    /// The walk descends into NURSERY objects only: old objects are immutable after
+    /// tenuring, so their handles are checked where they are reached but their
+    /// contents are not re-walked every collection (that made it O(old) and timed out
+    /// the large-structure tests). The one mutable old object is a `remembered` frame,
+    /// whose bindings are seeded as roots. It does *not* assert no-old→young: the
+    /// `remembered` set legitimately carries such edges until the next minor.
     fn verify_local_graph(&self, extra_roots: &[Value], extra_envs: &[EnvId]) {
-        // Allocation-light: the worklist carries only Copy handles plus the raw
-        // handle of the containing cell (`parent`, `0` = a root). No per-node
-        // `String` paths — this runs at *every* safepoint under GC_STRESS, so it
-        // must not itself churn the heap. On a hit we panic with the bad handle and
-        // its immediate container, which (with the offending op's `expr`) pinpoints
-        // the missed-rooting site.
-        enum W {
-            V(Value, u64),
-            E(EnvId, u64),
+        // The worklist carries Copy handles plus the raw handle of the containing
+        // cell — no per-node paths, since this runs at every safepoint under
+        // GC_STRESS and must not itself churn the heap.
+        enum Pending {
+            Value(Value, u64),
+            Env(EnvId, u64),
         }
-        // Generational: a LOCAL handle is checked against its own generation's
-        // epoch + slab length (nursery via `is_old()==false`, old otherwise). The
-        // seen-sets are `[young, old]` bool vecs per kind (O(1) mark, not a
-        // `HashSet` — this runs every collection under GC_VERIFY, so it must not be
-        // the bottleneck on a large live graph). We do *not* assert the no-old→young
-        // invariant here — the write-barrier `remembered` set legitimately carries
-        // transient old→young edges between a tenure-mid-bind and the next minor —
-        // only that every reachable handle is in-bounds and current for its gen.
+        fn first_visit(seen: &mut [bool], index: usize) -> bool {
+            !std::mem::replace(&mut seen[index], true)
+        }
         // Truncated like `check_epoch_aged` — see `epoch_in_gen_width`.
-        let young_ep = Self::epoch_in_gen_width(self.local_epoch);
-        let old_ep = Self::epoch_in_gen_width(self.old_epoch);
-        let mut seen_pair = [
-            vec![false; self.local.pairs.len()],
-            vec![false; self.old_opt().map_or(0, |o| o.pairs.len())],
-        ];
-        let mut seen_vec = [
-            vec![false; self.local.vectors.len()],
-            vec![false; self.old_opt().map_or(0, |o| o.vectors.len())],
-        ];
-        let mut seen_map = [
-            vec![false; self.local.maps.len()],
-            vec![false; self.old_opt().map_or(0, |o| o.maps.len())],
-        ];
-        let mut seen_clo = [
-            vec![false; self.local.closures.len()],
-            vec![false; self.old_opt().map_or(0, |o| o.closures.len())],
-        ];
-        let mut seen_env = [
-            vec![false; self.local.envs.len()],
-            vec![false; self.old_opt().map_or(0, |o| o.envs.len())],
-        ];
-        let mut work: Vec<W> = Vec::new();
-        for &v in extra_roots {
-            work.push(W::V(v, 0));
-        }
-        for &e in extra_envs {
-            work.push(W::E(e, 0));
-        }
+        let young_epoch = Self::epoch_in_gen_width(self.local_epoch);
+        let old_epoch = Self::epoch_in_gen_width(self.old_epoch);
+        let young = &self.local;
+        let slabs_for = |is_old: bool| if is_old { self.old_opt() } else { Some(young) };
+        // Visited marks for the nursery kinds the walk descends into.
+        let mut seen_pairs = vec![false; young.pairs.len()];
+        let mut seen_vectors = vec![false; young.vectors.len()];
+        let mut seen_maps = vec![false; young.maps.len()];
+        let mut seen_closures = vec![false; young.closures.len()];
+        let mut seen_envs = vec![false; young.envs.len()];
+
+        let mut work: Vec<Pending> = Vec::new();
+        work.extend(extra_roots.iter().map(|&v| Pending::Value(v, 0)));
+        work.extend(extra_envs.iter().map(|&e| Pending::Env(e, 0)));
         // Delivered-message slots (L1) are a root set too — a stale handle parked in
         // one would otherwise surface far away, at the `receive` that finally pops it.
-        for &v in self.msg_roots.iter().flat_map(|t| t.slots.iter()) {
-            work.push(W::V(v, 0));
-        }
-        for &v in self.roots.iter() {
-            work.push(W::V(v, 0));
-        }
-        for &e in &self.env_roots {
-            work.push(W::E(e, 0));
-        }
-        for &(_, v) in &self.dynamics {
-            work.push(W::V(v, 0));
-        }
+        work.extend(
+            self.msg_roots
+                .iter()
+                .flat_map(|slots| slots.slots.iter())
+                .map(|&v| Pending::Value(v, 0)),
+        );
+        work.extend(self.roots.iter().map(|&v| Pending::Value(v, 0)));
+        work.extend(self.env_roots.iter().map(|&e| Pending::Env(e, 0)));
+        work.extend(self.dynamics.iter().map(|&(_, v)| Pending::Value(v, 0)));
         #[cfg(feature = "dev-tools")]
         if let Some(v) = self.trace_context {
-            work.push(W::V(v, 0));
+            work.push(Pending::Value(v, 0));
         }
-        // The write-barrier `remembered` old frames are the *only* mutable old
-        // objects (they gained young bindings after tenuring). Seed their bindings
-        // as roots so a stale handle stored there is still checked, even though the
-        // walk below doesn't recurse into old-gen internals (see the `is_old`
-        // guards): old objects are immutable after promotion, so re-walking them
-        // every collection is redundant work — that redundancy is what made
-        // GC_VERIFY O(old) per collection and timed out the large-structure tests.
-        for &e in &self.remembered {
-            if e.is_old() {
-                if let Some(frame) = self.old_opt().and_then(|o| o.envs.get(e.index())) {
-                    for &(_, v) in &frame.vars {
-                        work.push(W::V(v, e.0));
-                    }
+        for &frame_id in &self.remembered {
+            if frame_id.is_old() {
+                if let Some(frame) = self.old_opt().and_then(|o| o.envs.get(frame_id.index())) {
+                    work.extend(
+                        frame
+                            .vars
+                            .iter()
+                            .map(|&(_, v)| Pending::Value(v, frame_id.0)),
+                    );
                 }
             }
         }
-        let bad =
-            |kind: &str, is_old: bool, gen: u32, idx: usize, len: usize, parent: u64, raw: u64| {
-                let (ep, space) = if is_old {
-                    (old_ep, "OLD")
-                } else {
-                    (young_ep, "nursery")
-                };
-                assert!(
-                    idx < len,
-                    "GC-VERIFY: stored stale {kind} handle OUT OF BOUNDS ({space} slot {idx} \
-                 ≥ slab len {len}); handle {raw:#x} held in container {parent:#x}. \
+
+        let check = |kind: &str,
+                     is_old: bool,
+                     generation: u32,
+                     index: usize,
+                     length: usize,
+                     parent: u64,
+                     raw: u64| {
+            let (epoch, space) = if is_old {
+                (old_epoch, "OLD")
+            } else {
+                (young_epoch, "nursery")
+            };
+            assert!(
+                index < length,
+                "GC-VERIFY: stored stale {kind} handle OUT OF BOUNDS ({space} slot {index} \
+                 ≥ slab len {length}); handle {raw:#x} held in container {parent:#x}. \
                  A handle was kept across a collection without re-rooting, then \
                  written into the live graph — use-after-GC.",
-                );
-                assert!(
-                gen == ep,
-                "GC-VERIFY: stored stale {kind} handle from epoch {gen}, {space} generation is \
-                 now epoch {ep} (slot {idx}, handle {raw:#x}); held in container \
-                 {parent:#x}. That cell holds a handle kept across a collection \
+            );
+            assert!(
+                generation == epoch,
+                "GC-VERIFY: stored stale {kind} handle from epoch {generation}, {space} \
+                 generation is now epoch {epoch} (slot {index}, handle {raw:#x}); held in \
+                 container {parent:#x}. That cell holds a handle kept across a collection \
                  without re-rooting — use-after-GC at the op that built it.",
             );
-            };
-        // Routed slab views: young vs old by the handle's age bit.
-        while let Some(w) = work.pop() {
-            match w {
-                W::V(v, parent) => match v.unpack() {
-                    ValueRef::Pair(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "pair",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.pairs.len(),
-                            parent,
-                            id.0,
-                        );
-                        if !id.is_old()
-                            && !std::mem::replace(
-                                &mut seen_pair[id.is_old() as usize][id.index()],
-                                true,
-                            )
-                        {
-                            let (a, b) = slabs.pairs[id.index()];
-                            work.push(W::V(a, id.0));
-                            work.push(W::V(b, id.0));
-                        }
-                    }
-                    ValueRef::Vector(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "vector",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.vectors.len(),
-                            parent,
-                            id.0,
-                        );
-                        if !id.is_old()
-                            && !std::mem::replace(
-                                &mut seen_vec[id.is_old() as usize][id.index()],
-                                true,
-                            )
-                        {
-                            for &el in slabs.vectors[id.index()].iter() {
-                                work.push(W::V(el, id.0));
-                            }
-                        }
-                    }
-                    // A range's backing vector holds only ints — validate the
-                    // handle itself (bounds + epoch), nothing to descend into.
-                    ValueRef::Range(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "range",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.vectors.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    // A seq-view's backing `[source xform]` holds heap values, so
-                    // validate the handle then descend into them — same as a
-                    // vector (it shares the vectors slab, so it dedups via
-                    // `seen_vec`).
-                    ValueRef::SeqView(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "seq-view",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.vectors.len(),
-                            parent,
-                            id.0,
-                        );
-                        if !id.is_old()
-                            && !std::mem::replace(
-                                &mut seen_vec[id.is_old() as usize][id.index()],
-                                true,
-                            )
-                        {
-                            for &el in slabs.vectors[id.index()].iter() {
-                                work.push(W::V(el, id.0));
-                            }
-                        }
-                    }
-                    ValueRef::Map(id) | ValueRef::Set(id) | ValueRef::Failure(id)
-                        if id.region() == LOCAL =>
-                    {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "map",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.maps.len(),
-                            parent,
-                            id.0,
-                        );
-                        if !id.is_old()
-                            && !std::mem::replace(
-                                &mut seen_map[id.is_old() as usize][id.index()],
-                                true,
-                            )
-                        {
-                            let node = &slabs.maps[id.index()];
-                            for &(mk, mv) in &node.data {
-                                work.push(W::V(mk, id.0));
-                                work.push(W::V(mv, id.0));
-                            }
-                            for &c in &node.children {
-                                work.push(W::V(Value::map(c), id.0));
-                            }
-                        }
-                    }
-                    ValueRef::Str(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "string",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.strings.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::BigInt(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "bigint",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.bigints.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::Decimal(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "decimal",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.decimals.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::Ratio(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "ratio",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.ratios.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::Bytes(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "bytes",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.bytes.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::Rope(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "rope",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.ropes.len(),
-                            parent,
-                            id.0,
-                        );
-                    }
-                    ValueRef::Fn(id) | ValueRef::Macro(id) if id.region() == LOCAL => {
-                        let Some(slabs) = (if id.is_old() {
-                            self.old_opt()
-                        } else {
-                            Some(&self.local)
-                        }) else {
-                            continue;
-                        };
-                        bad(
-                            "closure",
-                            id.is_old(),
-                            id.generation(),
-                            id.index(),
-                            slabs.closures.len(),
-                            parent,
-                            id.0,
-                        );
-                        if !id.is_old()
-                            && !std::mem::replace(
-                                &mut seen_clo[id.is_old() as usize][id.index()],
-                                true,
-                            )
-                        {
-                            let cl = &slabs.closures[id.index()];
-                            for arm in cl.arms.iter() {
-                                for &f in &arm.body {
-                                    work.push(W::V(f, id.0));
-                                }
-                                for &(_, d) in &arm.optionals {
-                                    work.push(W::V(d, id.0));
-                                }
-                            }
-                            if let Some(e) = cl.env {
-                                work.push(W::E(e, id.0));
-                            }
-                        }
-                    }
-                    _ => {}
-                },
-                W::E(e, parent) => {
-                    if e == EnvId::GLOBAL || e.region() != LOCAL {
+        };
+
+        while let Some(item) = work.pop() {
+            let (value, parent) = match item {
+                Pending::Env(env, parent) => {
+                    if env == EnvId::GLOBAL || env.region() != LOCAL {
                         continue;
                     }
-                    let slabs = if e.is_old() { self.old() } else { &self.local };
-                    bad(
+                    let Some(slabs) = slabs_for(env.is_old()) else {
+                        continue;
+                    };
+                    check(
                         "env",
-                        e.is_old(),
-                        e.generation(),
-                        e.index(),
+                        env.is_old(),
+                        env.generation(),
+                        env.index(),
                         slabs.envs.len(),
                         parent,
-                        e.0,
+                        env.0,
                     );
-                    if !e.is_old()
-                        && !std::mem::replace(&mut seen_env[e.is_old() as usize][e.index()], true)
-                    {
-                        let frame = &slabs.envs[e.index()];
-                        if let Some(p) = frame.parent {
-                            work.push(W::E(p, e.0));
+                    if !env.is_old() && first_visit(&mut seen_envs, env.index()) {
+                        let frame = &young.envs[env.index()];
+                        if let Some(enclosing) = frame.parent {
+                            work.push(Pending::Env(enclosing, env.0));
                         }
-                        for &(_, val) in &frame.vars {
-                            work.push(W::V(val, e.0));
-                        }
+                        work.extend(frame.vars.iter().map(|&(_, v)| Pending::Value(v, env.0)));
+                    }
+                    continue;
+                }
+                Pending::Value(value, parent) => (value, parent),
+            };
+            // Every LOCAL heap kind: (kind name, age, epoch, index, raw handle, its slab).
+            type SlabLength = fn(&Slabs) -> usize;
+            let (kind, is_old, generation, index, raw, slab_length): (
+                &str,
+                bool,
+                u32,
+                usize,
+                u64,
+                SlabLength,
+            ) = match value.unpack() {
+                ValueRef::Pair(id) if id.region() == LOCAL => (
+                    "pair",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.pairs.len(),
+                ),
+                ValueRef::Vector(id) if id.region() == LOCAL => (
+                    "vector",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.vectors.len(),
+                ),
+                ValueRef::Range(id) if id.region() == LOCAL => (
+                    "range",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.vectors.len(),
+                ),
+                ValueRef::SeqView(id) if id.region() == LOCAL => (
+                    "seq-view",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.vectors.len(),
+                ),
+                ValueRef::Map(id) | ValueRef::Set(id) | ValueRef::Failure(id)
+                    if id.region() == LOCAL =>
+                {
+                    ("map", id.is_old(), id.generation(), id.index(), id.0, |s| {
+                        s.maps.len()
+                    })
+                }
+                ValueRef::Str(id) if id.region() == LOCAL => (
+                    "string",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.strings.len(),
+                ),
+                ValueRef::BigInt(id) if id.region() == LOCAL => (
+                    "bigint",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.bigints.len(),
+                ),
+                ValueRef::Decimal(id) if id.region() == LOCAL => (
+                    "decimal",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.decimals.len(),
+                ),
+                ValueRef::Ratio(id) if id.region() == LOCAL => (
+                    "ratio",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.ratios.len(),
+                ),
+                ValueRef::Bytes(id) if id.region() == LOCAL => (
+                    "bytes",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.bytes.len(),
+                ),
+                ValueRef::Rope(id) if id.region() == LOCAL => (
+                    "rope",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.ropes.len(),
+                ),
+                ValueRef::Fn(id) | ValueRef::Macro(id) if id.region() == LOCAL => (
+                    "closure",
+                    id.is_old(),
+                    id.generation(),
+                    id.index(),
+                    id.0,
+                    |s| s.closures.len(),
+                ),
+                _ => continue,
+            };
+            let Some(slabs) = slabs_for(is_old) else {
+                continue;
+            };
+            check(
+                kind,
+                is_old,
+                generation,
+                index,
+                slab_length(slabs),
+                parent,
+                raw,
+            );
+            if is_old {
+                continue;
+            }
+            // Descend into the nursery kinds that hold heap values. A range's backing
+            // vector holds only ints; a seq-view's `[source xform]` shares the vectors
+            // slab and its marks.
+            match value.unpack() {
+                ValueRef::Pair(_) if first_visit(&mut seen_pairs, index) => {
+                    let (car, cdr) = young.pairs[index];
+                    work.push(Pending::Value(car, raw));
+                    work.push(Pending::Value(cdr, raw));
+                }
+                ValueRef::Vector(_) | ValueRef::SeqView(_)
+                    if first_visit(&mut seen_vectors, index) =>
+                {
+                    work.extend(young.vectors[index].iter().map(|&v| Pending::Value(v, raw)));
+                }
+                ValueRef::Map(_) | ValueRef::Set(_) | ValueRef::Failure(_)
+                    if first_visit(&mut seen_maps, index) =>
+                {
+                    let node = &young.maps[index];
+                    for &(key, entry) in &node.data {
+                        work.push(Pending::Value(key, raw));
+                        work.push(Pending::Value(entry, raw));
+                    }
+                    work.extend(
+                        node.children
+                            .iter()
+                            .map(|&child| Pending::Value(Value::map(child), raw)),
+                    );
+                }
+                ValueRef::Fn(_) | ValueRef::Macro(_) if first_visit(&mut seen_closures, index) => {
+                    let closure = &young.closures[index];
+                    for arm in closure.arms.iter() {
+                        work.extend(arm.body.iter().map(|&form| Pending::Value(form, raw)));
+                        work.extend(
+                            arm.optionals
+                                .iter()
+                                .map(|&(_, default)| Pending::Value(default, raw)),
+                        );
+                    }
+                    if let Some(env) = closure.env {
+                        work.push(Pending::Env(env, raw));
                     }
                 }
+                _ => {}
             }
         }
     }
@@ -954,7 +793,7 @@ impl Heap {
 
     /// Overwrite the operand-stack slot at `i` (the VM uses this to write a
     /// computed `let` binding into its frame slot — ADR-076 Stage 2). The slot is
-    /// already a tracked root, so the value is relocated by `arena_flip` like any
+    /// already a tracked root, so the value is relocated by every collection like any
     /// other; writing it is a plain `Vec` store.
     pub fn set_root_at(&mut self, i: usize, v: Value) {
         self.roots[i] = v;

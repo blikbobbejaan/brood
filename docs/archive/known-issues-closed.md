@@ -1,0 +1,13092 @@
+# Known issues — closed entries
+
+The full `## KI-N` sections for every closed issue: symptom, cause, why it survived, fix and
+guard. The index, the filing rules and any open entry live in [known-issues.md](../known-issues.md).
+
+---
+
+## KI-102 — `tcp/set-binary` on an accepted socket is racy ✅ fixed 2026-09-02
+
+**Symptom.** `breakage/chaos2_tcp_stress.blsp` P38 ("binary mode round-trip") failed in CI:
+
+```
+=== P38: binary mode round-trip ===
+P38: payload length: 256
+P38: echo length: 512
+P38-correct: false
+```
+
+Intermittent — CI run 33563774646 red on a commit whose code was **byte-identical** to the
+run before it, which was green. Not reproducible on an idle box (0/40); reproduced **2/30**
+under `taskset -c 0,1` with eight spinners running, i.e. CI's loaded two-core shape.
+
+**Cause.** Not a framing or doubling bug in the wire path. An instrumented repro reporting
+what the *server* saw gave `[256 :string]` — the socket delivered the payload as TEXT
+despite `(tcp/set-binary client true)` having been called before the `receive`.
+
+An accepted socket is **already reading** by the time its owner is handed
+`[:tcp-accept …]`; `set_binary` is documented to take effect "for the next inbound chunk",
+so a client that sends the moment it connects can have its first chunk read and decoded
+before the call lands. The lossy UTF-8 decode of bytes 0x00–0xFF gives 128 ASCII characters
+plus 128 U+FFFD; echoing that *string* re-encodes it as UTF-8 at 1 and 3 bytes respectively
+— 128 + 384 = **512**. The number in the failure message is the whole diagnosis, once you
+know where it comes from.
+
+There was no way to write a correct binary server: `set_binary` explicitly rejected a
+listener, and on a stream it was always one scheduling decision too late.
+
+**Why it survived.** The race needs the client's first chunk to arrive inside the window
+between `accept` and the owner's `set-binary` — a scheduler outcome that essentially never
+happens on an idle multi-core box, which is where the suite is normally run. `tests/tcp_test.blsp`
+had no case for it at all, and every existing binary-mode test does its `set-binary` before
+any data is sent, so they close the window by accident. The breakage suite caught it only
+because it is the one place a client sends immediately on connect, and only on a loaded
+two-core runner.
+
+**Fix.** A listener's binary mode is now **inherited** by every socket it accepts
+(`crates/lisp/src/net.rs`: `accept_ready` seeds the accepted socket's flag from the
+listener's; `set_binary` accepts a listener instead of erroring). The listener's mode is
+fixed before any connection exists, so there is no window. This is
+`gen_tcp:listen(Port, [binary])`'s shape. A stream may still switch mode afterwards —
+inheritance only decides where it *starts*. P38 was updated to set the mode on its listener;
+0/40 failures under the load that produced 2/30 before.
+
+**Guard.** `tests/tcp_test.blsp`, two cases: "a listener's binary mode is inherited by the
+sockets it accepts" — where the server **never** calls `set-binary` on the stream, so
+without inheritance the payload deterministically arrives as `:string` — and its inverse, "a
+listener that was not set binary still accepts text-mode sockets", so the fix cannot be a
+blanket "everything is binary now". **Sabotage-verified**: with `accept_ready` changed to
+ignore the listener's flag, the first case fails (`a listener's binary mode is inherited by
+the sockets it accepts`) and the inverse still passes. Deterministic in both directions
+rather than a timing hope, which the original P38 was.
+
+## KI-100 — a ~5-6% compute regression: two clean branches, a slow merge ✅ RESOLVED AS FILED 2026-09-04
+
+> **Resolution 2026-09-04.** The entry's own closing instruction was "re-baseline before
+> continuing" — against the 0.19.1 column, not against HEAD. Done, against `8a2aaa01` itself,
+> with `make ab --floor` (interleaved, pinned, best-of-7) and the stdlib image `:live` on both
+> arms after the harness twice refused an asymmetric pair: `startup` **−18.2%** (0.0% floor),
+> `sort` −7.6%, `fib` −4.2%, `bintree` −2.9%, `collatz` +0.3%, `nbody` +4.6% inside a 3.5%
+> floor. The published "every compute row 4–10% slower" no longer describes the runtime, and
+> component 1 — the fixed per-run cost that produced most of it at short sizes — is reversed,
+> by ADR-313 (the lazy crash reporter) and ADR-314 (the prelude image, default-on tonight).
+>
+> **What remains is one row, and it is this entry's mechanism.** `mandelbrot` +3.0% against a
+> 0.2% floor — under the 5% verdict line, fifteen floor-multiples, and the same ~3% the
+> re-baseline table above already isolated as genuine steady state. `perf stat`, pinned, 3 reps
+> a side: instructions **+1.8%**, cycles **+2.6%**, L1-icache-load-misses **+52%** (51.3 M →
+> 78.3 M), iTLB-load-misses **−18%**. Same work, more instruction-fetch stalls — the footprint
+> face of the two this entry described, with the iTLB confirming the huge-page lever is still
+> not the handle. Split out as **KI-109** so it is tracked as what it is: a 3% steady-state
+> code-footprint cost on one row, not a suite-wide regression.
+>
+> `json` — the other face, "+23% instructions", already recorded as gone at HEAD — could not be
+> re-measured against the old binary: the benchmark program now uses ADR-307's argument order
+> and fails on 0.19.1 (`empty?: expected collection, got fn`). The harness reports a baseline
+> program that exits non-zero as broken rather than slow, which is the right refusal.
+
+
+**Symptom.** Refreshing the benchmark suite's Brood column at 0.22.0 (last measured at
+0.19.1, `8a2aaa01`) found **every compute row 4-10% slower**, with checksums unchanged on
+every row — the programs compute exactly what they did, only time moved.
+
+**Bisected, 2026-09-01: the first bad commit is the MERGE `0f57e30b`, and both of its
+parents are fast.**
+
+| commit | what | mandelbrot vs a fixed reference |
+|---|---|---|
+| `2dc7d2e6` | ADR-302 data-first (the branch tip) | ratio **1.016 — good** |
+| `25a558d4` | mainline (carries §7.5 JIT increments 1-3) | ratio **0.992 — good** |
+| `0f57e30b` | **the merge of those two** | ratio **1.061 — BAD**, reproducible |
+
+So neither side is slow on its own; the combination is. `git bisect run` over the window
+found it (probe below), and the merge was re-probed to be sure.
+
+**What the merge actually changes.** `git diff 2dc7d2e6 0f57e30b -- std/` is **empty** — the
+std tree is identical across it. The whole delta is kernel-side: the mainline brought
+`115faead` (RootsBuf — `Heap.roots` from `Vec<Value>` to a `#[repr(C)]` buffer with
+(ptr,len,cap) at fixed offsets), `f832928f` (`BROOD_XCALL`, opt-in) and `3dc971d4` (hot
+re-lowering, default ON). Read the other way: **ADR-302's std is fast on the old kernel and
+the new kernel is fast on the old std; only ADR-302's std running on the new kernel is slow.**
+
+**Decomposition** (mandelbrot at `BENCH_N=1400`, min of 11, all interleaved against the
+same reference binary `2c822875`; synthetic merges built to order):
+
+| tree | ratio |
+|---|---|
+| `2dc7d2e6` — ADR-302's std alone | 1.021 |
+| ADR-302 + mainline **without** §7.5 | 1.030 |
+| ADR-302 + **RootsBuf only** (`115faead`) | **1.052** |
+| ADR-302 + all of §7.5 (the real merge) | **1.080** |
+| `25a558d4` — §7.5 **without** ADR-302's std | 0.992 |
+
+Read down the column: **§7.5 costs ~5 points on ADR-302's std and nothing at all on the old
+std** (0.992). `115faead` (RootsBuf) reproduces about half of that on its own, so it is a
+confirmed contributor rather than the whole story. The remaining split between increments 2
+and 3 is ~2 points against ~1% run-to-run noise, so it is **not** resolved — and note it sits
+awkwardly with `BROOD_NO_XCALL=1` (increment 3's off-switch) failing to close the gap. Do not
+build on that last split without more samples.
+
+**Narrowing so far.**
+- **Increment 3 is excluded**: `BROOD_NO_XCALL=1` does not close the gap (ratio 1.0595 with
+  it set vs 1.0570 without). `BROOD_NO_INLINE=1` does not either (1.0548).
+- **It is NOT JIT-specific**, which corrects this entry's first draft: on *this pair* the gap
+  is **1.046 at tier 1** and 1.064 at tier 2. The earlier "tier 1 is flat" reading compared a
+  different, confounded pair (an old commit against the current tree). A tier-1 signal rules
+  out codegen and points at something the VM path also pays — which is what makes
+  **`115faead` (RootsBuf)** the standing suspect: the GC root stack is used at every tier.
+- The merge inherits ADR-302's much larger lowering volume (160 arms lowered vs 88 on the
+  mainline side), so a plausible shape is "the new root-stack representation costs more per
+  frame, and ADR-302's std pushes many more frames" — unverified.
+
+**MECHANISM FOUND 2026-09-01: instruction-fetch pressure, not work.** `perf stat` on the
+culprit pair (mandelbrot, `BENCH_N=1400`):
+
+| metric | `2dc7d2e6` (good) | `0f57e30b` (bad) | delta |
+|---|---|---|---|
+| instructions | 18.01 G | 18.24 G | **+1.25%** |
+| cycles | 6.12 G | 6.41 G | **+4.7%** |
+| L1-icache-load-misses | 12.3 M | 18.2 M | **+47.7%** |
+| iTLB-load-misses | 76 K | 149 K | **+96%** |
+| L1-dcache-load-misses | 5.57 M | 5.60 M | +0.5% (flat) |
+
+So the binary is not doing meaningfully more *work* (+1.25% instructions) — it is **stalling
+on instruction fetch**. IPC drops 2.94 → 2.85. Data cache is untouched, which rules out the
+obvious "worse data layout" reading.
+
+Three independent confirmations:
+- **Monotonic across three trees.** icache 12.5 M → 16.1 M → 19.0 M and iTLB 77 K → 117 K →
+  155 K for good → synthetic-without-§7.5 → the real merge, matching their 1.021 / 1.030 /
+  1.080 ratios. Instructions over the same three are 16.7 / 18.0 / 17.0 G — not monotonic,
+  which is the point.
+- **A small-footprint row is completely unaffected**: `fib` measures **1.0010** on the same
+  pair where mandelbrot measures 1.0548. Exactly what a footprint effect predicts and what a
+  per-operation cost would not.
+- **The growth is in RUNTIME-emitted code, not the kernel.** Both binaries are the same size
+  (34.06 vs 34.08 MB) and lower the same number of arms (158 vs 159 — `std/` is identical
+  between them), so what grew is the machine code emitted *per arm*.
+
+**Why it needs both halves, finally explained.** §7.5 emits more machine code per JIT'd arm;
+ADR-302's std causes roughly **twice as many arms to lower** (158 vs 76 on the old std). The
+old std's 76 fatter arms still fit; ADR-302's 158 do not, and the working set spills out of
+the L1 icache and the iTLB. Neither change crosses the threshold alone, which is exactly why
+both parents measure clean.
+
+**Refined 2026-09-01 — and the first fix direction was WRONG.** Huge pages are *not* worth
+doing. THP on this box is in `madvise` mode, so JIT code really does get 4 KiB pages and the
+lever is genuinely available — but the arithmetic kills it: the iTLB delta is ~73 K extra
+misses at ~20-30 cycles ≈ **1.5-2 M cycles, under 1%** of the 288 M-cycle delta. Huge pages
+reduce iTLB misses, not icache footprint, so the measurable win would be noise. **The iTLB
+doubling is a symptom of the footprint, not a cost worth attacking.** The icache delta by
+contrast is ~5.9 M extra misses at ~15-20 cycles ≈ **88-118 M cycles, 30-40%** of the delta.
+
+**The mechanism has two faces, and `json` shows the clearer one.** Per-row, same pair:
+
+| row | instructions | icache misses | ratio |
+|---|---|---|---|
+| `json` | **+23%** | +5% | **1.095** |
+| `mandelbrot` | +1.25% | **+48%** | 1.059 |
+| `fib` / `collatz` / `sort` | — | — | 0.99 / 1.00 / 1.00 (flat) |
+
+So §7.5 adds **real per-operation work** where rooting is frequent (`json` parses and
+allocates heavily: +23% instructions, confirmed stable over repeats, and the
+without-§7.5 synthetic sits with the good binary at 2.38 G) and **code-footprint** cost where
+many arms carry the inlined root handling (`mandelbrot`: instructions flat, icache +48%).
+Both are the same underlying change — RootsBuf's root-stack manipulation being larger and
+inlined — seen through two different workload shapes.
+
+**Not every row regresses**, which the published-column summary obscures: `fib`, `collatz`
+and `sort` are flat-to-faster between these two commits despite lowering the same number of
+arms (161-167). Arm *count* is not the predictor; the size of the **hot working set** and
+the **rooting rate** are.
+
+**Fix direction (corrected).** Reduce the work and the code the root handling costs per arm
+— that is the single lever behind both faces. **Iterate on `json`, not `mandelbrot`**: its
+signal is *instruction count*, which is nearly noise-free (±0.1% over repeats) where wall
+time on this box needs min-of-3 interleaved runs to mean anything. `BROOD_NO_XCALL=1` does
+not help, so this is not the deferred re-lowering ceremony; `115faead` (RootsBuf) is the
+commit to read.
+
+**RE-BASELINED AT HEAD 2026-09-01 — the shape is different from the historical pair, and
+most of it is a FIXED per-run cost.** Everything above bisects where the regression
+*entered* (`0f57e30b`, v0.20-era). Measured against the published baseline at **current
+HEAD** (v0.23.x) it has moved, so work the numbers below, not the ones above:
+
+| row | N | old | HEAD | ratio | absolute Δ |
+|---|---|---|---|---|---|
+| `startup` | — | 25.9 ms | 30.0 ms | 1.159 | **+4.1 ms** |
+| `json` | 4 | 37.3 | 42.2 | 1.132 | +4.9 ms |
+| `json` | default | 132.9 | 144.6 | 1.087 | +11.6 ms |
+| `bintree` | 14 | 47.7 | 59.5 | 1.246 | +11.8 ms |
+| `bintree` | 200 (default) | 105.7 | 115.7 | 1.095 | +10.0 ms |
+| `bintree` | 1500 | 495.6 | 509.0 | **1.027** | +13.4 ms |
+| `mandelbrot` | 540 | 208.8 | 226.0 | 1.082 | +17.2 ms |
+| `mandelbrot` | 1400 | 1203.3 | 1243.4 | 1.033 | +40.1 ms |
+| `mandelbrot` | 3000 | 5386.7 | 5567.9 | **1.034** | +181.2 ms |
+
+Two components, and conflating them is what made this look like one big compute regression:
+
+1. **A fixed per-run cost.** `startup` alone is **+4.1 ms** with no workload at all, and
+   `bintree`'s delta is a flat ~10-13 ms whatever `N` is — its ratio decays 1.246 → 1.095 →
+   1.027 purely by amortization. The profile says where: HEAD spends visible time in
+   cranelift's `Verifier` (1.71%) and `regalloc2` (1.40%) on the `brood-jit` thread that the
+   baseline's top-10 does not show — **more/fatter JIT compilation per run**, plus the boot
+   growth already noted. This dominates the published column because the suite runs rows at
+   short default sizes, so a ~10 ms constant reads as 5-10% of wall.
+2. **A genuine steady-state cost, and only on some rows.** `mandelbrot` holds **~1.033-1.034
+   at both N=1400 and N=3000** — it scales with work, so it is real throughput, matching the
+   icache finding. `bintree` at N=1500 is 1.027 and still falling, i.e. mostly component 1.
+
+**What this changes.** "Every compute row 4-10% slower" (the published column) is largely
+**one fixed cost measured at short sizes**, not a broad throughput loss. That cost is still
+worth fixing — this runtime explicitly cares about short-lived work (`nest check`, a
+one-shot script, a request handler) — but it is a different fix from the ~3.4% on
+`mandelbrot`, and it should be reported separately rather than as one number.
+
+**Also corrected: `json`'s +23% instructions is gone at HEAD.** `BROOD_NO_XCALL=1` closed it
+on the historical pair, and on HEAD the lever now makes no difference on `json` (2.27 vs
+2.26 G) while still *earning* 13.9% on `bintree`. Something between v0.20 and v0.23 fixed
+that half. Do not start from the historical analysis.
+
+**A measurement trap recorded with it:** the first `json` instruction reading of the
+without-§7.5 synthetic came back 3.76 G — higher than either endpoint — and would have been
+recorded as "non-monotonic, therefore two unrelated mechanisms". Two repeats put it at
+2.40/2.39 G, in line with the good binary. One `perf stat` run is a sample, not a
+measurement, even for instruction counts.
+
+**Superseded next step** (kept for the record): why does the new root-stack representation
+cost ~2% *only* when ADR-302's std is what is running? The merge inherits ADR-302's much
+larger lowering volume (160 arms vs 88) and presumably a different frame/rooting profile, so
+"more frames pushed through a costlier root stack" is the shape to test — `perf stat` on the
+two binaries, or the `ns_*` counters under `--features perf-stats`. Then account for the
+~2 points that RootsBuf does not explain.
+
+**PARTIAL FIX 2026-09-01 (ADR-313), from the other end.** Component 1 — the fixed per-run
+cost — is substantially the *default crash reporter's require closure*, not only cranelift.
+`crash-report/arm-default` lived inside the module, so arming it loaded ten std modules on
+every `brood file` run: **9.0 ms of ~24 ms**. Arming now happens in the prelude and the
+reporter loads on the first crash. Beyond the startup saving this cuts **~13% of JIT-lowered
+arms** (bintree 108 → 94, fib 95 → 84, startup 10 → 6), which is this entry's own icache /
+arm-count mechanism — so it moves component 2 as well: `ab-bench --floor --all` vs
+`5669890d` reads `startup` −11.8%, `spawn` −11.8%, `bintree` −11.3%, `primes` −8.4%,
+`nqueens` −7.4%, `matmul` −5.8%, `fib` −5.7%, nothing regressed. **This entry stays OPEN**:
+the measurement above is against HEAD, not against the 0.19.1 baseline the published column
+carries, so how much of the original 4–10% remains is an open question until the column is
+re-measured. Re-baseline before continuing, and note that the remaining `mandelbrot`
+steady-state ~3.4% is a different fix from the per-run constant.
+
+**FURTHER 2026-09-02 — ADR-314, and a clean sighting of this entry's mechanism in both
+directions.** The prelude image (boot 9.36 → 5.32 ms) removes more of component 1's fixed
+per-run cost. Measured against `5669890d` with `ab-bench --floor`, the session's three
+changes together give `spawn` −15.9%, `reduce` −16.7%, `loop` −11.2%, `fib` −10.5%,
+`strings` −9.6%, `sort` −6.8%, `pingpong` −3.3%.
+
+`ring` is the one row that moved the other way, **+2.9% against a 0.6% floor**, agreed by
+three independent measurements — and `perf stat` says it is this entry's mechanism, not new
+work:
+
+| metric | `5669890d` | HEAD | delta |
+|---|---|---|---|
+| instructions | 7.738 G | 7.646 G | **flat / slightly fewer** |
+| cycles | 4.067 G | 4.418 G | **+5%** |
+| L1-icache-load-misses | 246 M | 269 M | **+11%** |
+| lowered arms | 160 | 150 | **−10** |
+
+Same instructions, more stalls. Note the arm count went **down** while icache misses went
+**up**, which is the sharpest confirmation yet of this entry's own conclusion that *arm count
+is not the predictor* — loading nine fewer modules changes which arms exist and how the
+shared region is laid out, and `ring`'s hot working set happens to span it worse while
+`pingpong`'s spans it better. Not pursued: it is sub-threshold, one-sided, and the huge-page
+lever this entry already priced out is the only obvious handle on layout.
+
+**Reproducing.** The harness is left in `target/ki100/` (gitignored): `probe.sh` is a
+`git bisect run` probe, `measure.sh` the raw timer, `bin/` the built binaries. The
+discriminator is a **ratio against a fixed reference binary, measured interleaved** — not an
+absolute time, because this box's governor wanders between turbo plateaus and an absolute
+threshold bisects the governor instead of the code. `BENCH_N=1400` so compute dominates and
+the separate boot effect (below) stays under 1%; `BROOD_NO_STDIMAGE=1` on every candidate for
+symmetry, which also avoids a per-worktree `nest` + image build.
+
+**A second, separate effect: boot +2.8 ms (+14.5%).** It tracks the stdlib growing (startup
+image 5199 -> 5332 bindings) and is best read as feature cost, not a defect. It is excluded
+from the measurement above by the large `BENCH_N`.
+
+**How it was verified before being believed** (the box makes a single number worthless):
+min-of-3 interleaved harness invocations; build-parity `make ab` (mandelbrot **+8.1% against
+a 0.9% floor**, solo at N=11); an **unpinned** re-run (**+6.8%**), because `make ab` pins to
+one core and the new binary lowers *more* arms, exactly the confound CLAUDE.md warns of; and
+an output check — every binary prints checksum `6129302`, so the arms do equal work.
+
+**Why nobody saw it for three releases.** Nothing in the benchmarks repo measures timing
+except a hand-run harness; its daily gate proves the rows *run* and that checksums *agree*,
+and both stayed green throughout. Hardening landed there: `bench/staleness.py` compares the
+commit the published column was measured at against the binary under test and fails on a
+version boundary (sabotage-verified). It measures nothing deliberately — a timing gate on a
+shared CI runner cannot separate a 7% regression from a turbo plateau, and a gate that cries
+wolf gets ignored.
+
+**A trap worth keeping.** `git log A..B` orders by date, not topology: `2dc7d2e6` appears
+inside the window while being an ancestor of *neither* endpoint measured earlier, so reading
+that list as a bisect order wrongly "excluded" ADR-302 — which turned out to be half the
+interaction. Check `git merge-base --is-ancestor` before reasoning about a range with merges
+in it, and bisect with `git bisect`, which understands the graph.
+
+## KI-101 — the distributed chaos harnesses were dead, and said "crash" ✅ FIXED 2026-09-01
+
+**Symptom.** `scripts/fuzz/dist_chaos.sh` reported `crashed=1` with `n0..n9 exit=1 (CRASH?)`
+on every run — for months. Nothing was crashing. Every node was failing to *start*:
+
+```
+n0.blsp:1:1: unbound error: unbound symbol: node-start
+```
+
+**Why nothing caught it.** Both harnesses build their node programs as **shell heredocs**,
+so they are invisible to `nest check`, to `make check-corpora` (which scans `.blsp` files in
+`examples/ stress/ fuzz-stress/ breakage/`) and to every other gate. The v0.9/v0.10
+namespacing waves renamed `node-start`→`node/start`, `register`→`proc/register`,
+`nodes`→`node/list`, `connect`→`node/connect` and `start-remote-spawn`→`node/serve-spawns`;
+later `each` became a reserved stdlib name and broke the sibling a second time. This is
+KI-42/KI-44's class exactly, in a directory those entries did not reach.
+
+**The part that makes it worse than simply not running:** the failure *presented as a
+finding*. `exit=1` is not in the script's expected set (`0|137|143`), so it printed `CRASH?`
+and set `crashed=1` — a stability harness confidently reporting a runtime crash that never
+happened. A dead gate that stays quiet wastes an opportunity; one that cries wolf spends
+someone's afternoon.
+
+**Fix.** Both scripts repaired, their own helpers prefixed `chaos-` so a future stdlib
+addition cannot collide with them again, and both made **self-reporting**: a
+definition-time error attributed to `nN.blsp` prints `HARNESS ROT … this run tested
+NOTHING`, names the error, and exits 2 — instead of blaming the runtime.
+
+Two details worth keeping, each found by the guard misbehaving before it worked:
+- It matches only **definition-time** kinds (`unbound`/`type`/`arity`/`syntax`/`name`),
+  never `runtime error`. This harness kills nodes deliberately, so
+  `connect: Connection refused` is an *expected* outcome; an earlier version matched it and
+  would have reported rot on every healthy run.
+- Its first placement anchored on `for i in $(seq 0 7)`, which in the sibling is the
+  **port-init** loop near the top — so the check ran before any `.err` file existed and
+  silently never fired. It is now anchored to the exit-collection loop.
+
+**With the harnesses actually running, the runtime is clean**: 10-node churn with kill and
+rejoin cycles plus 40 wrong-cookie attackers hammering the seed's handshake, and the
+remote-spawn variant shipping closures across a dying mesh — `crashed=0` on every run.
+
+## KI-99 — a dist handshake EOF'd under full-suite load, so a drop-warning test saw no send ✅ CLOSED 2026-09-03 (the recorded mechanism was the harness probe; the plausible cause is fixed)
+
+> **Resolution 2026-09-03.** The stderr line this entry reads as the cause is **routine**:
+> the harness's `wait_until_listening` is a bare `TcpStream::connect` that is dropped at
+> once, so B's acceptor reads EOF mid-frame and prints
+> `dist: incoming connection failed: failed to fill whole buffer` on **every** run of this
+> test — reproduced with a two-line probe against a lone node. It is only ever *seen* on
+> a failing run, because the assertion message is the only thing that prints B's stderr.
+> So the link between A and B was not shown to have failed, and the reading below is
+> withdrawn. Not reproducible: 27/27 solo, of which 15 under a detached 12-thread CPU
+> hog (load ≈ 7). What *can* make B warn zero times under a full `make test` is a **port
+> collision between concurrently running test processes**: `free_port` sliced its band by
+> `pid % 162`, both processes start at offset 0 of their slice, and a `brood` child burns
+> a pid per thread (~16), so two live test processes sitting exactly 162 pids apart got
+> the *same* first port — the KI-27/KI-38 class, and consistent with a one-in-many
+> full-suite sighting. Fixed in `crates/cli/tests/support/mod.rs`: the slice is now
+> nextest's `NEXTEST_TEST_GLOBAL_SLOT` (unique among tests running at any instant), pid
+> only as the plain-`cargo test` fallback. Guard:
+> `concurrent_nextest_slots_never_share_a_port_slice` in `distribution.rs`,
+> sabotage-verified. If the 0-warnings shape ever recurs, read **A's** stderr (the
+> assertion prints it) before B's.
+
+**Symptom.** In a full `make test`, `cli::distribution
+a_dropped_send_to_an_unregistered_name_warns_once` failed try 1 (passing on try 2):
+`assertion left == right failed: B should warn exactly once for the repeated inbound send
+(dedup)` — B warned **0** times. Its captured stderr names the cause:
+
+```
+--- B stderr ---
+dist: incoming connection failed: failed to fill whole buffer
+```
+
+**Reading.** Not a dedup miscount — the link never came up. `failed to fill whole buffer`
+is a `read_exact` hitting EOF mid-frame during the handshake, so the inbound send that
+should have been dropped-and-warned never reached B at all. Under full-suite load the
+box is running ~nproc test processes plus this test's two nodes.
+
+**Status.** One sighting, retry-absorbed; 6/6 green solo afterwards. Recorded rather than
+chased because the *output was captured this time* (KI-80's standing lesson) and it points
+somewhere specific. If it recurs: the question is why a local handshake EOFs under load.
+`accept_link`'s per-read `SO_RCVTIMEO` and `read_frame_capped` are the code — the same
+pair KI-97 item 1 rewrites for the trickle-DoS deadline, so that fix should re-test this.
+
+## KI-98 — `process_limit_test.blsp:114` timed out under a full `nest test`, twice in five runs ✅ ROOT-CAUSED 2026-09-02 → KI-103
+
+> **Resolution 2026-09-02: this is KI-103**, and the hypothesis below is wrong. The worker
+> is not missing a wake — it is **killed inside `(proc/flag :max-mailbox nil)`**, the call the
+> E0046 hint tells it to make, because every further `send` over the bound re-arms the sticky
+> flag and the handler's next safepoint is in `proc/flag`. So `[:recovered …]` is never sent
+> and the parent times out, exactly as recorded.
+>
+> "Not reproducible on demand" is also no longer true, and the reason it looked that way is
+> instructive: the window is narrow on the VM (~1 in 3 in a minimal repro) and wide on the
+> tree-walker (~3 in 4, it being ~10x slower). `make test-both` should have made that obvious
+> a fortnight ago, but that target ran its two halves as separate recipe lines and aborted
+> after the VM half — so the escape hatch had not been exercised. Fixing the gate is what
+> surfaced this. See KI-103 for the mechanism and the proposed fix.
+
+
+**Symptom.** In a full `nest test`, "proc/flag :max-mailbox › the handler can drain and
+clear the bound — the process recovers" fails with `code = :timeout` after its 30 s
+`after`: the flooded worker (parked on `(:never nil)` with `:max-mailbox 8`, flooded
+with 32) never sent `[:recovered …]`. Two sightings in five full runs on 2026-08-31
+(one on a stale pre-KI-89-fix binary, one on the fixed tree); the sibling cases in the
+same file stayed green.
+
+**What it needs to fail.** The worker's breach flag arms at delivery 9
+(`note_mailbox_bound`); ANY subsequent wake re-enters `receive_match`, whose entry
+check raises the catchable E0046 (`mailbox.rs`, the ADR-307 probe). `:timeout` means
+the worker never re-entered the scan for 30 s with 24+ undelivered messages queued —
+a missed-wake shape (the KI-88 family), or an E0046/drain path that hung.
+
+**Not reproducible on demand:** 16 solo runs of the file green; 10 runs under 8-way
+CPU load green; only the full-suite context shows it. Sighted on a tree carrying the
+KI-91/92 mailbox fixes — those touch the receive scan/consume and the msg-roots slot
+table, not delivery or wake, and a 3-run pre-fix control (worktree at `e569ca4f`)
+didn't fire it — but three runs is not a base rate; neither direction is established.
+
+**If it recurs:** the failing run's log already names the case; the missing fact is
+whether the worker EVER re-entered `receive_match` after the breach armed. Arm
+`BROOD_SCHED_DBG=1` (per-pid run/park/end lines) and keep the whole log — the
+question is one process's lifecycle between its 9th delivery and the timeout.
+
+**Fourth sighting, 2026-08-31 (KI-97 session):** same case, same `:timeout`, in a full
+`make test` on the merged tree — try 1 only, absorbed by the retry, and solo re-run green
+(13/13). Consistent with the established shape; no new information, and no
+`BROOD_SCHED_DBG` armed. Base rate now ~4 in 10 full runs.
+
+**Third sighting, 2026-08-31 (KI-96 session):** the same case, same `:timeout`, under a
+full **tree-walker** suite half (`BROOD_VM=0 cargo nextest run`, 16 GB cap) — first time
+seen at ceiling 0, so it is not VM-specific. Solo re-run under the same cap and engine:
+green (13/13). Still full-suite-context only; no `BROOD_SCHED_DBG` was armed (the run was
+a KI-96 verification pass, not a hunt). Base rate so far: ~3 in 8 full runs across both
+engines.
+
+## KI-91 — `receive`'s consume path removed the matched message by a stale scan index ✅ FIXED 2026-08-31
+
+**Symptom** (constructed — found by a code audit, never observed as a failure): a `receive`
+whose matching clause carries a `:when` guard that runs a *consuming* nested `receive`
+delivers wrongly, silently: the guard's consumption shifts the queue, and the outer
+receive's consume path then `queue.remove(*i)`s by the pre-shift index — deleting a
+**neighbouring** message (lost, and for an L1 `Payload::Local` its msg-roots slot is
+wrongly freed) while the **matched** message stays queued and is delivered again by the
+next receive. A second shape from the same root: after a *peeked* non-match whose guard
+consumed entries ahead of the cursor, `*i += 1` skipped an unexamined message, so a
+matchable message read as absent until two more arrivals.
+
+**Cause.** The matcher runs with the mailbox lock RELEASED (deliberately — the deep copy
+must not stall senders), and the scan identified its candidate by queue *position* across
+that window. The soundness comment claimed "only the owner removes from its own mailbox,
+so `*i` is stable" — refuted by the owner itself: a guard's consuming nested receive.
+`reinsert_at_seq` (2026-07-31) had already documented and fixed exactly this hazard for
+the NON-match re-insert path; the match path and the cursor advance still trusted the
+index.
+
+**Why it survived.** Every receive test's guards are pure except `mailbox_order_test.blsp`
+— and that one *declines* its clause, so only the (already fixed) non-match path was ever
+exercised. The match-path bug needs match + shift in the same scan, which no test built.
+
+**Fix** (`process/mailbox.rs`): a candidate's identity is its arrival `seq`, never its
+index. The consume path re-identifies by seq (O(1) fast path when unshifted, else a
+binary search over the seq-ordered queue; `None` — the guard consumed the candidate
+itself — removes nothing), and each scan-loop top re-anchors `*i` against the last
+examined seq (same fast-path-then-search shape as `reinsert_at_seq`).
+
+**Guard.** `tests/receive_consume_test.blsp` "a matched candidate is removed by seq, not
+by the stale scan index". **Sabotage-verified**: with the consume path reverted to
+`remove(*i)`, it fails `actual: [:dup 1]` (duplicate delivery) and the `[:tail n]` sweep
+loses `2` (the neighbour the stale index removed).
+
+## KI-92 — an L1-delivered `nil` message aliased a free msg-roots slot ✅ FIXED 2026-08-31
+
+**Symptom** (constructed — audit finding): send `nil` to a process parked in a selective
+receive, then more messages while it stays parked: the receiver observes the later
+message where `nil` belonged and `nil` where the later message belonged — an
+order-and-value swap; other interleavings give duplication or loss. Silent.
+
+**Cause.** `Heap::msg_roots` (the ADR-177 parked-message slot table) marked a free slot
+by its *content* — `Value::Nil` — and `nil` is a legal message value that
+`copy_cross_heap` passes through as an atom. A delivered `nil` therefore wrote a slot
+indistinguishable from a tombstone; the next `msg_root_add` reused it; two queued
+envelopes then read one slot, and the first consume tombstoned it under the second.
+
+**Why it survived.** A bare `nil` message is rare (the idiom is tagged vectors), the
+aliasing needs the L1 path (receiver parked) with the `nil` still queued when the next
+send lands (a selective receive), and even then most consumption orders are observably
+equivalent — only order-sensitive reads diverge.
+
+**Fix** (`core/heap.rs`): freeness is tracked **out of band** — `MsgRoots { slots,
+free }`, a free list beside the traced slots. A freed slot is still overwritten to `nil`
+so the GC never keeps a consumed message alive; a double free now trips a
+`debug_assert`. Bonus: `msg_root_add` is O(1) instead of an O(live-slots) scan performed
+under the sender-side mailbox lock (the KI-56 hold-cost class).
+
+**Guard.** `tests/receive_consume_test.blsp` "an L1-delivered nil message does not alias
+a free slot". **Sabotage-verified**: with the nil-content sentinel restored, the
+double-free tripwire fires in the victim (debug builds) and the case fails `:NO-REPLY`;
+the release-shape failure is the `[:result [:a 1] nil]` swap.
+
+## KI-93 — the net reactor thread's death was silent: every socket hung, `tcp-send` kept succeeding ✅ FIXED 2026-08-31
+
+**Symptom** (constructed — audit finding): any panic inside `reactor_loop` (every socket
+in the runtime multiplexes on that one thread) or a fatal `poll` error ended the thread;
+`Reactor::cmd` discarded the channel send error, so `tcp-send`/`tcp-listen`/`tcp-connect`
+kept returning `Ok(())` into a dead channel, no `[:tcp-closed]`/`[:tcp-error]` was ever
+emitted again, and every socket-owning process parked in `receive` forever. Zero
+diagnostics anywhere.
+
+**Cause.** `net.rs` spawned `reactor_loop` bare — no `catch_unwind`, no death hook —
+where `dist/heartbeat.rs` deliberately respawns on panic; and `cmd()`'s
+`let _ = self.tx.send(cmd)` encoded "a send can only fail if it panicked, in which case
+every socket is dead anyway" without making that state *observable*.
+
+**Why it survived.** It needs a reactor bug to fire, and none is known — this was the
+blast-radius hole around every future one, exactly the class where the failure is a
+silent hang three layers from its cause.
+
+**Fix** (`net.rs`): dead-loud, deliberately NOT restarted (the mio `Poll`, every fd's
+registration and all rustls state died with the thread). A `catch_unwind` wrapper runs
+`reactor_died`: set `REACTOR_DOWN` (SeqCst), one stderr line, then drain the registry and
+fail every socket at its owner — `[:tcp-error id "net reactor died"]` then the terminal
+`[:tcp-closed id]`, so either receive-loop shape terminates. `connect`/`listen`/
+`tls_listen`/`tls_request`/`send` gate on `reactor_up()`, and the three creators re-check
+the flag after inserting (flag-before-sweep + recheck-after-insert closes the race — an
+entry can never slip in behind the sweep and hang its owner).
+
+**Guard.** `crates/lisp/tests/net_reactor_death.rs` — its own test binary (the reactor is
+a process-global singleton; nextest gives it its own process), driven by a
+debug-assertions-only `Cmd::DieForTest` that panics the reactor exactly as a real
+event-loop bug would. **Sabotage-verified**: with the `catch_unwind` + hook removed,
+`listen` keeps succeeding after the death and the test fails its 10 s deadline — the
+silent-hang behaviour, reproduced.
+
+## KI-94 — a green process's death orphaned its OS subprocesses ✅ FIXED 2026-08-31
+
+**Symptom** (constructed — audit finding): a process that `os/spawn`ed a child and exited
+— crash or normal return — without `os/close` left the OS child running (never killed,
+never reaped), its registry entry alive for the life of the runtime, and both its reader
+threads draining output into a dead pid's mailbox (a no-op delivery) for the child's
+whole life. A supervisor restart loop accumulated one orphan child + two threads per
+restart.
+
+**Cause.** `subprocess::close`'s only caller was the `proc-close` builtin
+(`builtins/io.rs`), `Proc` recorded no owner, and `retire_pid_tail` — which already
+closes a dead process's *sockets* — had no subprocess counterpart.
+
+**Why it survived.** Every proc test closes explicitly, and nothing asserted on the OS
+child's lifetime after an owner crash; the leak is invisible to correctness gates.
+
+**Fix.** `Proc.owner` (the spawn-time subscriber) + `subprocess::close_process_procs(pid)`
+called from `retire_pid_tail` beside `close_process_sockets` — Erlang port semantics: a
+child dies with its owner. **This is a deliberate semantic change**: code that relied on
+a child outliving its spawning process must hand the handle to a longer-lived process
+first (there is no `proc-controlling-process` yet; the socket layer has one).
+
+**Guard.** `tests/proc_test.blsp` "an exited owner's subprocess handle is closed and its
+child reaped". Verified red on the pre-fix binary (`actual: :wrote` — the orphaned `cat`
+accepted the write), green after.
+
+## KI-95 — `promote` forwards only closures/envs: DAG-shaped data duplicates per referrer, exponentially with nesting ✅ FIXED 2026-08-31
+
+**Status:** ✅ fixed, exactly along the fix shape below. `PromoteForward` now forwards
+pairs, vectors (shared with ranges/seq-views — one `VecId` slab), map/set trie nodes and
+strings, keyed on the **handle types themselves** rather than `index() as u32` — handle
+`Eq`/`Hash` use the canonical identity (region + index + the LOCAL nursery/old AGE bit),
+which also closes a latent collision in the pre-existing closure/env tables: a nursery
+and an old-gen closure at the same slab index are distinct objects and could resolve to
+one RUNTIME copy. Guards: `core::heap::promote_sharing_tests` (5 tests) — the 16-level
+pair DAG promotes **17** cells where the pre-fix code promoted **131 071**, plus a
+shared-tail case, a vector DAG, a map/string sharing case, and the stride bound below.
+
+**The cost, measured (the entry demanded it).** Registration is a per-copied-node map
+insert on the `def`/`spawn` path. Three rounds:
+- SipHash was ~2% of the `spawn` row's instructions → replaced with a multiplicative
+  `HandleHasher` (the `table.rs` `IdentityHasher` pattern); `spawn` then measured
+  **fewer** instructions than base (the closure/env tables shed their SipHash too).
+- A bulk `def` of a long list (`sort`'s 375k-cell spine) paid ~107 instructions/cell in
+  `HashMap::insert` (+5% on the row, confirmed by interleaved `perf stat`) → long spines
+  (> 64 cells) register every **8th** cell (`SPINE_REG_STRIDE`), head always registered.
+  A walk re-entering the spine re-copies at most 7 cells per referrer before joining the
+  registered copy — growth stays O(n), the exponential class stays closed, and `sort`
+  came back to +0.7% on a 0.7% floor.
+- Final `make ab --floor`: `sort`/`spawn`/`startup`/`spawn-live`/`supervisor` all read
+  noise at their floors; `spawn`/`supervisor` instructions are *below* base per
+  interleaved `perf stat` (the concurrency-row wall deltas were the documented ±
+  cross-binary layout noise, checked as CLAUDE.md prescribes).
+
+Original entry:
+
+**Symptom** (constructed — audit finding, not yet observed): a `def` (or `spawn`
+argument) of a value whose substructure is *shared* — which immutable path-copying code
+produces routinely — copies the shared part once per reference into the append-only
+RUNTIME region, and the duplication compounds: `(let (a …) (b (list a a)) (c (list b b))
+…)` promotes `2^n` copies of `a`. No depth or size cap (the message path has
+`MAX_MESSAGE_DEPTH`; promote has nothing). Presents as RUNTIME-region growth / slow
+memory climb on `def`-heavy or spawn-heavy code, never a crash or wrong answer.
+
+**Cause.** `PromoteForward` (`core/heap.rs`) maps only closures and envs. The comment
+beside it reasons pairs/vectors/maps are "acyclic by construction so they need no
+forwarding (they'd only ever be a finite tree to re-copy)" — but acyclic ≠ tree, and
+`promote_list` stops only at an already-**shared** cell, not an already-**copied** one.
+The GC's own flush path forwards all of these (`flush_pair`/`flush_vector`/`flush_map`
+in `gc.rs`), so the collector handles DAGs and the promoter does not.
+
+**Why it survives.** Correctness is unaffected — the values are immutable and the
+duplicates are `equal` — so every gate is green; only memory and promote time observe it,
+and only on DAG-shaped values.
+
+**Fix shape** (not started): extend `PromoteForward` with source-id → promoted-id maps
+for pairs/vectors/maps/strings, mirroring the flush tables. Promote is on the
+`def`/`spawn` path, so the extra hashing must be measured — `spawn`, `spawn-live`,
+`startup` rows at minimum — and the maps should stay lazy/small for the dominant
+no-sharing case. A guard at fix time: promoting an n-level self-sharing structure must
+grow `cur_code().pairs` by O(n), asserted directly.
+
+## KI-96 — a remote monitor's `PENDING_REMOTE` entry survives its own DOWN ✅ FIXED 2026-08-31
+
+**Status:** ✅ fixed, along the entry's own "clean seam": the dist inbound path now
+*recognises* a monitor DOWN because the DOWN is no longer an ordinary send — it travels
+as a dedicated **`Frame::Down`** (wire protocol v7; `watcher_pid`/`mref`/`target_pid` +
+the `Message` reason). The watched node's `fire_down` ships it (`dist::send_down`); the
+watcher's node handles it in `deliver_remote_down`, which retires the `PENDING_REMOTE`
+entry FIRST, then delivers the `[:down mref pid reason]`. The dying pid is node-qualified
+by the *authenticated* peer on the receiving side, never wire data — same rule as the
+other coupling frames. Bonus closures: the `:noproc` immediate-fire path retires its
+pending entry the same way (it leaked identically), and `drop_pending_remote` now prunes
+emptied node keys. Guard: the two-node test
+`a_delivered_remote_monitor_does_not_fire_again_on_node_down` (monitor → target dies →
+DOWN received → node killed → `[:nodedown]` → assert no second `[:down]` on that mref),
+sabotage-verified — with the retire commented out it fails `SECOND-DOWN-BUG
+:noconnection`, the entry's exact predicted duplicate. Verified: distribution suite 4/4
+loops + a `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` pass, full suite green both engines
+(modulo the documented wasm-under-cap exception and one KI-98 recurrence, logged there),
+clippy on CI's flags.
+
+Original entry:
+
+**Symptom** (constructed — audit finding): entries in `PENDING_REMOTE`
+(`process/monitor.rs`) are removed by `demonitor`, by the watcher's own death, or by
+node-down — but **not** when the watched remote target dies and the peer's
+`[:down mref …]` arrives (it lands as an ordinary send; no hook runs). Two consequences:
+a long-lived watcher leaks one entry per completed remote monitor, and a later node-down
+for that peer fires a **second** `[:down mref pid :noconnection]` for an mref that
+already delivered — breaking the one-shot guarantee, which a `gen/call`-style receive
+pinned on that ref can mis-route (the recorded receive-mark makes a stale pinned message
+cheap to hit).
+
+**Fix shape** (not started): remove the entry when the DOWN actually delivers. The clean
+seam is the dist inbound path that recognises a monitor DOWN frame; failing that, a
+tombstone consulted by `handle_node_down`. Needs a two-node test: monitor, kill target,
+receive DOWN, then drop the node — assert no second DOWN.
+
+## KI-97 — consolidated hardening gaps from the 2026-08-31 stability audit ✅ FIXED 2026-09-03 (all four items; `read-line` — ADR-059 Phase 2 — was the last)
+
+One entry so the audit's remaining confirmed-by-reading findings have a number; none has
+been observed in the wild. Ranked. Each is independently fixable; strike through items
+here as they close.
+
+1. ~~**Pre-auth handshake trickle DoS**~~ ✅ **FIXED 2026-08-31.** The 10 s handshake
+   timeout was `SO_RCVTIMEO` — a bound per `read`, not per handshake — so `read_exact`
+   stayed alive on one byte per 9 s (~10 h for a 4 KiB frame); 128 such sockets exhausted
+   `HandshakeSlot` and every further inbound link was shed **with no log**. Both halves
+   are closed as the entry prescribed. A `Deadline` `Read`/`Write` shim now wraps the
+   whole exchange (`HANDSHAKE_DEADLINE`, 15 s) on **both** the accept and the dial side —
+   an absolute instant no amount of trickled progress can restart, checked before *and*
+   after each call so `read_exact`'s short-read loop cannot run past it. Writes are
+   deadlined too: a peer that completes its side and stops reading would otherwise park
+   us in `write_all` on a full socket buffer, holding the same slot from the other
+   direction. The per-read `SO_RCVTIMEO` stays — the two bound different things (a
+   *silent* peer between bytes vs a *slow* one across them). Shedding now reports itself
+   (`note_shed_handshake`): reaching the cap means inbound distribution is effectively
+   down, which the node used to say nothing about (the KI-36 lesson); rate-limited to one
+   line per 60 s with a cumulative count, since a per-shed line would be its own
+   amplification vector. Guards: 4 tests in `dist::tests`, sabotage-verified — with the
+   deadline no-op'd the trickle test fails *and takes 4.4 s delivering the whole 4 KiB
+   frame one byte at a time*, which is the attack itself. One real bug found while
+   testing: `now_millis()` counts from process start, so 0 is a legitimate timestamp in
+   the first millisecond and the obvious `0` "never warned" sentinel would have swallowed
+   the first warning of a flood that began at startup — the sentinel is `u64::MAX`.
+2. ~~**Untimed blocking calls on scheduler workers**~~ (ADR-059 violations) ✅ **ALL FOUR FIXED** —
+   three on 2026-09-01, the fourth (`read-line`, ADR-059 Phase 2) on 2026-09-03.
+   - ~~`os/run-process`'s `status()` with **inherited stdin**~~ ✅ **FIXED** — it now hands
+     the child `/dev/null`, so a `git` credential prompt reads EOF and fails fast instead
+     of pinning a worker forever with no timeout or `try` able to recover it. This matches
+     the analogue rather than departing from it (Emacs `call-process` uses `/dev/null` when
+     INFILE is nil), and every in-tree caller is `git`/`sh` needing no stdin — including
+     `std/tool/workspace.blsp`, which runs `git` across sibling repos and is exactly where
+     a credential prompt appears. Guard: `crates/cli/tests/run_process_stdin.rs`,
+     sabotage-verified. It has to spawn `brood` with a **pipe** as stdin that is never
+     written or closed: under an ordinary harness stdin is already at EOF, so a naive test
+     passes either way and proves nothing. Without the fix it hangs the full 20 s.
+   - ~~`%node-connect`'s unbounded DNS resolve on the worker~~ ✅ **FIXED** —
+     `connect_timeout` bounded the connect but never the *lookup*, and `to_socket_addrs` is
+     a blocking libc call with no timeout of its own, so an unreachable DNS server pinned
+     the dialing worker for the resolver's own timeout (tens of seconds, longer with
+     retries across several `nameserver` lines). `dist::resolve_timeout` now runs it on a
+     throwaway thread under a 5 s wall-clock bound. The thread is deliberately **detached**
+     on timeout: a blocking `getaddrinfo` cannot be cancelled, and detaching is precisely
+     what keeps the caller bounded; it touches nothing after its send, and the call rate is
+     set by a user-initiated `node/connect` or `reconnect/watch`'s backoff, not by inbound
+     traffic.
+   - ~~`proc-send`'s `write_all` under the per-child mutex~~ ✅ **FIXED** — a pipe write is
+     bounded by the OS buffer, so a child that stops draining its stdin blocked the calling
+     thread forever; the old comment justified this as "the blocking contract `tcp-send`
+     also has", but `tcp-send` went async in ADR-143, so nothing held that up. Each child
+     now has a **writer thread** fed by a bounded channel — `dist`'s shape, for the same
+     reason — and `proc-send` queues instead of writing. Deliberately **not** a per-call
+     write timeout: timing out mid-`write_all` would leave a *partial* message in the
+     child's input stream, silently corrupting its protocol, which is worse than the hang.
+     A full queue is reported (the child has stopped reading) rather than buffered without
+     bound; dropping the sender still closes stdin, so EOF semantics are unchanged. Guard:
+     `tests/proc_test.blsp` writes ~1.6 MB to a `sleep 30` that never reads — a **proof**
+     rather than a smoke test, since a pipe buffer is ~64 KiB and a synchronous `write_all`
+     of that size into a non-reading child cannot return.
+   - ~~`read-line` holding the global stdin lock~~ ✅ **FIXED 2026-09-03 — ADR-059 Phase 2.**
+     The kernel now has one `brood-stdin` reader thread behind `%read-line-start` (a token
+     primitive, `builtins/io.rs`), and `read-line` is a prelude function that parks on the
+     token in a selective receive — `offload`'s seam, applied to terminal input. A process
+     waiting for a line holds no worker; the thread serves callers in request order (the only
+     sensible sharing rule for one line-oriented stream) and delivers `nil` at EOF to every
+     later caller. A refused thread spawn is retried by the next call, not latched (item 3's
+     rule). Guard: `crates/cli/tests/read_line_parks.rs` — 256 processes waiting in
+     `read-line` on a never-written pipe, then a 200-spawn wave that must complete;
+     sabotage-verified (the old synchronous shape hangs the program to nextest's cap, since
+     even the root's resume from `sleep` needs a worker). With this, item 2 is closed.
+   - Not affected, checked while here: `%os-cmd` uses `Command::output()`, which nulls
+     stdin. It stays untimed, but a long-running child there is doing what was asked.
+3. ~~**Thread-spawn panic classes**~~ ✅ **FIXED 2026-09-01.** `std::thread::spawn`
+   *panics* when the OS refuses a thread (EAGAIN under thread/fd pressure), and the runtime
+   spawned threads at attacker-influenced rates while treating that as impossible. Every
+   site now uses `Builder::spawn`, which returns the error instead:
+   - **The timer's `Once` was the worst.** `TIMER_STARTED.call_once` is poisoned by a panic
+     inside it, so one refused spawn made *every later* `call_once` panic — and `arm_timer`
+     backs `sleep` and every `receive … (after ms …)`, so a single transient failure broke
+     all timeouts runtime-wide, permanently. It is now a plain CAS that a failed spawn
+     **releases**, so a later call retries; queued deadlines are late, never lost. Guard:
+     `the_timer_thread_start_is_retryable_not_a_once`, sabotage-verified — and note the
+     first version of that test asserted only the *flag* and passed against a `Once`-shaped
+     sabotage. It now asserts a genuinely new thread reached `timer_loop` (a one-increment
+     counter), which is the only assertion that separates "marked started" from "started".
+   - **`ensure_workers` stranded `LIVE_EXECUTORS` above reality** — it seeded the gauge with
+     `n` and its fallback used the *panicking* `spawn`. Two consequences: a second EAGAIN
+     panicked inside `call_once` (poisoning `WORKERS_STARTED` and unwinding whoever started
+     the pool), and a short pool left the gauge above the truth, so `enqueue`'s safety net —
+     which only fires at `LIVE_EXECUTORS == 0` — could never spawn a drainer and work was
+     stranded with nothing alive to run it. Now both gauges are corrected to the number that
+     actually started, the fallback retries at the default stack size, and a reduced pool
+     says so.
+   - **The dist acceptor no longer dies from one EAGAIN.** A refused per-connection thread
+     panicked *inside the accept loop*, unwinding the acceptor and closing the listener for
+     good — the node stopped accepting inbound links until restart. `spawn_bg` reports and
+     sheds instead; dropping the closure closes the accepted socket and releases the
+     `HandshakeSlot` on its own. Same treatment for the gossip dial (one thread per gossiped
+     peer, up to 4096 per `Peers` frame — the highest-rate spawn in the runtime, and a
+     refusal there now also clears the `PENDING_DIALS` marker so the peer stays dialable)
+     and the per-link reader/writer threads.
+   - **Poison-tolerant locks**, per `core/sync.rs`'s own policy: the timer thread's condvar
+     waits (a poisoned wait killed every deadline runtime-wide) and the `net.rs` /
+     `subprocess.rs` registry takes now recover instead of `.unwrap()`/`.expect()`.
+4. ~~**Smaller, same families**~~ ✅ **ALL FIXED 2026-09-01.**
+   - ~~`session::open` allocates up to 64 MiB from a length prefix before the AEAD tag is
+     checked~~ ✅ **FIXED** — `vec![0u8; len]` was the obvious spelling and the wrong one:
+     `len` is four bytes off the wire and the Poly1305 tag that proves the frame genuine is
+     inside the bytes not yet read, so the allocation happened strictly *before* anything
+     about the frame was authenticated. A peer spent 4 bytes to make us commit 64 MiB, then
+     stalled — ~16-million-to-one amplification, repeatable per link. `read_claimed` now
+     grows the buffer a 64 KiB chunk at a time *as bytes arrive*, so the cost is
+     proportional to what is delivered. Guard: `a_claimed_length_is_not_an_allocation`,
+     driven through `OpenKey::open` and sabotage-verified. (An earlier version called the
+     helper directly and passed with `open` reverted — it guarded the helper while the bug
+     sat at the call site. Exercise the entry point.)
+   - ~~every wire-decoded symbol interns permanently~~ ✅ **FIXED** — the interner is
+     append-only by design (`NAMES` is a lock-free `boxcar::Vec`; nothing frees an id),
+     which is right for a program's own symbols and wrong for wire symbols, whose spellings
+     the *peer* chooses: a stream of distinct names grew `NAMES`, the global id map and every
+     thread's intern cache, permanently. Refusing to mint is not available (a legitimate peer
+     may send a symbol we have not seen), so the bound is on the count —
+     `MAX_WIRE_SYMBOLS` (2^20, far above any real workload), past which the frame is rejected
+     and the reader tears that link down. A **known** name never touches the counter, so an
+     established link is unaffected. Guard: `a_peer_cannot_mint_symbols_without_limit`,
+     driven through `decode_frame` and sabotage-verified; it also pins that a refused name is
+     *not* interned, which is the leak itself.
+   - ~~the ADR-232 dedup set beside it~~ ✅ **FIXED** — same shape: for an inbound drop the
+     distinct names are the peer's to choose. Capped at 4096, past which it warns without
+     recording. A flood of distinct names is itself worth seeing, and the alternative is a
+     remote-controlled set that never shrinks.
+   - ~~a non-`WouldBlock` accept error breaks the edge-triggered drain~~ ✅ **FIXED** —
+     `Err(_) => break` ended the drain on any error, and the registration is
+     **edge-triggered**, so whatever was already queued in the backlog was stranded until
+     some *later* arrival happened to re-arm us. Silently. `ConnectionAborted` (a peer that
+     died between the readiness event and `accept`) is a fact about one connection, so it
+     now `continue`s; anything else still breaks but *says so*, since a listener that had
+     stopped accepting was previously indistinguishable from one nobody was connecting to.
+   - ~~`tls_request`'s untimed connect + the close-before-connect race~~ ✅ **FIXED** —
+     the connect is now bounded (`TLS_CONNECT_TIMEOUT`, 5 s, per resolved address) instead
+     of waiting out the kernel's multi-minute SYN timeout while holding the caller's
+     registry entry and request buffer. And the race is closed: the registry entry is
+     inserted *before* the connect, so an owner closing meanwhile removed it while the
+     thread went on to hand the socket to the reactor — installing a live connection under
+     an id nothing owned and nothing could close. The thread now re-checks the registry and
+     drops the stream instead. Its `.expect("spawn tls connect thread")` is gone too (item
+     3's panicking-spawn class).
+   - ~~a half-closed stream is never reaped~~ ✅ **FIXED** — the idle branch required
+     `!c.read_done`, which excluded a half-closed stream from the only reap that could
+     collect it: `accepted_at` is cleared once the owner claims the connection and `closing`
+     is only set by an explicit close, so a peer that shut its write half while the owner
+     never closed the socket leaked the entry and its fd for the runtime's life. `read_done`
+     now counts as quiet, gated on nothing being queued outbound — a half-close is a
+     legitimate "I am done sending, you may still reply", and reaping with unwritten data
+     would discard that reply.
+   - ~~`record_remote_link` skips the liveness check~~ ✅ **FIXED** — its doc had always
+     claimed it "returns whether `local_pid` is currently alive"; it returned `()`. The
+     check matters on the **inbound** side, where `to_pid` is wire data: a peer naming a
+     dead or never-existent pid created a `REMOTE_LINKS` entry nothing would ever remove,
+     because the sweep runs from `deregister`, which for that pid has already happened or
+     never will. Now checked inside the critical section (the shape `link` and
+     `add_monitor` already use), and a dead target gets `:noproc` sent back to the peer —
+     exactly what a *local* `link` to a dead pid delivers.
+   - ~~sysmon subscriptions are never reaped while `ARMED == 0`~~ ✅ **FIXED** — `clear_if`
+     gated on `armed()`, which is the mask of *selected kinds* and so is 0 for a subscriber
+     that selects nothing; such a subscriber was never reaped at all. Gated on the
+     subscription count now. Guard: `a_subscriber_selecting_nothing_is_still_reaped`,
+     sabotage-verified, and it asserts the `!armed()` precondition explicitly so the test
+     cannot quietly stop exercising the trap.
+
+Also recorded by the same audit, elsewhere: the four fixed bugs above (KI-91–94), the two
+correctness items KI-95/96 (both fixed later the same day), and the performance
+candidates in `compute-frontier.md` §7.8.
+
+## KI-88 — one spawn of a warm burst is created, promoted, registered — and never scheduled 📦 ARCHIVED 2026-09-04 (dormant since 2026-08-30; the stranded-work watchdog is the tripwire; no longer gates the router's default — ADR-318)
+
+> **Archived 2026-09-04.** Taken on the session-7 recommendation below: no reconstructable
+> binary exhibits it, 358 consecutive clean runs across five timing regimes and three builds,
+> one candidate mechanism found and closed, and a default-on watchdog that reports the exact
+> signature with the pid named. The tree-walker→VM router's default was decided on its own
+> gate the same day (ADR-318) and is ON; `BROOD_NO_TW_REENTRY=1` is the opt-out. Archived is
+> not closed: if `[sched] stranded work` ever prints, reopen this entry, PRESERVE THE BINARY,
+> arm `BROOD_SCHED_DBG=1`, and take a core in the window — everything below still applies.
+
+**Status note (2026-08-31, KI-96 session):** the *header* of this entry advertised a
+"deterministic repro" for a day after session 4 had already found it dormant — which is
+how it got picked up as the next item. It does not reproduce: the canonical repro (the
+full chaos2 file, `BROOD_TW_REENTRY=1`, router confirmed live at 394 routed closures)
+passes **10/10** at `62eac84c`, on top of session 4's 15/15 and 8/8. Read the session 5
+note at the end before spending time here.
+
+**Symptom.** In `breakage/chaos2_process_genserver` P47 (50-reader burst against a 10k-entry
+map server), exactly ONE early reader (index 2–4, stable within a config) never runs: its
+spawn returns a pid, `BROOD_TRACE_PROMOTE` shows all 50 thunk promotions, the mailbox is
+registered — but the process never executes its first instruction. No death line (a body
+that never runs exits nothing). The collector then times out and the section fails with
+`nth: expected a collection, got keyword (:timeout)`.
+
+**Exposure, not cause: the tree-walker→VM router** (`tw_vm_route`, 2026-08-30). With
+`BROOD_TW_REENTRY=1` the failure is 10/10 deterministic; without it 6/6 pass — but the bug
+predates the router's *commit lineage entirely*: a worktree at `c4af2feb` fails 3/3 the
+same way (its CI pass was runner luck). The router only makes the burst run at VM speed
+from a shape that used to tree-walk, which lands the spawns in the window.
+
+**The shrink trail (all preserved in scratch, method notes inline):**
+- Needs FOUR warm sections: P43+P44+P45 then P47 fails; every 3-section subset passes.
+  Threshold-shaped (cumulative arms/promotions/pool state), not one interaction.
+- The loop shape is irrelevant (hand-rolled `my-dotimes` fails identically); the burst
+  alone in a fresh process passes at both engines, router on or off.
+- `f` (the per-iteration closure) is CALLED all 50 times — instrumented — and every
+  `%spawn` runs (promotion trace); the loss is between enqueue and first schedule.
+- `BROOD_NO_HANDOFF=1`, `BROOD_SPAWN_RR=1`, `BROOD_SPAWN_SPILL=999999` all still fail —
+  not placement policy. **`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` makes it PASS** (timing
+  moves), and the armed per-deref tripwire never fires — so not a caught use-after-GC.
+
+**Where to look next** (the KI-1 invariant family): the enqueue→first-run window under a
+worker whose green process dirty-blocks a nested `receive` right after a local spawn —
+`enqueue`'s self-wake elision, `wake_a_parked_peer`'s `spawns_since_park >= 2` gate, the
+steal path's STEALABLE accounting against `dirty_block`'s executor bookkeeping. The repro
+is cheap (`--test` on the four concatenated sections, seconds); shrink further before
+theorising — tonight's session got it to "created but never scheduled" and stopped there
+deliberately (scheduler sessions want fresh eyes, and the router is gated off meanwhile).
+
+**Session 2 (2026-08-30, later) — three layers peeled, canonical repro narrowed:**
+- The wedge is NOT a lost condvar notify: `MailboxState.wake_pending` (the BEAM-style
+  latch, landed with this update) closes every notify-ordering hole by construction, fixed
+  the four-section combo 10/10 — and the FULL chaos2 file still wedges one reader.
+- The router now carries the `%receive` fence (`arm_calls_receive`): a receive-bearing arm
+  is never routed, so no receive becomes a nested-vm dirty block that tree-walking would
+  have handled. Necessary (a core dump showed a reader wedged at
+  `receive_match ← %receive ← vm_apply ← tw_vm_route`), not sufficient.
+- The surviving wedge, fully instrumented on the full file: one reader of fifty parks at
+  its `receive` having executed NEITHER of the two forms before it (a kernel-table probe
+  and the `send` — the server counts 49 gets; the probe table holds 49 entries and no
+  nil-keyed one), while a core dump shows no thread inside it — i.e. **execution entered
+  the body mid-way, at the receive**, which smells like a resume/continuation applied to a
+  first-run process or an ip/frame mix-up in the capture machinery, not messaging at all.
+  `BROOD_SCHED_DBG=1` (catalogued) traces the per-pid lifecycle that found this.
+
+**Held back by it:** `BROOD_TW_REENTRY` stays opt-in (60× on the viral defer shape,
+startup −6.9% — measured and waiting). The default path (router off) passes the full
+suite, the whole breakage suite, and the wake-sensitive loop ×5 with the latch + fence in.
+**Session 3 (2026-08-30, later still) — the observation is now maximally sharp, and it is
+the strangest one yet.** With park/resume ip tracing added (`Suspended::dbg_line`, printed
+under `BROOD_SCHED_DBG`), the wedged pid shows: ONE `enq`, ONE `run` (resume=false), then
+NOTHING — no `end` (the outcome print is the unconditional first statement of
+`handle_capture_outcome`), no `park` (`store_resume` never ran), no resume. Global counts:
+10,203 `run` lines, 10,202 `end` lines. And a full core taken inside the wedge window
+shows **no thread anywhere inside that quantum** — 16 LWPs: 12 idle `worker_loop`s, timer,
+jit channel, the main-eval thread in `collect`'s timed receive, the main thread joining.
+A Rust frame cannot evaporate mid-function without unwinding through the instrumented
+tail, so one of the session's models is wrong at a level below ordinary control flow —
+frame/stack corruption in the capture machinery is now the working suspicion (the
+debug-assertion tripwires stay silent, so if it is memory it is valid-but-wrong, the
+hardest class). Every earlier layer (wake ordering, routing of receives, message loss,
+captures) has been either fixed or excluded with instruments that remain in the tree.
+
+Fast repro: the four-section c3 combo (fixed by the latch — keep for regression); canonical
+repro: the full `chaos2_process_genserver` with `BROOD_TW_REENTRY=1`, wedging one reader
+per run at a stable-ish early index. The next probe for fresh eyes: a counter pair
+entering/leaving `run_one_timed` (not prints — a per-pid atomic ledger), and
+`BROOD_GC_VERIFY=1` on the full file (GC_STRESS alone passes, which may just be timing).
+
+**Held back by it:** `BROOD_TW_REENTRY` stays opt-in (60× on the viral defer shape,
+startup −6.9% — measured and waiting). The default path (router off) passes the full
+suite, the whole breakage suite, and the wake-sensitive loop ×5 with the latch + fence in.
+
+**Session 4 (2026-08-30 evening) — DORMANT: the repro died with the binary that carried
+it.** The quantum ledger (a per-thread `(pid, started)` map set around `drive()`, with a
+watchdog naming any quantum older than 3 s — now in-tree, armed by `BROOD_SCHED_DBG`) was
+built to catch the vanishing quantum in the act. It never fired: after the 196-file format
+reflow (c8184ab3) the full chaos2 file passes 15/15 with the router on (all-core and
+2-core pinned), and a PRISTINE rebuild of b5ad1888 — the commit that failed 3/3 the same
+afternoon — passes 8/8. The failure was keyed to one incremental build's layout/timing and
+no reconstructable binary exhibits it. Seen many times with the root cause unfound, it is
+real until proven otherwise: the router stays opt-in. If the wedge is next seen anywhere,
+arm `BROOD_SCHED_DBG=1` immediately (run/end/park/resume lines + the ledger watchdog),
+take a core inside the wedge window (`kill -ABRT`; apport keeps it), and PRESERVE THE
+EXACT BINARY — the artefact is the whole case.
+
+**Session 5 (2026-08-31) — still dormant; one candidate mechanism found and CLOSED.**
+Re-confirmed dormant (10/10, above). What the session did produce is a structural hole in
+the exact code path this entry implicates, found by reading rather than by reproducing:
+**`run_one`'s post-quantum tail ran unprotected.** `catch_unwind` wrapped `drive()` only,
+and everything after it — `save_ctx`, `finish_quantum`, and the outcome routing
+(`store_resume`/`park_on_receive`/`deregister`/`enqueue`) — was plain statements, with no
+catch in `worker_loop` either. A panic there did two silent things at once: killed that
+worker thread for good (the pool shrinks permanently; nothing restarts a worker), and
+dropped the `Box<Process>` during the unwind, so the process vanished with **no
+`deregister`** — no death line, no monitors, no `[:down …]`, and anything waiting on it
+waited forever.
+
+That is *exactly* this entry's signature: a `run` with no `end` (the `end` print is the
+first statement of `handle_capture_outcome`, which the unwind skips), a ledger entry no
+thread is inside (`ledger_exit` is likewise skipped), no death line, and a collector
+timing out. Session 3's "a Rust frame cannot evaporate mid-function without unwinding
+through the instrumented tail" was right about unwinding and wrong about the tail: the
+tail is not a `Drop` guard, so an unwind skips it silently.
+
+**It is not, however, a diagnosis of KI-88** — the mechanism is *loud* (the panic hook
+prints and appends `.brood_crash_dump`), and no sighting ever carried a panic message. It
+is now hardened and guarded regardless (`crates/cli/tests/quantum_tail_panic.rs`, with the
+`BROOD_FAULT_QUANTUM_TAIL=<n>` injection knob; sabotage-verified — reverting the catch
+fails the guard while its no-fault control still passes). The value for this entry is
+**elimination**: if the wedge is seen again, it is not this.
+
+One trap worth keeping from building that guard: a short program can exit *while the
+panicking worker is still symbolizing its backtrace*, so the recovery's own line never
+prints and the run looks like a silent vanish. The guard sleeps and runs two further waves
+to outlive the unwind. A wedge investigation that ends "no diagnostic appeared" should
+check it did not simply out-run one.
+
+**Session 6 (2026-09-03) — the runtime now watches for the signature, unarmed.** Every
+sighting of this entry happened in a run nobody had instrumented, and the one instrument
+that exists — the quantum ledger — only sees a process a thread is *inside*. A process that
+is enqueued and never scheduled has no ledger entry and no death line; it surfaces as a
+collector timeout thirty seconds later, with the evidence gone. So `scheduler/pool.rs` now
+carries a **stranded-work watchdog** that is on by default (KI-36's reason: a diagnostic you
+must arm before the bug is absent when it matters).
+
+The invariant it watches: work on a queue is found within one `STEAL_BACKOFF`, because every
+parked worker re-probes on that timeout and `try_steal` scans every queue. A full
+find-nothing cycle while `STEALABLE > 0` is individually normal (a process mid-pull, its
+decrement pending) but cannot persist — `run_one` resets the window on any progress
+anywhere. When the window reaches **3 s** the watchdog prints one report and latches:
+
+    [sched] STRANDED WORK (KI-88 signature): stealable=1 but no worker has found anything
+    to run for 3008 ms (live_executors=12, parked=11). Any pid listed below that never
+    runs is the stranded one — preserve this binary and the log.
+      w0: parked=true dirty=false busy=false queue=[]
+      …
+
+The pid list is the fact every previous sighting lacked. The window is wall-clock, not a
+cycle count — a count's meaning scales with how many workers are parked (12 parked workers
+burn 512 cycles in ~0.4 s at the 10 ms backoff; one worker takes 5 s), and a trip point that
+depends on the core count cannot be reasoned about from a log. Healthy-path cost: two
+relaxed stores per quantum in `run_one_timed` beside the existing `STEALABLE` decrement, and
+one relaxed load on the park path (already the cold path).
+
+**Testable by fault injection.** A detector nobody has seen fire is indistinguishable from
+one that cannot, so `BROOD_FAULT_STRANDED=1` over-counts `STEALABLE` by one at pool start —
+exactly what a stranded process looks like from the probe's side. `crates/cli/tests/
+stranded_watchdog.rs` asserts the report appears (once, with the worker rows) in a program
+that parks for 4.5 s under the fault, and does NOT appear in the same program without it.
+Sabotage-verified: commenting out the `stranded_probe()` call fails the fault run and passes
+the control. One defect found while building it: the reporting worker holds its own queue
+lock, so `try_lock` on its own row printed a phantom `<locked>` — the reporter's row now
+
+**The watchdog's own test was fixed 2026-09-20 — it asserted the machine's speed.** It
+required the report to appear exactly once, which is really the assumption "the 4.5 s program
+took about 4.5 s". The latch re-arms in `run_one` the moment anything is pulled to run, so the
+contract is *one report per starvation EPISODE*, not one per run: a process starved of CPU
+long enough to cross several 3 s windows reports several times, correctly. Under a loaded box
+one full-suite run in three took **19.6 s** and reported twice, and the gate read that as a
+latch failure.
+
+It is bounded by what the mechanism allows now — a run of T seconds cannot contain more than
+`T/3 + 1` episodes — which is a weaker claim than `== 1` and still a decisive one:
+sabotage-verified, with the latch removed the same run reports **4146 times against a ceiling
+of 2**. The watchdog itself was right on both occasions; only the test was wrong.
+reads its (known-empty) queue directly.
+
+**What this does and does not buy.** It does not reproduce KI-88 or explain it. It turns the
+next sighting from "a collector timed out" into a line naming the stranded pid and the state
+of every worker at the moment of starvation, printed while the process is still alive to be
+cored. If the report ever appears with `stealable=N` and **every queue empty**, that is a
+different finding — a `STEALABLE` accounting leak (an enqueue without a matching pull) — and
+worth its own entry.
+
+**Session 7 (2026-09-03, later) — 325 more runs, still dormant; the archive question.** The
+canonical repro (`BROOD_TW_REENTRY=1` on the full chaos2 gen-server file, the armed
+`-C debug-assertions=on` release build) at HEAD `0fb44bed`: **150/150** plain (under a
+concurrent cargo build), **60/60** pinned to two cores (`taskset -c 0,1`), **100/100** under a
+detached 12-thread CPU hog, **15/15** under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`. The
+stranded-work watchdog never printed. Together with sessions 4–6 that is 358 consecutive clean
+runs across five timing regimes on three builds, against a bug last seen on one destroyed
+incremental build. Nothing here proves it gone — nobody found the cause — but nothing
+reconstructable exhibits it, and the tripwire that would name the pid is on by default in
+every binary. Recommendation recorded here for the owner's call: **archive as dormant with the
+watchdog armed**, and decide the `BROOD_TW_REENTRY` default on its own perf protocol rather than
+on this entry — the entry no longer has a repro to hold it hostage with.
+
+## KI-87 — the checker's cycle guard released the symbol it refused: `nest run` at 54 GB, three 19 GB test processes ✅ FIXED 2026-08-29
+
+**Symptom.** `nest run` on bedit sat at 100% CPU with nothing running, RSS climbing past
+54 GB until the OOM killer took it; `cargo nextest run -p brood types::` put three test
+processes at ~19 GB each and swapped the machine to a halt three sessions in a row. Under a
+memory cap the same runs die cleanly with `stacker … mmap failed to allocate stack: Cannot
+allocate memory` inside the advisory checker: `types::check::tests::unused_use_import_is_flagged`
+(it `:use`s `io`, so a loaded module's functions are in play) and `nest check src/commands.blsp`
+in bedit both reproduce in ~3–10 s.
+
+**Cause.** `sigs::InferGuard::enter` — the re-entry guard that breaks a recursive or mutually
+recursive inference chain — ended in `.then_some(InferGuard(sym))`. `bool::then_some` builds
+its argument **eagerly**, so on the refusal path (symbol already in flight, or the depth cap) a
+guard was constructed and dropped at once, and its `Drop` removed `sym` from the in-flight set
+— the *outer* inference's mark. The refusal un-guarded the very symbol it refused. Latent since
+`aadd10c1` (2026-07-07): a body referencing its partner once was refused and moved on, and the
+memo eventually bounded the re-walks. `0f64f600` made the parameter-demand walk consult a
+callee's inferred signature, which turned every mutually recursive pair whose bodies reference
+each other *twice* — `require-one` ⇄ `%require-await` in the prelude — into unbounded nesting:
+refusal, un-mark, second reference re-enters, each level a fresh 1 MB stack segment, until
+memory ran out. The trace that found it: `[TRACE-DROP] ->seq` immediately before `->seq` was
+re-entered at the same depth, with the same interned symbol id.
+
+**Fix.** Construct the guard only on the success path (`entered.then(|| InferGuard(sym))`).
+Nothing may drop a guard that was never entered. No other `then_some` in the tree carries a
+`Drop` type.
+
+**Guard.** `sigs::guard_tests::a_refused_enter_does_not_release_the_in_flight_mark` (a third
+`enter` after a refusal must still be refused) and `…the_depth_cap_refuses_without_releasing_anything`;
+`check/tests.rs` `mutually_recursive_loaded_functions_infer_in_bounded_time` — two loaded
+functions referencing each other twice, both sigs resolved and a call site still flagged.
+Sabotage-verified by restoring `then_some` under `ulimit -v 4000000`:
+
+```
+a_refused_enter_does_not_release_the_in_flight_mark ... FAILED
+    the refusal released the in-flight mark (the eager-drop bug)
+mutually_recursive_loaded_functions_infer_in_bounded_time ... FAILED
+    mmap failed to allocate stack: Cannot allocate memory (os error 12)
+```
+
+Restored: the whole `types::` set 431/431 serially at 325 MB peak; bedit's `commands.blsp`
+checks in 1.4 s at 180 MB; `nest check std/ tests/` (342 files) zero warnings in 5.0 s.
+
+**Method note.** Put `ulimit -v` in front of any test run that exercises inference — it turns
+a machine-swapping OOM into a ten-second clean failure with the panic site named. And don't
+let the cap leak into a *build*: the linker inherited it and died with `LLVM ERROR: out of
+memory`. Build uncapped, run capped.
+
+## KI-86 — `runtime_collector`'s three promotion tests failed under `cargo test` ✅ ROOT-CAUSED + FIXED 2026-09-03 (reproduced deterministically; the recorded mechanism was wrong)
+
+> **Resolution 2026-09-03.** Reproduced **deterministically, on a quiet box, with no
+> scheduler activity at all**: `BROOD_RT_GC_FLOOR=128 cargo test -p brood --test
+> runtime_collector` fails `superseded_global_versions_are_reclaimable` every time
+> (`total=213`), and `BROOD_SCHED_DBG=1` prints **zero** `[sched] run` lines during it —
+> no worker process ever ran. The "worker heap ages the runtime" mechanism below is
+> therefore wrong; a gdb breakpoint on `age_runtime` never fires either. What happens:
+> the test's `set_rt_auto_collect(false)` sets its threshold to `usize::MAX`, then
+> `reflect/eval` autoloads `reflect`, the **stdlib image** materialises it (ADR-256) and
+> calls `Heap::rt_gc_rebaseline_all_live`, which blindly set the threshold to
+> `max(floor, 2 × live)` — re-arming the collector the test had switched off, with the
+> leaked `floor` of 128. The next safepoint past ~370 closures ran the **single-owner
+> compaction** (not aging), and the count collapsed to the live set. It looked
+> load-dependent because it is **image-dependent**: the 2026-08-29 non-reproduction ran
+> on a box with a stale image (every `std/` edit invalidates it), so the rebaseline never
+> ran. Fix: the rebaseline leaves an opted-out heap (`usize::MAX`) alone — the opt-out is
+> sticky (`gc_runtime.rs`). Guard: `an_opted_out_heap_stays_opted_out_across_a_rebaseline`
+> in `runtime_collector.rs`, sabotage-verified (dropping the early return fails it with
+> its own message). With the fix, the exact command above passes 21/21. The
+> precondition (an env-mutating test sharing a binary) was already removed and is gated
+> by `env_isolation.rs`; this closes the mechanism too.
+
+**Symptom.** Under a loaded box, `cargo test -p brood --test runtime_collector`: 17 pass, 3
+fail — `superseded_global_versions_are_reclaimable`, `evacuation_copies_only_live_code_and_verifies`
+(`expected ≥3000 promoted closures, got total=231`), `in_place_collect_reclaims_and_preserves_correctness`
+(`expected ≥2000 promoted, got 239`). The redef loop completes (`:done`); a probe shows
+exactly one closure promoted per iteration and a threshold of 4096, so 3000 redefs cannot
+trip the count-based collector — and the tests switch it off anyway
+(`set_rt_auto_collect(false)`). Yet `runtime_closure_count()` — which counts only
+`cur_code()`, the CURRENT generation — comes back 231.
+
+**Cause (inferred).** The runtime region is per-`Interp`, but the `Interp`'s scheduler
+WORKER heaps share it, and a worker's `rt_gc_threshold` is the process-wide `rt_gc_floor()`
+— a `OnceLock` read from `BROOD_RT_GC_FLOOR` once per process — not the test heap's
+`usize::MAX`. Two tests in the same binary set that variable to 128/256 for themselves
+(their comment: safe "per-test process under nextest" — true in CI, false under plain
+`cargo test`, one process and parallel threads). When a floor-setting test won the race to
+first construct a heap, every worker in every later `Interp` carried a 128 floor; a worker
+safepoint on the shared runtime then ran the multi-generation path (`advance_runtime_multigen`
+→ `age_runtime`), the main heap's `cur_code()` flipped, and the superseded closures were in
+the aged-out generation the count does not see. Load matters because workers only reach a
+safepoint when something schedules them. Not reproduced on demand: with the box quiet,
+`BROOD_RT_GC_FLOOR=128` process-wide does NOT trip it, which is what "needs a worker to
+wake" predicts.
+
+**Why it survived.** CI runs nextest. A bisect named an unrelated expander commit
+(ADR-297) "first bad" — it reshaped scheduling enough to make the race reliable, which is
+what bisecting a race does — and a "clean stash" reproduction confirmed the wrong conclusion
+the same way. Recorded here so the next person does not re-run that bisect.
+
+**Fix (the precondition).** A per-heap override, `Heap::set_rt_gc_floor(n)`; the two tests
+set it on their own `Interp` and touch no environment; every re-arm reads `self.floor()`.
+The env var stays as the runtime A/B lever it was meant to be. 4/4 green under load since;
+0 failures in the crate-wide run.
+
+**If it recurs.** Capture the failing `Interp`'s `(%gc-stats)` `:runtime-threshold`, the
+process's `BROOD_RT_GC_FLOOR`, and whether a drain was active (`drain_active()`); a
+generation flip with the count-collector off is the signature, and a worker heap is the
+only thing that can cause one.
+
+**Recurrence (2026-09-02) and the structural fix (2026-09-03).** The same shape, a
+different variable: `make asan` (which runs plain `cargo test`, not nextest) had
+`the_opt_out_arms_nothing_and_still_loads_nothing` `set_var("BROOD_NO_CRASH_REPORT")` reach
+`arming_the_default_reporter_does_not_load_the_crash_report_module` in the same binary and
+make it report that the reporter "did not arm". Fixed the same way (its own binary,
+`crash_report_optout.rs`, commit e7d3bfdb). Twice is a pattern, so the rule is now a gate:
+`crates/lisp/tests/env_isolation.rs` walks every integration-test file in the workspace,
+strips comments and string literals, and requires that a file calling `set_var`/`remove_var`
+hold **at most one** `#[test]`; a `#[cfg(test)]` module under `src/` may hold **none** (the
+lib test binary cannot be isolated at all — use a per-heap setter or a constructor parameter,
+which is what this entry's own fix introduced). Sabotage-verified: a second `#[test]`
+appended to `crash_report_optout.rs` fails it by file name.
+
+**Non-reproduction evidence (2026-08-29, second session).** Attempted with the entry's own
+command on the exact filed commit and could not make it fail:
+
+- `cargo test -p brood --test runtime_collector` on a pristine worktree of **`70549e80`**
+  (the commit the entry says reproduces): **20/20, and 0-for-10 in a loop.**
+- Same on `origin/main` (`802bf33d`), both the default test profile and `--release`, and
+  under `BROOD_VM=0`, `BROOD_NO_JIT=1`, `BROOD_NO_STDIMAGE=1`, `BROOD_TIER=1`: all 20/20.
+- The suspect the entry names (`8fa9f2f7`, deopt feedback) does not touch promotion, and the
+  other candidate from that day — the promote-on-8th-sighting change `7979c7a4` — is on a
+  path this test never takes: its `fn` forms are freshly-consed LOCAL lists, which
+  `make_closure_cached` refuses to key on (non-RUNTIME `fn_rest`), so each `def` RHS goes
+  through the uncached parse and `def`'s own promote-and-dedup, unchanged by that commit.
+
+**A confound worth knowing when re-attempting:** this machine's root filesystem hit **100%**
+during this day's sessions (17 GB of `make ab` worktrees; `make ab-clean` freed it), and in
+that same window an unrelated `make test` produced ten phantom in-language failures plus a
+TLS-serve failure that all vanished with disk space. If the 231-of-3000 runs happened in that
+window, ENOSPC is a candidate environment for it. **If it recurs on a healthy disk:** capture
+the `RUNTIME-GC estimate` stderr lines (they carry total/live/baseline) and the full env, and
+loop it — 0-for-10 here says one clean pass is not enough to close the question either way.
+
+## KI-85 — the checker false-positived: a tuple shape leaked onto a `pair` member ✅ FIXED 2026-08-29
+
+**Symptom.** With `(sig takes-str (string -> any))`:
+
+```brood
+(takes-str (first (fold (fn (a x) (cons x a)) [0] ["t"])))
+;; warning: takes-str: argument 1 expects string, got 0 (…)
+;; at runtime: (first …) => "t"
+```
+
+`reflect/expr-type` on the fold showed why: `(list | vector)<0>` — a sequence whose every
+element is `0`, for a value whose first element is a string. The system's governing
+invariant is "the checker is advisory and sound — it warns only on a *provable* misuse and
+never false-positives" (docs/type-system-status.md). This is a false positive.
+
+**Cause.** `[0]` types as the tuple `(tuple 0)` — a refinement of the VECTOR member. The
+fold's result is `init ∪ step`; the step `(cons x a)` with the accumulator over-approximated
+as `any` is a bare `pair` (unknown elements). `union_term` merged the two into ONE term with
+tags `pair | vector`, keeping the tuple refinement (correctly — it still describes the vector
+member). But `Ty::elem_ty` fell back to the tuple's elements when no `elem` refinement was
+set, and `Ty::tuple_elems` returned the shape unconditionally — so both answered `0` for a
+term whose `pair` member could hold anything. `first` then typed as exactly `0` (the tuple
+rule deliberately drops `nil` for an in-range position), a precise literal, and the `⊆`
+check against `string` fired.
+
+**Why it survived.** The lattice corpus tests (`lattice_laws_hold`, `subtyping_agrees…`)
+check the RELATIONS against each other, and every relation here was self-consistent — the
+defect is in an *accessor* that projects a per-tag refinement onto the whole term, which
+no relation-vs-relation test exercises. `std/` and `tests/` at zero warnings could not see
+it either: the shape needs a tuple literal as a fold init *and* a later positional read,
+which the corpus never does. And the checker's probe corpus (type-system-status.md) is
+built from misuses that should warn, not from valid programs that must stay silent — the
+direction this bug lives in.
+
+**Fix.** `elem_ty` answers the tuple fold only when the term's seq members are exactly the
+vector (`tags & SEQ_BITS == VECTOR_BIT`); `tuple_elems` answers only for a pure-vector term
+(`tags == VECTOR_BIT`) — a `nil` member makes `first` nil, a `pair` member makes it unknown,
+and unknown is the sound answer. A second gap the same probe exposed was closed alongside:
+a lambda literal passed as a callback was never checked (`callback_sig` → `None`, "the arity
+check covers those"), so its result was never compared. `lambda_sig_under` now types the
+literal's body under the arrow's *declared domain* and hands the existing disjointness rule
+a signature — sound because disjointness tolerates an over-approximated return, where the
+obvious alternative (an inferred `(any -> R)` arrow compared by `⊆`) would false-positive on
+`(fn (x) (+ x 1))` (`number ⊄ int`, though `int` under `x : int`).
+
+**Guard.** `types/tests.rs` `elem_of_a_tuple_shape_unioned_with_a_bare_pair_is_unknown`;
+`check/tests.rs` `a_tuple_shape_does_not_leak_onto_a_pair_member_through_first` (the exact
+program, asserting NO warnings), `a_lambda_callback_whose_result_is_disjoint_is_flagged`
+and `a_lambda_callback_with_a_merely_wider_result_is_not_flagged`. Sabotage-verified by
+removing both accessor guards and the `lambda_sig_under` wiring:
+
+```
+a_lambda_callback_whose_result_is_disjoint_is_flagged ... FAILED
+a_tuple_shape_does_not_leak_onto_a_pair_member_through_first ... FAILED
+elem_of_a_tuple_shape_unioned_with_a_bare_pair_is_unknown ... FAILED
+test result: FAILED. 403 passed; 3 failed
+```
+
+Restored: 406/406; `nest check std/ tests/` still at zero warnings.
+
+## KI-84 — an imaged start lost every buffer type's layers (the stdlib image reset a registry the project image had restored) ✅ FIXED 2026-08-29
+
+**Symptom.** In bedit, `nest test` passed 1306/1306 on the run that wrote `.brood/image.bin`
+and failed 99 on every run that read it, deterministically, with sources untouched. The
+failures were one thing wearing many faces: `special-mode's :activate hook makes the buffer
+read-only` (`(is (read-only? (typed :git-status)))` → `false`), every language-mode test
+(`a .ex buffer is in elixir-mode…`), the gutter tests, the tutorial's read-only prose. Probed
+at module-load time: `editor/layers/*type-layers*` held **26** entries on a cold start and
+**0** on a warm one. `BROOD_NO_STDIMAGE=1` made it pass. Minimal repro, in a bare process:
+
+```brood
+(def zz-alias editor/layers/*type-layers*)               ; the same 26-entry map
+(%image-write "/tmp/x.bin" (list ["" (list 'editor/layers/*type-layers* 'zz-alias)]) "FP")
+;; new process, load the section, then read both:
+;;   restored qualified: 0     restored alias: 26
+```
+
+**Cause.** Two images, and the older one won. The **project** image's root section restores
+`editor/layers/*type-layers*` with everything the app registered. Later, the first reference
+to `editor/layers` materialises that module from the **stdlib** image — whose writer puts
+every global under the module's prefix into its section, so the three registries are in it as
+their pristine seeds (`{}`, `()`, the values at stdlib-build time, before any program ran).
+`image_load_section` then `env_define`d the seed over the restored registry. Loading the same
+module from **source** runs `(defonce *type-layers* {})`, which leaves an existing binding
+alone; materialising had no `defonce`. The alias survived because a map is immutable and only
+the *binding* was overwritten — which is why the repro reads as "a namespaced global does not
+image" and why every value-shape experiment round-tripped perfectly.
+
+**Why it survived.** Every gate that ran loaded `editor/layers` from source *before* any
+registration, so `defonce` ran and the seed never landed on top of anything: the cold run of
+any suite, `nest check`, `brood_suite_passes` in this repo (whose own registries are written
+*after* the module loads). The brood repo has no project image of its own to read back, so
+the two-image interaction never occurred here at all. The only place it could show was a
+downstream project's *second* run — and `nest test`'s own "run it again" loop reports the
+same test names, so a red second run read as flakiness, not as a different program. Three
+earlier hypotheses were each ruled out by experiment before this one was found: a value shape
+that does not round-trip (a synthetic keyword→list-of-symbols map round-trips), a `defonce`
+that resolves the wrong name on the imaged path (an explicit qualified `bound?` guard changed
+nothing), and the KI-72 deferral parking heap `Value`s in an unrooted `Vec` (a real latent
+hazard, but switching it to defer the Rust-owned `Message` changed nothing either).
+
+**Fix.** `image_load_section`'s deferred pass — the entries whose name is already bound —
+now keeps an existing **data** binding when `reserve` is set. `reserve` is already passed
+exactly when an embedded module materialises from the stdlib image (`%require-force-in`,
+`(not (nil? src))`), which is the same fact: this image is pristine, older than the heap it
+restores into, so a binding that already exists is later state and must win. A pre-existing
+**function** is an ADR-246 autoload stub and is still replaced — the whole reason the
+deferred pass exists (KI-72). A **project** image passes no `reserve` and still overwrites:
+it describes a later state than the fresh process, and the `basic` test (`def` 41 → `def`
+`:clobbered` → restore → 41) depends on that. Two `defonce`-shaped registries in bedit
+(`interactive/*commands*`, found the same day) were a separate reset-on-reload of the same
+family and are fixed there.
+
+**Guard.** `tests/startup_image_test.blsp` — `a pristine (reserve) materialise keeps a bound
+data global; a stub is still replaced`, plus its converse `a project (non-reserve)
+materialise still overwrites a bound data global`. Sabotage-verified by deleting the
+`if reserve { … continue }` block and rebuilding:
+
+```
+tests/startup_image_test.blsp:62: test failed: … a pristine (reserve) materialise keeps a bound data global; a stub is still replaced
+    assert: (assert= {:brood [1 2 3]} si-reg)
+    actual: {:brood [1 2 3]}
+    expect: {}
+19 tests, 18 passed, 1 failed
+```
+
+Restored: 19/19. End to end: bedit `rm .brood/image.bin; nest test` ×4 — cold write then
+three warm reads — 1306/1306 each, where run 2 onward previously failed 99.
+
+## KI-50 — the JIT leaf inliner miscompiled the ordinary counting loop ✅ FIXED 2026-08-24
+
+**Status:** ✅ fixed. Guard: `tests/jit_leaf_frame_layout_test.blsp` (sabotage-verified — 4 of its
+6 cases fail with the fix reverted).
+
+**Symptom.** On the **default build**, silently wrong arithmetic:
+
+```lisp
+(defn sum-down (n acc) (if (<= n 0) acc (sum-down (dec n) (+ acc n))))
+(sum-down 200000 0)   ;; => 6251217600, want 20000100000
+(sum-down 400000 0)   ;; => type error: -: expected number, got nil   … at dec
+```
+
+The wrong value varied run to run (7004720064, 6251217600, 4138068672 …) because it depends on
+where the background compile lands. `BROOD_TIER=1`, `BROOD_NO_JIT=1`, `BROOD_TIER=0`,
+`BROOD_NO_LEAF_INLINE=1` and `BROOD_NO_DEOPT_RESUME=1` were all correct; `BROOD_NO_INLINE=1`
+(the *self*-inliner) was **not**, which is what isolated it to the leaf-callee inliner.
+
+**`std` was already corrupted by it.** `repeat-acc` (`std/prelude/seq.blsp`) is exactly this shape
+— `(repeat-acc (dec n) x (cons x acc))` — so `(count (repeat 200000 :a))` returned **28033** and
+`(string/length (apply str (repeat 200000 "x")))` returned **0**.
+
+**Mechanism.** A tiering arm has two frame layouts: the small body's (`nslots`) and, once the
+deferred upgrade installs, a leaf-spliced derivation's (`inline_nslots`). On a deopt or preempt
+the runtime must know which one the live frame was built to, because each keeps its deopt journal
+at its own slot. It decides **by frame size** — deliberately, because the `inline_installed` flag
+is flipped by `jit_tier` between the sizing and the deopt (that is KI-26, and reading the flag
+there caused an out-of-bounds `root_at`).
+
+Two things then combined:
+
+1. `leaf_nslots = d.nslots.max(nslots_total)` came out **exactly equal** to the small `nslots`
+   whenever the spliced callee needed no slot beyond the caller's own. `(dec n)` is that shape —
+   measured `nslots=4, inline_nslots=4`. So the size test could not tell the layouts apart, even
+   though every comment around it asserted a leaf layout is *strictly* larger.
+2. Splicing **removes the residual `Call`**, which makes the derivation `pure_self` and therefore
+   *unjournalled* (`ckpt_slot == u32::MAX`), while the small body — which still has the call —
+   journals at a real slot. The old predicate asked "is this frame leaf-spliced **and**
+   journalled?", answered *no* for that pair, and fell through to the **small** layout's slot.
+
+In the spliced layout that slot is an ordinary local. It held the live loop counter, so
+`jit_ckpt_resume` read `Int(165825)`, saw a positive integer, and decoded it as a journal word:
+resume ip `n >> 16` = 2, operand depth `n & 0xFFFF` = 34689. The loop resumed at a garbage
+instruction with thousands of phantom operands.
+
+**Fix.** Two halves, both in the "make the invariant true rather than work around it" direction:
+
+- `leaf_nslots = d.nslots.max(nslots_total + 1)` (`eval/compile/mod.rs`) — one reserved slot, so a
+  leaf layout is **strictly** larger than the small one and the size test means what the
+  surrounding comments already claimed.
+- `jit_frame_is_leaf_spliced`/`jit_ckpt_slot` replaced by a `FrameLayout` enum +
+  `jit_frame_layout(arm, frame_nslots)` (`eval/compile/jit_runtime.rs`), so a frame reads the
+  journal slot of the layout it was **built to** and never the other one's. An unjournalled layout
+  now yields `None` (resume from ip 0, effect-free by construction for exactly the arms that
+  decline to journal) instead of falling back to a foreign slot.
+
+**Why nothing caught it.** See the note under the index: the corruption needs one *long*
+activation, and no `std` suite tests a large input. It is invisible below ~10⁵ iterations and a
+loop that calls the same function eleven times at increasing sizes stays correct throughout — so
+repetition, the usual flake defence, does not help. The missing dimension is a **size sweep**
+(same closed-form answer at 10³/10⁵/10⁶, across `BROOD_TIER` 0/1/2), which the new guard does.
+
+---
+
+## KI-67 — `nest check` could not see inside a `try` body ✅ FIXED 2026-08-27
+
+> **Policy narrowed 2026-10-02.** The suppression below now covers only the two
+> error-*testing* forms, `error-of` and `assert-error`. An author's own `try` body is
+> checked like any other code: a `try` is where I/O lives, so dropping every lint but
+> "unbound" inside it hid exactly the misuse a rename or a reorder leaves behind. The test
+> macros are recognised by the SHAPE of their expansion (`walk.rs`,
+> `provokes_failure_on_purpose`), since every one of them expands to `%try` and the macro
+> name does not survive. The first run found real defects in six std modules (a short DNS
+> read reaching `bytes/uint`, `serve`'s attach sending to a nil manager, `codemod`'s nil
+> root, and three smaller); deliberate provocations in tests are wrapped in `check-allow`.
+
+`nest check` does not report an unbound symbol used inside a `try`. The skip is deliberate
+and has a test guarding it — `skips_error_testing_forms` — because a test that deliberately
+calls a missing name should not be flagged. The cost is that it blinds the checker to
+exactly the shape a rename wave produces.
+
+**How it presented.** hatch's spooled-upload write is:
+
+```lisp
+(try
+  (bytes/append path piece)
+  (catch e (do (spool-cleanup path) (error (str "spool write failed: " (error-message e))))))
+```
+
+brood renamed `bytes/append` to `file/spit-bytes-append` (it writes a FILE). `nest check`
+reported nothing. The repo was green, and every spooled upload was broken. It surfaced as
+four tests timing out — `:timeout`, `file/slurp-bytes: … No such file` — with no error
+naming the cause, because the `catch` swallowed the unbound-symbol error and re-raised it
+as a generic "spool write failed".
+
+**Why it is worth fixing rather than documenting.** A `try` is where I/O lives, and I/O is
+where the renamed primitives live (`file/*`, `os/*`, `bytes/*`). So the blind spot lines up
+precisely with the code most likely to be moved by a wave.
+
+**Candidates**, cheapest first:
+
+- Flag an unbound symbol in a `try` **whose `catch` does not itself mention it** — that
+  preserves `skips_error_testing_forms` (those tests catch the very name they call) while
+  covering the rename case, which never does.
+- A `nest check --strict` that reports them in a separate section, so the default stays
+  quiet and a rename wave has one command to run.
+- Have the checker treat an unbound symbol as an error but a *deliberate* one as suppressed
+  by the existing `(check-allow :unbound …)` directive, which already exists for this shape.
+
+Found twice in one session: this, and brood-terminal's `run-process` earlier.
+
+---
+
+
+**Fixed.** `try` / `%try` / `error-of` / `assert-error` moved off `SpecialHead::SkipBody`
+onto a new `ErrorTesting` arm that **descends** into the body and keeps **only** the
+unbound-symbol diagnostic. Everything else — arity, type misuse, exhaustiveness, no-method
+— is dropped, because deliberately exercising a failure is what these forms are *for*.
+
+The filtering happens **at the collection point**, not lint-by-lint: the arm walks into a
+scratch `Vec` and retains messages starting with `UNBOUND_PREFIX`. That was the second
+attempt. The first gated each lint on a `SUPPRESS_*` bit and immediately proved too coarse —
+exhaustiveness and `no num-mul method` have no bit, so `nest check` went from 0 to 6
+warnings, four of them false. Filtering at the collection point means a lint added later is
+suppressed here **by default**, which is the correct default for these forms.
+
+A test that really does assert on an unbound name opts out with `(check-allow :unbound …)`.
+
+**It found two real dead call sites on its first run:**
+
+| where | stale name | swallowed by |
+|---|---|---|
+| `tests/http_test.blsp:63-64` | `bytes-concat` (it is `bytes/concat`) | `assert-error` — the test passed on the *unbound* error, never exercising the CRLF-injection refusal it claimed to test |
+| `std/tool/mcp.blsp:78-83` | four `project-*` names that are `defn-` (module-private) | `(catch _ nil)` — so `mcp`'s per-file shadow report always returned nil |
+
+The second is the more instructive one: it is shipped `std/`, not a test, and the fix was to
+add a public `project/file-shadow-warnings` rather than let `mcp` reach for four private
+names. Guarded by `unbound_inside_an_error_testing_form_is_still_flagged` and
+`only_unbound_survives_an_error_testing_form` in `types/check/tests.rs` — sabotage-verified
+(restore `SkipBody` for `try` and the first fails).
+
+## KI-66 — nothing verified that a project still boots ✅ CLOSED 2026-08-27
+
+`nest check` resolves names; `nest test` runs the suite. Neither loads `main`. Module-load
+is precisely where a project with a stale dependency dies, so both gates can be green while
+the app cannot start.
+
+hive went down twice on the same shape:
+
+| | error | raised at |
+|---|---|---|
+| v130 | `unbound symbol: int->char` | `hatch/web/live.blsp` during `require`, before `main` |
+| v134 | `unbound symbol: os/getenv` | `web/application/default-logger-opts`, first line of `main` |
+
+Both times `nest check` was clean and the suite was green, because the failing module was a
+pinned dependency that the local working tree did not match, and because a suite never
+executes the entry point. The Rust runtime built fine — it is the BUNDLE that could not
+start, which is a different artifact from anything the gates look at.
+
+**The tool already exists.** `nest run --for <DURATION>` — documented for exercising a TUI
+or animation loop in CI — is exactly a boot check, and was verified on a fixture:
+
+| entry point | `nest run --for 1s` |
+|---|---|
+| `(defn main () (this-name-does-not-exist))` | **exit 1**, with `unbound symbol: …` |
+| `(defn main () (io/puts "booted") (sleep 60000))` | **exit 0**, having printed `booted` |
+
+So this is not a tooling gap, it is a wiring one: nothing suggests running it and no gate
+does. Note what it catches that a module-load check would NOT — the second outage raised
+inside `default-logger-opts`, called from `main`'s body, so loading the module was never
+going to be enough. You have to actually run the thing.
+
+**Wired into hive's `bin/ci`.** The open question is the shared package-ci workflow. It
+cannot simply be enabled everywhere: `bedit` and `pong` need a GUI, and a library has no
+`:main` at all. It wants an opt-in input, the way `postgres: true` is.
+
+**Closed.** That opt-in landed in `2b51de93`: `package-ci.yml` takes a `boot-check` boolean
+(default **false**) plus a `boot-seconds` string (default `6s`), and runs `nest run --for`
+before the suite when set. Default-off is deliberate and not laziness — a library has no
+`:main` to run, and `bedit`/`pong` open a window a runner has not got. hive's `bin/ci` runs
+it unconditionally, which is where the two outages happened.
+
+**Related, and cheap alongside it:** a bundled app cannot say what it is. Answering "which
+brood built this, with which features" required `grep -ac cranelift` on the binary over SSH,
+and the first attempt used `strings`, which is absent from `debian:bookworm-slim` and so
+reported 0 for *command not found* — indistinguishable from "no JIT". A `--build-info` on
+the bundle (brood commit, features, module count) removes that guesswork entirely.
+
+**Both follow-throughs landed 2026-08-27 ([ADR-257](../decisions.md)).**
+
+- **`--build-info` shipped** as `myapp --brood-build-info` — brood version, build-id,
+  features, app name/version, module count. The `--brood-` argv prefix is **reserved by
+  the runtime** (two names, first position only) so the bundle's "argv belongs to the app"
+  contract survives intact, and it reads only the manifest and module directory — loading
+  no module, so it still answers on a bundle whose modules are broken, which is when it
+  is asked.
+- **A first-class boot check shipped too**, `nest run --check-boot` and the one `nest
+  release` runs on each binary it writes (opt-in `--smoke` until 2026-08-29; now the
+  default, with `--no-smoke` to skip), alongside the `nest run --for` wiring recorded above. The distinction between
+  them is the useful part of this entry and is now written down as a table in ADR-257:
+  `--check-boot` loads every module and resolves `:main` **without invoking it**, so it
+  catches the v130 class (raised during `require`) and *not* the v134 class (reached from
+  `main`'s body) — exactly the point this entry made. In exchange it is always safe to
+  run: no window, no port, no side effects, and valid for a library with no runnable
+  `:main`, which is precisely why `package-ci.yml`'s `boot-check` had to default to false.
+  The release check additionally runs the **artifact**, which carries a dependency snapshot
+  no source-tree check can see — and deletes it if it does not boot.
+
+---
+
+## KI-64 — a JIT block-argument spill landed on the deopt journal ✅ FIXED 2026-08-26
+
+**Status:** ✅ **fixed** — and the mechanism is *not* the one this entry inferred. It is
+neither shared code nor multi-process nor load: it reproduces in **one process, on the
+fourth call**, with no `spawn` and no JSON. `BROOD_NO_JIT=1` is no longer needed in hive.
+
+**Root cause.** A JIT'd arm's frame is `[locals | spill slots | checkpoint journal]`, and the
+spill area has two independent halves — **call-result** spills (a heap handle left live below
+a later call, the `fib` shape) and **block-argument** spills (an operand crossing a block
+boundary that is not a profiled `Int`, ADR/KI-49). `jit_spill_reserve` sizes both and opened
+with:
+
+```rust
+if non_tail_call_count(code) < 2 { return 0; }
+```
+
+which is right for the call-result half and wrong for the other one. Block-argument slots are
+needed whenever the operand stack is deep where a block boundary falls, and that happens with
+a **single** non-tail call as soon as an `if` sits inside that call's argument list:
+
+```lisp
+(walk-list (rest xs) (step (first xs) (if first? acc (cons "," acc))) false)
+```
+
+Those arms reserved nothing, and the lowering's `blockarg_spill_base` was a *clamped*
+subtraction — with a zero reserve it collapsed onto `spill_base`, which for a journalling arm
+**is the checkpoint slot**. The native then wrote block arguments over the deopt journal, and
+a later block-argument read returned the packed journal word `(resume_ip << 16 | depth)` as
+if it were a live value. `17 << 16 | 2` = **1114114** — the number in the error, and the
+reason it never varied with the payload. Arms with no journal were worse: they wrote past the
+frame top entirely (`register-impl-check-arity` wanted 11 such slots against a 10-slot frame).
+
+Affected arms were not exotic: `fold-loop`, `index-of-seq-from`, `json/emit-list`,
+`json/emit-items`, `any?`, and most of the `match-*` predicates.
+
+**The fix** is `jit_plan::blockarg_spill_window` — the window is the *top* `len` slots of the
+reserve and `len = max_leader_depth.min(reserve)`, so it can never reach the journal. Where
+the reserve exists (the ≥2-non-tail-call shape KI-49 measured) `reserve >= want` and nothing
+changes; where it does not, `len` is 0 and a `Handle` crossing a boundary falls through to
+`ParamRepr::Int`, which tag-checks and **deopts** rather than corrupting — the pre-KI-49
+behaviour, correct but slower. A `spill-area-exceeds-frame` bail in `jit_lower_arm` backstops
+it; it is unreachable by construction and stays because *nothing* checked before this.
+
+**Growing the frame instead was measured and rejected.** Reserving `max_leader_depth` for
+every lowerable arm is the obvious fix and costs **+2 to +7% on nearly every benchmark row**
+(`errors-deep` +7.5, `primes` +6.8, `loop` +6.1, `spawn` +5.3, `collatz` +4.4, `fib` +3.1),
+because `max_leader_depth` counts int/bool merges that need no slot at all — `not`, `int?`,
+`inc`, `dec` and every small type predicate. The clamped form measures flat: full
+`ab-bench --all`, every row inside its own floor (`reduce` +2.8% vs a 5.6% floor, `pingpong`
++0.9% vs 0.4%, `ring` +0.8% vs 1.8%). `supervisor` read +17.2% then −13.5% across two runs
+with a 12–17% base-vs-base floor, i.e. **not resolvable** on that row — no claim either way.
+
+**Guarded by** `tests/jit_blockarg_spill_test.blsp` (the behavioural end-to-end case, which
+fails only if the clamp *and* the backstop are both removed — verified by sabotaging both) and
+two invariant tests in `jit_plan` that fail on the clamp alone, naming the arms.
+
+**What this entry got wrong, and why.** Every inference in the original diagnosis pointed at
+shared compiled code, and each was reasonable and wrong:
+
+- *"the multi-PROCESS dimension looks load-bearing"* — it is not. `spawn` merely got the arm
+  hot faster. The single-process repro fails on call 4.
+- *`BROOD_NO_SHARED_ARMS=1` made it clean* — a timing accident, and the most expensive false
+  signal here. With the reproduction narrowed to one process the same flag **still fails**.
+  A flag that fixes a bug is evidence about *scheduling*, not about mechanism, until the
+  repro is minimal.
+- *"the first ~60 requests succeed, then permanent"* — read as a load threshold; it is just
+  the tier-up point, and the sticky part is `BAILED` deopt feedback.
+
+The thing that actually localised it was **`BROOD_NO_DEOPT_RESUME=1`**, the one flag in the
+matrix that names the machinery rather than a policy — and then one `eprintln` at the failing
+`empty?` showing `raw=[0x2,0x110002,…]`, i.e. a *packed journal word* rather than a plausible
+datum. Decode the bad value before theorising about how it travelled.
+
+---
+
+**Original report (superseded above).**
+
+**What it looks like from outside.** hive's package API returns 500 while the site looks
+healthy: `/health` answers, every web page renders, the database is fine. A machine restart
+fixes it, for a while. This is what "hive hangs silently and recovers on restart" has meant
+for months — it was read as flaky infrastructure and it is a compiler bug.
+
+**Measured** (locally, against a real Postgres with the production data shape):
+
+| | with JIT | `BROOD_NO_JIT=1` |
+|---|---|---|
+| 40 sequential API requests | 8 ok, 32 failed | — |
+| 40 concurrent API requests | 0 ok, 40 failed | — |
+| 120 sequential API requests | — | **120 ok, 0 failed** |
+| 40 sequential WEB requests (same rows, same `registry/search`) | 40 ok, 0 failed | — |
+
+The first ~60 requests succeed; after that it is permanent until restart. That shape — fine
+while interpreted, broken once hot, sticky thereafter — is the tiering signature.
+
+**The error**, from instrumenting the handler (the server logs nothing on a 500, which is
+its own gap):
+
+    empty?: expected collection, got int (1114114)
+
+`emit-pairs` and `emit-list` in `std/json.blsp` recurse on a list and call `empty?` on it.
+An `int` arriving there means the argument slot held a non-list. **1114114 is 0x110002 —
+one past the Unicode maximum (0x10FFFF)**, which points at a codepoint counter leaking into
+the slot rather than an arbitrary garbage value.
+
+**Ruled out by measurement, not argument:**
+
+- *the connection pool* — Postgres reports 5 idle connections throughout; the pool is size 5
+  and healthy while the API is failing;
+- *the database, the query, `ilike`* — the WEB path reads the same rows through the same
+  `registry/search` and is 40/40 clean while the API is failing;
+- *`json/encode` itself* — `/health` encodes JSON on every request and never fails;
+- *hive's own code* — the only difference on the failing path is that it JSON-encodes the
+  package rows.
+
+**Not yet reproduced standalone.** 20 000 `json/encode` calls of the same payload in ONE
+process (including the multi-byte em dash two package descriptions carry) stay identical.
+hive reproduces it in about sixty requests, so the multi-PROCESS dimension looks load-bearing
+— each request runs in its own green process against shared compiled code (ADR-175/215).
+That is where to look next: a shared arm compiled in one process and adopted by another.
+
+**Next step.** Run hive's API under `BROOD_JIT_DUMP_IR=1` and `BROOD_DEOPT_TRACE=1` to name
+the arm, then `BROOD_NO_SHARED_ARMS=1` to test the shared-code hypothesis directly — if that
+makes it clean, the fault is in adoption rather than in lowering.
+
+## KI-63 — loading modules taxes JIT'd hot loops ☑️ RETRACTED 2026-08-25 (no such effect)
+
+**Status:** ☑️ **RETRACTED — there is no such effect.** Kept in full because the way it was
+wrong is worth more than the claim was: three successive measurement methods each produced a
+confident number, and each was an artifact.
+
+**The refutation, first.** Run the loop once and discard it, then time a second run in the same
+process:
+
+| | 20M loop, after a discarded warm-up |
+|---|---|
+| no module loaded | min 23, med 24, max 25 ms |
+| `format` loaded first | min 23, med 24, max 26 ms |
+
+Identical. Every figure below measured the **first** run of the loop — i.e. JIT tiering — not
+steady-state execution. Running the loop three times in one process shows it plainly: with
+`format`, 50 / 24 / 24 ms; without `format`, 51 / 24 / 24 ms. The first run is slow either way.
+
+**And first-run timing is not even stable against program shape.** The identical loop measured a
+median of 25 ms as the only statement in a file, and 40-51 ms as the first of three call sites in
+another — same code, same binary. That sensitivity is what produced the "`format` costs +92%"
+result: `format` was never the variable, the file's shape was.
+
+**What is actually true, and worth keeping:** a whole-process benchmark of a short row measures
+tiering as much as it measures the code. The harness does one discarded warm-up run *per
+language*, which warms the boot cache — but every row runs in a fresh process, so the program's
+own functions tier from cold on every measured run. For rows in the tens of milliseconds that is
+a large and variable share of the number.
+
+Everything below is the retracted investigation, kept for the traps it documents.
+
+
+
+**What.** The same allocation-free 20M-iteration loop, natively compiled, runs measurably slower
+if std modules were loaded first, and the penalty roughly **doubled** since 0.3.11. Timed
+**in-process** — `os/now-ns` either side of the loop — so module-load time is outside the
+measurement entirely. Unpinned, 25 runs:
+
+| | 0.3.11 | 0.12.0 |
+|---|---|---|
+| 0 modules | min 23, med 23, p90 23 | min 25, med 26, p90 29 |
+| 4 modules (`json format datetime csv`) | min 22, med 26, p90 30 | min 28, med 33, p90 50 |
+| **tax** | **−4.3% min / +13.0% med** | **+12.0% min / +26.9% med** |
+
+**Read the direction, not a single number.** Three samples of the same comparison gave a 0.12.0
+tax of +27.9%, +25.0% and +12.0% on min, against a 0.3.11 tax of −5.8%, +0.0% and −4.3%. The
+*ratio* is consistently about 2x and the sign is consistent; the magnitude is not stable enough
+to quote one figure, and the p90 gap (30 vs 50 ms) says the distribution is what moved most.
+
+It is **JIT-only**: under `BROOD_NO_JIT=1` or `BROOD_TIER=1` the same
+comparison reads 942 → 939 ms and 949 → 949 ms, i.e. 0.0%. The interpreter does not care; native
+code does.
+
+This is on the common path, not a corner: after the namespacing waves *every* program loads
+modules — `io/puts` alone pulls `io`.
+
+**Method, because the naive versions are both wrong.**
+
+1. **Time in-process; differencing two programs is not reliable enough here.** Loop time is
+   `os/now-ns` either side of the loop. The obvious alternative — `wall(file with the loop) −
+   wall(the identical file without it)` — cancels module-load cost in principle, and it is what
+   this entry first used, but it fails once the non-loop part is large and variable: with 2000
+   `defn`s in both files it reported the loop taking **4 ms**, and it manufactured a "+64% at
+   2000 functions" threshold that in-process timing shows does not exist (flat 24–26 ms from 0
+   to 4000 extra functions). Subtracting the harness's `startup` row is worse again: that row is
+   `(io/puts 0)`, which loads `io` but not `os`/`string`, so it under-subtracts for every real
+   row.
+2. **Do not pin.** Pinned to one core the same measurement reads **+68.2%** rather than +27.9%,
+   because the background JIT compiler competes for that core and loading modules increases
+   compilation volume — precisely the trap CLAUDE.md documents for `make ab`. The 0.3.11 side
+   inflates too (+27.1% pinned vs −5.8% unpinned), so a pinned reading exaggerates *both* sides
+   and the regression as well.
+
+**What it is not.** Each of these leaves the tax in place, so none is the cause:
+`BROOD_NO_SHARED_ARMS=1` (75.5%), `BROOD_RT_GC_FLOOR=99999999` (73.4%), `BROOD_NO_INLINE=1`
+(87.4%), `BROOD_NO_LEAF_INLINE=1` (78.4%) — pinned figures, compared against 87.1% pinned
+default.
+
+**Reproducer.** Two files per point, `N` modules `require-one`'d at the top, then
+`(defn- go (i acc) (if (>= i 20000000) acc (go (+ i 1) (+ acc i)))) (go 0 0)`; the paired file
+has the same requires and no loop. Difference the walls.
+
+**Why it matters more than 28%.** It compounds with KI-61: the namespacing both forces more
+modules to be loaded *and* makes each loaded module tax the code that runs afterwards.
+
+---
+
+## KI-62 — the stdlib image was unusable on the shipped build ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed. Guard: `stdlib image: fidelity › a replayed edge naming a module this
+binary lacks does not break require`, sabotage-verified.
+
+**What.** Installing the stdlib image made the *next* `require` fail:
+
+```
+error: require: cannot find module 'test'
+```
+
+The image is keyed on `stdlib-id`, a hash of the stdlib's **content**, and that is deliberate:
+`brood`, `nest` and `brood-lsp` built from one tree report the same id so they share one ~2 MB
+image instead of writing three. But sharing a key across binaries assumes they can load the same
+things, and they cannot — a **lean** runtime (what `nest release` and
+`make install INSTALL_FEATURES=RUN_FEATURES` produce, i.e. what actually ships) bakes in 88
+modules with **no dev-tools**, and `std/tool/project.blsp`'s recorded require-edges name `test`:
+
+```
+project -> (sexp coverage test hash reflect dev package version io os path file seq string)
+```
+
+`stdimage/install` replays those edges — correctly, and for a good reason: a restored module
+defines its bindings and evaluates nothing, so without the edges `url` comes back with no
+`path`. But replaying an edge to a module this binary has no source for poisons `require`
+outright.
+
+**So the image's headline number has never been available on the build users run.** Measured on
+release, once the edge is filtered:
+
+| | from source | from image | |
+|---|---|---|---|
+| `require format` | 62.0 ms | **12.8 ms** | 4.8x |
+| `require datetime` | 3.3 ms | **0.39 ms** | ~9x |
+
+**Fixed at install, not at build**, and the distinction is load-bearing: the image may have been
+written by a different binary from the one reading it — that is the entire point of sharing the
+key — so the *reader* is the only party that knows which modules it can load. Filtering at build
+time would produce an image correct for its writer and wrong for its readers.
+
+**Why it went unnoticed.** The image is built by `make install` and by `nest stdimage`, but it is
+not installed at boot (see KI-61), so nothing in the normal path ever replays those edges. It is
+dead code until someone calls `stdimage/install` — which is exactly what a boot-install
+experiment does, and what this was found by.
+
+---
+
+## KI-61 — startup is a per-wave namespacing tax ✅ FIXED 2026-08-26
+
+**Status:** ✅ **fixed** — and not the way this entry predicted. The recorded fix was "make a
+module load cheap at boot" (the std image + a registration replay). The actual fix was to **not
+load the modules at boot at all**: the prelude's references into `string`/`seq` are now
+**autoload stubs** that load their module on first call (ADR-246), so boot loads nothing and a
+future namespacing wave costs one declaration instead of a few more milliseconds on every
+invocation, forever. A second, unrecorded half went with it — the warm boot also read the
+prelude a *second* time, positioned, purely to recover def-sites for `M-.`; those now travel in
+the boot cache (ADR-247).
+
+Measured, warm, `taskset`-pinned, best-of-9 through `scripts/ab-bench.sh` against `7bf57f52`:
+
+| | before | after |
+|---|---|---|
+| prelude boot (`BROOD_BOOT_TRACE`) | 22.8 ms | **11.6 ms** |
+| — of which the two `require-one`s | 12.1 ms | 0 |
+| — of which the raw positioned read | 3.5 ms | 0 |
+| `startup` row | 45 ms | **32 ms** (−28.9%) |
+| base RSS, bare program | 55.6 MB | **50.7 MB** |
+| bare `brood empty.blsp` | ~26 ms | **~15 ms** |
+
+Every other row moved by the same absolute ~11–13 ms (`fib` −10.5%, `loop` −10.2%, `reduce`
+−22.2%, `strings` −34.7%), which is the point: this was a cost on every invocation, not on a
+benchmark. The std image remains the right way to make the *lazy* load fast when it happens, and
+the registration-replay design recorded below is still the work that would let it be installed at
+boot — the two compose. What follows is the original diagnosis, kept because the measurement
+traps in it are the reason the fix landed on the second try.
+
+---
+
+**Original diagnosis (2026-08-25).** Every figure below is best-of-15, `taskset`-pinned, on an
+empty program, with **each binary warmed first** — the boot cache is keyed on build-id *and the
+executable's mtime*, so a freshly copied binary's first run measures cache population (~1.2 s
+cold against ~0.11 s warm) and would have made the whole sweep meaningless.
+
+**What.** The first cross-language run on 0.12.0 read `startup` at **29.9 ms** against 0.3.11's
+16.5. A sweep of 8 points across the 244 commits shows two clean **steps**, not a ramp — which
+is what makes this bisectable at all, unlike the `primes` hunt FRONTIER records:
+
+```
+d5572d61  13.9      07538dea  13.5      3d734516  17.5
+4fb903ce  13.5      cf97b1d4  17.6 <-   0f326ead  24.8 <-
+                    7505e44a  17.5      c39ca87c  24.8
+```
+
+Both steps are the same mechanism, and it is not a bug in either commit:
+
+| step | commit | cause | cost |
+|---|---|---|---|
+| 1 | `1f613d23` "move the string surface into a `string` library module" | `(require-one 'string)` | **+4.0 ms** |
+| 2 | the v0.10.0/v0.11.0 waves | `(require-one 'seq)` | **+7.5 ms** |
+
+Step 2 was proven by deleting the single line and rebuilding: **24.3 -> 16.8 ms, -30.8%**.
+
+**Corroborated by the published harness, 2026-08-26.** The first full cross-language run on
+0.13.0 reads `startup` at **31.2 ms** (5th of eight, behind .NET) — consistent with the sweep and
+still climbing. It also names a **second symptom this entry had not recorded: base RSS is 56.1 MB**
+(6th of eight, heavier than Node's 42.9), against ~19-22 MB at 0.3.11. Same cause: the force-loaded
+modules are materialised into every boot. Both figures are warm — the boot cache is populated, so
+this is not the cold/warm bimodality `../brood-benchmarks/BENCHMARKS.md` warns about. It also
+deflates every other published row, since `compute = wall - startup`.
+
+**Why the load is there.** A prelude helper referencing `seq/find` or `string/char-at` is
+late-bound — a qualified name in a function *body* resolves when the function is called — but
+boot's namespace-resolve is a no-op for the root prelude, so those refs never auto-require. The
+module therefore has to be force-loaded before anything can call such a helper.
+
+**Why this matters more than 11 ms.** It is a **per-wave tax**. The core has gone 613 -> ~280
+published names across these refactors, each tranche leaving another module the prelude must
+force-load, and each costs a few ms of *every* `brood` invocation forever. It also deflates
+every other published benchmark row: `compute = wall - startup`, so a bigger startup makes each
+row's reported compute *smaller* than its wall-clock regression.
+
+**A suspect that measurement cleared.** `7bbf979d feat(stdimage): a startup image for the
+standard library` sits inside step 2's range and is **flat against its parent**. A startup
+regression in a window containing a commit named "startup image" is exactly the coincidence one
+would bank without checking.
+
+**The fix is not to revert a wave.** It is to make a module load cheap at boot — which is
+precisely what the std image does (4-33x) and precisely why it is not installed at boot:
+materialising a module defines its bindings and evaluates nothing, so every registration its
+load would have performed is skipped, and the suite fails 131 of 4873 with errors that
+type-check perfectly clean.
+
+**The recorded blocker is narrower than it reads, and there is a precedent in the same file.**
+The note rules out *snapshotting* `*impls*` — correct, since a closure nested in a snapshotted
+value does not round-trip. But `stdimage/install` **already replays** `*require-edges*` through
+a `%std-edges` section, for exactly this reason ("a restored module defines its bindings but
+evaluates nothing, so without them `url` comes back with no `path`"). The extension is to record
+the registration **forms** — `(impl Port :fn (write [f s] (f s)))` — rather than the resulting
+values: a form is symbols and lists all the way down, so it images cleanly, and evaluating it on
+materialise rebuilds the closure *and* performs the registration. Bounded: 56 `impl` forms
+across 13 files, 24 `defability`, 35 `defrecord`; `*record-ids*` (plain symbols) already
+restores correctly.
+
+**The scoping question is now answered with current data, and the recorded premise holds.**
+Measured 2026-08-25 by actually installing the image at boot and running the suite:
+**150 failures of 4920** (the note's figure was 131 of 4873, taken before the `%std-edges` replay
+and the root-global attribution fix — so those changed nothing here). Every failure is
+registration-shaped:
+
+```
+10  io: ports are Port impls › port? is true for a fn port
+ 8  io: ports are Port impls › a port record prints as itself
+ 6  the temporal types are records › every sealed member satisfies …
+ 6  log: the stock backend is a record › a backend prints as …
+ 6  http: responses are records with a Response impl
+```
+
+**And the prize is measured, not estimated.** Installing the image before the two boot requires
+takes a debug-build startup from **286.9 → 180.1 ms (−37%)**. Doing it needs one more thing
+besides replay: `stdimage/install` reaches for `os/getenv`, `path/join` and `file/exists?`
+through `os`/`path`/`file`, none of which are loaded that early, so it dies with
+`unbound symbol: os/getenv`. A prelude-only twin using `%getenv` + `str` + the `file/exists?`
+native (all bound at that point) boots fine — that part is done and works; it is only the 150
+registration failures that make it unshippable.
+
+So the remaining work is exactly the replay, and it is now sized: record each module's
+registration **forms** at image-build time (56 `impl`, 24 `defability`, 35 `defrecord` across
+std), store them as data — symbols and lists image cleanly, unlike the closures a value snapshot
+would need — and evaluate them when the module materialises. The hook is the image branch of
+`require-one` in `std/prelude/tools.blsp`, immediately after the `*require-edges*` fold that
+already replays the header's requires for the same reason.
+
+> **Superseded 2026-08-27 — the replay is DONE, and the design sketched below was wrong on its
+> central point.** See **ADR-256**. Three things it got wrong, all worth knowing:
+>
+> - **The "150 of 4920" figure, and the later "170 of 4888", are both artifacts.** The warning
+>   two paragraphs down was right and applies to those numbers too: installing the image from a
+>   PROGRAM cannot work, because the framework and its dependency tree have already loaded the
+>   library from source. Instrumented, that configuration reports **99 sections installed and
+>   materialises zero modules**. Installed at BOOT — from the prelude, the only place early
+>   enough — the honest figure is **157 of 4917**.
+> - **Registrations did NOT have to travel as forms.** The claim below that a value snapshot
+>   cannot carry them, because "a closure nested in a snapshotted value does not round-trip", is
+>   measured false: it round-trips and the impl calls correctly. Forms would have needed each
+>   defining module's namespace re-established to resolve their bodies' bare names — the hard
+>   part of that design, and it was never needed.
+> - **The registration gap was not even the largest fault.** 112 of the 157 were a
+>   **concurrency race**: the image branch provided the module before following its
+>   require-edges, so a racing process saw it as loaded with its dependencies still missing.
+>   Every affected file passed when run alone.
+>
+> Result: **4917/4917 with the image installed at boot**, `json` loads 6.5 → 1.7 ms, `http`
+> 12.0 → 3.6 ms, the `json` benchmark row −5.6%. Opt-in as `BROOD_STDIMAGE=1`.
+
+**Do not try to validate this with a post-boot probe — it cannot work, and it will tell you the
+bug is fixed.** A qualified name auto-requires *at compile time*, so every module a probe
+mentions is loaded from source before its first line executes; the probe then measures a
+source-loaded module and reports every `satisfies?` green. Routing through `eval` does not help
+(the `eval`'d forms are read at runtime but the enclosing file still names the module), and
+neither does installing the image first. Three separate probes here — `queue`, `io`, `datetime`
+— all reported "no registrations lost" while the suite under boot-install reported 150 failures.
+The only measurement that means anything is the suite with the image installed at boot.
+
+---
+
+## KI-60 — the stdlib lost stderr: `Port` was implemented for `:fn`, but `*err*` is a native ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed — **independently and concurrently**, here and upstream in
+`2b6b1672 fix(io): the ports the language ships with were not ports`, with the identical
+one-line impl. The merge brought both in and they had to be de-duplicated; upstream's comment
+is the one kept. Found here while merging `origin/main`, which was **red on three `nest`
+tests** — verified red at `f390bd56` with none of this branch's work present.
+
+Upstream's note adds the half this entry lacked, and it is the better half: **every test passed
+anyway**, because `with-err-str` rebinds `*err*` to a Brood closure — a `:fn` — so the tests
+only ever exercised the working case and the *default* was the broken one.
+
+**What.** `io/print` and friends take their destination as a trailing `:to <port>` pair, and
+`split-target` only treats it as a destination when `(port? (nth xs (- n 1)))`. `port?` is
+`(satisfies? 'Port x)`, and the ability is implemented as `(impl Port :fn (write [f s] (f s)))`
+— "a bare 1-arg sink fn is a port".
+
+But `*err*` is not a `:fn`:
+
+```lisp
+(def *err* %write-err)     ; std/prelude/control.blsp
+(type-of *err*)  ;=> :native      (port? *err*)  ;=> false
+(type-of (fn (s) s))  ;=> :fn     (port? (fn (s) s))  ;=> true
+```
+
+A Rust primitive's identity is `:native`, so the `:fn` impl never matched it. Every
+`(io/print … :to *err*)` in the stdlib — `log`, `std/tool/test`, `supervisor`, `repl`,
+`telemetry`, `format` — therefore failed the port test, and the pair fell through as ordinary
+values: the text went to **stdout** with a literal ` :to #<native %write-err>` appended.
+
+```
+Building mf (1 file) :to #<native %write-err>
+src/main.blsp:3:15: warning: unbound symbol: print :to #<native %write-err>
+```
+
+`*out*` is `%write-out` and has the identical shape, so an explicit `:to *out*` was equally
+broken; it just looked right because the fallback destination is also stdout.
+
+**Why the tests are the ones that caught it.** `declared_sig_is_authoritative_cross_module`
+asserts on warnings read from **stderr** — with the diagnostics diverted to stdout it saw none.
+That is a much better tripwire than the two that merely used a renamed `print`, and reverting
+only this impl confirms it: that test fails, the other two pass.
+
+**Fix.** `(impl Port :native (write [f s] (f s)))` beside the `:fn` one. One line, in Brood.
+
+**The lesson is about ability dispatch, not about ports.** `impl` is keyed on *identity*, and
+`:fn` and `:native` are two identities for things that are both "callable with one argument".
+Any ability meant to cover "a function" needs both, and nothing warns when it covers only one —
+the failure is a silently-declined dispatch, which is the same failure mode ADR-182's
+monomorphization notes and the stdimage boot-install note both describe: bindings present,
+registration missing, type-checks clean.
+
+---
+
+## KI-59 — a successful `nest run --for` could exit 1 ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed. Guard: `nest::cli_failure_reporting::run_for_exits_nonzero_when_the_program_dies`,
+extended with an instant-exit case that asserts the printed *reason*, not just the code. Read the
+caveat below before trusting it as a gate.
+
+**What.** `nest run --for 5s ok.blsp` on a program that prints and exits printed its output, then
+`[exit] :noproc`, and exited **1**. The wrapper `nest` generates was:
+
+```lisp
+(let (p (%spawn (fn () …))) (monitor p)
+  (receive ([:down _ ^p reason] (println "[exit]" reason) (= reason :normal)) …))
+```
+
+`%spawn` and `monitor` are two steps. If the program finishes in the window between them,
+monitoring an already-dead pid fires a **synthetic `:noproc`** — the monitor never saw the real
+exit — so `(= :noproc :normal)` is false and a program that *succeeded* reports failure.
+
+The kernel already names this exact race, one field over: `%spawn-link`'s own docstring says it
+"atomically links the child to the caller before it runs (**no spawn->link :noproc race**)"
+(ADR-067). The link half was solved; the monitor half kept the two-step form.
+
+**Why not just treat `:noproc` as success.** Because it is ambiguous in the direction that
+matters: a program that *crashed* before the monitor attached produces the same `:noproc`, and
+the whole reason this wrapper exists is the exit-nonzero contract beside it — a comment in
+`main.rs` records that `nest run --for 3s boom.blsp` once printed a crash and reported success.
+Mapping `:noproc` to 0 would restore that bug for fast-crashing programs.
+
+**The fix is atomicity, in Brood rather than the kernel.** `%spawn-link` establishes the link
+*before the child runs*, so the child's real reason always arrives; `trap-exit` turns it into a
+trappable `[:EXIT pid reason]` message instead of killing the driver, which is what `monitor` was
+chosen for. No new builtin — the primitives were already there.
+
+**Honest caveat about the guard.** The race is timing-dependent and the test is load-sensitive,
+not deterministic: with the fix reverted it fails ~1 run in 6 under 12 spinning cores, and
+adding an instant-exit case did **not** measurably raise that. What prevents the bug is the
+structural change; the test is a tripwire that will catch a regression eventually, not on the
+next run. Do not read a single green run of it as proof.
+
+---
+
+## KI-58 — the namespacing killed the `table-put` call-site inline ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed. Guard:
+`eval::compile::tests::table_put_call_site_inline_recognizes_the_namespaced_wrapper`,
+sabotage-verified against the pre-fix resolver.
+
+**What.** `sieve` ran **11.6× slower** than on 0.3.11 — 34 → 394 ms in the cross-language
+harness — with the benchmark program changed only from `(table)` to `(table/new)`, i.e. the
+same algorithm. The cause is in a comment that had quietly become false:
+
+> `resolve_prim3` — *"Only a **direct** native binding qualifies (its one member,
+> `table-put`, has no prelude wrapper to follow)."*
+
+True when written. The v0.9/v0.10 namespacing waves moved the table API into `std/table.blsp`,
+so the head is now `table/put`, a closure whose whole body is `(%table-put t k v)`. The
+resolver stopped matching, `(table/put …)` compiled to an ordinary `Call` inside the hot arm,
+and the JIT-lowered `PrimOp3::TablePut` — which `sieve` is a benchmark *of* — was never
+emitted. Nothing errored. No test failed.
+
+**What hid it.** The **2-ary** `resolve_prim` already follows its wrapper through
+`passthrough_arm`, so `table/has?` in the very same loop went on inlining as `Prim2`. One
+`BROOD_JIT_DUMP_IR` dump of `mark` shows both states side by side:
+
+```
+before:  … GlobalIc Local Const Call  Pop Local Prim2SlotSlot SelfCall
+after:   … GlobalIc Local Const Prim3 Pop Local Prim2SlotSlot SelfCall
+```
+
+The arm lowered to native in both cases, which is why no bail trace and no JIT-vs-no-JIT
+ratio flagged it — the loop was native, it just called out per element.
+
+**The fix** mirrors the 2-ary wrapper-following into `resolve_prim3`. Two properties are
+inherited rather than added: `head` stays the *original* call head, so any deopt dispatches
+the real wrapper with bit-identical errors, and the existing epoch `guard` re-validates on
+every `global_epoch` change, so rebinding `table/put` or `%table-put` cleanly drops the
+inline. The identity argument map is **required, not applied** — `Node::Prim3` carries no
+permutation (unlike `Node::Prim2`'s `map`), so a wrapper that reorders its parameters must
+decline; inlining one would store the value under the wrong key. That case is the second half
+of the guard.
+
+`make ab`, best-of-7 against the parent commit: **457 → 68 ms, −85.1%**, with all 29 other
+rows noise. (The sweep flagged `spawn-live` +5.4%; it does not survive — that row executes no
+table code, and a base-vs-base control reads a 7.5% floor with the new binary landing
+*between* two base samples. Reversing the arm order alone moved the verdict from +8.9% to
++4.5%.)
+
+**A second instance, found immediately by the gate this prompted.** Writing
+`every_inlinable_head_still_reaches_its_primitive` — one table asserting that each spelling a
+program actually writes (`+`, `nth`, `first`, `table/get`, …) still reaches its primitive —
+failed on its first run: **`table/get` did not resolve either.** Different cause, same class.
+Its wrapper is `(defn get (t k &optional default) (%table-get t k default))`, and an
+`&optional` head is not a thin wrapper — it binds a default before forwarding, so a 2-arg
+`(table/get t k)` had no passthrough to follow. `table/has?` beside it, a plain 2-ary forward,
+never lost its inline, which is exactly what kept the gap invisible.
+
+Fixed **in Brood, not the compiler**: `get` becomes two arity clauses, so the 2-arg arm is a
+pure forward. `%table-get` is `Arity::range(2, 3)` documented as "default (nil if omitted)", so
+the 2-arg call is exactly equivalent and the existing resolver follows it unchanged.
+
+**The class matters more than the instance.** This is the third time a rename has silently
+retired an inline — KI-44 was the same shape on `sqrt`, and its fix note names the same
+requirement ("a **bare** head resolving to a **PRELUDE** closure"). A call-site inline keyed
+on how a name is *spelled* or where it is *bound* is a performance cliff that no test, no
+checker and no CI job can see, because the program stays correct. The structural,
+wrapper-following resolutions (`sqrt`, the 2-ary prims, and now this) are the shape that
+survives a rename; a direct-binding check is the shape that does not.
+
+---
+
+## KI-57 — a stale `tags` handle in the selective-receive scan ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed. Guard: `make gcstress` (new), verified **red on the faithful pre-fix code
+and green on the fix**, twice each. Wired into CI's breakage job.
+
+**What.** `scan_mailbox` received the `receive` clauses' leading-keyword vector as a bare
+`Value` and decoded it **lazily** — the decode sits *inside* the scan loop, guarded by
+`st.queue.len() > 1 && ntags.is_none()`, so it does not run on a one-message mailbox. That
+laziness is the bug: on any iteration after the first, the decode runs *after* a matcher
+`apply`, which can collect at any eval depth (ADR-061) and relocate the LOCAL vector. The
+handle was captured before that collection and dereferenced after it.
+
+```
+use-after-GC: vector handle (nursery slot 3) is from epoch 12, but that generation is now
+epoch 13 — a handle held across a collection without being re-rooted (handle 0xc00000003)
+  Heap::vector <- mailbox::collect_receive_tags <- scan_mailbox <- receive_match
+```
+
+The galling part is that the fix was already written down eight lines above, for the value
+next to it: `matcher` is pushed to the roots stack at `rbase+0` and **re-read each
+candidate**, with a comment explaining that `apply` can collect and relocate it. `tags` needed
+identical treatment and was passed unrooted instead. It now sits at `rbase+1` and is re-read
+at the decode.
+
+**Blast radius.** Any selective receive whose mailbox has more than one message — i.e. the
+ordinary backlogged case, on a user-reachable path with no unsafe code in sight. Under
+debug-assertions it aborts the worker at the bad deref (what we saw). In release there is no
+tripwire: the decode reads whatever now occupies the old slot, and the tag filter then
+silently rejects a message it should have matched — a receive that misses a message it was
+waiting for, which `BROOD_NO_RECV_MARK`'s comment calls the hardest failure mode to attribute.
+
+**Why every green run missed it, and the real finding.** Collections are threshold-driven, so
+a handle held across one is only caught when a collection happens to land inside the window.
+Nothing in CI changes that: the breakage job arms the per-deref tripwire but still collects on
+a threshold. `BROOD_GC_STRESS=1` collects at *every* safepoint, which turns the window into a
+certainty — and it had never been run in CI at all, only by hand during an investigation.
+
+`make gcstress` now runs the twelve process/mailbox-heavy test files under
+`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, and CI runs it. It is a **debug** build deliberately,
+and that was verified rather than assumed: `--release` with `-C debug-assertions=on` (what the
+breakage step beside it uses) reports the faithful pre-fix code **clean**, because optimisation
+moves where allocations and safepoints land and the collection stops falling inside the window.
+A gate that cannot fail on the bug it was written for is not a gate.
+
+**Found while verifying something else.** This came out of the post-ADR-245 GC-stress pass, not
+from a failing suite — the full suite was 1061/1061 green with the bug present, on the very
+tree that was about to be pushed.
+
+---
+
+## KI-56 — the L1 under-lock copy: the hazard was real, but not where it was claimed ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed (ADR-245), **both sites**. Guards: seven cases in
+`process::message::copy_budget_tests` (the boundary both sides, every container kind declining
+attributably, the string/blob coupling, and the env override's three rules), six in
+`message_fits_tests`, and five in `tests/receive_under_lock_test.blsp` — the last
+sabotage-verified: dropping the re-inserted candidate instead of re-queueing it fails four of
+the five. Plus a `const _` build assertion tying the budget to `SHARED_BLOB_THRESHOLD`.
+
+This entry is kept mostly for the **measurement**, because a plausible-sounding review finding
+was half wrong and only a measurement could say which half.
+
+**The claim.** `try_deliver_local` (`process/mailbox.rs`) performs the whole cross-heap deep copy
+while holding the receiver's mailbox mutex — "a latency/contention hazard on the hottest lock in
+the system". A first investigation then *retracted* it, correctly noting that the obvious fix
+(take the waiter out, copy, re-lock) is unsound because `shutdown_runtime_parked` reaps parked
+waiters and would skip the process during the window.
+
+**What the measurement found.**
+
+1. **The fan-in framing is wrong, and provably so.** Under fan-in, L1 fires **0.4–1.2 %** of the
+   time (measured across 1/2/4/8 senders). The reason is structural, and worth internalising: **a
+   contended mailbox has a runnable receiver by definition, and L1 requires a *parked* one.** The
+   shape everyone pictures when they say "hottest lock" is precisely the shape where this code
+   almost never runs.
+2. **L1 is cheaper than the fallback everywhere**, 1.09× (tiny) to 2.58× (100k-element vector),
+   with no crossover across a call-count sweep. So "hazard" is the wrong word for throughput.
+3. **But there is a real, large latency effect** in synchronous request/reply (where the receiver
+   *is* parked — 61–81 % hit rate). An unrelated `%mailbox-size` probe — a pure lock-acquire, zero
+   message work, so a stall can only be lock wait — measures:
+
+| payload | L1 p50 | L1 p99 | wire p50 | wire p99 |
+|---|---|---|---|---|
+| ~8 KB | 4.8 µs | 11 µs | 4.4 µs | 7.5 µs |
+| ~80 KB | 4.9 µs | **1 106 µs** | 4.9 µs | 8.7 µs |
+| ~1.6 MB | **5 011 µs** | 13 994 µs | 7.3 µs | 15.0 µs |
+| ~4 MB | **6 777 µs** | 16 946 µs | 7.6 µs | 17.1 µs |
+
+The wire arm is **flat across a 500× payload range** because its heavy work happens outside the
+lock. Effects are 25×–1000× against a ≤3 % noise floor.
+
+**The fix (landed).** A work budget on the L1 copy — one heap node is one unit, default 4096,
+`BROOD_L1_BUDGET=0` to uncap — declining past it and falling through to the existing wire path. It
+bounds the lock hold **without touching the `st.waiter` invariant at all**, so the soundness
+objection that killed the first redesign does not apply. It keeps the win where essentially all
+sends live and gives it up only on the large send that is causing the stall.
+
+**A per-node charge alone was not enough, and the measurement is what said so.** The first cut
+decremented the budget as the walk visited each node — correct-looking, and it still measured p99
+**243 µs** at ~1.6 MB against the wire path's 5.4. The reason is that every container arm
+*materialised before descending*: `src.vector(id).to_vec()` copies the whole element array, and
+`map_entries` / `set_elems` / `list_to_vec` do the same, so the O(n) cost was paid under the lock
+and only *then* declined. Each kind now checks against the budget **before** materialising —
+`len()` for a vector, `map_size` for a map (doubled for key+value) and a set, `range_len` for a
+range, and a bounded spine walk for a cons list, which has no O(1) length. That is what moves the
+tail the rest of the way.
+
+The result, same probe and same harness as the table above (best of 200 trials per row, on one
+box, the *same binary* with only `BROOD_L1_BUDGET` changed — no rebuild, so nothing else can
+differ):
+
+| payload | uncapped p50 | uncapped p99 | capped p50 | capped p99 | wire p99 |
+|---|---|---|---|---|---|
+| ~8 KB | 0.76 µs | 3.8 µs | 0.77 µs | 3.5 µs | 3.2 µs |
+| ~78 KB | 0.73 µs | 89.7 µs | 0.80 µs | **3.2 µs** | 3.0 µs |
+| ~1.6 MB | 2.9 µs | 1 875 µs | 2.5 µs | **5.4 µs** | 7.7 µs |
+| ~3.9 MB | 2 360 µs | 13 029 µs | 3.9 µs | **5.7 µs** | 7.7 µs |
+
+The capped arm is indistinguishable from the wire arm at every size, and the ~8 KB row is
+unchanged — which is the point: below the budget nothing happens at all.
+
+**Throughput on the fast path: no resolvable cost.** Synchronous request/reply at 4 clients,
+best-of-9 per-request: capped reads +2.9 % at a 10-element payload and +9.0 % at 100 elements,
+against a **same-config base-vs-base spread of 6.4–9.4 % and 2.8–14.5 %** on the same box. Neither
+clears `max(5 %, 2 × floor)`, so this measurement cannot resolve a difference — it is not evidence
+of a cost, and it is not evidence of none either. `BROOD_L1_STATS=1` confirms the mechanism fires
+exactly where intended: 0 over-budget at a 100-element payload, 48 of 404 sends over-budget at
+20 000.
+
+**The second instance — measured, and worse than the first.** The *receive* side already
+implements the mitigation the first investigation ruled unsafe on the send side: the
+optimistic-pop path pops under the lock, then rebuilds with the mutex released. But its sibling
+**peek-in-place** branch called `from_message` **under** the lock — a selective-receive scan that
+has skipped the head holds the mutex across a deep rebuild *per candidate*, because a candidate
+that may not match has to stay queued.
+
+Measured the same way (probe by name in both arms, so the payload is wire-format either way and
+the L1 path cannot flatter one side):
+
+| backlog × payload | peek-in-place p50 | p90 | p99 | popped p50 | p90 | p99 |
+|---|---|---|---|---|---|---|
+| 4 × 8 000 | 0.5 µs | 112 µs | 950 µs | 0.4 µs | **0.5 µs** | 12.2 µs |
+| 4 × 40 000 | 0.7 µs | 952 µs | 2 179 µs | 0.4 µs | **0.9 µs** | 2.4 µs |
+| 8 × 8 000 | 0.5 µs | 254 µs | 586 µs | 0.5 µs | **0.7 µs** | 2.0 µs |
+| 8 × 40 000 | **1 252 µs** | 2 800 µs | 5 569 µs | 0.8 µs | **1.5 µs** | 11.2 µs |
+
+The fix is the same budget asked of the wire form (`message_fits`), and it needed no new
+machinery — a candidate past the budget takes the route the optimistic branch already takes.
+What made it clean rather than a trade is that the comment defending peek-in-place ("the scan's
+lock count stays ≤ the peek-only scheme's for every backlog length") predates the
+**leading-keyword filter**, which rejects a message no clause could match on its tag without
+rebuilding it. Pop/re-insert therefore applies only to candidates that could match, never to
+backlog length. Scan throughput over small candidates is within its own noise floor
+(+0.9 %/+0.4 %/+0.2 % at backlogs of 4/16/64, floor 0.6–1.0 %).
+
+**Method note, since it is reusable:** no source change was needed to A/B this. `send` tries L1
+only for a `Value::Pid` target, so `(send pid v)` takes L1 and
+`(send {:name :r :node (%node-name)} v)` takes the wire path — same binary, same value, same
+parked receiver. `BROOD_L1_STATS=1` confirms the split every run.
+
+---
+
+## KI-55 — a shipped closure could not call a namespaced std name on the receiver ✅ FIXED 2026-08-25
+
+**Status:** ✅ fixed. Guards: `cli::distribution::a_shipped_closure_requires_its_modules_on_the_receiver`
+(new) and `source_positions_survive_a_cross_node_send`, whose `(require-one 'reflect)` workaround is
+gone. Both sabotage-verified — with the sender-side scan disabled they fail with exactly the
+original `unbound symbol: math/sqrt` / `unbound symbol: reflect/form-pos`.
+
+**What.** Auto-require (ADR-227/229) fires when a form is **compiled**. A closure shipped to
+another node arrives *already compiled*, so nothing on the receiver triggered the require, and any
+namespaced global in its body was unbound there:
+
+```
+unbound symbol: reflect/form-pos
+```
+
+Before the namespacing these were bare prelude names, bound on every node by construction, so
+closure-shipping worked without anyone having to think about it. The refactor silently moved that
+guarantee: `seq/`, `dev/`, `reflect/`, `os/`, `table/`, `proc/`, `math/` are all module globals now.
+
+**The fix, in three parts.**
+
+1. **The sender names the modules.** `closure_to_message` walks the arms' body and
+   optional-default forms — the pass it is already deep-copying — collecting every *qualified*
+   symbol outside a `quote`/`quasiquote` subtree, then resolves each **distinct** one through
+   `derive::module_to_require`. A candidate is kept only when it is **bound as a global on the
+   sender**, which is what separates a real reference (auto-require loaded its module when the
+   body was compiled *here*) from a qualified-looking symbol sitting in the body — and is why an
+   unloadable module on the receiver is a genuine error rather than a false alarm. The result is a
+   `(module, probe)` pair per module in `ClosureMsg::modules`. Skipped entirely when the
+   destination is **this** runtime (its processes share our globals) and for the startup image.
+2. **It rides the wire.** Appended to the `M_CLOSURE` record (`dist/wire.rs`); protocol magic
+   bumped `BRD\x05` → `BRD\x06`, because a v5 peer would read the new count as the start of
+   `captured` — a silent mis-decode of every closure sent, which is exactly what a version byte is
+   for.
+3. **The receiver loads it at the closure's own call site.** `closure_from_message` filters the
+   list against `env_get` (one allocation-free lookup — a runtime that already has the module pays
+   only that) and, for each module it lacks, weaves a guard into the rebuilt body:
+
+   ```lisp
+   (do (if (bound? 'math/sqrt)
+         nil
+         (%try (fn () (require-one 'math))
+               (fn (e) (throw (str "this closure was shipped from another runtime and needs
+                                    module `math` …: " (if (map? e) (get e :message) e))))))
+       <original first body form>)
+   ```
+
+   Built from primitives and core special forms only, because a rebuilt body is **never
+   macroexpanded** on the receiver — `unless`/`try` would survive to the compiler as unexpanded
+   calls. Optional defaults are wrapped the same way: they are evaluated at frame setup, before
+   the body.
+
+**Why the load is not run at deserialize time**, which is the obvious place and is wrong twice
+over:
+
+- `from_message` rebuilds a value graph whose half-built lists/vectors/maps sit in **unrooted Rust
+  locals**, and a module load evaluates arbitrary top-level code, which collects. That is the
+  KI-51 shape.
+- Worse, the selective-`receive` scan calls `from_message` **while holding the mailbox lock** (the
+  peek-in-place branch of `mailbox::scan`), and `require-one` **sleeps** while another process
+  finishes an in-flight load of the same feature — a `sleep` is a `receive`, so that is a deadlock,
+  reachable whenever two processes on a node get shipped closures needing the same module.
+
+Woven into the body, the load runs in ordinary evaluation context, on the call that needs it, and
+its failure is a catchable Brood error naming the module, the reference and the fact that the
+closure was shipped — instead of an `unbound symbol` at whatever line touches the name first.
+
+**Cost.** The sender-side scan is the only new work on a hot-ish path, and it does not run for a
+same-runtime send at all. Measured on a deliberately reference-dense closure (8 forms, 10
+qualified references, 20 000 serialisations through `table/put`, best of 5): **51 ms → 75 ms**,
+i.e. +1.2 µs per closure serialisation. Against a cross-node send — the only path that needs it —
+that is noise beside the wire encode and the TCP hop. Resolving once per *distinct* symbol rather
+than per occurrence is what keeps it there: `module_to_require` interns and consults the import
+table, and doing that inside the walk cost 4× as much.
+
+**Related, found the same way:** bare **`require` is not a bound name** — the callable is
+`require-one` (`git log -S"defmacro require"` finds no definition in any commit). Several places
+in `CLAUDE.md` and the ADR-065 note describe writing `(require 'test)`; that guidance does not
+work against this tree.
+
+---
+
+## KI-54 — `main` was red, and a "core, bare" prelude module seized ten generic names ✅ FIXED 2026-08-24
+
+**Status:** ✅ both failures fixed. ⚠️ One judgement call is deliberately left to the owner.
+
+This entry exists because the sentence above the index said **"No open items… `main` is green on
+all five CI jobs"**, and it was not true. **Three** tests fail on a pristine `28e8eeb2` checkout,
+verified by building HEAD in a clean worktree rather than inferred:
+
+- `brood::basic spawned_process_picks_up_redefinition`
+- `namespace_test` — `(is (reserved-package-name? 'gen))`
+- `brood::prelude_manifest prelude_const_is_exactly_the_split_files`
+
+**One commit caused all three.** `7cb796f0` made the gen_server framework core and **bare** in the
+prelude. Three consequences followed, two of them in opposite directions:
+
+1. **It reserved too much.** A prelude name is un-redefinable (ADR-166), and `std/proc/gen.blsp`
+   defines these *bare*: `cast`, `call`, `call-timeout`, `stop`, `code-change`, `spawn-server`,
+   `spawn-server-link`, `spawn-server-named`, `gen-clause`, `defprocess`. So `(def call …)` — a
+   perfectly ordinary thing to write, and what that test did — is now refused outright.
+2. **It reserved too little.** `reserved-package-name?` derives its set from `(builtin-modules)`,
+   which lists only `embedded_module!` entries. Moving `gen` into the prelude bundle removed it
+   from that list, so the name `gen` silently stopped being reserved and a package could claim it —
+   while its siblings `supervisor` and `agent`, still embedded, stayed reserved.
+3. **It bundled a file without declaring it.** `std/proc/gen.blsp` was added to `lib.rs`'s
+   `concat!` but not to `prelude_manifest.rs`'s hand-maintained `EXTRA_PRELUDE_FILES`, so the
+   manifest test — which exists precisely to make "a file joined the prelude" a decision rather
+   than a drift — went red and stayed red. It did its job; nobody was reading the result.
+
+**Fixes.** (3) is one line: `gen.blsp` added to `EXTRA_PRELUDE_FILES` with the rationale.
+For (2), a `PRELUDE_MODULES` table (`builtins/system.rs`) feeds `builtin_modules`
+alongside `CORE_MODULES`/`DEV_MODULES`. It is kept honest by `prelude_modules_are_bundled`, which
+checks the source file exists *and* that `lib.rs` still `include_str!`s it into the prelude — so a
+module moving out cannot leave an entry reserving a name nothing owns. Note the test deliberately
+does **not** probe for a `gen/…` global: these modules define their functions bare, so no such
+namespace exists, and the reservation is about the *module name a package could claim*. For (1),
+the test's helper was renamed `call` → `ask`; the name was incidental to what it proves.
+
+**Left for the owner.** Whether `call`/`cast`/`stop` should be permanently un-redefinable is a
+design call, not a bug — it follows correctly from ADR-166 plus the deliberate "bare" decision.
+But it is a real cost that the commit may not have priced: these are among the most likely names
+for user code to want, the failure is a hard refusal at `def`, and the only escapes are a local
+`let` or a `defmodule`. If that is too aggressive, the options are to qualify them (`gen/call`),
+or to exempt a small set from sealing.
+
+**The meta-lesson.** The green-tree rule says a known failure *is* the work. Both of these had
+been red since the commit landed, and the file recording known issues asserted the opposite — so
+the claim was load-bearing and wrong, which is worse than no claim. Re-verify "green" against a
+clean checkout before writing it down.
+
+---
+
+## KI-51 — `macroexpand-1` dereferenced a handle across a module load ✅ FIXED 2026-08-24
+
+**Status:** ✅ fixed. `eval/macros.rs`'s `macroexpand_1` now roots `form` **and** `env` across
+`require_qualified_head` and re-derives the tail from the relocated pair.
+
+`macroexpand_1` read `let (head, tail) = heap.pair(p)`, then — for a qualified head into a
+not-yet-loaded module — called `require_qualified_head`, which **loads a module**: arbitrary eval,
+therefore a collection that relocates the nursery. It then dereferenced the stale `tail`.
+
+The compile pass is safe (it holds a `MacroBlockGuard`), but the **`macroexpand-1` / `macroexpand`
+builtins run with MACRO_BLOCK off** — so this was reachable from ordinary Brood, from the MCP
+`macroexpand` tool, and from editor/LSP tooling. Debug builds hit the epoch tripwire
+(`use-after-GC: pair handle (nursery slot 33) is from epoch 0, but that generation is now epoch 3`);
+**release silently walked relocated memory** and reported a garbage list length — a 5-element form
+came back as `arity error: expected 1 argument, got 31309`.
+
+The neighbouring `macroexpand` loop already roots `env` and argues in a comment that `cur` "needs
+no slot". That argument was correct when written and was invalidated by the ADR-227 auto-require
+landing inside `macroexpand_1` — the recurring shape being **a rooting argument that a later call
+quietly falsified**.
+
+---
+
+## KI-52 — `msg_roots` was a root set for one collector and not the other ✅ FIXED 2026-08-24
+
+**Status:** ✅ fixed. `msg_roots` is now seeded into `runtime_collect_with`,
+`seed_phase1_and_walk`, `runtime_evacuate` and `runtime_live_closure_count`.
+
+`Heap::msg_roots` is the L1 delivered-message slot table. `copy_cross_heap`'s share-fn path
+(default on; `BROOD_NO_SHARE_FN` reverts) hands an **already-shared RUNTIME closure to a parked
+receiver by handle**, and `try_deliver_local` parks that handle directly in a `msg_roots` slot —
+not in any LOCAL slab. A selective `receive` may leave the slot occupied indefinitely.
+
+The LOCAL collector treats `msg_roots` as a root set in all three of its walks. **No RUNTIME-side
+walk did**, so the shared code a queued message points at could be compacted or freed underneath
+it: a use-after-free of shared code, surfacing either as a panic on a dead handle or — after aging
+recycles the slot — as a silent dispatch to an unrelated closure.
+
+The share-fn path's own soundness note says a shared handle retained in the receiver's LOCAL data
+is safe because "the drain's Phase 2 walks the whole local heap". That is true for a handle
+*embedded in copied data* and false for the **top-level value sitting in the slot table**, which is
+the case this path actually produces.
+
+The structural cause is worth keeping: RUNTIME root enumeration is duplicated across four
+functions with no single "these are the heap's roots" visitor, which is exactly how a root set
+added later (`msg_roots`, ADR-177) got into the LOCAL lists and none of the RUNTIME ones.
+
+---
+
+## KI-53 — a `Ref` was unique per node, not across nodes ✅ MITIGATED 2026-08-24
+
+**Status:** ✅ mitigated (not closed by construction) — `process/monitor.rs`'s `next_ref` now
+randomises the top 24 bits per runtime, leaving a 40-bit counter.
+
+A `Pid` crosses the wire node-qualified (`{node, id}`). A `Ref` crosses as a **bare u64**
+(`dist/wire.rs`'s `M_REF`) and every node's `NEXT_REF` starts at **0**, so two nodes running the
+same code mint ref 1, ref 2, … in lockstep. A ref is what a pinned `receive` matches on and what
+identifies a monitor, so a collision can match a peer's message in a caller's pinned receive —
+delivering the wrong reply and stranding the real one.
+
+**Why this is a mitigation rather than a fix.** Erlang qualifies the ref itself by node. Here
+`Ref` is a bare `u64` inside `Value`, whose layout is pinned for the JIT
+(`value_layout_is_stable_for_the_jit`), so widening it would ripple through the JIT ABI. The
+random prefix makes an overlap ~6e-8 per node pair and leaves over a trillion counter values (a
+million refs a second for twelve days). Node-qualified refs remain the principled fix if `Value`
+ever gains room.
+
+---
+
+## KI-46 — the next test sitting under a deadline (a margin audit) ✅ FIXED 2026-08-18
+
+**Not a bug report. A margin.** KI-39 turned out to be a fixed cost under a fixed deadline that
+looked random for weeks, so once it was fixed every case's CI margin was audited from the
+2026-08-17 logs (both engine jobs) rather than waiting to be surprised by the next one.
+
+The ranking after the KI-39 fix, worst first, against nextest's **120 s** default hard kill
+(`slow-timeout = { period = "60s", terminate-after = 2 }`):
+
+| case | CI time | margin | status |
+|------|---------|--------|--------|
+| `mcp::tests::std_check_tool_returns_structured_diagnostics_or_an_error` | 87 s | 1.38× | ⚠️ this entry |
+| `scaffold_quality::…ships_passing_tests` | 89 s | 1.35× | ✅ split per template |
+| `scaffold_quality::…scaffolds_check_clean` | 80 s | 1.50× | ✅ split per template |
+| `scaffold_quality::…scaffolds_format_clean` | 77 s | 1.56× | ✅ split per template |
+| `gc::collects_below_the_outermost_eval` | 80 s | 1.50× | real GC work, single operation |
+| `complete::completion_never_fails_…` | was 300 s+ | timed out | ✅ KI-39, now 10.5 s |
+
+The `scaffold_quality` three were one case each looping over five templates — five scaffolds plus
+five toolchain runs summed against one deadline. Splitting into one case per (template, gate)
+pair costs no coverage at all, takes each case to ~18 s, lets nextest run them in parallel, and
+names the failing template in the case name. A macro generates them, and a generated
+`GATED_TEMPLATES` const is asserted equal to `SELF_CONTAINED` so the list cannot drift.
+
+**Why the remaining one is left alone.** `std_check_tool_…` invokes the MCP `check` tool, and
+`check-project-structured` is **cwd-based** — so it type-checks this entire repository, and the
+cost grows with the repo. Every cheap fix is worse than the problem:
+
+- `BROOD_NO_CHECK=1` returns nil before doing any work, so the case would stop exercising the
+  implementation it exists to prove is wired up.
+- Scaffolding a one-file temp project needs `set_current_dir`, which is process-global. Under
+  nextest (a process per case) that is safe, but under plain `cargo test` — a documented way to
+  run this suite — it would race every sibling case in the same binary. Trading a slow test for
+  a nondeterministic one is the wrong direction.
+- Raising its nextest budget is precisely what let KI-39 hide for weeks.
+
+### Done the real way, same day
+
+`check-project-structured` gained an optional `from` root (defaulting to `(cwd)`, so no caller
+changes), and `mcp-check-tool` now passes **`*project-root*`** rather than relying on the ambient
+cwd. That is not a test accommodation — it is a consistency fix. The MCP server serves exactly
+one project: `*project-root*` is what its write sandbox is pinned to (`mcp-project-path`) and what
+every other project-scoped tool already reads (`project-all-files *project-root*`). `check` was
+the one tool that took its project from wherever the host process happened to be standing, so it
+could disagree with the rest of the server.
+
+The case is now scoped to a two-file temp project: **87 s → 2.5 s**, and it asserts more than it
+used to, not less. The old version accepted `{:diagnostics [...]}` *or* `{:error …}` and so never
+proved the diagnostics path emits anything at all. The new one plants a deliberate unbound-symbol
+warning and requires it back with `:file`/`:line` populated, then asserts no diagnostic comes from
+outside the temp root.
+
+That pair is deliberate, and it exists because the first version of this test was too weak. When
+the "tool ignores `*project-root*` and falls back to cwd" sabotage was run against it, the test
+still **passed** — it merely got slow again (2.9 s → 21.7 s), which is exactly the failure mode
+this entry is about. Planting a warning that only exists inside the temp project makes that
+regression a hard failure ("the planted unbound-symbol warning is missing: []") instead of a
+number nobody reads. Both sabotages — a stubbed tool, and the cwd fallback — are verified to fail
+the test.
+
+---
+
+## KI-45 — `examples/editor` references `eval-command`, which left the repo in May
+
+**Status:** ✅ **fixed 2026-08-17 — `examples/editor` deleted** (option (a) below). `brood-edit`
+is the real editor project, so the in-repo duplicate — which had referenced a module this repo
+lacks for two and a half months — was removed rather than kept limping. `make check-examples`
+no longer skips a known-red project (`SKIP_PROJECTS` is now empty), and the `layers.md` /
+`system.rs` pointers to `examples/editor/src/` were repointed at `brood-edit`. Original write-up
+kept below.
+
+`examples/editor/src/brood-mode.blsp` calls `eval-command/eval-last-sexp` for its `C-x C-e`
+binding, and `examples/editor/project.blsp` still advertises the example as built on
+"std/buffer, std/keymap, std/layers, std/sexp, **std/eval-command**". That module was moved
+**out of this repo on 2026-05-31** (`650eb89f`, "move eval-command (editor policy) out of std →
+the myedit project") and now lives in the sibling project — `../brood-edit/src/eval-command.blsp`.
+So the example has referenced a module this repo does not contain for two and a half months.
+`nest test` in `examples/editor` is 4 of 5, failing only that case with `unbound symbol:
+eval-command/eval-last-sexp`.
+
+Nothing gates it: `examples/` is outside `make test`, `nest check` and the breakage suite — the
+same blind spot as KI-42 (breakage), KI-43 (a suite outside the gate) and KI-44 (the benchmarks
+repo). This is the fourth instance of that one pattern.
+
+**Why this is not fixed here.** The three options are each a judgement about what the example is
+*for*, which belongs to the owner: (a) delete `examples/editor`, since `brood-edit` is now the
+real editor project and this is a stale duplicate; (b) give the example its own small
+`eval-command` module, since the 650eb89f rationale — "editor policy belongs to an app, not
+std" — applies to an example app just as well; or (c) drop the `C-x C-e` feature and its test and
+correct the manifest comment. Option (a) also removes 9 of the ADR-229 migration's edits.
+
+What *was* done: the example's `require` call sites were migrated (ADR-229), which is a strict
+improvement — the missing module now fails at its one call site instead of at load, so the other
+four tests run. `text-mode` is loaded with `require-one` in both `brood-mode` and the test,
+because it is reached only through **quoted** keymap symbols (`'text-mode/forward-char`) and a
+quoted symbol is not a reference, so load-by-inference cannot see it — ADR-229's pure
+effect-load case.
+
+---
+
+## KI-44 — the `nbody` benchmark was dead, and the `sqrt` JIT call-site inline died with it
+
+**Status:** ✅ **fixed 2026-08-17.** Correctness fixed first (benchmark runs again, checksum
+verified); the ~1.8× performance half is **now fixed too** — the `sqrt` call-site inline was
+restored for the moved `math/sqrt`, keyed on a structural identity instead of the old
+sealed-PRELUDE one. See "the performance fix" below.
+
+**Two defects, one cause: ADR-227 moved `sqrt` out of the prelude into `std/math.blsp`, and
+nothing outside the brood repo was migrated.**
+
+**1. The row was broken outright.** `brood-benchmarks/bench/brood/nbody.blsp` calls `sqrt`
+bare, twice, on its hot path, and is a header-less script — so since 2026-08-14 it died with
+`unbound symbol: sqrt`. A published `bench/harness.py` run would have failed on it. `json.blsp`
+was dead too, calling `json/json-parse`/`json/json-encode` after stage 4 dropped the `json-`
+export prefix. Both fixed by referencing the module qualified — `math/sqrt`, `json/parse`/`json/encode` —
+which loads it by inference (ADR-229 removed the user-facing `require` a day later, and that
+removal broke `base64`/`json`/`regex` in the same repo for the same reason; fixed together), and
+all verified against the other ports' checksums rather than merely "it runs now".
+
+> ⚠️ **The two checksums this paragraph used to quote (`nbody` −169063618, `json` 364568836)
+> are stale and should not be treated as canonical.** Re-audited 2026-08-25: neither is
+> reproducible at any `BENCH_N` (an `nbody` sweep from 1k to 500k produced −169087605 …
+> −169096567 and never that value). `nbody`'s checksum is **N-dependent** — it is an
+> energy sum over a step count — so a figure quoted without its N means nothing. The
+> canonical values are the ones in `brood-benchmarks/results/results.json`, and all eight
+> ports agree with them. Quote a checksum with its N, or point at `results.json`.
+
+This is the **KI-42 pattern**: a suite that gates nothing rots silently. `brood-benchmarks` is a
+separate repo, so the ADR-227 migration sweep — which did cover `breakage/`, `examples/`,
+`stress/`, `crates/`, `std/` — could not see it, and no CI job runs the benchmark programs for
+*correctness*. Worth fixing structurally: a cheap "every bench row still runs at BENCH_N=50"
+check would have caught both in seconds.
+
+**2. The `sqrt` call-site inline is now dead, worth ~1.8× on the row.** `resolve_prim1`
+(`eval/compile/mod.rs`) lowers `sqrt` to `PrimOp1::Sqrt` only when the head symbol is **bare
+`sqrt`** *and* resolves to a **PRELUDE** closure — a deliberately narrow test, so a user
+`(def sqrt …)` cleanly disables it. After the move neither spelling can satisfy it: bare `sqrt`
+is not bound at global (a `(:use math)` refers it per-module), and `math/sqrt` fails the name
+test and is a RUNTIME module closure. So every `sqrt` now pays a closure call plus the wrapper's
+two `cond` comparisons, where it used to be one inlined instruction.
+
+Measured (release, pinned):
+
+| | wall |
+|---|---|
+| 3M-iteration `%f64-sqrt` loop (what the inline gave) | 406–410 ms |
+| same loop through `math/sqrt` | 754–755 ms |
+| **`nbody` row, `%f64-sqrt`** | **0.38–0.40 s** |
+| **`nbody` row, `math/sqrt` (shipping)** | **0.66–0.74 s** |
+
+≈1.85× on the microbenchmark (~115 ns per call) and **≈1.8× on the published row**. Note the
+inner `%f64-sqrt` still inlines *inside* the wrapper's own body — what was lost is skipping the
+wrapper at the call site.
+
+**The performance fix (2026-08-17).** The call-site inline was restored for `math/sqrt`, but the
+identity is now **structural, not name+region**. `region == RUNTIME` alone cannot distinguish the
+canonical wrapper from a user's own `foo/sqrt` (both are RUNTIME closures), and `math/sqrt` itself
+turns out to be a **reserved name** — `(def math/sqrt …)` is refused (E0030), so the *global*
+`math/sqrt` cannot be hot-reload-rebound at all. So `resolve_prim1` (`eval/compile/mod.rs`) now
+recognizes any `…/sqrt` (or bare `sqrt`) head bound to a closure whose single 1-param arm is
+*exactly* `(if (< n 0) _ (if (<= n 0) _ (%f64-sqrt n)))`, with `<`/`<=` the canonical PRELUDE
+comparisons and `%f64-sqrt` the native. That shape is what makes the x>0 shortcut sound (a positive
+argument provably returns `%f64-sqrt(n)`); every other argument still deopts to the live wrapper via
+the stored head. Three safety properties fall out: (1) a user's own `foo/sqrt` computing something
+else fails the match and never inlines — no miscompile; (2) `Inst::Prim1` re-runs `resolve_prim1` on
+every `global_epoch` change, so a rebind of `<`/`<=`/`%f64-sqrt` drops the inline; (3) any rewording
+of `std/math`'s `sqrt` simply stops inlining (degrades, never miscompiles) — guarded by the unit
+test `sqrt_call_site_inline_recognizes_the_moved_math_wrapper`, which also pins the no-inline case.
+Measured (release, pinned, 3M iterations): inline **321 ms** vs the wrapper-dispatch path **905 ms**,
+so the row's regression is recovered.
+
+**The generalisation worth keeping.** A kernel fast path keyed on a *bare stdlib name* is a
+hidden coupling to the stdlib's shape: moving the function is a source-compatible change that
+silently deletes the optimisation. `resolve_prim`/`resolve_prim1` and the checker's
+`symbol_is`/curated-sig tables are all in this class — the same ADR-227 move left stale bare
+keys in `sigs.rs`, `infer.rs` and `walk.rs` (fixed 2026-08-17), one of which had been masking
+the unbound lint. When a stdlib function moves, grep the kernel for its bare name.
+
+---
+
+## KI-43 — `remote_attach_reads_snapshot_then_sees_disconnect` killed the target on a stopwatch
+
+**Status:** ✅ **fixed 2026-08-14.** The test now waits for the observer's own attach report
+before killing the target, and passes **8/8 under saturating load** (14 busy loops on 12 cores)
+where the old form would have failed all eight. It also got *faster* — 3.5 s idle instead of
+~11 s, because a 5 s unconditional sleep is gone.
+
+**Not a flake, despite looking exactly like one.** It failed **both** tries in a full `make test`
+(the real-TCP group carries `retries = 1`) and passed in 10.8 s standalone, which is the classic
+signature people write off as load noise. The observer's failure was:
+
+```
+observer.blsp:4:1: connect: Connection refused (os error 111)
+    (def peer (connect "app@127.0.0.1:26720"))
+--- target stderr ---
+dist: incoming connection failed: failed to fill whole buffer
+```
+
+**The mechanism.** The test spawned the observer and then slept a **fixed 5000 ms** before
+killing the target. But the observer must boot a debug `brood`, `node-start`, `require 'observer'`
+(a large module) *and* connect inside that window. Measured under saturating load, the whole case
+needs **5.9–9.2 s** — every sample above the 5 s deadline. So the target was killed *before* the
+observer's `connect`, which is why the port refused and why stdout was **empty** (it never
+reached its first `println`). Under load this was not unlucky, it was arithmetic.
+
+**Two red herrings worth recording, because both cost time here.**
+- `dist: incoming connection failed: failed to fill whole buffer` is **not** a fault. It is
+  `wait_until_listening`'s readiness probe: that helper proves liveness with a bare
+  `TcpStream::connect` and drops it, and a *dist* listener accepts it, tries to read a
+  handshake, and gets EOF. Expected noise on every node test.
+- It does **not** kill the acceptor, which was the first hypothesis and was wrong:
+  `spawn_acceptor` (`dist.rs`) wraps each connection in its own thread plus
+  `catch_unwind`, logs the error and keeps looping. Verified before believing it.
+
+**The lesson, which generalises past this test.** Two earlier sessions had already bumped this
+constant (1500 → 5000 ms) — the same fix applied twice to the same wrong idea. A fixed sleep
+standing in for "the peer is ready" cannot be tuned right, because the quantity it approximates
+scales with machine load. Wait for the *event*: the marker read makes the wait proportional to
+the box, and it strengthens the assertion, since "attached before the kill" is what the case
+actually means and is now checked rather than assumed. The 60 s deadline that remains is a
+hang backstop, not a timing assumption.
+
+**Three more fixed-deadline waits, seen once, not reproduced (2026-08-17).** Under a
+*self-inflicted* 2x load — two `make test-both` invocations overlapping on one box and one
+target dir, which is not a supported configuration — three in-language cases failed on the
+first attempt and passed on retry: `tcp: activity resets the timer` (got `:reaped-BUG`: the
+activity messages lost the race with the idle timer), and two `proc` cases waiting on a `cat`
+subprocess (`:timeout`). A clean run of the same tree was 983/983 on both engines with **no
+flaky marker at all**, so there is nothing to fix on today's evidence. They are recorded
+because they are the same *shape* as this issue — a deadline standing in for an event — and so
+are the next candidates if any of them is ever seen again: `tests/tcp_test.blsp:115`,
+`tests/proc_test.blsp:39` and `:57`.
+
+**Found in the same pass:** `completion_never_fails_however_it_is_called` timed out at the 120 s
+default for a related reason — it is 96 child-process spawns, measured at 59–61 s solo, so it had
+2× headroom against a load factor of ~2×. Given its own budget in `.config/nextest.toml`, with
+the measurements and the reason recorded there.
+
+---
+
+## KI-42 — the breakage suite had rotted: 9 of 23 files red, unnoticed for months
+
+**Status:** ✅ fixed 2026-08-13 — all **23 of 23** files pass and gate, nothing skipped, and a
+CI job runs them so this cannot rot silently again.
+
+**What.** `make breakagetests` is deliberately outside `make test` (slow, abusive by design).
+The consequence nobody had priced in is that **nothing ever ran it**, so it rotted. Found while
+gating ADR-224; all nine failures reproduce identically on the pre-change baseline, so none of
+them were the change under test. The causes were mundane and all in the *tests*, not the
+runtime — which is the point: an ungated test suite decays into noise, and then a real finding
+in it cannot be distinguished from the noise.
+
+| cause | files | fix |
+|---|---|---|
+| the pin pattern moved from `~ref` to `^ref`; these predate it | `chaos2_process_{crash_propagation,genserver,links,ring}`, `chaos_pattern_hell` | mechanical (9 pins), leaving quasiquote `~`/`~@` alone |
+| `string-contains?` was renamed | `chaos_string_cancer` | → `includes?` (strings = substring) |
+| `(assert= 4.8 (/ 24 5))` predates exact rationals | `jit_breakage_test` | → `(assert= 24/5 …)`; brood's `=` is exactness-sensitive, so this had failed on **every** build since |
+
+**`chaos2_tcp_stress` — every phase was dead, and it is now fixed.** The file's own header
+states the model: `tcp-listen` delivers `[:tcp-accept …]` to *the calling process's* mailbox. It
+then created the listener in the parent and accepted inside a spawned server in **all** of
+P36–P40, so every accept went to the wrong mailbox and timed out — `P36 ok=0 bad=50`, P37–P40
+all `:timeout`, with the timeout keyword then reaching `tcp-controlling-process` and surfacing
+as a type error that hid the cause. (An earlier draft of this entry described it as two
+unguarded call sites; it was the whole file.) Each server now opens its own listener and hands
+the port back to the parent, which waits for it before connecting. P36–P42 all pass.
+
+That fix also exposed a second stale assumption in **P38**, the phase that claims to round-trip
+raw bytes `0x00`–`0xFF`: it built a *string* of codepoints 0–255 and sent that, but a string
+goes over the wire **UTF-8-encoded**, so 256 "bytes" arrived as 384 (visible as `\xc2\x80…`).
+It now sends `(apply bytes (range 256))` and compares as bytes — which is what the phase always
+claimed to be testing.
+
+**`chaos_map_volcano` — a sizing question, and a self-inflicted false alarm.** Its 1 000 000
+-entry map peaks at **~3.0 GB RSS** (13 s), against the ~1 GiB soft ceiling the test runners
+default on (ADR-043) so an adversarial test cannot take the machine down. It now runs with a
+per-file allowance in the Makefile (`BREAKAGE_ENV_map_volcano`, soft 4 GB / hard 6 GB) and
+passes; the default ceiling is untouched for every other file.
+
+**An earlier version of this entry claimed a robustness bug here, and it was wrong.** The
+report was that at a 2 GiB limit the *allocator aborts* (`memory allocation of 981893 bytes
+failed`) instead of raising the clean catchable limit error. That is the **documented backstop
+working exactly as designed**: `core/alloc.rs` enforces the *hard* limit inside `alloc` by
+returning null (so Rust's OOM handler aborts and the host survives any allocation pattern),
+while the *soft* limit is checked at an eval safepoint and raises `E0043`. The soft limit must
+therefore sit **below** the hard one. The abort was induced by setting `BROOD_MEM_LIMIT` and
+`BROOD_MEM_SOFT_LIMIT` to the *same* 2 GiB value, which leaves the safepoint check no headroom.
+Verified: soft 1.5 GB / hard 6 GB raises the clean error at 1.9 GB allocated, as documented.
+The ordering rule is now recorded beside the allowance in the Makefile, since getting it wrong
+converts a graceful failure into an abort and looks like a runtime bug.
+
+**Why it could rot at all, and what now stops it.** Three things hid it, and each is worth
+knowing separately:
+
+1. **No runner.** Now a `breakage` job in `.github/workflows/ci.yml`, guarded to main pushes
+   and `workflow_dispatch` exactly like the tree-walker differential, with failing files
+   emitted as annotations and the log uploaded as an artifact.
+2. **Truncated output.** The suite prints one `===== file =====` block per file and the
+   failures scroll; reading it through `tail` shows the *last* failure and reads as "one
+   failure". That is how this was first mis-scoped as a single broken assertion.
+3. **A file that dies still says little.** Most breakage files register no `deftest` at all —
+   their chaos runs at load and the exit code is the whole signal — so `--test` prints
+   `0 tests, 0 passed` whether the file did its job or died on line 3. The exit code is
+   correct and is what the runner checks; just do not read the per-file test counts as
+   coverage.
+
+---
+
+## KI-41 — a concurrent `require` of the same feature could double-load its file
+
+**Status:** ✅ **fixed 2026-08-13.** Guard:
+`breakage/chaos_concurrent_require_double_load.blsp`.
+
+**What.** Two processes racing to load the same feature could both load it. The claimant's
+`(contains? *features* key)` guard read the **per-process global inline cache**, which is
+version-gated on a `Relaxed` counter with no happens-before, so it could miss a racing
+loader's just-committed `provide` — win the released load-once claim, and re-load the module.
+
+**How it surfaced.** As the ADR-225 co-located-secondary `nest test` flake, about 1 run in 77
+— then reproduced on demand at 20 files × 40 requires, which is what turned it from a
+sighting into a bug.
+
+**Fix.** `require-one` re-checks `*features*` through a new cache-bypassing
+`%registry-member?` (which reads the shared globals table directly) before loading.
+
+---
+
+## KI-40 — shared compiled arms serialise concurrent VM execution: one refcount, N cores
+
+**Status:** ✅ **fixed 2026-08-13** (ADR-224). A process-local
+[`ArmHandle`](../../crates/lisp/src/eval/compile/ir.rs) is interposed between the inline cache
+and the runtime-shared arm, so the per-call clone lands on an allocation only one process
+touches. **`pfib` (100 × `fib(32)`, tier 1) 54.4 s → 17.1 s (3.19×)**, per-task CPU 6408 →
+2006 ms, and now at **parity with `BROOD_NO_SHARED_ARMS=1`** (16.8 s) — the contention is gone
+rather than reduced. Single-threaded rows unchanged (8-row A/B, every row inside its own noise
+floor); `spawn-live` pays **+1.1%** for the handle allocation, a measured and accepted trade
+(ADR-224 — which also records why an earlier +1.8% reading was measured in the wrong
+configuration, and why interning the handle was tried and rejected). Guarded by `arm_handle_clone_does_not_touch_the_shared_arm_refcount`, sabotage-verified.
+The diagnosis that follows is kept because the *shape* of it is the reusable part.
+
+`BROOD_NO_SHARED_ARMS=1` was the diagnostic lever throughout and was never a shippable
+workaround (sharing exists for the `spawn-live` 4.5 GB footprint and ~25% spawn CPU).
+
+**What.** When several green processes run the *same* VM-compiled arm at once, per-task CPU
+inflates far beyond what the same parallelism costs anywhere else. On `pfib` (100 × `fib(32)`,
+`BROOD_TIER=1`, 6-core/12-thread i5-11500H):
+
+| | wall | CPU% | CPU per task |
+|---|---|---|---|
+| default | 52.7 s | 1179% | 6213 ms |
+| `BROOD_NO_SHARED_ARMS=1` | **17.6 s** | 1172% | **2058 ms** |
+
+Serial `fib(32)` on the VM is 790 ms, and 12 *independent OS processes* each running it inflate
+to 1998 ms (2.5×) — pure SMT + all-core clock drop. So 2058 ms **is** the machine's floor, and
+everything above it was contention. The CPU figure is the tell: at 12 tasks the default runs at
+**769%** against 1148% with sharing off — the cores are stalled, not busy.
+
+**This is not tier-1-only.** At the default ceiling, an arm that simply does not lower keeps
+paying it: 24 × `fib(30)` under `BROOD_NO_I64=1 BROOD_NO_INLINE=1` runs 3110 ms, and 1540 ms
+with sharing off — **2.0×**. Any concurrent workload whose hot arms stay on the VM is exposed,
+which is the normal case for non-numeric server code (a Hatch request handler, not `fib`).
+
+**The 2×2 that isolates it.** 24 concurrent processes, `fib(32)`, tier 1, ms of CPU per task:
+
+| | sharing **on** | sharing **off** |
+|---|---|---|
+| **same** arm | **3881 (4.9×)** | 1925 (2.4×) |
+| **distinct** arms (24 separately-defined `fib_i`) | 1992 (2.5×) | 2046 (2.6×) |
+
+Only one cell is slow. Three independent cells land on the 2.4–2.6× machine control, so the
+cost needs *both* a shared arm object *and* multiple threads touching it. That rules out
+sharing's bookkeeping (distinct arms + sharing on is fast), concurrency as such (every cell is
+24-way), and resident-process count (12 vs 24 resident measure the same, 4381 vs 4201).
+`BROOD_GC_FLOOR=2000000` makes it **worse** (3044 vs 2345 ms/task), so it is not GC frequency —
+the same negative result `compute-frontier.md` records for `bintree`/`nqueens`.
+
+**Mechanism.** `Heap::vm_call_ic_probe` (`core/heap/vm_cache.rs:507`) returns the cached arm as
+`a.clone()` — an `Arc<CompiledArm>` refcount increment, matched by a decrement when the caller
+drops it — and that is the **IC-hit** path, i.e. the hot one, taken on every VM closure call.
+The IC table is per-process, but ADR-175 Phase B publishes the arm itself to `shared_closures`,
+so every process's IC entry points at *one* allocation. N workers then RMW one cache line per
+call. With sharing off each process compiles privately, the refcount is core-local, and the
+traffic disappears.
+
+**There is a second contended clone, and it is the one real code hits.** `vm_apply`
+(`mod.rs:2700`) also does `live_arm_push(arm.clone())` per activation — but *only* when
+`arm.has_runtime_handles`, so `fib`'s pure arithmetic body skips it and the benchmark above
+measures the IC clone alone. An arm carrying a `ConstVal::Handle` or a `MakeClosure` — i.e.
+anything that touches a string, a keyword or a lambda, which is most real code — pays both.
+Same recursion shape with a string constant in the body, 24-way, tier 1: 2278 ms/task shared
+against 991 ms unshared, a **2.30×** sharing penalty against **2.02×** for pure `fib`. Worse,
+but not by much, so the IC clone remains the dominant site and `live_arm_push` is a second one
+to fix, not the headline. (That the variant is handle-bearing is inferred from the constant, not
+read from `has_runtime_handles` — there is no flag that reports it.)
+
+Note `gc_runtime.rs:683` already documents the shape from the GC side: recursion "occupies one
+entry per *active frame* — a 100 000-deep parse holds 100 000 entries that are all the same
+`Arc`", and that walk was already given a distinct-arm dedup for the same reason.
+
+The cache line itself was **not** measured — `perf_event_paranoid=4` here, the same limit
+`compute-frontier.md` records — so the mechanism is an inference from the 2×2 plus the code,
+not a hardware-counter proof. What the 2×2 does establish without counters is the shape: the
+cost needs one shared object and many threads, and scales with threads, not with objects.
+
+The tree already names the cost and already fixed it for the other engine:
+`vm_call_ic_fast_link` (`vm_cache.rs:518`) returns only `Copy` data and documents itself as
+avoiding *"the one real atomic-RMW the hot recursive call (`fib` &c.) otherwise pays per call
+(~30M times)"*. That path is `#[cfg(feature = "jit")]` and serves native-to-native links only,
+which is exactly why tier 2 is immune and the VM is not.
+
+**How it was fixed (ADR-224), and why not the other way.** The route below — making shared
+arms immortal so the call path could borrow — was **not** taken: it is sound for a sealed
+PRELUDE arm but not for a RUNTIME one, which `shared_closures_clear` and the free-epoch stamp
+exist to invalidate. Interposing a per-process `Arc<ArmHandle>` instead needs no immortality
+argument, because it holds the shared `Arc` for at least as long as a direct clone would —
+liveness is strictly *stronger* than before, and `runtime_collect` still reaches the same arms
+via `ArmHandle::arc()`. All three per-call clone sites move to the handle at once. Cost: one
+extra allocation per (process, call site) at IC-fill time, and one pointer hop on arm reads,
+which measured inside the noise floor on every single-threaded row.
+
+**Why it was not a *small* fix.** The self-tail path only pointer-compares the arm
+(`std::ptr::eq(compiled.as_ref(), arm)` in `exec_chunk.rs`), so *that* clone is pure waste and
+could go today — but `fib` recurses **non-tail**, and the general call path hands the arm onward
+as an owned `Arc`. Removing the traffic there means the callee chain can borrow instead, which
+needs the arm to be immortal — sound for a sealed PRELUDE arm, not obviously sound for a
+RUNTIME-region one, which `shared_closures_clear` and the free-epoch stamp exist to invalidate.
+The shape is an `ArmRef` that is either `Owned(Arc<…>)` or `Immortal(&'static CompiledArm)`,
+touching the ~42 `Arc<CompiledArm>` sites across 11 files. `live_vm_arms` wants the same
+treatment as a second step — a stack of raw pointers beside a small distinct-owner table, which
+is close to what its GC walk already reconstructs per collection with `seen_arms`. Both must
+clear the GC-stress and
+hot-reload gates, not just the differential — the VM's answer stays correct either way, so
+**only a benchmark moves**, the same blind spot ADR-221 hit.
+
+**Repro.** `BENCH_N=32 TASKS=100 BROOD_TIER=1 brood pfib_k.blsp`, with and without
+`BROOD_NO_SHARED_ARMS=1`, where `pfib_k.blsp` is `bench/brood/pfib.blsp` with the task count
+read from `TASKS`. Compare CPU% between the two, not just wall. Measure with
+`/usr/bin/time -f "%e %P"` — **not** `timeout(1)`, which rounds wall up to a 100 ms grid and
+silently flattens every sub-second row (the published harness uses Python's
+`subprocess(timeout=)` and is unaffected).
+
+---
+
+## KI-39 — the tree-walker CI job fails intermittently, and the log was unreadable ✅ FIXED 2026-08-18
+
+**Recurrence 2026-08-17, and the diagnostic was broken.** Run `32032421650` failed this job
+with nextest exit 100 — the only red job of five (breakage, rustfmt, `examples still run` and
+`clippy + test` all green). The annotations added on 2026-08-13 so a sighting would name its
+failing case produced **nothing**: only "Process completed with exit code 1" and "exit code
+100".
+
+The cause is the annotate step itself. GitHub runs `shell: bash` as `bash -eo pipefail`, so
+`grep -hoE '…' log | sort -u | head -25 | while read; do echo ::error::…; done` **exits 1 when
+the grep matches nothing** — killing the step before the later greps run — and `head -25` can
+SIGPIPE the grep (141) for the same effect. Verified under the exact flags: the old pipeline
+exits 1 and never reaches the following line; with `|| true` appended it continues. All six
+annotate pipelines (this job, `breakage`, `examples`) are hardened.
+
+So this sighting is *still* undiagnosed, and the artifact that would name it
+(`tree-walker-nextest-log`) needs an authenticated download, which is blocked — see the note
+on `gh` below. **One candidate, unproven:** the deep-JSON case fixed the same day
+(`jit_tail_chain_depth_test.blsp`, native-stack guard at a 1.6 KB margin) is *more* likely to
+trip under `BROOD_VM=0`, where everything runs tree-walked and native stack use is far higher.
+It reproduces only in suite context, so it could not be confirmed against this run.
+
+**Second recurrence, 2026-08-17 (run `32054863012`, commit `f1c4336d`) — and the hardened
+diagnostic STILL said nothing.** Four of five jobs green (`breakage`, `rustfmt`, `examples still
+run`, `clippy + test`); only this one red, exit 100 again. The `|| true` fix demonstrably worked
+— the annotate step's own "exit code 1" annotation is gone and the step reports success — but it
+produced no annotation at all, **not even the `Summary [...]` line nextest always prints**. So
+the CI log differs from every local log in a way all three patterns miss, and the run stayed
+undiagnosable because the artifact needs an authenticated download.
+
+Local evidence continues to say the suite itself is fine: `BROOD_VM=0 cargo nextest run` passes
+**975/975** here, twice on different trees.
+
+Hence a third iteration on the instrument: an **unconditional fallback** that, when none of the
+patterns match, annotates the log's last 30 lines verbatim plus its size. A diagnostic that
+reports nothing when its patterns miss is precisely the failure this step exists to prevent —
+three sightings have now been lost to it.
+
+**Blocked on:** ~~`gh`'s stored token is invalid~~ — **unblocked 2026-08-25.** `gh auth
+status` reports a valid token (scopes `repo`, `admin:org`, `gist`, `project`) and
+`gh api rate_limit` returns the authenticated 5000/hour rather than the anonymous 60, so
+artifact and log downloads no longer 401. The next sighting is readable, which is the whole
+point of the artifact upload above: nothing else is waiting on this entry.
+
+**Status:** ⚠️ watching (2026-08-12). Not reproduced locally. The diagnostic gap is closed:
+the failing case is now uploaded as a CI artifact, so the next occurrence is readable.
+
+**What.** The `differential (tree-walker)` job (`cargo nextest run --no-fail-fast` with
+`BROOD_VM=0`) fails with **exit 100** — nextest's "tests failed" — on some runs and passes on
+others, with no relevant change between them. Observed on `main`:
+
+| commit | tree-walker | note |
+|---|---|---|
+| `aeac1ae0` | ✅ | |
+| `14b1db40` | ❌ | two test fixes (registry, tls) |
+| `79e7e555` | ❌ | ADR-222, the tier ladder |
+| `d7508f8c` | ✅ | **workflow file only — identical test code to `79e7e555`** |
+
+That last row is what makes it a flake rather than a regression: same tests, opposite result.
+Two consecutive failures had made a deterministic cause look likely; it was not.
+
+**What has been ruled out.** The suite passes locally at every configuration tried:
+`make test-both` 977/977 + 977/977; `BROOD_VM=0 cargo nextest run` 977/977 on 12 cores;
+the same under `taskset -c 0,1` 977/977. The two test files changed in `14b1db40` were each
+hammered 15× at ceiling 0 (`BROOD_TIER=0`) with **0 failures**. It is not the 1200s→2700s
+wall-clock budget either: the failing jobs ran ~30 min end to end, well inside it.
+
+**One caveat on the local attempts, worth not repeating.** `taskset -c 0,1` limits *affinity*
+but not what nextest sees — it still detected 12 CPUs and started 12 test threads onto 2 cores,
+which is **more** oversubscribed than the runner, not equivalent. GitHub's `ubuntu-latest` has 4
+CPUs and nextest defaults its thread count to that, so the faithful local shape is
+`taskset -c 0-3 … -j 4` together.
+
+**What was done instead of guessing.** Reading a run's log needs **admin** on the repository
+(`/actions/runs/:id/logs` → 403; `rerun-failed-jobs` → 401), so a failure here was
+undiagnosable to anyone without those rights — the wrong property for the only gate that catches
+tree-walker-only divergence. The step now tees its output and uploads it on failure
+(`actions/upload-artifact`, 14-day retention); artifacts download with plain read access via
+`gh run download`. Nothing is uploaded on a green run.
+
+**Update 2026-08-12 — a mechanism hypothesis raised and killed by measurement.** The best theory
+was a **cold-boot herd the KI-38 fix does not cover**: `scripts/warm-boot-cache.sh` warms `brood`
+and `nest` but explicitly not the ~50 test binaries (each is keyed on its own mtime), so on CI —
+where every commit rebuilds and colds every key — each test binary pays a cold prelude expansion,
+and if that expansion ran on the *tree-walker* it would cost ~10× and reproduce KI-38's herd in
+the one job that flakes.
+
+**It does not.** Measured, same binary, trivial program:
+
+| | cold | warm |
+|---|---|---|
+| default (ceiling 2) | 1213 ms | 98 ms |
+| `BROOD_VM=0` | **1274 ms** | 98 ms |
+
+Prelude macro-expansion does not go through the selected engine — `BROOD_BOOT_TRACE` shows
+`expand=1.20s` either way, and the cache key (`build_id_string`: version + git sha + executable
+mtime) is engine-independent, which is *why* one cache file serves both. So the tree-walker job is
+no more exposed to cold-boot cost than the VM job, and this line of attack is closed. Recorded so
+it is not re-derived.
+
+**What the retry policy narrows it to.** Only three filters carry `retries = 1` (`binary(suite)`,
+`binary(distribution)`, `binary(serve_attach) | binary(observe_attach)`); everything else gets no
+retry. The failing runs showed exit 100 with **no `FLAKY` row**, so the failing case is either one
+of those three failing *both* attempts — which would make it reproducible-within-a-run rather than
+a coin flip — or any un-retried test failing once. That is a genuine narrowing, and it argues
+against "marginal timing" for the retried binaries.
+
+**Not reproduced in six local configurations:** `make test-both`; `BROOD_VM=0` alone on 12 cores;
+`taskset -c 0,1` with 12 nextest threads; `taskset -c 0-3` with `-j 4` (the faithful runner shape);
+plus the two changed test files hammered 15× each at ceiling 0. All 977/977 or 0 failures.
+
+**Update 2026-08-13 — the local hunt is exhausted: 0 failures in 15 runs, and that is where it
+stops.** Fifteen runs of the *single* most faithful shape (`BROOD_VM=0`, `taskset -c 0-3` **and**
+`-j 4` together, prelude cache colded each iteration as a fresh CI commit does): **978/978 every
+time**, wall time 978-1015 s, a 3.7% spread with no outlier and no extra slow-test warning.
+
+Chosen deliberately over "one run each of several configurations", which is what the earlier
+attempt did and why its negative result was weak (see the correction above). Fifteen clean runs
+put the miss probability at **0.8%** — so on this machine, in this shape, the flake is not there
+to find. That is a statement about the machine, not about the code.
+
+**Do we know the bug is still present? No — and four green CI runs do not say otherwise.** At the
+observed 27% rate, four consecutive greens have a **28%** probability: exactly what you would see
+anyway if nothing had changed. "Fixed" and "still there" are both unfalsified. Three live
+possibilities:
+
+1. **Still present, and we have been lucky** — ~28% likely on its own.
+2. **Fixed in passing.** Weak: the last failure (`79e7e555`) came *after* the registry and tls
+   fixes landed in `14b1db40`, so those are not the explanation, and nothing else in that window
+   plausibly touched it.
+3. **Runner-dependent** — a property of which machine in GitHub's fleet the job lands on, which
+   would explain 15 identical local passes and 4 CI passes against 3 earlier failures.
+
+Most weight on 1 and 3.
+
+**What would settle it, either way.** To call it *gone* wants roughly **10 consecutive green CI
+runs** (0.73^10 = 4%); there are 4 so far, and they accumulate for free with ordinary pushes. To
+call it *found*, the annotations added in `2312d4a1` name the failing case the moment it fires —
+now the only live path, since the local avenue is closed. **Do not repeat the local hunt:**
+15 runs at ~16.5 min is ~4 hours, and this entry is the record that it returned nothing.
+
+**Update 2026-08-13.** The specific CI-faithful shape this entry recommends — `taskset -c 0-3
+… --test-threads 4`, the one earlier runs (12-core, `-c 0,1`) had *not* actually used — was
+looped **3× clean** (981/981 each, ~15 min/run), plus a `make test-both` tree-walker pass the
+same day. So the faithful shape is now on record as *also* returning nothing; the four failing
+CI observations remain unreproduced locally in any shape tried. Still a watch item, not a
+blocker — the CI-artifact path stays the only live avenue.
+
+**Next step when it recurs.** `gh run download <run-id>` → `tree-walker-nextest.log` names the
+failing case. Until then this is a watch item, not a blocker: the VM job and rustfmt have been
+green throughout, and the tree-walker gate exists to catch engine divergence, which
+`tests/differential.rs` and `tests/gabriel_engines.rs` also cover per-expression inside the
+normal run.
+
+
+### Resolved 2026-08-18 — two bugs, one hiding the other
+
+`gh auth login` was restored, the artifact downloaded, and both halves fell out at once.
+
+**Why the diagnostic said nothing (three sightings lost).** nextest colours its output under
+CI even when piped to a file, so the log holds
+
+    <ESC>[31;1m     Summary<ESC>[0m [1922.084s] 976 tests run: 975 passed, 1 timed out, 3 skipped
+
+Every pattern in the annotate step anchors on `WORD [` — `Summary \[`, `FAIL \[` — and none of
+them can match `Summary<ESC>[0m [`. Verified against the real log: **both patterns match zero
+lines.** Local logs are uncoloured (not a TTY, and no CI env), which is why the greps looked
+correct here and were dead there — and why "it prints nothing" was never a clue about the
+tests. The tail-dump fallback added the day before *did* fire and *did* carry the answer, but
+its `sed 's/[[:cntrl:]]//g'` stripped only the ESC byte, leaving `[31;1m` litter in the output.
+
+Fixed three ways: `--color never` on the nextest invocation (deterministic log at the source),
+the annotate step now greps an ANSI-stripped copy (correct even if colour returns), and
+`TIMEOUT`/`SIGSEGV`/`SIGABRT`/`ABORT`/`LEAK` joined `FAIL` in the pattern set. Re-verified by
+replaying the real coloured log through the patched step under `bash -eo pipefail`: it exits 0
+and annotates `TIMEOUT [ 300.010s] (901/976) nest::complete
+completion_never_fails_however_it_is_called` plus the summary line.
+
+**What was actually failing.** `nest::complete completion_never_fails_however_it_is_called`
+timed out at 300 s. It spawns 96 `nest complete` subprocesses, and every one that reaches a
+value position booted an interpreter and then `require`d `complete` — which opened with
+`(:use-internals project)` and so loaded all 2967 lines of `project`, plus `scaffold`, plus
+`project` again behind it. Measured 2026-08-18 in a debug build: **950 ms per completion, of
+which 770 ms was that module load**; 96 × 950 ms = the 64 s the test took *alone on an idle
+16-core box*, against nextest's 60 s slow line. On a 2-core runner sharing the machine with
+`brood_suite_passes` it crossed 300 s. Fixing the load cost (see the devlog) took the test to
+**10.5 s** and the completion to 121 ms.
+
+**It was never intermittent.** The original entry called this a 3-of-11 flake. With the log
+finally readable, every one of the 8 CI runs on 2026-08-17 failed this job, and the two jobs
+that run the suite (`clippy + test` and this one) failed on the *same* case. What varied was
+only whether the box was slow enough to cross the cap — the test had been sitting one
+contention spike away from red since it was written. A "flake" that is really a fixed cost
+against a fixed deadline looks random and is not.
+
+
+## KI-38 — three boot-wait tests fail together under peak suite load · **fixed 2026-08-08**
+
+**This is what KI-28 turned out to be part of.** KI-28 was recorded as "a single unexplained
+`nodedown` flake" with a standing record of 0 failures in 260 runs, and said in terms: *"A
+recurrence after this date — on a box with the KI-29 leak fixed — is a real signal worth
+chasing."* It has now recurred twice, and both times it brought two siblings with it.
+
+**The three tests, and the one thing they have in common:**
+
+| test | wait helper | deadline | panic |
+|---|---|---|---|
+| `cli::distribution clean_peer_exit_fires_nodedown_promptly` (was KI-28) | `wait_until_listening` (`crates/cli/tests/support/mod.rs:193`) | 20 s | `server never started listening on port N` |
+| `cli::child_cleanup a_brood_child_dies_when_its_spawning_thread_exits_ki29` | `wait_until_up` (`crates/cli/tests/child_cleanup.rs:66`) | 30 s | `child never wrote its marker at …` |
+| `cli::child_cleanup the_drop_guard_kills_a_running_brood_child_ki29` | `wait_until_up` (same) | 30 s | `child never wrote its marker at …` |
+
+Every one is a **boot wait** — a helper waiting for a freshly spawned *debug* `brood` to become
+ready. None is an assertion about the behaviour the test exists to check. So the common factor is
+**not distribution**, which is how KI-28 was framed and why the pattern stayed invisible: two of
+the three are child-spawn tests that have nothing to do with nodes.
+
+**The sightings.** Both are full `make test` runs, and in both the three fail together in the same
+dense region of the schedule:
+
+- **2026-08-06 18:41** — all three failed: 34.675 s / 35.142 s / 35.145 s, at position 840/966.
+- **2026-08-07 21:20** — `…_ki29` failed at 35.521 s; `clean_peer_exit…` failed try 1 at 35.476 s
+  **and passed on retry in 0.827 s**; at 841/974. The immediately following run of the same suite
+  on the same commit was 974/974 green, and `make test-both` was 1948/1948 green.
+
+**KI-28's open question is answered.** That entry said a recurrence should separate *"B never bound
+its port"* from *"A could not connect to a listening B."* Both recurrences panic in
+`wait_until_listening`: **B never bound its port.** It is a startup failure — not a failed
+`connect`, and not the late-`[:nodedown]` shape the entry speculated about (that speculation was
+already withdrawn there for having nothing under it; this closes it properly).
+
+### Diagnosed 2026-08-08: a COLD expanded-prelude boot cache, times the herd
+
+**The mechanism is contention after all — but on work nobody had measured, so the earlier
+"it is a stall, not a slow boot" conclusion was drawn from a distribution that excluded it.**
+
+`build_id_string()` = version + git sha + `binary_stamp()`, **the running executable's own
+mtime**. The expanded-prelude boot cache (`~/.cache/brood/prelude-expanded-<hash>.blsp`) is
+therefore invalidated by **every rebuild**, for `brood`, `nest` and all ~50 test binaries at
+once. The first suite run after a build is a fully **cold** one — and that is the run you do
+after committing, i.e. the one you are watching when you see the flake.
+
+**A cold boot costs ~11x a warm one, and it is all macro-expansion** (`bootcost.sh`, isolated
+via `XDG_CACHE_HOME`, idle box):
+
+| | single boot | 16 concurrent |
+|---|---|---|
+| cold | 1227–1361 ms | max **4313 ms** |
+| warm | 107–114 ms | max 359 ms |
+
+`BROOD_BOOT_TRACE=1` names it: cold is `expand=1.102851931s` of `total=1.227s (source boot,
+cache written)`; warm is `cache hit — total=93.9ms`.
+
+**Every boot sample the previous entry rested on was warm.** The 151 ms idle / 4066 ms worst
+figures came from a sampler run alongside and after suite runs on an already-built tree. The
+cold path was never sampled, so "a 20–30 s timeout would have to be ~5x worse than the worst of
+4915 samples" compared the deadline against the wrong distribution.
+
+**Dose-response, and it is linear** (`doseresponse.py`, N cold boots sharing one cold cache,
+12 cores):
+
+| herd | 8 | 16 | 24 | 32 | 48 | 64 | 96 | 128 |
+|---|---|---|---|---|---|---|---|---|
+| cold, worst boot | 2.3 s | 4.2 s | 6.4 s | 8.8 s | 13.7 s | **18.4 s** | **27.3 s** | **36.5 s** |
+| warm, worst boot | — | 0.32 s | — | 0.64 s | — | 1.30 s | — | — |
+
+The 20 s deadline is crossed at a herd of ~70, the 30 s one at ~105 — and the observed failures
+(34.7 / 35.1 / 35.1 / 35.5 s) sit where the curve puts ~120. Memory is **not** involved anywhere
+on this curve: 24.7 GB still available at n=128, no sustained D state.
+
+**Confirmed in situ, on the tests themselves.** Each row is a full suite run; the cold rows had
+`~/.cache/brood/prelude-expanded-*.blsp` removed first, which is exactly the post-rebuild state:
+
+| condition | `clean_peer_exit` (20 s) | `drop_guard` (30 s) | `pdeath` (30 s) |
+|---|---|---|---|
+| idle, standalone, warm | 0.492 s | 0.156 s | 0.206 s |
+| suite `-j12`, warm | 1.110 s | 0.524 s | 0.414 s |
+| suite `-j12`, **cold** | 4.714 s | 4.135 s | 3.723 s |
+| suite `-j32`, **cold** | 7.123 s | 11.038 s | 11.484 s |
+| suite `-j64`, **cold** | **FAIL 20.119 s** | 28.363 s | 26.697 s |
+
+This also satisfies KI-36's methodological trap in the direction it demands: the load demonstrably
+inflates the tests' own durations (0.5 s → 4.7 s → 7.1 s → past the deadline) before anything is
+concluded from it.
+
+### Reproduced deterministically 2026-08-08 — the first reproduction
+
+```
+rm -f ~/.cache/brood/prelude-expanded-*.blsp
+cargo nextest run --no-fail-fast --features brood/treesit-grammars -j 64
+```
+
+`cli::distribution clean_peer_exit_fires_nodedown_promptly` — **TRY 1 FAIL [20.119s]**, panicking
+in `wait_until_listening` at `support/mod.rs:199`, then **FLAKY 2/2, passing on retry in 2.850 s**.
+That retry is itself confirmation: by then the herd had written the cache, so the retry booted
+**warm**. The 2026-08-07 sighting has the identical signature (failed try 1, passed on retry in
+0.827 s). The other two tests came in at 26.7 s and 28.4 s — the same regime, saved only by their
+larger 30 s budget.
+
+The stall report fired and reads: **`loadavg: 62.00`, `MemAvailable: 24865760 kB`, `SwapFree:
+282200 kB`** — 24 GB free, swap untouched. CPU contention, not a stall, not memory, not I/O.
+
+`-j 64` on 12 cores also broke `brood::gc spawned_process_reclaims_too` and timed out 3 cases.
+**That is over-subscription damage at loadavg 80, not a regression** — the same commit is
+974/974 green at the default `-j`, twice over (see below).
+
+### Fixed 2026-08-08 — warm the cache once, before the fan-out
+
+`scripts/warm-boot-cache.sh`, wired as a **nextest setup script** so it covers a bare
+`cargo nextest run` and not just `make test`:
+
+```toml
+experimental = ["setup-scripts"]      # root-level; nextest 0.9.137 still gates this
+
+[scripts.setup.warm-boot-cache]
+command = 'scripts/warm-boot-cache.sh'
+
+[[profile.default.scripts]]
+filter = 'all()'
+setup = 'warm-boot-cache'
+```
+
+It boots each spawned binary **once** (~2.4 s total) so the herd hits a warm cache. Two
+details worth keeping: `brood` and `nest` carry **separate** cache files (different mtimes,
+different keys), and `nest --version` does **not** boot the prelude while `nest complete --`
+does — so warming `nest` needs the latter. Every failure path in the script exits 0: warming
+is an optimisation and must never redden a run.
+
+**The herd-miss is directly demonstrable**, which is the whole reason one boot up front is
+worth ~2.4 s. Twelve children launched simultaneously against a *cold* shared cache — every one
+misses, because none has finished writing it — then twelve more against the same cache once warm:
+
+```
+cold, 12 at once:  3.71 3.72 4.14 4.21 4.23 4.35 4.39 4.54 4.58 4.60 4.86 4.86   (seconds)
+warm, 12 at once:  0.24 0.24 0.25 0.25 0.29 0.32 0.33 0.34 0.35 0.35 0.36 0.37
+```
+
+13–15x, and note the cold spread is *tight*: they are not queueing behind one another, they are
+each doing the full 1.1 s expansion in parallel and contending for cores while they do it.
+
+**Verified against the reproduction**, same command, same `-j 64`, same cleared cache:
+
+| test (deadline) | before | after |
+|---|---|---|
+| `clean_peer_exit` (20 s) | **FAIL 20.119 s** | **2.599 s** |
+| `drop_guard` (30 s) | 28.363 s | **1.926 s** |
+| `pdeath` (30 s) | 26.697 s | **1.991 s** |
+
+10–14x faster, and from 94% of the deadline consumed to 13%. The whole `-j 64` run also
+improved from *1 failed, 3 timed out, 1 flaky* to *1 failed, 1 timed out, no flaky* — the two
+that remain are the over-subscription damage described above (`gc spawned_process_reclaims_too`
+failed in the pre-fix `-j 64` run too), not a regression; both pass at the default `-j`.
+
+**What this does not cover, stated so nobody assumes otherwise.** Each of the ~50 test binaries
+also boots the prelude **in-process**, and each has its own cache file keyed on its own mtime —
+so they cannot be warmed without running them, which is what the suite is doing anyway. Those
+boots still pay ~1.2 s once each after a rebuild, and they still contribute to the herd. What
+the fix removes is the *repeated* cost: the dozens of spawned children that were each paying
+the expansion because they all started before any of them had written the cache. That is the
+part that scaled with the herd, and it is the part the deadline was racing.
+
+**A cheaper fix was considered and rejected**: key the cache on the prelude's content rather
+than the binary's mtime, so all ~50 binaries could share one file. The mtime is there precisely
+because an uncommitted Rust change to the *expander* changes the expansion without changing the
+prelude text or the git sha — content-keying would serve a stale cache during exactly the
+development loop this repo lives in. Not worth the correctness risk to save ~50 boots.
+
+### What the sighting rate means
+
+~1 in 11 is what this mechanism predicts with nothing exotic added: **one cold suite run per
+rebuild**, every other run in the session warm. It also explains why the cluster is *only* these
+three tests. Many tests spawn a `brood` child, but these are the only ones that wait for a booted
+child **against a deadline**; everywhere else a slow boot is absorbed as a slightly slower test.
+
+A single default-`-j` suite run peaks at **27–29 concurrent `brood`** (measured, 1 Hz), which the
+curve puts at ~8 s — short of the deadline. So a real sighting needs the herd roughly 2–4x that,
+from load *beside* the suite. The handoff records exactly such a condition 24 minutes before the
+2026-08-07 sighting: two debug suites running at once, which ended with the editor process dying
+on memory at 20:56.
+
+### `stall_report` was blind in the way that mattered — FIXED 2026-08-10
+
+The armed diagnostic could not have distinguished the candidates it was built for. It read
+`/proc/<pid>/stat`, i.e. **the main thread only**, and a `brood` runtime parks its root thread
+on a futex while worker threads do the work. So in the reproduction every process — including
+the children burning CPU — printed `S futex_do_wait`, and `D` / `R` / dead all presented
+identically. Its filter was over-broad too: `cmd.contains("/brood")` matches every binary under
+the repo path `…/broodlang/brood/`, so the report was mostly test binaries and the invoking
+shell.
+
+**Fixed:** it now reads **per-thread** state from `/proc/<pid>/task/*/stat` and prints every
+thread's state char, the `wchan` of the first non-`S` thread, and the process's total CPU ms;
+and it matches on argv[0]'s **file name** (`brood`/`nest`) rather than a substring of the path.
+Verified by sabotage — the child's marker write removed so the wait really times out:
+
+```
+live brood/nest (pid states-by-thread cpu-ms wchan cmd):
+  3469426 [S,S,S,S,S,S,S,S,S,S,S,S,S,S,S] cpu=1380ms S:futex_do_wait  …/brood …/park.blsp
+```
+
+Two processes listed instead of ~40 lines of harness, and the child reads as *booted then
+parked idle* (15 threads all `S`, CPU flat). A stall now shows a `D` thread with its `wchan`,
+and contention shows an `R` thread with CPU rising between two samples — the discrimination
+the report existed for.
+
+**Do not merge KI-36 into this.** Different test, and its 22.6 s was analysed against its own three
+deadlines (nodedown 15 s / pong 20 s / nodeup 45 s) and points at the nodedown branch. It may be
+the same family; nothing yet says it is, and a premature merge would bury one of the two.
+
+---
+
+## KI-37 — an imaged start never followed a module's require edges · **fixed 2026-08-07**
+
+**Found 2026-08-07** while scoping `nest run`'s cold pre-flight, and confirmed within the hour
+by an independent sighting on a real project: `hatch-demo` (24 files plus a `_deps/hatch`
+dependency) ran fine cold and died on the **second** run with
+`unbound symbol: hatch-demo/db/start`.
+
+**The defect.** Materialising an image section **defines** a module's bindings; it does not
+**evaluate** its source. So the `(defmodule shapes (:use geom))` header — whose expansion is
+what runs `(require 'geom)` — never runs. `require-force`'s image branch restored the section
+and `provide`d the feature, and stopped there. An imaged start therefore built a heap with
+holes and the program died at the first call across a missing edge. Third defect in the same
+loader seam after KI-34's two, and the same family as KI-35: the image carried a module's
+*bindings* and silently dropped a piece of its *behaviour*.
+
+**It looked like it worked, and here is why — the part worth keeping.** `nest run`'s advisory
+pre-flight `check-file`s each source file, and checking a file incidentally `require`s its
+header's deps. That propped up **exactly one level** of the graph, for free, invisibly. So:
+
+- a project whose entry `:use`s its modules directly worked, and every fixture in
+  `crates/nest/tests/startup_image.rs` was exactly that shape (`app (:use lib)`,
+  `app (:use shapes)`, `app (:use libdep/util)`) — five tests, all blind to it;
+- a two-level chain died on the second hop;
+- **the correctness of `nest run` depended on an advisory pass**, and `BROOD_NO_CHECK=1` did
+  not disable it (that flag suppresses warnings, not the checker's requires);
+- `nest test` / `nest check` / the LSP were never affected — they call
+  `project-materialize-all`, which requires every section, so every edge is satisfied trivially.
+
+Isolating it needed the pre-flight removed entirely. With it out, a warm `nest run` on
+`main → shapes → geom` fails at the **first** hop: `FEATURES: (demo/main)`,
+`unbound symbol: demo/shapes/area`.
+
+**Fix: record the edges during the load and replay them on materialisation.** A new root
+registry `*require-edges*` maps feature → the features its body required.
+`require-record-edge!` runs at the **top** of `require-one`, before its already-loaded
+short-circuit — the edge is a property of the requiring module, not of who won the race to
+load the target — and the image branch does
+`(fold (fn (_ d) (require-one d)) nil (get *require-edges* key))` after `provide`.
+
+Two details that cost a build each:
+
+1. **The parent is `(current-ns)`, not a dynamic var set by `require-force`.** The first
+   version bound `*require-parent*` around the load in `require-force`, which records edges
+   for std modules and **none at all for the project's own sources** — those are `load`ed
+   directly by the bulk loader, never through `require-force`. `current-ns` is the module
+   whose *file* is being loaded, is set for every top-level form in it, and reads **nil at
+   runtime**, so a runtime `require` is correctly not recorded as a load-time edge.
+   `*require-parent*` survives only as the fallback for a file with no `(defmodule …)`.
+2. **Recorded, not re-derived.** Re-parsing headers at materialisation time
+   (`%module-direct-requires`) would work and costs ~2 ms/file — ~34 s on a 16 300-module
+   project, which is the whole cost ADR-218 exists to remove. Recording is one CAS per
+   *distinct* edge (a `member?` read is the lock-free fast path for repeats), and being a
+   registry it rides into the always-materialised root section automatically via KI-35's
+   derived set — so no image-format version knows about it.
+
+A spurious edge costs one extra materialisation and nothing else; the error direction is
+one-sided on purpose.
+
+**Guard:** `crates/nest/tests/startup_image.rs::an_imaged_start_follows_transitive_require_edges`.
+**The chain is inside a dependency deliberately** — a dep's modules resolve outside
+`:source-paths`, so the pre-flight never checks them and cannot prop the test up the way it
+propped up the bug. **Verified by sabotage**: with the replay removed it fails with
+`unbound symbol: libdep/helper/triple` and the other five image tests still pass, which is
+the measurement of how blind they were.
+
+A companion, `an_imaged_start_terminates_on_a_require_cycle`, covers an imaged require cycle.
+**It is a behaviour test, not a gate on the `provide`/replay ordering** — reordering those two
+lines was tried and it still passed, because `require-one`'s `*features-loading*` marker is
+what actually breaks the cycle. Recorded so a later reader does not credit it with more than
+it does.
+
+---
+
+## KI-36 — a single `reconnect_watcher_heals_a_fallen_link` failure · ✅ **FIXED 2026-08-19**
+
+**Resolved.** The third sighting finally carried its output, and the answer was not what the
+analysis below predicted. **The failing branch was `TIMEOUT-no-pong`, not the nodedown deadline.**
+
+**Root cause — a race in the test's own round-2 script, not in the runtime.** B2 ran
+
+```
+(node-start :b …)                                  ; listener open → A's watcher connects
+(let (echoer (spawn …)) (register :echo echoer) …)  ; …but :echo exists only from here
+```
+
+A pings `{:name :echo :node up}` the *instant* it receives `[:nodeup]`, and by that point it has
+already restored `(process-flag :send-errors nil)`. So a ping that lands before `register` is
+**silently dropped** — no error, no reply — and A then waits out its full 20 s pong deadline for a
+message that was never queued. No deadline extension could ever have fixed it.
+
+**Why only this test, out of 16 sites with the same ordering.** Everywhere else the peer is
+spawned *after* `wait_until_listening`, and booting a fresh `brood` costs ~150 ms–4 s — far longer
+than B's spawn+register, so B always wins. This test is the sole case where the peer is **already
+running and hot-looping a 100–400 ms backoff `connect`**, so it can land within milliseconds of the
+listener opening. The other 15 are the same shape with no exposure; left as-is deliberately.
+
+**Fix:** `register` precedes `node-start`, so the name is live before any peer can reach the node.
+
+**Verified by sabotage, in both directions:**
+
+| condition | result |
+|---|---|
+| pre-fix, 3 s delay inserted between `node-start` and `register` | **100% fail**, `TIMEOUT-no-pong`, byte-identical to the wild failure |
+| post-fix, that 3 s delay **retained** | pass (1.44 s) |
+| post-fix, 6 CPU burners at equal priority | **10/10 pass** |
+| post-fix, 12 burners at *higher* priority than the test | failures are all `wait_until_listening gave up` (boot-class); **zero** `TIMEOUT-no-pong` |
+
+**The original inference below was wrong, and worth reading as a lesson.** It reasoned that 22.6 s
+"can only be the nodedown deadline (15 s + startup), not the nodeup deadline, which would have
+taken at least 45 s." The flaw: reaching the *pong* branch does not cost the 45 s nodeup deadline —
+nodeup fires promptly, because the harness restarts B2 ~400 ms after B1 exits. So the arithmetic is
+setup (~2.6 s) + the 20 s pong deadline ≈ 22.6 s, matching the original sighting exactly. **The
+hunt was aimed at a stall that never existed**, which is the most likely reason 25 idle runs and 14
+loaded runs all came back clean. When a deadline analysis rules a branch out, check the *time to
+reach* that branch, not just the branch's own timeout.
+
+**Two red herrings, both recorded so the next reader discards them fast:**
+
+1. `dist: incoming connection failed: failed to fill whole buffer` in B2's stderr is **benign
+   harness noise**: `wait_until_listening` opens a bare `TcpStream::connect` and drops it with no
+   handshake bytes, which is exactly an EOF mid-read on B2's accept loop. It appears on passing
+   runs too.
+2. This entry's own **method trap fired again**, on me, in the same shape it warns about. A first
+   verification loop classified on "did the success line appear" and reported 8/12 failures — all
+   of which turned out to be my 12 default-priority spinners starving a `nice -n 19` test's child
+   boots (a priority inversion I created), not the race. **Capture and classify the output; a
+   failure you cannot name is not evidence.**
+
+The original entry follows, unaltered.
+
+---
+
+### (original entry, superseded) — **watching, seen once 2026-08-07**
+
+**Seen once**, in the full `make test` that gated the dependency-imaging change: `TRY 1 FAIL
+[22.567s]`, passed on nextest's retry, suite otherwise 970/970. The box was **not idle** — a
+4000-module image build (≈2.9 GB RSS) was running beside the suite, which is the same condition
+the 2026-08-06 devlog records as producing a false `division by zero` failure in
+`brood_suite_passes`.
+
+**Not reproduced: 0 failures in 25 idle runs** (retries off, one at a time) and **0 in 10 runs
+under synthetic load** (six CPU burners plus repeated cold image builds). That second number is
+weak evidence, and worth saying so: those runs took 1.6–1.9 s each against 2.58 s idle, i.e. the
+load never actually reached the test's path.
+
+**What the 22.6 s says.** The test has three liveness deadlines — nodedown 15 s, pong 20 s,
+nodeup 45 s. A 22.6 s failure can only be the **nodedown** one (15 s plus node startup), not the
+nodeup deadline, which would have taken at least 45 s. That branch is A failing to observe
+`[:nodedown]` after B1 exits *cleanly*, where the socket EOF should fire it immediately and the
+heartbeat path (`DOWN_AFTER` 6 s, 2 s ticks) is only the backstop — so 15 s is roughly 2× the
+worst case, and exceeding it means a real stall, not a marginal deadline.
+
+**Diagnostic to arm next time:** the failing run's stdout was lost because the suite output was
+piped through a `grep` for summary lines. The test prints exactly which branch fired
+(`TIMEOUT-no-nodedown` / `NODEDOWN-OK` / `NOCONNECTION-OK` / …) precisely so this question is
+answerable after the fact — capture the full nextest output on any suite run that is expected to
+be evidence.
+
+**A clean re-run is green:** 970/970 with no flaky row, on an idle box, same commit. So the
+sighting stands alone, exactly as KI-28's does.
+
+**Update 2026-08-12 — the condition this entry called untested has now been tested: 0/14.** The
+weakness recorded above was that the load hunts never reached the test's path (synthetic CPU
+burners; runs came out *faster* than idle). So the real thing was reproduced instead: a
+`gen-project.py 4000` fixture, its `.brood` image deleted every iteration, loaded in a loop by
+the prebuilt `nest` — measured at **186% CPU and 352 MB RSS** with a load average of ~3 while the
+test ran. **14 runs, retries off, one at a time: 0 failures.** Idle baseline the same day: 0/10.
+
+That does not explain the sighting, but it does retire the "we never tried the real condition"
+caveat: the 4000-module image build beside the suite is now a *tested* negative, not an untested
+suspicion.
+
+⚠️ **Method trap, recorded because it produced a convincing false positive first.** The first
+attempt drove the load with `cargo run -q -p nest …` against the same workspace. That takes the
+**cargo build lock** on the target dir the foreground `cargo nextest run` needs, so every
+foreground run failed on lock contention — and a `grep -E "FAIL|failed"` matched *cargo's* error
+text. It read as **12/14 → then 12/12 failures**, i.e. a reproduction, and it was nothing of the
+kind: with the load stopped the same test passed in 1.3 s. Drive background load with a
+**prebuilt binary**, never through cargo, and assert on the test harness's own summary line rather
+than on any line containing "fail".
+
+**Related:** KI-28 is the same shape in the same suite — a single unexplained dist failure that
+passed on retry and has never recurred. Two independent one-off failures in the dist tests, both
+under load, is worth correlating if a third appears; neither reproduces on demand today.
+
+**Update 2026-08-07 (evening): KI-28 recurred and became [KI-38](#ki-38); this one did not.** A
+further **25 consecutive idle passes** (retries off, one at a time, ~2.0 s each) plus four whole-
+suite passes on the same commit — but note that only *repeats* this entry's own "0 failures in 25
+idle runs" and therefore adds a third idle confirmation and nothing more. **It does not touch the
+condition that produced the sighting** (a 4000-module image build running beside the suite), which
+is exactly the weakness recorded above. This stays a watch item, deliberately **not** folded into
+KI-38: KI-38's three tests all fail in a *boot* wait, whereas this one's 22.6 s points at the
+nodedown branch, and merging on a resemblance would bury one of the two.
+
+---
+
+## KI-35 — `*method-from*` was never imaged · **fixed 2026-08-07**
+
+**Filed separately from KI-34 on purpose**, for the reason KI-30 was filed separately from
+KI-29: found while fixing another issue, and a bug recorded as an aside inside a fixed one is
+invisible. This is also the *third* recurrence of one shape — a registry missing from the
+startup image's hand-maintained list — after `declared_sigs` and the seven ability/multimethod
+registries of 2026-08-07 morning.
+
+**The defect.** `register-method` records `[multimethod key] → registering ns` in
+`*method-from*` and warns when a *different* module re-registers the same key
+("redefined from … by … (last wins)"). The image never carried that registry, so an imaged
+start began with it empty: `has-prev` is false for every key, and the conflict warning stops
+being emitted. Nothing crashes and dispatch still works — the last registration simply wins,
+silently, which is exactly the class this list keeps producing.
+
+**The fix is the mechanism, not the entry.** The set is derived now rather than named —
+`%registry-update!`/`%registry-cas!` are the only ways a registry is written, so the kernel
+records the names they write and `(%registry-names)` reports them (see KI-34 and ADR-218).
+A registry added later is carried without anyone remembering to. What remains in
+`std/tool/project.blsp` is an *exclusion* list, where a forgotten entry costs a redundant load
+rather than a wrong answer.
+
+**Guard:** `crates/nest/tests/startup_image.rs::an_imaged_start_keeps_what_loading_registered`
+runs a project twice and asserts multimethod dispatch, ability dispatch, record identity,
+method provenance and module docs all survive the imaged start.
+
+---
+
+## KI-34 — the startup image was written every cold start and never read from · **fixed 2026-08-07**
+
+**Found 2026-08-07** while auditing KI-35's neighbourhood. ADR-218's per-module lazy
+materialisation had not worked since it shipped (118f745a): `nest run` on a project restored
+the image's root section and then **loaded every module from source anyway**. There is no error
+and no wrong answer — the observable behaviour of an imaged start was identical to a cold one,
+because it *was* a cold one. Only the benefit was missing.
+
+**Two independent defects, either one sufficient to disable it.**
+
+1. **The installer wrote a module-qualified global.** `project-install-image` ran
+   `(def *image-sections* …)` from inside module `project`, binding
+   `project/*image-sections*`, while `require-force` — root code — read the empty root global.
+   The prelude documents this exact rule four lines above the global's own `def`, and ships
+   `set-load-path!` as the root setter for the same reason; `set-image-source!` is now its
+   sibling and the installer goes through it.
+2. **`require-force` tested the branches in the wrong order.** The image branch sat after the
+   ADR-070 package-module branch, and a project roots its OWN modules — so
+   `*package-module-files*` holds `demo/shapes` exactly as it holds a dependency's `foo/b`, and
+   the package branch matched first for every module of every named project. The image branch
+   now comes first: an image is only installed after its fingerprint matched the sources that
+   branch would re-evaluate, and a module with no section still falls through to it.
+
+**Why the existing tests missed it.** `startup_image_test.blsp` and `image_test.blsp` drive the
+`%image-*` primitives directly — they hand in a section list and read it back, never routing
+through `require`. The defect lived entirely in the seam between the primitives and the loader,
+which no unit of either side can see.
+
+**How to tell it is working** (the only reliable signal): a `println` at a module's top level is
+evaluated by a source load and absent from an imaged one. A second run of an unchanged project
+must not print it, and `BROOD_IMAGE_TRACE=1` should show one `[image-section]` line per module
+the entry point reaches, not just the root section.
+
+**Guard:** `crates/nest/tests/startup_image.rs` — `a_second_run_loads_modules_from_the_image_not_from_source`
+(plus `an_edited_source_file_invalidates_the_image`, so the fix cannot be "serve a stale image").
+
+**Follow-up shipped the same day:** a dependency's modules are imaged too, with their files
+added to the staleness key (they live outside `:source-paths`, so nothing else could invalidate
+them) — see the ADR and `a_path_dependency_is_imaged_and_its_edits_invalidate`.
+
+**Re-measured 2026-08-07, and the two halves of ADR-218 fared very differently.** Same fixture
+(4 002 generated modules), same box, release binaries from `90099993` (pre-fix) and `34770be4`:
+
+| row | pre-fix | post-fix | |
+|---|---|---|---|
+| lazy `nest run` (entry reaches 2 of N) | 0.37 s / 112 MB | 0.36 s / 102 MB | unchanged |
+| eager materialise-all | 8.55 s / 674 MB | **1.34 s / 453 MB** | **6.4×**, −33% RSS |
+| ⤷ materialise time alone | 7 012 ms | **959 ms** | **7.3×** |
+
+So the **lazy row was never broken in a way a stopwatch could see**: an entry point reaching two
+modules pays about the same to source-load two files as to materialise two sections, which is why
+ADR-218's 1.30 s was a real number measuring the wrong mechanism (a 16 302-module re-run of that
+row lands at 1.57 s / 243 MB against its 1.30 s / 219 MB, on a denser fixture). The row that was
+genuinely broken is the **eager** one — `project-materialize-all` → `require-one` → the source
+branch — so `nest test`, `nest check` and the LSP re-evaluated the whole project on every start.
+
+**A trap worth keeping:** the eager path *reported* "materialised 4002 of 4003 sections" in both
+arms. The count is sections walked, not sections served from the image, so the instrument looked
+healthy throughout. Only the wall clock and a top-level `println` in a module told the truth.
+
+---
+
+## KI-33 — fully consuming a stream leaked its producer process · **fixed 2026-08-07**
+
+**Found while fixing KI-32, 2026-08-07.** A `std/stream.blsp` stream is a process; an
+exhausted one used to answer `:stream-done` *idempotently* by looping in `stream-done-loop`
+— so once a stream was fully consumed, its producer process stayed **parked forever** instead
+of exiting. `stream-empty`, `stream-singleton`, `stream-drop` (when it drops past the end),
+`stream-chunk` (partial last chunk) and `stream-lines` (final buffer flush) all ended there.
+Every *other* source (`stream-list-loop`, `stream-fn-loop`) and every transformer already
+exited on exhaustion, so this was an inconsistency: some pipelines self-cleaned, some leaked
+one (or more) processes per stream. Harmless for a one-shot, but a long-lived program that
+builds many streams leaked processes without bound — surfaced as `memory limit exceeded`
+under a stream-hammering repro.
+
+**Fixed** by making `stream-done-loop` (and `stream-err-loop`) answer once and then **exit**,
+matching every other loop. Safe because a well-behaved consumer stops at the first `:done`
+(the idempotence was never relied on) and no transformer re-polls a done upstream — each
+forwards `:done`/`:stream-err` and exits. Terminal consumers therefore need no `stream-close`
+call, and a fully-consumed multi-stage pipeline tears itself down completely.
+
+Regression test: `tests/stream_test.blsp`, "streams do not leak producer processes" — consumes
+150 batches of the four leaking shapes and asserts no producers remain parked under this
+process (a `process-info :parent`/`:status` count, cross-checked to report 5 for 5
+deliberately-parked children). **Verified by sabotage** — restoring the recursion fails the
+test 3/3.
+
+---
+
+## KI-32 — a selective `receive` corrupted a skipped local message to `nil` · **fixed 2026-08-06**
+
+**Found by the green-tree flake battery, 2026-08-06** — the in-language suite's
+`stream-drop › drop more than available` timed out at 600s once (masked by a nextest
+retry, so the battery's own fail-count read 0). Not a stream bug: an amplified repro
+(`stream-drop` pipelines hammered concurrently) reproduced an intermittent **hang** —
+~20% at 200 pipelines, ~80% at 800, and **100% single-worker** (`BROOD_J=1`), which ruled
+out a multi-core data race and pointed at a cooperative-scheduling logic bug. A gdb
+snapshot of the wedge showed the root process blocked in `receive` while the worker slept
+with an empty run queue; a watchdog dump named the culprit: one process parked over a
+single queued message whose value had become **`nil`**.
+
+The bug was in the selective-receive scan (`scan_mailbox`, `process/mailbox.rs`). A message
+delivered by the **L1 fast path** — the sender copies it straight into a *parked* receiver's
+heap, a `Payload::Local` whose value lives in a `msg_roots` slot — was read during the
+optimistic single-lock scan with **`msg_root_take`**, which *tombstones the slot for reuse*.
+On a **non-match**, the same envelope (still holding that slot index) was re-inserted into
+the queue via `reinsert_candidate`; the next scan `msg_root_peek`-ed the now-empty slot and
+read **`nil`** (or, worse, a later message that reused the slot). A `[:next pid]` request
+sitting in a stream stage's mailbox while it waited for its upstream reply was thus corrupted
+to `nil` and could never match again — the stage parked forever, and the whole pull-stream
+pipeline deadlocked. Intermittent because it needed the message to arrive via L1 (receiver
+parked) *and* be the optimistically-popped first candidate of a non-matching scan; worse
+single-threaded because that interleaving is more likely; engine-independent because the
+mailbox scan is shared by the VM and the tree-walker; unhelped by every scheduler/message
+opt-out lever because none of them touch the take/reinsert.
+
+**Fixed** by **peeking, not taking**, in the optimistic scan (so a re-queued candidate keeps
+its slot intact) and freeing the slot (`msg_root_take`) only on the **consume** path, where
+the message actually leaves the queue. This also closes a latent slot leak on the
+non-optimistic match path, which peeked but never freed. Wire-format messages were always
+immune (their value lives in the envelope, not a slot).
+
+Regression test: `tests/concurrency_test.blsp`, "selective receive: a skipped local message
+keeps its value" — a receiver is driven to `:waiting` (via `process-info`) so the send takes
+the L1 path, then a non-matching `[:data 42]` is skipped and later matched; a companion
+hammers the shape across 40 processes and checks the value round-trips. **Verified by
+sabotage** — on the pre-fix binary the test hangs 5/5 (600s → timeout); on the fix it passes
+0/10, and the amplified repro drops from 80%/100% hang to 0.
+
+---
+
+## KI-31 — a foreign-ecosystem version range silently compiled to its first term · **fixed 2026-08-06**
+
+**Found by a bug hunt against `std/version.blsp`, 2026-08-06** — not by a failing test, and not
+by the fuzzers: no generator covers the version module.
+
+`version-satisfies?`/`version-compile` split a constraint into terms on **commas**. A range
+written in npm/cargo style, with terms separated by *spaces*, therefore arrived as one term:
+`version-split-constraint` peeled the leading `>=` and handed `"1.0.0 <2.0.0"` to
+`version-core`, which is **deliberately lenient** ("a missing or non-numeric segment reads as
+0" — the property that makes `"1.x"` and the short `">= 0.3"` work). It parsed that as
+`(1 0 0 0 0)`, i.e. `>=1.0.0.0.0`. The upper bound vanished without a word.
+
+The consequence is the dangerous direction for a package manager:
+
+```
+(version-satisfies? "3.0.0" ">=1.0.0 <2.0.0")   ; => true, before the fix
+```
+
+A user pinning a dependency to `>=1.0.0 <2.0.0` got `>=1.0.0`, so the resolver could select a
+breaking major. It also failed the other way — `"^1.0.0 || ^2.0.0"` silently dropped the second
+alternative, so `2.5.0` did *not* satisfy it — and `"1.0.0 - 2.0.0"` (npm hyphen) became
+`=1.0.0` with a garbage prerelease of `(" 2" "0" "0")`.
+
+**Fixed** by rejecting a version part containing whitespace or a constraint operator
+(`< > = | ^ ~`) — the same rule `version-split-constraint` already applied to the *operator*
+("an operator with no meaning has to say so"), extended to the version beside it. `-` and `+`
+are deliberately not rejected: they are legal prerelease/build punctuation.
+
+**The leniency it does not touch, on purpose.** `">= 1.0.0"` (space after the operator),
+`">= 1.2"` (short), `"1.x"` and `"1.0.0+build"` all still compile — that leniency is why
+`version-core` exists in its current form. One case stays lenient and is *not* fixed:
+`">=1.0.0extra"` still reads as `>=1.0.0`, because a segment that begins with digits and
+continues with letters is indistinguishable from the `"1.x"` form the module intends to
+accept. Tightening that means deciding whether `"1.x"` should survive at all — a design
+question, not a bug fix.
+
+Regression test: `tests/version_test.blsp`, "a range from another ecosystem raises instead of
+silently widening", plus a companion asserting the intended leniency survives. **Verified by
+sabotage** — with the check disabled the first fails and the second does not, which is the only
+version of that test worth having.
+
+---
+
+## KI-30 — seven `temp-dir` prefixes were never purged · **fixed 2026-08-05**
+
+**Filed as its own entry deliberately.** Found while fixing KI-29, and KI-29's lesson is that an
+adjacent finding recorded inside another entry is invisible. It is a *different* bug: litter on
+disk, not a process burning CPU and holding a port.
+
+**Measured.** 4622 `/tmp/brood-*` directories, **168 MB**, on an ordinary dev box.
+
+**The mechanism already existed — the coverage did not.** My filed fix direction (a
+`with-temp-dir` macro, and a decision about whether a failing test keeps its directory) was
+wrong, because `purge-stale-temp` already implements the convention and documents it: name
+fixtures with a unique prefix, and at file **load** drop the previous run's leftovers, which
+bounds `/tmp` to one run and recovers from a crashed run. Nine prefixes did this. Seven did not,
+and the census is a clean 1:1 with no inference required:
+
+| prefix | dirs | purged? |
+|---|---|---|
+| `brood-feat-` | 1392 | ❌ |
+| `brood-reload-` | 926 | ❌ |
+| `brood-walk-` · `brood-skip-` · `brood-p2-` | 464 each | ❌ |
+| `brood-ambient-` · `brood-ambient2-` | 387 each | ❌ |
+| `brood-pkg-` | 42 | ✅ |
+| `brood-file-`, `brood-slurpb-`, `brood-dup-`, `brood-manifest-`, `brood-fmt-*`, `brood-buf-` | ≤20 each | ✅ |
+
+Every unpurged prefix is in the hundreds; every purged one is one run's worth. 4484 of the 4622
+directories (97%) come from the seven missing lines.
+
+**Fix.** The seven missing `(purge-stale-temp …)` calls, in `project_test.blsp` (4),
+`reload_watch_test.blsp` (1) and `syntax_finalization_test.blsp` (2). Verified by running the
+whole suite three times: **128 directories after each run** (110 of them the suite's, 3.7 MB),
+flat, where before each run added ~110 permanently.
+
+**Covered by** `tests/temp_purge_coverage_test.blsp`, which scans each test file's own source and
+fails if a prefix passed to `temp-dir` is never passed to `purge-stale-temp` — reporting
+`[file prefix]` pairs, so a failure names the file to edit and the line to add. A purge covers a
+prefix it is a `starts-with?` prefix of, since that is how the purge itself matches
+(`brood-file-` legitimately covers `brood-file-swap-`). **Verified by sabotage**: deleting one
+purge line fails it with `(["reload_watch_test.blsp" "brood-reload-"] …)`. It carries a second
+test asserting the scanner still finds ≥20 uses, so a renamed primitive or a reformat that breaks
+the `(temp-dir "` spelling cannot make the first test pass vacuously forever.
+
+**Why a source scan rather than a `/tmp` check:** a `/tmp` check could only fail *after* litter
+exists, would depend on what earlier runs left behind, and would not reproduce on a clean machine.
+The property is static and local — a file's own text either has the line or it does not.
+
+**Not a correctness risk** — nothing reads a stale dir (each name is freshly randomised), and the
+purge runs at load, before any fixture exists. It was disk, and noise when reading `/tmp`.
+
+## KI-29 — the node/observe tests orphan `brood` children · **fixed 2026-08-05**
+
+**Why this became its own entry.** It was written down as an "adjacent finding" inside KI-14, which
+is *fixed* — so it read as closed, was counted as closed, and sat for nine days. A live bug filed
+under a fixed one is invisible. (KI-30 is filed separately for exactly this reason.)
+
+**Evidence, 2026-08-05.** Three stray `brood` nodes were alive on this box at once:
+
+| child | age | CPU |
+|---|---|---|
+| `/tmp/brood-observe-*/target.blsp` | **9 d 14 h** | 4.0% |
+| `/tmp/brood-dist-reconnect-*/b1.blsp` | 1 h 13 m | 15.3% |
+| `/tmp/brood-dist-nodedown-*/quitter.blsp` | 32 m | 15.6% |
+
+Together ~35% of a core, indefinitely, on a machine whose benchmark numbers are measured pinned to
+one core. Each is also a **live node**, listening, with the same `secret-test-cookie-16+` and the
+same `:a`/`:b` names every dist test uses — which is why it was KI-28's leading suspect.
+
+**The cause: a test binary that is killed rather than allowed to finish** — nextest fail-fast, a
+`timeout`, a `^C`. `std::process::Child` has no drop-kill, so every `brood` child the binary had
+spawned is reparented and runs forever. Nothing fails when this happens, which is why it went
+unnoticed: a leak leaves no red test behind.
+
+**Fixed** in `crates/cli/tests/support/mod.rs` with `BroodChild`, a guard returned by
+`spawn_brood`/`spawn_brood_env` in place of a bare `Child`. Two *independent* nets, because neither
+covers the other's case:
+
+1. **`Drop`** kills and reaps whatever is still running — for the test that panics between the
+   spawn and its `kill`, or returns early past it.
+2. **`PR_SET_PDEATHSIG(SIGKILL)`** in `pre_exec`, so the *kernel* kills the child when the thread
+   that spawned it terminates, however it terminates. This is the net that fixes the filed bug: a
+   SIGKILLed test binary runs no destructors, so net 1 is worth nothing there. It closes its own
+   race too — if the parent died in the window between the fork and the `prctl`, the signal was
+   already missed, so the child compares `getppid()` against the pid captured before the fork and
+   `_exit`s if it changed.
+
+Net 2 is exposed on its own as `dies_with_parent(&mut Command)` and applied to the four test files
+that merely `.output()` a one-shot `brood`/bundled-app run as well (`error_format_parity`,
+`checker_cross_module_ability`, `std_attribution`, `release_bundle`). Those cannot orphan on the
+happy path — `output()` blocks until the child exits — but a program that *hangs* while the binary
+is killed is the same leak, and this bug's lesson is that nothing reports it. The invariant is now
+uniform: every child a `cli` test starts dies with the test.
+
+**Two things the original entry got wrong**, both worth keeping:
+
+- **Cause 2 — "the observe/attach path leaks even when its test completes normally" — has no
+  mechanism, and is withdrawn.** It was inferred from the 9-day-old child being "from an ordinary
+  run", which was itself inferred from its age; age is not provenance. Read the test: all three
+  harnesses kill the target *before* asserting, so a run that completes cannot leak, and the only
+  non-killing exits are panics — i.e. cause 1 again. Verified: `cargo nextest run -p cli` is 46/46
+  with zero strays. (The fix covers this either way — PDEATHSIG does not care why.)
+- **The filed fix direction, a process group, is the wrong lever for cause 1** and was not taken.
+  Moving the child into its *own* group **removes** it from any group an outer tool might kill, and
+  nothing runs our group-kill when we are the one being SIGKILLed. A group buys only grandchildren,
+  which no test here creates (these programs are green processes, no `run-process`), and it costs a
+  pid-recycling hazard: `killpg` on a reaped leader's recycled pgid can signal an unrelated group.
+  `Child::kill` cannot — std caches the exit status, so a kill after a `wait` is a no-op rather
+  than a signal to a stranger's pid.
+
+**Covered by** `crates/cli/tests/child_cleanup.rs`. "Nothing leaked" is not observable from inside
+a passing test, so each test drives **one** net with the other defeated and asserts the child
+actually died: the `Drop` test spawns on the test's own thread (where the parent-death signal
+cannot have fired yet), and the PDEATHSIG test `mem::forget`s the guard so no destructor runs.
+Both were **verified by sabotage** — breaking each mechanism fails its own test at the 10 s
+deadline and leaves the other passing, and the PDEATHSIG sabotage reproduced the original leak
+live (a child outliving its dead test binary).
+
+**Also verified against the filed scenario itself**, since the unit tests stand in for it rather
+than perform it: `cargo nextest run -p cli --test distribution` was started, a test binary holding a
+live `brood` child was **SIGKILLed** mid-run, and three seconds later `pgrep -af 'brood /tmp/brood-'`
+was empty. Do this with a **bracketed** pattern (`'deps/[d]istribution-'`) — the unbracketed form
+matches the shell running it, which is the trap `CLAUDE.md` records, and it cost a run here by
+SIGKILLing the very shell doing the killing.
+
+**Check for a recurrence with** `pgrep -af 'brood /tmp/brood-'` — still the right instrument, since
+the class of bug is one that no test failure reports.
+
+## KI-28 — a single unexplained `nodedown` flake · **superseded by [KI-38](#ki-38) 2026-08-07**
+
+> **Recurred twice (2026-08-06, 2026-08-07) and is now part of KI-38.** The recurrence this entry
+> asked for arrived, and it answered this entry's own question: both sightings panic in
+> `wait_until_listening` — **B never bound its port** — so this is a *boot* failure, and the
+> framing below ("a dist flake") is the wrong altitude. Both times it failed alongside two
+> `cli::child_cleanup` tests that are not dist tests at all. Read KI-38 first; everything below is
+> kept because its 0/260 hunt and its ruling-out of KI-27/KI-29 remain valid and are load-bearing
+> for KI-38.
+
+
+**Not a diagnosis — a record, so a second occurrence is recognised as the second.** In the full
+`make test` that verified the KI-27 fix, `cli::distribution clean_peer_exit_fires_nodedown_promptly`
+failed try 1 and passed try 2 (nextest reported `FLAKY 2/2 [0.631s]`).
+
+**How long the failure took is unknown.** That 0.631 s is the duration of the *passing retry* —
+nextest reports the final attempt. An earlier version of this entry read it as the failure's
+duration and concluded node A had exited early rather than hitting its 5 s `[:nodedown]` guard;
+that inference had nothing under it and is withdrawn. Both shapes are still open: a failed
+`connect`, or a nodedown that genuinely did not arrive within 5 s under load.
+
+**What the failure text said: nothing, and that is my fault.** I had piped that run through
+`tail -25`, which discarded the assertion output. The test now prints **B's stderr** alongside A's
+on failure, so the next occurrence explains itself.
+
+**What is known.** 0/40 solo; 33/33 × 3 for the whole dist file under nextest (the config that
+failed); and it did **not** recur in the next full `make test` (956/956, no flaky). It is *not* the
+KI-27 mechanism — under nextest this test's process asks for two ports and cannot wrap its slice,
+and concurrent test processes have near-consecutive pids and therefore disjoint slices.
+
+**Its one live suspect is now gone, which matters for reading a recurrence.** Orphaned test children
+(KI-29) were real and confirmed 2026-08-05: three stray `brood` nodes alive at once, one for **9
+days**, together burning ~35% of a core. A leaked node still *listening* on a port, with the same
+`secret-test-cookie-16+` and the same `:a`/`:b` names every dist test uses, is exactly the kind of
+thing that makes a node test fail once in a hundred runs. **KI-29 is fixed as of 2026-08-05**, so a
+run since then starts from a box with no stray nodes on it — meaning a recurrence *after* that date
+can no longer be explained away by the leak, and is a stronger signal than the original sighting.
+Still worth confirming with `pgrep -af 'brood /tmp/brood-'` before chasing anything subtler.
+
+**If it recurs**, the printed B stderr should immediately separate "B never bound its port" from
+"A could not connect to a listening B"; a `connect` failure would then be a real runtime question
+rather than a harness one.
+
+**Dedicated hunt 2026-08-07: 0 failures in 260 runs, retries OFF.** With no stray `brood` nodes
+on the box (confirmed `pgrep -af 'brood /tmp/brood-'` clean), the whole dist file ran 60× under
+nextest (`--retries 0 --no-fail-fast`, the exact config that flaked) and the named test ran 200×
+alone — zero flakes, zero aborts. That is now the standing record: KI-28 **genuinely does not
+reproduce on demand**, so it stays a watch item rather than an open bug, with the B-stderr
+diagnostic armed. A recurrence after this date — on a box with the KI-29 leak fixed — is a real
+signal worth chasing; until then there is nothing under it to fix.
+
+## KI-27 — node tests drew their port from the OS ephemeral range · **fixed 2026-08-05**
+
+**Symptom.** In a full `make test`, `cli::distribution reconnect_watcher_heals_a_fallen_link`
+failed twice (nextest retried once) after **20.06 s** — its `(after 20000 …)` guard on
+`[:nodeup]`, so the watcher never saw node B come back. Fast and reliable alone: **7/7 solo** at
+~1.3 s, **16/16** as 16 concurrent copies of the same binary, and 3/3 for the whole dist binary
+even under 12 CPU hogs. Only a full suite reproduced it.
+
+**Cause.** `free_port()` in the three node-test harnesses picked a port with
+`TcpListener::bind("127.0.0.1:0")` and dropped the listener. That asks the kernel for a port from
+the **ephemeral range** — 32768–60999 here (`/proc/sys/net/ipv4/ip_local_port_range`) — which is
+the same range every outbound connection on the box is assigned from, and then releases it. So a
+port a test node is about to bind can be handed to an unrelated process's *client* socket in the
+gap, and the node's bind fails with `EADDRINUSE`.
+
+Measured, not inferred: of 4000 client sockets opened by an unrelated process, **4000 (100%)**
+landed on a port the old `free_port()` could have handed a node, and **0** in the band the fix
+uses. `reconnect_watcher_heals_a_fallen_link` is the most exposed test in the file because it needs
+one port to stay free across B1's whole life, B1's exit, the 400 ms gap *and* B2's rebind; every
+other test needs a single bind. And the pre-existing mitigation — a `PORTS` mutex around
+bind→spawn — is per-process, so under `cargo-nextest` (one process per test, which is what
+`make test` uses) it does not exist between the tests that actually run concurrently.
+
+**Fix.** `crates/cli/tests/support/mod.rs` (new — the three harnesses had their own copies of these
+helpers, which is how a fix in one file could miss two). `free_port()` now allocates from a fixed
+band **below** the ephemeral floor (12000..32768), where the kernel never auto-assigns, sliced by
+pid so concurrent test processes start in different places, and probes bindability before
+returning. Additionally `reconnect_watcher_heals_a_fallen_link` now calls `wait_until_listening`
+on B2 instead of assuming it came up, and prints B2's stderr on failure — the test previously
+could not distinguish "the watcher failed to heal" (the thing under test) from "B never came
+back", which is why this presented as a mysterious 20 s timeout. Its `[:nodeup]`/pong deadlines
+were raised (60 s / 30 s): they are liveness ceilings on a saturated machine, not latency
+assertions, and cost nothing when healthy (the test still runs in 1.3 s).
+
+**Ruled out along the way.** `SO_REUSEADDR` is absent from all three `TcpListener::bind` sites
+(`net.rs:1208`, `net.rs:1528`, `dist.rs:859`) — the obvious suspect for a failed rebind, and
+**tested directly: not the cause** (immediate rebind after a linked peer exits succeeds 3/3).
+That is consistent with the real cause: the port was lost to another process, not to `TIME_WAIT`.
+
+## KI-25 — five JIT/VM suites cannot be re-run in one image · **fixed 2026-08-04**
+
+**Symptom.** Five suites pass on the first run and fail on the second *within the same
+image* — that is, under `--repeat-until-failure`, at every seed tried (0 and 5), which rules
+out ordering:
+
+| suite | shape |
+|---|---|
+| `jit_self_rebind_test` | 1 of 2 fails on iteration 2 |
+| `jit_shared_spawn_test` | 1 of 4 |
+| `pid_identity_test` | its single test — and it is ALREADY `:isolated` |
+| `vm_call_head_order_test` | 2 of 3 |
+| `vm_selfcall_reload_test` | 1 of 3 |
+
+Found by a sweep of every suite in both repos (3 iterations × 2 seeds). `bedit` came
+back completely clean; these five were the only hits, and they reproduce on a working tree
+with the day's changes stashed, so they predate them.
+
+**Why it matters more than "who re-runs a suite twice".** `--repeat-until-failure` is *the*
+tool for finding flakes, and `nest test --failed` re-runs in one image too. While these
+five fail on a second iteration, the tool cannot be used across brood's suite — a real flake
+somewhere else is invisible behind them. (That is how it was found: hunting flakes elsewhere.)
+
+**What is known.** These are hot-reload / self-call / tiering tests: they redefine globals
+and assert on how the VM or JIT re-links afterwards, so the natural theory is "iteration 2
+starts from iteration 1's redefined state". That explains four of them, and `:isolated`
+(which runs a unit alone against the clean post-load baseline and rolls back its `def`s) is
+the ordinary fix.
+
+**`pid_identity_test` is explained too, and NOT by a JIT cache** (correction 2026-08-04 — the
+original entry guessed "a JIT tier election, an IC block, a pid counter, or an arm-keyed cache"
+and reasoned from there that the case was informative about JIT internals; it is not). Running
+the recipe below prints the cause outright:
+
+```
+uncaught error: … :message node-start: this runtime is already a node (node-start called twice)
+```
+
+The test calls `node-start`, which is **deliberately one-shot per runtime** (`dist.rs`: a second
+listener would need a second port, so the second call is an error by design). `:isolated` rolls
+back `def`s; it cannot roll back the runtime's node state, and no test-level isolation can. So
+this is not "something survives an isolated re-run" in the mysterious sense — it is a test whose
+precondition (`(node-name)` is `:nonode`) is consumed by running it once.
+
+**Fixed 2026-08-04, and it was small once the premise was right.** Two different fixes, as the
+diagnosis implies:
+
+- **The four rebinding suites** (`jit_self_rebind`, `jit_shared_spawn`, `vm_call_head_order`,
+  `vm_selfcall_reload`) are marked **`:isolated`**, so `%isolate` rolls their `def`s back to the
+  post-load baseline and iteration 2 starts where iteration 1 did. `jit_shared_spawn` moved from
+  `:serial` to `:isolated` — it already ran alone; what it lacked was the rollback.
+- **`pid_identity_test`** now calls `node-start` only when `(node-name)` is `:nonode`. Nothing at
+  the test level can undo a started node, so the re-run keeps the equality / hashing /
+  receive-pattern assertions and skips re-taking the one-shot transition. Every ordinary
+  `nest test` is a fresh image, so the real nonode→node case still runs there.
+
+**Verified**: each of the five clean over 3 iterations at seeds 0 and 5, and — the point of the
+issue — the **whole in-language suite now survives a re-run in one image**: `nest test
+--repeat-until-failure 2` gives 4390/4390 twice. The failure detector was checked against the
+pre-fix file first, so a green result means something. Reproduce in one command:
+
+```bash
+nest test tests/pid_identity_test.blsp --repeat-until-failure 3 --seed 0
+```
+
+## KI-24 — an `eval`'d definition cannot forward-reference another `eval`'d name · **fixed 2026-08-01**
+
+**Symptom.** Two definitions made by `eval` from inside a namespace, where the first
+references the second:
+
+```
+(defmodule m)
+(eval '(defn r (n) (s n)))
+(eval '(defn s (n) (+ n 1)))
+(r 41)          ; → unbound symbol: s
+```
+
+The hint said it all: ``s` is defined as `m/s``. The *definition* side qualified
+correctly; only the bare *reference* failed to.
+
+**The REPL had it too** — it is simply typing a `defmodule` and then two mutually
+recursive `defn`s, since each REPL input is its own compile unit:
+
+```
+(defmodule rtest)
+(defn ra (n) (rb n))
+(defn rb (n) (+ n 1))
+(ra 41)          ; → unbound symbol: rb
+```
+
+**Order-dependent; ordinary code unaffected** — `scripts/fuzz/stress/eval_forward_ref.blsp`:
+
+| shape | before | after |
+|---|---|---|
+| normal mutual recursion (forward ref) | ✅ `:ok` | ✅ |
+| eval'd, target defined **first** | ✅ 42 | ✅ |
+| eval'd, target defined **second** | ❌ `unbound symbol: s` | ✅ 42 |
+
+**Confirmed a regression** rather than long-standing: rebuilding `builtins/system.rs` at
+`97d63eda^` returned 42 for the failing row.
+
+**Cause.** `97d63eda` (a good change — it took `eval` off the ~14× tree-walker) swapped
+`macroexpand_all` for `macros::compile`, which adds the **resolve** pass. Resolve qualifies
+a bare name only on *positive evidence* that the namespace owns it: the name is already a
+`ns/name` global, or it is in `ns_known_names` — the def heads a **file loader pre-scans
+before compiling any form**. That pre-scan is what makes a forward reference work inside a
+file. `eval` and the inheriting `eval-string` (REPL, inline) compile **one form at a time**
+and cannot scan the future, so the reference was left bare. A survey of every
+`macros::compile` call site confirmed those two were the only ones without a pre-scan.
+
+Note the mirror image: *before* the resolve pass, an eval'd `defn` inside a module defined
+a bare **root** global — module code leaking into the global namespace. The old behaviour
+"worked" only because reference and definition were consistently wrong.
+
+**Fix.** `Heap::set_ns_assume_own` — a compile-context flag, alongside `compile_ns` /
+`ns_known_names`, set by the two call sites that have no pre-scan behind them. With it on,
+the resolver's *last resort* flips: a bare name bound at root/prelude still falls through
+(so `+`/`map`/`count` keep working) and a `(:use …)` import still wins (checked first), but
+a name bound **nowhere** is taken to be this namespace's — the conclusion the file pre-scan
+would have reached. Deliberately not the resolver's default: over-qualifying a name that is
+really a local is a *silent* miscompile, so the general rule stays evidence-only.
+
+**The one trap, caught by the regression test.** Special forms and core-macro keywords —
+`if`, `let`, `do`, `fn`, `cond` — are bound in **no** environment, so "unbound ⇒ ours"
+rewrote `if` to `m/if` and every eval'd conditional died. `is_syntax_keyword` excludes
+`builtins::SPECIAL_FORMS`. (Macro *calls* are already gone by resolve time —
+`macroexpand_all` runs first — but a special-form head survives expansion by definition.)
+
+**Covered by** `tests/eval_vm_test.blsp` ("eval resolves names against the enclosing
+namespace"): the forward reference, mutual recursion across two evals in O(1) stack, the
+definition landing in the namespace rather than root, and one guard test each for syntax
+keywords, root/prelude names, and imports. Those evals run at **load** time on purpose —
+`compile_ns` is only set while a file loads, so an `eval` inside a `test` body is at root
+and never exercises the resolver at all.
+
+**Two fixes were written for this, independently and on the same day.** The other one
+(`13706580`) reverts `eval_builtin` to `macroexpand_all`, dropping the resolve pass rather
+than feeding it the missing evidence. It fixes the reproducer, and its reasoning about the
+pre-scan is the same as above. It was measured against this one and not kept, because
+dropping resolve drops everything else resolve does for an eval'd form:
+
+| | revert to `macroexpand_all` | `compile` + `ns_assume_own` |
+|---|---|---|
+| `eval_forward_ref.blsp` | ✅ `:ok` / 42 / 42 | ✅ `:ok` / 42 / 42 |
+| REPL: `defmodule` + two mutually recursive `defn`s | ❌ `unbound symbol: rb` | ✅ 42 |
+| eval'd `defn` in a module defines `mod/name` | ❌ leaks a bare **root** global | ✅ |
+| `(:use …)` imports, `(:alias …)`, privacy, static-QQ in eval'd code | ❌ lost | ✅ |
+
+The REPL row is the load-bearing one, and it is why that commit's "`eval-string` was never
+affected" does not hold: each REPL input is its own compile unit, so `eval_string_inner`'s
+*inheriting* path (`reset_ns = false`) has no pre-scan either — its own comment says it
+"does neither" — and touching only `eval_builtin` leaves the REPL broken. Verified by
+building both and running the same two inputs.
+
+## KI-26 — a fast-link deopt guard re-read `inline_installed`, and its fallthrough re-ran · **fixed 2026-08-04**
+
+**Severity: unknown — structurally reachable, never observed.** Recorded because the root cause
+is the same anti-pattern behind two real ADR-210 bugs, and because the failure mode would be a
+silently *repeated effect* rather than a crash.
+
+**The shape.** In `jit_run_fast_link` (`eval/compile/jit_runtime.rs`), a deopt takes the
+resume path only if `arm.active_nslots() == nslots`, where `nslots` is the frame size recorded
+in the fast-link table and `active_nslots()` **re-reads `inline_installed`**. When the guard
+declines, control falls through to `vm_apply` — a re-run from ip 0, which repeats any effect the
+native had already journaled (a completed non-tail call, or a `table-put`).
+
+**Why it looks reachable.** The inline swap in `jit_tier` deliberately does **not** bump the
+global epoch — its own comment explains that a bump cascaded under `pfib` and cost ~2× — and it
+invalidates only the *installing* process's fast links. Arms with a `share_key` are shared
+across processes via `shared_closure_lookup`, so a peer can hold a link whose recorded `nslots`
+predates the swap while `inline_installed` now reads true. Guard declines → re-run → duplicate.
+
+**Why it is not fixed.** It could not be demonstrated. A purpose-built detector — fire whenever
+the guard declines *while `jit_ckpt_resume` reports a live journal* — stayed silent across:
+
+- the 4350-test in-language suite,
+- `tests/jit_effect_once_test.blsp` (all six cases),
+- `pfib` ×3, the parallel shared-arm workload the no-epoch-bump comment is about,
+- a targeted 24-process race: one shared arm with a `table-put`, a spliceable leaf (so it gets
+  an inlined upgrade), and an i64 overflow forcing a deopt on *every* call. All 24 effect
+  counts came out exactly 4000, five runs in a row.
+
+Most likely the per-call epoch check on the fast link re-validates the entry before the mismatch
+can be observed. Not proven either way.
+
+**Fixed** by extracting the check as a flag-free predicate, `jit_frame_shape_matches(arm,
+frame_nslots)` = `frame_nslots == arm.nslots || frame_nslots == arm.inline_nslots`. That is a
+strict superset of the flag form (`active_nslots()` returns exactly one of those two), so it only
+*admits* more resumes — the effect-preserving direction — and every admitted resume is still
+validated by `jit_ckpt_resume` (positive journal, in-bounds slot). A genuinely foreign arm is
+still refused, which is the out-of-bounds protection the check exists for.
+
+**How it was verified, given the runtime detector never fired.** The race could not be won, so
+the behaviour difference was pinned at the unit level instead — which turned out to be the better
+tool anyway, because it is deterministic. `ki26_frame_shape_check_is_independent_of_inline_installed`
+asserts that for an arm with layouts (6, 9), *both* frames stay resumable in *both* flag states,
+and that a foreign frame is refused in both; it **fails against the old flag form** (checked by
+temporarily restoring it: "the small frame must stay resumable with inline_installed=true") and
+passes with the fix. `ki26_shape_check_admits_everything_the_flag_form_did` sweeps four layout
+pairs — including the degenerate `(4, 4)` an unjournalled derivation produces — × both flag
+states × 40 frame sizes, asserting the new form never refuses what the flag form accepted, so the
+fix cannot have traded one silent wrong-resume for another.
+
+Gate re-run: 40/40 `tests/jit.rs` under GC_STRESS+GC_VERIFY, 946/946 Rust, 4350/4350 in-language
+with `BROOD_NO_PARTIAL_LEAF` both ways, 4 fuzz generators × 4 engine configs, `--no-default-features`
+clean.
+
+**The lesson worth keeping.** The runtime detector was the right instinct and the wrong
+instrument: it can only fire if you win a race. When a hazard is a *predicate* rather than a
+timing window, extract the predicate and test it directly — a fix for a bug you cannot make fire
+is a fix you cannot verify, but "make it fire" does not have to mean "reproduce it end to end."
+
+## KI-23 — the KI-22 lost update also exists in std-module registries · **fixed 2026-08-02**
+
+KI-22 fixed the **prelude's** registries by routing them through `%registry-update!`. The
+same `(def *X* (assoc *X* …))` read-modify-write survived in registries that live in `std/`
+modules. Measured directly, at 200 concurrent writers into one map: the plain `def` rebind
+keeps **~125 of 402** entries (three runs: 128 / 122 / 125). The rest are silently gone.
+
+It was already biting: `tests/repl_test.blsp`'s "re-registering a name replaces rather than
+duplicates" failed **2 runs in 5** — two concurrent registrations each filtered the old list
+and each appended, so the duplicate the API forbids survived. It is **32/32** now.
+
+**The mechanism: compare-and-swap, not more ops.** `%registry-update!` names each shape it
+supports as a kernel op (`:assoc`, `:cons-new`, …), which fits a registry whose update is one
+map/list operation. Several of these are not like that — `face-set` merges into the *existing*
+entry, `attach` strips an id from every bucket before consing onto one,
+`register-repl-command` filters by name overlap and appends, `register-system-layer` is
+append-if-absent. A Rust op per shape would have pushed policy into the kernel. Instead:
+
+- `%registry-cas!` (`Heap::registry_cas`) — rebinds the global only if its current value still
+  equals the expected one, under the same registry lock.
+- `registry-swap!` / the `swap-registry!` macro (**prelude, Brood**) — retry around it, so the
+  transform is an ordinary Brood function and only the read-decide-write is indivisible.
+
+**The `defdyn` caveat dissolved.** The original note worried that `%registry-update!` writes at
+`env_root(env)` and would bypass an active `binding`. Reading the evaluator settles it: `def`
+computes `let root = heap.env_root(env)` and writes *there* too, and both spellings read
+through the chain. The lock matches `def` exactly, so converting a `defdyn` registry (`*faces*`)
+is semantics-preserving — an active `binding` shadows the root write identically either way.
+
+**Converted** (13 sites): `debug/*traced-fns*`, `protocol/*protocols*`,
+`telemetry/*telemetry-handlers*` (attach, detach, and the auto-detach of handlers that threw),
+`telemetry/*telemetry-events*`, `*faces*` (`def-face` + `face-set`),
+`editor/layers/*system-layers*`, `editor/layers/*type-layers*`,
+`editor/layers/*auto-type-by-file*`, `repl/*repl-commands*`.
+
+**Deliberately not converted: `std/tool/test.blsp`'s `*units*` / `*collected*` /
+`*collecting*` — they are not racy.** Registration happens at *load* time and test files load
+**sequentially**, each inside its own `%isolate` (`test.blsp`: "Files run sequentially (each
+`%isolate` blocks to …)"). There is no concurrent writer to lose an update to. `*collecting*`
+/`*collected*` are also not registries but a sequential accumulator protocol — `describe` sets
+a flag, the body conses, the flag clears — which a CAS would not make correct anyway.
+
+**Covered by** `tests/registry_test.blsp`: the mechanism with its own **control** (a plain
+`def` rebind in the same test, asserted to lose entries, so a regression cannot hide behind a
+test that would pass with the bug), a concurrent counter (proving each retry recomputes
+against the value that won), and one concurrent-registration test per converted registry —
+including the repl duplicate-name shape and `register-system-layer`'s idempotence.
+
+## KI-22 — concurrent registration silently lost registrations · **found + fixed 2026-08-01**
+
+**Symptom.** Intermittent failure of the whole in-language suite, ~1 run in 5, in three
+different tests: `ability_test`'s "open extension" (`(esize [1 2 3])` returning `-1`, the
+`:default` impl, right after its `:vector` impl was registered on the line above),
+`modules_test`'s "provide records a feature idempotently" (its own feature missing from
+`*features*` on the next line), and `private_test` (a module registered by a sibling test not
+found). Because nextest retries, `make test` printed `929 passed` with only a `FLAKY` marker.
+
+**Root cause: a lost update.** Every load-time registry is one global holding a whole map or
+list, written as `(def *X* (assoc *X* …))` — read, compute, write, three separate steps. Two
+processes registering at once each read the old value and each write their own successor; the
+later write silently drops the earlier one. `scripts/fuzz/stress/registry_race.blsp` (N
+processes, one **private** ability each, so nothing is a legitimate precedence contest)
+measured **24/50, 88/200, 218/500 lost — about 40%.** Not a dispatch-cache bug; the cache was
+never involved. **Fifteen registries** share the shape, so multimethod registration had the
+identical bug to ability registration, unhit until now.
+
+**Fix: `%registry-update!`** — one kernel primitive that performs the whole read-modify-write
+inside a single call, under a per-runtime `registry_lock`. Atomic by construction: no CAS (so
+no ABA question), no retry loop, no spinning, and no callback into Brood while a lock is held.
+Four ops cover all fifteen sites — `:assoc`, `:assoc-new` (presence test *inside* the lock, so
+a derived method mirror cannot clobber an authored one registered in between), `:dissoc`,
+`:cons-new` (the `member?` test inside the lock, for `provide`). Policy stays in Brood; only
+the atomicity is kernel. Reads are completely untouched, which matters: dispatch reads
+`*impls*` on every call, and the registries cannot become `Table`s because a table deep-clones
+values in and out, putting a closure copy on the hot path.
+
+**Two earlier attempts, both reverted** — see the devlog. Optimistic retry cut the loss 44% →
+20% but cannot close the read-write window. An in-Brood ticket lock on `table-incr` reached
+`LOST=0` and then made `make test` *worse* than the bug: a bounded busy-wait burnt 157 s of CPU
+and still lost one under load, and adding `sleep` exposed that a timed-out waiter never bumps
+`:served`, desynchronising the sequence permanently.
+
+**One trap worth recording**, because it cost a debugging cycle: `def` binds at
+`env_root(env)`, which is **not** always `EnvId::GLOBAL`. During prelude load the root is a
+bootstrap env whose bindings later *seed* the shared runtime, so the first version of the
+primitive — which wrote straight to the globals table — had its writes silently discarded at
+seed time, and the prelude lost its own `Display`/`Inspect` impls (`to-str` then failed with
+"no impl for :string"). A kernel primitive that stands in for `def` must read and write the
+same place `def` does.
+
+**Verified:** the probe goes 218/500 lost → **0 lost** at 50/200/500/1000, in 0.1 s; prelude
+registries are back to their pre-change counts; regression tests for concurrent `impl` and
+concurrent `provide`; suite green.
+
+## KI-20 — a JIT fast link ran the callee against the **caller's** IC block · **fixed 2026-07-30**
+
+`jit_run_fast_link` set `jit_call_env`, `jit_dbg_fn`, `jit_native_depth` and the stack limit
+before entering the callee's native code — but not `ic_bases`, which the cloning native-link
+path in `jit_dispatch_call` *does* set. `FastLink` (the IR-readable fast-path mirror) carried
+no callee block, unlike `CallIcEntry`. So callee B ran with arm A's `cur_ic_base`/`cur_gic_base`,
+and B's `vm_call_ic_put` / `vm_global_ic_put` / `vm_fast_link_publish_native` wrote into A's
+slots, and vice versa.
+
+**Never a wrong answer.** Every read path re-validates `(sym, argc, epoch)`, so a crossed
+entry simply misses. The cost was that both arms ran with a permanently cold cache; it also
+made `dbg_site_loc` and `[jit-staged-stale]` report the wrong source position.
+
+**The fix (the one the earlier reverted attempt spelled out).** The callee's block bases now
+**ride in the `FastLink` slot** — `_pad` became `callee_ic_base`, and a `callee_gic_base` was
+added (the struct grows one 8-byte slot). `vm_call_ic_fast_link` stamps them from the entry's
+already-resolved `CallIcEntry::callee_bases` (no `vm_arm_block` call on the publish path, no
+lookup on the memoised hot path), the IR loads them alongside `code`/`nslots`/`env` (two extra
+`u32` loads from the same cache line) and passes them as two more args to `brood_rt_fast_frame`,
+and `jit_run_fast_link` does `set_ic_bases(callee_bases)` around the native call and restores —
+exactly as the cloning path already did. So the runtime callback **never re-reads the table**:
+the whole install is two `Cell` writes off values it was handed. A native flat cell carries
+`(0, 0)` (a builtin runs no IC-using arm).
+
+**Why the first attempt regressed and this one doesn't.** The reverted version read the bases
+inside `jit_dispatch_fast_frame` via a `RefCell` borrow + a bounds-checked index **per call** —
+on the very path whose purpose is to skip the IC probe, and dominated by self-recursion where
+the install is a no-op — costing `bintree` +5.5% for no gain. Riding the bases in the slot adds
+no lookup: a pinned best-of-9 A/B (`fib`, `bintree`) measured **+0.0%** against a +0.0%
+base-vs-base floor.
+
+**Guard.** A debug cross-check in `jit_dispatch_fast_frame` asserts the IR-passed bases equal
+what the authoritative IC resolves (`b == callee_bases`), so a future mirror desync trips in
+debug across the whole suite. The correctness net is the full differential + jit suites (the
+change can only make a callee read its *own* caches, never produce a wrong value).
+
+---
+
+## KI-19 — the VM resolved a call's free-global head **after** its arguments · **FIXED 2026-07-30**
+
+**Fixed.** The tree-walker evaluates the operator first; the VM elided a free-global head
+and resolved it through the call-site IC *after* the arguments ran, so an argument that
+rebound the head made the engines disagree — `(f (bump))` gave `:new` on the VM and `:old`
+on the tree-walker.
+
+`Inst::Call` now carries a `staged` flag. The compiler stages the head (as a `GlobalIc`,
+resolved at IC speed) ahead of the args for exactly the calls that can be affected: a
+**rebindable** global head with at least one argument that can run user code. `head` and
+`site` stay populated, so the call-site IC still caches the resolved **arm** — validated by
+closure identity against the staged callee, one compare on the common path. The JIT treats
+a staged head as a computed callee (`head: None`, `site: NO_SITE`) so it calls the staged
+value rather than re-resolving.
+
+Three things had to be got right, and each was learned by measuring a wrong version:
+
+* **Don't demote to the plain computed-callee path.** What the elided head really buys is
+  the IC's cached *arm*, not the callee lookup: dropping it cost `json` 168 → 1159 ms (6×).
+* **`head: None` with a live `site` aborts the JIT.** `emit` decides elided-vs-staged from
+  the callee node while `jit_lower` decides it from `(head, site)`; a mismatch made the JIT
+  resolve a head that wasn't there — `json`/`bintree`/`nqueens`/`wordcount` all died in
+  `brood_rt_call_slow` → `unbound_error` → non-unwinding panic.
+* **Exempt reserved names.** `def` refuses a name the language ships (ADR-166), so its
+  resolution cannot change mid-call and the elided head stays correct. Staging every call
+  regressed `regex` 31%, `wordcount` 11% and `sieve` 9% — almost entirely `first`/`rest`/
+  `str`-class calls that were never rebindable.
+
+Rows flat on an idle machine: `json` −3.6%, `bintree` −2.0%, `fib` +0.4%, `nbody` +0.1%,
+and the three largest movers at baseline on a solo re-run (`regex` 95.7 ms, `wordcount`
+50.6, `sieve` 49.7). `Inst::Call`'s stale doc comment claiming eval order was unchanged is
+gone with the change that made it false.
+
+Regression test: `tests/vm_call_head_order_test.blsp`.
+
+---
+
+## KI-18 — a deopt could re-run a `table-put` · **FIXED 2026-07-30**
+
+**Fixed.** Four distinct paths let a JIT deopt re-execute an effect; the first three were
+closed earlier the same day (no journal for a call-free effectful arm, a multi-arity
+self-call exemption that ignored argc, and the leaf inliner splicing an effectful callee
+into an engine that cannot journal). Those made the corruption unbounded and proportional
+to the workload — 200 000 iterations put 402 047 times.
+
+The fourth was the residual recorded here, and it is now fixed too: **`jit_run_fast_link`
+treated an IC re-probe miss as "give up and let the caller redo the call"**. By then the
+callee's native code had already run, so the caller's `brood_rt_call_slow` executed it a
+second time — effect included. It showed up as a bounded over-count of exactly 16 (the
+`DEOPT_BAIL_CONSECUTIVE` threshold, after which the arm bails and the duplication stops),
+independent of iteration count. The IC probe is only an *optimisation* for locating the
+arm, so a miss must not change behaviour: it now resolves the arm by name
+(`env_get` → `compiled_arm_for`) and takes the same checkpoint-resume path as a hit.
+
+Found by elimination, after instrumenting every re-run path: the deopt paths all resumed
+correctly at their journal, `[fl-fallthrough]` was the one that fired 16 times, and
+counting entries to *each arm separately* showed the caller was re-entered too — which is
+what pointed above `f` rather than inside it.
+
+Also hardened while here: the checkpoint resume now covers **preempt** (outcome 2), not
+just deopt. A preempt normally lands on a back edge where the journal is 0, so this is a
+no-op there; but if one ever landed after a completed call or a `table-put`, the ip-0
+re-run would have repeated it.
+
+Regression tests: `tests/jit_effect_once_test.blsp`, four shapes including the multi-arity
+one, each asserting the effect count equals the iteration count exactly.
+
+---
+
+## KI-17 — `nest check` validated qualified names against ITS load set, not per-file reachability · **FIXED 2026-07-30**
+
+**Fixed (ADR-189).** `check-file` now takes a per-file **reachability set** — the
+file's *transitive* require-closure — and flags a **user-written** qualified
+reference `mod/name` whose `mod` is outside it (bound in the image only by load-order
+luck). `std/tool/project.blsp` builds the module→direct-requires graph once
+(`%module-direct-requires`, one native parse per file), closes it transitively per
+file, and threads each file's set through the fresh / cached / structured check paths
+(carried as data in the parallel chunks). Soundness — the checker's cardinal rule —
+held zero false positives across the whole `std/` + `tests/` sweep: the transitive
+closure clears legitimately-transitive references (a test that `(:use editor/treesit)`
+naming `face/…`, since treesit requires `editor/face`), the guard restricts the lint
+to references the user *literally wrote* (never a macro-injected one), and a genuine
+circular case (`coverage` naming `project/…`, which can't `(require 'project)` without
+a cycle) is resolved by a *lazy* runtime `(require 'project)` in the one function that
+uses it. Regression tests: `ki17_flags_a_qualified_reference_to_an_unrequired_module`
+(Rust) and the end-to-end `nest check` on a project with a bad reference. Suppress a
+deliberate exception with `(check-allow :unrequired form…)`. Original report:
+
+**Symptom.** A qualified call to a module the running program never loads —
+`(path/basename f)` in a file whose module neither `(:use path)` nor
+`(require 'path)` — passed `nest check` clean, then raised
+`unbound symbol: path/basename` at runtime. Hit twice in one day downstream
+(myedit: `path/basename`, then a cross-module form value with the same shape).
+
+**Cause.** `check-project` loads the whole project image (sources + test files)
+before checking; any file's `require` binds the qualified name image-wide, so the
+checker resolved it for EVERY file — including files whose own load graph never
+pulls that module in. The check answered "bound in the check image", not "bound when
+this module is reachable".
+
+**Workaround (pre-fix).** Discipline: every qualified `mod/…` call needs a
+`(require 'mod)` in that file (a bare require avoids `(:use …)` import shadowing,
+e.g. std path's `join` vs the prelude's) — which the lint now enforces.
+
+## KI-15 — `impl` silently misregisters a **bare** record id · **FIXED 2026-07-27**
+
+**Fixed:** `impl` and `:sealed` now share one helper, `ability--id-kw`, which qualifies a
+bare symbol against `(current-ns)` (`circle` → `:<ns>/circle`), keeps a keyword id
+untouched (`:int`, `:default`), and never double-qualifies an already-`/`-qualified
+symbol. So `(impl S circle …)` registers under the same `:<ns>/circle` a value presents.
+Regression tests: `tests/ability_test.blsp` "impl id qualification (KI-15)" (a bare id
+dispatches) and `sealed_ability_bare_impl_id_qualifies_ki15` (a bare impl satisfies a
+sealed member). Original report:
+
+
+`ability`'s two macros disagree about whether a bare record symbol gets namespace-
+qualified, and the mismatch fails *silently* at registration:
+
+```lisp
+(defmodule geometry (:use ability))
+(defrecord* circle (r))
+(defability Shape :sealed [circle rect] (area [self] :-> float))  ; :sealed QUALIFIES → :geometry/circle
+(impl Shape circle (area [c] …))                                  ; impl does NOT     → :circle
+(area (circle 2))
+;; error: ability Shape/area: no impl for :geometry/circle — have (:circle)
+```
+
+`defability--sealed-vec`'s member mapping qualifies a bare symbol against
+`(current-ns)`; `impl`'s `id-kw` is a plain `(keyword (name key))`. Since
+`identity-of` produces the *qualified* `:module/name` keyword, the bare form
+registers under a key no value ever presents — so the impl never matches, the
+sealed-exhaustiveness check reports the member as unimplemented, and the failure
+only surfaces at the first call.
+
+**Workaround:** always write the id qualified — `(impl Shape geometry/circle …)`,
+which is what `tests/ability_test.blsp` and the documentation do.
+
+**Fix direction:** qualify a bare symbol in `impl` the same way `:sealed` does (a
+symbol with no `/` gets `(current-ns)` prepended), so both macros agree. A keyword
+id (`:int`, `:default`) must keep passing through untouched, and an already-
+qualified symbol must not be double-qualified. Alternatively make a bare,
+unqualifiable symbol an expansion-time *error* rather than a silent
+misregistration — but qualifying is the ergonomic answer and matches `:sealed`.
+Either way, add a test that a bare id and a qualified id reach the same impl.
+
+**Found by:** writing the ADR-168 documentation and following the `impl` docstring
+verbatim on a first attempt (docs run, 2026-07-27).
+
+---
+
+## KI-16 — the LSP still matches the retired `defprotocol`/`defimpl` · **FIXED 2026-07-27**
+
+**Fixed:** `introspect::protocol_ops` now scans both `*abilities*` and `*protocols*`, so
+`impl` op-completion works and `:implements` hovers still resolve; `completion.rs`'s
+`enclosing_impl` matches `(impl …)` (was `(defimpl …)`); `definition.rs`/`module_ref.rs`
+match `"defbehaviour" | "defability"` (was `| "defprotocol"`). Regression:
+`offers_ability_ops_inside_impl`. Original report:
+
+
+ADR-168 removed `defprotocol`/`defimpl`, but the language server was not migrated
+with them:
+
+- `definition.rs` (`enclosing`/interface goto) and `module_ref.rs` match
+  `"defbehaviour" | "defprotocol"`. The `defprotocol` arm is dead code — harmless,
+  but it will never fire again.
+- `completion.rs` offers an interface's ops inside a `(defimpl …)` form
+  (`enclosing_defimpl`). Since `defimpl` no longer exists, **op completion inside
+  an `(impl …)` form is simply missing** — the one user-visible loss.
+- `completion.rs`'s test seeds `*protocols*` directly and is named
+  `offers_protocol_ops_inside_defimpl`.
+
+Nothing is broken for `defbehaviour` (goto + hover over `(:implements …)` still
+work); abilities are never claimed in a module header, so they were never part of
+that path. The gap is purely the `impl` completion affordance.
+
+**Fix direction:** rename `enclosing_defimpl` → `enclosing_impl` and match `impl`,
+reading ops from `ability/*abilities*` (via `introspect::protocol_ops`' ability
+sibling) as well as `*protocols*`; drop the `defprotocol` arms from
+`definition.rs`/`module_ref.rs`. Update the test name and seed.
+
+**Found by:** the documentation validation pass for ADR-168 (docs run, 2026-07-27).
+
+---
+
+## KI-14 — the RUNTIME collector re-walked a deep process's whole root stack at every safepoint · **found 2026-07-27, fixed 2026-07-27**
+
+**Symptom.** `make test` could not go green: `brood::suite brood_suite_passes` was
+SIGKILLed at its 600 s nextest cap, deterministically. One-line repro, which hung
+indefinitely (observed >10 min):
+
+```sh
+nest test --only 'test:every n_ document'
+```
+
+**What made it confusing.** The same work outside the test framework was fast and correct:
+the identical scan over the identical 318 corpus files returned `[0 188 nil]` in seconds,
+each of the 188 `n_` documents parsed fine one-per-process, and the two deep-nesting
+documents parsed cleanly inside a spawned green process. It needed the framework context —
+and, it turned out, nothing about the framework except **how much code it had loaded**.
+
+**Root cause.** The ADR-091 RUNTIME two-generation collector's cooperative drain report
+(`Heap::report_gen_liveness` → `runtime_gen_referenced_private`) probes in two phases:
+Phase 1 over the process's private roots and live arms, Phase 2 over its whole LOCAL heap.
+Phase 2 already had a stale-dirty throttle (`P2_REVALIDATE_STRIDE`) added for exactly this
+class of problem. Phase 1 was deliberately unthrottled, on the premise that it is the
+*cheap* probe.
+
+That premise has an unbounded term: `roots` is the VM operand/env stack, so **Phase 1's
+cost is O(recursion depth)**. Parsing a 100 000-level JSON document makes it enormous, and
+instrumenting the hung run showed the scale — inside a **single** drain epoch:
+
+```
+drains: 1   phase1 walks: 78409
+[rt-dbg] phase1 roots=1727686 env=2 dyn=0 arms=66448
+```
+
+78 409 walks over a 1.7-million-entry root stack. Three compounding faults:
+
+1. **The Phase-2 stale-dirty short-circuit sat *between* the phases.** A process dirty via
+   Phase 2 therefore paid a full Phase-1 walk on every safepoint and then discarded the
+   result — the verdict is `true` regardless of what Phase 1 found. Pure waste, invisible
+   while Phase 1 really was cheap. This was the dominant cost.
+2. **Phase 1 had no throttle of its own,** so a process dirty *via Phase 1* (deep inside
+   draining-generation code) re-walked O(depth) every reporting safepoint.
+3. **`live_vm_arms` was walked per active frame, not per distinct arm.** It is a per-frame
+   stack, so a recursive function appears once per frame — 66 448 entries that are a
+   handful of distinct `Arc`s, each arm's whole IR tree re-walked every time.
+
+Why loaded-code volume was the trigger: the drain only arms once the shared RUNTIME region
+crosses `BROOD_RT_GC_FLOOR`. Few files loaded → no drain → no probe → 520 ms. Whole suite
+loaded → drain armed → the above. `BROOD_RT_GC_FLOOR=100000000` (collector off) took the
+hung repro to 2.2 s, which is what confirmed the subsystem.
+
+**Fix.** Hoist the stale-dirty short-circuit above Phase 1 (changes no verdict — it only
+skips work whose result was already discarded); give Phase 1 its own `P1_REVALIDATE_STRIDE`
+throttle, gated on `P1_LARGE_SEED` so a shallow process keeps reporting on its very next
+safepoint (the promptness the drain-completion tests rely on); and dedup `live_vm_arms` by
+`Arc` identity. Soundness is the same argument Phase 2 already made: a stale-dirty verdict
+only *delays* drain completion, it can never fabricate a clean ack.
+
+**Result.** The filed repro: hang → **9.8 s**. Whole in-language suite including
+conformance: **3591 tests, all passing, 88 s**.
+
+**Guarded by** `tests/jit_deep_recursion_test.blsp` (deep recursion under the collector)
+and the existing `crates/lisp/tests/runtime_collector.rs` drain-completion tests, which pin
+the promptness the seed-size gate preserves.
+
+**Residual — the canary's timeouts were too tight for the grown suite (2026-07-29).** The
+hang is fixed, but the guard tests began hard-killing at the framework's 120 s per-test
+ceiling under the *grown* suite (3591 → 3800+ tests). Not a regression — a false timeout: the
+guard-page fix now makes deep recursion DEOPT to the VM and raise the catchable
+`MAX_BC_FRAMES` error (→ the parse returns `:rejected`), so the worker is *slow*, never dead.
+With the drain armed (the whole suite's loaded code arms it — the very condition under test)
+one parse costs ~36 s of CPU (measured at `BROOD_RT_GC_FLOOR=1`), and `:serial` serialises
+only *within* the group, so the warm passes + spawned parse compete with the rest of the
+suite for cores; the whole-test wall-clock overran 120 s (the suite still *completed* — no
+guard-page abort, the real KI-14 symptom). Fixed by tagging the group `:slow` (the
+`*test-slow-timeout-ms*` = 900 s batch budget the conformance corpora already use for work
+that is long, not stuck) and widening the in-test `after` liveness nets to 850 s (a stuck
+worker is still caught, cleanly, under the ceiling). The warm passes were kept — they are
+load-bearing (the spawned parse must hit the WARM native path, the condition the canary
+guards). The *underlying* residual — a deep-recursing process still pays a
+throttled-but-O(depth) Phase-1 drain-report cost — is bounded and left for a separate,
+ADR-gated collector-perf pass if it ever bites outside this canary.
+
+**Found alongside** two genuine stack-overflow aborts on the same corpus, both fixed and
+both distinct from the hang (each aborts rather than hangs, and neither is the reason
+`make test` was red):
+
+- **A JIT'd arm could run the native stack into its guard page.** The pre-existing guards
+  (`jit_native_depth` + the `stacker` headroom probe) sit on the *dispatch* paths, so they
+  only bound recursion that goes through a fast link; recursion via `brood_rt_call_slow`
+  re-enters Rust every level while the depth counter stays near zero. Fixed with a
+  three-instruction prologue guard in every lowered arm, checking the frame's address
+  against a `Heap::jit_stack_limit` stamped from the live remaining stack at each native
+  entry. On a trip it sets `jit_force_vm` and deopts, so the subtree drains through the
+  VM's bounded heap frames and raises the clean, catchable `MAX_BC_FRAMES` error. (Deopt
+  alone livelocks: the VM re-runs the arm, the callee re-tiers, the prologue trips again.)
+- **`gc_runtime::flush_rt_value` ⇄ `flush_rt_pair` recursed unguarded.** The cdr spine was
+  already iterative, but *car* nesting recursed one native frame per level, so promoting a
+  deeply nested value into the RUNTIME region aborted the thread. The LOCAL twin
+  (`gc::flush_value`) already had the `stacker::maybe_grow` guard; the RUNTIME one was
+  simply missed.
+
+**Adjacent finding, now its own entry and fixed:** `nest observe`/attach tests leaked a `brood`
+child — one found alive 2h22m after its run (`/tmp/brood-observe-<pid>/target.blsp`, ~2.7% CPU).
+Independent of this bug. Recording it *here*, inside a fixed entry, is what made it read as closed
+for nine days; it is **KI-29** now, and fixed 2026-08-05.
+
+## KI-13 — cross-module return-type inference blows up exponentially in branch count · **FIXED 2026-07-27**
+
+**Fixed — it had TWO independent causes, both now addressed.**
+
+*Cause 1 — type size.* Inferring an undeclared recursive value-builder's return unions
+branch results into a `Ty` with a deep, `Arc`-shared refinement DAG; `==`/`Hash`/
+`is_subtype` (recursive, no sharing dedup) walk it as a tree → superlinear per op.
+`Ty::bounded` now widens any `Ty` whose refinement tree exceeds `MAX_TY_NODES` (64) to its
+flat tag set — a sound over-approximation — applied at `union`, `intersect`, and every
+structural constructor (`seq_of`/`map_of`/`record_of`/`tuple_of`), so no `Ty` ever gets
+large. Fixed the moderate case (4-branch `deriv`: 25 s → 0.3 s). Regression:
+`inferred_type_size_is_bounded_ki13`.
+
+*Cause 2 — walk count.* With size bounded, the full 5-branch `deriv` was still dominated by
+exponential **re-inference**: `sig_of`/`infer_sig` had no result cache, so a callee's body
+was re-walked on every request (~400k walks), and because the cycle guard is slipped by a
+self-call stored as a bare name vs the qualified name a caller resolved, the re-walks
+compounded. `infer_sig` now **memoizes** completed inferences per check pass (`SIG_MEMO`,
+cleared per `check_file`), capping it at one walk per distinct name. Full 5-branch `deriv`:
+>900 s → 1.1 s.
+
+Both are sound (widening / a deterministic memo for a read-only pass): 255 checker tests
+plus the full app ecosystem (hatch 750, brood-chat 102, hatch-demo 89, …) unchanged. The
+`(sig deriv (any -> any))` in the corpus is no longer load-bearing (kept as API hygiene).
+Original report:
+
+
+**Symptom.** `nest check` never finishes. No diagnostic, no progress output, one core
+pegged. The LSP is the same code path, so an editor hovering the call site hangs with it.
+
+**Trigger.** A recursive function with several `cond`/`if` branches that build *nested
+list structure*, **called from another module**. The same call inside the defining file
+checks instantly — this is specifically the cross-module path, where the checker infers an
+undeclared callee's signature (`sig_of` → `infer_sig` → `expr_ty` over the whole body).
+
+Minimal reproduction — this is the `deriv` benchmark from the Gabriel corpus
+(`tests/support/gabriel/deriv.blsp`), which is how it was found:
+
+```lisp
+;; a.blsp
+(defmodule zzm)
+(defn d (a)
+  (cond
+    (not (pair? a)) (if (= a 'x) 1 0)
+    (= (first a) '+) (cons '+ (map d (rest a)))
+    (= (first a) '-) (cons '- (map d (rest a)))
+    (= (first a) '*) (list '* a (cons '+ (map (fn (b) (list '/ (d b) b)) (rest a))))
+    (= (first a) '/) (list '- (list '/ (d (second a)) (third a))
+                             (list '/ (second a) (list '* (third a) (third a) (d (third a)))))
+    else (error "no")))
+
+;; b.blsp — checking THIS file is what hangs
+(defmodule zz-probe (:use zzm))
+(def r (d '(+ x 1)))
+```
+
+**Measured scaling** (release `nest check`, one recursive branch added at a time):
+
+| recursive branches | `nest check` |
+|---|---|
+| 2 | instant (105 ms, the floor) |
+| 3 | 105 ms |
+| 4 | **8.7 s** |
+| 5 | did not finish (killed at 900 s) |
+
+So each additional branch multiplies the work by roughly an order of magnitude —
+consistent with the inferred `Ty` growing multiplicatively as `expr_ty` unions branch
+results whose element types are themselves nested unions, with the lattice operations
+(`union`/`is_subtype`) then superlinear in that size. Not diagnosed further than the
+scaling; nobody has profiled it yet.
+
+**Not a hang in the sense of a loop.** `InferGuard` (`types/check/sigs.rs`) already breaks
+recursion *cycles* correctly, and `expr_ty` has a depth cap. What is missing is a bound on
+the *size* of an inferred type.
+
+**Workaround, and why the corpus port uses it.** A **declared** signature is consulted
+before body inference (`declared_heap_sig`), so it short-circuits the blowup entirely:
+adding `(sig deriv (any -> any))` takes the case above from >900 s to 105 ms. That is what
+`tests/support/gabriel/deriv.blsp` does, with a comment saying so — the sig is honest and
+declaring a public API's type is right anyway (ADR-153), but it is load-bearing there and
+must not be removed as decoration.
+
+**Likely fix.** Cap the size of an inferred type and widen past the cap. Widening an
+over-approximation is always sound, so this cannot introduce a false positive; it can only
+lose precision on exactly the pathological shapes. The existing `MAX_INFER_DEPTH` is the
+precedent for the shape of the fix.
+
+**Severity.** `nest check` is a CI gate and the checker also backs the LSP, so a hang is
+worse than a wrong warning — and the trigger is ordinary code, not something exotic. No
+regression test yet; the reproduction above should become one with the fix.
+
+---
+
+## KI-12 — a frozen prelude global's inner handle resolved to the wrong object · **found + fixed 2026-07-26**
+
+**Symptom.** The prelude's only non-trivial global value is corrupt in every build:
+
+```lisp
+(println (pr-str *load-path*))
+;; expected: (".")
+;; actual:   ("A list of the given arguments.")   ← `list`'s DOCSTRING
+```
+
+The *list* is right (one element, `rest` is nil) — its **car** is a different object
+entirely. Which object depends on heap layout, which is what makes it a handle bug
+rather than a logic bug:
+
+| build / flag | `*load-path*` |
+|---|---|
+| debug, default | `("A list of the given arguments.")` (a docstring) |
+| debug, `BROOD_GC_VERIFY=1` | `("ret")` |
+| prelude written `'(".")` instead of `(list ".")` | `(xs)` — a **symbol** |
+| **`BROOD_VM=0`** (tree-walker) | `(".")` — **correct** |
+
+So the car slot holds whatever value happens to live where the handle points, and
+the kind bits change with it — i.e. the stored `Value` is wrong, not merely
+mis-read. Correct under the tree-walker, wrong under the VM.
+
+**Not a regression.** A `brood` binary from 2026-07-25 18:49 (predating that day's
+syntax work — it still rejects `^x` pins) shows the same class of failure, with
+`cond`'s docstring in the slot instead. The 2026-07-26 prelude edits (alias trims,
+`sig` adoption) only changed the *layout*, hence which wrong object appears.
+
+**Why it hid for so long.** The prelude has essentially one global holding a heap
+value, and nothing reads it on the happy path: `require` finds every std module via
+`%builtin-module`, and a project run replaces the path wholesale
+(`project-setup` → `set-load-path!`). So filesystem module lookup from the
+*default* path has been broken without a single test noticing — except
+`brood-lsp`'s `completion::tests::completes_module_names_in_require_and_use`,
+which puts a temp dir on the default path and asks for completions. That test is
+the canary and is **currently failing**.
+
+**Root cause.** `to_prelude` (`crates/lisp/src/core/heap.rs`) re-tagged a handle by
+keeping its slab **index** and changing its **region** bits. That is valid only for a
+LOCAL handle, because the builder's slabs *become* the prelude region — and it was
+applied unconditionally. Instrumenting the freeze showed the offending global was:
+
+```
+[freeze] *load-path*: Pair region=0 idx=55990 car=Str region=2 idx=60
+```
+
+a LOCAL pair (region 0) whose car was a **RUNTIME** string (region 2). The VM interns
+its constant-pool literals into the shared RUNTIME region so compiled code can be
+shared between processes, so `(def *load-path* (list "."))` — evaluated by the VM
+during the prelude build — bound a pair holding a RUNTIME `"."`. Re-tagging turned
+that into PRELUDE `Str@60`: a different slab, an unrelated string. The tree-walker
+was correct because it passes the LOCAL string straight from the read form.
+
+**Fix.** Two halves, both in `heap.rs`:
+
+1. `Heap::localize_for_freeze` — before anything is re-tagged, deep-copy any part of
+   a global's reachable graph that lives outside LOCAL into the builder's own slabs
+   (a forwarding table collapses shared structure and terminates cycles). Reachable
+   prelude state is then all-LOCAL by construction, which is what the re-tag assumes.
+2. `to_prelude` re-tags **LOCAL only** and returns anything else untouched. The slab
+   sweep visits every cell including unreachable boot garbage, which may legitimately
+   hold RUNTIME handles; flipping those is what did the damage. A `debug_assert` on
+   the root bindings catches a future `localize` gap at freeze time instead of
+   silently corrupting a global.
+
+Cost: one walk of the reachable global graph per *source* boot (freeze 5.0 → 8.7 ms,
+source-boot peak 3.7 → 10.6 MB, both once per build — the cached boot is unchanged at
+~49 ms). All three boot paths now agree: `*load-path*` is `(".")` under the source
+boot, the cached boot, and `BROOD_VM=0`.
+
+**What it had been costing.** Filesystem module lookup from the *default* load path
+never worked — `require` found std modules via `%builtin-module` and a project run
+replaced the path wholesale, so nothing noticed. `brood-lsp`'s
+`completion::tests::completes_module_names_in_require_and_use` was the only test that
+read the default path; it passes again.
+
+## KI-11 — JIT tail-chain recursion escaped the native-depth cap · **found 2026-07-25, fixed 2026-07-26**
+
+**Symptom (before the fix).** Deep non-tail recursion on the **JIT** path overflowed the
+*native* stack and killed the process — `thread '<unknown>' has overflowed its stack /
+fatal runtime error: stack overflow, aborting`. An abort, not a panic, so the crash-dump
+hook (`install_crash_dump`) never fired and there was no `.brood_crash_dump` to read.
+
+The other two engines were correct on the identical input, which is what identified it as
+a JIT bug rather than a missing guard in general:
+
+| engine | 20,000-deep nested JSON |
+|---|---|
+| default (JIT) | **process aborted** — native stack overflow |
+| `BROOD_NO_JIT=1` (bytecode VM) | parsed fine — frames are heap-backed |
+| `BROOD_VM=0` (tree-walker) | clean, catchable `recursion too deep: used 12585200 bytes of stack, over the 12582912-byte budget` |
+
+Threshold was between 10,000 and 20,000 nesting levels. `gdb --batch -ex run -ex bt` put
+the recursion in `jit_runtime::jit_run_fast_link` ← `brood_rt_fast_frame`.
+
+**Impact (before the fix).** Any Brood service parsing untrusted nested input was
+killable with a few kilobytes — `std/json` the obvious one, but this was a property of
+the JIT call path, not of the parser. Unrecoverable: `try`/`catch` could not see it, and
+a supervisor could not restart from it because the whole OS process died, not the green
+process.
+
+**Repro** (the minimal shape — a three-function cycle with a tail-call delegator,
+entered from a non-tail position; see the root cause for why a plain `(defn deep (n) (+ 1
+(deep (- n 1))))` runs to 200,000 without tripping it):
+
+```lisp
+(defn tv (n) (if (= n 0) [0 n] (ta (- n 1))))   ; enters the cycle
+(defn ta (n) (tacc n))                           ; the tail-call delegator
+(defn tacc (n) (let ([v j] (tv n)) [(+ v 1) j])) ; non-tail: result destructured
+(tv 20000)                                       ; aborted pre-fix; fine now
+```
+
+**Found by** the JSONTestSuite corpus (`n_structure_100000_opening_arrays.json`,
+`n_structure_open_array_object.json`) — see ROADMAP "External conformance corpora".
+
+**Root cause.** Not a missing guard — a guard that stopped applying. The cap
+(`JIT_NATIVE_DEPTH_LIMIT`, 1500) and its counter (`Heap::jit_native_depth`) already
+existed and *were* checked by both dispatch entry points. But `jit_run_fast_link`
+restored the counter to the caller's level as soon as the native callee returned, and
+*then* handled the outcome — and three outcome arms re-enter the evaluator while that
+frame is still on the native stack: the outcome-4 tail-chain follow-through
+(`apply_value`) and the two deopt/preempt re-runs (`vm_resume_deopt` / `vm_apply`). So a
+chain of tail-calling delegators oscillated between `depth` and `depth+1` forever while
+the native stack grew without bound. The cap never tripped because the depth never
+climbed.
+
+That is why no existing depth test caught it: the trigger needs a **cycle** of functions
+in which at least one link is a plain tail-call delegator (so its native returns outcome
+4) and the cycle is entered from a non-tail position. Plain deep self-recursion — even
+with a 20-local frame, even mutual, even building a 20,000-deep nested value — all stay
+under the cap and run to 200,000 fine. `std/json`'s
+`json--value` → `json--array` → `json--array--acc` → `json--value` is exactly the shape,
+with `json--array` as the delegator.
+
+**Fix, part 1 — make the counter count.** `jit_native_reenter` re-raises the depth for the
+duration of each re-entrant call, so the cap sees the true native nesting and chains past
+1500 levels drain on the VM's heap-backed frames as intended. The hot outcome-0 return path
+is untouched, and the cap is only reached by depths that previously crashed.
+
+**Fix, part 2 — make the cap a measurement.** With part 1 in place the release build was
+fine but the *debug* build still aborted, because `JIT_NATIVE_DEPTH_LIMIT` is a frame
+**count**, and a count is only ever right for one frame size: 1500 levels is a few MB of
+the 16 MB worker stack in release and several times that in debug. Same root flaw as the
+bug itself, one level up. `jit_native_headroom_ok` now probes
+`stacker::remaining_stack()` and refuses a new native link below a 512 KB margin; the
+count cap stays as the cheap first test, and the probe is skipped below 64 levels so the
+hot shallow path (`fib`, `primes`) pays nothing beyond the existing integer compare.
+Measured flat: primes-to-200k 57→58 ms, fib-30 5→6 ms (3-sample, within noise).
+
+This also covers a case neither the count nor this bug report anticipated: a host embedding
+Brood on a smaller thread stack. Returning `false` is never a correctness problem — the
+caller falls through to the VM, which is where deep recursion belongs.
+
+**Regression test.** `tests/jit_tail_chain_depth_test.blsp` — the minimal three-function
+cycle at 30,000 levels, the deeply-nested-JSON rejection, and the plain-self-recursion
+shapes that always worked (so a future depth change has to keep them working). Verified by
+A/B against a pre-fix binary: pre-fix aborts at 20,000, post-fix runs to 50,000 — in
+**both** profiles, debug included, which is what part 2 bought.
+
+The two JSONTestSuite documents that found this are still skipped in the sweep, but on
+cost grounds rather than correctness: rejecting a 100,000-level document now means actually
+draining it on the VM, which is ~400 ms standalone and >120 s inside the full parallel
+suite. That >250× gap is steeper than contention explains and is logged in ROADMAP as a
+possible GC-depth pathology worth its own investigation; the property is covered by a
+synthetic 5,000-level case.
+
+---
+
+## KI-10 — `receive` compile cliff at the 13th arm · **no longer reproduces 2026-07-25**
+
+Adding a 13th arm to a hot `receive` loop degrades it badly: on `buffer--serve`
+(std/editor/buffer.blsp), a single TRIVIAL extra arm (`([:sync-probe] (recur …))`)
+took the buffer suite from 4.9 s / 139 MB peak to 8.0 s / 248 MB — +65% wall,
++80% peak — and pushed the full parallel suite over the 1 GB test soft limit.
+Bisected 2026-07-11 while adding a `[:sync …]` arm for the resync primitive;
+12 arms are fine, 13 fall off the cliff, so the dispatch likely drops from an
+indexed strategy to an allocating linear one at that width. Worked around at the time by
+merging `buffer--serve`'s two `[:edit …]` arms (buffer-edit always sends the
+3-element form) to stay at 12.
+
+**Re-measured 2026-07-25 on `b0b4fd1`: gone.** Adding the same trivial
+`([:sync-probe] …)` arm to `buffer--serve` and rebuilding costs nothing, and neither
+does adding eight:
+
+| serve arms | buffer suite (`brood --test tests/buffer_test.blsp`) | full suite (`nest test`) |
+| --- | --- | --- |
+| 12 (committed) | 3.33 s / 55 MB | 22.49 s / 610 MB |
+| 13 | 3.35 s / 54 MB | — |
+| 20 | 3.36 s / 55 MB | 22.79 s / 636 MB |
+
+Measured on a `cargo build --release` binary with the module **baked in** (the
+configuration the cliff was originally seen in — a hot-loaded copy was checked too and
+is equally flat). Against the original +65% wall / +80% peak for a single arm, +1.3%
+wall / +4% peak for *eight* is flat.
+
+**The mechanism was never identified, so this is an incidental fix**, from some part of
+the VM/JIT/pattern work between 2026-07-11 and now — not a change aimed at it. The
+arm-count budget is therefore lifted (the note in `buffer--serve` is updated), but if a
+width-dependent cliff ever reappears it needs bisecting from scratch: the width alone
+was never the trigger. A 13-arm receive of *uniform* trivial arms never showed it
+either, which is why the original report is specifically about `buffer--serve`'s arm
+shapes.
+
+## KI-9 — arity error from a closure shipped in a `spawn` body · **likely transient; not present in committed code**
+
+Surfaced once while parallelising `nest check`: a driver spawned
+`(spawn (send me (list :chunk (self) (chunk-fn chunk))))` where `chunk-fn` was a
+*closure passed in as an argument* (captured in the spawned body's env); ~1 worker in
+3 died with a bogus `arity error: fn: expected 0 arguments, got 1` at the
+`(chunk-fn chunk)` call, silently skipping its files.
+
+**Most likely a transient inconsistent-build artifact, NOT a standing kernel bug.**
+The sighting happened while a *concurrent session* was mid-edit on the Rust tree
+(uncommitted type-checker changes to `check.rs` et al., committed later as
+`be0f8cc`); building from a half-applied edit can yield a binary with a real-but-
+transient fault. The decisive evidence is the **frequency collapse**: it died ~66 %
+of runs then, and **0 of 50+** now under identical repro conditions (a minimal
+captured-closure spawn; the *exact* old shipped-closure `pfold` + `check-file`
+chunk-fn at 24 and ~470 workers; the full multi-level `pfold-files→groups→spawn`
+capture; all under `BROOD_GC_STRESS=1` + `BROOD_GC_VERIFY=1` on a debug-assertions
+build — all clean, no tripwire/verifier hit; deterministic arity-through-`spawn`+
+`promote` passes). A stable race doesn't go 66 %→0 %; a changed binary does. A code
+audit of the promote path (`heap.rs::promote_closure`/`promote_env`) found no defect
+— arms/arity copied faithfully, reserve-then-fill with cycle-breaking, lock-free
+concurrent append, and RUNTIME compaction can't fire mid-fan-out (uniquely-owned-Arc
+gate). **No fix applied** — deliberately not blind-patching the moving-GC/shared-
+RUNTIME path to chase a fault not present in the committed code. If it ever recurs on
+a *clean committed build*, reopen with that repro.
+
+**Best-practice (independent of this):** prefer shipping **data** to a spawned worker
+and resolving the operation through a **global** (as the test runner and
+`std/tool/project.blsp`'s `project--pfold-run` do) over capturing a closure value in a
+`spawn` body — it avoids the heavier per-spawn `promote` deep-copy of a captured-env
+closure regardless.
+
+## KI-8 — RUNTIME form-position table (`positions`) stranded by compaction · **fixed 2026-07-03**
+
+The bug-KI-3 class again, in a side table the KI-3 fix didn't cover. `RuntimeCode::positions`
+(source positions of RUNTIME list forms) is keyed by the pair's RUNTIME **slab index**, with a doc
+comment asserting "a RUNTIME pair never moves" — a pre-ADR-091 premise the compactor invalidated. A
+compaction relocated the pairs but not the keys, so `(form-pos …)` / source-location returned a
+stranger's position (or none) afterward. Diagnostics-only. **Fix:** `runtime_collect_with` remaps
+the keys through the same `fwd.pairs` forwarding after the evacuation walks, dropping entries whose
+pair didn't survive (mirroring the LOCAL `form_pos` remap). **Guarded by:** the `declared_sigs`
+regression test exercises the same rewrite pass; the LOCAL analog `form_pos` is remapped in `collect`.
+
+## KI-7 — declared `(sig …)` type-expressions corrupted by RUNTIME compaction · **fixed 2026-07-03**
+
+The bug-KI-3 class in another off-graph holder. `RuntimeCode::declared_sigs` stores each `(sig name
+type)` form's type-expression as a **promoted RUNTIME `Value`**, held in a `SymbolMap<Value>` beside
+`globals` but NOT walked by `runtime_collect_with`. A compaction relocated the type-expr out from
+under the stored handle, so the checker's `sig_of` later read a garbage form (confirmed: `(int ->
+int)` read back as `(i 1)` after churn + compact). Silent wrong-data (no tripwire — the handle is a
+valid RUNTIME index, just the wrong cell). **Fix:** `runtime_collect_with` now `flush_rt_value`s
+`declared_sigs` alongside `globals`. **Guarded by:** `tests/runtime_collector.rs::declared_sigs_survive_a_runtime_compaction`.
+
+## KI-6 — `%isolate` snapshot/restore not RUNTIME-compaction-safe · **fixed 2026-07-03**
+
+A sibling of KI-2 (that fix handled orphan-process reaping; this one the compaction-relocation race).
+`%isolate` snapshots the global table — an off-graph `SymbolMap<Value>` of raw RUNTIME handles — runs
+a thunk, then restores it. A RUNTIME compaction *during* the thunk (its `def`s crossing
+`BROOD_RT_GC_FLOOR`, trivially met in a large image) relocated those handles; the stale snapshot then
+reinstalled handles aliasing *other* closures → an unrelated pre-isolate global silently misdispatched
+(`foo` → a 1-arg `z-*` defined inside the rolled-back isolate). Latent for every `:isolated` test.
+**Fix:** a re-entrant `Heap::rt_collect_block` counter (a `Cell<u32>`) suppresses RUNTIME compaction
+while a globals snapshot is outstanding — `snapshot_globals` increments it and `restore_globals`
+decrements it, so the invariant holds *structurally* (every caller of the protocol is covered, not
+just `%isolate`). Checked at the `runtime_collect_with` choke point, so BOTH the auto safepoint path
+(via `rt_gc_due`) and a manual `(runtime-collect)` are covered — an explicit collect inside an
+`%isolate` is a no-op, not a corruption. The isolate's `def`s become garbage at restore and are
+reclaimed by the next safepoint. **Guarded by:**
+`tests/runtime_collector.rs::{isolate_is_safe_against_a_runtime_compaction_inside_the_thunk,
+manual_runtime_collect_inside_isolate_is_a_noop}`.
+
+## KI-5 — `nest test` OOMs: shared RUNTIME region accumulates every test file's code · **fixed 2026-07-03**
+
+`run-project-tests` loaded every test file into one long-lived driver image before running any, so
+each file's top-level `def`s promoted their compiled closures/chunks into the shared `RuntimeCode`
+region + global table — globally rooted, live, unbounded, unreclaimable (only same-name redefinition
+frees the old version). A 725-test suite crossed the 1 GB soft cap → `memory limit exceeded` on
+whichever workers were allocating (bedit: 9 spurious failures, all passing in isolation).
+**Fix:** `test/run-tests-scoped` (+ `-structured`) runs the suite file-by-file, each file inside its
+own `%isolate` (reset → load one file → drain → rollback), so the file's `def`s roll back and the next
+safepoint reclaims the promoted code — bounding memory to ~one file (relies on the KI-6 fix so the
+mid-run rollbacks are compaction-safe). `BROOD_TEST_NO_SCOPE` reverts to the legacy load-all path.
+bedit: OOM → 725/725 at 199 MB. **Guarded by:**
+`tests/runtime_collector.rs::per_isolate_scoping_bounds_runtime_region_growth`.
+
+## KI-4 — bitset stored as a non-UTF-8 `Value::Str` corrupts the GC on promote · **fixed 2026-06-15**
+
+A bitset was a blob-backed `Value::Str` holding raw, non-UTF-8 bytes, but
+`Value::Str`/`SharedBlob` carry a valid-UTF-8 invariant; promoting a closure that
+captured one (`spawn`/`def`) read the bytes through the UTF-8 string accessor →
+panic (armed) or UB/`flush_oob`/SIGSEGV (release). Surfaced ~1-in-3 in the
+brood-life `--fair` demo. **Fix:** bitsets are a distinct `Value::Bitset` kind with
+their own raw-byte slab (LOCAL `Vec` + RUNTIME `boxcar`), byte-clean accessor /
+`promote_in` / equality / `Message::Bitset`, mirroring the `bigint` leaf slab — a
+bitset can no longer reach a string accessor. **Guarded by:** the spawn-promote-a-
+bitset path under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
+
+> **Superseded 2026-06-28:** the whole `bitset` feature (the `Value::Bitset` kind +
+> 13 `bitset-*` prims) was removed — it had no in-repo or external consumer left.
+> The KI-4 fix is moot now that the type is gone; kept here as the historical record.
+
+## KI-3 — RUNTIME compaction strands live VM / tree-walker constants · **fixed 2026-06-01**
+
+Once the ADR-076 RUNTIME compactor made promoted code-region handles movable, two
+sites held them as immovable: the tree-walker elided the operand-stack slot for a
+RUNTIME root (so `runtime_collect` never rewrote it), and the VM held promoted
+handles inline in `Node::Const`/`MakeClosure.fn_rest` (off the GC root graph). A
+compaction at a nested safepoint left them dangling → `flush_oob` or a constant
+read back as a different value. **Fix:** `needs_root_slot` (LOCAL **or** RUNTIME)
+gives a RUNTIME handle an operand slot; the VM carries movable consts as
+`ConstVal::Handle` and registers its live arm in `Heap::live_vm_arms`, which
+`runtime_collect` rewrites in place. **Guarded by:** `compile::tests::{const_handle_round_trips,
+rewrite_arm_handles_rewrites_every_embedded_handle}` and
+`tests/runtime_collector.rs::auto_safepoint_collect_bounds_runtime_region`.
+
+## KI-1 — multi-thread scheduler race: green processes can't resolve globals · **fixed 2026-05-29**
+
+Spawning green processes that touched globals crashed workers with bogus `unbound
+symbol` errors (a data race on shared global/scope state via the kernel
+supervisor's RESUME_SLOT machinery, worsened by free-list slot reuse). **Fix
+(in series):** strip the kernel supervisor (ADR-039, reverted → ADR-044); switch
+to a bump-only allocator (slots never recycle, so a stale handle can't observe a
+wrong-type value); per-worker pinned queues. **Durable invariant:** no recycled
+slots / no stale handles across a safepoint. (The per-worker *pinning* stopgap was
+later superseded by ADR-100's heap-captured continuations, which make cross-thread
+migration safe and routine.) **Guarded by:**
+`tests/concurrency_race.rs::fanout_with_concurrent_global_rebind_matches_serial`
+(the fan-out-matches-serial bar) and the self-diagnosing `flush_oob`/`flush_bound!`
+OOB check.
+
+## KI-2 — `nest test` flaky / hangs when parallel tests share heavy global lookups · **fixed 2026-05-29**
+
+Two bugs: (1) the KI-1 lookup race could kill a worker; (2) the runner didn't reap
+a dead worker, so the run hung in `receive` forever. A 2026-06-07 recurrence under
+maximal load was root-caused **not** to a core race but to test isolation:
+`%isolate` (test-only) wholesale-restored the globals table, so a test that left an
+orphan process running saw the orphan's next lookup die `unbound`. **Fix:** the
+runner `monitor`s every worker and accounts for each exactly once (death → a failing
+result, not a hang); `%isolate` reaps the processes its thunk spawned (via the
+green-friendly `scheduler::yield_now`, never a thread sleep) **before** restoring
+globals. Production never wholesale-restores globals, so the language itself was
+never implicated. **Guarded by:** `tests/runner_failfast_test.blsp`.
+
+## Platform gaps — GUI display seam · **all resolved 2026-05-31 (ADR-079)**
+
+The GUI frontend had one font size for everything. Resolved: a `Face` carries an
+integer `:scale` (per-op/region larger text in a scale×scale cell block — also
+covers per-pane font); `gui-font!` takes an optional window id for per-window fonts;
+`std/editor/pane.blsp` (ADR-077/078) provides pane layout + clip-rects. Per-pixel
+`:height` sizing stays deferred (would break the uniform grid).
+
+## Minor (all fixed)
+
+- **Type-checker noise around `(require 'proc/hatch)`** — `check_file` pre-evaluates
+  top-level `(require …)` so the required module's macros resolve.
+- **`nest format` collapsed multi-line forms** — fixed (`5b19787`); respects author
+  newlines. Still normalizes intra-line multi-space alignment (a standard trade-off).
+- **Plain-release segfault on tail-recursive workers** — fixed by per-worker pinned
+  queues, then made moot by ADR-100 (heap-captured continuations).
+- **`cargo test --test suite` debug segfault** — coroutine stack overflow, not a
+  memory bug; `WORKER_STACK_BYTES` raised (pages mmap'd lazily, ~0 cost until needed).
+
+## KI-21 — `nest run --for` / `--watch` emit a pre-ADR-150 `~p` pin ✅ FIXED 2026-07-30
+
+**Status:** ✅ **fixed** 2026-07-30 (`~p` → `^p`). Found while smoke-testing a
+TUI/GUI app end to end.
+
+**Symptom.** Any `nest run --for <duration>` or `nest run --watch <path>` fails
+immediately, whatever the file:
+
+```
+$ printf '(println "hi")\n' > /tmp/t.blsp
+$ nest run /tmp/t.blsp --for 1s
+error: match: `~p` is not a pattern — a pin is written `^p` (`~` belongs to
+quasiquote alone). To match the literal 2-element list (unquote x), quote the
+head: ('unquote x).
+    at error / match-compile-velems ×3 / match-compile-vector /
+       match-build-clause / receive
+```
+
+Plain `nest run <file>` is unaffected — only the wrapped path.
+
+**Cause.** `crates/nest/src/main.rs:1203` builds the wrapper source as a string:
+
+```rust
+"(let (p (%spawn (fn () {}))) \
+      (monitor p) \
+      (receive ([:down _ ~p reason] (println \"[exit]\" reason)) {}))",
+```
+
+`~p` was the pin syntax before **ADR-150** moved pins to `^p` and made `~`
+quasiquote-only. The generated `receive` therefore fails to compile at runtime.
+Because the wrapper is only emitted when `timed.is_some()` or `--watch` is set,
+nothing in the normal `nest run` path exercises it — and since the code is a Rust
+string literal, neither `nest check` nor the Brood test suite can see it.
+
+**Fix.** `~p` → `^p` in that format string. Verified: `nest run --for 800ms` over a
+trivial file now exits 0 and prints `[stopped after 800ms]`.
+
+**Guard — still owed.** A test that actually *runs* `nest run --for 200ms` and asserts
+a zero exit. The general lesson is the durable part: **Brood source generated from Rust
+string literals is invisible to `nest check` and to the in-language suite**, so every
+such snippet needs an execution test rather than a reading. Worth grepping for the
+others.
+
+---
+
+## KI-49 — the tagged-tuple `receive` matcher was latched onto the interpreter ✅ FIXED
+
+**Fixed 2026-08-21.** An operand crossing a block boundary now carries a *representation*
+(`ParamRepr::Int | Bool | Slot(k)`), agreed across predecessors by the existing
+`record_block_flags`. A boxed `Op::Handle` with no slot of its own is **spilled to a frame
+slot derived from its operand-stack POSITION** — position, not `spill_next`'s allocation
+order, because every predecessor must name the same slot or the edge is rejected. A slot the
+tier-time profile saw an `Int` in keeps the unboxed carry, so `fib`/`collatz` are untouched.
+
+| | before | after |
+|---|---|---|
+| the matcher | latched to the VM | **native** (`jit_link_done` 0 → 187 328, `hof_decline_bailed` 98 981 → 0) |
+| `ns_match_run` | 457 ns/msg | **179 ns/msg** (2.6x) |
+| `vm_apply` | 100 166 | 6 406 |
+
+`make ab` against the groundwork commit: **`pingpong` −12.9%** (217 → 189 ms, reproduced at
+−12.1/−12.3/−12.9% over N=7/11/15), `ring` −1.4%, and — the risk that made this
+measure-before-ship — **`spawn` −1.6%, `fib` +1.2%, `collatz` 0.0%**, i.e. the frame growth
+did *not* reproduce the 1.9x `spawn` regression blanket-reserving once caused. The reserve
+stays behind the `chunk_in_jit_subset` gate, so only lowerable arms pay it.
+
+That takes `pingpong` from 3.7x to ~3.26x of Elixir. It is not parity and was never going to
+be: the bare-atom path is 739 ns against Elixir's ~290 ns per message, so `receive` +
+`deliver` remain the structural remainder.
+
+### (the diagnosis that led here follows)
+
+> Everything below is the diagnosis **as it was recorded before the fix above**, kept because
+> the elimination order is what made the root cause findable. Its status line is historical
+> and superseded — KI-49 is fixed; nothing here is open.
+
+**Status (as recorded then; superseded by the fix above):** ⚠️ **open (2026-08-21) —
+root-caused and localised; not fixed.**
+
+**What it costs.** `pingpong` is Brood **211 ms** vs Elixir **58 ms** (3.7x); `ring` 2.9x;
+`supervisor` 3.3x. Those three rows are exactly the ones whose protocols are **tagged
+tuples**, and this is why.
+
+    receive pattern     ns_match_run   hof_native_deopt   ends up
+    `:ping`                  59 ns            0           native, stays native
+    `[:ping x]`             454 ns           16           BAILED, VM for the process life
+
+The matcher **is** JIT'd. It then type-deopts on its first 16 native activations and the
+sixteen-deopt rule latches it to `BAILED` permanently. Same shape as **KI-44**'s `nbody`
+bug — "silent interpretation, no error, no failing test" — now its second confirmed
+instance, which suggests the deopt-latch deserves a standing check rather than being
+rediscovered each time.
+
+**Where it deopts.** All 16 land on the same instruction:
+
+    [jit-deopt] arm=<closure> resume_ip=7 op=Const (journalled)   x16
+
+    ip: 0 Local  1 Call(vector?)  2 SetLocal  3 Local  4 JumpIfFalse
+        5 Local  6 Call(vector-length)  7 Const  8 Prim2  …
+
+i.e. immediately after the `Call` to `vector-length`, at the length comparison.
+
+⚠ **CORRECTION (same day).** An earlier version of this entry said the deopt was specific
+to the HOF native fast-frame. **That is wrong**, and the check that disproves it is one flag:
+with `BROOD_NO_HOF_JIT=1` — which disables that protocol entirely — the arm still deopts
+exactly 16 times, merely counted on the other path (`jit_deopt` 16 / `hof_native_deopt` 0,
+against 0 / 16 by default). The arm's native code deopts **regardless of how it is invoked**.
+
+**What IS established**, each by measurement:
+
+- exactly **16** deopts, then the sixteen-deopt rule latches `BAILED` for the process life
+- all resume at **ip 7** — the checkpoint written after the `Call` to `vector-length`, so the
+  failing guard is at or after ip 7, *not necessarily at it* (the journal records the last
+  checkpoint, not the deopt site — a distinction that cost an hour)
+- **payload type is irrelevant**: `1`, `:x`, `"s"` and `[9]` all thrash identically, so it is
+  structural to the pattern, not a value-type guess
+- **not an optimizer pass**: `BROOD_NO_INLINE`, `BROOD_NO_LEAF_INLINE`, `BROOD_NO_PARTIAL_LEAF`,
+  `BROOD_LINMAP=0` and `BROOD_NO_HOF_JIT` each still thrash
+- **not message-vector indexing**: a hot arm doing `(nth m 1)` on a *message-delivered* vector
+  does not deopt, and neither does a hot loop doing `(= (vector-length v) 2)`
+
+### ROOT CAUSE (2026-08-21): a non-Int value carried across a block boundary
+
+Per-deopt-site reason codes were built to answer this (all 43 branches into the shared deopt
+block now pass a distinct id, recorded via `brood_rt_note_deopt`; the `as_int` guard also
+encodes the *observed* tag in the low byte). The verdict:
+
+    [jit-deopt] arm=<closure> resume_ip=7 op=Const reason#5386   x16
+
+`5386 = (21 << 8) | 10` — guard **21** is `as_int`'s `Op::Handle` case, and tag **10** is
+`TAG_VECTOR`.
+
+Guard 21 is reached from **`as_block_arg`**, which materialises an operand that crosses a
+block boundary. Cranelift block params here are declared `I64`, so *every* block-carried
+operand is forced through `as_int` — and a non-Int value deopts. A tagged-tuple matcher
+cannot avoid this: it tests `vector?`, then `vector-length`, then `nth` on the **same**
+message, so the vector crosses the `if`/`and` merges.
+
+Confirmed by discriminator: a tuple pattern that **binds nothing** (`[:ping]` against
+`[:ping]`) deopts identically, so it is not the bindings vector — it is the message itself.
+The deopt then re-runs on the VM, which is why results stay correct and only speed is wrong.
+
+**Two fixes are possible, and they are not the same fix.**
+
+1. *Cheap and honest:* teach the profitability gate to refuse an arm that would carry a
+   non-Int operand across a block boundary. It ends up on the VM either way, but without the
+   compile, the 16 deopts and the latch. **No faster — just stops the waste.**
+2. *The real one:* carry a boxed operand across block boundaries as its three words instead
+   of forcing `as_int`. This is what would actually make tagged-tuple matchers native, and it
+   is a genuine change to the block-argument protocol in `jit_lower`, not a tweak.
+
+The prize is unchanged and still bounded: ~390 ns of a 2144 ns round trip, `pingpong` roughly
+211 ms → 175 ms (3.7x → 3.0x vs Elixir). It does not reach parity on its own.
+
+**Ruled out, by measurement rather than argument:**
+
+- *a lowering refusal* — with every `BAILED` route traced, the arm is refused by none of them
+- *shared-code adoption across mismatched profiles* — `BROOD_NO_SHARED_ARMS=1` still thrashes
+- *inline-cache adoption / the inline swap* — traced, never fires for this arm
+- *`codegen_poisoned`* — traced, never fires
+- *"it never lowers"* — it does: `arm: 29 (<closure>) ckpt_slot: 6`
+
+**A measurement trap worth keeping.** The thrash is **timing-sensitive**: with
+`BROOD_JIT_DUMP_IR=1` the background compiler is slow enough that at N=20000 the arm never
+compiles, so it neither dumps nor thrashes and the bug looks absent. It needs N=300000 to
+show up *with* the dump on. A green run under the dump flag proves nothing here.
+
+**Next step.** Read the deopt guard at ip 7-8 in the arm's CLIF (dumped at N=300000) and
+determine why the fast-frame protocol invalidates it where the ordinary call path does not.
+Worth ~390 ns of a 2144 ns round trip — `pingpong` roughly 211 ms -> 175 ms — which is
+real but does not reach parity on its own: the bare-atom path is already 739 ns against
+Elixir's ~290 ns per message, so `receive` + `deliver` (61% of even the cheapest path) is
+the structural remainder.
+
+## KI-48 — JIT tail dispatch read past the roots stack ✅ FIXED 2026-08-21
+
+**Status:** ✅ **root cause found and fixed 2026-08-21.** Two crashes, 4 s apart, captured in
+`.brood_crash_dump` on 2026-08-20; never reproduced on demand, so the causal link to the fix
+below is strong (right fault shape, right function, right stack) but **not proven**.
+
+### The bug
+
+`jit_dispatch_tail` computed where the native staged its `[callee, args…]` as:
+
+```rust
+let top = base + arm.active_nslots();
+```
+
+`active_nslots()` re-reads `inline_installed` — which the deopt code *in this same file*
+already calls "the anti-pattern behind two ADR-210 bugs" (KI-26). The background inline
+upgrade can flip that flag **between** the native entering (built to the small frame) and
+this callback running, after which the staged area is written at one offset and read at
+another.
+
+**The hazard was live, not theoretical.** Instrumenting the path found **123 arms** reaching
+tail dispatch whose two frame sizes differ, `fold` among them:
+
+```
+[ki48] tail-dispatch arm=fold nslots=13 inline_nslots=25 delta=+12
+```
+
+A mid-flight flip there sends `top` twelve slots past the staged area and off the roots
+stack — precisely `root_at(9)` on a len-8 stack.
+
+### The fix
+
+The rule was already written down and obeyed everywhere else: the caller captures the size
+once ("the two must agree on the same frame boundary") and, in `vm_run_bc`'s own words, "the
+deopt-resume helpers must be **told** it rather than re-deriving it". This path was the one
+that was not. `jit_dispatch_tail` now takes `frame_nslots` from the trampoline that built the
+frame.
+
+### What sabotage showed, and why the guard is not the fix
+
+Forcing a desync (+8 slots at the call site) made the program **hang**, and the `top >= n`
+tripwire did **not** fire: an overshoot that stays in bounds silently dispatches the *wrong
+callee*. So the guard only catches the extreme case. It is kept as a backstop — it also
+prevents `argc = n - top - 1` from underflowing, which would otherwise turn a clean bounds
+panic into a wild `root_at(top + 1 + k)` loop — but passing the correct size is the repair.
+
+### The audit: a SECOND live instance, and a false invariant
+
+Fixing one call site does not fix a class, so every reader of the racy size was audited
+(2026-08-21). Four production call sites; two were builders doing it right, two were not:
+
+| site | verdict |
+|---|---|
+| `jit_runtime.rs` (native entry) | ✅ builds the frame, captures once — the model to copy |
+| `mod.rs` `hof_apply_native` | ✅ builds the HOF fast frame, captures once |
+| **`dispatch.rs` outcome-4 tail** | ❌ **same bug, and worse** — see below |
+| **`vm_cache.rs` FastLink memo** | ⚠️ **safety argument was factually false** |
+
+**`dispatch.rs` was the same defect with the noise removed.** Its outcome-4 path read the
+staged callee at `base + active_nslots()`, in a branch *already gated on
+`!inline_installed`*, over a frame `push_frame` always sizes to `arm.nslots`. Because it
+guards with `if n > frame_top` it never panics — it silently dispatches the **wrong callee**,
+which is exactly what a forced desync reproduced as a hang. Now `base + arm.nslots`.
+
+**`vm_cache.rs` claimed protection it does not have.** Its comment read "the small→inlined
+swap bumps the epoch, so a stale memo here is invalidated". `jit_tier`'s swap deliberately
+does **not** bump `global_epoch` (a bump cascaded under `pfib`); it stores the flags and calls
+`invalidate_fast_links_for(arm.inline_name)`. The memo is protected — by a different
+mechanism than the one written down. Comment corrected, and the asymmetry it exposes recorded:
+the `inline_installed.store(true)` is unconditional while the invalidation is
+`if let Some(sym) = arm.inline_name`, so the guarantee is held by construction elsewhere
+rather than enforced there.
+
+### The redesign: the anti-pattern now has to be justified
+
+This was the **third** appearance of one anti-pattern — KI-26 and two ADR-210 bugs before it —
+so the point fix is not the deliverable:
+
+* `active_nslots()` is renamed **`frame_size_for_new_entry()`**, so the contract is visible at
+  every call site rather than buried in a doc comment three files away, and its doc now states
+  the rule: only a frame BUILDER may read it, and it must capture and pass on the result.
+* `crates/lisp/tests/frame_size_callsites.rs` pins the permitted callers with a reason each.
+  A new call site now fails the suite with a message explaining that a consumer must be TOLD
+  the size. Sabotage-verified: reintroducing the read in `dispatch.rs` fails it by name.
+  Limits stated in the test — it is file-granular (a new bad call inside an allowlisted file
+  passes) and it cannot prove a caller correct, only force the question.
+
+### No deterministic regression test exists
+
+`tests/jit_tail_frame_test.blsp` covers the path (hot mutual tail recursion through the
+computed dispatcher, concurrent so swaps land while peers are mid-dispatch) but **does not
+guard the fix** — verified by sabotage: reverting to `active_nslots()` leaves it green,
+because the fault needs the swap inside a few-instruction window and nothing forces that. It
+is labelled as coverage in its own header so a green run is not misread as proof. Forcing the
+desync artificially produced a **hang**, not an error, so there is no clean failure to assert
+on. A real guard would have to drive the flip mid-dispatch; not attempted.
+
+(Method note: a first sabotage attempt silently no-op'd because `cargo fmt` had reformatted
+the call site and the patch carried no assertion. It "passed" while testing nothing — the
+same shape as the gates repaired the day before. Assert that a sabotage actually landed.)
+
+### (original entry follows)
+
+
+```
+panicked at crates/lisp/src/core/heap/gc.rs:1543:19:
+index out of bounds: the len is 8 but the index is 9
+  brood::eval::compile::jit_runtime::jit_dispatch_tail
+  brood::eval::compile::vm_run_bc::vm_run_bc
+  brood::process::scheduler::pool::run_one
+```
+
+`gc.rs:1543` is `root_at(i) -> self.roots[i]`. The read comes from `jit_dispatch_tail`:
+
+```rust
+let n = heap.roots_len();
+let argc = n - top - 1;
+let callee = heap.root_at(top);   // panicked here: top = 9, n = 8
+```
+
+So JIT'd native code entered tail dispatch with an operand-stack `top` **beyond the roots
+stack**: either a stale `top` baked at lowering time, or the roots stack shrank between the
+native code staging its args and the callback running (a collection, a frame restore, or a
+deopt resume that rewound `roots`).
+
+⚠ **`argc = n - top - 1` underflows on exactly this input.** With `top >= n` that is a
+usize wrap, so the panic above is the *lucky* outcome — `root_at` happened to be evaluated
+and bounds-checked. A build where the subtraction is reached first takes a huge `argc` and
+loops `root_at(top + 1 + k)` over it. Worth a defensive check regardless of the root cause.
+
+**What is known.** Both entries are 2026-08-20 11:10:13 and 11:10:17 UTC, on a scheduler
+worker. **Not** caused by that session's changes: the region was last touched by an unrelated
+refactor and the session's only `gc.rs` edit (the `form_pos` capacity shrink) is elsewhere in
+the file and does not touch `roots`.
+
+**Not reproduced:** the message-shape probes, `pingpong` x3 and `supervisor` x2 all ran clean
+afterwards, and the full suite has passed 996/996 repeatedly since.
+
+**How it was found, and the reason it is worth chasing beyond the crash itself.** It surfaced
+while investigating why a tagged-tuple `receive` matcher is permanently `BAILED` (it runs on
+the VM at 454 ns where the keyword matcher runs natively at 59 ns — the `pingpong`/`ring`/
+`supervisor` latency gap). With every lowering refusal now traced (`BROOD_JIT_BAIL_TRACE`,
+commits 5ab3c122 + 60c0958b), that arm is refused by *none* of them — which leaves
+`codegen_poisoned`, i.e. a swallowed codegen panic marking every later arm BAILED with no
+attempt and no trace. The bailed matcher's frame is **nslots=8** and the bad index is **9**.
+That is suggestive, not established — but if the two are the same fault, fixing it also
+recovers the latency row.
+
+**Next step.** Reproduce with the tripwires armed (`RUSTFLAGS="-C debug-assertions=on"`,
+`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`) on spawn+tagged-tuple workloads; and add the
+`top < n` guard so the underflow cannot turn a bounds panic into a wild loop.
+
+## KI-47 — the tree-walker suite crossed the 1 GiB memory backstop ✅ FIXED 2026-08-19
+
+**Not the three tests it named.** The `differential (tree-walker)` job failed on every run from the
+ADR-230/231 stdlib-namespacing merge onward, always reporting the same three `adversarial_test.blsp`
+cases (1 MB string / 30 000-element cons list / 10 000-entry CHAMP map) dying on a catchable `E0043`.
+They are simply the cases that happen to be running when the **suite's** process-wide total crosses
+the cap — a threshold failure blames whoever is holding the parcel.
+
+**Regression window, pinned:** green through run **32141480911**, red from **32221892676** — the
+first run after the namespacing merge. The mechanism is module count: the refactor split the stdlib
+into new `string` and `file` modules, and module loading costs memory super-linearly here (see the
+module-load-scaling note: RSS ≈ 45× source bytes).
+
+**Measured** — in-language suite, debug build, `BROOD_VM=0`:
+
+| | bytes | vs cap |
+|---|---|---|
+| local | 1 145 412 425 | 6.7% over |
+| CI (same job) | 1 149 317 883 | 7.0% over |
+| cap | 1 073 741 824 | — |
+
+The VM arm stays under and was never affected; the tree-walker allocates far more by design, so it
+crosses first. Runner-reported peak was 996.6 MB.
+
+**Fix:** `TEST_DEFAULT_SOFT` 1 → 2 GiB, `TEST_DEFAULT_HARD` 2 → 3 GiB. Justified by the cap's own
+documentation — a *"host-survival backstop, not a working-set budget"*, sized to *"never trip on
+legitimate parallel load"*. 1.145 GB is the working set; a real runaway, that same comment notes,
+*"heads to many GB"*. Verified: `brood_suite_passes` under `BROOD_VM=0` passes clean (963 s, exit 0),
+and CI run 32247618122 is green on all five jobs.
+
+**Tried and rejected, recorded so it is not re-attempted:** `hibernate` after each isolated test in
+`run-unit-fresh`. It shrinks only the *calling* process's slabs — a genuine **148×** on a
+51-iteration microbenchmark (25.3 MB → 171 KB retained, peak 30.4 MB → 6.9 MB) — while this cap
+counts process-wide allocation across every green process and the shared regions. Real effect, wrong
+scope. An earlier attempt at `gc-collect` was even further off: it rested on a stale comment in
+`std/tool/test.blsp` claiming the runner only collects at "the depth-1 eval safepoint", which
+**ADR-061 made false** — `eval/mod.rs` collects at *any* eval depth, so the collector was already
+running there.
+
+### ✅ The open question below is ANSWERED (2026-08-20): legitimate growth, not a regression
+
+**KI-47's stated mechanism is wrong, and the 4.8× was an apples-to-oranges comparison.**
+
+**Module count is not the driver.** The entry blamed the stdlib split ("module loading costs memory
+super-linearly here"). Tested directly — total source held constant at ~40 KB, module count varied
+1 → 12 → 48 → 120 — peak went 11.23 → 12.59 → 15.13 → 18.59 MB: **120× the modules costs 1.65×**, a
+marginal ~60 KB per module. All 89 stdlib modules therefore carry ~5.5 MB of per-module fixed cost,
+against the +905 MB that needed explaining. The 2026-08-06 module-load entry was misread: its
+*quadratic* was in **time** (the `*features*` `member?` walk, fixed by ADR-216), and it explicitly
+found memory **not** to be per-module ("10 big functions vs 100 small ones at equal line count costs
+the same or more"). `RSS ≈ 45× source bytes` is linear in *source*, and splitting a file into more
+modules barely changes source bytes.
+
+**The namespacing merge did not cause it.** `098a3316` (the commit before ADR-230) built in a
+worktree and run through the identical harness, release, both arms:
+
+| arm | pre-merge (098a3316) | HEAD (305d85d4) | change |
+|---|---|---|---|
+| VM | 424.6 MB | 443.1 MB | +4.4% |
+| tree-walker | 685.6 MB | 612.7 MB | **−11%** |
+
+On the tree-walker — *the arm that actually went red* — HEAD uses **less** memory than before the
+merge. The merge was the commit that crossed the threshold, exactly as this entry suspected, and
+none of the growth is attributable to it.
+
+**Where the 4.8× actually came from: three confounds, not growth.** The ~240 MB baseline dates from
+**2026-05-30** (`4e801546`); the 1145 MB from 2026-08-19. Different *engine* (measured today: the
+tree-walker costs **1.38×** the VM on the same suite and build), different *build* (debug vs
+release), and three months of suite growth in between. Compounded, they cover the multiplier without
+a regression.
+
+**And it has since receded.** Same harness this entry used — debug, `BROOD_VM=0`, `brood_suite_passes`
+— measured at HEAD, two samples: **726.7 MB and 757.9 MB** runner peak (mean ~742 MB, 4.3% spread)
+against this entry's **996.6 MB** on 2026-08-19. That is **−24% to −27%**, i.e. back under the
+*original* 1 GiB soft cap.
+
+**Recommendation: keep 2 GiB soft / 3 GiB hard.** At ~742 MB the current margin is ~2.6×, near the 4×
+the original sizing intended; reverting to 1 GiB would leave ~1.2× and re-trip on the next growth.
+The number was right — only its *rationale* was wrong, and that is what this note corrects.
+
+⚠ **Open question this fix deliberately does not answer.** The rationale it replaced claimed the
+suite *"peaks ~240 MB under collection"*. The measured peak is ~4.8× that, so the raise restores a
+~2× margin rather than the intended 4×. **Whether that growth is legitimate (the suite and the
+module count both grew) or a regression is unmeasured** — the namespacing merge is the commit that
+pushed it over the line, not necessarily the one that caused the growth. Do not read KI-47's closure
+as evidence the growth is fine. The tool for the next person: `BROOD_TRACE_PROMOTE=1` ranks what
+enters the append-only shared RUNTIME region, which the local collector cannot reclaim.
+
+**Two diagnostic traps this one set, both of which cost real time:**
+
+1. The failure list and the *slow-test* list sit next to each other in the runner's output. Reading
+   a slow-test line as a failure sent the first hours of triage at `parse-number-fxx`, which was
+   never failing.
+2. `nest test` (release) and `brood_suite_passes` (debug, via the Rust suite binary) are **different
+   harnesses with different allocation profiles**. The former passed 4652/4652 while the latter
+   failed. Reproduce CI with CI's harness, not the convenient one.
+
+## KI-65 — `take-while` / `drop-while` silently ignored a vector ✅ FIXED 2026-08-27
+
+**Symptom.** `(take-while pred [1 2 3 1])` answered `nil` and `(drop-while pred [1 2 3 1])`
+answered `[1 2 3 1]` — for every vector and every string, whatever the predicate said. A
+wrong VALUE, not an error, so nothing downstream could notice.
+
+**Cause.** Both loops guarded on `(pair? coll)`, which is false for a vector and a string, so
+they walked zero items and returned the accumulator (`nil`) or the input unchanged. Every
+neighbouring function — `take`, `drop`, `%take-acc` — guards on `empty?`, which is
+collection-generic, so the inconsistency sat inside one file between adjacent definitions.
+
+**Why it survived.** `tests/prelude_seq_test.blsp` and `tests/sequence_test.blsp` both cover
+these, on LISTS. The prelude's own two callers (`prelude/tools.blsp`, splitting a parameter
+list on `&`) also pass lists, so nothing in the tree exercised the broken path.
+
+**Found by writing a documented example.** The probe that produced the value for the
+docstring returned `nil` where `(1 2)` was obvious, which is the whole argument for
+`tests/doc_examples_test.blsp`: an example is evaluated, so a wrong one cannot be committed,
+and writing one puts a second pair of eyes on behaviour nothing else was checking.
+
+**Fix.** `pair?` → `empty?` in both guards. A string now raises a clear `first: expected
+list, vector, set, map or bytes` rather than answering wrongly. `drop-while` returns `coll`
+itself when nothing is dropped, matching `(drop 0 [1 2 3])` → `[1 2 3]`.
+
+## KI-69 — two `jit_plan` guards failed on every `main` push ✅ FIXED 2026-08-27
+
+**Symptom.** The `differential (tree-walker)` CI job had been red on every completed run since
+KI-64's fix landed, and the run list did not show it: each push cancelled the previous run, so
+the page was a wall of `cancelled` with one `in_progress` on top and no visible red.
+
+**Cause.** KI-64's fix added two guards —
+`block_argument_spills_never_reach_the_deopt_journal` and
+`the_block_argument_want_is_clamped_to_the_reserve` — and both assert over **VM-compiled**
+arms via `dbg_compiled_arms()`. That job runs `BROOD_VM=0`, the tree-walker, where nothing is
+compiled at all: the first guard inspected 0 chunks and the second found no arm to clamp.
+
+**Why they failed rather than passing hollowly.** By design, and it is the reason this was
+findable. Both refuse a vacuous green — `only {checked} lowerable chunks inspected — a green
+result would mean nothing` — instead of reporting success over an empty set. A guard that
+passes when it examined nothing is the failure mode [[KI-68]] is entirely about; these two
+took the opposite choice and were loud.
+
+**Fix.** Pin the tier: `set_forced_ceiling(Some(Tier::Native))`, which is what
+`compile/tests.rs` has carried for its two native tests since ADR-222 made the ceiling
+coherent (`BROOD_VM=0` and `BROOD_NO_JIT=1` are aliases for ceilings 0 and 1). The guards are
+new — 2026-08-26 — and simply missed the pin every other tier-sensitive test already had.
+Reproduced locally under `BROOD_VM=0` before and after.
+
+**Guard.** The two tests themselves, now that they run at a ceiling where there is something
+to inspect; their own anti-vacuity assertions are what make that meaningful.
+
+## KI-68 — the fuzz-differential gate was comparing dead programs ✅ FIXED 2026-08-27
+
+**Symptom.** None, which is the point. `python3 stress/fuzz_programs.py --seeds 20` printed
+`seed N ok (exit=1)` twenty times and then `---- fuzz: 20 seeds, all configs agree`, exit 0.
+The gate CLAUDE.md prescribes as part of proving the tree green had not compared a working
+program in weeks.
+
+**Cause.** The generator emits Brood source from Python string literals. The v0.9–v0.13
+namespacing waves retired essentially every name it wrote — `(table)`, `rem`, `quot`,
+`min`/`max`, `bit-and`/`bit-or`/`bit-xor`, `table-get`/`table-put`/`table-incr`/`table-count`,
+`println`, and the linear-map whitelist `map-int-add`/`map-get`/`map-count`/`map-dissoc`.
+The first form of every generated program is `(def t (table))`, so every program died on
+line 1 — **identically in all four configs**. The differential compares config against
+config, so identical death reads as agreement.
+
+**Why nothing caught it.** Three independent gaps, each sufficient on its own:
+
+1. The generator is **Python**. `nest check`, the `.blsp` suite, `make check-stress` and
+   `scripts/stale-names.sh` all look at `.blsp` files; none of them reads a `.py` that
+   *emits* Brood. This is the same class as the Rust-embedded Brood in
+   `crates/lisp/tests/*.rs` — see [[rename-wave-checklist]].
+2. `run_one` captured **stdout only**. `unbound symbol` goes to stderr, so the diagnostic
+   that named the problem was discarded before the comparison ever saw it.
+3. The `ok` line prints the last line of the compared value, which for a dead program is
+   the string `exit=1`. It was on screen, twenty times per run, and reads as success.
+
+**Fix.** Two parts, and the second is the durable one:
+
+- The names are updated to the current spellings, verified by running the generated corpus:
+  60 seeds produce 0 unbound diagnostics and every config agrees on real digests.
+- **Liveness is now asserted.** `run_one_full` returns stderr beside the comparison string.
+  An `unbound symbol` in a *generated* program is a hard failure — the generator writes the
+  calls itself, so an unbound name there is never legitimate — and it reports the dead names
+  rather than the seed alone. Beneath that, a run in which **not one seed** reached a clean
+  exit fails as `NOT ONE ran to a clean exit — the corpus is dead, not the engines agreeing`.
+
+**Sabotage-verified in the original shape.** Reverting `(table/new)` to `(table)`:
+
+```
+DEAD PROGRAM seed=1 (stress/fuzz_out/fuzz_1.blsp kept): the generator emits names this
+build does not bind: table
+---- fuzz: 3/3 seeds DIVERGED
+```
+
+versus `---- fuzz: 3 seeds, all configs agree (3 ran clean)` on the fix. Reverting
+`"math/rem"` to `"rem"` is caught too, by the *other* arm — a program whose dead name sits
+in an untaken branch still exits 0, and `check_soundness` flags it as a checker false
+positive. The two checks are complementary, not redundant.
+
+**The reusable lesson.** A differential gate proves that N engines *agree*; it proves nothing
+about whether they agreed on anything. Any harness whose pass condition is "the sides match"
+needs a separate assertion that the sides did real work — the same shape as KI-39's silent
+annotate step and KI-62's image that installed nothing. When a corpus is generated rather
+than checked in, that assertion has to live in the generator.
+
+## KI-70 — the checker never looked inside a vector or map literal ✅ FIXED 2026-08-27
+
+**Symptom.** `nest check` silent on code that raises on its first execution:
+
+```lisp
+(defn runnable (code)
+  [:textarea {:rows (str (max 2 (count (string/split code "\n"))))} code])
+```
+
+`max` moved to `math` in the ADR-227 wave, so this is `unbound symbol: max` the moment the
+page renders. hive shipped it, `bin/ci` passed (`nest check`, `nest format --check`,
+`nest test`, and the `nest run --for` boot check all green — the boot check does not render
+`/docs`), and the only way to see it was to load the page.
+
+**Cause.** One line. `check_into_inner` began:
+
+```rust
+let Value::Pair(_) = form else { return };
+```
+
+A vector or map **literal** is not a `Pair`, so the walk ended there. Everything nested
+inside `[…]` or `{…}` — arbitrarily deep — was invisible to *every* lint, not just the
+unbound one. That is the entire Hiccup style: hive's web layer, `std/editor/*`, every
+render-op and every UI spec in the language.
+
+**Why it outlived KI-67.** KI-67 was the same *shape* one level in: `try` bodies were
+reached by the walk and then discarded. Its sweep found four dead `project-*` call sites in
+`std/tool/mcp.blsp` and fixed them. The fifth, `project-all-files` in the `callers` tool, sat
+inside `{:references …}` — a map literal — so the walk never arrived, and no amount of
+fixing the suppression rules could have surfaced it.
+
+**Fix.** Descend, before the `Pair` bail:
+
+- `Value::Vector` → walk every element.
+- `Value::Map` → walk every **key and** value (a computed key is evaluated too).
+
+**Why this cannot false-positive**, which is the only reason it is safe to turn on for a
+checker whose CI gate rejects any warning:
+
+1. The checker runs on **macroexpanded** forms. A `match` pattern vector (`([a b] …)`) has
+   already been lowered to `let`/`if` binders by the pattern compiler, so no binder vector
+   survives in value position for the walk to misread as references.
+2. `quote` / `quasiquote` / `comment` return at `SpecialHead::SkipBody`, which is reached at
+   the *head symbol* of the enclosing `Pair` — so quoted data never reaches this code.
+3. The generic operand recursion below is already gated on `head_is_macro`, so a literal
+   passed to an unexpanded macro is still left alone.
+
+Confirmed empirically, not just argued: the CI gate `nest check std/**/*.blsp
+tests/**/*.blsp` (held at zero warnings since 2026-07-31) reported **one** warning on the
+first run with the fix, and it was a real dead call site.
+
+**The real find it produced immediately.** `std/tool/mcp.blsp`'s `callers` tool called
+`project-all-files`, a `defn-` in `std/tool/project.blsp`. The tool raised `unbound symbol`
+on every invocation. `project-all-files` is now the public, de-stuttered `project/all-files`
+beside `project/source-files`, the same remedy KI-67 applied to its four.
+
+**The reusable lesson.** A lint that is *suppressed* somewhere leaves a trace you can grep
+for; a lint that is never *reached* leaves nothing at all. When a checker has a
+"return early if this is not the shape I expect" line, that line is a silent coverage
+boundary — and the shapes on the far side of it are exactly where nobody is looking.
+
+---
+
+## KI-72 — a module materialised from the stdlib image was callable before it was complete ✅ FIXED 2026-08-28
+
+*Filed as "the stdlib image cannot be default-ON yet: a require-stall storm" — that framing was the symptom, and the two sections below record it as it was understood. The cause was neither a stall nor the require protocol; see "the children DIED", further down.*
+
+**Symptom.** With the stdlib image installed at boot, `autoload_race::racing_the_first_call_into_string_is_sound`
+exceeds nextest's 120 s cap during `make test`. It passes **12/12 in 0.5 s** when run alone, and
+passes under `cargo nextest run --test autoload_race` alone — only the full parallel suite trips it.
+
+**Repro, and it is a clean one.** 12 parallel copies of the test binary at `--test-threads=4`,
+90 s timeout:
+
+```
+image ON  : 12 of 12 timed out
+image OFF :  0 of 12 timed out
+```
+
+**Cause (understood; the image is the amplifier, not the fault).** ADR-256 moved the image
+branch's `(provide key)` to run AFTER the module's require-edges are replayed. That ordering is
+required: providing first publishes a module whose dependencies are still missing, and a racing
+process then dies on `unbound symbol: rand/token` — 112 of the 157 failures ADR-256 fixed were
+exactly that. But it also means a module stays **unprovided** while it recursively requires its
+whole edge set, and any other process that wants it during that window takes this path:
+
+```lisp
+(contains? *features-loading* key) (%require-await key 1000)
+...
+(defn- %require-await (key n)
+  (cond (contains? *features* key) key
+        (> n 0) (do (sleep 5) (%require-await key (dec n)))
+        else    (%require-force key)))
+```
+
+— a **5 ms x 1000 poll**, i.e. up to 5 s, before giving up and force-loading. Nothing hangs
+permanently. But the image makes many more modules materialise in a burst, so more processes
+land in that window at once and the 5 s stalls compound past the cap.
+
+**Not fixed by reverting the ordering.** That trades this for the 112 unbound failures, which are
+wrong ANSWERS rather than slow ones. The fix is the poll: a waiter should block on the loader
+finishing (a completion signal) rather than sleep-and-recheck, so the wait costs the load's real
+duration instead of a 5 ms quantum.
+
+**Measure both arms.** The synthetic 12x4 load stresses something that pre-dates the image: at
+that parallelism the default (image off) still showed **4 of 12** over 90 s in one run. A fix
+should move both numbers, and a claim that the image is safe to default-on needs the image arm at
+parity with the no-image arm, not merely under the cap.
+
+### Re-characterised 2026-08-28: the wait is UNBOUNDED, and the repro is far cheaper
+
+Two corrections to the account above, both measured.
+
+**1. "Nothing hangs permanently" is wrong.** The 5 ms x 1000 poll bounds `%require-await` at
+~5 s, so the entry above reasoned that the suite could only be *slow*. It is not. With the
+image installed, a root blocked in `reduce`+`receive` over 24 spawned children:
+
+- outlasted a **30 s** `after` clause and still lost a reply (the whole 30 s elapsed — it did
+  not recover at 5 s);
+- was caught by a watchdog green process reporting **`backlog=0` continuously from t=20 s to
+  t=30 s** — the root's mailbox is EMPTY, so the reply was never delivered. This is not a
+  message delivered-and-unmatched, and not a slow poll;
+- under gdb, sat in `receive_match` -> `wait_for_message` with **all 12 scheduler workers idle**
+  in `wait_timeout` on the run queue. Nothing was runnable — so no child was merely slow.
+
+The watchdog kept ticking throughout, so the scheduler itself is alive. A `send` (or a child)
+is genuinely lost.
+
+**2. The repro no longer needs 12 parallel copies over 90 s.** One process is enough:
+
+```
+BROOD_STDIMAGE=1 ./target/debug/deps/autoload_race-* --test-threads=4     # 5-6 of 9 hang
+```
+
+against a 25 s timeout, where each test alone passes in ~105 ms. Rates measured over 8 runs
+each: `--test-threads=1` 3/8, `=2` 4/8, `=4` 5/8. **Concurrency between runtimes is not
+required** — sequential tests in one process hang too — but more than one `Interp` in the
+process is: a single test, run alone, has never hung.
+
+**Ruled out** (each with a measurement, none of them the cause):
+
+- the mailbox park/notify in general — a `pure` variant (children send a constant, no
+  `require`, no image) never lost a reply;
+- `%registry-member?` vs `contains?` staleness in the poll — fixed separately (that WAS a real
+  defect: a waiter polling the cached global read could miss a racing `provide`, sleep its
+  whole budget and then force-load a module that was ready), but it does not fix this;
+- pid collision across runtimes — concurrent `Interp`s get distinct pids;
+- `ensure_ctx` thread-local reuse — six sequential `Interp`s on one thread all report
+  `#<pid nonode/1>`, because the root `Ctx` is cached per THREAD rather than per runtime, and
+  the second runtime's root is therefore the first's mailbox. **This is a real design smell
+  worth fixing on its own**, but it is not this bug: four sequential same-thread `Interp`s
+  each running the full fan completed 6/6.
+- `BROOD_NO_RECV_MARK` / `BROOD_NO_HANDOFF` / `BROOD_NO_MSGTAG` — no arm separated from
+  baseline at n=12 (5, 4, 2, 6 losses respectively; the spread is noise at that sample size).
+
+**A warning for whoever picks this up.** The bug is timing-fragile and *every* in-language
+observer moved it. Collecting the child pids (`spawn-many`) instead of discarding them
+(`dotimes`) suppressed it twice; adding a `%list-processes` watchdog suppressed it (0/48);
+an `after` body larger than `(cons :LOST acc)` suppressed it. An earlier A/B here concluded
+that a `receive` nested inside the native `reduce` builtin was the trigger (3/10 vs 0/10
+for a Brood-level loop) — **that conclusion did not hold**: under parallel load the plain
+loop lost a reply and the nested one did not. Do not trust a shape comparison at n=10 on
+this bug. Use the unmodified `autoload_race` binary as the repro and observe from gdb.
+
+### 2026-08-28, later: three fixes landed, NONE of them closes this
+
+Fixed and pushed, all found while chasing this bug, none of them its cause:
+
+- **the wake was an either/or** — `deliver` re-queued a parked green process *or else*
+  notified the condvar, and a green process in a native-nested `receive` is reachable by
+  both, so a present `waiter` suppressed the notify. `wake_for_timeout` had no notify at
+  all. Now `mailbox::wake_both` signals both, always.
+- **`%require-await` polled** — replaced with the `code_server` model described below.
+- **the root ctx outlived its `Interp`** — `ensure_ctx` cached it per THREAD, so a second
+  `Interp` on one thread inherited the first's pid *and mailbox*, and a queued
+  `Payload::Local { slot }` then indexed the new runtime's heap at the old one's index.
+
+**Measured, interleaved, with the image verified live in both arms: no change.** Baseline
+and fixed are indistinguishable, and the baseline itself swung between 9/20 and 13/20 across
+runs of *identical* code. Do not read the fixes as having narrowed this.
+
+**A much cheaper repro than the one above.** The hang is one test, not the suite:
+
+```
+BROOD_STDIMAGE=1 ./target/debug/deps/autoload_race-* \
+    --exact racing_the_first_call_into_string_is_sound --test-threads=1     # 8 of 12 hang
+```
+
+One test, one thread, one `Interp`, a 12 s cap, no parallelism at all. Across whole-binary
+runs it is nearly always `racing_the_first_call_into_string_is_sound` that hangs (sometimes
+`seq` as well), never `boot_loads_no_library_feature`.
+
+**Two traps that cost hours here; read these before measuring anything.**
+
+1. **`stdlib-id` embeds the git sha, so COMMITTING invalidates the image.** Commit while
+   investigating and the amplifier silently switches off: the baseline then measures 0/12
+   and any fix looks perfect. Every measurement in this session that read 0/N was this. Check
+   for `[image] install: N sections` — and note the line is prefixed by libtest's `test … `
+   output, so a `grep -E '^\[image\]'` anchored at line start finds nothing and looks like
+   a clean run.
+2. **Every in-language observer moves or suppresses it.** Collecting the child pids
+   (`spawn-many`) instead of discarding them (`dotimes`) suppressed it; a `%list-processes`
+   watchdog suppressed it (0/48); enlarging the `after` body suppressed it; and so did a
+   *Rust* watchdog thread that does nothing for its first 3 s. Reproduce with the unmodified
+   binary and observe from gdb.
+
+**What the state looks like when it is stuck** (gdb, single test, single thread): the root
+is in `receive_match` → `wait_for_message` on the mailbox condvar, inside `range_reduce_slow`;
+**all 12 scheduler workers are idle** in `wait_timeout` on the run queue; the JIT thread is
+idle. Nothing is runnable, and the root's mailbox is empty. So the 24 children have all
+finished or never ran, and no reply is in flight — consistent with a lost `send`, a child that
+died silently, or a child that never got scheduled. Distinguishing those is where this stands.
+
+**Ruled out since**, each with a measurement: the mailbox park/notify in general (a `pure`
+variant with no `require` never loses a reply); pid collision across runtimes; the
+`ensure_ctx` inheritance above; and `BROOD_NO_RECV_MARK` / `BROOD_NO_HANDOFF` /
+`BROOD_NO_MSGTAG`, none of which separated from baseline. An earlier A/B concluding that a
+`receive` nested in the native `reduce` was the trigger (3/10 vs 0/10 for a Brood-level loop)
+**did not hold** — under parallel load the plain loop lost a reply and the nested one did not.
+
+### How Erlang does it — the `code_server` model
+
+Brood's `%require-await` polls; OTP does not, and the difference is the fix. From
+`lib/kernel/src/code_server.erl`, in its own words:
+
+> we queue loaders for a given module and either reply to them or run them if a previous
+> loader succeeded.
+
+`schedule_or_run_loader/4` is the whole mechanism: if the module is already in `loading`, the
+requester is appended to that module's waiting list and the server answers `{noreply, ...}` —
+the caller simply stays blocked in its `gen_server:call` receive. When the in-flight load
+finishes, `run_loader_next/2` pops the next waiter and replies to it. Three consequences
+Brood does not currently get:
+
+1. **A waiter's cost is the load's real duration**, not a 5 ms quantum times however many
+   rounds — it wakes on a message, O(1).
+2. **There is no force-load fallback.** The claim is authoritative and only the claim holder
+   can release a waiter. Brood's `%require-force` after 1000 rounds is a *second* loader for
+   the same module — precisely what turns a slow load into a duplicate one.
+3. **Deadlock is detected, not timed out.** If the module's `on_load` is being run by the
+   requesting process itself, the server replies `{error, deadlock}` immediately.
+
+The claim itself is not the gap: Brood's `:assoc-new` test-and-set inside the registry lock is
+equivalent to the code server's serialisation. It is the *wait* that differs.
+
+**The deeper divergence, and it is the one this bug lives in.** In BEAM everything is a
+process and there is exactly ONE park/wake path — `erts_queue_message` enqueues under the
+message lock, then:
+
+```c
+erts_proc_notify_new_message(Process *p, ErtsProcLocks locks)
+{
+    erts_aint32_t state = erts_atomic32_read_nob(&p->state);
+    if (!(state & ERTS_PSFLG_ACTIVE))
+        erts_schedule_process(p, state, locks);
+}
+```
+
+The wakeup is recorded as a **persistent bit in the process state** (`ERTS_PSFLG_ACTIVE`). A
+state flag latches; whatever the interleaving, a process made ACTIVE will be run.
+
+Brood has two paths, chosen by whether a green process is parked:
+
+```rust
+st.push(env);
+if let Some(proc) = wake_parked(&mut st) { drop(st); wake_enqueue(proc); }
+else { mb.cv.notify_one(); }   // wake the root thread, if it's blocked in receive
+```
+
+A condvar notify **does not latch** — delivered with no waiter, it is silently discarded. The
+root/file-runner thread is a hybrid BEAM has no equivalent of: a mailbox owner that blocks an
+OS thread on a condvar instead of being a schedulable green process. `wait_for_message` does
+hold the state lock across its check-then-wait, which closes the obvious window, so this is
+not yet a proven mechanism for the loss — but it is the structural difference, and unifying
+the two wake paths (or latching the wakeup in the mailbox state the way `ERTS_PSFLG_ACTIVE`
+does) would remove the whole class.
+
+### FIXED 2026-08-28 — it was never a stall. A section published its entry points too early
+
+**It is not a hang, a lost wakeup, or a lost message.** Every prior account here — the
+5 ms poll, the condvar that does not latch, the `code_server` model, the two wake paths —
+was chasing a symptom. The root is an **unbound symbol in a child**, which presents as the
+root hanging because the test's `reduce` waits for 24 replies and one child died before
+sending its own.
+
+**What found it: three counters and a signal handler.** Every in-language observer moved or
+suppressed this bug, and `ptrace_scope` forbids attaching gdb to a process the shell did not
+fork. What worked was relaxed atomics on paths that run once per process (`spawn`, exit,
+`send`) plus a **SIGTERM handler** that writes them with `libc::write(2, …)` — `timeout`
+already sends SIGTERM at the cap, so the readout happens only once the process is *already*
+stuck and cannot perturb the race. Three readings, in order:
+
+- `spawned=24 exited=24` — no child is parked, none is missing;
+- `delivered == sent` exactly — **nothing is lost in transit**; and
+- `sent-to-root` 16–23, never 24, with `done + err = 24` and `sent-to-root == done`.
+
+So children were *crashing*, and the shortfall was exactly `err`.
+
+**Why "no child prints died" was believed.** It does print — `pool.rs` has an `eprintln!`
+for exactly this. **libtest captures a test's stderr and discards it for a test that never
+completes**, so the message was written and thrown away. With `--nocapture`:
+
+```
+process 9 died: unbound error: unbound symbol: string/whitespace?
+```
+
+**The mechanism** (ADR-279). `blank?` is public and carries an ADR-246 autoload stub;
+`whitespace?` is `defn-` and is called from `blank?`'s body. An image section defines its
+globals one at a time and each define publishes immediately, so installing the real
+`blank?` **removed the stub** — the one door that routes a racing caller into `require-one`
+and makes it wait — while `whitespace?` was still unbound. The source path cannot produce
+this: `load` evaluates in file order, where a helper precedes its caller.
+
+**The fix:** a section defines names with no current binding first and names that already
+have one (i.e. the stubs) last. Sabotage-verified: 9 of 12 hang with the deferral disabled,
+**0 of 24** with it enabled.
+
+**Acceptance load** (the one this entry opened with — 12 parallel copies at
+`--test-threads=4`, 90 s): **image ON 0/12, image OFF 0/12**, against 12/12 vs 0/12 before.
+
+### A third trap, worse than the two above: the amplifier switches off *by itself*
+
+Trap 1 said "committing invalidates the image". It is broader and it invalidated real work:
+`BROOD_STDLIB_HASH` is a content hash over **every `std/**/*.blsp`**, so *any* edit to std
+— including one made by somebody else while your measurement is running — changes the id,
+no image matches, and the image arm silently becomes the no-image arm. During this session
+the tree was being edited in parallel and a 12-run measurement read **0 of 12** purely
+because of it; the same runs read 9 of 12 once the image was rebuilt.
+
+This very likely explains the entry's own "baseline and fixed are indistinguishable, and the
+baseline itself swung between 9/20 and 13/20 across runs of *identical* code".
+
+**So: verify the image inside the same command that measures.** Not once at the start —
+every run. `BROOD_IMAGE_TRACE=1` and count `install: N sections`; `N` must be a number and
+not `nil`, and the loop should report how many runs saw it:
+
+```
+hangs: 0 of 24   (image live 24/24)
+```
+
+**Was open, now decided:** the image went **default-ON in v0.15.0** (`f114d01e`), opt out with `BROOD_NO_STDIMAGE=1` — verified empirically: with no flag set a `require` of `json` reports `install: 103 sections` and materialises from the image, and `BROOD_NO_STDIMAGE=1` emits no `[image]` line at all. The paragraph below is the reasoning as it stood before that call.
+
+Parity is met on this load, but
+that is one workload; flipping the default is a shipping decision and ADR-256's flip was
+reverted once already.
+
+**And the bar for that decision moved, in both directions, the same day.** Asked whether the
+image should default on "except when running scripts", the measurement says the opposite: a
+script requiring three std modules runs **46.5 ms → 36.2 ms**, a 22% saving it pays on
+*every* invocation, where a long-lived process pays it once and amortises it away. Scripts
+are the beneficiary, not the exception — and the exceptions that do exist are already
+handled by construction (coverage stands aside; editing std invalidates the id).
+
+What was missing was not a workload but a *proof*. Every divergence in this feature's
+history was found by consequence, so ADR-280 added the differential — load every module
+from source, load it from the image, require the resulting state to match. It found a
+**sixth** on its first run: materialising dropped **privacy**, so every `defn-` in an imaged
+module came back public. 1448 names diverged; 0 after the fix. Default-on is a decision
+about one gate now rather than about five anecdotes.
+
+
+
+### The guard was accidental until 2026-08-28, and it is probabilistic
+
+`autoload_race` is what stands between this bug and a silent return, and until now whether it
+ran on the **imaged** path — the only path the bug exists on — was an accident. It never built or
+required an image, and nothing in `ci.yml` builds one. What *does* build one is
+`image_matches_source.rs` (ADR-280), which writes it to `~/.cache/brood` — so coverage depended
+on whether that case happened to run before this one, and nextest gives each case its own process
+in no guaranteed order. In CI, with no image on disk, these races ran on the source path and
+asserted nothing about the imaged one.
+
+The differential does not cover the gap. It compares final **state** — name, kind, privacy,
+declared signature — and proves the two load paths agree *once loaded*. This bug was not a state
+divergence but an **ordering** one during install. A differential over end state cannot see it.
+
+So `race_first_call_from_the_stdlib_image` was added, which builds the image in a **throwaway**
+interpreter (`stdimage/build` `require`s every module into the calling heap, which would load the
+very module whose *first* call is being raced), then installs it into a fresh interpreter and
+asserts three things before racing: that the install returned non-nil, that `*std-image-file*` is
+set, and that the module is **not yet loaded**. Any of those failing means the test would have
+exercised the source path while reporting that KI-72 is still fixed.
+
+**Sabotage-verified, and the first attempt was vacuous — which is the part worth recording.**
+Reverting the deferral (`if false && kind != KIND_SIG && heap.env_get(global, sym).is_some()`)
+and re-running gave, per 12 standalone invocations of a single case:
+
+| arm | caught the sabotage |
+|---|---|
+| pre-existing (`…_string_is_sound`) | **6 of 12** |
+| new (`…_from_the_stdlib_image`) | **4 of 12** |
+| `cargo test` running all 5 cases in one process | **0 of 3 runs** |
+| **`cargo nextest run` (what `make test` and CI use)** | **4 of 4 runs RED** |
+
+Three things follow, and none of them is "the guard is fine, move on":
+
+1. **The guard is probabilistic, not deterministic.** The race is intermittent by nature, so a
+   single case catches a reintroduced bug roughly half the time. What makes it a usable gate is
+   nextest running five cases in five processes: 4 of 4 whole runs went red. Do not reason about
+   this guard as if one green case proves anything.
+2. **Plain `cargo test` suppresses it entirely** — all five cases share one process, and the
+   earlier cases warm the allocator, interner and JIT enough to close the window. CLAUDE.md
+   already warns that `cargo test` has no per-test timeout; add that it cannot see this class of
+   bug at all. **Reproduce with nextest, or with `--exact` on a single case.**
+3. **The new arm is weaker than the old one** (4/12 vs 6/12) for a knowable reason: building the
+   image in the throwaway interpreter warms the same process. That is the documented hazard of
+   this bug — *every* in-language observer moves it — appearing inside the test written to catch
+   it. It is kept because it is the only arm that runs on the imaged path *deterministically*,
+   and the two together are stronger than either.
+
+### Two accounts, one bug — and a merge that dropped one of them
+
+This was root-caused twice in parallel on 2026-08-28, from opposite ends, reaching the same
+mechanism. The merge (`cba50894`) then hit a conflict in this file and **kept only the weaker
+account**, silently dropping the 83 lines above; they were restored by hand afterwards. Worth
+recording because nothing failed — the code from both sides merged cleanly and every gate stayed
+green, so the loss was invisible to CI. **A doc conflict resolved by "keep one side" loses
+findings no test can miss.**
+
+| | the loader account (authoritative, ADR-279) | the writer account (superseded) |
+|---|---|---|
+| **what is deferred** | names that already have a binding — the ADR-246 **stubs** | module-**privates**, emitted first by `%image-write` |
+| **why the race is reachable at all** | overwriting the stub removes the door that routes a caller into `require-one` and makes it wait | not identified — framed as ordering alone |
+| **coverage** | total: a public->public window is only reachable *through* a stub | partial: public->private only |
+| **where it lives** | `startup_image.rs` (the loader) | `std/tool/stdimage.blsp` (the writer) |
+
+The writer change was **reverted** once the loader fix landed: with it removed the repro is
+**0 of 24, image verified live 24/24**, so it was redundant — and two half-mechanisms for one
+bug is worse than one whole one.
+
+The writer account also produced a claim that is now **withdrawn**: that privates-first was
+"necessary and not sufficient", and that an **atomic** section install was the prerequisite for
+default-ON, on the evidence of a static scan finding ~257 public->public calls whose caller
+sorts first (`(global-names)` order is alphabetical). The arithmetic was right and the
+conclusion was wrong: those windows are **not reachable**, because a racing process can only
+enter a partially-installed module through a stub, and stubs now install last. Deferring is
+enough; atomicity is not needed.
+
+That scan is still a cautionary tale about static analysis over a Lisp. Its first run said
+**757**, inflated twice over: `:year` matched the public `year` (the keyword colon was not
+excluded), and `(defn- foo` parsed as a public named `-` (`defn-?` matched `defn`, then captured
+the hyphen). Both errors pointed the same, scarier way, and only hand-checking one case caught
+them — `epoch-ms->` "calling" `year` is really `(get ymd :year)` beside three `let`-locals named
+`hour`/`minute`/`second`.
+
+One measurement caveat, in fairness to the third trap above: the writer account's figures were
+taken with the image verified **once before the loop**, not per run. Per-run verification is now
+known to be required, so those figures should not be leaned on. The numbers in this section, and
+the 0-of-24 above, were taken with it.
+
+## KI-71 — `seq/remove-nth`'s argument swap was invisible to every gate ☑️ NOT A BUG 2026-08-27
+
+Not a defect in brood — a note about the *class*, because this one cost the most time to
+find of anything in the downstream migration.
+
+`seq/remove-nth` moved to index-first, correctly: it was the one function in `seq` that
+broke the collection-last convention, and its docstring says so. But a **reversed-args
+change is invisible to every gate we have**:
+
+- the arity is unchanged, so no arity error;
+- no symbol is unbound, so `nest check` is clean;
+- the type mismatch is advisory, and the call sites are polymorphic enough not to warn.
+
+In bedit it surfaced as **seven** failures in `buffers_eval`, `hosted` and `tutor` that
+looked like unrelated buffer-lifecycle bugs — "killing the last editable buffer leaves a
+fresh `*scratch*`" returning the *old* buffer's text. The actual raise
+(`<=: expected number, got vector` in `%take-acc`) happened inside `ed-kill-at`, where the
+caller's error handling absorbed it.
+
+**What made it findable** was reading the failing function's source and testing the
+primitive directly, not any tool. **What fixed it** was `nest rename --swap`, which already
+exists for this and rewrites `(f a b)` to `(f b a)`.
+
+**The lesson for the next wave:** a reversed-args rename needs to be announced differently
+from a moved name. A moved name produces an unbound symbol the checker will point at; a
+swapped one produces a plausible wrong answer somewhere else entirely. Worth listing them
+explicitly in the release notes under their own heading, since no gate will.
+
+<!-- KI-70 addendum, 2026-08-27: a second call site of the same reversed-args change was
+     found in brood-terminal (`seq/remove-nth tabs i`), presenting as one unrelated-looking
+     test failure — "ctrl-d with two tabs closes one". Two repos, two different symptoms,
+     one rename. `grep -rn 'remove-nth'` across the ecosystem is what found it; nothing in
+     the toolchain would have. -->
+
+## KI-73 — a prelude macro template is captured by a user module defining the same name ✅ FIXED 2026-08-28
+
+**Symptom.** A module that defines an ordinary domain function silently gets wrong values out of
+an unrelated language feature:
+
+```lisp
+(defmodule inventory)
+(defn get (bag k) :CAPTURED)     ; a perfectly reasonable function to write
+(defrecord point (x y))
+(point-x (point 1 2))            ; => :CAPTURED, not 1
+```
+
+No error, correct arity, nothing unbound, and `nest check` says nothing.
+
+**Cause.** A macro's quasiquote template is spliced into the *caller's* file, and a bare symbol
+in it resolves against the caller's namespace before root. ADR-065's α clause auto-qualifies a
+template's free references to the *defining* namespace, which fixes this for module macros — but
+the prelude's defining namespace is root, which has no prefix, so prelude templates emit bare
+names and are capturable. It is the general form of the `name` collision ADR-258 fixed for one
+symbol: renaming the operation moved the hazard, it did not remove it.
+
+**Fix (partial).** The `/name` root escape (ADR-236) pins a reference to root, and `defrecord`,
+`for`, `defonce` and `with-err-str` now use it. That escape had to be *completed* first: it was a
+resolve-time rewrite and `resolve` returns early at root, so an emitted `/get` reached the
+evaluator literally and was unbound in any root script. `macros::strip_root_escapes` now handles
+the root case, skipping `quote`/`quasiquote` subtrees — without that skip the prelude's own
+templates get stripped at definition time and the capture returns (it did, for one build).
+
+**`receive` needed two more moves, and both were structural rather than workarounds.** Its
+expansion calls `but-last`, which lived in `std/prelude/seq.blsp` — concatenated *after*
+`process.blsp` — so `receive` could not expand at prelude compile time; and `sleep`, whose body
+*is* a `receive`, was defined 200 lines *before* `receive` existed, so its expansion was deferred
+to first call. `but-last` moved to `core.blsp` (it needs only `reverse` and the kernel `rest`)
+and `sleep` moved below `receive`. Neither is a shim; both put a definition where its dependency
+order already required it to be.
+
+**And the escape had to work at runtime too.** A macro defined *at the REPL or after its use
+site* — `(defmacro await (t) \`(receive ([:reply ^~t v] v) (after 1000 :timeout)))` — expands in
+the evaluator, which no resolve pass ever touches. `eval/mod.rs`'s macro-application site now
+strips escapes on the way out, which is the runtime half of `macros::resolve`'s root case. Found
+by `tests/syntax_finalization_test.blsp`, not by reasoning.
+
+**A second emission shape, found a day later and live the whole time.** A macro need not
+use a quasiquote at all — it can build its output with `(list 'head …)`, and the template
+walker skips `quote` subtrees by design, so those heads were never scanned. Five prelude
+macros did it, emitting `map`, `apply`, `mapv`, `current-ns` and `sig`. `defmulti`'s
+`(list 'mapv '%identity-of 'args)` was the live bug: a module defining `mapv` broke every
+multimethod it declared, dispatching on `:CAPTURED` instead of the record id. All escaped
+except `sig` — see below. The gate now walks both shapes.
+
+**`sig` looked unescapable, and the reason was the ordering, not the name.** `compile`
+**expands before it resolves**, and `macro_head_id`'s root fallback did not understand the
+escape — so `(/sig …)` was not recognised as a macro head, stayed unexpanded, and never
+produced the `%register-sig` the checker collects. Every record's constructor and accessor
+signature silently stopped being checked. Four checker tests caught it; without them it
+would have shipped as a quiet loss of type checking, which is the worst shape a bug can take
+in a checker.
+
+The fix is at the lookup site: `macro_head_id` strips a leading `/` in its root fallback, so
+a macro head is recognised at *expansion* time rather than merely rewritten afterwards. It is
+general — every macro a template emits, not just `sig`. (The escape appeared to work on
+macros already; that was the *evaluator* expanding them at runtime. The checker never
+evaluates, so it never got that second chance — which is why only a checker test could find
+this.)
+
+**No name is reserved and no warning is added.** Reserving `sig`/`get`/`map`/`mapv` inside
+modules would break ADR-166's one-sentence rule — reserved ⇔ it shipped with Brood, and in a
+module it is yours — which is the escape hatch that makes namespacing worth having. With the
+escape total there is nothing left to warn about; the gate asserts **zero** offenders.
+
+**Guarded by** `tests/prelude_capture_test.blsp` — a static scan of every prelude `defmacro`
+template plus three behavioural probes that define `get`/`reverse`/`bound?` and assert the real
+value comes back. It pins `receive` as the known exception, so a *new* offender fails the build.
+Sabotage-verified: removing `defrecord`'s escape fails both the scan and the probe.
+
+## KI-111 — a `def-` global went PUBLIC on any write that was not a redefinition ✅ FIXED 2026-09-05
+
+**Symptom.** `(reflect/private? '*std-impls*)` answers `true` at boot and `false` the moment a
+stdlib image installs. `(reflect/private? '*require-edges*)` answers `false` after the first
+`require` — which is every program. Four more went the same way: `*std-regs*`,
+`*std-require-edges*`, `*std-image-sections*`. Nothing raises and nothing fails; the names just
+stop being private, so `apropos`, `doc-search` and completion begin offering kernel bookkeeping
+and the cross-module private-reference warning stops firing for them.
+
+**Cause.** One rule, three sites that break it. `env_define` calls `unmark_private` on every
+global definition, and that is **correct**: privacy is declared by the def FORM (ADR-146), so an
+author editing `defn-` to `defn` and hot-reloading must stop being private. The corollary is
+that any path writing a binding *without* a def form having changed must put the mark back.
+
+1. **`registry_cas` had no save/restore, while its sibling `registry_update` did.** The two are
+   documented as a pair four lines apart in `core/heap.rs`; the guard went into one of them. So
+   a `def-`'d registry updated through `%swap-registry!` rather than `%registry-update!` turned
+   public on its first write — `*require-edges*`, on every `require`.
+2. **`define_image_entry`'s deferred pass.** A section's `KIND_PRIVATE` entries are written
+   *last*, and a value entry whose global already exists is deferred to a second pass — so for
+   an already-bound private the mark landed first and the define undid it. Private at
+   image-build time, private for one pass of the load, public by the end of it.
+
+A third path *looks* like a cause and is not, which is worth recording because it cost the most
+time here. **`%mark-private` resolves its quoted name at CALL time** — against the namespace
+loading right then — while `def` resolved its head at COMPILE time. They disagree for a prelude
+function assigning a root private while a module loads: it binds `*x*` and marks `mod/*x*`. Real,
+but no live path takes that shape, and the two symptoms it was blamed for were (1) and (2).
+
+**Why it survived.** The four worst-affected names are **not in `(reflect/global-names)`** — a
+global bound to `nil` is not listed — so every per-global gate in the tree, the two boot
+differentials included, was structurally unable to see them. That is KI-106's blind spot
+exactly, one level down: KI-106 was a registry the `global-names` diff could not see, and this
+is a *fact about* a global the same diff cannot see. The two affected names that ARE listed
+diverged identically in both arms of every differential, so a comparison of two boots agreed
+while both were wrong.
+
+**Fix.** `registry_cas` saves and restores privacy around `env_define`, like `registry_update`.
+`define_image_entry` does the same, so the order of a section's value and privacy entries stops
+mattering. The 17 prelude assignments to a `def-` global were switched from `def` to `def-`,
+stating the intent at the site.
+
+**Deliberate non-fix, with its reason.** Closing the `%mark-private` resolution mismatch by
+having `def-`/`defn-` pass the symbol `def` returned — `(%mark-private (def …))` — was
+implemented and reverted. `types/check.rs::top_level_defs` identifies a private definition by the
+exact shape `(do (def name …) (%mark-private …))` and unwraps it so the definition is inferred
+and its call sites checked; most definitions in a real module are private (40 of
+`std/json.blsp`'s 42). Nesting the `def` anywhere else makes the checker silently stop seeing
+them: `nest check --strict std/` went from clean to **ten warnings in files the change never
+touched** (`tempo`, `stats`, `datetime`, `version`, `fuzzy`, `seq`). The shape is now documented
+as load-bearing at the macro. Fixing the mismatch properly means qualifying at expansion time,
+which needs `qualify_name`'s ambient/already-qualified rules restated in Brood — a second copy of
+a kernel rule, for a hazard with no symptom.
+
+**Guard.** `%side-facts` (ADR-320) reports the recorded facts themselves, and `STATE_DUMP` — run
+by `prelude_image_matches_source`, `image_matches_source` and the `artifact_matrix` — compares
+them between boots. Sabotage-verified twice: dropping `Fact::Meta` from the image write reddens
+`an_imaged_boot_and_a_source_boot_agree_on_every_global` with
+`source: meta not= since=None deprecated=Some("0.19.1") …` named in the diff; and before the
+fixes, the matrix failed with `baseline: FACTS 807 / cell: FACTS 804` naming the three lost
+`private` facts. Adding a sixth `FactKind` fails to compile in six places.
+
+## KI-109 — `mandelbrot` is ~3% slower than 0.19.1 at steady state: icache footprint on one row ✅ CLOSED 2026-09-05
+
+> **Resolution 2026-09-05.** Closed by lead 1 below, not by a layout change. `->float` is
+> `(* 1.0 x)`; its `1.0` put the arm in float context, `x` was read through `as_f64`, whose
+> guard accepted `Float` alone, and every program that converts calls it with an int — a deopt
+> per activation, BAILED after sixteen, one VM call per pixel for the rest of the process. The
+> guard now promotes an `Int` with `fcvt_from_sint`, the VM's own coercion. Closing gate,
+> `make ab BASE=8a2aaa01 --floor ROWS=mandelbrot`, best-of-9, images live on both arms:
+> **578 → 579 ms, +0.2%** (floor 4.3%). The row is back at the 0.19.1 column.
+>
+> The icache measurements in this entry stay true — the footprint grew, and with the arm
+> native it grows a little more — but they were the *shape* of the cost, not its cause on this
+> row. What cost the wall time was one arm that could never stay native. Lead 2 (`row-sum`'s
+> `call-mediated-boxed` bail) is no longer needed to close this; it is an improvement candidate
+> for the frontier doc, and the gate's own `newvel` measurement says to bring numbers.
+
+
+**What it is.** The one thing left of KI-100 after the re-baseline. `make ab BASE=8a2aaa01
+--floor`, best-of-7, stdlib image `:live` on both arms: `mandelbrot` **+3.0%** against a 0.2%
+floor while `startup` reads −18.2%, `sort` −7.6%, `fib` −4.2%, `bintree` −2.9%, `collatz` flat
+and `nbody` inside its floor. KI-100's own table had `mandelbrot` at 1.033 (N=1400) and 1.034
+(N=3000) — it scales with work, so this is throughput, not a per-run constant.
+
+**Mechanism, confirmed at HEAD.** `perf stat`, `taskset -c 2`, `BENCH_N=1400`, three reps a
+side, all stable to <1%:
+
+| metric | `8a2aaa01` | HEAD | delta |
+|---|---|---|---|
+| instructions | 16.53 G | 16.83 G | +1.8% |
+| cycles | 9.71 G | 10.01 G | +2.6% |
+| L1-icache-load-misses | 51.3 M | 78.3 M | **+52%** |
+| iTLB-load-misses | 74 K | 61 K | −18% |
+
+Same work, more instruction-fetch stalls: the footprint face KI-100 described. The iTLB going
+*down* while icache misses go up is the sharpest possible statement that huge pages are not the
+lever — KI-100 priced that out on arithmetic; this is the measurement.
+
+**Fix direction** (from KI-100, unchanged): reduce the machine code the JIT emits per arm for
+root handling — RootsBuf's inlined root-stack manipulation (`115faead`) is the standing suspect,
+and §7.5's fatter arms the multiplier. `docs/compute-frontier.md`. Iterate on icache misses, not
+wall time: on this box the counter is stable to <1% where wall needs min-of-N interleaved.
+
+**Measured 2026-09-05 — where the 3% lives, and three levers priced.** Symbolized builds of
+both binaries (`CARGO_PROFILE_RELEASE_FAST_STRIP=false`, separate target dirs) and `perf-stats`
+builds of both, same session, pinned:
+
+- **Both binaries tier `mandelbrot` identically**: `esc` lowers (general lowering, not the
+  scalar worker); `row-sum` **bails** (`call-mediated-boxed`) and runs on the VM; `->float`
+  lowers, deopts 16× and latches BAILED. Per pixel: one native `esc`, two VM calls
+  (`row-sum`→`->float`, `row-sum`→`esc`), ~2.3–2.6 `env_get` with ~3.6 `env_hops`
+  (`n`'s late-bound global reads through the chain), ~0.4 `alloc`. `tw_defer` is ~1.4 k total —
+  boot-shaped, so the tree-walker's 7.8% share of icache *misses* against ~0.6% of *cycles* is
+  cold code being evicted and re-fetched, not extra tree-walking: layout, as this entry says.
+- **The one new piece of real work is `Heap::push_root` at 2.5% of cycles** — absent as a hot
+  symbol on the baseline, whose `Vec<Value>::push` inlined by being generic. HEAD→base counter
+  diff per pixel: `env_get` +0.34, `env_hops` +0.5, `alloc` +0.08, `global_ic_miss` 233 → 1 085.
+- **Lever 1, `#[inline]` on the four `Heap` root wrappers: NEGATIVE.** Cycles flat, icache
+  misses 80 M → ~130 M — more code at each of ~14 VM call sites, which is the footprint
+  mechanism itself. Reverted.
+- **Lever 2, `codegen-units = 1` on `release-fast`: real but under the bar.** perf: cycles
+  10.2 → 9.75 G (the baseline's number), instructions −1.5%. Wall, interleaved pinned
+  best-of-9 with a control-vs-control floor: `mandelbrot` **−2.0% (floor −0.2%)**, `bintree`
+  −1.7%, `nqueens` −0.6%, `startup` +1.2%; `fib` unreadable (its own control swung −12.7%, the
+  turbo-plateau bimodality `brood-benchmarks/CLAUDE.md` describes). Below `max(5%, 2×floor)`,
+  and every incremental `make release` would take ~4 min instead of ~50 s. Not adopted.
+- **Lever 3, `BROOD_XADMIT=1` (admit `row-sum` at the hot stage): noise** — 583/601 and
+  580/565 ms interleaved. Consistent with KI-100's negative measurement of the same switch.
+
+**Two leads worth more than the three levers above, both general:**
+1. **`->float` is `(* 1.0 x)` and deopt-thrashed to BAILED on an int argument — FIXED
+   2026-09-05.** The `1.0` puts the arm in float context, so `x` was read through
+   `emit::as_f64`, whose tag guard accepted `Float` alone: a deopt on every activation,
+   sixteen in a row latched BAILED, interpreted forever — one VM call per pixel here and in
+   every program that converts. The guard (`float_or_promoted_int`, both the slot and the
+   handle path) now takes `Int` too, promoting with `fcvt_from_sint` — the VM's own
+   `prim_apply_float` coercion, `i64 as f64` — and still deopts on anything else (a `BigInt`
+   is a different tag). Not a type guess: it is the mixed-operand semantics the VM already
+   has, so a stale profile costs nothing. Guard: `crates/cli/tests/float_context_int_operand.rs`
+   runs real `brood` on a mixed int/float loop, asserts the result equals `BROOD_NO_JIT=1`'s
+   (including 2⁵³+1 rounding the same way) and that `BROOD_JIT_BAIL_TRACE=1` names no
+   `deopt-thrash-latched` for the arms; sabotage (int tag made unmatchable) fails it with the
+   latch message. Also green: the 46 JIT Rust cases, every `tests/jit_*_test.blsp`, numeric
+   conformance 19/19, math 87/87. Perf: see the devlog entry for the `make ab` row.
+2. **`row-sum` bails `call-mediated-boxed`** on both binaries, so the row's hot loop is a
+   VM↔native round trip per pixel; the profitability gate exists for a measured reason
+   (§7.5, `BROOD_XADMIT`), so the lever is the call convention it prices, not the gate.
+
+**Gate.** `make ab BASE=8a2aaa01 ARGS=--floor ROWS=mandelbrot` closes it at ≤ the floor; the
+`perf stat` table above is the diagnostic. Keep `json` out of that A/B — its benchmark program
+uses ADR-307's argument order and fails on the 0.19.1 binary.
+
+**Related.** KI-100 (resolved as filed; this is its residual), ADR-313, ADR-314.
+
+
+> **Correction to lever 3 above (2026-09-05).** "`BROOD_XADMIT=1` … noise" was not a
+> measurement of admitting `row-sum`: hot admission declines that arm for having an inline
+> variant, and independently on the frame cap (8 against its nslots=14), so both sides of the
+> A/B ran identical code. `BROOD_JIT_BAIL_TRACE=1` now reports what admission did with a
+> refused arm, so a lever that skips the case under test says so instead of reading as "no
+> effect". Nothing about this entry's closure changes — lead 1 closed it.
+>
+> **Lead 2's deciding clause is isolated** — `docs/compute-frontier.md` §7.9. It is the
+> float-slot carve-out and nothing else in the gate, shown by changing one thing (the same
+> arm lowers with an int accumulator), and the carve-out's premise moved when lead 1
+> landed. No numbers: benchmarks were not available to that session.
+
+## KI-108 — the lazy-arm crash-report test slept a fixed 500 ms and lost once under load ✅ FIXED 2026-09-04
+
+**Symptom.** One run of the cli crate under a full-suite load (`-j1`, 2026-09-04 night):
+`FAIL cli::crash_report_default an_unsupervised_crash_is_reported_through_the_lazy_arm` with
+"no crash report … stderr was:" followed by **nothing** — an entirely empty stderr. 5/5 green
+in isolation immediately after, at 0.53 s each. Both earlier full suites that day had passed it.
+
+**Mechanism.** The script was `(spawn (fn () (/ 1 0))) (sleep 500) (io/puts "done")` and the
+harness read stderr after the process exited. The lazy arm (ADR-313) loads the reporter's nine
+std modules on the FIRST crash before it renders anything; one loaded run took longer than the
+500 ms the root slept, so the root exited and took the reporter with it before the report
+landed. A fixed window that is 10× the healthy path still loses when the box is busy — KI-79's
+class exactly, and KI-80's shape (a timing-sensitive case inside a heavily loaded runner).
+
+**Fix.** A deadline, not a window, on the harness side. There is no in-language observable for
+"report printed" — `%crash-report-arm-default` registers the SHIM under `:crash-reporter` at
+arm time, so `proc/whereis` is true before any report exists, and asking `crash-report/running?`
+from the script would load the very module whose lazy load is the seam under test. So
+`stderr_until` reads the child's stderr pipe incrementally and kills the child as soon as
+`[crash]` and the reason are present, ceiling 15 s; the script parks for 15 s as a ceiling the
+harness never reaches. Healthy runs went from 0.53 s to ~50 ms, because the harness no longer
+waits for the sleep to end.
+
+**Guard, sabotage-verified.** With the `spawn` removed from the script the test fails at the
+deadline with `no crash report`, not a hang. The negative case
+(`the_opt_out_still_suppresses_the_report`) keeps its bounded sleep: an absence assertion can
+only ever be "not within this window", and lengthening it costs every run without changing what
+it can prove.
+
+**Filed as KI-108, not 107.** The number was computed from the headings as the file says to; 107 had
+been taken by a parallel session's merge minutes earlier, and an assert on the expected number
+caught it before anything was written. Read the section numbers, not the index.
+
+**Related.** KI-79 (the same fix for `live_migration`), KI-80, ADR-313 (the lazy arm).
+
+## KI-107 — `eval_server_test`'s `:all` cases are coupled through shared trace state ✅ CLOSED 2026-09-06 (three mechanisms)
+
+> **Earlier the same day — the refcount (the 1.8% → 0.67% half), recorded before the closing half below.**
+>
+> **2026-09-06 (later) — REFCOUNTED. 6.0 % → 0.67 %; still not closed.**
+>
+> Scoping teardown to "what I installed" (below) left a hole the refcount closes: request A
+> installs a wrapper, B calls `trace-fn` and gets a documented **no-op** because the name is
+> already traced, so B records nothing — and when A finishes first it takes the wrapper away
+> while B is still running. The registry is shared, so the second user was uncountable.
+>
+> `debug/trace-hold` / `debug/trace-release` make it countable. A hold ensures the wrapper
+> exists and adds one holder; a release removes one and restores only at the last. **A fresh
+> install is its own first holder**, so an interactive `trace-fn` counts as one and a request
+> that holds and releases the same name leaves the REPL's trace exactly as it found it.
+> `trace-fn`/`untrace-fn` keep their documented toggle meaning — refcounting *them* would make
+> `untrace-fn` fail to untrace after two `trace-fn`s — and `untrace-fn` drops any holds, so a
+> late release is a no-op rather than a second restore.
+>
+> **The parent-side `untrace-all` was the same bug one level up**, and this file proves it is
+> live: the `answer` tests time out on purpose, and the timeout path restored the WHOLE image.
+> Holds are now recorded under the evaluator's pid in `*trace-holders*`, so the parent releases
+> exactly that child's holds (`eval-server/release-holds-of`) — nothing image-wide on either path.
+>
+> | | failures | rate | |
+> |---|---|---|---|
+> | before | 9 / 150 | 6.00 % | |
+> | scoped teardown | 10 / 550 | 1.82 % | p ≈ 0.006 vs before |
+> | **refcounted** | **3 / 450** | **0.67 %** | **p ≈ 0.00006 vs before** |
+>
+> **What the numbers do not say.** Refcounted vs scoped-teardown is p ≈ 0.11 — *not*
+> established at this N. The refcount is shipped because it closes a mechanism the scoped
+> version provably leaves open, shown deterministically by a guard rather than by the rate, and
+> the parent-side scoping likewise: neither is claimed to have moved the flake rate on its own.
+>
+> **Three guards, each sabotage-verified.** A trace installed outside a request survives that
+> request's teardown; two holders and the wrapper survives the first release (and a plain
+> `trace-fn` counts as a holder, so a scope cannot steal it); a timed-out evaluator's cleanup
+> leaves a bystander's trace alone. Each fails on **every** run when its fix is removed — which
+> is what a guard for a rare race has to do. The third one's first sabotage passed and was
+> wrong, not the guard: the patch matched a ten-space pattern inside the thirty-six-space
+> `:down` branch and never touched the timeout branch it meant to break.
+>
+> **Still open at 0.67 %.** Three failures in 450, same assertion. No mechanism is currently
+> named for them; the two that were are closed and guarded.
+
+
+> **Resolution 2026-09-06 (the closing half).** Lands on top of the scoped-teardown fix
+> recorded further down, which took the rate from 6.0% to 1.8% and explains what it could not:
+> the tests were never isolated. Every `:isolated` in that
+> describe body is written BEFORE its test form — `:isolated (test "…" …)` — and the `test`
+> macro reads its modifiers AFTER the name, `(test "…" :isolated …)`. Inside a `describe`
+> body the bare keyword was an ordinary form: it evaluated to itself, did nothing, and the
+> `(test …)` after it registered as a PARALLEL test. So the three `:trace :all` cases ran in
+> the parallel phase beside each other and beside every other traced request, each of whose
+> `eval-capturing` teardown runs `untrace-all` over the shared registry — which is precisely
+> the coupling the file's own comments describe and the marker was meant to prevent. With the
+> teardown scoped, the residual was a CONCURRENT `:all` request resolving to THIS test's
+> function, wrapping it itself ("newly installed" from its own view) and restoring it on its
+> own teardown — which is why the per-test baseline was refuted twice: it never addressed the
+> concurrency. That is also why the two refuted fixes of 2026-09-05 changed nothing: quiescing between isolated steps and a
+> per-test baseline both act on the isolated phase, and these tests were not in it. And why
+> the evidence showed `:all` resolving to seven functions of four tests and `evsrv-t-*`
+> names present: the tests really were concurrent.
+>
+> The summary line said so all along — `3 isolated` for a file with six markers — and the
+> runner's own comment (`register-test`) records fixing the *other* half of this trap a
+> month earlier ("you mark a test isolated, the suite reports 0 isolated, and you believe
+> the test"). Tree-wide, 31 tests in 10 files carried the prefix spelling mid-body and were
+> running concurrently; 260 more use it at the head of a body, where it is the group-level
+> modifier and works.
+>
+> **Fix (ADR-323).** `describe` now lifts a body-position `:isolated`, `:skip` or `:tags
+> [..]` into the `(test …)`/`(deftest …)` form directly after it, so the spelling means what
+> everyone reading it thought it meant; any other bare keyword in a body — including
+> `:serial`, which has no per-test meaning — is an expansion-time error naming the correct
+> spelling. `eval_server_test` now reports `6 isolated`. Reproduced on the day's tree before
+> the fix at **3 of 160** (`brood --test tests/eval_server_test.blsp`, 0/40 + 2/60 on the
+> source path + 1/60 on the image path — the same assertion each time); after the fix,
+> **0 of 120** (60 on each path). Gate: `tests/describe_modifiers_test.blsp` reads the expansion (a registered
+> fixture would land in the running suite's `*units*`) for the splice, the stacking, the
+> head-position group case, `deftest`, and each error. Sabotage-verified: with the lift
+> removed the splice cases red.
+>
+> **One test the fix exposed.** `project_test`'s "an unbundled binary in a checkout reads
+> its app from project.blsp" compared against `*project-version*`, a global it never set;
+> it passed because a neighbouring parallel test's `project/setup` leaked the value, and
+> failed deterministically once those neighbours (the `--fix-sigs` cases at 1020-1079) were
+> genuinely isolated and rolled back. It reads the manifest itself now.
+>
+> **Two corrections to the record.** The claim in the test file and below that `%isolate`
+> "does not roll back" the trace registry is wrong: `%registry-cas!` writes through
+> `env_define` into the globals table, which `restore_globals` replaces wholesale — the
+> registry is rolled back like every binding. What isolation cannot do is stop a CONCURRENT
+> test from stripping the wrapper, and that is the whole reason the marker matters. And
+> `macroexpand-1` of a bare `describe` inside a test WORKER returns the form unchanged (the
+> worker's compile context has no module imports), where `reflect/eval` of the qualified
+> `test/describe` raises — a gate that asserts on expansion must qualify the name.
+
+> **Earlier the same day — the scoped teardown (the 6.0% → 1.8% half).**
+>
+> **2026-09-06 — one mechanism identified, fixed and measured; a residual remains.**
+>
+> **The mechanism.** `eval-capturing`'s teardown called `debug/untrace-all`, which restores
+> **every** entry in a registry that is shared globals — so one request's teardown stripped a
+> wrapper a *concurrent* request had just installed, that request's trace stopped mid-recursion,
+> and its reply came back with an empty `:spy` and no error anywhere. That matches the evidence
+> recorded below exactly: the wrapper installed and then lost, and **no refusal for the failing
+> test's own name**.
+>
+> **Fix.** `eval-server-try-traces` records the names this request NEWLY wrapped (those
+> `debug/traced-current?` said were not already wrapped) and teardown restores exactly those.
+> A name someone else had already traced is deliberately not recorded: `trace-fn` is idempotent
+> and left their wrapper alone, so this request has nothing to put back for it. The parent-side
+> `untrace-all` on the `:down` and timeout paths stays — a killed child never reached its own
+> teardown, and cleaning the image is the point there.
+>
+> **Measured, with a real baseline.** 150 runs of the unfixed tree and 550 of the fixed one,
+> `brood --test tests/eval_server_test.blsp`, counting the `:all` spy-cap failure specifically:
+>
+> | | failures | rate |
+> |---|---|---|
+> | before | 9 / 150 | **6.0 %** |
+> | after | 10 / 550 | **1.8 %** |
+>
+> χ² = 7.59, p ≈ 0.006. The first reading was 3/40 against 1/100 and looked like a clean kill;
+> it was not — a 40-run baseline cannot distinguish 7.5 % from 2 %, and a later 150-run block of
+> the *same* fixed build read 5/150. The honest comparison needed a same-N baseline, and the
+> effect survived it at about a **3.3× reduction**.
+>
+> **Guarded deterministically**, which a 6 % flake otherwise cannot be: `teardown restores only
+> what the request traced (KI-107)` installs a trace OUTSIDE a request, runs a traced request,
+> and requires the outside trace to survive. Sabotage-verified — with `untrace-all` back in
+> `eval-capturing` it fails on **every** run, not one in fifteen.
+>
+> **Still open at 1.8 %, and one theory refuted a second time.** The per-test session baseline
+> was re-tried, on the reasoning that scoping teardown had changed its premise: `reset-baseline!`
+> plus a boundary in each `:all` test read **3/150**, indistinguishable from the fix alone, so the
+> "`:all` spans tests" theory is now refuted twice and was not shipped. Remaining candidates, in
+> order: the parent-side `untrace-all` (still image-wide, on a path the tests should not reach —
+> worth confirming they do not); and **refcounting the registry**, so a wrapper shared by two
+> requests is restored only by its last user, which is the general form of the fix above.
+
+> **Original record (2026-09-04, investigated 2026-09-05) — superseded by the resolution above; kept for the evidence and the two refuted fixes.**
+
+> **Investigated 2026-09-05 — reproduced, mechanism sharpened, and TWO candidate fixes
+> measured and REFUTED. Read this before attempting a third.**
+>
+> **Rate, current tree:** 2/25, then 3/60, then 4/80 across the session — a stable ~5-8%,
+> standalone, on `brood --test tests/eval_server_test.blsp`. It is not rare and it is not
+> load-dependent.
+>
+> **Refuted fix 1 — quiesce before every `:isolated` step.** The theory was that an isolated
+> unit's promise is broken by processes the *previous* unit's worker spawned: `run-step`
+> awaits the worker, not its children, and every eval-server child runs `debug/untrace-all`
+> on teardown. Implemented by extending `test-quiesce-file` (upstream's file-boundary
+> reaper) to run before each `:iso` step, with the baseline captured inside the driver.
+> Result: **3/60 against 2/25** — unchanged. Reverted.
+>
+> **Refuted fix 2 — a per-test session baseline.** `*baseline-globals*` is a `table`, so
+> `%isolate` cannot roll it back, and `baseline-globals` is idempotent (first call wins): the
+> three `:all` tests share one baseline captured before the first of them. Added a
+> `reset-baseline!` and had each tracing test start its own session. Result: **4/80** —
+> unchanged. Reverted. (`reset-baseline!` is a real API gap regardless — an embedder running
+> several sessions in one image cannot express a session boundary — but it fixes nothing
+> here and was not shipped on a false narrative.)
+>
+> **What the evidence positively shows.** Instrumenting `eval-capturing` after the run
+> (printing the entry count, `session-globals` and `debug/traced-fns`) and logging the
+> exception `eval-server-try-traces` swallows:
+>
+> - One request resolved `:all` to **seven functions belonging to four different tests**
+>   (`evsrv-all-*`, `evsrv-named-*`, `evsrv-sg-mine`, `evsrv-test-triple-x9`), with all seven
+>   traced at once. The `:all` cases are coupled through the shared global table, not merely
+>   through the trace registry.
+> - In a failing run, `trace-fn` is refused for a dozen `evsrv-t-*` names — the OTHER describe
+>   block's functions — each with `unbound symbol`. So those names are present in
+>   `reflect/global-names` while having no binding: another unit's rolled-back state lingering
+>   in the name list, which is the KI-89 shape.
+> - There is **no refusal for the failing test's own function**. Its wrapper was installed and
+>   then lost, which points at a concurrent `debug/untrace-all` — every eval-server teardown
+>   calls it, against a registry that is shared globals — stripping it mid-recursion.
+>
+> **The candidate that follows, and why it was not attempted here.** Make the trace registry
+> per-process rather than shared globals. The blocker is that `eval-server` deliberately
+> relies on it being shared: when the parent kills a timed-out child it runs
+> `debug/untrace-all` itself, with the comment "the trace registry is shared globals, so the
+> parent can". Changing that is a design change to the tracing model, not a patch, and it
+> wants a human. A real mutual exclusion around install/teardown is the other option.
+>
+> **Two traps that cost time here, both worth knowing.** `os/getenv` does not exist (it is
+> `%getenv`), and a probe that raises inside `eval-capturing` is swallowed by that function's
+> own `try` — so a broken probe presents as a 100% failure rate rather than as an error, and
+> two "captured on run 1" readings were my own breakage. And `eval-capturing` wraps its run in
+> `%capture-begin`, so any probe INSIDE the run is captured into the result's `:output` and
+> never reaches the terminal: instrument outside the capture, or write to a file.
+
+**Symptom.** `tests/eval_server_test.blsp:189` — "`:all` traces, and cannot exceed the spy
+cap" — fails about **1 run in 20**, always on the same half:
+
+```
+assert: (is (> (count (get r :spy)) 0))
+actual: false
+```
+
+Measured 2026-09-04: 1 of 20 standalone `brood --test` runs, plus one retry-recovered flake in
+a full `cargo nextest` workspace run.
+
+**Cause (already written down, one line above the failing assertion).** The file's own comment
+says `untrace-all` clears a registry that `%isolate` does **not** roll back — isolation copies
+global *bindings*, and the trace registry is not one — so "a neighbouring traced test can pull
+this one's wrapper mid-recursion and the entry count lands anywhere below the cap".
+
+That reasoning is used to justify the `<=` upper bound beside it. But *anywhere below the cap*
+includes **zero**, which is exactly what the `> 0` assertion forbids. The two halves of the
+test disagree with each other, and the flake is the liveness half being stated more strongly
+than the shared registry can support.
+
+**Why it is not simply weakened.** `> 0` is the only thing keeping the case from passing
+vacuously: without it, a build where `:all` traced nothing at all would be green. So the fix is
+to make the claim true rather than to drop it — either give the trace registry the same
+rollback the bindings get (the general form of this is the `%isolate` gap KI-89 also lives in),
+or give the tracing tests real mutual exclusion instead of relying on `:isolated` scheduling.
+
+Left as a **watch** rather than open: it is one assertion, at a known rate, with a known cause,
+and the two candidate fixes both touch machinery that KI-89's design session is already going
+to have to look at.
+## KI-106 — an imaged prelude loses a record's ability impl across a multi-file check ✅ FIXED 2026-09-04
+
+> **Resolution 2026-09-04.** The narrowing above was right that this is the checker's view and
+> not the dispatcher's, and right that the loss is the DERIVED mirror. The mechanism is one step
+> further back: the image on disk was short, and the imaged boot restored it faithfully. (A
+> second session found, independently and the same day, why only the IMAGED boot suffered from
+> a short image — the reader-side layer, below the symptom.)
+>
+> `image-prune-foreign-registrations` (added for KI-89's residual) removes, at project-image
+> write time, every registration owned by a module the image does not carry — on the sound
+> premise that *a registration is data about a module and must arrive with it*, since the module
+> re-registers its own entries when it loads. Ownership is decided by
+> `stdimage/registrations-by-module`, which groups **by the qualifier of the key**.
+>
+> `num/mul`'s qualifier is `num`. `std/num.blsp` exists and is a real module, and the project
+> image does not carry it — so the entry looked textbook-foreign and was pruned. But the
+> `(defmulti num/mul :commutative)` that registers the algebra lives in the **prelude**, not in
+> `std/num.blsp`. The qualifier named a module that was not the registrar, so nothing ever
+> replayed it: the prune's premise failed silently, the loss was written into the image, and an
+> imaged boot restored a `*multi-algebra*` holding **one** entry (`compare-to`) instead of five.
+>
+> From there the reported symptom follows exactly. `build_multi_info` synthesizes the
+> commutative mirror only `if algebras.contains_key(mname)`, so with the algebra gone every
+> `num/*` mirror went with it — which is why the DECLARED `[usd :int]` on line 135 never warned
+> (the checker reads it from the file's own forms) and only the derived `[:int usd]` on line 137
+> did. It also settles the "unexplained" non-monotonic scope: with `std/**` in the check set,
+> `std/num.blsp`'s `defmulti` forms are in the checked text, so `collect_register_multi` finds
+> the algebra from forms and never needs the registry at all.
+>
+> **The fix needs no name heuristics.** A registration that was already present before this
+> project loaded a single file cannot be owned by anything the load brought in — so nothing will
+> replay it, and pruning it loses it permanently. `write-image` now captures that baseline beside
+> the `before (reflect/global-names)` it already took, at the same moment and for the same
+> reason, and the prune skips it. Everything the load actually introduced is still pruned, which
+> `crates/nest/tests/project_image_registries.rs` (KI-89's guard) confirms.
+>
+> Guarded in `tests/startup_image_test.blsp` by two cases — a synthetic pre-existing
+> registration, and `num/mul` itself — and sabotage-verified: ignoring the baseline fails both.
+>
+> **What this cost, and the reason it stayed hidden.** Nothing else could see it. The prune is
+> rolled back by its own `%isolate`, so the running session keeps every registration it had and
+> looks correct; only the file on disk is short. A defect that is transient in memory and
+> permanent on disk is invisible to every test that checks the live session, which is what the
+> entry observed when it noted that the whole 1377-case suite passes with the image on while the
+> project's own `nest check` fails immediately.
+>
+> **Flipped that night, with its own evidence.** ADR-314's default went ON after the project's
+> gates ran under the flag first — `make check-imaged`, the checker gate with and without the
+> opt-out, the cli image guards, the full suite 1383/1383. Both layers of this fix are in it.
+
+
+**Symptom.** With the prelude image on (ADR-314, opt-in via `BROOD_PRELUDE_IMAGE=1`):
+
+```
+$ nest check tests/modules_test.blsp tests/record_test.blsp
+tests/record_test.blsp:137:19: warning: *: no `num/mul` method for [:int :record-test/usd]
+$ BROOD_NO_PRELUDE_IMAGE=1 nest check tests/modules_test.blsp tests/record_test.blsp
+(clean)
+```
+
+Any second file will do — ten different companions each reproduce it — and the order of the
+two does not matter. `record_test.blsp` **alone** is clean, on both arms.
+
+**Why it matters.** It reddens `nest check std/ + tests/ + examples/`, which is CI's
+zero-warning gate and the checker's one hard reject (ADR-123/124/125/126). This is the reason
+the 2026-09-04 attempt to make the prelude image the default was reverted.
+
+**It is not new, and not the KI-105 fix.** It reproduces on the pre-fix binary at `bc8d34d8`
+with `BROOD_PRELUDE_IMAGE=1` set. It has presumably been true for as long as the prelude
+image has existed; nothing looked, because the image was opt-in and no gate ran under it.
+
+**What it says about the guards.** Nothing else caught it. `prelude_image_matches_source.rs`
+passes (it compares globals after boot, and the impl is registered later, while checking).
+`prelude_image_survives_a_relaid_stdlib_image.rs` passes. The **entire 1377-case suite passes
+with the image default-on**. The project's own `nest check` found it immediately. The lesson
+generalises past this bug: *when evaluating a flag, run the project's gates under it, not only
+the tests written for the feature.*
+
+**Unexplained, and worth noting before diagnosing.** The scope is not monotonic —
+`std/**` + `tests/**` in one command is **clean**, while `tests/**` alone warns, and
+`std/** + tests/** + examples/**` warns again. So it depends on what shares the process, not
+on a particular companion file. A count- or GC-sensitive registry effect would fit that shape.
+
+**Narrowed 2026-09-04, after filing.** Four facts that cut the search down:
+
+1. **The runtime is correct on both arms.** A program that does `(defrecord usd (cents))`,
+   `(defmethod num/mul [usd :int] …)` and then `(* 3 (usd 500))` answers `1500` with the image
+   on and off, and `(get *multi-algebra* 'num/mul)` is `:commutative` on both. So the derive
+   itself works; this is the **checker's** view of the world, not the dispatcher's.
+2. **Only the DERIVED mirror is lost.** Line 137 is `(* 3 (usd 500))` — the `[:int usd]`
+   commutative mirror, which `%register-method` derives at load time. The *declared*
+   `[usd :int]` on line 135 never warns. One warning, not two.
+3. **That is exactly the entry the checker cannot see in the file.** `MultiInfo`
+   (`types/check/protocol.rs`) unions "this file's `register-method` forms" with "the runtime
+   `*methods*` registry". A declared method is a form in the file; a derived mirror exists
+   **only** in the runtime registry. So the failing lookup is precisely the one that depends on
+   the registry rather than on the source text.
+4. **It explains the non-monotonic scope.** `std/**` + `tests/**` is clean, `tests/**` alone
+   warns. With `std/**` in the set, `std/num.blsp` is checked from source, so its `defmulti`
+   and `defmethod` forms are *evaluated* and the registry is populated that way. Without it,
+   `num` arrives materialised from the stdlib image — and under the *prelude* image the derived
+   entry does not reach the checker's `*methods*` snapshot.
+
+So the question to answer next is narrow: **why does the runtime `*methods*` registry, as read
+by `MultiInfo`, lack the derived mirror when the prelude was materialised rather than
+evaluated** — while the same registry read from the same process at runtime has it. Suspect the
+globals snapshot/restore `check` wraps its cross-file load in (`%isolate`), interacting with a
+registry global that is a materialised binding rather than one created by evaluating `def-`.
+
+**Where to look.** The checker resolves the record's identity and then finds no impl under it,
+which is the shape of KI-89 (orphaned `*record-ids*` writes, whose diagnostic
+`BROOD_REG_TRACE=1` prints each registry write with the writer's ancestry chain and every
+globals-snapshot restore) and of KI-84 (an image restoring a registry that a source load would
+have derived). `nest check` restores a globals snapshot between files; the imaged prelude's
+snapshot is built by materialisation rather than evaluation, so a registry that the prelude's
+*evaluation* would have seeded can differ. The minimal repro is two files, so instrument the
+second file's registration and diff the two arms.
+
+**The reader-side layer (found the same day, independently of the resolution above).** The
+writer fix above explains why the project image on disk was SHORT. This explains why only the
+imaged boot showed it — a short root section is normally repaired at load, and the imaged boot
+could not repair it. The registry-NAME set.
+`Heap::registry_names()` = the runtime's live set ∪ `SharedCode::registry_names`, and the
+latter is captured by `freeze_as_shared_code` from the builder heap's live set at boot. On a
+source boot the prelude's `(defmulti num/add :commutative)` etc. call `%registry-update!`,
+which marks `*multi-algebra*` and `*multi-ret*`. Materialising runs no `%registry-update!`,
+so an imaged boot's set was **10 names to the source boot's 12** — missing exactly the two
+only the prelude itself writes. `project-registry-snapshot` consults that set to decide which
+globals a section load merges rather than overwrites, so inside the checker's cross-file
+`%isolate` the two unmarked registries were not protected and the derived mirror was lost.
+KI-89's mechanism, one layer over. Why the plain-program probe read 12 on both arms: with a
+LIVE stdlib image, `%std-image-tables!`'s lazy `%std-regs` merge re-marks the names at
+runtime; the probe was accidentally measuring that, and the earlier 10-vs-12 reading only
+appeared once the stdlib image happened to be stale. The checker's isolate is where the gap
+actually bites, which is why the differential — not the probe — is the guard.
+
+**Fix.** `write_prelude_image` writes `heap.registry_names()` after the def sites; the loader
+re-marks them via `Heap::mark_registry_names` before the freeze, so `SharedCode` ends up
+identical to a source boot's. The fourth thing the evaluation *records* rather than binds,
+after the `defdyn` marks, the def sites and `meta` — and, like those three, found late.
+
+**Guards.** `prelude_image_matches_source.rs` now prints and compares `(%registry-names)` as
+its first line — this bug agreed on every per-global attribute and differed only there.
+Sabotage (names read, never marked): the differential reddens on the REGISTRIES line, and the
+two-file `nest check` warns 3/3 from an imaged `nest` boot.
+
+**Gate.** `make check-imaged` (`scripts/check-imaged.sh`), in `make green-all` and as a step
+of CI's examples job: runs `nest check` over `std/ + tests/ + examples/` WITH the prelude
+image on, in a private cache. It warms nest's own per-binary image first — a first sabotage
+run read 0 warnings because nest had never booted under the flag — and asserts the boot took
+the image path (`BROOD_BOOT_TRACE` says `(prelude image)`); its tripwire fired for real once,
+when the warm-up used `nest complete --`, which silences stderr.
+
+**Related.** ADR-314 (the default), KI-105 (the other bug the same flip attempt found,
+fixed), KI-89, KI-84, KI-72.
+
+## KI-105 — an imaged boot read a stale stdlib section directory ✅ FIXED 2026-09-04
+
+**Symptom.** `unbound symbol: io/puts`, and `module 'string' does not define 'string/starts-with?'`,
+on a tree where nothing is wrong with `io` or `string`. Only with the prelude image live
+(ADR-314); the same artifacts booted with `BROOD_NO_PRELUDE_IMAGE=1` are clean.
+
+**How it was found.** Working ADR-314's own four artifact states while deciding whether to
+flip the prelude image's default. State four — *the stdlib image re-laid by a different
+writer* — reproduced it on the first try, 5 runs out of 5, against 0 of 5 on the opt-out arm.
+
+This bug had a history. ADR-314 records the identical failure from 2026-09-02, describes a
+mechanism as a hypothesis, and then records **three reproductions that were written and all
+three passed under a sabotage removing the fix** — so the ADR concluded "whether the replay
+is the fix or merely perturbed the state is unproven", and kept the feature opt-in on that
+basis rather than on any known defect. The reproduction was the missing piece.
+
+**Mechanism (confirmed, not hypothesised).** `%add-image-source!` **appends** — deliberately,
+so a project's image and the stdlib's can both be sources. A boot from the prelude image
+*restores bindings and evaluates nothing*, so `*image-sources*` comes back holding a snapshot
+of whatever install was live when that prelude image was written. The imaged boot then
+replays `%std-image-install`, which appends the current directory — leaving **two entries for
+the same file path**, the stale one first. `%image-section-for` scans in install order, so a
+lookup takes the stale offset.
+
+The load-bearing detail is that **the stale entry's path still exists and reads fine**. A
+missing file, or an offset past the end, fails cleanly and `require` falls back to source —
+harmless, and that is precisely why the three earlier attempts came back green. Same path,
+different layout, still readable: the read succeeds and returns garbage. Diagnostic that
+settled it — `(count *image-sources*)` is **2** on the imaged arm and **1** on the source arm.
+
+**Why it is a real deployment, not a contrivance.** The image id is keyed on version + git
+sha + a content hash of every baked-in `.blsp` — **not** on which modules the writer chose to
+include. A lean `nest` (`make install INSTALL_FEATURES='$(RUN_FEATURES)'`) and a full `brood`
+therefore write different layouts to the same path in the same `~/.cache/brood`, which is the
+configuration `docs/release.md` and the Makefile both describe.
+
+**Fix.** `%std-image-reinstall!` in `std/prelude/tools.blsp` — clear `*image-sources*`,
+`*image-path*`, `*image-sections*` and the four `*std-image-*`/`*std-*` bookkeeping globals
+to the values `def-` gives them on a source boot, then install. Sound because nothing else
+can have installed yet: it runs during boot, before any project image and before any
+`require`. The imaged boot calls it in place of `%std-image-install`. Policy in Brood, per
+the repo's core principle; the Rust side only evaluates the form.
+
+**Guard.** `crates/cli/tests/prelude_image_survives_a_relaid_stdlib_image.rs`.
+
+**Its first cut passed its own sabotage**, which is the part worth remembering. The test
+built a full stdlib image and then booted — but *that build's own run* cold-booted first and
+wrote the prelude image **before any stdlib image existed**, so the snapshot was empty, the
+replay had nothing stale to append to, and removing the fix changed nothing. Arming a
+state-dependent repro is not the same as performing the steps in the right order. The test
+now discards the prelude artifacts and re-cold-boots with the full image live, **asserts that
+arming boot really was a source boot** (otherwise it silently proves nothing), and fails with
+the original `unbound symbol: io/puts` when `%std-image-reinstall!`'s resets are removed.
+
+**Related.** ADR-314 (amended); KI-72 and KI-84 are the same family one level down — an image
+restoring state that a source load would have derived.
+
+## KI-104 — `includes?` scanned a set instead of asking its trie ✅ FIXED 2026-09-02
+
+**Symptom.** None visible. `(includes? #{…} x)` returned the correct answer; it just did so
+by walking the set. On 500 elements, 500 lookups cost 29 ms where `contains?` cost 0.4 ms —
+**64x**. Nothing failed, so nothing pointed at it.
+
+**Cause.** `includes?` (`std/prelude/seq.blsp`) dispatched on `map?` — searching a map's
+VALUES, which is its documented behaviour — and let everything else fall through to
+`index-of`. A set is not a map (`map?` is false on `#{…}`, ADR-060), so it took the sequence
+path. `contains?` had the fast arm (`(if (set? m) (%set-has? m k) …)`) and `includes?` did
+not, which made the *less* obvious of the two functions the correct one to reach for.
+
+**Where it was found.** In bedit, not here. The playground's `realign-evaluated` asks "did
+this record match anything?" once per record; written as `includes?` over a `#{}` of matched
+keys, that one call was **287 ms of a 309 ms pass on a 500-form buffer, on the keystroke
+path** — the editor was unusable above about a page of code. The bedit-side fix was to say
+`contains?`; the language-side fix is that saying `includes?` should not have been a trap.
+
+**Fix.** One arm, ahead of the map arm:
+
+```lisp
+(set? coll) (%set-has? coll x)
+```
+
+**Guard.** `tests/set_test.blsp`, "includes? answers a set the same way contains? does" —
+which asserts agreement with `contains?` rather than a bare true/false, so the two cannot
+drift apart again. It cannot catch a *slow* regression; the equivalence is what is testable,
+and the arm is what makes it fast.
+
+**The reusable part.** A performance bug that returns the right answer has no failing test
+to find it, so the only defence is that the obvious spelling is the fast one. When a type
+gains a fast membership path, every function that answers "is this in that" has to learn it,
+not just the one that motivated the primitive.
+
+## KI-103 — a `:max-mailbox` breach re-trips inside its own handler, killing the remedy ✅ FIXED 2026-09-02
+
+> **Resolution 2026-09-02.** The bound is **one-shot per arming**. Taking the breach flag
+> now LATCHES it, so no further enqueue re-arms until the bound is set again — which gives
+> the handler the window it never had. Setting the bound (either direction, `n` or `nil`)
+> clears the latch, so a process that re-sets its bound is protected again.
+>
+> **The first fix was wrong and the repro said so**, which is the part worth keeping. A
+> separate `overflow_raised: AtomicBool` checked before arming is a check-then-act race: a
+> sender reads "not yet raised", the receiver's probe latches, and the sender stores anyway
+> — arming *after* the latch, so the handler still died inside `proc/flag`. It moved the
+> failure rate from ~3 in 4 to ~1 in 10 and looked like a residual second bug. It was the
+> same bug. The flag is now ONE word with three states (`0` clean, `1..` armed with the
+> breaching length, `usize::MAX` latched), armed with `compare_exchange` from clean and
+> taken-and-latched with `compare_exchange` — no window to lose.
+>
+> Measured after: minimal repro 20/20 under the tree-walker (was ~1 in 4), and
+> `process_limit_test` 12/12 on each engine (was ~1 in 4 under the tree-walker). Two
+> regression tests pin the semantics: a handler that does NOT clear the bound still survives
+> to report, and re-setting the bound re-arms it. The second needs a drain and a handshake to
+> be observable — re-arming while the queue is still over the bound trips again immediately,
+> which is the bound working as specified.
+
+
+**Symptom.** A process that catches E0046 and follows the error's own hint is killed part-way
+through following it:
+
+```
+[crash] exited: mailbox limit exceeded: 15 queued messages exceeds this process's :max-mailbox bound of 8
+        kind :runtime  code E0046  at …:11:24
+        hint: drain the backlog (receive in a loop), raise or clear the bound with
+              (proc/flag :max-mailbox n), or let it crash under a supervisor
+        at proc/flag          ← killed INSIDE the call the hint recommends
+```
+
+**Repro** (both engines; ~1 in 3 under the VM, ~3 in 4 under `BROOD_VM=0`, which is ~10x
+slower and so widens the window):
+
+```brood
+(let (me (self)
+      w (spawn (do (proc/flag :max-mailbox 8)
+                   (send me [:ready (self)])
+                   (try (receive (:never nil))
+                        (catch e (do (proc/flag :max-mailbox nil)   ; ← killed here
+                                     …drain…
+                                     (send me [:recovered …])))))))
+  (receive ([:ready ^w] nil) (after 10000 (error "no ready")))
+  (dotimes (_ 32) (send w :flood))
+  (receive ([:recovered c n] [c n]) (after 12000 :TIMEOUT)))
+```
+
+**Mechanism, and it is deliberate.** `Mailbox::take_overflow_hit`'s own comment states it:
+"Clearing on read means the raise happens exactly once; **still over the bound at the next
+enqueue, it re-arms**." Every subsequent `send` that finds the queue over the bound re-arms
+the sticky flag, and the handler's very next safepoint — which is *inside* `proc/flag` —
+takes it. While a flood continues, the window between catching E0046 and clearing the bound
+is never wide enough, so the documented remedy is unreachable. Only "let it crash under a
+supervisor", the third option in the hint, actually works.
+
+**Earlier sighting.** KI-98 (2026-08-31) is this defect, recorded as a not-reproducible
+watch item with a missed-wake hypothesis (the KI-88 family). That hypothesis is wrong, and
+the reason it stayed unreproducible is that the window is narrow on the VM and wide on the
+tree-walker — which the differential gate would have shown, had it been running both halves.
+
+**Why it was not seen.** `tests/process_limit_test.blsp`'s "the handler can drain and clear
+the bound — the process recovers" is a correct test of this, and it mostly passes under the
+VM. `make test-both` should have caught it on the tree-walker — except that target ran its
+two halves as separate recipe lines, so make ABORTED after the VM half, which fails on every
+capped run here (`wasm_sandbox_limits_test` under the 16 GB ulimit). The differential gate
+had therefore been checking one engine. That is fixed (2026-09-02); this is the first thing
+the second half found.
+
+**Proposed fix, not yet made because it changes ADR-307's semantics.** Give the bound
+hysteresis: once a breach has been *raised*, do not re-arm until the bound is set again.
+That makes the bound one-shot per arming — a process that catches E0046 gets a guaranteed
+window to drain or clear, and one that ignores it is not re-killed for the same flood. The
+alternative readings (re-arm only when the queue drops back under the bound; make `proc/flag`
+itself uninterruptible) are both narrower and both leave the general "catch and drain" shape
+racy. Needs a decision before it is written.
+
+## KI-74 — one `cargo test -p brood --lib` run reported a failure it would not name ✅ FIXED 2026-08-29
+
+**What was seen.** A single run of the lib suite ended `test result: FAILED. 607 passed; 1
+failed; 1 ignored` — and the run's output carried **no `---- <name> stdout ----` block and no
+`failures:` list**, so the failing case named itself nowhere. Every subsequent run has been
+green: **20 consecutive** clean runs (8 + 12) of the identical binary, `608 passed; 0 failed`.
+
+**Why it is a watch and not an open bug.** Per the rule above, `⚠️ watching` requires that it
+genuinely cannot be reproduced on demand, with the diagnostic armed and named. It cannot: 20
+runs, no recurrence, and the one sighting is uninformative by itself. It is *recorded* rather
+than dismissed because this repo's own history says a flake seen once is real until proven
+otherwise (KI-36 took three sightings and twelve days; KI-39 took four).
+
+**The one lead.** The suite has a test that deliberately touches the filesystem outside any
+project — `introspect::tests::load_tooling_image_is_best_effort_outside_a_project` — and its
+normal output in every run is a `Permission denied (os error 13)` note for
+`/nonexistent/path/xyzzy/.brood`. Tests run on many threads and several build an `Interp`
+that consults `~/.cache/brood`, so a shared-cache race is the most plausible shape. This is a
+**hypothesis, not a diagnosis**: nothing has tied the sighting to that test, and the run did
+not name a case.
+
+**Diagnostic armed.** `make test` runs the suite through cargo-nextest, which runs each test
+in its own process and **names the failing case** — the exact gap this sighting had. Re-run
+under nextest (`cargo nextest run -p brood --lib`) if it recurs, and capture the full output
+rather than the summary line; libtest's summary alone cannot answer it.
+
+**REPRODUCED, NAMED, AND FIXED (2026-08-29).** Forty runs of the same command under a 4-core
+spin load reproduced it at **1-in-40**, and full-output capture named it:
+`eval::compile::tests::jit_tier_compiles_a_hot_arm_then_runs_native` panicking `the hot arm
+should tier up to native code`. The cache-race lead above was wrong; the mechanism is a
+**deadline**: the test polled 400 × 2 ms (~0.8 s) for the background compiler to land the
+native code, which a loaded box misses — and libtest's single shared process queues every
+*other* test's compiles ahead of this one on the same compiler thread, which is why nextest
+(process per test, its own queue) ran 30-for-30 clean under the identical load, and why the
+original sighting was libtest-only. The same hazard existed in
+`vm_run_bc_runs_a_tiered_arm_via_the_hook`, one screen down.
+
+**Fix.** Both polling loops now run against a 60-second wall-clock bound instead of an
+iteration count — a compiler that never lands code still fails, on a bound a loaded box can
+meet (KI-43's stopwatch lesson, applied to a compile instead of a kill).
+
+**Guard.** The reproduction loop against the fixed tree: the same 40-run 4-core-spin loop
+that produced 1-in-40 before the fix. (Re-shrinking the bound fails immediately under load —
+the sabotage direction.) The "would not name" half was my capture cutting libtest's failures
+list from the tail; full output names it fine.
+
+**Also worth recording:** this entry had no index row — the file's own rule says both halves
+are required, and nothing enforces index completeness. Row added with this close.
+
+**Next step if it recurs:** get the case name, then decide. Until then this entry exists so a
+second sighting is recognised as a second sighting rather than a first.
+
+## KI-83 — the mono differential failed over load-dependent progress chatter ✅ FIXED 2026-08-29, RECURRED and fixed again 2026-09-20 (a blank line, where the first was a duration)
+
+**Symptom.** One `make test` run: `cli::mono_differential monomorphization_computes_what_the_
+dynamic_path_computes` failed with `the two arms disagree — monomorphization changed an ANSWER`.
+Read side by side, both arms end `92 tests, 92 passed, 0 failed (0 failed assertions, 4
+isolated)`; the entire diff is one line present in one arm only:
+
+```
+  concurrent impl registration (KI-22) › no impl is lost when many processes register at once 13.9s
+```
+
+**Cause.** The test framework prints a per-test annotation for any test slower than
+`*test-slow-ms*` (default 1 s) — informational, load-dependent. The differential runs the
+ability suite twice (dynamic vs `BROOD_MONO=1`) and compares **raw stdout** after a
+`without_timings` filter that stripped only lines containing `ms wall` or `Slow tests` — not
+this per-test line. Under full-suite nextest parallelism, one arm's nested KI-22 stress case
+crossed the 1 s threshold and the other's did not. Standalone, the same test passes in ~0.4 s;
+the 13.9 s was contention, which is exactly when the annotation appears.
+
+**Why it survived.** The filter was written against the outputs the author had seen — quiet
+runs, where no test crosses 1 s and the annotation never prints. The line only exists under
+load, and the differential had only ever run on a lightly loaded machine.
+
+**Fix.** `without_timings` also drops any line whose last whitespace-separated token is a
+duration (`13.9s`, `2ms`). A real divergence that manifests *only* in such a line is
+theoretically maskable, but a failing arm already fails the `plain_ok`/`mono_ok` asserts
+before the comparison runs, so the comparison only ever sees two passing runs' chatter.
+
+**Guard, sabotage-verified** (offline, on the exact captured outputs from the failure): the
+old filter leaves the two arms unequal (reproduces the false alarm); the new filter makes them
+equal; and mutating one arm's summary `92 passed` → `91 passed` still diverges under the new
+filter — so it cannot mask a real answer change in the summary. `cargo test -p cli --release
+--test mono_differential` green after the fix.
+
+
+**RECURRED 2026-09-20 — same species, a different survivor. ✅ FIXED again.** One full-suite
+run in three failed with the same `monomorphization changed an ANSWER`, both arms again
+reporting `94 tests, 94 passed, 0 failed`, and the entire diff one **blank line**:
+
+```text
+left:  …dots…\n\n94 tests, 94 passed…
+right: …dots…\n94 tests, 94 passed…
+```
+
+The 2026-08-29 fix dropped the "Slow tests" header and any line ending in a duration — and
+left the **empty line that precedes the block**. So whichever arm crossed a second grew a
+blank line the filter could not see, which is the original defect exactly: a filter written
+against the outputs its author had in front of them.
+
+`without_timings` now also drops blank lines, which is the general form rather than another
+instance-by-instance patch: this differential compares answers, and whitespace is not one.
+Sabotage-verified — mutating one arm's `94 tests` → `93 tests` still diverges.
+
+**The lesson this entry keeps re-teaching, now stated as a rule:** a differential must compare
+the ANSWER, not a rendering of it. A rendering carries incidental state — a duration, a blank
+line, a map's iteration order (KI-166, the same week), a pid, a path — and when the incidental
+thing moves, the gate accuses the feature under test by name. Two sightings of this one entry
+have both been progress-chatter; the third will be something else, and the filter is the wrong
+place to keep fighting it.
+**Numbering note:** filed as KI-82 in the fixing commit's message (`4d6c8ceb`); renumbered here the same day — a parallel session's KI-82 (the wasm playground recursion) was already cited upstream, and the process renumbers the newer entry. **Same species as [KI-80](#ki-80)** (a nested suite emitting load-dependent output that an
+outer gate reads as signal), one gate over — and the general rule both point at: **a
+differential must compare answers, not transcripts.** Anything a harness prints conditionally
+on timing, load, or environment must be normalised out before an equality check is allowed to
+mean anything.
+## KI-82 — the hosted playground cannot run its own front-page example ✅ FIXED 2026-08-29
+
+**What happens.** On `https://brood.fly.dev`, the snippet the front page ships as its example
+
+```lisp
+(->> (range 1 11) (map (fn (n) (* n n))) (filter math/odd?) (reduce +))
+```
+
+answers `recursion too deep: used 14021552 bytes of stack, over the 12582912-byte budget`, with
+`{:fn %require-force-in} {:fn %require-force}` in the trace at `std/math.blsp:19`. So the
+**auto-require of `math`** — inferred from the qualified `math/odd?` — recurses in the wasm
+build.
+
+**Wasm-only.** The identical snippet on the native 0.16.0 binary answers `165`.
+
+**Not yet attributed.** The playground wasm is built during the hive deploy from `BROOD_REF`,
+which moved `d3a2cdfa` → `d12dc5d0` (v0.16.0) that day, so the v0.16.0 bump is the prime
+suspect — and ADR-290/291 is the part of it that touched `require`: it put qualified
+`reflect/…` references into the **prelude**, and a qualified reference is what infers a
+require.
+
+**Ruled out:** the playground's own preload line (`crates/playground/src/lib.rs`), renamed in
+the same wave. That is the *autocomplete* `Interp`, not the eval path.
+
+**Fastest mitigation, if the site matters more than the diagnosis:** repin `BROOD_REF` to
+`d3a2cdfa` in `hive/Dockerfile` and redeploy. The reference page reverts to documenting 0.15.0
+with it.
+
+**First thing to try:** reproduce under `wasm32` locally (`crates/playground`) rather than
+through a deploy.
+
+**FIXED (`b6706120`, same day) — and the attribution above was wrong in an instructive way.**
+Not `require`, not ADR-290/291: `WORKER_STACK_BYTES` was a hard-coded 16 MiB (a native
+worker's stack) while wasm runs on a ~1 MiB shadow stack in linear memory. The budget
+(stack − 4 MiB margin) could never be reached — the host traps first — and the
+"implausibly large ⇒ stale base" backstop only fires above a whole stack, so a bogus
+13.4 MiB reading landed exactly in the gap: over the budget (raised) and under the backstop
+(never recognised as stale). Both are now target-aware. Reproduced deterministically through
+the page's own call sequence (`completions()` then `run()` — the second `Interp` on the same
+thread is what leaves the stale `STACK_BASE`), verified to fail before and pass after on
+native, lean-native and wasm32 + node. The commit also records a masking hazard: a first
+attribution (the ADR-295 arms) made the symptom disappear by *shifting the prelude* enough to
+nudge the bogus reading under the threshold — a sabotage run coming back green is what
+exposed it.
+
+**Residual, outside this repo:** the deployed site keeps the old wasm until the hive deploy
+repins `BROOD_REF` ≥ `b6706120` and redeploys. This entry's runtime half is closed; whoever
+owns the deploy closes the visible symptom.
+
+## KI-81 — `BROOD_CONTRACTS=1` was unusable on a cold boot cache ✅ FIXED 2026-08-29
+
+**Filed as an unreproducible one-shot panic. It was never a flake.** The trigger is
+`touch target/release/brood`: the boot cache is keyed on the executable's **mtime**, so the
+first run after any rebuild expands the prelude from source, and every run after that replays
+the cache and never executes the macro bodies involved. Twelve "clean" runs were twelve warm
+ones. Reproduces 100% cold.
+
+**Three independent defects, all cold-only** (full reasoning in ADR-293):
+
+1. `sig!`'s expansion-time code called `take`/`nth`/`map`/`range`/`count`, none of which exist
+   yet at that point: the prelude concatenates `core → predicates → map → control → match →
+   process → seq → string → tools`, and `sig!` lives in `core.blsp` while `take` is defined in
+   `seq.blsp`. Now `%sig-take` / `%sig-nth` / `%sig-gensyms`, siblings of the `%sig-pos` that
+   already existed for exactly this reason.
+
+   **Corrected 2026-08-29:** this entry first blamed ADR-290/291 for moving `take` out of the
+   bare namespace, and named `std/prelude/tools.blsp`'s `defmulti` as a second latent call
+   site. Both were wrong. `take` is bound at root (`(bound? 'take)` → true) and never moved;
+   the fault is purely load order. And `tools.blsp` is concatenated *after* `seq.blsp`, so
+   `defmulti`'s bare `take` resolves and needs no fix. The fix above was right; the reason
+   given for it was not.
+2. The shim was `(let (orig name) (fn …))` — a closure over a **let-bound local** — which the
+   prelude's freeze step rejects outright (`shared closures must capture the global env`). The
+   original now lives in a gensym'd global, so the shim captures only globals.
+3. `defrecord` emitted its constructor `sig` **before** the `defn` it rebinds, making every
+   record in the language fatal under contracts; `std/io.blsp`'s `standard-port` took the boot
+   down as soon as anything required `io`. Its accessor sigs already came after theirs.
+
+**Why it rotted:** the mode had **no end-to-end test at all**. `crates/cli/tests/contracts_mode.rs`
+is now that gate, and it cold-caches deliberately (`XDG_CACHE_HOME` at a fresh temp dir) —
+without that it passes on a broken build, which is exactly what every other check did for the
+entire period this was unusable.
+
+### Recurrence 2026-08-30 — defect 3's shape came back 211 times, and the gate could not see it
+
+The signature-adoption sweep put a `(sig …)` **above** its `defn` in 211 places across `std/`,
+plus 7 in the prelude — the same forward reference as defect 3, and above-the-defn is the
+natural place to write a signature, so this will keep happening. Every one of those modules
+was unloadable under `BROOD_CONTRACTS=1`; `std/string.blsp` took the boot down through an
+auto-derived import as soon as a program used `str`.
+
+**`contracts_mode.rs` was green the whole time.** It proves the *prelude* boots and declares
+its own sigs correctly — it never asserted anything about the other 400 files. A gate that
+covers the place a defect was found is not a gate on the defect's *class*.
+
+So the rule is now asserted where it lives: **`crates/lisp/tests/sig_placement.rs`** scans
+every `.blsp` and fails on any `(sig NAME …)` that precedes a same-file definition of `NAME`,
+naming the line to move. Textual, no interpreter, sabotage-verified. All 218 sites moved below
+their definitions.
+
+Two things fell out of fixing it:
+
+- **`sig!` never handled `&optional`.** Read as fixed parameters, the marker itself counts as
+  one, so `(sig pad-left (string int &optional string -> string))` armed a **4-arity** shim
+  over a 2-3-arity function and every `(string/pad-left s 10)` became an arity error. It was
+  unreachable before only because the module died earlier. The shim is now variadic and
+  `apply`s just the arguments it received, so the callee's own defaults survive — passing an
+  explicit `nil` for an absent optional would have silently changed answers. Covered in
+  `contracts_mode.rs` (default kept, supplied value passed, contract still fires).
+- **Two multi-line sigs were mangled by the bulk move** (`observe-minibuffer`,
+  `lineedit-render-single`): the head line moved and its continuation stayed behind, leaving
+  both files unparseable — and the *symptom* was three `unbound symbol` warnings in
+  `tests/debug_test.blsp`, a file with nothing wrong with it, because `nest check` could no
+  longer load what it imported. `nest format --check` names the unparseable file directly and
+  is the faster read.
+
+## KI-80 — `brood_suite_passes` flaked once under load, and the output was thrown away ✅ FIXED 2026-08-29
+
+**What was seen.** One `cargo nextest run -p brood --test-threads 4` ended
+`888 tests run: 888 passed (1 slow, 1 flaky)`, the flaky row being `brood::suite
+brood_suite_passes` — failed on try 1, passed on try 2. It was the first run that included a
+new CPU-heavy test (`arrow_subtyping_is_sound`, ADR-292).
+
+**Why there is no diagnosis.** The failure output was discarded **at the terminal, not by the
+tooling**: nextest names a flaky case and prints its `---- … stdout ----` block, and the
+command piped the run through `tail -5`. So the summary line survived and the one thing worth
+having — *which in-language case failed* — did not. That is exactly the trap already recorded
+as `never-truncate-test-output`, and it is the substance of this entry: the tooling was not
+the gap.
+
+**Not reproduced.** Ten runs since, all `888 passed`: six loaded 4-thread runs with
+`--retries 0`, three solo runs of `--test suite`, and one loaded run before the fix below.
+
+**The one contributing factor found.** The new test rebuilt a `Ty` and recomputed a
+denotation inside its inner loop — 1596 redundant rebuilds of each, ~2.5M times over.
+Precomputing both took it from 3.4s to 2.0s. That is real contention removed from a
+`--test-threads 4` window, though nothing ties it to the sighting.
+
+**Why a watch and not an open bug.** It matches, verbatim, the class this binary's
+`retries = 1` was added for — `.config/nextest.toml` records it: the in-language suite
+contains timing-sensitive cases that talk to a local node, they run inside this single
+wrapper case, and one blown deadline under a loaded runner reddens all ~1200 of them
+(observed 2026-07-25, passing 3/3 standalone immediately after). The mitigation is already in
+place and a pass-on-retry is deliberately reported as FLAKY rather than absorbed, which is why
+this sighting was visible at all.
+
+**Next step if it recurs:** capture the entire run to a file and read the failing case's
+stdout block. Which `.blsp` case failed is the whole question; if it is a node round-trip
+(`tests/remote_spawn_test.blsp` and friends) this is the known class and can be closed, and if
+it is anything else it is a new bug that this sighting cannot distinguish.
+
+**Second sighting, 2026-08-29 (same day), output kept this time.** During a deliberate
+4-core-spin load test (the KI-74 hunt), `brood_suite_passes` hit its 300 s nextest cap
+(`TRY 1 TMT [300.016s]`) and passed on retry (`TRY 2 SLOW [>60s]`) — reported FLAKY, not
+absorbed. So the sighting shape is now confirmed: a **timeout under load**, not a wrong
+answer, and the 300 s budget (5× the quiet-box 66 s) was exceeded only under full-core
+adversarial contention no CI runner should see. The retry + FLAKY reporting is the designed
+handling working. Stays ⚠️ only because the *original* sighting's output is gone; if a third
+sighting is also a TMT line, close this as understood.
+
+**DIAGNOSED AND FIXED (2026-08-29, third pass).** The second sighting's TMT try-1 stdout was
+not thrown away this time, and it rewrote the entry: the dots stream contains **62 F's in
+runs (46, 12, and singles) before the timeout** — the "timeout under load" was mass test
+failures under load, with the cap merely hiding the names. Its stderr names the class:
+dozens of spawned processes dying `unbound symbol: editor/serve/serve-manager` (and bare
+`ui-run`) **after their file's `%isolate` rolled the globals back**. Three defects, each
+fixed:
+
+1. **74 hardcoded 1–3 s positive-wait deadlines** across 41 test files (`(after 2000
+   :none)` on receives that *expect* a message) — the exact class `*test-wait-ms*` was
+   created for, never swept. Under saturation a serve round-trip legitimately exceeds 2 s,
+   and the serve/editor cluster fails in blocks. All 74 now use `*test-wait-ms*` (20 s);
+   the collect-until-lull terminators and sub-second negative asserts were checked
+   individually and left alone.
+2. **`%isolate`'s reap "join" was a spin, not a wait** (`for _ in 0..10_000 { yield_now }`
+   — a thread-yield hint the OS may ignore, burnable in microseconds while a parked
+   victim's kill still needs a scheduler worker). On the ROOT thread — where `brood
+   --test` runs `:isolated` units — this was **deterministic**: `tests/remote_spawn_test.blsp`
+   failed 4/4 standalone (also at v0.16.0 — latent, not new), because the reaped
+   `:remote-spawn` server was still registered when the next test's `serve-spawns` checked,
+   so it declined to restart and every spawn request went to the corpse, silently. The join
+   is now wall-clock-bounded (5 s) with yield-then-micro-sleep backoff. 6/6 green after.
+3. **Retirement swept NAMES after removing the pid from REGISTRY**, so any join on
+   REGISTRY-absence could return while the dead pid was still name-registered.
+   `deregister` now sweeps NAMES first — the invariant is *REGISTRY-absent ⇒
+   NAMES-absent* (the sweep in `retire_pid_tail` stays, idempotent, for the root-ctx
+   path).
+
+**Verified:** the full suite under the second sighting's own load (4-core spin + a
+concurrent nextest loop) runs **green in 99 s** where it produced the 62-F TMT before;
+`remote_spawn_test` standalone 6/6 (was 0/4); suite 1250/1250; gcstress green. The
+original sighting's discarded output is permanently unknowable, but every mechanism the
+kept output exposed is closed.
+
+**Fourth sighting, 2026-08-31 — and the terminal trap repeated verbatim.** Under a
+`make test-both` (KI-95 session), `brood_suite_passes` failed **both tries** on the VM
+half (`Summary [511s] 1319 run: 1318 passed, 1 failed` per try, `Brood test suite
+failed: error: 1 test(s) failed` — a named in-language failure, NOT a TMT) — and the run
+was piped through `grep -E "Summary|FAIL|failed|passed"`, so the one line worth having,
+the failing case's name, was discarded *again*, this time by the model driving the
+session. Not reproduced with output kept: solo green, a full captured VM run green
+(1319/1319, 163 s), a full captured `make test-both` green on both halves (161 s/244 s,
+zero retries). Both-tries-failed distinguishes it from the retry-absorbed class above;
+with the name lost it cannot be told apart from KI-98's full-suite-context family
+either. The standing instruction survives another demonstration: **never pipe a suite
+run through a filter — capture the whole run to a file, grep the file.**
+
+**Fifth sighting, 2026-09-08 — split in two. See KI-119 and KI-120.** One wrapper run died
+on bare `set` with `BROOD_SCOPE_DBG=1` printing no restore-with-survivor, and a fresh `nest run`
+(no runner, no isolate) died on `file/regular?` / `format/vec->list`: those were KI-119, the
+stdlib image reader opening the file by path per section against a boot-time directory while
+rebuilds moved every offset — fixed. But this entry's own shape — `editor/serve/serve-manager`,
+`ui-run`, `def-face` dying in spawned children, TMT at 900 s — recurred on the fixed tree with
+no image rebuild in the window, twice in three full runs. That is **KI-120**, open; whether
+the third pass's `%isolate` attribution holds for it is exactly the question there.
+
+## KI-75 — `compare` called unequal values equal, and `sort` inherited it ✅ FIXED 2026-08-28
+
+**Symptom.** Sorting float data containing a `NaN` silently returned it *unsorted*:
+
+```lisp
+(sort [3.0 nan 1.0 2.0])   ; => (3.0 nan 1.0 2.0)   — input order, no error
+```
+
+And two demonstrably different integers compared equal:
+
+```lisp
+(compare 9007199254740993 9007199254740992.0)   ; => 0
+(= 9007199254740993 9007199254740992.0)         ; => false
+(> 9007199254740993 9007199254740992.0)         ; => false   — neither equal nor greater
+```
+
+**Cause, both silent-wrong rather than errors.**
+
+1. **NaN.** `value_cmp` ended every float arm with `partial_cmp(...).unwrap_or(Equal)`, and the
+   exact `bigdecimal_cmp_float` helper had an explicit `if f.is_nan() { return Equal }`. So NaN
+   compared *equal to everything*. `sort` is built on `compare`, so one NaN made every element
+   look equal to it and the merge kept input order. The doc comments recorded this as a
+   deliberate choice ("a `NaN` float is `Equal`"), which is why it survived — it was consistent,
+   and consistently wrong.
+2. **Precision.** `(Int(x), Float(y)) => (x as f64).partial_cmp(&y)`. Every *other* cross-type
+   numeric arm — BigInt, Decimal, Ratio against Float — already went through an exact base-10
+   `BigDecimal` comparison, with a comment explaining why the lossy path was wrong. The `Int`
+   arm was the one that never got the treatment.
+
+**Fix.** `float_total_cmp` places NaN last and equal only to itself — Rust's `f64::total_cmp`
+and Java's `Double.compare`. `Int`/`Float` now uses `bigdecimal_cmp_float`, the same exact path
+as its neighbours.
+
+**What deliberately did NOT change.** `<`/`<=`/`>`/`>=` stay IEEE: every comparison against NaN
+is false. So `compare` and `>` now disagree about NaN, on purpose — `compare` promises a **total
+order** because `sort` needs one, `<` promises IEEE because arithmetic needs that. And `=` stays
+strict: `(= 1 1.0)` is false while `(compare 1 1.0)` is 0, because 1 and 1.0 are the same point
+on the line and different values.
+
+**How it was found.** A review of whether Brood should have cross-type comparison at all. The
+answer turned out to be that the design was defensible and the *implementation* had two holes.
+A proposed `==` (numeric equality) was written, then withdrawn on this evidence: built on
+`compare`, it inherited both bugs, claiming `(== nan nan)` is true and that 2^53+1 equals 2^53.
+
+**Guarded by** `tests/comparison_test.blsp` — 25 cases covering the strictness of `=`, the
+tower coercion of `compare`, exactness past 2^53, NaN's placement, the sort that broke, and the
+deliberate `<`-vs-`compare` disagreement — plus `float_total_cmp_is_a_total_order`,
+`int_vs_float_is_exact_past_2_53` and `nan_sorts_last_and_infinities_order_by_sign` in Rust.
+One test in that file has to compare via `pr-str` rather than `assert=`, because a result
+containing NaN is never `=` to itself — the contract biting the test that checks it.
+
+## KI-76 — `make green` gated on a binary no command refreshes ✅ FIXED 2026-08-28 (siblings 2026-08-29)
+
+**Symptom.** `./scripts/green.sh` reported the tree NOT green with 8 warnings from the one
+gate that is supposed to be held at zero:
+
+```
+  FAIL nest check std/ + tests/
+       tests/support/gabriel/deriv.blsp:46:39: warning: unbound symbol: third
+       …
+       tests/gen_test.blsp:8:13: warning: unbound symbol: defserver
+```
+
+Every one was phantom. `third` is defined at `std/prelude/predicates.blsp:118` and
+`defserver` at `std/proc/gen.blsp:225`. Run against the current binary, the same command
+returns `format: 412 files checked, all clean` and **zero** checker warnings.
+
+**Cause.** Two independent mistakes about *which* binary to run.
+
+1. `green.sh` gated on `$root/target/release/nest`. `make release` builds
+   `RELEASE_DIR := target/$(TARGET_SUBDIR)release-fast` — a **different path**. Only a plain
+   `cargo build --release` writes `target/release`. So the script's own remedy
+   ("run `make release` first") could never refresh the binary it was about to run, and that
+   binary drifted freely. On this tree it was 9 commits old (`464b6c57` against HEAD
+   `6790e1b6`).
+2. `std/` is `include_str!`'d into the binary, so a 9-commit-old `nest` carries a 9-commit-old
+   `std/` — including `gen/defprocess`, which `e38e9a0b` renamed to `defserver`. The gate was
+   faithfully reporting that *its own baked-in stdlib* did not have the name the current
+   `tests/gen_test.blsp` calls. It was reading a rename backwards.
+
+**Why it survived.** The guard written for exactly this hazard could not fire:
+
+```sh
+if [ -n "$(git status --porcelain -- std crates)" ] && [ "$nest" -ot "$(git diff --name-only …)" ]
+```
+
+It is conditioned on `std/` or `crates/` having **uncommitted** changes. A clean tree — which
+is the state you are in immediately before a push, and the state in which "is this tree
+green?" is actually asked — takes the `[ -n … ]` test to false and skips the check entirely.
+The guard was live only in the situation where you already knew your binary was behind.
+It was also a `note` (advisory) rather than a failure, so even when it did fire the gate still
+printed a verdict beside it.
+
+`make doctor` had the finding all along — *"target/release/brood is built from 464b6c57, HEAD
+is 6790e1b6 — it will silently ignore anything newer"* — but nothing makes `green.sh` consult
+it, and `make green` is documented as the answer to "is this tree green?".
+
+**Fix.** `green.sh` now resolves the binary by identity rather than by path: it prefers
+whichever of `target/release-fast/nest`, `target/release/nest` reports HEAD's short sha from
+`nest --version` (the `binary_sha` mechanism `doctor` already used). A binary that is stale, or
+merely older than any `std/`/`crates/` source, is **`red`** — not a note — and the `.blsp`
+gates are skipped with `the .blsp gates DID NOT RUN`. That direction is deliberate: a stale
+binary's verdict is meaningless in *both* directions, so the failure mode must not be a
+believable green **or** a believable red. This one cost a real investigation on 2026-08-28 —
+two names were chased as rename rot before the binary was suspected.
+
+**Guard, sabotage-verified.** There is no unit test; the gate guards itself, which is checked
+by breaking it on purpose. With `std/string.blsp` edited and uncommitted (binary older than
+the source), it prints:
+
+```
+  FAIL the .blsp gates DID NOT RUN — std/string.blsp is newer than …/target/release-fast/nest (uncommitted work)
+       rebuild with `make release`, then re-run.
+```
+
+and after `make release`, both `.blsp` gates run and pass. Confirmed in both states.
+
+**The general lesson, which this file already states once (KI-68/69/70) and now again:** a
+gate that names the wrong artifact is not a weaker gate, it is a *different* gate, and it
+reports confidently about something you did not ask. Whenever a script runs a built binary,
+assert the binary's identity — not its existence.
+
+**Addendum 2026-08-29 — the same defect was in three sibling gates, and it hid a second one.**
+`green.sh` was fixed inline, so `check-examples.sh`, `check-stress.sh` and `check-corpora.sh`
+kept the original bug verbatim: all three defaulted to `target/release/…` while their error
+told you to run `make release-brood`, which writes `target/release-fast`. Locally none of the
+three could run at all, and the message named a command that could not fix that — the reason
+this went unnoticed is that CI *does* build `target/release`, so the gate only misbehaved
+where a person would run it.
+
+Pointing them at whichever binary exists then surfaced a **second** wrong answer, and it is
+the more interesting one. `make release` builds `brood` with `RUN_FEATURES`, which is LEAN:
+`--no-default-features` compiles `DEV_MODULES` (`test` `docs` `grammar` `observer` `reload`
+`mcp` `perf` `repl`) out entirely. So `examples/hot-reload/main.blsp` died on
+`unbound symbol: reload/on-change` — reported as an example failure, i.e. **as rename rot**,
+which is exactly the class this gate exists to detect. That is a false positive that costs a
+name hunt through a rename wave; it nearly bought one.
+
+**Fix.** `scripts/lib/gate-binary.sh`, now sourced by all three: `gate_pick` prefers the
+candidate whose `--version` reports HEAD's sha (existence is only a tiebreak),
+`gate_require_fresh` exits 2 with `the gate DID NOT RUN` — carrying over `green.sh`'s
+exemption for a binary whose baked-in `std/`+`crates/` is unchanged, so a docs-only commit
+does not refuse the gate — and `gate_classify` separates the two verdicts. A run whose
+unbound names *all* belong to a module this **tree has and this binary lacks** is reported as
+`skip … (needs reload, absent from this lean build)`, never as a failure. The absent-module
+set is derived from the tree (`std/tool/<ns>.blsp` exists, `(builtin-modules)` does not list
+it) rather than restating the Rust `DEV_MODULES` list, so it cannot drift from it. The
+`stress/*_test.blsp` block skips wholesale on a lean brood for the same reason — `--test`
+needs the `test` module.
+
+**Addendum 2026-08-29 (same day, second pass) — the freshness rule itself cried wolf, and
+`scripts/*.blsp` was a fifth ungated corpus.**
+
+*The rule.* `gate_require_fresh` asked the **sha first** and the mtime second, so it refused a
+binary that was in fact current: build from a dirty tree (the binary records the sha of the
+HEAD it was built **at**), then commit, and the sha now names the parent while the contents
+are exactly what is on disk. It refused `check-corpora` minutes after being written. **mtime
+is now the primary test and the sha is only the rescue** — a binary newer than every
+`std/`+`crates/` source baked what is on disk, which is a *stronger* property than any sha
+match; the sha exemption is kept for the one case mtime cannot judge (a `git checkout` or
+fresh clone rewrites mtimes without changing content). The same reordering was ported to
+`green.sh`, which had the defect inline. Candidate *selection* had the same bug in miniature:
+with no sha matching HEAD both pickers fell back to "first that exists", which chose a
+`release-fast/nest` from 15 commits back over a `release/nest` built minutes earlier — the
+fallback is now the **newest** candidate.
+
+*The corpus.* `scripts/*.blsp` sat outside `check-corpora` (which covered `examples/`,
+`stress/`, `scripts/fuzz/stress/`, `breakage/`), and all three non-trivial ones were dead:
+`scripts/stdlib-audit.blsp` — the standing audit of the library's own surface — plus
+`release-ecosystem.blsp` and `suggest-renames.blsp`, on ADR-258's `name` → `->string` and
+`os/getenv` → `os/env`. The audit had been unrunnable for long enough that nobody noticed the
+number it produces was unobtainable. `scripts` is now its own tree in `check-corpora` (top
+level only — `scripts/fuzz/stress` stays a separate corpus, since a name resolves against the
+files loaded *with* it). Sabotage-verified: restoring `(name s)` in the audit turns the
+`scripts` row red.
+
+**Guard, sabotage-verified.** Four deliberate breaks, all against the LEAN binary:
+
+| sabotage | verdict |
+|---|---|
+| `(bogus/thing 1)` appended to `examples/life.blsp` (module exists nowhere) | `FAIL life` ✅ |
+| `(no-such-function 1)` appended (bare name) | `FAIL life` ✅ |
+| unmodified `hot-reload` on the lean build | `skip … (needs reload, …)`, exit 0 ✅ |
+| `touch crates/lisp/src/lib.rs` | `the gate DID NOT RUN — … is newer than …`, **exit 2** ✅ |
+
+The first two are the ones that matter: the skip path must not be able to swallow real rot,
+and a name whose module exists nowhere is still a failure. With the full-featured binary
+(`cargo build --release -p cli -p nest`) all three gates run clean end to end — examples 9/9,
+stress 28/28, corpora 68 files across four trees.
+
+## KI-77 — `loop` was ~3% slower than v0.14.1 ☑️ NO LONGER REPRODUCES 2026-08-28 (fixed by v0.15.0)
+
+**Symptom.** The `loop` benchmark row (a pure integer self-tail loop — the simplest shape the
+JIT covers) reads consistently slower than `v0.14.1`:
+
+| measurement | base | new | delta | floor |
+|---|---|---|---|---|
+| `make ab` sweep, best-of-7, pinned | 93 ms | 96 ms | +3.2% | 1.1% |
+| solo re-run, best-of-15, pinned | 91 ms | 95 ms | +4.4% | 0.0% |
+| fixed baseline + base-vs-base control | 90 ms | 93 ms | +3.3% | **0.0%** (90/90) |
+| interleaved, min-of-15, pinned | 89 ms | 92 ms | +3.4% | — |
+| interleaved, min-of-15, **unpinned** | 72 ms | 74 ms | +2.8% | — |
+| interleaved vs `464b6c57` | 92 ms | 94 ms | +2.2% | — |
+
+**Why it is a watch and not dismissed as noise.** It survives the two checks that normally kill
+a few-percent signal on this suite:
+
+- **Unpinned.** `make ab` pins compute rows to one core, which charges the benchmark for
+  background JIT compilation, and 70 commits of `std/` growth means more arms tier up — exactly
+  the ADR-175 artifact that showed `collatz` +8% pinned and zero unpinned. This row keeps +2.8%
+  unpinned, so that is not it.
+- **Interleaved.** Alternating the two binaries within one session controls thermal/cache drift.
+  The gap holds.
+
+`make ab` still prints `noise`, because its verdict rule is `max(5%, 2 x floor)` and a ~0% floor
+collapses that to the 5% absolute threshold. For a row whose base-vs-base spread is genuinely
+0.0%, 5% is a lenient bar — worth revisiting in `ab-bench.sh` rather than treating the verdict as
+the answer.
+
+**Localization.** `464b6c57..HEAD` only. v0.14.1, `6b172c1d` and `464b6c57` are all within 1.1%
+of each other interleaved, and HEAD is +2.2% against both. Not bisected further.
+
+**The measurement trap, which is the more useful half of this entry.** A bisect stalled because
+this row's **absolute** numbers drift ~3% between measurement *sessions*: the same `6b172c1d`
+binary read **90 ms** in one interleaved pair and **93 ms** in the next. So a per-step bisect that
+compares a freshly built candidate against a number taken earlier is reading drift, not signal —
+which is how the first three readings here disagreed (+3.2%, +4.4%, −1.1%). If this is picked up:
+**compare only same-session interleaved pairs**, budget ~15 reps a side, and expect ~1% of
+irreducible spread even then.
+
+**Next step if it is worth chasing:** interleaved-pair bisect over the 24 commits in
+`464b6c57..HEAD` (the type-system wave, `e38e9a0b`, `092ba281`, and the KI-72/KI-76 fixes). The
+plausible suspects are the ones that touch runtime rather than the checker — `092ba281`'s root-ctx
+tagging and `e38e9a0b`'s `core/heap/equality.rs` changes — but nothing has been measured to
+implicate either.
+
+### Resolved 2026-08-28: gone at v0.15.0, and the original reading was right
+
+Re-measured at `e9c54606` (v0.15.0) against the same `v0.14.1` worktree binary, `--floor`,
+best-of-15, pinned:
+
+| row | v0.14.1 | HEAD | delta | verdict |
+|---|---|---|---|---|
+| `loop` | 93 ms | 89 ms | **-4.3%** | noise |
+| `startup` | 35 ms | 29 ms | **-17.1%** | improved |
+| `sieve` | 83 ms | 80 ms | -3.6% | noise |
+| `collatz` | 219 ms | 217 ms | -0.9% | noise |
+| `fib` | 111 ms | 111 ms | +0.0% | noise |
+
+**The original reading was not a measurement error**, which was worth settling rather than
+assuming. Building the exact tree the regression was filed against and measuring it in one
+session against HEAD gives `dfcddc4f` **94 ms** vs HEAD **89 ms** — so `dfcddc4f` really did sit
+~4 ms above v0.14.1's ~90 ms, as filed, and v0.15.0 moved past both.
+
+**What actually changed is a fixed per-run saving, not a `loop` fix.** `dfcddc4f` -> HEAD, same
+session:
+
+| row | dfcddc4f | HEAD | delta | absolute |
+|---|---|---|---|---|
+| `startup` | 36 ms | 30 ms | **-16.7%** | -6 ms |
+| `loop` | 94 ms | 88 ms | -6.4% | -6 ms |
+| `sieve` | 84 ms | 78 ms | -7.1% | -6 ms |
+| `fib` | 116 ms | 111 ms | -4.3% | -5 ms |
+| `collatz` | 223 ms | 218 ms | -2.2% | -5 ms |
+
+Every row gained the *same ~5-6 ms*, and the percentage simply tracks how cheap the row is.
+That is the signature of a boot/load win, not a compute change — and it is the mirror image of
+what filed this entry, where almost every row read *slightly positive* for the same reason in
+reverse.
+
+**Not attributed.** The saving arrived somewhere in `dfcddc4f..e9c54606`; nothing in the devlog
+records it, and the prelude changes in that range (ADR-278/281's multimethod return types) are not
+an obvious cause. `cli_support.rs`'s addition there is the `.brood_crash_dump` process-death hook,
+which is diagnostics, not boot. **Worth attributing before anyone claims it**, because a 17%
+startup win is the kind of thing that should have a commit next to it.
+
+**One arithmetic that must NOT be done here.** It is tempting to read "boot fell 6 ms but `loop`'s
+wall fell only 6 ms, so compute is unchanged" — or worse, to subtract the `startup` row from
+another row to isolate compute. CLAUDE.md and FRONTIER both record that as an **under-subtraction
+trap**: the `startup` row is `(io/puts 0)`, which loads `io` and through it `string`, while most
+rows load neither, so a row keeps a lazy-load saving that the subtraction only partly removes.
+If anyone wants to know whether a residual *compute* delta survives underneath this boot win, the
+measurement is an in-process one with a fixed iteration count (`%now-ns` around N iterations
+inside one process), not a difference of two whole-invocation rows.
+
+### RETRACTED 2026-08-28 (same day): there was no v0.15.0 boot win — it was image state
+
+The section above attributes KI-77's closure to a "~5-6 ms fixed per-run saving" in v0.15.0 and
+calls it an unattributed 17% startup win. **That is wrong, and the error is instructive: it is
+this feature's own documented trap, taken while writing about it.**
+
+`make ab BASE=dfcddc4f ROWS=startup` compares a worktree binary against the working-tree binary.
+The working-tree binary had a **current stdlib image** (the harness and `make install` both build
+one); the worktree binary had none, because the image id carries the git sha and no image was ever
+built for that ref. So the arm I read as "v0.15.0 is faster" was *imaged vs unimaged*, which is
+KI-72's trap 3 — "the arm you believe is imaged is reading source" — inverted.
+
+**The trustworthy measurement is a single-session interleaved sweep with every binary in the same
+image state** (all unimaged, core-pinned, best-of-9):
+
+| row | 0.13.0 | v0.14.0 | v0.14.1 | dfcddc4f | e9c54606 | HEAD |
+|---|---|---|---|---|---|---|
+| `startup` | **27 ms** | 35 | 34 | 36 | 36 | 36 |
+| `fib` | 106 | 108 | 112 | 115 | 114 | 114 |
+| `loop` | 84 | 91 | 89 | 93 | 92 | 95 |
+
+Which says something quite different, and more useful:
+
+- **`startup` is flat from v0.14.0 to HEAD.** There is no v0.15.0 win to attribute. What there *is*
+  is a **step of ~30% between 0.13.0 and v0.14.0** (27 → 35 ms) that no entry records — masked in
+  the published numbers because the image flip landed later in the same window and gives some of
+  it back. That is the real open question, and it is a step, so it is bisectable.
+- **`fib` and `loop` are ramps**, not steps (+7.5% and +13% across 0.13.0 → HEAD, no single jump).
+  brood-benchmarks' CLAUDE.md describes exactly this shape and says there is nothing to bisect —
+  `git bisect` will still return a commit, and on `primes` it once returned a `.blsp` *test file*.
+
+**Three measurements of the same thing disagreed before this was settled** (−16.7%, −10.9%, +0.0%),
+and every disagreement was image state rather than code. The rule that resolves it is already in
+this file and was not followed: **verify the image per arm, not once per session.**
+`(stdimage/status)` reports `:live`/`:stale`/`:absent` with the id it wants beside the ids on disk.
+
+**And a papercut that makes this easy to walk into.** `make release-brood` rebuilds only `brood`
+(`-p cli`), leaving `target/release-fast/nest` at whatever commit it was built at. `nest stdimage`
+then writes an image keyed to *nest's* `stdlib-id`, which `brood` cannot use — so `brood` reports
+`:stale` no matter how many times you build one. Observed here with `brood` at `70fbdb32` and
+`nest` at `7cd92eed`, and note the content hash was **identical in both** (`f81c5e8bfacc125`): the
+baked stdlib was byte-for-byte the same and only the git sha differed. The sha is a deliberate
+conservative proxy for "the kernel that interprets this stdlib may have changed", so it is not
+simply removable — but it does mean **any** commit invalidates every image, not just a `std/` edit,
+which is broader than trap 3 states. If you are measuring, build the image with the *sibling* nest
+(`make release`, not `make release-brood`) and check `:state` is `:live`.
+
+**Kept as an entry rather than deleted** because the *method* is the reusable part: this row's
+absolute numbers drift ~3% between measurement sessions (the same `6b172c1d` binary read 90 ms in
+one interleaved pair and 93 ms in the next), so a per-step bisect on a 3% signal reads drift. What
+worked was building every candidate first and measuring them all in **one** session — and, when a
+signal disappears, building the exact tree it was filed against rather than assuming the original
+was wrong.
+
+## KI-78 — CI never built a stdlib image, so the suite tested the path users do not get ✅ FIXED 2026-08-28
+
+**Symptom.** There isn't one, which is the point. Every CI job is green and every one of them
+exercises the **source** load path, while the shipped default since v0.15.0 (`f114d01e`) is the
+**imaged** path.
+
+**Cause.** Default-ON is safe by construction: `%std-image-install` answers `nil` when no image is
+on disk and `require` falls back to source in ~30 µs. The runtime deliberately never *builds* one
+(~1 s, which would land on the short-lived runs the image exists to help) — `nest` writes it. And
+nothing in `ci.yml` runs `nest stdimage` or sets `BROOD_STDIMAGE`. So CI has no image, and the
+whole suite runs source.
+
+**Why it is worse than "uniformly untested".** `image_matches_source.rs` (ADR-280) builds an image
+itself and writes it to `~/.cache/brood`. nextest gives each case its own process in no guaranteed
+order, so whether any *other* case runs imaged depends on whether that one happened to go first.
+The coverage is not absent, it is **nondeterministic** — which is the harder failure to reason
+about, and the same shape as the KI-72 guard hole one level down (`autoload_race` never built an
+image either; fixed in `6e52528a`).
+
+**Not a suspected failure.** The suite is known green on the imaged path: 1218/1218 and later
+1222/1222 locally with an image verified live. This is a gap in what CI *proves*, not evidence of
+a bug hiding behind it.
+
+**Fix, and the shape it has to take.** Build the image in nextest's setup script — the repo
+already runs one (`warm-boot-cache`, for KI-38), so this is an addition to an existing mechanism
+rather than a new one, and it fixes `make test` locally at the same time. But it must not *trade*
+one path for the other: with the image built, `autoload_race`'s two default-path arms become
+imaged too, and source-path race coverage would vanish. So one job has to stay on the source path
+deliberately, with `BROOD_NO_STDIMAGE=1`.
+
+**The general lesson, which this file has now recorded four times** (KI-68 dead corpora, KI-70 a
+walk that returned early, KI-76 the wrong binary, this): a gate must assert *what it is gating
+on*. Every one of those four was green while measuring nothing, and in three of them the thing
+being measured was not even present.
+
+### Fixed 2026-08-28
+
+`scripts/build-std-image.sh`, registered as a second nextest setup script beside
+`warm-boot-cache` (`setup = ['warm-boot-cache', 'build-std-image']`). It follows the same
+contract as its neighbour, because it is the same kind of thing — infrastructure that must never
+redden a run:
+
+- every failure path exits 0. No `nest` built yet means no image, and the suite behaves exactly as
+  before, which is a **correct** configuration rather than a broken one;
+- its off switch is `BROOD_NO_STDIMAGE=1` — the variable that already disables the image at
+  runtime — so a source-path job gets a source-path *setup* without inventing a second flag;
+- `nest stdimage` reports `:present` rather than rebuilding when a current image exists, so the
+  cost is ~30 ms on a warm tree and ~4.9 s after a commit (the id carries the git sha plus a
+  content hash of every baked-in `.blsp`).
+
+**The trap this had to avoid, and the reason one job opts out.** Building the image makes
+`autoload_race`'s two *default-path* arms imaged as well — so simply turning it on everywhere
+would have deleted source-path race coverage while appearing to add coverage. ci.yml's
+tree-walker job now carries `BROOD_NO_STDIMAGE: 1`, which is the right job for it: it already
+exists to run the suite in the non-default configuration, so the pairing is engine × load-path
+rather than either alone.
+
+**Verified in both configurations, whole suite, image deleted first each time:**
+
+| configuration | setup script | result |
+|---|---|---|
+| default | `4816 bindings -> …std-image-0.15.0+…bin` (4.9 s) | **1222/1222** |
+| `BROOD_NO_STDIMAGE=1` | `skipped … the suite will run the source path` | **1222/1222** |
+
+One detail worth knowing: the two *explicitly* imaged arms build and install their own image via
+`%std-image-install`, which is a plain function and does not consult the env var. So they stay
+imaged even in the source-path job — which is what you want, since it means that job covers
+**both** paths rather than losing the imaged one.
+
+## KI-79 — one `live_migration` failure on the commit that moved the JIT preempt handler ✅ FIXED 2026-09-02
+
+> **Resolution 2026-09-02.** The liveness check is a **deadline** now, not a burst count.
+> The budget had already gone 40 → 400 and still went red once; raising a fixed count is the
+> wrong lever, because a loaded machine does not need more attempts so much as more *time*,
+> and a count spends the same number of slower bursts before giving up. The loop still exits
+> on the first burst that migrates (0.2 s on a healthy machine) and now keeps trying for 45 s
+> — well under nextest's 120 s cap, so a genuine scheduler failure still reports as this
+> assertion rather than as a timeout. Under `BROOD_GC_STRESS` the fixed 5 bursts and the
+> skipped liveness assertion are unchanged.
+>
+> Found by generalising the fix for a `process_limit_test` flake the same day: a
+> `(receive … (after 100 …))` that was a wall clock standing in for synchronisation. Same
+> defect class in a different language — *assert a condition, not an observation within a
+> window* — which is why this entry closes on that day's sweep rather than on its own.
+
+
+**Symptom.** CI on `12b31fc2` (`perf(jit): outline the fast link's cold outcomes`):
+
+```
+FAIL [3.841s] (847/1227) brood::live_migration deep_receive_continuations_resume_correctly_across_workers
+  panicked at crates/lisp/tests/live_migration.rs:118:5
+```
+
+Every other job passed. Line 118 is **not** the correctness assertion — it is
+`assert!(migrated || gc_stress, …)`, which fails unless `process::migrate_count() > 0` after up to
+400 bursts. So the test asserts that a scheduler event **was observed**, and in this run the
+per-burst `assert_eq!` on the computed result passed **400 times out of 400**.
+
+**Why it is suspicious despite that.** `12b31fc2` outlined `jit_run_fast_link`'s cold outcome arms
+into a `#[cold]` helper, and those arms include **outcome 2 — preempt** — which is precisely the
+mechanism live migration rides on. A change that stopped preemption firing would produce exactly
+this signature: right answers, no migration observed.
+
+**Why it is probably not that, with the evidence:**
+
+- **The move is verbatim.** A line-by-line diff of the 117 moved lines against the pre-change file
+  shows **zero semantic differences**. The only new code is `if outcome == 0 { … return … }` ahead
+  of the delegation, which is the same condition the `match` arm had.
+- **It cannot change *when* a preempt happens.** The native arm's tick poll decides that
+  (`emit_self_call` resets the journal immediately before it); only the *handling* of the returned
+  outcome moved.
+- **Unreproduced in 18 runs** — 10 unpinned, and 8 pinned to two cores to match the runner CI
+  describes as sharing 2 cores with the workspace build.
+- **The test's own failure message anticipates this case**: "If this is the only failure and the
+  machine was loaded, suspect scheduler starvation rather than the capture machinery: the per-burst
+  correctness assertion above passed every time."
+
+**The structural gap, which is the actionable part.** This was the last test in the suite asserting
+an *observation of concurrency* with **no retry** — the same gap `.config/nextest.toml`'s
+`distribution` override already documents for real-TCP deadlines. Observing a cross-worker migration
+on two shared cores is exactly the kind of thing that can legitimately not happen. It now carries
+`retries = 1`: a starvation blip stops reddening CI, a deterministic regression still fails both
+attempts, and a pass-on-retry is reported as FLAKY so it cannot be absorbed silently.
+
+**If it recurs, the first thing to establish is whether the per-burst `assert_eq!` also failed.**
+That is the line between scheduler starvation (this entry) and a real capture-machinery bug (a much
+more serious thing, and the class KI-1 lives in). The two look identical in a summary line and
+completely different in the log.
+
+**Not filed as a bug against `12b31fc2`** because nothing in it can produce a wrong answer, and
+nothing did. Recorded because this repo's own rule is that a failure seen once is real until proven
+otherwise — and because a single sighting on the one commit that touched the preempt path is
+precisely the coincidence that deserves writing down rather than explaining away.
+
+## KI-89 — a test file's ability impls leak into `std/`'s checker view ✅ FIXED 2026-09-03 (the residual root-caused: the project startup image carried the build session's registrations; two more mechanisms found and closed on the way)
+
+> **Resolution 2026-09-03 — the residual is closed, and it was three things, none of them the
+> straggler race this entry had settled on.** Method: instrument, don't theorise. A per-file
+> orphan probe in the runner (record ids whose constructor is not a global) showed the seven
+> ids `:log/line-backend :multimap/multimap :queue/queue :pq/pq :tempo/iset :tempo/span
+> :tempo/tempo` present **before the first test file ran**, on the runs that failed at all
+> (3 of 6); a second probe bisecting the pre-file phase put their first appearance at
+> `load-sources-cached` — the **project startup image restore** (ADR-218) — and only when
+> the stdlib image was live.
+>
+> **1. The project image carried the build session's load state (the seven-id shape, and the
+> live `tempo` "no impl" sighting).** `write-image` puts every registry global (`*record-ids*`,
+> `*impls*`, `*impl-from*`, `*methods*`, …) into the root section as a WHOLE VALUE. On a
+> source-path boot `nest` loads `debug` → `repl` → … and a chain that reaches `log`, `pq`,
+> `queue`, `multimap`, `tempo`, so the build session's `*record-ids*` held those seven ids and
+> the image stored them. An imaged boot loads lazily and never touches those modules, so
+> restoring the root section registered seven record ids whose constructors did not exist —
+> sticky, because every later file's snapshot contained them. Intermittent only because the
+> stdlib image goes stale on every `std/` edit and a source-path boot has the modules loaded
+> for real. Fix (`std/tool/project.blsp`): `image-prune-foreign-registrations` — before the
+> write, inside an `%isolate`, drop every registration OWNED by a module the image does not
+> carry (not in `*module-files*`), using the stdlib image's own per-owner grouping
+> (`stdimage/registrations-by-module`, `%std-impls-by-module`); root-level and
+> project/dependency-owned registrations stay; the std module re-registers its own when it
+> loads. A registration is data about a module and must arrive with it — the rule the stdlib
+> image already follows by replaying each module's registrations at materialisation.
+> Guard: `tests/startup_image_test.blsp` "write-time pruning drops foreign-owned
+> registrations and keeps root and project ones". **A stale `.brood/image.bin` keeps the old
+> contents until its fingerprint changes** — delete it once after upgrading.
+>
+> **1b. Restored wholesale, the root section also REPLACED the live registries** — erasing what
+> modules loaded before the restore had registered. `nest` boots with `datetime`, `io`,
+> `project` … loaded; the unpruned image happened to carry their impls (the build session had
+> them too), which is the only reason this never showed. With pruning in place the first
+> imaged run lost `Temporal/->iso`'s `:datetime/date` impl (`tempo_test` 7 red, `ui_test`,
+> `test_selection_test`). `project-install-image` now snapshots the live registries, loads
+> the section, and merges the live entries back through `%registry-cas!` (live wins on a
+> conflict; two-level registries union their inner maps). Guard:
+> `crates/nest/tests/project_image_registries.rs` — a scaffold run twice, the imaged second
+> run must still dispatch `->iso` on a datetime and must have no orphan record id.
+>
+> **1c. `%registry-names` omitted every registry the PRELUDE wrote.** The merge in 1b
+> snapshots "the registries" by `%registry-names`, and that set lived in the build heap's
+> `RuntimeCode`, which the freeze discards — so a fresh runtime listed only registries this
+> process had written since boot, and neither `*multi-algebra*` nor `*multi-ret*` (both written
+> by the prelude's `defmulti num/add`). The pruned root section
+> then replaced `*multi-algebra*` with a map lacking `num/add` and nothing merged it back:
+> the next imaged run failed to LOAD every test file carrying a `defmethod num/add`
+> (`record_test.blsp`: "no `(defmulti num/add …)` is in scope"). Fix (`core/heap.rs`): the
+> build's registry-name set rides into `SharedCode` at freeze, like `declared_sigs`, and
+> `Heap::registry_names` unions it. Guard: `crates/lisp/tests/registry_names.rs` on a FRESH
+> `Interp` (under `nest test` the boot writes these registries itself, so an in-language
+> version passed against the bug), sabotage-verified.
+>
+> **2. The scoped runner let 1–18 processes per file run past the restore.** `%isolate` reaps
+> the thunk's descendants by spawn ancestry, and a process whose parent (a unit worker) has
+> exited is not attributed. `drain-files-scoped` now quiesces at every file boundary: kill
+> every process that was not alive when the file started, wait for them to be gone (bounded;
+> a survivor is reported on stderr because it is exactly a writer that may straddle the
+> swap), then restore. `nest test --trace` prints each file's count. Guard:
+> `crates/nest/tests/file_boundary_quiesce.rs`, sabotage-verified.
+>
+> **2b (2026-09-04). The quiesce then caught the runner's OWN processes — the guard read
+> `(nil :ki89-leaker)` one run in three.** `collect-loop` retired a worker at its
+> `:unit-result` and dropped its later `:down`, and `drain-runner` demonitored the driver and
+> flushed its `:down` with `(after 0)` — which only consumes a `:down` that has *already*
+> arrived. A worker's body is `(send me …)` and it exits the instant the send returns, so the
+> window is microseconds, and it was hit anyway. Both now wait for the exit: `pending` counts
+> `:down`s, not results (one more receive per worker), and the driver's `:down` is awaited
+> (bounded 5 s). The guard's exact-count assertion is what found this — keep it exact; a
+> `contains` would have passed over the runner counting itself as a leak. 15/15 + the full
+> suite green after, 271 s wall vs 313 s before (no cost).
+>
+> **3. `stdimage_test.blsp:60` was a violated precondition, not a leak.** The scoped `nest
+> test` boots with `repl` and `editor/lineedit` already loaded (the `debug` chain), so "the
+> names a `require` introduces" cannot be measured in-process there — and the test passed
+> solo, where nothing preloads them. It now measures in a fresh `brood` subprocess.
+>
+> Verified: two consecutive full `nest test` runs 5508/5509 (the one red is the documented
+> 16 GB-cap `wasm_sandbox_limits` exception), orphan probe armed and silent on both; the
+> earlier "delete the stdlib images" lever is explained (it flips boot to the source path,
+> where the modules are really loaded); the seven-id set is explained (exactly the
+> record-bearing std modules `nest`'s source-path boot reaches and its imaged boot does not).
+> The two explicit-file repro pairs in the original entry never touched `%isolate` (resolution
+> 1 above) and stay closed as by-design.
+
+> **Resolution 2026-08-31, two findings.**
+>
+> **1. The recorded minimal repro never touched `%isolate`.** `nest test FILE...` with
+> explicit files takes the **single-file path** in `crates/nest/src/main.rs`: it
+> `eval_file`s every named file into ONE image and runs `run-loaded-tests` — no
+> `drain-files-scoped`, no per-file isolate anywhere. So
+> `nest test tests/record_test.blsp tests/std_check_test.blsp` fails **by design of that
+> path**: `usd` is simply still bound (a probe file run the same way sees the
+> constructor bound and zero orphans — nothing was ever rolled back, because nothing
+> ever restores). Every hypothesis this entry ruled out was tested against `%isolate`,
+> which the repro does not exercise; the image/order/`-j1` invariance that seemed
+> mysterious is just this. (Whether the explicit-files path *should* scope per file is
+> a separate design question, deliberately not changed here.)
+>
+> **2. The full-suite orphans were a lost-update race between `registry_update` and
+> `restore_globals` — found by code reading, reproduced deterministically, fixed.**
+> The registry RMW (KI-22's fix) holds `registry_lock` from its read of the registry
+> global to its `env_define`; `restore_globals`' wholesale table swap did **not** take
+> that lock. A bystander process (a straggler the per-file reaper's documented
+> ancestry gap misses) that read the registry *before* a restore's swap and wrote its
+> successor *after* it writes back a map computed from the PRE-restore table —
+> resurrecting **every accumulated registration wholesale** (`*record-ids*`,
+> `*impls*`, `*features*`, …) while the ordinary bindings beside them stay rolled
+> back. That is exactly the observed asymmetry: std record ids registered, their
+> constructors unbound. And one hit is **sticky**: the resurrected entries sit inside
+> every later snapshot, so they never roll back again — which is why orphans from
+> five different modules appeared at once.
+>
+> Reproduced deterministically (`tests/registry_isolate_race_test.blsp`: a spawned
+> registering bystander + 2000 isolate cycles): **1994 of 2000 cycles resurrected**
+> the rolled-back registration on the pre-fix build, **0 of 2000** with the fix. At
+> suite scale: a pre-fix worktree (`e569ca4f`) failed **3 of 3** full `nest test`
+> runs on this entry's own sightings (`ability_test.blsp:471` orphans ×2,
+> `stdimage_test.blsp:60` ×1); the fixed tree ran the same suite with **zero** orphan
+> failures. Fix: `restore_globals` acquires `registry_lock` around the swap (lock
+> order registry → globals, matching every RMW; see the comment at the swap). A
+> racing RMW now either completes before the swap and is wiped — the isolation
+> contract — or starts after and reads the restored table.
+>
+> Guard: `tests/registry_isolate_race_test.blsp`, with a liveness floor on the
+> bystander (its first draft died silently on a renamed builtin and "passed" — the
+> gate-that-cannot-fail lesson, again).
+>
+> **Residual, 2026-08-31 (later): a suite-scale orphan mechanism SURVIVES the fix on
+> one binary — and that binary is gone.** The first post-fix build of the merged tree
+> failed 3 of 3 full `nest test` runs orphan-shaped (`stdimage_test:60`,
+> `ability_test:471` ×2, same seven ids) — so the resurrection race was not the only
+> path; the suspected residual is the interleaving the lock deliberately permits (a
+> straggler's constructor `def` wiped by a restore while its locked
+> `%record-register`, starting after the swap, lands in the restored table: id kept,
+> ctor gone — sticky via the next file's snapshot). Then the next incremental build
+> (adding the `BROOD_REG_TRACE` instrumentation, runtime-gated OFF) went **15/15
+> green** — traced and untraced — and no binary that exhibits the residual exists any
+> more. That is KI-88's lesson repeated verbatim, including the mistake: the failing
+> binary was overwritten instead of preserved. What the hunt left in-tree:
+> `BROOD_REG_TRACE=1` (every `*record-ids*` write with the writer's 4-hop ancestry
+> chain + every restore), and two traced observations — the heavy all-registry trace
+> *suppresses* the race (stderr-lock serialization), so trace lean; and the
+> module-sweep writers seen mid-run are `doc_examples_test`'s legitimate
+> load-everything unit, within its own file window. **If orphans are next seen:
+> PRESERVE THE BINARY, re-run it with `BROOD_REG_TRACE=1`, and read the chain= of
+> the seven writes against the RESTORE lines.** Watching, not open: 15 consecutive
+> green full runs and no reproducing artifact.
+>
+> **Follow-up, same day: a REPRO LEVER exists, the class is wider than registries, and
+> this needs a design session.** The residual fired again on the next combined-tree
+> build (first run after the build: `stdimage_test:60`, `*lineedit-keymap*` pre-bound),
+> that binary WAS preserved this time (sha `8bd15795…` — since cleaned up: the
+> delete-the-images lever below supersedes it, reproducing the class on any binary),
+> and it then ran 6/6 green warm and 3/3 green cold-booted (`touch` lever) — so the
+> boot cache is not the key either. The lever that works: **delete the stdlib images**
+> (`rm ~/.cache/brood/std-image-*.bin`) so every module load takes the slower SOURCE
+> path. Under that timing the class fires readily and in new shapes: run 1 failed
+> `ui_test.blsp:284` (records/vtables mixing — overlay ability records), and run 2
+> caught the mechanism LIVE mid-suite — a process died
+> `ability Temporal/->iso: no impl for :tempo/tempo — have (:datetime/…)`, i.e.
+> **tempo's `*impls*` entries were ripped out from under a RUNNING dispatch** (the id
+> resolved; the impl map only held datetime's) — and the run then degraded past a
+> 10-minute bound. So the full class is: **a per-file scope restore races processes
+> still RUNNING against the pre-restore globals — readers as well as writers** — the
+> `%isolate` soundness condition ("no other process mutating globals concurrently")
+> violated routinely by the scoped suite under source-path timing. The registry lock
+> fixed the one corruption that compounded (wholesale resurrection); the remaining
+> design question is structural: process quiescence at file boundaries, or the
+> spawn-time ownership generation the `%isolate` comment already names as the missing
+> primitive. A scheduler/runner design session with fresh eyes — do not patch it
+> piecemeal from here.
+>
+> **Sighting 2026-09-01 (late).** Fired on a plain `nest test -j1` at `3bcfff10` + the
+> strict-gate fix, WITH the stdlib images live (so the source-path lever is sufficient
+> but not necessary): `ability_test.blsp:471` — "every registered record id names a bound
+> constructor" — i.e. the orphan seen from the *registry* side rather than the checker's.
+> 94/94 solo immediately after, on the same binary. No new information beyond confirming
+> the class is still live on the current tree; the binary was not preserved because the
+> delete-the-images lever supersedes it.
+>
+> **Sighting 2026-09-04 — BINARY PRESERVED, and the writer is now named.** Fired on a
+> plain capped `nest test` at `4477cedd` + the uncommitted ADR-308 `sort` sweep, with the
+> stdlib image **live**: orphan-shaped 3 of 3 runs (`stdimage_test:60` once —
+> `*lineedit-keymap*` pre-bound — then `ability_test:471` twice), each passing solo. The
+> artifact this entry has twice lost is kept at
+> `~/brood-orphan-repro-2026-09-04/` (both binaries, the two untraced runs, and a full
+> `BROOD_REG_TRACE=1` suite log). **The lean trace does NOT suppress the race** — it
+> reproduced under it, which is what made the read below possible.
+>
+> The seven orphaned ids are not seven independent losses. They are **one contiguous
+> burst by one writer**, sandwiched between two of pid 1's restores:
+>
+> ```
+> [reg] pid=Some(1) RESTORE
+> [reg] *record-ids* Assoc :log/line-backend    chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :multimap/multimap   chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :pq/pq               chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :queue/queue         chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :tempo/iset          chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :tempo/span          chain=13224<-13217<-1<-
+> [reg] *record-ids* Assoc :tempo/tempo         chain=13224<-13217<-1<-
+> [reg] pid=Some(1) RESTORE
+> ```
+>
+> So the straggler is a **grandchild** of the runner (pid 13224, child of 13217, child of
+> 1) doing a `require`-driven registration of five modules' record types *inside* the
+> window between two file-scope restores. That is the interleaving the registry lock
+> deliberately permits, observed directly rather than inferred: the `%record-register`
+> writes land under the lock and survive, while the constructor `def`s they pair with go
+> to the globals table pid 1 then swaps away — id kept, constructor gone, sticky from the
+> next snapshot on. It does not change the verdict (still a design question about process
+> quiescence at file boundaries, not a patch), but it removes the remaining doubt about
+> *which* interleaving: it is spawn-descendant liveness across a scope boundary, not a
+> lost update inside the registry.
+>
+> **Same day, after working the fix: one half is CLOSED, the other is measured and still
+> open.** Two things landed, both verified by sabotage:
+>
+> 1. **`%isolate` now reaps by an ownership STAMP, not by ancestry.** `Mailbox::isolate_owner`
+>    is copied at spawn from the spawner's current isolate scope and never mutated, so it
+>    survives every death above it. That closes the gap the code itself documented as
+>    "needs an ownership generation stamped at spawn time, which the scheduler does not
+>    expose today" — an orphaned grandchild whose middle process exited is now provably
+>    owned. Guard: `tests/registry_isolate_race_test.blsp`, "a grandchild whose parent
+>    already exited is still reaped"; sabotage-verified by putting the ancestry walk back
+>    (the grandchild is then alive after the isolate returns).
+> 2. **The test runner accounts a worker as done only when its `[:down …]` arrives**, not
+>    when its results do. The DOWN was already being delivered and thrown away; "sent its
+>    results" is not "has exited", and the runner was entering the next `%isolate` while a
+>    worker was still finishing.
+>
+> **Neither fixes the suite failure, and that is the honest result.** The writer is not an
+> orphan whose chain broke — the trace's `owner=` (added the same day) shows it carrying a
+> scope from an isolate that is *not* the one restoring, i.e. it is a legitimate concurrent
+> global mutator: a load-everything module sweep running as an ordinary parallel unit while
+> some other unit is inside `%isolate`. That is the documented soundness condition being
+> violated by design, not a bug in the reaper.
+>
+> **What was tried and rejected, with numbers**, so it is not tried again blind:
+> - *Wait for scope quiescence before each isolated unit.* Correct in principle; the bound
+>   is either useless or ruinous. At 500 ms it took the suite from **91 s to 470–506 s**
+>   (5x) and still failed; at 20 ms it cost nothing and bought nothing. The blocker is a
+>   real straggler that takes hundreds of ms, and there are hundreds of isolated units.
+> - *Mark the two visible load-everything sweeps `:isolated`* (`doc_examples_test`,
+>   `docs_test`). No effect on the failure, and it breaks the explicit-file-args run mode.
+>   Reverted.
+>
+> **The stdlib IMAGE is a severe amplifier — forced in both directions.** Measured
+> 2026-09-04 on one binary: delete `~/.cache/brood/std-image-*.bin` and a full `nest test`
+> goes to **106 failures in 469 s**, including the `ui_test` records/vtables shape this entry
+> already names as the same class; rebuild with `scripts/build-std-image.sh` and it is back
+> to 5514/5514 in ~91 s. So the "delete-the-images lever" is not merely *a* repro — it is the
+> difference between one flaky assertion and a wholesale collapse.
+>
+> **It is NOT the whole story, and the tempting version of that claim is wrong.** With a live
+> image the suite was seen red 4 runs running and green 7 runs running on builds a few edits
+> apart, so it stays genuinely intermittent there: the image widens the window, it does not
+> own it. Two things checked while chasing that, both worth not re-deriving: `nest` builds
+> the image itself for every command except `stdimage`/`completions`/`complete`, and builds
+> the FULL 107-section one, so the absent-image state normally lasts exactly one command
+> after a `std/` edit; and `BROOD_IMAGE_TRACE=1` shows the image serving modules for the
+> whole scoped run (43 materialised across a five-file run), not just the first file.
+>
+> Practical rule for the next sighting: **read `(stdimage/status)` before quoting any
+> frequency**, and say which state the number came from.
+>
+> So the design session still owes an answer, and the question it should answer is now
+> sharper: **an `:isolated` unit and a module-loading parallel unit cannot both be running,
+> and the runner has no mechanism that says so.**
+>
+> ---
+>
+> ### 2026-09-04 — the trigger was not a race, and it is fixed
+>
+> **Read this beside the 2026-09-03 resolution above, not instead of it.** That one names the
+> PROJECT startup image (ADR-317) as the residual's mechanism; this one names a second,
+> independent trigger in the same family — `nest` building the STDLIB image in the process
+> that then ran the suite. Both were real and both are fixed; neither subsumes the other.
+>
+>
+> Chased to the bottom with `BROOD_SCOPE_DBG` (added to `%isolate`: it names every process
+> still live when the globals are rolled back). Four things came out, and they are not equally
+> well established — which of them is which is the most useful thing in this entry.
+>
+> **1. `nest` built the stdlib image INSIDE the process that then ran the suite. Fixed,
+> attributed, sabotage-verified both ways.** `stdimage/build` works by loading every module
+> and snapshotting what each binds, so `ensure_stdimage` left the runner holding all ~107 std
+> modules before the suite started — and the per-file and per-test `%isolate` rollbacks then
+> tore that state down underneath running code. It also silently falsified any test whose
+> premise is "this module is not loaded yet": `stdimage_test.blsp:60` failed **6 runs of 6**
+> with the image absent and passed with it present, which read as a flaky race for a day and
+> is nothing of the kind. `nest` now builds the image in a **child process**. Measured: image
+> deleted, in-process build → `stdimage_test:60` red 2/2; child build → 5515/5515 green **5
+> runs of 5**, and green again on every later run.
+>
+> **2. `%isolate` reaped by walking the `parent` chain, which dies with any intermediate.**
+> Fixed by `Mailbox::isolate_owner`, a scope token copied at spawn and never mutated, so an
+> orphaned grandchild is provably owned however many processes above it have exited. This is
+> the fix the code itself named in a comment as "needs an ownership generation stamped at
+> spawn time, which the scheduler does not expose today". Guard:
+> `tests/registry_isolate_race_test.blsp`, sabotage-verified (put the walk back and the
+> grandchild is alive after the isolate returns).
+>
+> **3. The runner treated a worker as finished when it SENT its results, not when it exited.**
+> The `[:down …]` was already being delivered and discarded. `collect-loop` now waits for it.
+> Free — the message was already in flight.
+>
+> **4. Eight tests called `%isolate` while the runner had parallel workers in flight**, in
+> `stdimage_test.blsp` and `system_robustness_test.blsp`, rolling the shared global table back
+> under their siblings — precisely the condition `%isolate` documents itself as unsound in.
+> They are `:isolated` now, and `crates/lisp/tests/isolate_tests_run_alone.rs` is a static gate
+> so it cannot regress (sabotage-verified).
+>
+> **What is NOT proven, and should not be claimed.** The orphaned-record-id symptom
+> (`ability_test:471`, `ui_test:284`) has not reproduced in ~20 full-suite runs since, including
+> the amplifier — but it also did not reproduce with fixes 2, 3 and 4 **reverted**, so no single
+> lever was shown to kill it. The honest reading is that fix 1 removed the trigger and 2–4
+> closed real soundness gaps that made the damage worse; it is not a proof that the class is
+> gone. If it is seen again, the tools now exist: `BROOD_SCOPE_DBG` names the survivors of a
+> restore, and `BROOD_REG_TRACE=1` prints each registry write's `owner=` stamp beside its
+> ancestry chain.
+>
+> **Two measurement rules this cost a day to learn.** The stdlib image state changes the
+> suite's behaviour, so `(stdimage/status)`'s `:installed` must be read before quoting any
+> failure rate — and `BROOD_NO_STDIMAGE=1` is **not** the same experiment as deleting the
+> images, because deleting them makes `nest` rebuild, which was the trigger. Twice on the same
+> day a frequency claim was written down and then contradicted by the next batch of runs.
+
+**Symptom.** In a scoped `nest test` run, `std_check_test` ("the standard library carries no
+checker warnings") fails with ~15 warnings about a record defined in **another test file**:
+
+```
+std/stats.blsp:26:33: warning: *: no `num/mul` method for [:record-test/usd :record-test/usd]
+std/json.blsp:138:23: warning: +: no `num/add` method for [:record-test/usd :int]
+std/tool/perf.blsp:38:20: warning: /: no `num/div` method for [:record-test/usd :float]
+```
+
+`record-test/usd` is `tests/record_test.blsp`'s money record. It is not `require`d by any
+`std/` module and cannot be: the checker is seeing it because the registration outlived the
+file's scope. `record_test`, `sig_adoption_test`, `docs_test` and `doc_examples_test` fail in
+the same run for the same reason; **every one of them passes when run alone.**
+
+**Minimal repro — two files, order-dependent:**
+
+```bash
+nest test tests/record_test.blsp tests/std_check_test.blsp   # fails
+nest test tests/std_check_test.blsp                          # passes
+```
+
+**Pre-existing, and proven so.** The same two-file invocation reproduces identically on a
+clean HEAD worktree, so this is not ADR-308's argument-order migration (which is what
+surfaced it — adding tests shifted discovery order so `record_test` now loads first). Also
+not the `nest check` result cache: `BROOD_NO_CHECK_CACHE=1` behaves the same.
+
+**Mechanism: UNKNOWN. Five hypotheses tested and ruled out** — recorded so the next attempt
+does not repeat them:
+
+1. *`%isolate` fails to roll back `*record-ids*`.* It rolls back. `(%isolate (fn ()
+   (require-one 'tempo) …))` leaves the count unchanged.
+2. *`%isolate` fails to roll back `*impls*`.* It rolls back. Loading the whole of
+   `tests/record_test.blsp` inside an isolate leaves `*impls*` at 8 entries, no `usd` key,
+   and `record-test/usd` unbound afterwards.
+3. *A process spawned inside an isolate registers after the restore.* No orphans.
+4. *Another process observes the shared RUNTIME-region entry after the parent rolled back.*
+   The child sees the same clean state.
+5. *The checker accumulates knowledge across files in one process.* No: `check-file` on
+   `tests/record_test.blsp` then on `std/stats.blsp` produces zero `usd` warnings.
+
+So the registries are correctly scoped and the checker is not accumulating — yet the two-file
+`nest test` invocation reproduces every time. What remains unexamined is the path between
+them: `drain-files-scoped` folds files serially, but a file's *units* run as concurrent
+spawned workers, and `std_check_test`'s `check-file` sweep is itself one of those units. The
+next probe should be whether a registration made by a worker of file A is visible to a worker
+of file B despite A's isolate having restored — i.e. whether the restore covers writes made
+by processes the isolate did not create.
+
+**Not fixed** — filed rather than patched, because a fix aimed at the wrong mechanism would
+look like a fix. `mono_devirtualize`'s soundness hole is the narrow part worth closing
+independently: it resolves a global and then trusts `*record-ids*` by name, so a stale id
+plus a later same-named non-record would devirtualize wrongly.
+
+**Two more sightings, 2026-08-31 — and the concurrency hypothesis is now DEAD.** Three
+consecutive full `nest test` runs on `da038914` failed, each on a different case, one failure
+per run:
+
+| run | failing case |
+|-----|--------------|
+| 2 | `stdimage_test.blsp:60` — "a root global is attributed to the module that defines it, not to a dependent" |
+| 3 | `ability_test.blsp:471` — "every registered record id names a bound constructor" |
+| 4 (**`-j1`**) | `ability_test.blsp:471`, identically |
+
+Run 4 used `nest test -j1`, so a file's units did **not** run as concurrent workers — which
+retires the "next probe" this entry proposes above (whether a worker of file A is visible to
+a worker of file B). The leak survives a fully serial run, so it is not cross-worker
+visibility; it is the per-file scope restore itself, or file-to-file state in the folding
+process. Both cases pass alone (`ability_test` 94/94, `stdimage_test` 12/12).
+
+`ability_test.blsp:471`'s own diagnostic paid off — it names the orphans, so this sighting
+cost no extra run:
+
+```
+(:tempo/iset :multimap/multimap :tempo/tempo :queue/queue :pq/pq :tempo/span :log/line-backend)
+```
+
+Every one is module-qualified, and every one is a `defrecord` in a std module (`tempo`,
+`multimap`, `queue`, `pq`, `log`) that some *earlier* test file `require`d. So the shape is
+narrower than "a test file's records leak": the ids of **std** records outlive the scope that
+`require`d their module, while the constructors those ids name are correctly unbound again.
+That is a registry write escaping a restore that did roll back the bindings beside it —
+which contradicts hypothesis 1 above as tested (an isolate around a single `require-one`
+leaves the count unchanged), so the escape needs more than one `require` depth, or the
+`nest test` scope is not the same mechanism as a bare `%isolate`.
+
+`stdimage_test.blsp:60` fails by the same asymmetry read the other way: it compares the count
+of globals a module introduces against the count a dependent introduces, and a registry entry
+left behind by an earlier file makes the definer's set no smaller than the dependent's.
+
+## KI-90 — `mono_devirtualize` trusted `*record-ids*` by NAME after resolving a global ✅ FIXED 2026-08-30
+
+**The hole.** `inline::mono_arg_identity` proves a direct-constructor call's identity by
+taking the constructor's resolved global name, keywording it (`(circle 2)` → `:mod/circle`)
+and confirming that keyword is registered in `*record-ids*`. The registry is consulted by
+NAME only — nothing checks that the global still *is* that record's constructor.
+
+So a stale id plus a later, same-named non-record function devirtualizes wrongly: under
+`BROOD_MONO=1` the guard compares the identity and then calls an impl directly, which is a
+silently **wrong impl**, not a slow path (`docs/dispatch-speculation.md` names this exact
+risk). The registry does go stale — see [KI-89](#ki-89), where ids outlived the modules that
+registered them.
+
+**Why it has not bitten.** `BROOD_MONO` is off by default (ADR-182 keeps 100% dynamic
+semantics precisely because a captured impl fn can go stale), and a name being re-bound to a
+non-record between a `defrecord` and a call is rare. It is still the narrow, fixable half of
+KI-89's problem, and it is fixable **without** reproducing KI-89.
+
+**Fixed** in `eval/compile/inline.rs`: the name is now necessary but not sufficient. The
+constructor must still be **bound** — an unbound id is exactly KI-89's orphan shape, and it
+is refused rather than devirtualized — and the registry's recorded name must still be this
+constructor. Either check failing leaves the call on the dynamic path, which is the correct
+conservative answer: the rewrite declines on any uncertainty (ADR-182).
+
+**Guarded by** `crates/cli/tests/mono_differential.rs`
+`a_stale_record_id_is_not_devirtualized_to_whatever_the_name_means_now` — a `defrecord`
+named `shape` is rebound to a plain fn returning a bare map while its id stays registered,
+and `BROOD_MONO=1` must answer byte-identically to the dynamic path. A differential rather
+than a pinned string, so it cannot pass by agreeing with a wrong expectation.
+
+**Residual.** This closes the reachable path (a stale id, or a name rebound to something
+else). It does not make the registry itself self-cleaning — that is KI-89, still open.
+
+**Found by** reading the readers while diagnosing KI-89, not by a failure.
+
+## KI-110 — `exit_test` "the reason survives work done after the signal" flaked once: `:noproc` for a body that finished first ✅ fixed 2026-09-05
+
+Seen once in a 5570-test `brood_suite_passes` run on 2026-09-05 (nextest retried it green,
+which is how it was noticed at all), 0/30 standalone. `actual: :noproc`, `expect: :badness`.
+
+**Mechanism.** The ADR-311 block in `tests/exit_test.blsp` had three cases whose body ENDS on
+its own — `(exit (self) :badness)` then nothing, the same plus fifty cells of work, and a bare
+`:done` — each written `(let (p (spawn …) m (monitor p)) …)`. That form is only reliable while
+the spawner does not yield between the two calls; under the suite's load the child ran to
+completion first, `monitor` took its already-dead branch, and the DOWN carried `:noproc`. It
+is KI-59's mechanism (`nest run --for` reporting failure for a program that succeeded) and the
+reason `spawn-monitor` exists (ADR-309): the monitor is registered in the same pre-enqueue
+window `spawn-link` uses, so the child cannot exit before it.
+
+**Fix.** The three self-ending cases use `(let ([p m] (spawn-monitor …)) …)`. The parked
+bodies elsewhere in the file (`ex-park`, `ex-echo`, …) never finish on their own, so their
+two-step form has no window and is left alone. Argument from construction rather than a
+reproduction loop: the primitive's docstring already measured the two-step form at 0/300 lost
+adjacent and 40/40 lost with one 5 ms yield, and the fix removes the window rather than
+narrowing it.
+
+**Trap for the next author.** `spawn` then `monitor` reads as idiomatic and passes every
+standalone run; the failure is a WRONG REASON, not a hang, so nothing raises and only an
+assertion on the reason itself can catch it. When a spawned body can finish on its own and the
+reason matters, write `spawn-monitor`.
+
+## KI-112 — `stdimage/build` in a process with a std module already loaded drops that module's root globals ✅ fixed 2026-09-05
+
+Never pushed: found and fixed inside the session that caused it, while moving `nest stdimage`
+into the Brood dispatcher (ADR-322).
+
+**Symptom.** After the move, `nest check` — any `nest check` — died with `unbound symbol:
+*ns-package*` at `package/record-ns-packages`, four `boot_check_and_renames` cases went red,
+and the checker gate over `std/` failed with no warning line at all. `BROOD_NO_STDIMAGE=1`
+made every one of them pass, and an image built by `brood` from the same tree had 5629
+bindings against `nest`'s 5594 — 31 of the 35 missing were `project`'s root globals.
+
+**Mechanism.** `build` attributes a module's ROOT globals (the ones with no `mod/` prefix —
+`*ns-package*`, `*units*`, `*lineedit-keymap*`) by probing: inside `%isolate`, snapshot the
+global names, `require-one` the module, and credit it with the names that appeared. For a
+module this process has ALREADY loaded, `require-one` is a no-op and nothing appears; the
+root goes unclaimed, and an unclaimed root was treated as the prelude's and skipped. The
+Brood dispatcher is a std module whose load pulls `project`, `test`, `codemod`, … in, so a
+routed `nest stdimage` — and, through `ensure_stdimage`'s child process, EVERY first `nest`
+command after a `std/` change — built from a process with the toolchain loaded. Evaluating the
+module's embedded source through the probe instead does not help: the "before" snapshot
+already holds the names. The hole predates the move — any program that loaded a tooling
+module and then called `stdimage/build` or `stdimage/ensure` got a bad image — the move only
+made it the default path.
+
+**Fix.** Two halves. `stdimage` stays a Rust arm (its variant doc records why), built before
+any std module loads, and the child process the automatic build spawns is that arm. And
+`build` audits: a root global that no probe claimed and that the prelude did not bind is a std
+module's the probe missed — the build refuses, naming them, and writes nothing. "The prelude
+bound it" is `%prelude-global?`, backed by `SharedCode::binding_names`, recorded at the
+freeze from the prelude root env (its own definitions, every native, the registries it
+seeds). Definition sites were tried first and rejected: thirty prelude helpers carry none, and
+a clean build refused on them.
+
+**Gates.** `crates/cli/tests/stdimage_refuses_dirty_process.rs` (real `brood`, private
+`XDG_CACHE_HOME`): a build after `(require-one 'project)` is refused naming `*ns-package*`
+and leaves no file; a fresh-process build writes, and a fresh process restoring `project`
+from that image has the root bound. `blsp_dispatch.rs` builds through `nest stdimage` and runs
+`nest check` against the result.
+
+**Trap for the next author.** A suite whose image build is refused does not fail — it runs
+every test from source and pays a failing child build in every process, which reads as a hang
+(the `nest` crate went past ten minutes) before it reads as anything else. If a `nest` run is
+inexplicably slow, run `nest stdimage` by hand first.
+
+## KI-118 — a name a macro defines was unbound above its definition ✅ FIXED 2026-09-08
+
+**Symptom.** A module referred to a name defined by a definition-macro, from a function
+written ABOVE the macro call:
+
+    (defn package-list (packages) … (map packages package-card) …)   ; line 263
+    (defhtml package-card (pkg) …)                                   ; line 271
+
+At runtime: `unbound symbol: package-card`, as a 500 on the first request that reached it.
+Reordering — the `defhtml` above `package-list` — worked around it completely.
+
+**Why it survived.** Every gate was green:
+
+    nest check              clean
+    nest check --strict     clean
+    nest test               190 passed
+    GET /packages           500
+
+**Cause.** `scan_regions` / `scan_def_form` in `eval/macros.rs` pre-scan the file's
+UNEXPANDED top-level forms to learn which bare names belong to the module's namespace, so a
+reference can be qualified to `ns/name` before the definition has run. The scan matched only
+the literal heads `def`/`def-`/`defn`/`defn-`/`defmacro`/`defdyn`. A macro that expands to a
+`def` was invisible: its name never entered the region's set, so a reference above it stayed
+bare, fell through to root, and was unbound. Below the definition it happened to work,
+because by then `ns/name` was already bound and resolution found it.
+
+This was never `defhtml`-specific. std's own `defonce`, `defrecord`, `defmulti`,
+`defability`, `defbehaviour` and `defevent` all had it, as did hatch's `deflive`.
+
+**Fix.** `scan_def_form` also accepts a head spelled `def…` (last segment, so a qualified
+`(web/page/defhtml card …)` counts), taking its second element as a defined name —
+`defines_by_convention`. `defmodule` is excluded: it names a module, not a binding.
+
+The scan reads unexpanded forms by construction, so it cannot ask a macro what it binds — at
+scan time the file's own `(:use …)` has not run and the macro may not be loaded at all.
+Expanding to find out would be order-dependent AND a second run of every macro. The spelling
+is the one signal available before expansion, and it is a signal the language already leans
+on (`?` predicate, `-` private, earmuffed knob).
+
+A false positive costs a bare reference to a same-named ROOT binding being qualified to
+`ns/name` inside that one module — which is what a real definition would have done anyway,
+and the head must be spelled `def…` for it to arise at all.
+
+**Guard.** Three, in `eval::macros::resolve_tests`:
+`scan_regions_collects_names_a_definition_macro_binds`,
+`scan_regions_ignores_a_non_def_head_and_a_nested_defmodule`, and the end-to-end
+`a_macro_defined_name_resolves_from_above_its_definition`. Sabotaging
+`defines_by_convention` to `return false` reproduces `unbound symbol: thing` exactly.
+
+## KI-117 — an error raised inside JIT'd code carries no `:trace` ✅ fixed 2026-09-08
+
+**Symptom.** In a full `make test` on `d1513d17` (the merge of the heap split with the KI-114 fix),
+`brood_suite_passes` failed on try 1 and passed on try 2 — nextest's `FLAKY 2/2`. The captured
+try-1 output names one case:
+
+    tests/try_catch_test.blsp:352: test failed: error stack traces › trace is capped at 32 frames under deep non-tail recursion
+        assert: (assert= 32 (count (try (deep 100) (catch e (get e :trace)))))
+        actual: 32
+        expect: 8
+
+Nine solo runs of the file pass. The two suite runs earlier the same day, without the upstream
+merge, showed no flake — which is a sample of two, not evidence.
+
+**Located — it is deterministic once the arm is hot.** The test's exact shape, looped:
+
+    (defn probe ()
+      (check-allow :non-tail-recursion
+        (letrec (deep (fn (n) (if (= n 0) (/ 1 0) (+ 1 (deep (- n 1))))))
+          (count (try (deep 100) (catch e (get e :trace)))))))
+    ;; tally the counts over 3000 runs in one process
+
+| binary | default | `BROOD_NO_JIT=1` |
+|---|---|---|
+| `d1513d17` debug (today) | `{32 482, 0 2518}` | `{32 3000}` |
+| `540524fc` 0.25.2 release-fast (2026-09-05, before the KI-114 fix) | `{32 847, 0 2153}` | — |
+| `bc8d34d8` 0.25.2 release (2026-09-04) | `{32 456, 0 2544}` | — |
+
+32 frames for the first few hundred runs, then **zero** for every run after — the flip is the
+background compile of `deep`'s arm landing. The error itself is intact (`:kind :runtime`,
+`division by zero`); only `:trace` is empty. So this is not the merge, not the KI-114 lowering,
+and not new: it has been true since the arm could go native. The test caught it only when the
+suite's load stretched the single `(deep 100)` call across the compile — 8 levels interpreted
+(8 `BcFrame`s), the native body installed, the remaining 92 levels native and unrecorded.
+
+**Mechanism — corrected once the binary being probed was the one being built.** Nothing on
+the native side ever pushed a `TraceFrame`. `attach_vm_trace` records a VM driver's
+`BcFrame`s; the tree-walker records its boundary entries; a native activation is neither, so
+a recursion that has tiered up contributes nothing however deep it is. In the repro the route
+is specific: the integer-division lowering **deopts** on a zero divisor (`emit.rs`, reason 16)
+rather than raising, the native caller re-runs that one level on the VM in a nested driver
+(`jit_run_fast_link` → `vm_resume_deopt`), the VM raises there — with no pending callers, so
+the level's own entry is nameless and positionless and `push_trace` drops it — and the error
+is parked and returned up through the remaining native levels, none of which record. The
+suite's 8 was the recursion caught mid-tier: 8 levels interpreted, then the compile landed.
+
+**Fix (2026-09-08).** Each native arm records itself as the error exits it: a
+`brood_rt_trace_push(heap, arm)` callback (`jit/rt.rs`) called from the general lowering's
+`error` block (`jit_lower.rs`) and from the scalar worker's `poisoned` block when its sentinel
+reads 3 (`jit_lower/i64.rs`), pushing `(fn_name, src_file, no position)` — cold path only,
+one call per level, and the arm pointer is a constant because installed code pins its
+`CompiledArm` for the process lifetime. The one place that would then double-record is a
+native arm running at the VM driver's loop top and returning outcome 3: `vm_run_bc` attaches
+only the pending callers there (`attach_vm_trace_callers`, split out of `attach_vm_trace`).
+Verified: the looped repro reads `{32 3000}` and 5000 runs never flip; a named `a → b → c`
+chain reads the identical trace hot and cold for both a parked native error and the
+deopt-then-raise route (`([c :pos] [b :pos] [a :nopos])` — no duplicate, innermost intact);
+sabotage (the emitted call removed) fails the guard by construction; `try_catch_test` 82/82.
+
+**Guard.** `tests/jit_trace_test.blsp` — the suite's exact shape looped 3000 times, every run
+required to read the 32-frame cap. It fails after ~500 runs with the call removed, in well
+under a second.
+
+**Residue, recorded not hidden.** A native frame carries its name and defining file but no
+call-site position (the VM's entries do — the site lives in the caller's instruction stream,
+which native code does not keep; the emitters know the site index at each call edge, so
+passing it through the error block as a block param, KI-49's shape, would restore it). A leaf
+callee spliced into its caller (ADR-210) leaves no frame, as any inlined call does.
+
+**Not it (checked).** ADR-318's router (`BROOD_NO_TW_REENTRY=1` still flips; `BROOD_DEFER_DBG`
+shows no per-call defer); KI-115's scheduler fix (wasm-only in effect); the self-inliner, the
+XCALL path and leaf inlining (each opt-out still flips; only `BROOD_NO_PARTIAL_LEAF=1` changes
+the count, to 16, because it changes where the deopt resumes); preemption (a single quiet
+process flips).
+
+**A trap this cost an hour.** `cargo build -p brood` builds the `crates/lisp` library only;
+`target/debug/brood` is the `cli` package and stays whatever last linked it. Three rounds of
+instrumentation "never fired" and the fix "did not work" against a binary that predated all of
+them. CLAUDE.md records this for `--release`; it is identical for debug. `cargo build --bin
+brood`, then check the mtime.
+
+## KI-122 — the KI-120 refer tripwire cried wolf on bedit ✅ FIXED 2026-09-09
+
+**What was seen.** Every cold `nest check` of bedit printed:
+
+    [refer] (:use fuzzy) imported NOTHING — no public `fuzzy/` global is bound;
+            *features* lists it: true, mid-load: false, pid=Some(1) scope=0
+
+**Why it looked like KI-120 and was not.** That line is KI-120's tripwire, left default-ON so
+the "recorded loaded, globals missing" wave self-reports, and restricted to EMBEDDED std
+modules on the reasoning that those always have public API. `fuzzy` is embedded, so it fired —
+but the claim was false. `fuzzy`'s two publics (`match`, `filter`) were both bound; `nest
+check` reported zero warnings, and the qualified call at `src/completion.blsp:58` resolved.
+
+**Cause.** The diagnostic tested `referred` — how many names *this* `:use` took. An excluded
+name `continue`s without counting, so `(:use fuzzy :exclude [filter match])`, which excludes
+`fuzzy`'s entire public surface, leaves `referred == 0` with nothing wrong. The comment beside
+the check already listed that shape as one that must stay silent (`clpb2`, "everything
+`:exclude`d"), but the guard chosen for it was `is_embedded_module`, which excuses a *user*
+module that excludes everything and not a std one.
+
+**Fix.** Count `public_seen` — the public names the module exposes, excluded or not — and warn
+only when that is zero. The message then means what it says. The KI-120 signal is preserved by
+construction: the added condition is strictly narrower and is false only when the globals
+exist, which is precisely what the wave does not produce.
+
+**Why it read as a one-off.** The run that shows it is the run that rebuilds
+`.brood/image.bin`; every later check materialises from that image and is silent. It first
+appeared once in ten runs and survived `BROOD_NO_CHECK_CACHE=1`, `BROOD_NO_STDIMAGE=1` and a
+private `XDG_CACHE_HOME`. The deterministic repro is `rm ../bedit/.brood/image.bin && nest
+check`, which also regenerates the file, so it is self-cleaning.
+
+**Guard.** `crates/cli/tests/refer_excluded_all.rs` — the exclude-all shape must be silent,
+with an ordinary refer-all as the control so the test cannot pass on a build where the
+diagnostic never fires. Sabotage-verified: restoring the `referred`-only guard reds the
+exclude-all case and leaves the control green.
+
+**Why it mattered.** The commit that narrowed this diagnostic said it out loud — "a gate that
+cries wolf is one the reader learns to skip" — and it was crying wolf on the one project CI
+runs as its downstream smoke.
+
+## KI-121 — a crash-report test saw another test's crash under heavy load ✅ FIXED 2026-09-09
+
+**What was seen.** In a deliberately heavy run (full suite at `-j8`, the in-language wrapper
+under `BROOD_SCOPE_DBG`), `tests/crash_report_test.blsp` "one report per site" failed once:
+
+    (is (includes? (crash-report-next) "exited: boom: "))
+
+`crash-report-next` returned a report, but not this test's — some other crashing test's text.
+Retry passed (FLAKY); the file passes 3/3 alone.
+
+**Why.** The default crash reporter (`std/proc/crash-report.blsp`) subscribes to
+`proc/system-monitor`, which is RUNTIME-global: a reporter armed by one test receives the
+abnormal exit of ANY process in the runtime. A full suite crashes processes constantly
+(`error: boom` / `worker failed` / `always`), so a test that arms a reporter and then reads
+"the next report" can read a neighbour's. `:isolated` serialises the units but not the whole
+runtime — a straggler or a parallel non-isolated unit elsewhere can still be dying.
+
+**Not KI-120.** No module came back empty, no `[refer] NOTHING`, no `unbound`. This is
+cross-talk on a shared global monitor, not the isolate-restore race.
+
+**Fixed 2026-09-09, without waiting for a recurrence.** A watch is the right status when a
+mechanism is unknown; here it was already understood, and the sighting was explicitly not
+reproducible on demand — so waiting would have meant waiting for a flake that reproduces once
+a fortnight in someone else's run.
+
+**Nothing in the reporter changed.** Being runtime-wide is what ADR-305 is *for*: a host arms
+one reporter and hears about every crash. What was wrong was the test asking for "the next
+report" and assuming it was its own. Every assertion in `tests/crash_report_test.blsp` now
+names the crash it means:
+
+- `crash-report-next-of` / `crash-report-quiet-of?` — scoped by the pids the test spawned,
+  matched against the report text (`render` prints `(pr-str pid)` in the headline).
+- `crash-report-next-saying` — scoped by content, for the two cases whose crashing pid the
+  test never sees: the `spawn-link`ed grandchild, and the telemetry-coexistence case.
+
+Reports that do not match are DROPPED and the wait continues. The wait is a **deadline** taken
+once, not a fresh `after` per message: re-arming the window on every skipped neighbour would
+let steady crash traffic extend it without bound — the same "a window is not a deadline" shape
+as KI-79 and KI-108.
+
+**Pinned deterministically, not by load.** Reproducing this by running a heavy suite is a
+coin-flip; but what the global subscription *delivers* is simply a `[:report …]` in the
+mailbox ahead of the test's own, and that can be sent directly. The new case
+`"a neighbouring test's report is skipped, not asserted on (KI-121)"` queues a foreign report,
+crashes its own process, and asserts it reads its own — plus a second foreign report against a
+quiet assertion. Sabotage-verified: forcing the matcher to `true` (the pre-fix behaviour) reds
+that case and only that case. 12/12 in the file, and 10/10 runs green with concurrent
+crash-producing suites running beside it.
+
+## KI-120 — the wrapper's `def-face`/`editor/serve/*` unbound wave: a straggler supervisor respawns into the isolate-restore window ✅ FIXED 2026-09-08
+
+**What was seen.** A full `make test` on the merged tree `b405c49f` (KI-119 fixed):
+`brood_suite_passes` TMT at 900.040 s on try 1, passed try 2 in 112.7 s (`FLAKY 2/2`). The
+captured try-1 output: F-waves of 12, 8, 22, 4, 8, 3, 19 and 76 in a row; stderr with **200**
+`process N died: unbound error: unbound symbol: def-face`, 7 `editor/serve/serve-manager`, 2
+`ui-run`, 2 `editor/serve/shared-hub`, 2 `editor/serve/serve-shared-manager`, 1
+`highlight-spans`. The same names, in the same proportions, as the first run of the day on
+`4027b8ca` and as KI-80's third-pass sighting of 2026-08-29.
+
+**What rules KI-119 out for this one.** KI-119 needs the stdlib image to be REPLACED between a
+process's boot-time index and a module's first materialisation. Here the image for this tree
+was written once, by nextest's setup script at 14:13:33, and its mtime was unchanged when the
+run finished 17 minutes later. Nothing else was running on the box (the release build and
+clippy had been killed for memory before this run started). And the wrapper looped alone
+under `BROOD_SCOPE_DBG=1` beside a `cargo nextest run -p cli -p nest` loop never produced
+this shape — its one failure was KI-119's bare `set`.
+
+**What the names say.** `def-face` is a root-level name from `std/face.blsp`, referenced bare
+by `tests/face_test.blsp` (13 tests, all `:isolated`, several spawning 8 workers that call
+`face`); 200 deaths is many more processes than that file has tests, so children are dying,
+not only workers. `editor/serve/*` are qualified references from `serve_test`/`sse_test`; `ui-run`
+and `highlight-spans` bare ones from `ui_test`/`highlight_test`. All editor-cluster modules,
+all loaded on demand by the files that use them — inside those files' `%isolate`s.
+
+**What is not known.** Whether an `%isolate` restore ran with a live survivor (the third
+pass's theory) — the two hits had no scope tracer armed, and the wrapper prints only F's until
+a summary it never reaches. Which tests failed. Whether the fan-out's *memory* pressure rather
+than its CPU load is the ingredient (the wrapper carries `TEST_DEFAULT_*` memory limits; the
+loaded solo loops that stayed clean ran with the box's memory free).
+
+**Next.** Run the full suite with `BROOD_SCOPE_DBG=1` exported — every test process inherits
+it, it prints only at a restore that has a live survivor, and nextest prints the wrapper's try-1
+stderr when it fails — then read the `[scope]` lines against the death lines. **Not**
+`BROOD_IMAGE_TRACE`: its per-section timing lines differ between engines and reddened 25
+output-comparing tests (`error_format_parity`, `complete`, the differentials) on the one run that
+tried it, which passed the wrapper and so learned nothing. Tally so far: hits on 2 of 4 full runs
+(`4027b8ca`, `b405c49f`), misses on the KI-119 proof run and the instrumented one. If a restore with
+survivors precedes the wave, the third pass's theory stands and the survivor's ancestry names
+the leaking test; if none does, the next tool is `BROOD_REG_TRACE=1` on a narrowed run, since
+`*features*` saying "loaded" over an unbound module is the state that would explain a
+`(:use …)` importing nothing. Also worth doing regardless: `face_test`'s fan-in receives have no
+`after`, so a dead child is a 600 s hang rather than a failure — the reason this reads as a
+timeout instead of a named case.
+
+**Resolution 2026-09-08 — the instrumented run named it, and it was not the rollback KI-80
+guessed.** With `BROOD_SCOPE_DBG=1 BROOD_TEST_TRACE=1` exported to every test process, the
+hit came with the wrapper's per-test trace intact, and three default-on-where-safe diagnostics
+(added this session) told the whole story on stderr:
+
+```
+supervisor: child :flaky failed to start: flaky: cannot start
+[refer] (:use editor/ui) imported NOTHING — no public `editor/ui/` global is bound; *features* lists it: true, mid-load: false, pid=Some(1) scope=270
+[unbound] std module `editor/serve` is recorded as loaded but `editor/serve/serve-manager` is not bound — pid=Some(3773) scope=298
+```
+
+`*features*` lists `editor/ui` as loaded while not one `editor/ui/` global is bound — the
+"recorded loaded, globals missing" state — and it is **pid 1, the runner itself**, hitting it
+while loading a later file's `(:use editor/ui)` header. So the poison was written into the
+runner's own base `*features*` by an earlier file and persisted.
+
+**Mechanism.** The scoped runner quiesces once per file:
+`(%isolate (fn () (let (before (proc/list) results (drain-one-file loader)) (test-quiesce-file before) results)))`.
+`test-quiesce-file` took ONE pass — snapshot `(proc/list)`, kill every non-`before` process,
+await. But the supervisor lines show a supervisor is *among* those stragglers, and killing its
+child makes it respawn. A replacement spawned after the pass's snapshot — or in the window
+between the pass returning and `%isolate`'s `restore_globals` — is not in `before`, was not
+killed, and is alive as the globals roll back. It loads an editor module (`env_define`s
+`editor/ui/*`, then `provide`s it); the restore wipes those globals but the `provide`,
+serialized with restore under the registry lock (KI-89's lock), lands *after* it and re-adds
+`editor/ui` to the restored `*features*`. Sticky from the next snapshot on. This is KI-89's
+exact asymmetry — a registry write surviving a restore that rolled back the plain globals
+beside it — for `*features*` + a module's own globals rather than `*record-ids*` + a
+constructor. KI-80's third pass attributed the earlier sighting to the `%isolate` rollback and
+fixed three real things around it; the rollback was downstream, the un-quiesced respawn was the
+cause.
+
+**Fix** (`std/tool/test.blsp`). `test-quiesce-file` now LOOPS (`test-quiesce-rounds`, bounded at
+20): each round re-scans the non-`before` set, kills all of it — the supervisor included, so it
+stops respawning once its restart intensity is spent or it is simply dead — awaits, and repeats
+until the set is empty. A parked leaker dies in round one; a respawning supervisor takes a few.
+The bound means a pathological respawner warns (`still spawning after 20 kill rounds`) and the
+restore proceeds anyway, which is no worse than the single pass and never a hang.
+
+**Diagnostics kept** (this session, so a recurrence self-reports rather than costing another
+week): `%refer` prints `[refer] (:use mod) imported NOTHING …` on stderr, default-on, since a
+refer-all of nothing has no legitimate shape; `unbound_error` prints `[unbound] std module `m`
+is recorded as loaded but `m/x` is not bound` under `BROOD_SCOPE_DBG` (gated — a typo on a std
+name looks identical); `BROOD_TEST_TRACE=1` arms the runner's `--trace` from the environment so
+the nextest wrapper, which nobody passes flags to, names each result as it lands even when
+killed at its cap. All three are in `docs/known-issues.md`'s catalogue via `debug_flags.rs`.
+
+**Verified.** Before: ~40% of full loaded runs hit the wave (KI-119 proof run clean, but the
+`4027b8ca`, `b405c49f` and one instrumented run all hit it — 3 of ~7). After: two full runs
+under the same `-j 6` concurrent load and tracers, **0 unbound deaths, 0 `[refer] NOTHING`, 0
+give-ups**, wrapper green. The guard `crates/nest/tests/file_boundary_quiesce.rs` follows the
+new per-round wording and asserts the leaker dies in the first round (no give-up). The two
+tests that reddened under the tracer export — `mono_differential` (compares two arms' stdout,
+which the trace timing perturbs) and the old-wording `file_boundary_quiesce` — both pass
+un-instrumented; they were the instrumentation, not the fix.
+
+**Residual.** The fix is a bounded loop, not a hard guarantee: a supervisor that out-respawns 20
+kill rounds would still slip a straggler through and warn. None observed. The deeper guarantee —
+an isolate restore that cannot be raced at all — is the `%isolate`/scheduler design question
+KI-89 and this entry both circle; the loop closes the window this bug used, loudly.
+
+## KI-119 — a module materialised from the stdlib image came back with another module's bytes ✅ fixed 2026-09-08
+
+**Symptom, three shapes in one afternoon, all under load.**
+
+1. A full `make test` on `4027b8ca`: `brood_suite_passes` **TMT at 900.040 s** on try 1, passed
+   on try 2 (`FLAKY 2/2`). The captured try-1 stdout has F-waves (15, 46, 19, 64 in a row); its
+   stderr names spawned children dying `unbound symbol: editor/serve/serve-manager`, `ui-run`,
+   `def-face`, `highlight-spans` — KI-80's third-pass shape, verbatim.
+2. The wrapper binary looped alone with `BROOD_SCOPE_DBG=1` beside a `cargo nextest run -p cli -p
+   nest` loop: run 1 died `process 3735 died: 156:46: unbound error: unbound symbol: set` — bare
+   `set`, in `tests/set_test.blsp`'s `st-build-echo` child — and then sat until my 700 s timeout:
+   the parent's `(receive)` has no `after`, so a dead child is a hang until the 600 s batch
+   deadline, which plus the rest of the run is more than the 900 s cap. **Zero `[scope]` lines** —
+   no `%isolate` restore ran with a live survivor. The rollback theory KI-80 settled on does not
+   survive that run.
+3. The concurrent load loop's third pass: `nest::startup_image
+   an_imaged_start_follows_transitive_require_edges` — a FRESH `nest run` in a scaffolded project,
+   no test runner, no isolate — died `1000:13: unbound symbol: file/regular?` at
+   `nest/run-program`. Looped alone with `BROOD_IMAGE_TRACE=1`: **1 of 40**, then **1 of 40**
+   again with `BROOD_SCOPE_DBG=1` (still no `[scope]` line), this time
+   `509:29: unbound symbol: format/vec->list` at `package/package-lock-index` — and the same
+   process's own trace shows `[image] format` materialised, with **20 entries**. A healthy
+   `format` section holds **172**.
+
+That last number is the whole diagnosis: the process read a *different module's bytes* under
+`format`'s name. `vec->list` exists, is public, and `format` was "installed"; it was some other
+section.
+
+**Mechanism.** `%image-index` reads the header, footer and directory at boot and hands Brood a
+`{name → [offset len]}` map. `%image-load-section` runs LATER — on each module's first
+`require`, seconds or minutes after — and re-opened the file **by path** (`read_at(path, off,
+len)`), then seeked to an offset from that boot-time directory. In between, the file at that
+path gets replaced: nextest's `build-std-image` setup script writes it on every invocation
+(so every one of my loops did, on every iteration), `nest` rebuilds it on any command that
+finds it stale or missing, and the writer's own comment promised this was harmless because
+"both wrote identical bytes anyway (the content is a pure function of `stdlib-id`)". **It is
+not.** Three builds of one unchanged tree, same binary, same id:
+
+    ce4d6c8a0ff84bfd  3005157 bytes
+    db117e1c4787e15a  3005157 bytes
+    ad6d5a5eb858513c  3005157 bytes    — differing from byte 103 on (right after the header)
+
+Same size, different layout — section order and encoding vary run to run — so every rebuild
+moves every offset. The rename is atomic, so no reader ever saw a torn file; every reader saw
+a *complete, valid, different* file through a directory that described the previous one. A
+section decoded at the wrong offset either defines another module's names (harmless, and the
+requested module's names never arrive — the `format`/20-entries case) or runs off the end and
+answers nil (the source path then loads it — the silent recovery that kept this at one-in-N).
+
+Why it presents as KI-72's "wrong answer as a hang" and KI-80's mass F's: the name is missing
+in *every* process of the runtime at once, so whichever spawned children reach it die together,
+their parents wait on replies that never come, and the wrapper's 600 s batch deadline plus the
+rest of the run exceeds its 900 s cap — a TMT line with the names hidden behind it. It needs
+load only because load is what makes an image rebuild land *between* a boot and a module's
+first use in some other process on the box.
+
+**Fix** (`crates/lisp/src/builtins/startup_image.rs`). `%image-index` opens the file once and
+keeps the handle in `OPEN_IMAGES`, keyed by path; `%image-load-section` reads from that
+handle, never from a fresh open. An open descriptor pins the inode across the writer's rename,
+so a directory and the bytes it indexes cannot come from two builds. Re-indexing a path
+deliberately adopts the file now on disk (that is what `%std-image-reinstall!` is for, KI-105).
+One handle per indexed image, held for the process's life. The lookup takes its hit out from
+under the registry lock before the miss path re-locks it — the sabotage that first tried
+`open_image` inside the `if let` deadlocked, which is worth knowing about `std::sync::Mutex`.
+
+**Guard.** `tests/startup_image_test.blsp` "a section is read from the file that was indexed,
+not the one at the path now": write an image, index it, write a *shorter* valid image with the
+same stamp over the path, load the indexed section — it must still define its global. With the
+reader sabotaged to open per read, the load runs off the end and answers nil: **21/22**; with
+the fix **22/22**. The replacement is deliberately shorter so a path read cannot pass by luck.
+
+**After the fix.** The rebuild-then-`nest run` loop that failed 1/40 and 1/40 ran **0/60**; a
+full `make test` beside it (so the stdlib image was rebuilt some sixty times during the run —
+the adversarial condition) came back 1417/1418 with `brood_suite_passes` green on try 1 in
+201 s, the one red being `doc_refs` reading this file mid-edit (green on rerun). One
+sighting's-worth of evidence, not proof of absence; the fix is argued from construction — an
+open descriptor cannot see a rename.
+
+**What this closes — and what it does not.** It closes the `nest run` sightings (3) and the
+wrapper run whose failure was bare `set` (2): both happened while another process was rebuilding
+the image. It does **not** close the wrapper shape in (1): on the fixed tree, with the image
+rebuilt exactly once at the run's start (mtime 14:13:33, untouched for the 17 minutes after),
+`brood_suite_passes` went TMT at 900 s again with **200** children dead on bare `def-face` and
+the `editor/serve/*` names — see **KI-120**, open. So the wrapper has had at least two
+mechanisms under it, and KI-80's third-pass attribution to the `%isolate` rollback may yet be
+right for that one; what is settled is that it was wrong for the `set` and `nest run` runs,
+where the scope tracer printed nothing. KI-72 (a section replaced a stub before its helpers
+were bound) and KI-105 (a prelude image carrying a stale directory) are two other members of
+this entry's family — a directory and its bytes disagreeing — and this is the one that needed
+neither the prelude image nor a stub.
+
+**Also recorded here, found on the way.**
+- Twelve orphaned `sh -c 'while :; do :; done'` load spinners from a 2026-09-03 KI-88 hunt
+  had been pinning nine to twelve cores of this box for **4 days 18 hours** (their `timeout 400`
+  parents died with that session's shell; a SIGKILLed `timeout` does not take its child).
+  Every figure taken on this machine in that window was ~2.5x inflated — `artifact_matrix` 66 s
+  → 26 s clean, `complete` 22.4 s (the "unexplained doubling" in `.config/nextest.toml`) →
+  **5.7 s** clean — and they turned `artifact_matrix` into a 120 s TIMEOUT once. Before
+  believing a timing or a timeout on a dev box: `cat /proc/loadavg`, `pgrep -af 'while :;'`.
+- `nest test --trace` reds the five `tests/runner_progress_test.blsp` cases: `progress-mark` is
+  suppressed under `*test-trace*`, so `with-out-str` captures "". Cosmetic; not fixed here.
+- `tests/set_test.blsp`'s fan-in `(receive …)` has no `after`, so a dead child is a hang rather
+  than a failure. Left as is: the runner's batch deadline names it, and the test is right to
+  expect the message.
+
+## KI-116 — the strict warnings that are the checker being right ☑️ not a bug 2026-09-08
+
+**Symptom.** After the 269 -> 9 sweep, nine warnings remain that no declaration or guard
+removes without changing what the test asserts.
+
+| shape | why it is right |
+|---|---|
+| `(rcmp [a b] …)` ×2 | only `self` dispatches on a concrete id. `b` is any implementor — comparing a circle with a rect is legal — so `(get b :r)` on a rect really is nil |
+| `{:keys [a b] :or {b 40}}` | `b` is `40 \| nil` by the destructuring's own semantics, which is the thing under test |
+| `c-first-vec` under `-> string` | `first` of an empty vector is nil; the contract test asserts the declared return is enforced |
+| `lineedit-kill-line` | the lineedit state is a plain map with no declared shape. Declaring `lineedit-move`'s return `map` merely MOVES the warning into `std/` where the project check cannot see it — traded one visible warning for two hidden ones, and was reverted |
+| `math/pow` ×4 (chudnovsky) | answers `number` because a negative exponent yields a ratio. The exponents here are non-negative literals, but the values flow through top-level `def-`s whose types do not carry the int |
+
+**Why this entry was wrong before.** Its first revision said TWENTY warnings were of this
+kind. Eleven were not: they were regex substitutions written and never verified, whose
+non-matches were then reported as deliberate. `docs_test`, `gen_test`, `layers_test`, the
+`nt-wrong` pair and the `grow` helpers were all fixed in one pass once actually read.
+
+Two more were named here as limitations of the checker's arithmetic and were not:
+
+  - `(* int int)` is `int` — the int-closure rule exists and is right. The gap was that an
+    ability impl's `self` was not seeded with the record it dispatches on.
+  - `math/max` answers the union of its operands — the extremum rule exists and is right.
+    It was not firing because a test helper's parameters were untyped.
+
+A third of the same shape was found and fixed while correcting this entry: a multimethod's
+params bound unknown although its dispatch key (`[:int :string]`) states them positionally.
+
+**Fix.** None wanted for the nine. The deliberate non-fix is the entry.
+
+**Guard.** None — the warning IS the guard, it says the union is real. What needs guarding
+is the reflex to silence it. Two ways that goes wrong, both hit here:
+
+  - **Coercion changes meaning.** `(count (str (json/decode …)))` type-checks and counts
+    CHARACTERS where the test counts ROWS. Caught only because two assertions went red; it
+    would have read as green had the numbers coincided. Narrow (`(if (vector? x) x [])`),
+    never coerce.
+  - **A declared sig is authoritative, so a wrong one is worse than none.**
+    `(sig mk (int -> int))` on a helper answering `[n :tag]` was rejected immediately.
+
+## KI-115 — `io/puts` output never reaches the playground page ✅ fixed 2026-09-07
+
+**Symptom.** On the deployed playground and the `/docs` runnable examples, printed output was
+missing and only the last form's value appeared:
+
+    (io/puts "hello, brood")
+    (+ 1 2 3)
+    => 6                      ; expected: hello, brood, then 6
+
+**Cause.** `Process::save_ctx` ended a quantum with `CURRENT = None` rather than restoring the
+context the quantum displaced. On a worker thread that is the same thing — the thread runs
+processes and owns no context — so it was correct for as long as processes only ran on
+workers. On wasm there are no worker threads: `ProgramExit::wait` calls
+`pump_until_quiescent`, driving the run queue on the CALLING thread, so a quantum runs on top
+of the caller's own context. `playground::run` calls `begin_stdout_capture()`, which creates
+that context and puts the capture buffer in it; the snippet's quantum then cleared it, and
+`take_capture()` returned `None`. Output went to real stdout, which in a browser is nowhere.
+
+**Why it survived.** Three layers, each reasonable alone:
+
+1. This bug was already fixed once — `f8f647b4`, "a root program never inherited the caller's
+   stdout capture" — and guarded by `root_program_capture.rs`. That guard asserts
+   `run_program`. The playground calls `run_program_repr`.
+2. `run_program_repr` was `#[cfg(target_arch = "wasm32")]`, as were `ProgramExit::result`,
+   `set_result`, `take_result` and `ProgramState::last_repr`. The whole result path existed
+   only on wasm, so **no host test could name the function that ships** — a fix written for
+   this exact bug could only be verified against its neighbour.
+3. `test_drive_quanta`'s doc comment instructed callers to drive "from a **fresh** thread (not
+   the spawner's), so `run_one`'s per-quantum ctx install doesn't clobber the caller's process
+   ctx". The defect was recorded as standing advice rather than filed, and the workaround it
+   recommends is unavailable on the one platform that needs it.
+
+**Fix.** `install_ctx` pushes the displaced `CURRENT` onto a thread-local `DISPLACED` stack;
+`save_ctx` pops and restores it. A stack rather than a slot because a pump re-entered from
+inside a quantum would otherwise lose a frame silently. The five `#[cfg(wasm32)]` items above
+are ungated so the shipped path is testable off-wasm (measured first: 200 top-level forms each
+a 20k-element vector run 0.58s ungated vs 0.60s gated). `test_drive_quanta`'s doc now records
+that driving on the caller's thread is safe, and why. Two cosmetics went with it: the joiner
+added a newline to a `captured` that already ended in one (a blank line between output and
+value), and `playground::run`'s doc still credited capture to `print`/`println`, names that
+have never been bound.
+
+**Guard.** `crates/lisp/tests/same_thread_capture.rs` — workers disabled, a root program
+spawned and its quanta driven on the spawner's own thread, asserting the caller's capture
+survives and holds `hello, brood\n`. Its own test binary, since `set_test_no_workers` is
+process-global. Sabotage-verified: restoring the `CURRENT = None` line fails it with
+`left: None, right: Some("hello, brood\n")` — the production symptom exactly. Also verified
+end to end against a locally built wasm in node, before and after:
+`"6"` → `"hello, brood\n6"`.
+
+## KI-114 — the native JIT turns an int into a float across a call ✅ fixed 2026-09-07
+
+**Symptom.** On brood v0.26.0, `pong` fails 22 of its 101 tests, all with the same shape:
+
+    rem: expected int, got float (-16.0)     :code E0030
+      at math/mod                 (std/math.blsp:611)
+      at pong/pong/spawn-burst-acc (src/pong.blsp:618)
+
+The wrong values are always whole-numbered floats — `-16.0`, `9.0`, `104.0`, `175.0`,
+`194.0`, `299.0`. The expression is `(mod (+ hue (round (* 120 (- c 0.5)))) 360)` where
+`hue` is an int literal (25 at the `crowd-crash` call site) and `round` is `math/round`
+under `(:use math)`, which returns an int.
+
+**Cause.** Not yet identified. Bisected to the native JIT tier:
+
+| lever | result |
+|---|---|
+| default (v0.26.0) | 79/101 — **fails** |
+| `BROOD_NO_JIT=1` | 101/101 — passes |
+| `BROOD_VM=0` | 101/101 — passes |
+| `BROOD_NO_TW_REENTRY=1` (ADR-318 router) | 79/101 — still fails |
+| `BROOD_NO_INLINE=1` | 79/101 — still fails |
+| v0.25.2 (d0af81f7), default | 101/101 — passes |
+
+So it is the native tier specifically, and neither the ADR-318 router nor the self-inliner.
+`BROOD_JIT_BAIL_TRACE=1` reports both math arms REFUSED:
+
+    [jit-bail] arm=math/round reason=call-mediated-boxed
+    [jit-bail] arm=math/round reason=lowering-returned-none
+    [jit-bail] arm=math/mod   reason=call-mediated-boxed
+
+— so neither `round` nor `mod` is JIT'd, and the corruption is in a JIT'd **caller**
+(`spawn-burst-acc`) mishandling the value returned across the call boundary. That matches
+the observed symptom exactly: an int result arriving as a float.
+
+**Why it survived.** brood's own 5597-test suite is green, and so is every other package in
+the ecosystem — pong is the only one whose hot path threads a PRNG float through
+`round` into `mod` often enough to be admitted. It also cannot be seen from a single call:
+the same function called once, or 3000 times with an unthreaded seed, is correct under both
+engines. It needs the JIT to admit the arm AND a value that exercises the miscompiled path.
+
+**Located, 2026-09-07 — `math/round` returns a FLOAT.** Instrumenting pong at the failure
+point names the operand exactly:
+
+    BAD  hue=149 int?=true   rr=-33.0 int?=false   c=0.224...
+
+`hue` is a clean int; `rr` is `(round (* 120 (- c 0.5)))`. Inlining `round`'s body
+(`(if (< x 0) (- (math/floor (+ (- x) 0.5))) (math/floor (+ x 0.5)))`) narrows it one step
+further:
+
+    y=-33.118 float?=true   fl=33 int?=true   rr=-33.0 int?=false
+
+`math/floor` correctly answers the **int** 33 — it is Brood's one Float->Int primitive — and
+then `(- fl)` answers **-33.0**. Unary negate of an int is publishing a float. Only the
+NEGATIVE branch of `round` is affected, which is why every bad value observed is negative.
+
+**Mechanism.** `-` is `((x) (%sub 0 x))` in `std/prelude/core.blsp`, so the zero is an int and
+the expression is int-typed. But `-`'s arm is profiled FLOAT (pong runs a great deal of float
+arithmetic through it), so the lowering takes the float path, and since
+`62cbe29f perf(jit): a float-context arm applied to an int promotes it instead of deopting
+(KI-109)` an int operand read through `as_f64` is promoted with `fcvt_from_sint` rather than
+deopting. Promotion is sound for a genuinely mixed operation — `(+ 1.5 2)` IS 3.5 — but not
+when the operand's own type decides the result's, which is exactly `(%sub 0 x)`. Before that
+commit the int deopted to the VM and the result stayed an int. `62cbe29f` is dated
+2026-09-05, inside the v0.25.2..v0.26.0 range, which matches when this appeared.
+
+**A fix that did NOT work, recorded so it is not retried.** Restricting the promotion to
+`Op::Slot` and restoring Float-only-or-deopt for `Op::Handle` (call results) leaves pong at
+79/101. The value reaches the subtraction as a plain slot, not a handle — `set_slot_flags`
+maps `Op::Handle` to not-float, so the call result is stored unflagged and read back as
+`Op::Slot`. Slot promotion is the same path KI-109 needs, so the two cases are
+indistinguishable at that level and the fix has to be higher up: either the float path must
+not be chosen when the other operand is an int constant, or an arm whose result type follows
+its operand must not promote.
+
+**The minimal repro the earlier attempts missed — fourteen lines, no PRNG.** The copy of
+`spawn-burst-acc` did not reproduce because the *shape* is irrelevant. What matters is that
+the shared `-` arm is float-profiled BEFORE an int reaches it, which a standalone module
+that only ever calls it one way never arranges:
+
+    (defn burn (n acc)
+      (if (= n 0) acc (burn (- n 1) (+ acc (- 1.5)))))   ; float-profiles `-`
+    (burn 400000 0.0)
+    (defn probe (x) (- x))
+    (probe 33)   ; => -33.0 with the JIT, -33 with BROOD_NO_JIT=1
+
+Two lessons for the next miscompile of this class. **The arm to reproduce is the one that
+was profiled, not the one that computes wrongly** — every earlier attempt rebuilt
+`spawn-burst-acc`, whose only role is to run enough float arithmetic to mislabel a *prelude*
+slot. And **the tools were not silent for the reason recorded**: `BROOD_JIT_DUMP_IR` and
+`BROOD_JIT_BAIL_TRACE` work on a plain release build (the JIT is a default feature); the
+earlier reading of "silent" came from a stale `target/release/nest` — `cargo build --release
+--bin brood` does not relink `nest`, which is what `nest test` runs.
+
+**Fix — `emit::as_f64_pair` (`jit_lower/emit.rs`), used by all three float-arith lowerings
+in `prim.rs`.** The rule is the VM's own: an operation is float arithmetic **iff at least one
+operand is a float**, and only then is the other coerced. So promotion is licensed
+per-operand by the *other* operand being proven float — which is why the pair is now read
+together rather than by two independent `as_f64` calls: neither operand can decide alone. A
+`Prim2SlotInt` whose literal is an int therefore needs its slot to be a float outright; two
+tagged operands take a fused test that keeps the both-float path at its original two
+branches, so the guard is not paid for in the hot float loops it does not concern.
+
+This restores `op_is_float`'s documented contract — *a wrong guess is safe: a deopt, not a
+miscompile* — which KI-109 had quietly voided while fixing a genuine stall. KI-109's own
+case (`->float` is `(* 1.0 x)`) still promotes: the `1.0` is an `Op::Float`, i.e. proven.
+
+**Guard.** `crates/cli/tests/float_profile_int_stays_int.rs` — runs the real binary and
+requires the JIT to agree with `BROOD_NO_JIT=1`, pins `(- 33)` and `(math/round -16.4)` as
+ints, and pins the KI-109 direction (a float+int op still promotes, and `mix` does not
+`deopt-thrash-latched`). Sabotage-verified: restoring the unconditional promotion at
+`Prim2SlotInt` reddens it, and an over-strict gate reddens `float_context_int_operand.rs`.
+The file states in its own header what it does NOT cover — no program written for it reached
+the `Prim2SlotSlot` or `Prim2`-handle lowerings with a wrong guess (those arms either never
+tier or thrash-latch on the int path first), so those two carry the same rule on the argument
+that the unsoundness is identical, not on a test.
+
+## KI-113 — `BROOD_CONTRACTS=1` could not load eleven std modules from source ✅ fixed 2026-09-06
+
+Found while checking upstream's new `std/net/dns.blsp` under contracts: `BROOD_CONTRACTS=1
+brood --test tests/dns_test.blsp` died at boot with `1:1: type error: first: expected list,
+vector, set, map or bytes, got symbol (int)` — and so did `bytes_test`, and every other file,
+whenever the cache directory held no current stdlib image. With the image present the same
+commands pass, because a materialised module restores its bindings and never evaluates its
+`(sig …)` forms; the source path is the only one that reaches them, and nothing in CI takes
+it under contracts (`contracts_mode.rs` booted a small program that requires only `string`).
+
+**Mechanism 1 — a bare type on a value.** Three sigs declare a value's type rather than an
+arrow: `(sig *check-oversample* int)` in `project`, `(sig *test-timeout-ms* int)` in `test`,
+`(sig *lineedit-indent-width* int)` in `editor/lineedit`. Under contracts `sig` becomes
+`sig!`, which asks `%sig-pos` where the `->` is — and `%sig-pos` walked the "list" with
+`first`, on a symbol. Every module that transitively loads one of those three failed:
+`codemod`, `coverage`, `debug`, `docs`, `editor/lineedit`, `eval-server`, `format`, `mcp`,
+`nest`, `observer`, `package`. Fix: `%sig-pos` answers -1 for a non-list, so `sig!`'s own
+"not an arrow — nothing to enforce" branch is reached, which is what a value sig meant all
+along.
+
+**Mechanism 2 — a sig above its definition that the placement gate could not see.**
+`std/editor/pane.blsp` had `(sig pane-layout-go …)` above its `defn-`, both indented inside a
+`(check-allow :non-tail-recursion …)` wrapper. `sig_placement.rs` matched sig lines at column
+0 only (its `def_name` was already indentation-blind, its `sig_name` was not), so the gate
+that exists for exactly this passed. Under contracts an above-defn sig DEFERS its contract to
+the next `provide`; the loader calls `provide` after `%load-module-source` returns, i.e. after
+the reserved-name exemption ends, so the shim's `def` of a std name was refused. Fix: the sig
+sits below its definition, and the gate trims indentation. The one other above-defn sig the
+widened scan found, in `telemetry`'s event-emitter template, was reordered as well.
+
+**Mechanism 3 — the shim was not hygienic.** With the modules loading, `project_test` under
+contracts died in `proc/info` with `proc/list: expected 0 arguments, got 1`, from a frame in
+`proc/list` that `info` never calls. The `sig!` shim template built its argument list with a
+bare `(list ~@params)`, and the shim is expanded INSIDE the module being contracted — where
+a bare name resolves to that module's own definition first, so in `(defmodule proc)` it was
+`proc/list`. Every prelude function the template emits (`list`, `str`, `pr-str`, `apply`,
+`type-of`, `type-matches?`) is root-scoped now (`/list`, …), the idiom `control.blsp`'s
+capture macro already used for `/str`.
+
+**What a sweep of every test file under contracts from source then turned up (same day).**
+With the modules loading, 39 of 235 files failed. The conformance files need `nest test`'s
+load path for their corpus helper and fail identically without contracts — a sweep artefact.
+The rest were four more shapes, all fixed:
+
+- **Arrow-typed callback parameters never matched.** `type-matches?` dispatched on a list
+  type's HEAD, and an arrow's head is its first parameter type — so `(map -> int)` fell into
+  the `map` branch and rejected every function argument (`coverage-sum`, and every HOF with a
+  declared callback). An arrow is checked first now and matches any callable, which is all a
+  contract can say about a function value.
+- **Contracted functions lost their docstrings.** A docstring lives on the closure, and the
+  shim was a fresh `(fn …)`: `doc`, `apropos`, `doc-search` and the surface audit went blank
+  for every signed function in the one mode meant for careful reading. `sig!` now reads the
+  original's docstring at expansion time (by the qualified name `%register-sig` returns) and
+  splices it into the shim. `%sig-doc-forms` tests with `type-of`, not `string?`, because the
+  prelude's own sigs expand before `predicates.blsp` exists.
+- **The held originals were public gensym globals.** `(def orig123 name)` per contracted
+  function showed up in `reflect/global-names`, apropos, completion and the doc catalogue's
+  "nothing falls through to `:other`". They are `def-` now.
+- **Signed private helpers went public.** The shim's `def` is a plain global definition,
+  and `env_define` clears the private mark on every one (ADR-146), so `path/path-last-dot`,
+  `seq/shuffle-at`, `string/trimr-to` and the like appeared in the doc catalogue. `sig!`
+  re-marks a private original private after the rebind, the way `def-` does.
+- **Four signatures that were simply wrong**, and only a runtime contract could tell:
+  `seq/subvec` declared two fixed parameters over a `& more` end (`(vector int & int ->
+  vector)` now); `table/get` declared two over a three-argument primitive (`&optional any`);
+  `tls/self-signed` declared `list` over a primitive that allocates a vector — the Rust `Sig`
+  said `list` too, so the checker agreed with the wrong answer; both say `vector` now; and
+  `nest/main` declared `vector` over the LIST the router builds, which refused every
+  Brood-routed `nest` subcommand under contracts.
+
+**Residue: the budget half is fixed; the rest stays, deliberately.** With everything above
+in, a contracts-mode run of the whole test tree from source still reds a handful of files,
+all for reasons that are the mode itself rather than a bug.
+
+**Fixed 2026-09-08.** `audit_test`, `doc_examples_test`, `prng_test` and `resolver_test`
+exceeded the 120 s per-test budget (every std call is wrapped; the doctest runner evaluates
+thousands of examples), and were therefore reported as **TIMED OUT** — the one word that has
+to keep meaning "this test stopped making progress". Four slow tests presenting as four
+hangs is what makes a real hang unreadable, so `*test-timeout-ms*` is now `600000` when
+`BROOD_CONTRACTS=1` and `120000` otherwise. Coarse on purpose: the ceiling only has to
+separate "slower because everything is checked" from "not running". It does not lift the
+nextest wrapper's own 300 s cap — contracts mode is driven directly, not under nextest.
+
+**Not chased, and the reason.** `maps_test` asserts the KERNEL's `nth` message
+(`integer index`), which the shim's argument check now pre-empts with its own; the three
+`jit_*` tests assert lowering decisions on shapes the shims change; and `record_test`,
+`sig_adoption_test`, `ability_test`, `std_check_test` are CHECKER tests whose warnings differ
+against a live image in which every std signature is a shim (`(sig ghost …)` itself expands to
+a deferred contract, not a declaration). Every one of those is the shim being *visible*, which
+is the mode working; marking them `:skip` under contracts would put "does not hold under
+contracts" into seven files that have nothing to do with contracts, to make green a
+configuration nothing runs. Contracts mode is a dev switch, not a suite configuration; what
+it must do — boot, load every module from source, enforce — is gated, and the reading it is
+actually used for (point a signed module at it and see what the contracts say) is unaffected
+by any of the seven.
+
+**Gate.** `contracts_mode.rs::every_baked_in_module_loads_under_contracts_from_source`:
+a fresh `XDG_CACHE_HOME`, `BROOD_NO_STDIMAGE=1`, `BROOD_CONTRACTS=1`, a program that
+`require-one`s every `(reflect/builtin-modules)` entry and prints each failure by name.
+Sabotage-shaped by construction: it is the bisect that found both shapes, and it fails on
+either alone.
+
+**Trap.** A contracts-mode reading taken on a machine with a current stdlib image says
+nothing about the sig forms in `std/` — they did not run. Check it with a private cache
+directory, or `BROOD_NO_STDIMAGE=1`.
+
+
+## KI-123 — KI-117's per-frame trace push cost `errors-deep` 61% ✅ fixed 2026-09-10
+
+**What was seen.** The 0.27.0 Brood-column refresh in `brood-benchmarks` read `errors-deep`
+at **131 ms against a published 76 ms (+72%)** — across three interleaved harness invocations
+that agreed to 0.6%, so not the turbo-plateau shape `regex` and `wordcount` have. Every other
+row on the sweep was flat or improved (`startup` −18%, `reduce` −18%, `http` −16%).
+
+**Where it came from.** Bracketed with `make ab --floor`, one row, best-of-7:
+
+| base | errors-deep base → working tree | verdict |
+|---|---|---|
+| `c9876132` (the commit *before* KI-117's fix) | 100 → 161 ms | **+61.0%**, floor 1.0% |
+| `04e0fe36` (KI-117's fix itself) | 160 → 154 ms | −3.8%, floor 1.2% — noise |
+
+So the whole regression enters at `04e0fe36`, "a native frame records itself as an error exits
+it", and nothing in the two days after it contributes.
+
+**The mechanism.** `brood_rt_trace_push` is called once per native level as an error unwinds.
+It built the `TraceFrame` first — `arm.src_file.as_deref().map(str::to_string)`, an allocation
+and a copy — and only then called `push_trace`, which *drops* the frame when the trace is at
+`MAX_TRACE_FRAMES` (32) or the error is a control signal. `errors-deep` throws 50 frames deep
+50,000 times: 2.5M frames built, 1.6M kept, where before the fix there were none at all.
+
+**The fix, in two parts** (each measured separately against `c9876132`):
+
+1. **Return early on `is_control() || trace_full()`** — +61% → +51%. This is not a new idea:
+   `attach_vm_trace_callers`, the VM's own walker three files over, has consulted `trace_full()`
+   since it was written, and `LispError::trace_full` is documented as "frame walkers use this to
+   stop early". The JIT callback simply never asked.
+2. **`TraceFrame.file` is `Option<Arc<str>>`, not `Option<String>`** — +51% → **+19%**. Every
+   producer already holds the file as an `Arc<str>` (`CompiledArm::src_file`, and `form_pos`
+   for the tree-walker), so the old field type forced an allocation at each of the nine
+   construction sites to store what the caller already had. `TraceFrame.name` was already
+   `&'static str` for the same reason; `file` was the odd one out.
+
+**Residue, deliberately not chased.** ~19% remains against the pre-KI-117 baseline: the
+callback itself (2.5M calls), and the `Vec` growth for the 32 frames each throw does keep.
+That is the price of KI-117 being fixed at all — before it, an error crossing native code
+reached `catch` with an empty `:trace` — and `errors-deep` is a deliberate worst case (50,000
+throws through 50 native frames; the shallow `errors` row measures +2.3% against a 2.3% floor,
+i.e. nothing). Reopen if a real workload shows it.
+
+**Why no gate caught it.** Nothing in this repo measures throw cost: `make ab`'s row list has
+`errors-deep` in it, but a perf A/B is run against the change you are making, and KI-117 was a
+correctness fix whose author had no reason to expect a timing effect. The row that would have
+said so lives in the *other* repo and is only measured when the column is refreshed — which is
+what happened here, three versions late. `staleness.py` exists for exactly this and had been
+saying "refresh me" since 0.24.0.
+
+**Guard.** `tests/jit_trace_test.blsp` (KI-117's own) is what proves the early-out is
+behaviour-preserving — sabotage-verified this session in both directions: making the callback
+return unconditionally reds it (`1 tests, 0 passed`), restoring greens it. Suite 1019 + the
+`.blsp` suite green, clippy `--all-targets --all-features` clean.
+
+## KI-124 — macOS stopped compiling on 2026-09-03 and only a tag could say so ✅ fixed 2026-09-10
+
+**Symptom.** The `Release` workflow for **v0.27.1** built both Linux targets and failed both
+mac ones:
+
+```
+error[E0308]: mismatched types
+   --> crates/lisp/src/subprocess.rs:636:31
+636 |             if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+    |                -----------    ^^^^^^^^^^^^^^^^ expected `u64`, found `u32`
+note: function defined here
+    --> libc-0.2.189/src/unix/bsd/mod.rs:557:12
+557 |     pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+error: could not compile `brood` (lib) due to 1 previous error
+make: *** [release-brood] Error 101
+```
+
+**Cause.** `os/spawn-pty` (f3e524bb, 2026-09-03) makes the pty the child's controlling
+terminal from `pre_exec`. libc declares `TIOCSCTTY` as `c_uint` in its Apple bindings and as
+`c_ulong` on Linux, while `ioctl`'s `request` parameter is `c_ulong` on both — so the literal
+constant is the right type on one platform and the wrong one on the other. Not a logic error:
+it never compiled for macOS at all.
+
+**Why it survived.** This is the whole of it, and it is structural rather than an oversight in
+any one review: **every job in `ci.yml` ran `ubuntu-latest`.** Nothing in the tree was ever
+compiled for macOS outside the `Release` workflow's build matrix, and that workflow is
+triggered by a pushed tag — so the earliest possible detection was *after* a version number
+had been made public. Worse, the two releases in between could not have found it either:
+v0.26.0 and v0.27.0 both failed the tag-matches-the-tree step nine seconds in and never
+reached a compiler (KI-121). Fixing that gate is precisely what let v0.27.1 travel far enough
+to hit this one — a week of macOS breakage surfaced only because an *earlier* blind spot was
+closed first.
+
+**Fix.** `libc::TIOCSCTTY.into()`. The asymmetry is upstream and worth stating precisely,
+because it is what makes the sibling call two hundred lines up compile: libc derives
+`TIOCSWINSZ` from `_IOW`, which yields `c_ulong` and matches the parameter, but `TIOCSCTTY`
+from `_IO` through `ulong_cast_uint`, which yields `c_uint`. So `TIOCSWINSZ` at line 512 is
+deliberately left alone — it is already the right type on both platforms.
+
+`.into()` rather than `as u64` on purpose: Linux types both the constant and the parameter as
+its `Ioctl` alias, which is `c_ulong` on gnu but **`c_int` on musl**, so a hardcoded width
+would have swapped a macOS break for a musl one. The identity conversion is right on all of
+them and cannot truncate. The comment at the call site says so, so that a later tidy-up does
+not read it as a redundant conversion and delete it.
+
+**A second platform trap, one layer up.** The correct cross-platform fix does not compile
+under CI's own lint settings. On linux-gnu — the only target clippy ever runs on here —
+`Ioctl` *is* `c_ulong`, so `.into()` is the identity and `clippy::useless_conversion` fires;
+CI runs `-D warnings`, which makes that a hard error, and per the note in `CLAUDE.md` a red
+clippy step **skips every step behind it**, so the tests, doctests and checker gate would not
+have run at all. The lint is right about the target it can see and wrong about the other four.
+The conversion therefore carries a statement-scoped `#[allow(clippy::useless_conversion)]`
+with the reason written beside it, deliberately not a crate- or function-level allow. This one
+*was* sabotage-verified in the ordinary way: without the allow,
+`cargo clippy -p brood --all-targets --all-features -- -D warnings` fails with
+`useless conversion to the same type: u64` at that line; with it, exit 0.
+
+**Guard.** A new `macos-check` job in `ci.yml` (`runs-on: macos-14`) runs `cargo check` over
+`cli`, `nest` and `brood-lsp` with the feature set CI's release build actually uses, so a
+macOS compile error now reds an ordinary push instead of a tag.
+
+**Getting the guard's scope right took three tries, and the pattern is worth keeping.** Both
+failures were the same mistake — the job checked *more* than the release builds, and each
+extra thing it checked was broken on macOS for reasons no release cares about:
+
+| the extra breadth | what macOS said | why the release never sees it |
+|---|---|---|
+| `--features brood/gui` | `unresolved import winit::platform::wayland`, no `with_any_thread` | `WITH_GUI ?= 0`; the `config.mk` enabling it is gitignored (KI-125) |
+| `--all-targets` | `cannot find function prctl` / `PR_SET_PDEATHSIG` in `crates/cli/tests/support/mod.rs` | a release builds binaries, not tests; that helper is the Linux child-reaper from KI-29 |
+
+The lesson is not "be careful" — it is that a gate's value comes from *fidelity* to the thing
+it guards, and any breadth beyond that is a false positive waiting to block a release. Both
+exclusions are commented in the job so neither reads as an omission.
+
+**On verifying it.** The *fix* is verified on the real targets, not by reasoning about them.
+A full cross-compile to Apple is not possible from this machine — the C build scripts (`psm`,
+`aws-lc-sys`) will not cross — so the check ran through a minimal libc-only probe mirroring
+both call sites. Unfixed, it reproduces CI's error verbatim and exactly once, with
+`TIOCSWINSZ` clean, which is the sabotage direction; fixed, it passes on all five of
+`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`,
+`aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-musl` — the last being the one that
+rules out `as u64`.
+
+The *guard* is the weaker half, and this entry would rather say so than blur the two. Nobody
+has yet watched `macos-check` go red: it was written after the fix, so the first run carrying
+it can only go green. Standing in for a sabotage run is Release run `34478600630`, a recorded
+red from the same runner, toolchain and target on the unfixed source; the new job differs from
+it only in `cargo check` versus `cargo build`, and a type error is diagnosed in the same pass
+either way. If a cheap way to red the job on purpose appears — a throwaway branch with the
+conversion reverted — take it and replace this paragraph.
+
+
+## KI-131 — lazy loading met `%isolate`: the runner's driver died on `math/max` ✅ FIXED 2026-09-12
+
+**Symptom.** Running `tests/lazy_load_test.blsp` or `tests/startup_image_test.blsp` alone,
+the runner itself died — `process 2 died: unbound error: unbound symbol: math/max`, trace
+`test/collect-loop` → `test/run-driver` — 3 of 20 and 4 of 12 runs. Under `BROOD_NO_JIT=1`
+too, which ruled out the one path ADR-335 leaves raising (a native miss). Found the same
+day ADR-335 landed, by looping the new guard file, which is the only reason it did not
+become a standing "flaky when run alone" row.
+
+**Mechanism.** `%isolate` snapshots the global table and swaps it back; it is sound only
+while nothing else mutates globals, and the runner ensures that by quiescing the file's
+workers before an `:isolated` unit runs. ADR-335 adds a mutator the quiesce cannot see: a
+module load on first use, by whichever process first needs the module. The isolated unit
+was the first to use `math`, so `math`'s materialisation landed inside its snapshot and the
+restore removed it — consistently, bindings and `*features*` record together. But the
+runner's driver, running beside the unit (an ancestor, legitimately excluded from the
+quiesce), had called `math/max` in between and was now relying on a module that had been
+taken away. Its next call missed, `global_miss` ran `require-one`, and — because the unit
+might still be mid-restore, or because the driver's own earlier lookups had been served by
+the unit's load — the sequence could leave the driver looking at a table with no `math/*`.
+
+Before ADR-335 the runner was immune by accident: every std module it could touch loaded
+when the `test` module loaded, before any isolate opened, because its references loaded at
+its load. Nothing stated that invariant.
+
+**The first fix was wrong.** The define→`provide` window (KI-89's asymmetry: a swap landing
+between a loader's definitions and its `provide` keeps the record and drops the bindings)
+is real and is now closed — `%isolate` waits for any other process's in-flight load before
+the swap (`wait_for_inflight_loads`, on the `*features-loading*` claim, with a dead-owner
+check and the reap's bound). But it was written first, on that theory, and the loop still
+failed 3/20: the module here was not torn, it was loaded and unloaded whole.
+
+**Fix.** State the invariant and pin it. `(:load a b …)` is a fourth `defmodule` header
+clause — load at this file's load, refer nothing, the explicit eager request in its pure
+form — and `std/tool/test.blsp` `:load`s its dependency closure: `bit dev file humanize io
+json map math os path proc reflect seq stdimage string system`, which is exactly what a
+source load of it under the eager policy pulls in. `crates/cli/tests/test_framework_closure.rs`
+measures that closure (`BROOD_NO_STDIMAGE=1 BROOD_NO_LAZY_LOAD=1`, a probe that requires
+`test` and prints `*features*`) and fails naming any module the clause lacks;
+sabotage-verified by dropping `math`. The new test's head-deferral fixture moved from
+`humanize` to `url` for the same reason: anything in the runner's closure is loaded before
+the test can observe it absent.
+
+**Verified.** 25/25 on the reproducing file, 6/6 with `BROOD_NO_JIT=1`, 4/4 with
+`BROOD_NO_STDIMAGE=1` (a private `XDG_CACHE_HOME`), 15/15 on `startup_image_test.blsp`.
+
+**The lesson worth keeping.** A lazily-loaded module is shared state with a lifetime the
+loader does not control. Anything that rolls globals back — there is one such thing, the
+runner — must either own every load in its window or have what it needs before the window
+opens. `:load` is how a module says the latter about itself.
+## KI-130 — `os/exe-path` names a deleted inode after an in-place upgrade ✅ FIXED 2026-09-12
+
+**Symptom, and why it read as a flake.** `tests/introspection_test.blsp:519` — `os/exe-path`
+"and it points at something that exists" — failed **three consecutive full-suite runs** and
+passed **3/3 solo**. That is the classic signature of a concurrency flake, and it was not one.
+Two things reinforced the wrong reading: adding a diagnostic print made a
+`spawn_monitor_test` case fail *in its place*, and four later full-suite runs came back
+green with no code change. The actual variable was never the suite — it was **whether a
+`cargo build` had replaced the binary since**.
+
+**Mechanism.** You cannot write over a running executable (`ETXTBSY`), so `cargo`,
+`make install`, `cp` and every package manager **unlink the old inode and rename the new
+file into place**. From that moment Linux's `/proc/self/exe` reads `<path> (deleted)`, and
+`std::env::current_exe()` returns it verbatim. Reproduced deterministically:
+
+```
+$ cp target/debug/brood /tmp/brood-copy
+$ /tmp/brood-copy where.blsp &   # prints (os/exe-path) after a sleep
+$ rm /tmp/brood-copy
+exe-path = "/tmp/brood-copy (deleted)"  exists? = false
+```
+
+**Why it matters beyond the test.** `%exe-path` has exactly one job, stated in its own doc
+comment: a shipped app cannot trust `PATH` (a desktop launch inherits a session `PATH` that
+routinely lacks `~/.local/bin`), so "the runtime that installed me is my sibling" is the
+reliable lookup. That lookup is `(path-join (parent-directory (os/exe-path)) "nest")` — and
+it starts returning nothing **at exactly the moment an upgrade happens**, silently, with no
+error for anyone to see. A test noticing it was luck.
+
+**Fix.** `strip_deleted_marker` in `crates/lisp/src/builtins/filesystem.rs` removes the
+suffix. This is not cosmetic — it is the *more correct* answer: after an upgrade the
+replacement binary sits at precisely that path, so the un-suffixed string names the live
+install while the suffixed one describes a dead inode. If nothing is there any more the
+caller gets a path that does not exist, which is honest and is something `file/exists?` can
+act on.
+
+**Guard.** `crates/cli/tests/exe_path_survives_in_place_upgrade.rs` copies the binary,
+unlinks it mid-run, and asserts the answer carries no marker and names the install path.
+**Sabotage-verified**: reverting the strip reds it with
+`".../brood (deleted)|false"` in the message. A second case asserts an intact binary's
+path *does* exist, so the first cannot be satisfied by making the primitive return nonsense
+— the failure mode the sabotage rule exists to catch.
+
+**The lesson worth keeping.** A test that fails only in the full suite is not automatically a
+concurrency problem. Ask what else differs between the two invocations; here it was one
+`cargo build` earlier in the same shell command, and the bug was fully deterministic given
+that trigger.
+
+## KI-129 — a script outside `src/` loads a project module twice: rooted and bare ✅ FIXED 2026-09-12
+
+**Symptom.** From bedit's directory, `nest run /tmp/…/probe.blsp` where the probe says
+`(defmodule probe (:use model))`: `(filter (keys *features*) …)` answers `("bedit/model"
+"model")`, and `(reflect/check-string-here "(sig h (model -> string)) (defn h (m) 42)")`
+answers `sig h: unknown type `model`` — the same string checked under `nest test` gives the
+return-type warning it should.
+
+**Cause.** Two loads of the same file under two namespaces. The single-file pre-flight
+(`%check-file`) runs `setup_check_imports`, which roots the `(:use model)` target through
+`root_module_name` and `require-one`s `bedit/model`. The script's own header then evaluates
+`(:use model)` at runtime; the file lives outside the package, so its load carries no package
+context and the target stays bare: `require-one 'model` finds `src/model.blsp` on the load
+path and evaluates it again under `model`. Each load runs the file's `(deftype model …)`, so
+`%register-type` stores the alias under both `bedit/model/model` and `model/model`, and
+`annot::alias_ty`'s unique-suffix resolution — two candidates decline, by design (ADR-327) —
+reads the bare `model` as unknown.
+
+**Why it survived.** Nothing runs a project's modules from a file the project does not own:
+`nest test` loads through the project loader, `nest run` of the project runs `:main`, and
+the checker gates check files *in* the project. A scratchpad probe was the first reader.
+
+**Fix (2026-09-12).** One level below the cause above. The rule it names — a bare
+`(:use m)` in a project's directory roots `m` when the project provides it — was already in
+force: `%root-module-name` roots against the AMBIENT package context, and `project/setup`
+installs the project's. What the file's header saw was an empty context, because `nest run
+FILE` launches the file as its own green process through `spawn_root_program`, and that
+constructor built the program's heap without the package-context inheritance `spawn_impl`
+(an ordinary `spawn`) has carried since ADR-070's "which package is this code from is a
+property of the CODE, not of the process running it". The program inherits it now, exactly
+as a spawned child does; free outside a package (an empty pair), so a plain `brood FILE` is
+unchanged. The file's location was never the variable — a file under `src/` run the same way
+lost the context just the same.
+
+**Guard.** `crates/nest/tests/run_file_roots_project_modules.rs` — a script BESIDE a
+fixture project that `(:use model)`s the project's module, run with `nest run` from the
+project directory: `*features*` holds `proj/model` only, and a `sig` naming the module's
+`deftype` alias is checked (the return-type warning appears) rather than reported as
+`unknown type`. Sabotage-verified: without the inheritance the first assertion reds on
+`(model proj/model)`.
+
+## KI-128 — a top-level value rendered on every native run, and discarded ✅ fixed 2026-09-11
+
+**Symptom.** `sort` — the benchmark suite's heaviest allocation row — was ~10% slower than
+early September, against a fixed baseline, with no plausible commit in sight.
+
+**Cause.** `7a72135b` ("the shipped run path is testable off-wasm") ungated a
+`#[cfg(target_arch = "wasm32")]` block. That was the right fix for a real gap: the playground
+calls `run_program_repr`, and gated, no host test could name the function that ships. But the
+same commit ungated this, in `ProgramState::finish_form`:
+
+```rust
+self.last_repr = Some(crate::syntax::printer::print(heap, v));
+```
+
+so the NATIVE path began rendering every top-level form's value to a string. `run_program`
+discards it. The cost is proportional to the value's size, so it is invisible until a program's
+top level binds something big — `sort`'s is `(def data (sort …))` over a 375k-element list.
+
+**The ungating WAS measured**, and that is the part worth keeping: "200 top-level forms each a
+20k-element vector run in 0.58s here against 0.60s on the gated build — no cost worth a cfg
+for." Many small top-level values, never one large one. The measurement was sound; it did not
+cover the shape that bites. A per-form cost proportional to the form's value needs a workload
+with one *big* value, not many small ones.
+
+**Fix.** `ProgramExit::want_result`, set once at construction so nothing races the program
+starting. `run_program_repr` passes true; `run_program`, `run_program_with_preamble`,
+`spawn_program_for_test` and `%run-program-file` pass false. The path stays **ungated** — that
+is what makes it host-testable — and KI-115's guard is untouched; the work is skipped when the
+answer is thrown away. `%run-program-file` is the site the diagnosis nearly missed: `nest run
+FILE` routes through it, so every run script was paying this too.
+
+**Measured** (interleaved, one session, every arm verified `:state :live`, best-of-15):
+
+| arm | min | vs pre-regression |
+|---|---|---|
+| `b388f120` (pre-regression) | 134 ms | — |
+| `7a72135b` (regressed) | 145 ms | +8.2% |
+| fixed | **135 ms** | **+0.7%** |
+| control (same binary twice) | 134 ms | 0.7% |
+
+**Guards, sabotage-verified.** `run_program_does_not_render_a_result_nobody_reads` asserts
+`take_result()` is `None` after `run_program` — the observable consequence, not the flag, so a
+regression that sets `want_result` without honouring it still fails. Reverting the fix reds
+exactly that case while the other four pass. `run_program_repr_still_renders_the_result` is the
+other side, so the first cannot be satisfied by deleting the rendering outright.
+
+**How it was found, and three measurement lessons that cost most of the hunt.** The
+brood-benchmarks 0.27.2 column refresh. Note the column-vs-column "`sort` +8.6%" reported by the
+*previous* refresh was a different, non-finding — cross-session drift on a power-managed laptop
+— and this real one was hiding underneath it.
+
+1. **`--floor` bounds error WITHIN one `ab-bench` run, not across runs.** A bisect built from
+   one-baseline-per-run deltas manufactured a ramp and "converged" on a commit that changes four
+   lines of markdown. That absurd answer was the tell; `FRONTIER.md` already warns that a bisect
+   must return something.
+2. **Every arm must be `:state :live`.** A hand-rolled interleaved harness compared
+   source-booting baselines against an imaged HEAD — a ~10 ms handicap on a 146 ms row, in
+   exactly the direction that erases a HEAD slowdown. It produced a confident *retraction* of a
+   true finding. `ab-bench` refuses this configuration (`stdimage MISMATCH`); bypassing it
+   reintroduced the bias by hand.
+3. **`stdimage`'s `prune` keeps `max-keep 4`**, so at most 4 baselines + HEAD can be compared
+   imaged in one session. A fifth silently evicts the earliest arm into a source boot.
+
+## KI-126 — the Rust tests never purged their `/tmp` fixtures ✅ fixed 2026-09-11
+
+**Filed as its own entry, for the reason KI-30 gives.** This *is* KI-30 — "seven `temp-dir`
+prefixes were never purged" — in the half of the suite KI-30's fix and its gate cannot see. An
+adjacent finding recorded inside a fixed entry is invisible, so it gets a number.
+
+**Measured**, by `make doctor`'s own litter check (`> 200 /tmp/brood-*` notes "the KI-30 shape;
+check the temp-dir purge still runs" — it was right):
+
+| prefix | entries | source |
+|---|---|---|
+| `nest-blsp-` | 404 | `crates/nest/tests/blsp_dispatch.rs` |
+| `brood-prelude-` | 106 | `crates/cli/tests/prelude_image_matches_source.rs` |
+| `brood-fixsigs-` | 97 | the `--fix-sigs` tests |
+| `brood-relaid-` | 96 | `prelude_image_survives_a_relaid_stdlib_image.rs` |
+| `brood-pkg-` · `brood-startup-` · `brood-scaf-` · `brood-float-` · … | 39 and below each | the rest of `crates/*/tests` |
+
+**1109 entries, 340 MB, oldest 2026-08-30** — six weeks at roughly one directory per test per
+run. Nothing accumulated fast, which is why nobody saw it.
+
+**The mechanism is the part worth keeping.** Every site is written to look exactly like the
+convention:
+
+```rust
+let dir = temp_dir().join(format!("brood-startup-image-{tag}-{}", process::id()));
+let _ = fs::remove_dir_all(&dir);            // purge, at the start
+// … test …
+let _ = fs::remove_dir_all(&dir);            // and again at the end
+```
+
+and it cannot be the convention, because **the name carries the test process's pid**. KI-30's
+rule is "at load, drop the *previous run's* leftovers" — a prefix match against names an
+earlier run chose. A pid-scoped path names something no earlier run ever created, so the
+opening `remove_dir_all` always removes nothing. The only cleanup that ever fires is the
+closing one, and that is skipped by every early return, every failed assertion and every panic.
+The pid is not the bug — it is what keeps concurrent nextest cases apart, which is its job.
+
+**Fix.** `scripts/purge-stale-temp.sh`, registered as a nextest setup script, so the Rust half
+gets at the start of a run what the `.blsp` half gets at file load. One place instead of ~40
+call sites in 15 files, and it covers fixtures that do not exist yet. Three guards, because it
+removes files outside the repo: `-maxdepth 1` (fixture roots only, never a path inside one),
+`-user` (never another account's entries on a shared `/tmp`), and `-mmin +60` — a live run's
+fixtures are minutes old (per-case cap 2 min, full suite ~10), so an hour untouched cannot
+belong to a running suite and a **concurrent** run keeps its own. The `.blsp` version needs no
+age guard: it runs before that file's fixtures exist. A setup script runs once for the whole
+process tree, so it asks about age instead.
+
+**Verified.** 942 of 1109 swept on the spot (the 167 left were that hour's runs), 340 MB → 6.4
+MB; two fixtures created seconds earlier survived, which is the age guard doing its job;
+`BROOD_TEMP_PURGE_AGE_MIN=0` then took the remainder; `BROOD_NO_TEMP_PURGE=1` skips with a line;
+and `cargo nextest run` reports `SETUP [1/3] purge-stale-temp` — first, because nextest runs
+setup scripts in the order their tables are declared, not in the `setup = [...]` list's order.
+
+**Deliberately not done: a source-scan gate like KI-30's.** `temp_purge_coverage_test.blsp`
+exists because the `.blsp` convention is per-file discipline, and discipline needs a gate. This
+fix is not discipline — no test has to remember anything, and a new test that invents a fresh
+`brood-…` prefix is swept without being told. The gate to keep is `make doctor`'s litter check,
+which is what found this one.
+
+**Not a correctness risk**, same as KI-30: every fixture name is freshly randomised, nothing
+reads a stale one. It was disk, and noise when reading `/tmp`.
+
+## KI-125 — `brood/gui` could not compile on macOS ✅ fixed 2026-09-11
+
+**Symptom.** `cargo check -p cli --features brood/gui` on `macos-14`:
+
+```
+error[E0432]: unresolved import `winit::platform::wayland`
+error[E0599]: no method named `with_any_thread` found for struct `EventLoopBuilder<T>`
+              in the current scope
+error: could not compile `brood` (lib) due to 2 previous errors
+```
+
+**Cause — two layers, and only the first is a typo-shaped problem.** `crates/lisp/src/gui.rs`
+reached for Linux/Wayland-only winit surface with no `cfg(target_os)` guard:
+`use winit::platform::wayland::EventLoopBuilderExtWayland` and `builder.with_any_thread(true)`.
+(A third site, `WindowAttributesExtWayland`, was already gated — which is what made the
+omission easy to miss.)
+
+The second layer is the real one. `with_any_thread` is not a detail; it is the **only reason
+the GUI could live on a thread of its own**. winit requires the event loop on the process
+main thread, and Wayland/X11 offer that opt-out while **macOS does not** — AppKit's run loop
+is main-thread-only, full stop. So gating the call would have made the code compile and then
+fail at the first `gui-open`. Porting meant giving the loop somewhere legal to run.
+
+**Why it survived.** Nothing ever compiled the gui feature for macOS. Every CI job was
+`ubuntu-latest` (KI-124), and the one thing that did build macOS — the Release matrix — runs
+`make release` with **no `config.mk`**, where `WITH_GUI ?= 0`. The `config.mk` that turns the
+gui on is written by `./configure` and is gitignored, so a developer's local `make release`
+compiles the gui and CI's never does. The feature was on for everyone who would notice and
+off everywhere it would be checked.
+
+**Fix** (rationale and the constraints it creates: **ADR-324**). The gate, plus main-thread
+hosting — which turned out to be far smaller than feared, because the runtime *already* runs
+on a spawned thread. `cli_support::run_on_main_stack`
+has always moved the work off the main thread (to size the stack for the ADR-043 budget
+guard), leaving the main thread doing nothing but `join()`. So there was a free main thread
+the whole time; it simply had no way to be asked for.
+
+It now parks instead of joining: a small `brood-main-join` thread waits on the runtime while
+the main thread blocks on a channel, and `start_thread` either spawns the usual `brood-gui`
+thread (Wayland/X11) or hands the loop to the main thread (everywhere else). The one case
+needing care is a runtime that *returns* while winit owns the main thread — nothing would
+notice, so the joiner ends the process the way a returning `main` would have. Every non-zero
+exit already went through `std::process::exit` on the runtime thread and is untouched.
+
+`main_thread_hosting_required()` is forced true wherever a dedicated thread is illegal, and
+**the lever cannot switch it off there** — `BROOD_GUI_MAIN_THREAD=0` on macOS would not read
+as a config mistake, it would read as a GUI that fails to start.
+
+**Guard, and what it does and does not prove.** This project has no macOS to run anything on;
+`macos-check` compiles and stops. So the port would otherwise have shipped *executed nowhere*.
+Hence `BROOD_GUI_MAIN_THREAD=1`, which selects the main-thread path on Linux — not a
+preference knob, but the thing that makes the macOS code path runnable where the GUI is
+actually tested.
+
+- **Live, on Linux, both modes, same binary** — the probe opens a real window, paints a
+  frame, and closes. Output and exit codes are identical (`exit=3` for a `system/halt 3`
+  under both; `0` and `5` with the lever set and no window ever opened, which is the
+  `RuntimeDone` path). The decisive evidence is the thread table: **default** shows
+  `brood-gui` and no joiner; **`BROOD_GUI_MAIN_THREAD=1`** shows **no `brood-gui` thread at
+  all** and a `brood-main-join`, i.e. the loop is on tid == pid. That is the macOS topology,
+  observed.
+- **Unit tests** `gui::backend::main_thread_hosting::*` pin the decision itself, as a pure
+  function of (platform-permits-dedicated, lever) so every platform's answer is testable from
+  this one. They run in CI's existing `cargo test -p brood --features gui,gui-gpu --lib gui`
+  step. Sabotage-verified: letting the lever disable hosting where nothing else is legal reds
+  `a_platform_with_nowhere_else_always_hosts_on_main` with `lever Some("0") must not move the
+  loop off the main thread`, and only that test.
+- **`macos-check` now compiles `brood/gui`** in its own step, so the original break cannot
+  return silently.
+
+**What is still not proven, stated plainly:** no window has been opened on an actual Mac. The
+topology and the handoff are verified, the code compiles for Apple, and the AppKit
+main-thread rule is what the design now satisfies — but "a window appears on macOS" is an
+observation nobody has made. The first person with a Mac should run the probe; if it fails it
+will fail at `gui-open`, not at compile time.
+
+## KI-127 — `autoload_race` hung silently for 48 minutes ☑️ hardened 2026-09-12, cause open
+
+**What was seen.** One `cargo test -p brood` on 2026-09-11 never finished: the
+`autoload_race` test binary sat asleep — `S`, 0% CPU, 31 threads — for 48 minutes with
+nothing on the terminal, until it was killed. The machine was busy: a full-workspace
+rebuild with a changed feature set (every test binary recompiling) and bedit's 1490-test
+suite (which spawns `nest` subprocesses of its own) ran alongside, and the stdlib image
+under `~/.cache/brood` was being deleted and rebuilt in a loop by the same session.
+
+**What is ruled out.** Run alone the test passes in 0.16 s. Eighty-two further runs — 30
+under a `yes` per core, then 40 under that load *plus* a loop deleting and rebuilding the
+std image every 200 ms, then 12 under the churn alone — all passed. Two suspects cannot
+hang by construction: `%require-await` (the loser side of a racing first load) has a
+30-second backstop that prints `[require] BUG` and force-loads, so a stalled loader is
+loud; and the image writer writes a sibling temp file and renames it, with a reader's
+handle held open (KI-119), so a rebuild under a running reader is invisible to it.
+
+**What could hang, and now cannot.** The test's own fan — 24 children each `(send root
+[:r (call)])` — collected replies with a bare `receive ([:r v] …)`. That wait cannot tell
+"slow" from "dead": a child that died before replying, for any reason at all, left the
+parent blocked forever, and a monitorless spawn left no trace of the death. Whatever the
+cause was, this is why it was *silent*. The fan now `spawn-monitor`s every child and bounds
+the wait: an abnormal `[:down …]` fails the run naming the pid, the reason and how many
+replies had arrived; 60 s of silence (twice the loader's backstop, so a genuine loader stall
+reports itself first) fails it with what did arrive. A `:normal` down is skipped by a
+`:when` guard — a child exits normally right after replying, and that down can sit in the
+mailbox ahead of the next child's reply.
+
+**Status.** The next occurrence is a failure with a cause instead of a hang. If it names a
+child death, the reason in that message is the bug; if it names a 60-second silence with
+23 of 24 replies, look at the scheduler, not the loader.
+
+**Re-hunted 2026-09-25, not reproduced.** The whole `autoload_race` binary (five tests, the
+image-backed variants included) ran 150 times with a `yes` on every core, then 150 times
+beside a `-j28` workspace suite: no failure, slowest run under a second. That makes 382 clean
+runs in all. It stays a watch item with its diagnostic armed, because the one hang was never
+explained. The next occurrence names its cause.
+
+## KI-132 — the JIT latches the syntax highlighter's walk onto the VM: every helper of `hl-spans` deopt-thrashes ✅ FIXED 2026-09-15 (ADR-353)
+
+**Symptom.** One fontify pass over a 111-line, 421-token band of `bedit/src/view.blsp`
+under `BROOD_JIT_BAIL_TRACE=1`:
+
+```
+[jit-bail] arm=editor/highlight/hl-head?  reason=deopt-thrash-latched nslots=21 deopts=16 …
+[jit-bail] arm=editor/highlight/hl-advance reason=deopt-thrash-latched nslots=31 deopts=16 …
+[jit-bail] arm=editor/highlight/hl-name    reason=deopt-thrash-latched nslots=29 deopts=16 …
+[jit-bail] arm=editor/highlight/hl-doc?    reason=deopt-thrash-latched nslots=30 deopts=16 …
+```
+
+and with a `perf-stats` build, `BROOD_DEOPT_TRACE=1`: `hl-spans` 56 deopts at
+`resume_ip=0` and 56 at `resume_ip=108`, the helpers 16 each at `resume_ip` 40 / 47 / 47 / 48
+with `watch=true`. The pass then runs on the VM: **1.1 ms for 421 tokens**, 2.4 µs a token,
+against 130 µs for the native `scan-tokens` that feeds it. bedit re-lexes the band on every
+keystroke (`panes/ed-refresh-spans`), so this is the largest single cost of a typed character
+there (2.5 of 3.1 ms of `update`, measured with `BROOD_UI_TRACE=1`).
+
+**Cause — a hypothesis, not verified.** The helpers destructure the walk's frame vector
+`[open n head params?]` (`hl-push` makes it as `[open 0 nil false]`); `head` is `nil` until
+the list's first symbol is seen, then a string. The deopt sites sit on the `SetLocal` after
+that element's `(nth v 2)`. If the lowering types the slot from the first activation's tag
+and the re-lowering after a type deopt does not widen it, sixteen identical attempts follow
+and the arm is `BAILED` — the "an arm that lowers and then keeps falling back" shape
+`BROOD_DEOPT_TRACE` exists to find. It may instead be `hl-spans`'s own deopts propagating
+to its callees; the two sites in `hl-spans` (ip 0 and 108) want reading first.
+
+**Why it survived.** Every gate is a correctness gate; the answers are right. The
+highlighter's own tests run once per case, far below the tiering threshold. The cost was
+attributed to "the Brood side of a keystroke" as a lump until the ADR-336 pass split it.
+
+**Fix.** Not yet. Filed from the bedit pass rather than worked, because the JIT is mid-change
+by another session (ADR-333). Worked around nowhere: the highlighter resolves its faces once
+per pass now (`hl-faces`, −0.4 ms), which is independent of this.
+
+**Repro.** `BROOD_JIT_BAIL_TRACE=1 nest run probe.blsp` where `probe.blsp` calls
+`(editor/highlight/highlight-spans src)` a few dozen times over any ~100-line `.blsp` source;
+`(bench …)` the same call for the time. Expected after a fix: no `[jit-bail]` line for an
+`hl-*` arm, and the pass several times faster.
+
+**Guard.** None until fixed; the guard is the bail trace above going quiet on this repro.
+
+**Resolution (2026-09-15).** The hypothesis above was wrong twice over, which is worth
+recording because it was the plausible reading. First, nothing re-lowers after a type deopt:
+`jit_deopt_feedback` only counts — the same native code runs on the next activation, deopts
+at the same guard, and the sixteenth consecutive one stores `BAILED`. Second, the `head` slot
+was innocent (`f-nilstr`, a helper reading a nil-then-string slot, never deopted). The method
+that found the real causes: run the repro, then cut each latched helper down to one-line arms
+of its shapes until exactly one still latches — `BROOD_JIT_BAIL_TRACE=1` on a ten-line file, a
+minute per round.
+
+1. **`(= open "(")` — `=` with a string operand.** `eq_dispatch` lowered `=` as an
+   Int×Int payload compare, a Sym/Keyword identity compare, and a **deopt for every other
+   tag**. A string compare per activation is therefore a deopt per activation; `hl-head?` and
+   `hl-name` latched on it. The residual case now calls `brood_rt_equal` — `Heap::equal`,
+   which is exactly `%eq` (`prim_eq`) for anything but a lazy seq-view, and the seq-view
+   (status 2) is the only thing that still deopts, because realising it needs the evaluator.
+2. **`(or p (and params? (= n 2)))` — a type-mixed join.** A join block carries its operand
+   stack as one `i64` param per entry, typed per entry as raw int / 0-1 bool / "lives in
+   frame slot k". Edges were emitted in ip order and the FIRST edge fixed the join's typing;
+   a later edge that disagreed was compiled as an unconditional jump to `deopt`. `(or p X)`
+   expands to `(let (t p) (if t t X))`, whose join takes `t` (a boxed slot) from one edge and
+   `X`'s scalar from the other — so every activation with `p` false deopted. `hl-advance`
+   and `hl-doc?` latched on it; so does any `(if c x 7)`, `(or flag default)` or
+   `(if c 7 (< a b))` in a hot arm. ADR-353: branches now target fresh edge blocks and
+   record their stacks; when the target leader is translated every predecessor is in hand,
+   the typings are unified, and a disagreement widens — into the block-argument spill slot
+   when the arm reserved one, else as three tagged words in extra block params — with the
+   edge blocks filled then.
+
+A third, found by asking what else crosses a join: a materialised float had no repr, was
+typed `Int`, and deopted on every crossing — `(+ acc (if (< x 0) 0.5 1.5))` thrashed the same
+way (`ParamRepr::Float` now; guarded in the same file).
+
+En route: `%match-splice-fail-in` was being refused with `cranelift-define-function`, a
+Cranelift verifier rejection ("mismatched argument count") — the prepass depth model had no
+stack effect for `MakeVector` or `Prim3`, so it stopped walking there and sized every later
+join at 0 params. Both are modelled now, the verifier error prints under the bail trace, a
+prepass/emit depth disagreement bails as `join-depth-mismatch` naming the ip, and an unmodelled
+opcode bails as `prepass-unmodelled-inst` naming it.
+
+Measured on `highlight-spans` over the 300-line `std/editor/highlight.blsp`: **7.7 → 4.0 ms
+per pass**, no `[jit-bail]` line for any `hl-*` arm. Guard: `tests/jit_eq_join_test.blsp` —
+value cases for engine agreement, and tier cases that assert the arm is `:native` through the
+new dev-tools probe `(%jit-arm-state f argc)`, because both bugs produced the right answer
+slowly and a value test passed against them. Sabotage-verified: restoring the deopt in
+`eq_dispatch`'s residual reds "string `=` keeps the arm native" with `:bailed`; restoring
+first-edge-wins reds the join tier case the same way.
+
+## KI-150 — `base64` +6.6%: the sig wave moved work from a declaration into every run's pre-flight check ✅ CLOSED 2026-09-20 — the walk is replayed from a verdict cache (ADR-371); the `1b9befd0` column read `base64` 65.7 → 62.2 ms, `reduce` −21%, `strings` −17%, `pipeline` −14% (was 🔶 OPEN with the loading half closed by ADR-370 2026-09-18)
+
+**Closed 2026-09-20.** The remaining half — the checker's own per-file walk, paid on every
+run of an unchanged program — is gone from the column: ADR-371 records the pre-flight's
+verdict (warnings and the loads it made) keyed on the text, the binary, the stdlib and the
+flags that change a walk, and replays it. The trigger this entry set for itself was the next
+column refresh reading the short rows: `brood-benchmarks` at `1b9befd0` (min of three
+interleaved invocations) reads `base64` 65.7 → 62.2 ms (−5.3%, spread 0.8%), `reduce` 21.2
+→ 16.7 (−21%), `strings` 28.5 → 23.5 (−17%), `pipeline` 23.9 → 20.6 (−14%), `errors-deep`
+−6.8% — the per-file walk's share of each. A checker feature can no longer move a benchmark
+row, which is the property the wave's owner asked for; the cost of a checker change is now
+paid once per program text, at the first run. The original entry follows.
+
+
+**Symptom.** The 0.29.2 column refresh (`brood-benchmarks`, min of 3): `base64` 65.2 → 69.5 ms
+(+6.6%, spread 1.4%) against the 0.29.0 column at `d464e9ed`.
+
+**Attribution** (fixed baselines under `target/ab/`, each with its own std image confirmed
+live by `BROOD_IMAGE_TRACE`, `perf stat -e instructions:u -r 5` — the row's wall is bimodal
+at 76–80 ms across binaries and says nothing):
+
+| binary | instructions | with `BROOD_NO_CHECK=1` |
+|---|---|---|
+| `d464e9ed` (the column) | 0.632 G | 0.723 G |
+| `a4b79219` (A0 + A1 alone, before the wave) | 0.642 G | 0.736 G |
+| `1a8759fb` (323 std sigs removed, no A1) | 0.664 G | 0.730 G |
+| head (`be8a1405`) | 0.671 G | — |
+
+So +5% of the +6% is the wave, and it lives in the pre-run check: with the check skipped the
+wave's delta is +1%. `1a8759fb` removed nine sigs from `std/encoding.blsp` (`base64-decode`,
+`base64-decode-bytes`, `hex-encode`, …) and one from `bytes.blsp`; `brood file` type-checks
+the program before running it, and where a declared sig was a lookup, the checker now infers
+each function's type — ~30 M instructions, ~8 ms, on a 78 ms row. (The `BROOD_NO_CHECK=1`
+column reading HIGHER than the checked one on every binary is its own curiosity — the
+pre-flight materialises the modules it checks from the image, and without it something loads
+from source; not this entry's question.)
+
+**Why it matters.** It is the exact shape of KI-138/139 (`supervisor` +50% from the checker):
+on this runtime a checker cost is paid by every short-lived program, and the wave's premise —
+"the checker infers each verbatim without it" — is a statement about the verdict, not the cost.
+
+**The options** (the wave's owner's call): keep the sigs on modules a short-lived program
+pays for (the `redundant-sigs` gate could weigh per-run inference cost, not just derivability);
+cache inferred signatures across runs the way the stdlib image caches bindings; or let the
+pre-flight skip inference for imaged std modules. A0/A1's own +1.6% is the `JitCallCtx` build
+and the callback asserts on a call-heavy codec, inside the convention's ledger.
+
+**Decided 2026-09-16 (the wave's owner): the first, narrowly.** The ten sigs the bisect
+names — `encoding`'s nine decoders/encoders and `bytes/length` — are back, each under a
+comment saying it is kept for cost and declares no fact the checker cannot derive, so the
+next sweep does not remove them again as "redundant" (`scripts/redundant-sigs.blsp` will
+still list them; that script finds derivability, which is exactly the property they have).
+Ten lines against the measured row. The two structural options are not taken blind: no
+benchmark runs on the development box, so the row is read again at the next column refresh,
+and a residual delta there reopens this with a cache in the stdlib image as the first
+candidate — it is the same shape as the bindings the image already carries. Until then, a
+`redundant-sigs` sweep over a module a short-lived program pays for (`json`, `format`,
+`datetime`, `http`) should count the instructions of `brood file` on a program that touches
+it before it removes anything.
+
+**Read again 2026-09-17, at the `a406f9a6` column refresh (brood-benchmarks `d2646f4`) — the
+trigger above fired, and not on `base64`.** `base64` itself is +1.4% (spread). The row that
+moved is `pipeline` +7.3%: instructions 208M → 222M against a fixed `084060fb` binary (both std
+images live), and the split is exact — **`brood --check` alone 130.7M → 144.3M (+13.6M), the
+run with `BROOD_NO_CHECK=1` 586M → 591M (+0.8%)**. `fib`'s check grew the same way, 123.6M →
+133.0M, on a file the wave never touched, so this is not a removed sig: **the checker costs
+~10% more per file than at `084060fb`** (the A4 per-arm overload check, A5, B6's widening
+notes, C9's product lattice — not bisected), and every `brood file` pays it before it runs.
+On the 26 ms `pipeline` row that is the whole +7%. The residual this entry said would reopen it
+is here; the first candidate it named stands: inferred signatures cached in the stdlib image (or
+a pre-flight that skips inference for imaged std modules), so the checker's growth stops being a
+per-run tax. Repro: `perf stat -e instructions:u <brood> --check bench/brood/pipeline.blsp` on
+the two binaries. (Recorded beside it, unexplained: `BROOD_NO_CHECK=1` runs `pipeline` at
+586M instructions against 208M WITH the check — skipping the check sends this program down a
+2.8× costlier path; `fib` shows no such effect. Handoff 2026-09-17 night has the watch item.)
+**Resolved the same night as KI-163 (ADR-366):** that 2.8× was lazily-loaded code keeping
+its pre-load compile shape, and the checked run was faster only because the check loads
+eagerly. With the fix `BROOD_NO_CHECK=1` is the cheapest run (`pipeline` 183M against 221M
+checked), so the check's cost is now purely the checker's — this entry's question, unchanged.
+
+**Measured 2026-09-17 night, `perf` on an unstripped release binary, `brood --check` of a
+one-line file (cwd outside the checkout — inside it, B7's `stdlib_tree_hash` adds ~10% and
+must not be mistaken for the checker).** The checker's own Rust (`types::check::*`) is **~3%**
+of the samples. The cost is module MATERIALISATION driven by the eager policy: a check of
+`(seq/lmap inc [1 2 3])` — a PRELUDE binding, bound at boot — materialised `seq`, and through
+that module's own references `map`, `math`, `reflect` and `string`: **138M instructions
+against 75M for an io-only file**, while RUNNING the same file lazily loads nothing (73M).
+`(math/rem 7 3)` reads the same: 125M, `math` plus the four. Two consequences. (1) **Fixed the
+same night, narrowly:** the eager drain now skips a module every one of whose recorded names
+is already bound (`derive::drain_pending` — the record carries the name beside the module), so
+the prelude-name case costs nothing (138M → 82M); an unbound `json/prase` still loads `json`, so
+the unbound verdict is unchanged. Guarded in `tests/lazy_load_test.blsp` (both directions,
+sabotage-verified). `pipeline`'s own check is unchanged at 145M, because `math/rem` and
+`string/->number` are genuinely unloaded and their materialisation under the eager policy
+pulls the rest in. (2) **What remains is structural and is the decision this entry has
+always been about:** under the eager policy a materialised module's own qualified references
+load transitively — needed only so the checker can DERIVE signatures for std functions by
+walking their bodies. A std module served by the image could carry its inferred signatures IN
+the image (the checker's inference is deterministic per stdlib id), and the pre-flight would
+then load nothing it does not run. That is the first candidate named above, now with a
+number on it: ~70M of `pipeline`'s 145M check is this.
+
+**Read again 2026-09-18 midday, at the `a6a0d934` column refresh.** Against the `04958398`
+binary, every `BROOD_NO_CHECK=1` run is flat (+0.1–1%) and `brood --check` alone grew
+**4–7M instructions per file** on every row measured (`fib` 134 → 138, `pipeline` 145 → 151,
+`strings` 131 → 138, `errors-deep` 167 → 175) — today's checker work: KI-164's guard
+narrowing, KI-165's runtime enforcement, C13, C14. And a second mechanism, exact this time:
+the CHECKED `pipeline` run grew 24M where its check grew 6M, because the check now
+materialises `path` and `file` that it did not before — `os/which` landed this morning, its
+body names `path/…`, and the eager policy loads what a materialised module's body names, so
+**one new std function costs every checked program that names any `os/` function ~18M
+instructions**. That is the transitive-load half of this entry, with a date and a name.
+
+**Measured after ADR-370 landed (2026-09-18, callgrind, image `:state :live`, cache warm).**
+The check's cost is the run WITH the pre-flight minus the run without it:
+
+| file | check cost before | after ADR-370 |
+|---|---|---|
+| `(io/puts (str (os/env "HOME")))` | 53.4M | **13.2M** (−75%) |
+| `(io/puts "hi")` | ~2M | 2.1M |
+| `(seq/lmap inc [1 2 3])` | — | 19.8M |
+| `(math/rem 7 3)` | — | 26.6M |
+
+**What remains is visible in the trace, and it is not the checker's Rust.** The signature
+index carries **124 authoritative types out of 3104 names**, so the walk still materialises
+a module for every name it has none for — `BROOD_IMAGE_TRACE` names them one by one:
+`check materialises string for string/trim`, `… math for math/max`, `… reflect for
+reflect/read-string`. Those five modules are the whole of `oscheck`'s remaining 13.2M. So
+the next increment of this entry is COVERAGE of the index, not a new mechanism: every name
+that gains an authoritative type removes the load behind it.
+
+**Coverage, first increment — 2026-09-18 evening (`517b8a1c`): 124 → 150 authoritative types,
+`path` and `string` out of the scan, and the saving is BELOW THE FLOOR.** Three parts:
+
+- **A missing word of the type grammar.** `std_index::every_symbol_is_a_type_word` listed `&`
+  but not `&optional` — both are parameter-list markers of `annot::arrow_of`, neither is a name
+  to resolve — so 14 declarations spelled *entirely* in the grammar declined for a reason the
+  grammar does not have (`string/pad-left`, `string/pad-right`, `string/fields`,
+  `string/number->`, `markdown/->html`, `reflect/type-aliases`, …). Its gate
+  (`check::tests::image_sigs::a_declaration_whose_only_marker_is_optional_rides`) asserts on
+  the **source scan** first and the footer second: written against the footer alone it passed
+  under sabotage, because the image on disk was built before the fix. The other four
+  image-signature gates stayed green throughout — which is how these declined silently.
+- **The rest of the gap is now a list, not a probe.** `BROOD_IMAGE_TRACE=1` answers this one
+  name per run, because a module once loaded hides every later name in it.
+  `std_index::triage::untyped_names_that_force_a_module_load` (`#[ignore]`d — run it by name,
+  it asserts nothing) reads the embedded sources and ranks, per module, the names other std
+  modules reference and the index carries no type for.
+- **Two modules declared out.** Five `path` signatures and eleven `string` ones (`string` is
+  referenced by 32 std modules), each read off its own body. Both drop out of the transitive
+  scan entirely: the `os/env` one-liner's pre-flight went from 3 transitive materialisations
+  to **zero**.
+
+**And the number says to stop optimising here.** Interleaved, same binary pair, image live:
+**107.23–107.27M (with) against 107.25–107.36M (without) — overlapping.** Materialising a
+module from the image is cheap on this box, so what coverage buys is a smaller heap and a
+verdict that no longer depends on what else happened to load — *not* a faster check. Read
+this before spending on the triage list. (A first reading of **+63%** on the SOURCE path did
+not reproduce: the same invocation read 226M, 336M and 367M. `perf-handoff.md`'s rule
+applied — if a revert does not reproduce the number you started from, the rig is wrong.)
+
+Two things found while writing the declarations, worth knowing before writing more:
+`nest check --suggest-sigs` proposes `(sig string/format (string -> string))` for a
+**variadic** function, which would make every real call an arity error — check each suggestion
+against the parameter list. And a new declaration can expose a TRUE warning at a call site:
+`path/absolute`'s did, in `tests/support/corpus.blsp` (a `nil | string` fed to it).
+
+**Attempted 2026-09-18, NOT landed — the mechanism is now pinned down, with numbers.** The
+loader is `types::check::materialise_referenced_modules`: it scans every function of every
+loaded module, loads every module their bodies name, to a fixpoint. Measured with
+`callgrind` (deterministic, no `perf` needed — see `perf-handoff.md`), image `:state :live`,
+boot cache warm:
+
+| `(io/puts (str (os/env "HOME")))` | instructions | modules materialised |
+|---|---|---|
+| `--check` only | 110.3M | 9 (`io os file string math path reflect map seq`) |
+| run, with the pre-flight | 133.9M | 9 |
+| run, `BROOD_NO_CHECK=1` | 80.6M | **2** (`io os`) |
+
+So the check costs **53M on a program whose whole no-check run is 80M**, and it loads seven
+modules the program never touches — because `os`'s OTHER functions name `path` and `file`
+(`os/which`, landed that week), and those modules' bodies name more.
+
+**The scope constraint, which is the part to get right.** That whole-world pass is
+DELIBERATE for `nest check`: `project-preload!` brings the heap to one fully-loaded state
+before any file is checked, which is what makes a verdict independent of the order files are
+checked in (KI-137). A SINGLE-file check has no such order, so the fix belongs to that path
+only — `check_forms`' call site, not the primitive `project-preload!` uses.
+
+**The shape that worked:** seed from the checked file's own qualified NAMES, load the module
+a name needs, walk THAT NAME's body for further names, repeat — a reachability closure
+instead of the whole world. It measured **110.3M → 82.6M on `--check`, 133.9M → 83.7M on the
+run**, materialising exactly the two modules the program needs, with `iocheck`/`seqcheck`
+flat. Two rules it needs, each found by measuring:
+- a name already BOUND loads nothing (the eager drain's own rule — `seq/lmap` is a prelude
+  binding; loading `std/seq.blsp` for it cost 14M on a one-line file);
+- only a MATERIALISED module's names are walked — following a prelude binding's references
+  walks the whole prelude call graph for nothing.
+
+**Why it was not landed, and what supersedes it.** Two reasons, and the second is the one
+that decides it. The rig produced three different baselines for the same reverted code
+(110M, 133M, 110M) before the two traps in `perf-handoff.md` were understood — and a
+checker-loading policy decided on numbers that unstable is how this repo has been wrong
+about performance before. Then the owner **decided the structural fix the same day**
+(handoff 2026-09-18, ADR-370 when it lands): the stdlib image carries each imaged module's
+SIGNATURES, and the checker reads a callee's type from the image instead of loading its
+module and walking its body. A reachability closure is the short-term fix that decision
+explicitly declines — it narrows *which* modules get loaded, where carrying signatures
+removes the reason to load them at all, and it keeps ADR-340's need (a derivation must
+still reach the leaf that declares its type) satisfied by construction rather than by a
+narrower traversal.
+
+So what stands from the attempt is the measurement, not the patch: the nine-modules-for-two
+shape, the 53M-on-an-80M-run figure, and the confirmation that the cost is transitive
+loading rather than the checker's own Rust (~3% of samples). Whoever builds ADR-370 can use
+those as the before, and the precision check is a `--suggest-sigs` diff over `std/` +
+`tests/` (3452 inferred signatures at `34467e8a`): the image's signatures must leave every
+one of them unchanged.
+
+**ADR-370 LANDED 2026-09-18 — and the measurement it came with corrects this entry.** The
+footer of the stdlib image carries every imaged function's existence and arity and, for the
+136 declarations the checker reads as-is, the declaration; `materialise_referenced_modules`
+loads a module only for a name that is neither bound nor typed by the footer. The one-line
+program's check materialises **7 modules instead of 9** (`file` and `path` stay out) — and
+its instruction count is **unchanged**: 105.5M with the footer read, 105.5M with
+`BROOD_NO_IMAGE_SIGS=1`, release, `perf stat`, min of 3. Materialising a module from the
+image is cheap on this box; the "nine modules for two" shape was real and is gone, and the
+tax it was blamed for was not in it. Two more readings from the same session: skipping the
+FILE's own references at the drain (the plan's item 5) made `base64`'s run **+37M** — the
+load moved to the first call and the body was recompiled (ADR-366) — so the drain still
+loads what the file names; and the pre-flight's cost here is **3.7M** on the one-liner,
+24M on `pipeline`, 47M on `errors-deep` (run with the check minus `BROOD_NO_CHECK=1`),
+scaling with the checked file, not with what loads. The other box's 53M-on-80M figure did
+not reproduce here. What is left of this issue is the checker's own per-file walk —
+`cli_support::stdlib_tree_hash` (B7) is the top symbol of a debug `--check` at 14% — and
+that is the next item, with `[image] check materialises <module> for <name>` (under
+`BROOD_IMAGE_TRACE=1`) naming any transitive load that does remain.
+
+**The item this entry named next is done — 2026-09-19: `stdlib_tree_hash` was 15.0M
+instructions, 16% of a release `brood --check`, and is now 2.2M.** The 14% figure above was
+read off a *debug* profile, which is usually a reason to distrust it; callgrind on the
+RELEASE binary says the same thing, and the A/B is clean because the guard is skipped
+outside a checkout (`repo_root()` → `None`), so the same binary measures both arms:
+
+| release `brood --check` on a one-line file | inside the checkout | outside | the hash |
+|---|---|---|---|
+| before | 93.88M | 78.92M | **15.0M** |
+| after | 80.61M | 78.43M | **2.2M** |
+
+(Each arm twice; the *outside* arm is the control, and its 0.5M shift between the two
+binaries is build-to-build codegen drift — which is why the guard is read as the difference
+*within* one binary, 14.96M then 2.19M, rather than across them.) `cli_support::stdlib_tree_hash` was the top symbol of the profile at 14.5% and is now
+absent from it; `Heap::env_get` is the new head at 12.3%.
+
+**The cause was the loop, not the I/O.** FNV-1a a byte at a time over 3.0 MB of `std/` is
+4.4 instructions per byte — load, xor, multiply, increment, compare, branch, with a serial
+dependency on `hash` that cannot vectorise. The fix keeps FNV's shape and runs it over 8-byte
+WORDS with a byte tail (`mix_chunk`, mirrored verbatim in `crates/lisp/build.rs` and
+`cli_support.rs`), plus each chunk's length mixed in first — a word tail makes concatenation
+ambiguity easier to reach than a pure byte stream did, and the length costs one multiply per
+chunk. Same file set, same order, same prime.
+
+**What was NOT done, and why.** A cache keyed on `stat` metadata would take the remaining
+2.2M, and it was rejected: this guard exists because a stale binary's verdict "reads exactly
+like a right one" (B7), and an mtime-keyed cache reintroduces exactly that failure in the
+dangerous direction. The word loop has no such risk — it is the same function computed
+faster.
+
+**Both guards sabotage-verified**, because a staleness guard that cannot fail is the bug it
+is meant to catch: (1) appending a line to `std/uuid.blsp` makes `brood --check` AND `nest
+check` refuse with exit 2 (the entry points a caller reaches, not the hash function); (2)
+drifting one copy of `mix_chunk` by a single `^ 1` reds
+`the_runtime_and_build_time_stdlib_hashes_agree`.
+
+**Note for anyone bisecting across this commit:** the algorithm change moves
+`BROOD_STDLIB_HASH`, which keys the stdlib startup image — every cached
+`~/.cache/brood/std-image-*.bin` from before it is orphaned and rebuilt once. That is the
+image id moving for a *Rust* edit, the trap `perf-handoff.md` trap 2 describes.
+
+
+**Scope, stated plainly: this does NOT move the `base64` row this entry opened on.** The
+staleness guard is called from `brood --check`, `brood --test`, `nest` and `nest check` — the
+development entry points — and **not** from `brood file.blsp`, which is the benchmark's path.
+So the ~12.8M is won by every checker and test invocation (a single-file `--check` is ~14%
+faster) and by nothing the published rows measure. What is still open for the row is the
+pre-flight's own per-file walk — 3.7M on the one-liner, 24M on `pipeline`, 47M on
+`errors-deep` — which scales with the file being checked and is the checker doing its job.
+This entry stays OPEN until a column refresh reads `base64` again; no benchmarks run on this
+box.
+## KI-161 — Tier 1 monomorphization's rebind guard refused every module constructor and admitted the module-less rebind ✅ FIXED 2026-09-17
+
+**Symptom.** `BROOD_MONO=1 BROOD_MONO_DBG=1` on `(defmodule mp) (defrecord circle (r)) … (area
+(circle 2))`: no `[mono]` line, ever. The same file without the `defmodule`: it fires — and
+with `shape` rebound to `(defn shape (n) {:n n})` after its `defrecord`, `(render (shape 7))`
+answers `REC7` where the dynamic path answers `DEFAULT` (a bare map is not the record). Both
+on the pushed 0.30.1 binary; the flag is off by default, so no default build was affected.
+
+**Cause.** `mono_arg_identity`'s KI-90 check compared `*record-ids*`'s recorded value — the
+constructor's BARE symbol, `circle` — with the resolved head, `mp/circle`. Never equal in a
+module (Tier 1 dead there), always equal without one (the rebind check reduced to "is the
+name bound", which a plain fn of that name satisfies). `mono_differential`'s stale-id test
+used a module fixture, so it passed on the dead half.
+
+**Fix.** The property dispatch actually depends on: the head's bound closure constructs
+values carrying this `:__id__` — one arm, one body form, a map literal whose `:__id__` is the
+id. `closure_constructs_record` in `inline.rs`; the registry membership check stays as the
+`defrecord` ground truth. The test runs both spellings and asserts the constructor call
+devirtualized (it was vacuous before). Sabotage-verified.
+
+## KI-160 — the dirty-operand-stack check fired on every deopt of an inlined arm ✅ FIXED 2026-09-17
+
+**Symptom.** `BROOD_PERF_STATS=1` on a scratch loop `(defn l (i acc) (if (>= i n) acc (l (+ i 1)
+(dbl i))))` with `dbl` a leaf-inlinable one-liner: `[jit-dirty] deopt/preempt left roots_len=23
+(jit_tier found 24)` and `jit_deopt_dirty 1432` against `jit_preempt 1462`. Deterministic on
+HEAD (`3b2c3fb9`) in a worktree; `BROOD_NO_LEAF_INLINE=1` reads 0.
+
+**Cause.** `settle_native_frame` (vm_run_bc.rs) restores an inlined frame's small top on every
+non-Done, non-resume path — `truncate_roots(small_top)`, the deliberate "re-run the ORIGINAL
+small body" step of two-stage tiering — and the dirty check ran AFTER it, comparing against
+`pre_roots`, which was captured after `extend_roots_to_nil(inline_nslots)`. So every deopt or
+preempt of an arm with an installed inlined body read as dirty by exactly `inline_nslots −
+nslots`. The check (795fffe9, 2026-06-14) predates two-stage tiering (ddf87f03, 2026-06-17);
+nothing reads the counter but a human under `perf-stats`, so it was never green.
+
+**Fix.** The check runs before the restore; the restore is the settle's own resize, not the
+native's doing. `jit_deopt_dirty` is 0 across the scratch loops, the vector benchmark and the
+`supervisor` row. Not a corruption fix — a diagnostic that could not catch its class.
+
+## KI-159 — the const-index vector read deopted on a shared-region vector ✅ FIXED 2026-09-17
+
+**Symptom.** After ADR-362 made `%vector-ref` compile to `PrimOp::VectorRef` (the prim table
+had named the native `vector-ref`, its spelling before the `seq/` refactor renamed it, so the
+entry was dead), two `jit_eq_join_test` arms — `ej-streq`, `ej-or-bool` — settled `:bailed`
+with 16 deopts. Both destructure their argument, `(let ([a b] v) …)`, and both are driven with
+a literal vector.
+
+**Cause.** `inline_vec_ref` (the `Prim2SlotInt` lowering: a vector in a slot, a constant index)
+guards region == LOCAL and DEOPTED otherwise. A literal or `def`'d vector lives in the shared
+PRELUDE/RUNTIME region, whose slabs are chunked and have no base to index — the same fact the
+pair path met and answered with the `car`/`cdr` callback ("deopting here was a 70x cliff on
+`def`'d data", `PrimOp1::First`'s lowering). The vector path kept the deopt, and a function
+already had a dead `ffi` block that called `brood_rt_vector_ref` with the constant index. It
+was latent because the pattern compiler's element reads spell `%vector-ref`, which compiled
+as a call; `nth`, the one head that did inline, is rarely written against a literal in a hot arm.
+
+**Fix.** The region check branches to that FFI block. Status 1 from the callback (out of range)
+still deopts, so `nth`'s default and `%vector-ref`'s error stay the VM's.
+
+**Guard.** `tests/type_predicate_inline_test.blsp` "element reads of a shared-region vector stay
+native": five arms (destructuring, `%vector-ref`, `%vector-ref` + `=`, `nth`, `vector?` +
+`%vector-length`) on a `def`'d vector settle `:native` with 0 deopts. Sabotage-verified: the
+check routed back to `deopt` reds all five.
+## KI-158 — the checker's joint fixpoint was not a function of the file ✅ FIXED 2026-09-17
+
+**Symptom.** `nest check --suggest-sigs std/tool/nest.blsp`, six times, same binary, same
+tree: `run-program` inferred `(int 0 2)` five times and `0 | 1 | 2` once. Over the whole
+of `std/`, eight inferred returns differed between two runs that differed only in the
+order the derivation asked its questions (the site-walk cache, `sigs::SiteCache`, whose
+differential is what found this — a cache that changes an answer is a bug, and this one
+had not changed anything; the answers were never stable).
+
+**Cause.** Two channels, both in Pass 2.9's joint round (`check.rs`):
+
+1. `SPECIAL_MEMO` — `specialized_ret`'s memo of a body re-typed under a call's argument
+   types, keyed by `(name, argument types)` — was cleared per FILE. The body is typed
+   under the file's returns and derived parameters as they stand in the round; an answer
+   computed in round one, when every live return was floored at `never`, was handed back
+   in every later round. Which questions were asked first decided which stale answers
+   stuck.
+2. The candidates' returns were re-inferred by iterating a `HashMap`, each new return
+   applied to the context at once (Gauss–Seidel). A name read its neighbours' returns as
+   NEW or OLD depending on hash order, the rounds' intermediate values differed, and the
+   widening that reads them (`widen_intervals_against`: an interval that moved goes to
+   its infinity) fired on one run and not the next.
+
+**Fix.** `sigs::clear_specializations()` at the top of every joint round (the fuel is not
+reset — it bounds the file). The returns are re-read in DEFINITION order (`all_candidates`,
+the `Vec`), and the derivation types a round's candidates sorted by name. Both runs of the
+differential now agree byte for byte over `std/` and `tests/`, and six runs of the file
+above agree.
+
+**Guard.** `crates/nest/tests/derivation_cache_differential.rs`: `nest check --strict
+--suggest-sigs` over every file under `std/` and `tests/`, with `BROOD_NO_DERIVE_CACHE=1`
+and without, must produce the same text. Sabotage-verified: a cache that reuses a form
+whose reference closure moved reds it in 18 s.
+
+## KI-157 — a native loop never saw a pending memory limit ✅ FIXED 2026-09-17
+
+**Symptom.** `mem_limit::soft_limit_turns_runaway_into_catchable_error` went red the moment
+its `let`-bound consing loop started compiling to a `SelfCall` (KI-156): the loop ran
+native, built its million cells and returned `Ok` — no E0043. A top-level `defn` loop had
+behaved the same way all along, unnoticed because no test ran one under a limit.
+
+**Cause.** The three limits — the soft ceiling, a per-process heap limit, a mailbox overflow
+— are checked at the VM's safepoints (`exec_chunk`'s self-tail and tail-call paths, the
+tree-walker's). A JIT'd loop's back-edge runs its GC safepoint and its batched reduction
+poll and returns to the VM only on preempt or deopt; neither happened, so nothing raised.
+
+**Fix.** `brood_rt_tick_n` answers `2` when any of the three is pending (peeks, never takes:
+the VM's raise consumes them) and the lowering branches to `deopt` on it — at the back-edge
+the frame already holds the next iteration's arguments and the checkpoint was just reset,
+so the VM re-runs exactly that iteration and raises at its safepoint, the way its own
+self-tail path always has. One compare per `TICK_BATCH` iterations.
+
+**Guard.** `mem_limit::soft_limit_trips_inside_a_native_loop`, a warmed `defn` loop under a
+4 MiB headroom; sabotage (the poll answering 0) reds it and leaves the letrec sibling red
+too.
+
+## KI-156 — no `letrec` loop ever got its `SelfCall` ✅ FIXED 2026-09-17
+
+**Symptom.** `(letrec (lp (fn (i acc) (if (>= i 3000000) acc (lp (+ i 1) (+ acc i))))) (lp 0 0))`:
+300 ms. The same loop as a top-level `defn`: 7 ms. `BROOD_JIT_DUMP_IR=1` shows the closure's
+chunk ending in `Local Call` where the defn's ends in `SelfCall`. Found while measuring
+what a fused pipeline could reach through a local loop.
+
+**Cause.** The self-call rule in `compile_node` (`lower.rs`): a tail call whose head is the
+closure's own self-name, "not shadowed by a local" — `scope.lookup(h).is_none()`. A letrec
+closure's captured frame binds its name to the closure (that is how the recursive
+reference resolves), `env_chain_names` lists that binding among the enclosing names, and
+`compile_arm`'s lexical addressing binds every enclosing name to a capture slot. So the
+self-name was bound in the scope, the rule read it as a shadow, and the call went through
+the captured closure: a full dispatch per iteration, and an arm the JIT could only lower
+with a real call at its back-edge. The comment on the runtime path still described the
+optimisation as live.
+
+**Fix.** `Scope::self_slot` — the capture slot the self-name landed in — and the rule
+admits `bound == self_slot`. A `let` inside the body that rebinds the name resolves to the
+let's slot and still declines, which the guard pins at both the chunk and the value.
+
+**Guard.** `eval::compile::tests::a_letrec_loop_is_a_self_call_and_a_shadowed_name_is_not`;
+sabotage (the rule without the slot) reds it with the chunk it used to produce.
+
+## KI-155 — `mcp_test`'s watch window missed a 5 ms-late burst on a loaded runner ✅ FIXED 2026-09-25
+
+**Fixed by construction (2026-09-25).** The spread below bounded the problem instead of
+removing it: the bursts ended about 500 ms after the helper started, so a watcher scheduled
+later than that saw an empty window again. `mcpt-until-stopped` bursts every 25 ms until it
+receives `:stop`, and `mcpt-watching` sends that only after the watch has returned, so the
+window always has a helper running inside it. Checked both ways. With a 700 ms sleep before
+the watch (past the old spread's end) both tests pass. With that sleep and the helper
+stopped before the watch, both fail. Under load it ran 60 times with a `yes` on every core
+and 60 times beside a `-j28` workspace suite, all clean. A future `count 0` cannot be the
+scheduler, so it would mean the system monitor lost events.
+
+### As filed (2026-09-17)
+
+**Symptom.** CI `test` job at `a701f1e1`: `mcp watch-runtime tool › the :filter selects
+only the requested kinds` — `(is (> (count evs) 0))` false. The sibling test in the same
+describe passed in the same run. Local runs clean.
+
+**Cause (by shape).** `(spawn (do (sleep 5) (mcpt-burst 10)))` then
+`(mcp/watch-runtime-tool {:ms 1500 …})`: the burst runs 5 ms after the spawn on another
+worker; the watcher subscribes when THIS process next runs. On a loaded runner that gap
+exceeded 5 ms and the ten spawn/exits were over before the window opened. KI-141 hit the
+same test through a different delay (the module load inside the window) and fixed that one.
+
+**Done.** `mcpt-spread`: 20 bursts of 3, 25 ms apart (~500 ms), from the helper process —
+events land inside a 1500 ms window that opens any time in the first half-second. Both
+watch tests use it. A watch item: the cause is the runner's scheduling as read from the
+shape, and the runtime's sysmon delivery is the next suspect if it recurs with the spread.
+
+## KI-154 — `duplicate_connect_is_deduplicated` waited 30 s for a welcome, once ✅ FIXED 2026-09-23
+
+**Closed (2026-09-23, confirmed 2026-09-25).** The index row has the 2026-09-23 closure: the
+first fix had reached only `echo_server_src`, and the twelve inline servers were moved to
+register-before-listen after `dual_listen` failed the same way. **Stress, 2026-09-25:** the
+test ran 150 times with a `yes` on every core, then 150 times beside a `-j28` workspace
+suite, with no failure. Two other ways to lose the `[:hi]` were ruled out by reading the
+code. (1) A duplicate link's tie-break (`establish`) keeps the EXISTING link when both links
+have the same initiator, so two ends that registered in different orders could each close
+the link the other kept. That cannot happen here: `node_connect`'s pre-dial check matches the
+authenticated name (`a@127.0.0.1`), so the second `connect` never dials, and mesh gossip
+skips self and connected peers. (2) The handshake reads frames with `read_exact` and the
+responder sends the final `Auth`, so no frame behind the handshake is over-read.
+
+### As filed (2026-09-17)
+
+**Symptom.** One full-suite run: `cli::distribution duplicate_connect_is_deduplicated` failed
+with the client's `no welcome` after its 30 s `receive`, then passed on nextest's retry.
+25 solo runs and 3 runs of the whole file since, all clean.
+
+**Hypothesis (not observed).** Every server in that file registered `:echo` AFTER
+`node/start`, and `wait_until_listening` releases the client the instant the port accepts,
+so a `[:hi]` that lands between the listen and the register is dropped — a message to an
+unregistered name is silent by design (ADR-232), with a warning only the server prints,
+and the test discarded the server's stderr.
+
+**Done.** Every server registers before it listens (five sites), which closes that window by
+construction, and the failure message now carries the server's stderr, where ADR-232's drop
+warning would name this cause. Left a watch item rather than a fix: the cause was inferred
+from the shape, not seen. If it recurs, that stderr is the first thing to read.
+
+## KI-153 — a function reached only through itself was checked as dead code ✅ FIXED 2026-09-17
+
+**Symptom.** `(defn w (xs) (if (empty? xs) 0 (do (string/length 5) (w (rest xs)))))` —
+`brood --check` reports nothing. Give it one caller anywhere in the file, or delete the
+self-call, and `string/length: argument 1 expects string, got 5` appears. Found while
+checking that a loop the linear-map rewrite had rewritten still produced its warnings (it
+did, from the inner copy — which is a gensym and so never derived — while the plain,
+unrewritten function did not).
+
+**Cause.** ADR-341's caller-derived parameters: a candidate with at least one site and no
+escape is "live" and starts every parameter at ⊥ for the least fixpoint; each site's
+arguments are typed in their scope and joined. A self-call is a site, so a function whose
+only sites are its own recursion was live — and its self-call's arguments, typed under the
+⊥ parameters, joined to ⊥. Every parameter ⊥, every branch dead, no lint.
+
+**Fix.** `sigs::live_private_functions` requires a site that is not a self-call. Such a
+function is site-less: its callers are not all here (a public function's never are), its
+parameters are unknown, and its body is walked like any other. The derivation is unchanged
+wherever a real caller seeds it.
+
+**Guard.** `closure_inference::a_function_reached_only_through_itself_is_not_derived`: the
+lint in the self-call's own argument, beside the self-call in the recursive branch, and the
+private spelling — each must report — plus a seeded private function that must stay clean.
+
+## KI-152 — the linear-map rewrite was observable on its seed ✅ FIXED 2026-09-17
+
+**Symptom.** `(lm-idiom '(:a) {:r (text/from-string "x")})` — a tally whose input map holds
+a rope — raised `cannot send a rope in a message; send (rope->string r) …` with the rewrite
+on and returned `{:r <rope>, :a 1}` with `BROOD_LINMAP=0`. The same for a map holding a
+builtin (`{:f string/length}`), a lazy seq-view, a self-referential closure. Found probing
+what the seed can hold while writing the fuzzer's seed list; the fuzzer then confirmed it.
+
+**Cause.** The split's wrapper seeds its private table from the accumulator's input map
+(`%table-from-map` → `%table-put` per entry → `to_message`), and the linearity proof says
+nothing about the seed's VALUES: the proof licenses the in-place build, the seed is
+whatever the caller passed. A table refuses what a message refuses. A record seed had the
+quieter version — a 2-arity `(get acc k)` on a miss consults `Lookup` in the source and
+answers nil through the table.
+
+**Fix.** `%table-from-map` answers `nil` for a record or a seed it cannot copy, and the
+split now keeps the loop exactly as written — `NAME/linmap-slow__N`, self-calls re-pointed
+at itself — behind `(if t <table path> (SLOW …))`. Two costs found and removed on the way:
+`%table-from-map` needs `try`, a macro defined in `control.blsp` AFTER `predicates.blsp`
+where it lived, so its body compiled to nothing the VM could run and deferred to the
+tree-walker on every call (`BROOD_DEFER_DBG=1` named it; 12M instructions) — it moved to
+`process.blsp`; and the pre-run check of `brood file` walked the copy (another ~12M per
+definition), so the copy is wrapped in `(%lint-allow :generated …)`, a new `check-allow`
+category the checker skips outright — the inner loop carries the author's code and
+positions. `perf stat` on a one-definition program: +0.7M instructions against HEAD.
+
+**Guards.** `tests/linmap_soundness_test.blsp` "a seed a table cannot hold runs the loop as
+written" and "a record seed keeps its Lookup answers" (`(get acc k 0)` never reaches
+`Lookup` — its default is not nil — so the record case pins the 2-arity read);
+`crates/lisp/tests/linmap_idiom.rs` `the_split_keeps_an_unrewritten_copy_behind_the_seed_check`;
+`types::check::tests::lints::check_allow_generated_skips_the_subtree_entirely` (a body that
+lints on its own, and a def inside the marker still resolves); `linmap.py` seeds with each.
+
+## KI-151 — the idiomatic tally was an escape: only `%map-int-add` was rewritten ✅ FIXED 2026-09-16
+
+**Symptom.** The brood-benchmarks `wordcount` and `persistent-map` ports called
+`%map-int-add`, an undocumented kernel primitive (`docs/primitives.md` lists it under the
+`%` names). Rewritten to what a Brood user writes — `(assoc m key (+ 1 (get m key 0)))`, the
+same one-call update every other port makes — the rows went 99 → 848 ms and 109 → 561 ms.
+`BROOD_JIT_BAIL_TRACE=1` named the loop arm `call-mediated-boxed` (two prelude calls per
+element on boxed values), and the map was path-copied per update.
+
+**Cause.** The linear-map rewrite (`linmap_probe` / `linmap_split_def`) proves a map
+accumulator linear and builds it in place on a private `Table`, but admitted only `%map-get`,
+`%map-count`, `%map-int-add` and `%map-dissoc` on the accumulator. The prelude `get` and
+`assoc` were escapes, so the idiomatic fold never qualified. The fast path was reachable only
+by knowing a name the reference hides.
+
+**Fix (ADR-360).** `LinIdiom` in `eval/compile/inline.rs` admits `(get acc k [d])` as a read
+and `(assoc acc K (+ (get acc K 0) E))` — either operand order — as an update, when `get` and
+`assoc` are the PRELUDE closures (reserved names, ADR-166) and `K` is the same pure expression
+on both sides (a local, an immediate constant, or an inlined prelude primitive over those —
+`(first xs)`, `(math/rem x 7)`; never a global, a call, or a table read, since the source
+evaluates it twice and the rewrite once). The source rewrite in `eval/macros.rs` emits
+`%table-get` and the new `%table-add`, which is `(+ (get t k 0) v)` on a table: the integer
+case is `table-incr`'s lock-free path, everything else the real `+` then a `put`. And
+`%map-int-add` → `%table-add` too, with the primitive itself made exactly the `+`
+read-modify-write (it used to raise past i64 and read a non-integer as 0 to match
+`table-incr`), so `BROOD_LINMAP=0` cannot change any program's answer.
+
+**Guards.** `crates/lisp/tests/linmap_idiom.rs` inspects the expansion: the six shapes that
+must fuse and the five that must not (a different read key, a non-zero default, a 2-arity
+`get` in the sum, a global key, a plain `assoc`). `tests/linmap_soundness_test.blsp` pins the
+values — including a float under the key, a bignum past i64 and `+`'s own error — and passes
+under `BROOD_LINMAP=0` and every `BROOD_TIER`. `scripts/fuzz/generators/linmap.py` folds
+each random tally as the rewritten `defn` AND as a `fold` the rewrite never touches, and
+prints `BAD` when they differ; sabotage (routing back to `%table-incr`) reds 8 of 120.
+
+## KI-149 — the unused-private verdict depends on the file list ✅ FIXED 2026-09-16
+
+**Symptom.** On one tree (`df47aeb4`, and `c1647db8` before it): `nest check` →
+`tests/lazy_load_test.blsp: warning: unused private function: use-a`; `nest check std/**/*.blsp
+tests/**/*.blsp examples/**/*.blsp` (CI's `green.sh` invocation) → zero warnings; `nest check
+tests/lazy_load_test.blsp` → zero.
+
+**What is known.** `use-a` (`lazy_load_test.blsp:43`) is a `defn-` whose only textual call sits
+inside a string the test writes to a child program — so the lint's "unused" is *correct*, and
+the discrepancy is that two of the three lists do not raise it. KI-137 fixed the class for
+inferred returns by bringing the heap to ONE state before any file is checked
+(`project-check/project-preload!`); the bare project-wide walk evidently reaches a different
+state for this lint (a different materialisation set, or the site collector scoped by the
+project's `:source-paths` rather than the listed files).
+
+**Why it matters.** Not a red gate — CI lists the files. But KI-137's lesson stands: a verdict
+that depends on the list is a verdict a developer cannot reproduce from the message.
+
+**Next step.** Diff the materialised module set and the collected private-call sites between
+the two invocations (`BROOD_IMAGE_TRACE=1` for the former); the answer decides whether the
+project walk needs the same preload the listed walk gets, or the lint needs the child-string
+exemption made explicit (`check-allow :unused-private` on the helper would silence it, and
+would be the wrong fix until the list dependence is understood).
+
+**Fix (2026-09-16).** Not the KI-137 class. The two lints were whole-project passes that only
+`check` (the bare form) ran; `check-files` (the listed form, which CI uses) ran the per-file
+walk alone — so the list did not change a verdict, it changed WHICH PASSES RAN. And `check`
+discarded the lints' counts, returning only the per-file tally, so a dead private had never
+failed a gate in either form. `project-whole-lints` computes both over `all-files root` for
+either form (the verdict needs the whole project), keeps the warnings that mention a listed
+path, prints and counts them. `use-a` was dead — the unit moved to a child program that
+defines its own — and is deleted. Guard: `crates/nest/tests/whole_project_lints_listed.rs`
+scaffolds a project with a dead private and asserts the bare and the listed check both fail
+on it while a list naming another file stays clean; sabotage-verified (the listed arm goes
+red with the lints taken back out of `check-files`).
+## KI-148 — two more arms latched off the native tier, and a dead-block lowering bug ✅ FIXED 2026-09-16
+
+**Symptom.** Every benchmark row run under `BROOD_JIT_BAIL_TRACE=1` after ADR-353 landed:
+`http` and `supervisor` — `arm=second reason=deopt-thrash-latched … deopts=16`; `json` —
+`join-depth-mismatch at ip=46: prepass=1 edges=[0, 1]` and the same at ip 128, so
+`json/num-end` and `json/object-acc` were refused at lowering. Before ADR-353 the latter was
+the unprinted `cranelift-define-function`: those two arms had never run native.
+
+**Causes.** (1) The inline `first`/`rest` tag-checked for a pair and deopted for every other
+shape — `second` is `(first (rest x))`, and over a vector its `first` saw a non-pair on every
+activation. (2) The bytecode compiler emits a jump-past-the-`else` after a then-branch that
+ends in a tail `SelfCall`; nothing falls through a SelfCall, the prepass (correctly) never
+reaches that block, and the emit loop still translated it with an empty operand stack — an
+edge of depth 0 into a join of depth 1.
+
+**Fix.** The non-pair path of `first`/`rest` calls `brood_rt_first`/`brood_rt_rest`, which
+answer nil / vector / range / bytes / set and the type error in the kernel and deopt only for
+a record (`Seqable` dispatch) or a seq-view (realisation) — both need the evaluator. The
+first cut segfaulted: `rest` of a vector ALLOCATES a list, which can grow the pair slab and
+move its base, and the arm had hoisted the pair-slab bases at entry, so the next inline pair
+read went through a stale pointer. The bases are Cranelift `Variable`s now, re-fetched after
+that call (`prim::emit_prim1`); `ej-rest-then-pair` in the guard file is that shape and
+SIGSEGVs with the re-fetch removed. A leader the prepass never reached is terminated as
+unreachable (`jump deopt`, never taken) instead of emitted.
+
+**Guard.** `tests/jit_eq_join_test.blsp` §3 (values at tiers 0/1/2, the type error, the
+pair-after-fallback shape, `second` staying `:native`), and **`make tier-audit`**
+(`scripts/tier-audit.sh`, in `make green-all`): every benchmark row under the bail trace,
+failing on any `deopt-thrash-latched` / `suspend-latched` / `join-depth-mismatch` /
+`prepass-unmodelled-inst` / `cranelift-define-function`. Red on the 0.29.0 binary (json,
+supervisor), green after. `make ab --floor` over the list-walking and message rows: every
+row inside its floor.
+
+## KI-145 — the differential fuzz harness was vacuous: every generator emitted stale names ✅ FIXED 2026-09-15
+
+**Symptom.** `scripts/fuzz/run.sh <generator> 150` reported `checked=1050 bad=0 divergences=0
+crashes=0` for `metamorphic`, and the same shape of clean result for six more generators —
+1850 programs — and a session cited that as the VM/JIT differential being green. One
+generated program run by hand: `warning: unbound symbol: abs`, `unbound symbol: rem`, and
+**0 bytes of stdout**. Every generator: `println` (177 programs), `rem` (222), `quot`, `max`,
+`min`, `abs`, `mod`, `concat`, `subvec`, `substring`, `char-at`, `last-index-of`,
+`string->list`, `rope-insert`/`-delete`/`-length`/`-slice`, `string->rope`/`rope->string`,
+`scan-form-start`, `check`, `bit-or`/`bit-xor`/`bit-shl`. Each program died on its first form
+on all four engines, which therefore agreed — on nothing.
+
+**Why it survived.** The runner compared engine outputs and counted `BAD` lines; an error on
+stderr with an empty stdout is neither a divergence nor a `BAD`. No test ran a generator.
+Brood's rename sweeps cover `std/`, `tests/`, `examples/`, `breakage/`; a generator writes Brood
+from Python. This is the third time the same hole has been closed for a different generator
+(`bench/smoke.py` after KI-42/KI-44; `stress/fuzz_programs.py`'s `STALE GENERATOR` line), and
+the `CLAUDE.md` rename checklist already says "grep the Python too".
+
+**Fix.** The names updated in all ten generators; `match.py` no longer emits `(_ :NOMATCH)`
+behind a top-level bare-variable pattern (an unreachable clause after a catch-all is a
+compile error, ADR-297); `run.sh` counts a `STALE GENERATOR` — the reference engine reports an
+unbound symbol, or prints nothing for a generator whose programs must run (`syntax` and
+`checker` are exempt from the second rule: their programs are meant to be rejected) — and
+exits nonzero on any finding. Guard: `crates/cli/tests/fuzz_generators_live.rs`, one program
+per generator on the tree-walker in the ordinary suite; sabotage-verified with one `println`
+restored.
+
+**What the harness then said, on the same day, once it ran:** see the devlog entry — every
+generator clean on the ADR-353 tree, with real output this time.
+
+## KI-146 — `string/last-index-of` skipped overlapping occurrences ✅ FIXED 2026-09-15
+
+**Symptom.** `scripts/fuzz/run.sh strings`, on its first live run after KI-145:
+`BAD str_801.blsp: BAD nothing-after-last got 445 want -1` — the oracle's property that
+`(index-of s needle (+ last 1))` finds nothing once `last` is `(string/last-index-of s
+needle)`. Reduced: `(string/last-index-of "xaaay" "aa")` → 1 (the occurrence at 2 exists);
+`(string/last-index-of "ab\n\n\ncd" "\n\n")` → 2 (3 exists).
+
+**Cause.** `%str-last-index-of` (`builtins/string.rs`) scanned `a.s.match_indices(needle)`
+and kept the last start under the bound. Rust's `match_indices` yields *non-overlapping*
+matches — after the one at 1 it resumes at 3 — so an occurrence overlapping the previous
+one is never a candidate. The forward `index-of` uses `find` from `from`, which sees every
+occurrence, so the two disagreed exactly on self-overlapping needles (`aa`, `\n\n`, `..`).
+
+**Fix.** A match of `k` chars starting at char `c < before` lies within the first
+`before + k − 1` chars, and any match inside that prefix starts before `before`; so
+`prefix.rfind(needle)` is the answer with no enumeration at all. The prefix end is a char
+boundary by construction (`char_to_byte` of a char index, or the whole string).
+
+**Guard.** `tests/strings_test.blsp` "last-index-of sees an occurrence that overlaps the
+previous one": the two reductions, `"aaaa" "aa"` at `before` 2/3/default (the bound is on
+the START, a match may extend past it), a multibyte needle, a needle longer than the string.
+The old primitive answers 1 on the first case; the strings oracle keeps watching the
+property.
+
+## KI-133 — a preempted native loop resumed on the interpreter, via its callee's frame ✅ FIXED 2026-09-12
+
+**Symptom.** Measuring what one native→native call costs (`f` a self-tail loop of 5M
+iterations, `g` a callee too big to leaf-splice): 3.86 G instructions against 0.51 G for the
+same loop with the call removed — ~640 per call. `perf` on the main thread: `exec_chunk`
+28%, `vm_run_bc` 10%, `jit_tier_in_frame` 3% — the *interpreter*, on a loop whose arms were
+both native. Counters: `jit_preempt` 3 252 (the 2 000-reduction quantum, as designed),
+`self_tail` **839 607** interpreted iterations, `jit_native` 832 540 re-entries — ~256
+interpreted iterations per preempt. `BROOD_REDUCTIONS=100000000`: 2.48 G, −36%.
+
+**Mechanism** (an event trace on the driver): native `f` polls at its 128-iteration back-edge
+batch, the budget is spent → outcome 2 (preempt). The driver's outcome-2 arm "runs the arm on
+the VM with the frame intact — the VM preempts at its own loop-top since the budget is already
+spent". But the interpreter's next safepoint is not `f`'s loop top: `f`'s body calls `g`, the
+`Call` pushes `g`'s frame, and the frame-boundary `tick_capture()` fires at **`g`'s entry**.
+The capture is `(g, ip 0)`; the resume re-tiers `g` (native, `Done`), returns into `f` at its
+call-return ip, and `f` — now mid-body, on the interpreter — runs to its next
+`BACKEDGE_TIER_INTERVAL` (256) boundary before the installed-code check exits it. The 2026-08
+fix "a RESUME tiers too when it re-enters at ip 0" (sieve's `mark`) was correct and never saw
+this frame.
+
+**Fix.** On outcome 2 with `capture` on, yield immediately with the current frame
+(`Ok(ChunkExit::Preempt)`), after the journal's resume point has been applied — so the
+captured ip is 0 for the ordinary back-edge preempt, and the resume goes straight back to
+native. `big.blsp` 3.86 → **2.53 G** (the preemption-off bound is 2.48), cycles 1.15 → 0.72 G;
+the leaf-spliced loop 2.15 → **0.61 G**.
+
+**Why the rows did not show it.** The benchmark rows run 60–250 ms — tens of preempts — and
+the call-heavy rows' loops are gate-refused (interpreted regardless). `loop` −3.7% and
+`primes` −2.4% in instructions with preemption off were the trace of it. Anything
+long-running pays in full: a server's request loop, a `count-primes` at scale. It is also a
+plausible reason §7.1's admission experiments lost: an admitted call-mediated loop is
+exactly the shape that preempts into its callee.
+
+**Guard.** `eval::compile::tests::a_native_preempt_captures_the_loop_frame_not_its_callee`
+— the real capture-mode driver, a 300-reduction budget refilled per resume the way `run_one`
+does, asserting every capture after the loop's native install is `(pre-f, ip 0)`, and that at
+least ten such captures happened (else vacuous). Sabotage: `if false &&` on the new arm →
+the captures land on `pre-g`.
+
+## KI-134 — KI-89's orphan-record-id class is back since the lazy-load wave ✅ FIXED 2026-09-13 (ADR-339)
+
+**Symptom.** Full `nest test` on `5d4d5217` (release `nest`, stdlib image live): six runs
+tonight, four with exactly one basic case failing, a different one each time —
+
+| run | failing case |
+|-----|--------------|
+| 1 | `lazy_load_test.blsp:120` — a function head into an imaged module loads at first call |
+| 2 | `ability_test.blsp:478` — every registered record id names a bound constructor |
+| 3 | clean |
+| 4 | `queue_test.blsp:18` — FIFO queue › push increases size |
+| 5 | `queue_test.blsp:157` + `lazy_load_test.blsp:56` |
+| 6–8 (JIT changes inert) | `queue_test.blsp:18` + `:16`; clean; clean |
+
+Every failing assertion is a record-type dispatch or a module-load observation; every case
+passes alone. This is KI-89's signature: its 2026-08-31 table is one failure per run, a
+different case each time, with `:queue/queue` among the orphaned record ids.
+
+**Not the day's JIT work.** Runs 6–8 used a `nest` built with the KI-133 yield stubbed
+(`if false &&`) and `BROOD_NO_XCALL=1` (the depth-0 blob inert): same case, same rate. A
+scheduling change can shift which interleaving a race lands on; it cannot make `count` of a
+fresh `queue` return something other than 1.
+
+**Where to look.** ADR-335 moved module loading to first use. A `require`'s registry writes
+(`*record-ids*`, `*impls*`, …) therefore now happen inside whichever `%isolate` window the
+first *use* falls in — the exact "write escaping a restore" shape KI-89 closed for the
+project image, entered from a new door. `ability_test.blsp:478` names the orphans; the
+runner's per-file orphan probe KI-89 built is the tool. Not chased tonight: it is the
+lazy-load author's mechanism and the fix belongs with ADR-335's runner clause (KI-131).
+
+
+**Reproduced small, and split in two (2026-09-13).** The full suite is not needed: three
+files reproduce it in ~10 s.
+
+    nest test tests/queue_test.blsp tests/ability_test.blsp tests/lazy_load_test.blsp
+
+Baseline **5 of 12** runs fail. Both ingredients are necessary, each measured against that
+rate: `BROOD_TEST_NO_SCOPE=1` (no isolates) **0 of 6**, `BROOD_NO_LAZY_LOAD=1` (eager) **0 of
+6** — p≈0.04 apiece. The failure is legible rather than merely "a case failed":
+`(queue/pop (queue/empty))` answers `[nil {… :size -1}]`, a queue of size MINUS ONE, because
+`pop`'s emptiness check dispatched against an `*impls*` table `queue` was no longer in while
+`queue/pop` and `queue/empty` themselves still resolved. Bindings present, registrations
+gone — the orphan asymmetry caught mid-act.
+
+**Window 1 — a unit's own isolate, CLOSED.** `drain-one-file` runs the file's `reflect/load`
+inside the file's `%isolate`, and an `:isolated` unit nests another inside that. A module
+whose first use falls in the nested window is written into the nested snapshot and rolled
+back when it closes, while the file's other units — concurrent green processes — are still
+using it. `queue_test.blsp` never `(:use queue)`s; every `queue/…` is a qualified reference,
+so under ADR-335 it loads at whichever use gets there first. Closed by loading the file
+eagerly (`%eager-loads!` around the loader only, so a unit body still sees the lazy policy):
+**5/12 → 1/12**.
+
+**Window 2 — a spawned worker, OPEN.** What remains is a different case with a different
+shape: `queue_test.blsp:157` "queues built in workers arrive as queues and pop in order",
+`(every? results queue?)` false after a 20 s wait. `queue?` is a record-id predicate, so this
+is the same orphan read from a worker the test spawned — KI-89's grandchild shape, now able
+to *load a module* (and write its registrations) inside the window rather than merely
+`defrecord` in it. The eager file load cannot reach it: the worker's first use happens in its
+own process, at run time. That is the half still to fix, and it is why this KI stays OPEN —
+the rate is lower, which makes it rarer to catch, not closer to gone.
+
+**Window 2 is the SAME bug, and the two windows have one root cause (2026-09-13).** The
+paragraph above guessed at the worker's failure from the assertion alone; instrumenting it
+(`(assert= [] (seq/filter results (fn (r) (not (queue? r)))))`) says what actually happens,
+and it is not a lost record id read by a bystander:
+
+    expect: [:timeout]
+    process 4 died: error: conj: adding to a record takes a [k v] pair or a map, got 0
+
+Exactly ONE of the four workers is missing; the other three return proper queues. That worker
+did not stall and was not descheduled — it RAN and RAISED. `(queue/list-> (list 0 10))` calls
+`conj` on a queue, `conj`'s ability dispatch missed queue's `Conjable` impl, and the call
+fell through to the generic record `conj`, which rejects the integer `0`. The `:timeout` is
+two steps downstream: a dead worker never sends, so the `receive` waits out
+`*test-wait-ms*`, and `queue?` is false because the slot holds `:timeout`.
+
+So both windows are one mechanism — a module's registrations rolled back while something is
+still using it — and they differ only in which ability call reaches the gap first. Window 1
+returns a WRONG VALUE (`pop`'s emptiness check misses, `:size -1`); window 2 RAISES (`conj`
+finds no impl and the record default refuses the argument). The KI's own table mixes the two
+shapes (`queue_test:18`/`:16` against `:157`) for that reason, not because there are two
+bugs.
+
+**What that settles for the fix.** One fix closes both: module-load writes must survive an
+`%isolate` restore. A module load is a process-shared, idempotent fact, and isolation exists
+to roll back what a TEST did, not what a LOAD did. The shape that reaches the spawned-worker
+case (which no amount of eager loading in the parent can, since the worker's first use is in
+its own process at run time): `require-one` marks "in module load" — the same one-shot trick
+`SKIP_NEXT_EDGE` already uses — every `env_define`/`registry_update` under that mark is
+journalled, and `restore_globals` replays the journal after its wholesale swap. Keyed on what
+KIND of write it was, not on where the load happened.
+
+**Ruled out, so nobody re-checks it.** The absence memo (`0c66565b`) is not a contributor,
+which was worth testing because it predates the KI's own runs (21:55 against 22:48): with
+`module_known_absent` stubbed out the rate is 1/12, the same as with it live.
+
+**FIXED 2026-09-13 — two mechanisms, two fixes (ADR-339).** The KI's "one root cause, two
+shapes" was half right: both shapes are a module's registrations missing while its bindings
+are in use, but only ONE of them is the rollback.
+
+*Window 1 — the isolate rollback — the journal, as specified.* `require-one` runs every load
+inside `%with-load-journal`; under it a global define and a registry update are journalled (the
+registry one as its OPERATION, so what the isolate itself registered stays rolled back), and
+`restore_globals` replays the entries since its snapshot into a private copy of the snapshot
+and installs it with one swap. Two things the spec did not say: `%isolate` had a second client
+with the opposite need — the stdlib image builder probes each module inside one precisely so
+the load rolls back — so the contract is explicit now (`%isolate` keeps loads,
+`%isolate-discard-loads` is the scratch world), and the replay must be atomic (replaying into
+the live table left readers a window). Deterministic guards: `tests/isolate_load_test.blsp`,
+`crates/lisp/tests/isolate_load_journal.rs`.
+
+*Window 2 — the worker — was never the rollback.* A `BROOD_REG_TRACE` run that failed shows the
+worker dying (`conj: adding to a record takes a [k v] pair or a map, got 0`) BEFORE the first
+`RESTORE` line of the whole run — and the `*record-ids*` write for `:queue/queue` by another
+process on the line just above it. The worker reached `queue/list->` while `queue` was
+MID-LOAD. That cannot happen from a source load — in `std/queue.blsp` the `(impl Conjable …)`
+precedes `(defn list-> …)`, so a bound `list->` implies a registered impl — but the loader's
+IMAGE branch materialised the whole module's bindings first and replayed its impls after, and
+under lazy loading (ADR-335) a concurrent process reaches a freshly-bound name through an
+ordinary global HIT: no `require-one`, no wait. Seven of thirty three-file runs under load, none
+of them with a restore anywhere near. Fixed by publication order: dependencies, registrations,
+impls, then bindings, then `provide` (`%require-force-in`'s image branch). Guard:
+`crates/cli/tests/image_publication_order.rs` asserts the trace order, deterministically.
+Three-file repro under synthetic load, image live: 0 of 20 (7 of 30 before).
+
+The narrower cousin of window 2 on the SOURCE path — a concurrent process hitting a name a
+module has bound moments before the impl that makes its values dispatchable — is real and is
+filed as KI-135; it is what ADR-335's hit path leaves open by design and needs atomic module
+publication to close.
+
+## KI-135 — a module is observable mid-load through a global hit (the ADR-335 hit-path gap) ✅ FIXED 2026-09-13 (ADR-344)
+
+**Fixed as specified below** — see ADR-344 for the mechanism. What the spec did not say: a
+`%swap-registry!` write-back cannot be staged (a whole map published from an outer frame
+overwrote what a nested load had added — the image builder lost 10 of 35 `*require-edges*`
+records, and `(require-one 'repl)` stopped loading `editor/lineedit`), so that funnel writes
+live unless the registry was defined by the same load; the two `*features-*` registries loads
+coordinate through stay live; and a discarded frame must bump `version`/`code_epoch`, or the
+loader's own inline cache keeps a value that never landed. The guard makes the window 300 ms
+wide on purpose (`tests/module_publish_test.blsp`): 0 sightings with staging, 58 without.
+
+**Shape.** Before lazy loading, a file's qualified references `require-one`d their modules at
+compile time, and `require-one` waits for an in-flight load, so no process ever ran code
+against a half-loaded module. ADR-335 moved the load to the first use — through the global
+lookup MISS path (`derive::global_miss`), which still waits — but a name a concurrent loader has
+ALREADY bound is a HIT, and a hit consults nothing. For the image branch that was the whole
+module at once (KI-134 window 2, fixed by publication order). For a SOURCE load the window is a
+single form: between `(defn empty …)` (line 28 of `std/queue.blsp`) and `(impl Conjable …)`
+(line 73), a second process that first-uses `queue/empty` and then `conj`s onto the result finds
+no impl and takes the record default. Narrow, and not reproduced on demand yet; recorded because
+it is the remaining member of a class that has now cost three diagnoses (KI-89, KI-134 ×2).
+
+**Fix direction.** Atomic publication: a loading module's defines and registrations go to a
+per-load staging table that only the loader resolves against, and `provide` installs the whole
+set under one write of the globals table (the same shape `restore_globals` now uses for its
+replay). The hit path then cannot see a partial module because a partial module is never in the
+table. The alternative — gating every global-IC miss on `*features-loading*` — reaches only the
+paths that have an IC.
+
+**Until then.** Nothing masks it: the runner's eager file load (`7e26803b`) was reverted
+with ADR-339 (redundant once loads survive an isolate, and it broke `lazy_load_test` in the
+full suite). The window is one form wide on a source load and needs a second process's first
+use to land inside it.
+
+## KI-136 — the stdlib image replays registrations a module never made ✅ FIXED 2026-09-15
+
+**Shape.** `nest stdimage` records the registry writes each module's load performs and
+replays them when the module materialises. The attribution (`stdimage/%std-regs-by-module`)
+goes by the KEY's qualifier — an ability by `*ability-owner*`, a multimethod by
+`*method-from*`, a record id by its prefix — and a key that names no module (`:syntax/comment`
+in `editor/face`'s `*faces*`) lands in the registry's own module's section. So materialising
+`editor/face` registers 26 faces, including the eight `:syntax/*` faces `editor/highlight`
+declares and six `observer/*` ones; loading it from source registers 6.
+
+**How it showed.** `editor/lexer` resolves `:syntax/*` faces through `editor/face` and had
+no path to `editor/highlight`. Imaged: 10/10 in `configs_test`. From source: 2/10, every span
+unstyled. Found because two binaries at the same commit read different image files (`-dirty`
+is part of the id) and one of them had none yet. The ADR-280 differential
+(`image_matches_source.rs`) compares names, kinds, privacy and declared sigs, not the contents
+a load leaves in a registry, so the divergence was invisible to the gate built for it.
+
+**Done.** `editor/lexer` declares the dependency (`(:load editor/highlight)`); `configs_test`
+holds under `BROOD_NO_STDIMAGE=1`.
+
+**Open.** Two changes, either of which would have caught this: attribute a registry write to
+the module whose LOAD made it (the builder loads each module inside `%isolate-discard-loads`,
+so the writer is known), and extend the differential to compare, per module, the registry
+entries its materialisation adds against the ones its source load adds. Until then a test that
+passes only with the image on is a possibility, and `BROOD_NO_STDIMAGE=1` on a module's test
+file is the cheap check.
+
+
+**Resolution (2026-09-15).** Both open items, and the guard.
+
+*Attribution by writer.* `Heap::registry_update` journals, under `registry_lock`, the
+compile namespace at every write — `(registry, printed key path) → module` in
+`RuntimeCode::registry_writers`; a `:dissoc` or a root write clears the entry. `(%registry-
+writer reg path)` reads it, and `%registry-update!` takes an optional fifth argument naming
+the writer, which `%replay-std-regs!` passes as the module it materialises (the namespace at
+that moment is whoever required it). `stdimage/%std-regs-by-module` is one generic rule over
+`(%registry-names)` — owner = writer; `*module-docs*` by its key, which IS the module name
+(the doc is recorded before `defmodule` opens the namespace); `*features*`,
+`*features-loading*`, `*require-edges*`, `*module-files*` skipped as runtime state and
+`*impls*`/`*impl-from*` as the impls' own section — replacing the six hand-listed registries
+and the qualifier guess. So `:syntax/comment` is `editor/highlight`'s, and materialising
+`editor/face` registers its six.
+
+*The snapshot.* A registry's VALUE in its owner's section still held every entry at write
+time, so `build` now runs `%image-write` inside an `%isolate` after
+`%prune-attributed-registrations!` dissoc'd every module-owned entry: a value carries only
+what no load replays (the prelude's and the root's), each module's entries come back with
+that module — by replay from the image, or by evaluation from source — and the session
+keeps everything when the isolate closes.
+
+*The differential.* `image_registrations_match_source.rs` (a binary of its own — it owns
+its cache through `set_var`, and `env_isolation` allows one test per such binary) holds
+`an_imaged_module_registers_what_its_source_registers`: the image is built in a runtime of
+its own (the build loads every module into the process that runs it), then every module is
+loaded alone inside `%isolate-discard-loads` in a source runtime and an imaged one, and the
+registry entries **owned by that module or by nobody** are compared against each arm's own
+no-load baseline. Owned-by-a-dependency entries are deliberately outside it: which modules a
+load pulls in differs between a source load (a lazy first call at load time) and a
+materialisation (recorded edges), by design under ADR-335, and the first cut of the test
+reported exactly that noise for every module. With `*faces*` back on the skip list and the
+prune off — the historical shape — it reds on `editor/face` (six faces from source, none from
+the image, which never even enumerates the registry) and `editor/highlight`.
+## KI-137 — a strict verdict depends on which other modules are loaded ✅ FIXED 2026-09-14
+
+**Fixed as the gate question.** `nest check` used to load modules as each file's check reached
+them — a header require here, a lazy load on a qualified reference's global MISS there — so
+two files could see two heaps. It now preloads (`project-check/project-preload!`): every
+module in the project's and the listed files' header closures, every module a listed file's
+body names with a qualified reference, then the ADR-340 materialisation to a fixpoint —
+sorted, before the first check, in the fresh, cached and structured paths alike. A file's own
+module is not loaded unless its body names it (a test file's top level must not run under
+`nest check`; verified with a marker-writing file). Verified with the `max`/`min` declarations
+removed: `[math datetime]`, `[datetime math]`, std sorted and std reversed each reported
+exactly the one `clamp` warning, where before the same lists split 0/1. Cost: the strict gate
+over std/ 31 s, std+tests+examples 89 s (debug), the loads being the ones the checks did
+anyway. Guard: `tests/check_preload_test.blsp`.
+
+**Fixed at the mechanism (881552a6, 6367ac6e).** A module's own qualified definition of a
+name a by-name rule describes reads that rule ahead of the sig inferred over unknown
+parameters, and a type variable absorbs an untyped argument, so `math/max` and `math/min`
+declare `(& ?A -> ?A)` and leave the curated table; `clamp` is clean with or without the
+declaration. (A first attempt to add the declaration alone failed the `declared_vs_curated`
+tests — a declared std sig may not widen its curated signature — which is what the second
+commit resolves.)
+
+**What stays open is the class**, not this instance: any inferred return that is a
+registry-derived cover reads wider as modules load. With the preload that can only show as a
+verdict that differs between two LISTS, never between two runs of one list. The text below
+records the mechanism as it was traced.
+
+
+**Repro, deterministic.** In one process: `(%check-strict! true)`, then
+`(reflect/check-file "std/math.blsp")` → nil; `(require-one 'datetime)`; the same call →
+`math/clamp: declared return type number but the body yields ordered`. Loading every std
+module one at a time, `datetime` is the first whose presence turns it (a scratch loop over
+`(reflect/builtin-modules)`).
+
+**Mechanism, as far as it is known.** `math/max` and `math/min` carried no declaration; a
+call's type came from the kernel `%max` contract — a number OR a comparable record. The
+record half of that union is inhabited only once some module has registered comparable
+records, so the union the checker prints (and compares against `clamp`'s declared `number`)
+grows with the heap. The strict rule reads a positively-known bound by inclusion, so the
+grown union is a warning and the fresh one is not.
+
+**Why it flickered.** `nest check` checks its files in parallel processes over ONE heap, and
+a file's check loads the modules its bodies reference (ADR-340). Whether `datetime` is loaded
+by the time `math.blsp` is checked is a scheduling race. It was red on the first run after a
+merge and on a clean build of `5afd40bd`, green on seven runs after, red again from the
+pre-push hook — the same binary throughout, and the check cache faithfully kept whichever
+answer a run computed.
+
+**Open.** The class. A gate whose verdict depends on the order files were checked in is not a
+gate. Either the runner loads the whole closure of the listed files BEFORE checking any of
+them (deterministic, and the state a live image would be in), or kernel contracts of the
+`%max` kind carry their type variable so no union grows with the heap. Until then a strict
+red that does not reproduce alone is this until proven otherwise; the repro above settles it
+in seconds.
+
+## KI-138 — the advisory checker re-walked one question 36 times, and `brood file.blsp` paid it ✅ FIXED 2026-09-14
+
+**Found by the benchmark, not by a test.** The 2026-09-14 cross-language field run read
+`supervisor` **886 → 1330 ms (+50%)** with every other row inside drift. Three brood-only
+invocations at `c9d6c1a1` read 1342/1345/1350 ms against 888.6/892.1/891.4 ms for the
+previous column's commit rebuilt with its own std image — spreads under 0.6% on a row that
+is in the harness's `NOISY` set precisely because it usually wanders. Peak RSS did not move
+with it (626 → 644 MB), which is the first clue: whatever it was cost time, not allocation.
+
+**It was not the supervisor, and it was not per-child.** A sweep of `BENCH_N` put the cost
+at a **flat ~520 ms** — N=100 read 625 ms against 104 ms, N=20000 read 1455 against 884 — so
+it was load-time. Cutting the benchmark file form by form put +414 ms on a single line,
+`(def sup (start [] {…}))`, and a two-line file was enough to reproduce it:
+
+```blsp
+(defmodule probe)
+(def sup (supervisor/start []))    ; 41 ms before, 463 ms after
+```
+
+`json`, `gen`, `http`, `set` and `regex` were all unaffected, which is what made it look
+module-specific. It is not: `supervisor` is simply the std module with 31 mutually-calling
+private functions passing maps around.
+
+**The mechanism.** `brood` type-checks a program before running it (`check_one_file`,
+`crates/cli/src/main.rs`), so this is a cost every invocation pays. Inside the checker,
+`specialized_ret` re-types a callee's body under the call's argument types and memoizes the
+answer per `(name, argument types)`. An arm whose tail could not be typed returned through
+`?`:
+
+```rust
+let t = typed?;   // ← returns None BEFORE the memo write at the bottom of the function
+```
+
+so that `None` — a full body walk to reach — was never remembered, and the same question was
+re-asked at every call site and every enclosing level. Instrumenting the counter showed the
+shape exactly: the prelude's `get` was re-typed **1864 times for 52 distinct questions**,
+`%lookup-miss` 592 times for 61. The file spent **2760 arm re-typings to ask 236 questions**.
+
+**The escape is older than the regression.** It dates from `68c250e8`, where call-site
+specialization was introduced. What `f3842f6a` (ADR-341, caller-derived parameter types for
+module-private functions) changed is that private parameters now *have* types — and
+`specialized_ret` returns early when every input is unknown, so before ADR-341 the
+specializer never engaged on these bodies at all. A latent quadratic became reachable.
+
+**The fix** memoizes that `None` under the same rule the bottom of the function already
+uses — `stable`, i.e. a body loaded from the image rather than a same-file global still in
+flux (a same-file `None` is a fact about the moment, and memoizing it would outlive the
+Pass 2.8 fixpoint that turns it into an answer) — **and only when no specialization was
+refused underneath it**, tracked by a `REFUSALS` counter snapshotted around the arm walk. A
+refusal (a name already in flight, or the depth cap) is a fact about *where* the question was
+asked, so a `None` reached through one is not a stable answer; this is the same trap
+`robustness::a_depth_capped_body_walk_is_not_memoized_as_the_callees_signature` already pins
+for `infer_sig`. Exactness is free here: 238 re-typings with the refusal guard against 236
+without it. Nothing about the *answer* changes; it is only remembered. Re-typings on the
+probe file fall 2760 → 238, and every name's count now equals its distinct-question count —
+one walk per question, as designed.
+
+Measured (2026-09-15, imaged release binaries, quiet machine): the probe file's check reads
+**10 ms at `5c913fe3`** (the last-good column), **240 ms at the fix alone** (`0148a3a5`) and
+290 ms at the merged tree (`b393c38c`); the harness `supervisor` row reads **1097–1121 ms**
+at the fix alone against 1343 published at `c9d6c1a1` and 975 for `5c913fe3` rebuilt today
+(886 published). So this fix recovers roughly HALF the regression; an earlier draft of this
+entry said the row was "back to its pre-regression level", which was measured before the
+machine was quiet and is wrong. The rest is KI-139 — not a re-ask multiplier (238 walks for
+236 questions) but the cost of the walks themselves.
+
+**Guard:** `crates/lisp/tests/check_specialization_cost.rs` — bounds the arm re-typings a
+check of the two-line probe file may spend (238 at the fix, 2760 before it, bound 800), plus
+a companion asserting a file that specializes nothing reads near zero, so the bound cannot
+pass because the meter stopped moving. Sabotage-verified: reverting the fix alone reds the
+first test with the number in its message.
+
+**The same class as KI-13**, which is the part worth carrying forward. `infer_sig` memoizes
+its negative answers deliberately — its comment names the ~400k body walks that taught it —
+and the call-site specializer, added later beside it, reopened the hole. A memo whose
+negative answers escape is not a memo.
+
+**What to take from it.** A checker's cost is a *runtime* cost on this system, because the
+file runner checks before it runs, and no test in the tree measured that. The signal came
+from a benchmark row in another repo — which is the argument for keeping that column fresh.
+
+## KI-139 — the checker's transitive specialization costs `brood file.blsp` ~240 ms on a two-line file ✅ FIXED 2026-09-15 (same day)
+
+**Filed from the KI-138 follow-up measurement**, which found that fix recovering half of the
+`supervisor` row's regression and not all of it. Same probe, three imaged release binaries, a
+quiet machine, five runs each:
+
+| binary | `brood --check probe.blsp` | harness `supervisor` row |
+|---|---|---|
+| `5c913fe3` — the last-good column | **10 ms** | 975 ms today (886 published) |
+| `c9d6c1a1` — the regressed column | 463 ms | 1343 published |
+| `0148a3a5` — the KI-138 fix alone | **240 ms** | 1097 / 1110 / 1121 ms |
+| `b393c38c` — the merged tree | 290 ms | 1143 / 1150 / 1176 ms |
+
+```blsp
+(defmodule probe)
+(def sup (supervisor/start []))
+```
+
+**It is not another re-ask.** The KI-138 meter reads 238 arm re-typings for 236 distinct
+questions, so each question is walked once; at 240 ms that is roughly **1 ms per specialized
+body walk**, and the walks are of small functions. What changed between the two columns is how
+much the checker looks at: `BROOD_IMAGE_TRACE=1 brood --check` shows the old checker
+materialising `supervisor` alone (2 sections) where the new one materialises `os`, `io`,
+`string`, `map`, `seq` and more — ADR-339's transitive materialisation — and then specializes
+every private body it reaches under caller-derived types (ADR-341). More work per file by
+design, at a price nothing gates: `brood file.blsp` checks before it runs, so this is paid on
+every invocation of a program that calls into a map-heavy module.
+
+Origin's ADR-349/350 commits add a further, consistent ~50 ms on the probe (240 → 290 ms) that
+reads as noise on the row (`make ab --floor`: +0.4% against a 0.4% floor).
+
+**Profile** (`perf`, the dev binary, `--check` on the probe) is flat: `Ty` clone/drop,
+`(u32, Ty)` hashbrown clone/drop (a `Ctx` copied per specialization?), `symbol_is`, the memo's
+hashing. No single hotspot, so this is the walk's constant factor, not an escape.
+
+**Found the same afternoon, and the "constant factor" reading above was wrong.** The 238 walks
+were not 1 ms each: **three** of them were 83 ms each and the other 235 totalled 5 ms. Timing
+each specialized arm walk put 249 of the 259 ms on `supervisor-group-restart`, a 239-node body.
+Counting `expr_ty` entries during that walk read **78 910** — 330× the body — and per-form entry
+counts laid out the ladder: 1 → 2 → 4 → 7 → 11 → 16 → 22 → 44 → 58 → 116 → … → 2464 down the
+nesting, each `let` level re-entering its body and each `(do …)` re-entering its single form
+exactly twice. Backtraces at the doubled entry named the caller: `sigs::specialize_call`'s
+argument-typing map — the `let` form was being typed **as a call to a function named `let`**,
+with its binding list and its body as the arguments.
+
+The mechanism: `control_flow_ty` returns `None` when any contributing sub-form is unknown (the
+false-positive discipline), and `expr_ty_inner` then **fell through to the generic call path**
+for a head that is a special form. `sig_of(do)` is nothing, so the path reached
+`specialize_call`, which types every operand before asking — the body a second time — and
+`specialized_ret` for `do` then returned early on all-unknown inputs *without* recording
+`NO_ARMS`, so the next `(do …)` did it all again. Under the specializer every parameter of
+`supervisor-group-restart` has a type, but `(supervisor-bump-intensity state)` does not, so the
+destructuring `let` it opens is unknown, and so is every level beneath it — twelve `let`/`do`
+levels, 2^12.
+
+**The fix** is one guard after `control_flow_ty`: a head that `crate::eval::is_special_form`
+knows is unknown when it cannot be typed, never a call — the comment above that line already
+said "a special-form head can't be a callable global, so we never confuse this with a call" and
+the code below it did exactly that. Measured, release binary: the probe's check **290 → 65 ms**,
+its expression visits 288 408 → 20 979, its arm re-typings 238 → 162 (the spurious
+specializations of `do`/`let` are gone too). The harness `supervisor` row: **902 / 907 ms**
+with std loaded from source (the dirty build had no image), against 975 ms for the last-good
+binary the same day and 1087 for the tree before this fix.
+
+**Guards** (`crates/lisp/tests/check_specialization_cost.rs`): `expr_ty` now carries a visit
+meter (`check::expr_ty_visits_spent`, one `Cell` increment per entry, reset per file) beside the
+KI-138 walk meter — that one counts walks and passed throughout this, because the walks were
+few and each was the problem. The probe is bounded at 60 000 visits (sabotaged: 288 408), and a
+synthetic body of 6 vs 12 nested unknown `let`/`do` levels must grow linearly — fixed 469 → 685,
+sabotaged 25 687 → 5 999 833 (the first cut used 8 vs 16 and the sabotaged run did not finish in
+the two-minute cap, which is a red but not a legible one).
+
+**A verdict moved with it, and the move is towards consistency.** The pre-push hook ran the
+strict gate over std/ with the pre-fix `nest` and reported six `get: argument 1 expects
+countable, got nil | bool | number | string | vector | map` warnings in `std/tool/package.blsp`
+(`meta`/`data`, the `[:ok payload]` of `registry-get-json`, whose payload IS `json/decode`'s
+declared union). The fixed checker reports none. Neither reports them with the file checked
+**alone** — so the old checker inferred `registry-get-json`'s return only in the full-list
+context, by the spurious fall-through walk specializing `registry-error-text` at a shallower
+depth than the real walk is allowed (`MAX_SPECIALIZE_DEPTH`) and leaving it in the memo. That is
+the KI-137 class exactly — a verdict that differs between two lists — and the fixed checker
+answers the same way for the file alone and for all of std/. The finding itself is real under
+strict (the payload can be a number), and reaching it *deliberately* is the depth cap's
+question, not this bug's.
+
+**What to take from it.** A flat profile plus a per-walk count that "looks about right" is not
+attribution; the three timings that were (per-walk time, per-form entry counts, backtraces at
+the hot entry) took forty minutes and each contradicted the previous theory. And the meter that
+existed measured the wrong quantity: KI-138's guard counts walks, KI-139 was the size of each.
+
+## KI-140 — `apply` does not bind a callee's type variable ✅ FIXED 2026-09-15
+
+**Found by the downstream smoke, not by a test here.** bedit's `tests/strict_ratchet_test.blsp`
+holds `nest check --strict` at zero findings; against brood `0cf7e80b` it read **25**, with no
+bedit change in between. Classified:
+
+| findings | shape | side |
+|---|---|---|
+| 4 | `(apply math/max 1 (map entries …))` typed `ordered`, then handed to `string/pad-left`'s `int` | checker — this KI |
+| 3 | a private helper's caller-derived parameter reads `number` where the callers pass ints (`ed-word-end`, `sb-clip`'s `(math/max 0 n)`) | checker, wider by design (ADR-341) or a caller really passes a `number` — unclassified |
+| 13 | `(first idxs)` / `(last idxs)` as `nil \| int` right after `(is (not (empty? idxs)))` | the checker cannot read a test framework's `is` as a guard — a strict true-positive by its rules |
+| 5 | `(get *vim-digits* key)` as `1 \| … \| 9 \| nil`, `ed-selected-pane` declared `pane` yielding `nil \| {…}`, `assoc` on a maybe-buffer | honest strict findings for bedit |
+
+**The `apply` half reproduces minimally:**
+
+```blsp
+(defn widest (xs) (apply math/max 1 (map xs string/length)))
+(sig widest (list -> int))          ; strict: declared int but the body yields number
+(defn widest2 (xs) (math/max 1 (string/length (first xs))))
+(sig widest2 (list -> int))         ; clean
+```
+
+`math/max` declares `(& ?A -> ?A)` (KI-137), so a direct call binds `?A` to its operands'
+union — `int`. Through `apply` the call is typed by `apply`'s own curated signature, which
+knows nothing of the callee's variable, and the result falls to the callee's flat return. The
+rule wanted: `(apply f a b … coll)` types as `f` applied to `a`, `b`, … and `coll`'s element
+type — for a variadic callee that is one more operand of the element type. Lives in the call
+typing of `crates/lisp/src/types/check/sigs.rs`.
+
+Not fixed in this session because the checker is mid-change by another session (ADR-349/350/351
+landed the same day); bedit carries the 25 with the classes named in its ratchet's comment, and
+the ceiling comes back down as each class closes.
+
+
+**Resolution (2026-09-15).** `infer.rs`'s `apply` branch types `(apply f a b … coll)` as
+`callback_ret(f, [a, b, …, element-of coll])` — the combinator machinery that already binds a
+callee's variables for `map`/`fold`, so a declared `(& ?A -> ?A)`, a same-file declaration,
+an overload and the numeric rules all resolve through the spread exactly as in the
+written-out call. A ring operator's answer is its closure without an interval (the spread's
+count is unknown), an extremum's union does not depend on the count, a lambda literal keeps
+the flat body type. `(apply math/max 1 (map xs string/length))` under `(list -> int)` is
+clean; `(apply + 1 [2 3])` is `int`, `(apply * 2 [1.5])` a `float`. Guards
+`apply_binds_the_callee_type_variable_from_its_operands` and
+`apply_of_a_ring_operator_stays_in_its_closure_not_one_steps_interval` in
+`types/check/tests/inference_precision.rs`, sabotage-verified; the tree's checker gates
+read zero, strict included. bedit's ratchet ceiling can drop by the four `ed-dired-cols`
+findings.
+## KI-141 — a module's registration onto a foreign registry did not survive the isolate its load landed in ✅ FIXED 2026-09-15
+
+**Symptom.** CI's `differential (tree-walker)` job had been red since `3bc5307e` (2026-09-12
+evening, one push after the last green), and the `test` job's own reds hid it: 27 failures,
+all one shape — a face lookup answering nil. `(highlight-spans "(+ 1)")` → nil where
+`([1 2 {:fg :cyan}] [3 4 {:fg :yellow}])` is expected; `editor/configs`' documented examples
+`([0 3 nil])` where `{:fg :dark-grey}` is written; the observer's status row nil. Every one
+of those files passes alone, under either engine, with or without images.
+
+**Not the tree-walker.** The same 27 appear on the VM with `BROOD_NO_STDIMAGE=1
+BROOD_NO_PRELUDE_IMAGE=1` through `cargo nextest run -E 'binary(suite)'` — the in-process
+`brood_suite_passes` wrapper, which evaluates `(require-one 'test) (project-run/run-tests)`.
+And **zero** through `target/release/nest test` from the same tree with the same env. Two
+mechanisms reproduce in two minutes but not in a two- or three-file `nest test <files>`: an
+explicit file list does not open the per-file isolates (everything ran at scope 0 in the
+trace), so the shape needs the whole project run.
+
+**The trace that named it.** `BROOD_TRACE_GLOBAL='*faces*'` (new: every root write to one
+global — define / staged swap / live swap — with pid and isolate scope, plus its value before
+and after every globals restore, and the load journal's mark, outstanding count and entries
+for that global). Through the wrapper:
+
+1. The first isolate is `run-tests`' pre-flight `(%isolate-discard-loads (fn ()
+   (project-check/check)))`, and in the wrapper it is where `editor/face` loads for the FIRST
+   time (in `nest test` the dispatcher had loaded it at root already). `discard=Some(1)`,
+   2345 journalled writes dropped — as designed. `*features*` reverts with the table, so
+   nothing is left half-loaded here.
+2. A later test file loads `editor/face` again inside its isolate (scope 36): `define *faces*
+   {}`, seven `swap->staged` def-faces (its own `:ui/*` defaults), seven `JOURNAL write`s.
+   Then `editor/highlight` loads lazily beneath it and def-faces its `:syntax/*` roles —
+   **`swap->LIVE`**, no journal write: `*faces*` was born in a frame that had closed.
+3. That file's restore: `live value before` carries `:syntax/number`, `:syntax/comment`, …;
+   `target-entries` in the journal are the seven from step 2 only; `value after replay` has
+   the `:ui/*` defaults and nothing else. `editor/highlight`'s function defines WERE
+   journalled and replayed, so `*features*` says it is provided and it never reloads.
+
+`registry_cas`'s own comment describes the rule exactly: a whole-map swap "writes a WHOLE map,
+and a whole map cannot be re-applied … a registration that must survive an isolate goes
+through `%registry-update!`'s ops instead." `def-face` was a swap.
+
+**The fix.** `editor/face`'s `def-face` and `face-set`, `protocol`'s `%register-protocol`,
+and `editor/layers`' `register-system-layer` / `register-type-layers` / `register-file-type` /
+`register-interpreter-type` are each one `%registry-update!` op — staged with the load that
+makes them, published whole, replayed by every restore that would otherwise discard them.
+`register-system-layer` appends at the END unless a member (its order is precedence, newcomers
+lowest), which no op did, so `:append-new` joins `:cons-new` in the kernel; and `face-set`'s
+restyle is a `:merge` op — a read-then-`:assoc` first cut lost keys under `registry_test`'s 64
+concurrent merges into one face, which is exactly the lost-update the ops exist to rule out. The
+remaining
+`%swap-registry!` callers in std are runtime bookkeeping (`debug/*traced-fns*`,
+`telemetry/*telemetry-handlers*`, `repl/*repl-commands*`, `eval-server/*trace-holders*`), not
+load-time registrations, and stay as they are.
+
+**Guards** (`tests/isolate_load_test.blsp`): a `def-face` inside `%with-load-journal` inside
+`%isolate` is there after the restore; a `register-system-layer` likewise; a test's own
+`def-face` inside `%isolate` is still rolled back — isolation keeps undoing what a test did.
+
+**The other red in the same job** was `mcp_test`'s watch-runtime window: under ADR-335 the
+first `mcp/watch-runtime-tool` call loaded the `mcp` module — slow under the tree-walker from
+source — before arming its monitor, and the helper's burst 20 ms after its spawn had come and
+gone. The file `(:load mcp)`s now, KI-131's idiom.
+
+**The follow-up that fell out: `nest test FILE…` now scopes each named file.** The named files
+were loaded into ONE image and run together — no per-file isolate — which is why no two- or
+three-file `nest test a b c` could reproduce this fault (its trace ran entirely at scope 0), and
+why the pre-push hook read `mcp_test`'s eval-tool defs as two undocumented public names in
+`audit_test` whenever it named the two together. `project-run/run-named-tests` routes the named
+files through the same per-file scoped runner the whole-project run uses (`--failed`/`--cover`
+unchanged; `BROOD_TEST_NO_SCOPE` restores the one-image run); the guard is
+`crates/nest/tests/named_files_scoped.rs` — a top-level `def` in the first named file is not
+bound in the second.
+
+**Why the image path never saw it.** With the stdlib image, the faces of every std module are
+installed at boot from the image's sections, outside any isolate — KI-136's observation from
+the other side: the image replays registrations a module never made *here*, and so hides
+what the source path does not have. CI's differential job runs from source on purpose; it was
+the only gate that could see this, and it had been red for three days behind the `test` job's
+own failures.
+
+## KI-142 — the suite wrapper reserves 19 GB of address space; the 16 GB cap aborts it ✅ FIXED 2026-09-15
+
+`( ulimit -v 16000000; cargo nextest run -j1 -E 'binary(suite)' )` on the tree after the v0.28.0
+merge: `memory allocation of 113341680 bytes failed`, SIGABRT, at the same point both tries; the
+allocation size varies per run (56, 63, 113, 159 MB) because it is whichever request crosses the
+cap. Before the merge the same command passed (twice, VM and tree-walker, this session). Uncapped
+it completes. The test binary run directly, sampled from `/proc` until exit: **`VmPeak` 19.3 GB,
+`VmHWM` 1.8 GB** — the process never *used* more than 1.8 GB; it *reserved* 19.3.
+
+So this is the cap's documented blind spot, not KI-87's runaway: a reservation grew past the
+number the rule was set to. Where it grew is not attributed here — the window is `0cf7e80b..b57c1a43`
+(ADR-352's bitset DFA lexers, the v0.28.0 release, the closing type-system review). A `table` is
+a 64 MB virtual region each (the cap note measured it with `strace -e mmap`), so ~50 new tables
+would be the whole growth; a lexer cache per mode built as a `table` is the first thing to check.
+
+Until attributed: run the suite wrapper under 24 GB. The rule's purpose — one runaway is the whole
+spike, a diverging process dies in seconds naming the cap — holds at 24 as at 16 (KI-87's
+processes were 19 GB each and 54 GB for the `nest run`).
+
+
+**Resolution (2026-09-15).** Attributed by counting rather than guessing: `strace -f -e
+trace=mmap … | grep -c 'mmap(NULL, 67108864,'` read **100** for `regex_test` alone (6.4 GB),
+37 for `configs_test`, 7 for `shell_test`, 0 for `maps_test`. The 64 MB region was reserved
+on a table's FIRST dense write whatever the key, and the regex object carries two memo
+tables per compiled pattern (the lazy DFA and the accept memo) whose first keys are small
+ints; ADR-352 put every lexer rule of every mode through `regex-compile`, which is the
+growth. The fix is the mechanism, not the caller (ADR-354): `DenseSlots` is a directory of
+128 chunk pointers, each a 512 KB anonymous mapping reserved the first time a write reaches
+its key range, so a five-key memo costs one chunk and a sieve over millions of keys at most
+128. Reads of an unmapped chunk answer `EMPTY`; scans skip unmapped chunks; the JIT's inline
+`table-put`/`has?` load the chunk pointer per op and route to the FFI when it is null. After:
+`regex_test` 105 chunks (52 MB), `VmPeak` 3.5 GB — the runtime's baseline. Guarded by
+`crates/lisp/tests/table_address_space.rs` on the entry point (`table/put`, `VmSize` read
+from `/proc/self/status`); sabotaged by `CHUNK_SHIFT = 23` (the old one-chunk region), which
+reds it. The suite wrapper runs under the documented **16 GB** again; the 24 GB note is
+withdrawn.
+## KI-143 — the strict gate over std/ is red at origin's head on ADR-352's code ✅ FIXED 2026-09-15 (`c247c996`, the ADR-352 owner)
+
+`set -- $(find std -name '*.blsp' | sort); nest check --strict "$@"` at the merged tree
+(`b57c1a43` + this session's registry/runner changes, checker untouched):
+
+```
+std/editor/shell.blsp:94:13:  inc: argument 1 expects number, got ordered (i)
+std/editor/shell.blsp:95:10:  string/char-at: argument 2 expects int, got ordered (i)
+std/editor/shell.blsp:96:31:  string/char-at: argument 2 expects int, got number ((inc i))
+std/editor/shell.blsp:96:31:  inc: argument 1 expects number, got ordered (i)
+std/regex.blsp:1001:52:       +: argument 2 expects number, got nil | int ((nth codes j))
+std/regex.blsp:1003:75:       regex/regex-delta-slow: argument 5 expects int, got nil | int ((nth codes j))
+std/regex.blsp:1120:29:       +: argument 2 expects number, got nil | int (code)
+std/regex.blsp:1122:16:       regex/regex-delta-slow: argument 5 expects int, got nil | int (code)
+std/regex.blsp:1131:19:       regex/regex-steps?: argument 4 expects number, got nil | int (code)
+std/regex.blsp:1132:43:       regex/regex-steps?: argument 4 expects number, got nil | int (code)
+std/regex.blsp:1227:52:       +: argument 2 expects number, got nil | int ((nth codes j))
+std/regex.blsp:1229:75:       regex/regex-delta-slow: argument 5 expects int, got nil | int ((nth codes j))
+```
+
+Every line is in `2a750c08` (ADR-352, the bitset DFA lexers) or the shell highlighter beside it.
+The pre-push hook runs this gate for any std/ change and stops the push; the KI-141 fix was
+pushed past it with the twelve named in the commit, because they are not that change's and a
+guard at one site (`(or (nth codes i) 0)` in `regex-tokens-loop`) only moved the verdict to eight
+others. Two causes, both known classes: `nth` on a vector reads `nil | element` and the
+`(>= i n)` guard with `n = (count codes)` is not read as a bound (the ADR-350 intervals stop short
+of it here); and `i` in `shell.blsp` reads the `ordered` cover an extremum leaves when its type
+variable cannot bind (KI-140). The owner of ADR-352 should choose between declaring the indices
+and teaching the bound; this session did not, because each patch shifted the verdict.
+
+**Fixed 2026-09-15, from both ends, converging on the same reading.** The four scanners
+(`regex-longest-loop`, `regex-accepts-loop`, `regex-first-mask-loop`, `regex-steps?`) take
+`(check-allow :type-mismatch …)` with the invariant written out, the marker the anchored and
+search loops carried before their literal-0 start made them provable; `shell-skip-blank` and
+`shell-defines-after?` declare their `int` index. The count relation is NOT the missing half
+— `derive_count_aliases` is a least fixpoint climbed from the direct sites now (it settled
+after one round before, so a relation reached one hop and no further), and it does derive
+`n = (count codes)` for `regex-longest-loop`. What is missing is the LOWER bound: a match end
+flows back through several returns typed `number`, so the position reads as possibly-negative
+and `(nth codes p)` as `nil | int`. The checker did not regress — the same two files gave 14
+findings under the pre-ADR-350 checker and 8 under this one. std/ is at zero plain and strict.
+
+
+## KI-147 — `nest release` refused every hive bundle since v0.28.0: a false `circular (:use …)` ✅ FIXED 2026-09-16 (v0.29.1)
+
+**Symptom.** `fly deploy` of hive on brood v0.29.0 died in `nest release`'s boot check:
+`<bundle>/hatch/http/request.blsp:1:1: runtime error: circular `(:use http/util)`:
+`http/util` is still loading (a cycle back into this module)`. `http/util` has no `:use` at
+all, and the module named moved between runs (`http/server` / `http/websocket` once,
+`http/request` / `http/util` the next). Reproduced locally with the released v0.28.0 `nest`
+(same error) and v0.27.2 (gets past loading and dies on hive's own `seq/filter`, which is
+why hive's pin sat between them, at `572faa4c`, where the race happened to be won).
+
+**Cause.** `BROOD_TRACE_GLOBAL='*features-loading*'` over the kept bundle (`nest release
+--no-smoke`, then `--brood-boot-check`) showed TWO loaders: pid 1, the bundle's boot loop
+over every embedded module, and pid 3, a process a module started at load — under lazy
+loading (ADR-335) its first qualified call loads a module in *that* process, which is
+ordinary. Pid 3 claimed `http/util`; pid 1's `(:use http/util)` in `http/request` ran
+`require-one`, which waited and returned on pid 3's `provide` — and `provide` lands inside
+`%require-force`, a few instructions before the loader clears its marker. `%refer`'s cycle
+check then read the marker and called it a cycle.
+
+**Fix.** `module_is_loading` (`builtins/modules.rs`) is true only when THIS process holds the
+claim. A cycle back into a module is only possible in the process loading it; another
+process's finished load has a complete public set by the time `require-one` returns. Guard
+in `tests/modules_test.blsp`: another process's claim over a provided module refers, our own
+claim is the cycle — sabotage (any claim is a cycle) reds exactly the first half. hive
+bundles 3/3.
+
+**What did not catch it.** Nothing bundles an app whose modules spawn at load:
+`release_bundle.rs`'s apps are inert, `nest run --check-boot` loads in dependency order in
+one process, and hive's own suite runs the installed `nest`, not a bundle (its `bin/ci` says
+so). The boot check itself was the gate that worked — it refused to ship the artifact.
+
+
+## KI-166 — a map's iteration order depends on how the prelude arrived ✅ FIXED 2026-09-20 — a symbol hashes by its SPELLING now (was 🔶 WATCH 2026-09-19)
+
+**Symptom.** `cli::mapprim3_differential` failed one full-suite run on 2026-09-19 with
+`a prim changed an ANSWER`, and the only difference between the two arms was the order of one
+map's entries:
+
+```text
+left:  assoc-map {:b nil, :c 3, :a 1} …
+right: assoc-map {:a 1, :b nil, :c 3} …
+```
+
+Every other line of a twenty-line differential matched, including the hot loops. The test
+passed 5/5 when re-run alone, and two earlier full-suite runs of the same day were 1651/1651.
+
+**Cause, reproduced deterministically** — the same binary, the same program, one variable:
+
+```sh
+$ echo '(io/puts (pr-str (assoc {:a 1 :b nil} :c 3)))' > /tmp/mp.blsp
+$ brood /tmp/mp.blsp
+{:a 1, :c 3, :b nil}
+$ BROOD_NO_PRELUDE_IMAGE=1 brood /tmp/mp.blsp
+{:c 3, :b nil, :a 1}
+```
+
+Deleting `~/.cache/brood/prelude-expanded-*.img` and running twice shows it without any flag
+at all: the first run boots the prelude from SOURCE and prints one order, the second boots
+from the image it just wrote and prints the other. A map is a CHAMP trie, so iteration order
+follows the keys' hashes, a keyword's hash follows its interned id, and the two boot paths
+intern in different orders. Nothing is random — it is two deterministic orders, and a test
+that spawns two processes can straddle them.
+
+**What is fixed.** The differential compared *renderings* of a multi-key map across two
+processes, which is not the thing it exists to test. It now compares by `=` in-language —
+content-exact, order-free, and it separates a STORED nil from an absent key, which is the one
+distinction that file is about — with an `assoc-map true true true` assertion so that a wrong
+map in BOTH arms reds rather than agreeing. Sabotage-verified: changing the expected map to
+`{:a 1 :b nil :c 4}` fails the test. That makes the gate strictly stronger than it was, since
+the rendering was never pinned against an expected value at all.
+
+**What is NOT exposed, checked rather than assumed.** `mapget_differential`'s `pr-str` calls
+all render scalars. The doctest harness compares parsed VALUES, not strings, so the eight
+docstring examples that pin a multi-key map's rendering are safe — confirmed by running
+`tests/doc_examples_test.blsp` and `tests/doctest_test.blsp` under both boot paths, 3/3 and
+13/13 each way. No value-`hash` primitive is exposed to the language, so the blast radius
+today is rendering only.
+
+**What is open.** Whether the prelude image should restore the symbol interner so that ids
+match a source boot. Arguments both ways, recorded so the next person does not have to
+rediscover them:
+
+- *Leave it.* Map iteration order is unspecified here as it is in Clojure; no program should
+  depend on it, and making the image reproduce an evaluation's interning order is more state
+  for the artifact to carry — the exact class that has bitten ADR-314 twice already (KI-105,
+  KI-106), each time because the image restores BINDINGS and something the evaluation merely
+  *recorded* was missed.
+- *Fix it.* A user's first run after a rebuild printing a different order from every run
+  afterwards is a wart that looks like a bug, and "unspecified" is a weaker promise than
+  "deterministic for a given binary and program", which is what people will assume. It is
+  also the same argument the boot differential already makes for registry marks.
+
+**If it is ever fixed**, the gate is the existing boot differential: add the rendering of a
+multi-key map to what it compares between an image boot and a source boot, which reds today.
+
+**A live instance, found the same day in another file's in-flight work (2026-09-19).**
+`eval-server`'s request encoders return `(pr-str {…})`, so their *result is a rendered map
+inside a string*:
+
+```text
+image boot:   {:specs [], :timeout-ms nil, :test true, :id 1}
+source boot:  {:id 1, :specs [], :timeout-ms nil, :test true}
+```
+
+This matters because the surface audit's ratchet (`tests/audit_test.blsp`, "no more public
+names lack a `form → result` example than yesterday") pushes every new public function toward
+an executed example, and the obvious example for an encoder pins its string — which is a
+latent flake, not documentation. **Write the example through the DECODER instead**:
+`(evsrv-decode-request (evsrv-encode-test 1 [] nil))` yields a map, and the doctest harness
+compares parsed values, so the order never enters it. That the harness does so is not assumed
+here: the eight existing docstring examples pinning a multi-key map's rendering all pass under
+*both* boot paths, which they could not if the comparison were textual.
+
+The general rule for a docstring example, same shape as the differential's: **pin the value,
+not its rendering** — and where a function's value genuinely *is* a rendering, pin what
+parsing it back gives you.
+
+**FIXED 2026-09-20 — `value::symbol_hash`: a symbol hashes by its SPELLING, not its id.**
+The open question above is answered, and not the way either bullet framed it: the image was
+never the right place to fix this. An id is an index into an append-only table — it records
+*when* a name was first interned in this process — so hashing it made every map's order a
+property of the process. Hashing the spelling makes it a property of the program, which is
+what everyone already assumed it was.
+
+- `NAME_HASHES` is pushed in lockstep with `NAMES` under the same lock, holding an FNV-1a of
+  each new name; `symbol_hash` reads it. Both the scalar fast path in `hash_value` and the
+  compound path in `hash_value_into_grown` use it, or a keyword nested in a vector would
+  still carry intern order into the hash.
+- **Read through a per-thread `Vec`, and that is not an optimisation, it is the fix working
+  at all.** The first cut read `NAME_HASHES` (a `boxcar::Vec`) directly and cost **+15.8M
+  instructions on boot** — 63.4M against 47.6M with the lookup stubbed out. boxcar is
+  segmented, so a read computes a bucket and takes an atomic load: right for the cold intern
+  path it was chosen for, wrong for something every map and env operation pays. A plain
+  per-thread `Vec` index is two instructions, and entries are immutable once written, so a
+  per-thread copy cannot go stale — the same shape, and the same reason, as the interner's
+  existing name→id `CACHE`. `hash_name` never returns 0 because 0 is that cache's
+  "not filled yet" slot.
+- Measured with callgrind, from outside a checkout so the staleness guard is skipped on both
+  arms: **boot 46.44M → 46.90M (+1.0%)**, the interning FNV, and a **map-heavy loop
+  1414.6M → ~1.20G (−15%)**, where a keyword now skips `DefaultHasher` entirely. The map
+  figure is the one soft number here — its readings spread ~3% where boot's are tight — but
+  the direction is not in doubt, since the worst reading beats the baseline's best.
+  **Wall-clock is NOT measured: no benchmark work happens on the development box**
+  (`perf-handoff.md` carries the row-level verification).
+
+**Gate:** `cli::prelude_image_matches_source::an_imaged_boot_and_a_source_boot_render_a_map_the_same_way`
+— the boot differential this entry named, comparing four rendered maps (keywords with a
+stored nil and a post-literal `assoc`, plain symbols, and strings as the control) between an
+image boot and a source boot. Sabotage-verified: returning `symbol_hash` to the id reds it.
+Its "claim the output" assertion earned its place immediately, catching an unbound `seq/map`
+in the first draft of the test program — which would otherwise have compared two arms that
+both printed nothing.
+
+**What did NOT need changing, checked rather than assumed:** no docstring example moved. The
+eight that pin a multi-key map's rendering still pass, because the doctest harness compares
+parsed values; `tests/maps_test.blsp` (83), `doc_examples` (3) and `doctest` (13) are green
+on both boot paths. And the `mapprim3_differential` fix from 2026-09-19 stays as it is: a
+differential should compare answers rather than renderings whatever the hash does, which is
+the durable half of this entry.
+
+**The transferable lesson**, and the reason this has an entry rather than a commit message:
+**a differential must compare the answer, not a rendering of it.** A rendering carries
+incidental state — order here, but equally a float's formatting, a path, a pid, a timestamp —
+and when it drifts, the failure accuses the feature under test by name.
+## KI-165 — no `deftype` alias is enforced at runtime: an alias type accepts any value under `sig!` ✅ FIXED 2026-09-18
+
+**Symptom.** `type-matches?` (`std/prelude/core.blsp`) dispatches on base names and type
+CONSTRUCTORS; an alias name is neither, so it reaches the final `else true` — "unknown type
+names accept anything, so a contract never throws on a type it can't interpret". Measured:
+
+```lisp
+(deftype point (record :x int :y int))
+(defn take-point (p) 1)
+(sig! take-point (point -> int))
+(take-point "nope")        ; => 1, accepted
+```
+
+Not recursion-specific and not new: it is **every** alias since ADR-327, while the checker
+enforces all of them statically. So a `sig!` naming an alias reads as a contract and is not
+one — the trusted-declaration problem (A5) with the grammar's blessing.
+
+**How it was found.** Asking C14's work the question C11 taught: does the runtime contract
+enforce what the grammar lets a declaration say? C11 found `(set T)` had no arm at all; this
+is the same question asked of `deftype`.
+
+**Fix (2026-09-18).** `type-matches?` gained an alias case: resolve the name and match the
+type it names. The store already held the FORM (`reflect/type-aliases` stringifies only for
+display), so the new `%type-alias` reads it by key — `%type-aliases` walks every declared
+sig in the runtime, which a contract asking per value cannot afford.
+
+**Termination, which is the part worth reading.** Two halves, and the split is why `seen` is
+threaded through some recursive calls and not others:
+
+- A recursion that **consumes value** always terminates — a Brood value is finite and
+  acyclic, data being immutable — so every call that descends into an element, a field or a
+  position starts with a FRESH `seen`. The first cut threaded the accumulated one
+  everywhere, and it accepted a bad leaf at depth 2: `tree`'s `:l` field is `tree`, so the
+  legitimate descent looked exactly like a cycle and the guard swallowed it.
+- A recursion that **does not** — `or`/`and`/`not`/`len`/`rec` and the alias expansion, all
+  re-asking about the same value — is where a cycle can live: `(deftype loop loop)`, or
+  `(deftype a (or b))` with `(deftype b (or a))`. Those thread `seen`, and re-entering a
+  name already on the path accepts, the direction this function's unknown-type default
+  already takes.
+
+**Resolution runs where the VALUE is, not where the alias was declared.** After the two
+keyed lookups (the rooted qualified reference, then the bare symbol — what `%declared-sig`
+does) comes the checker's own unique-suffix rule, declining when two modules could answer.
+Without it a `test` body failed: it runs in its own green process, where the bare `c-point`
+does not resolve to the `contract-test/c-point` the `deftype` registered.
+
+**Guards.** `tests/contract_test.blsp` § deftype alias contracts — a plain alias enforced, a
+recursive one enforced at every depth, and a cycle that terminates. Sabotage-verified twice:
+disabling the lookup reds two tests, and removing the cycle guard makes the file **hang**,
+which is the failure the guard exists to prevent and the reason the termination case is
+there at all.
+
+## KI-163 — a body compiled before its module lazily loaded kept its pre-load shape for the process ✅ FIXED 2026-09-17 (ADR-366)
+
+**Symptom.** With the pre-flight type check skipped (`BROOD_NO_CHECK=1`, "raw eval, e.g. when
+timing"), the `pipeline` benchmark executed **591M instructions against 183M** with lazy
+loading off (`BROOD_NO_LAZY_LOAD=1`) and 221M checked — the flag documented as the cheaper
+path was 2.8× the costlier one. A loop calling `(math/rem i 3)` 100k times read 302M against
+157M, at both tiers; `math/max` the same; `math/abs`, `os/env`, `string/upcase` not at all.
+
+**Cause.** A closure bytecode-compiles at its first activation, and everything the compiler
+reads from the global table is read then: `resolve_prim` follows a BOUND head through its
+thin wrapper (`(defn rem (a b) (%rem a b))`) to the kernel primitive and emits
+`PrimOp::Rem` inline; the JIT derives the leaf splice from the callee's body. Under ADR-335
+the head's module is not loaded when the calling body compiles — `math/rem` is unbound — so
+the call compiles generic, the first execution's miss loads `math`, and the chunk stays as
+compiled for the rest of the process (and, via the shared body cache, for every process). At
+tier-up, `preload_arm_globals` ran AFTER `compile_epoch` was stamped, so its load moved the
+epoch past the stamp and the inlined upgrade bailed `leaf-derivation-stale` on every attempt.
+The exact names that paid were the ones the recogniser keys on (`%rem`, `%max`, `%min`).
+The pre-flight check runs under an eager scope and loads every module the file names, which
+is why every `brood file` run and the whole benchmark column hid it.
+
+**Fix (ADR-366).** The load that a miss triggers marks the missing arm (`stale_bindings`, via
+`Heap::mark_arm_stale` in `global_miss_in_arm` at the six bytecode miss sites, and at tier-up
+when the pre-load — now run before the epoch stamp — loads anything). Marking advances a
+runtime-wide `stale_gen`; the per-process cache read path compares it beside `free_epoch` and
+drops marked entries once per advance, so `compiled_arm_for` misses and recompiles; the shared
+install and `probe_arm_for` skip a marked entry. A running loop adopts it through the
+`SelfCall` hot-reload guard: marking records the arm's uid in a per-process hint, a matching
+frame enters `exec_chunk` with a sentinel epoch, and the guard's lookup finds the entry
+dropped and applies the name afresh. (The frame re-enters after each non-tail call, so a fresh
+epoch read hid the load; the first version read the arm's own flag per entry and cost
+`pipeline` +4% at the VM ceiling — a cold line — so it reads the hint.) Measured on the fixed
+release-fast binary: `pipeline` no-check 591M → **183.4M** (eager 183.0M), the `math/rem` loop 302M → **163M** (eager 156M), and at the VM tier 409M → 279M.
+
+**Guards.** `tests/lazy_load_test.blsp`, both in a child `brood` (the runner loads eagerly)
+and both sabotage-verified: the call-site shape flips from `Call(head=math/rem)` to
+`Prim2SlotInt(Rem …)` between the first call and the next lookup (`%vm-arm-ops`; eviction
+disabled → red on `warm=true`), and a loop whose first iteration loaded a fixture returns
+with its cached arm present and current (`%vm-arm-stale?` answers `false`, not `nil`; the
+entry sentinel disabled → `nil`, red).
+## KI-164 — a declared `(is T)` type guard does not narrow: ADR-301's signature proves nothing ✅ FIXED 2026-09-18
+
+**Symptom.** A user predicate declared as a type guard narrows neither branch. Over a
+KNOWN union the checker reports the union unchanged; over the unknown — the case a
+downstream actually hits — the value stays unknown, so the enclosing declaration reads as
+A5's `trusted, not verified`. The built-in predicate in the same position narrows both.
+Reproduced 2026-09-17 on `nest 0.30.1 (cd87c8c1-dirty)`, `nest check --strict` on one file:
+
+```lisp
+(defmodule probe)
+(sig myint? (any -> (is int)))
+(defn myint? (x) (int? x))
+
+(sig g ((or int string) -> int))
+(defn g (x) (if (myint? x) x 0))
+;; warning: probe/g: declared return type int but the body yields int | string
+;;          — with (int? x) in its place, clean
+
+(sig h (any -> int))
+(defn h (m) (let (v (:top m)) (if (myint? v) v 0)))
+;; warning: probe/h: declared return type int is trusted, not verified
+;;          — with (int? v) in its place, clean
+```
+
+**Cause — NOT diagnosed; this entry is the symptom and the ground work.** The declaration
+is parsed (`annot::guard_ret` reads `(is T)`) and recorded (`Sig.guard`), and the lookup
+path exists: `guards::guard_ty_of_head` falls back through `ctx.declared_sig(head)` /
+`sigs::sig_of(heap, head)` to `sig.guard`. So a guard is *known* and not *applied*. The
+first thing to check is the early return immediately above that fallback —
+`if ctx.is_some_and(|c| c.is_local(head)) { return None }` — which a same-file `defn` may
+satisfy; a cross-module predicate was not isolated here, because there is no longer one to
+test with (below).
+
+**Why it survived.** The feature has no live instance and no end-to-end gate.
+`grep -rn -- "-> (is " std/` is **empty** today, though ADR-301's devlog line (2026-08-30)
+records "the prelude's six record predicates declared", and no test in `crates/` or
+`tests/` asserts that a declared guard narrows — what is gated is the *grammar* (the parse)
+and the *display* (`Sig`'s `-> (is g)`). Both halves can be green with the narrowing dead.
+Worth checking as the remover: the 323-redundant-`sig` sweep (2026-09-16) drops a `sig`
+whose return the checker can infer, and a guard's return infers as `bool` — the information
+it carries is not in the return, so a guard sig looks redundant and is not.
+
+**Fix (2026-09-18).** The suspected early return was it. `predicate_guard_ty` bailed on
+`ctx.is_local(head)` — "a local shadowing the name is not the predicate" — and `is_local`
+also answers true for the FILE's own globals, so a same-file `(defn myint? …)`, which is where
+every user guard lives, never reached the `declared_sig`/`sig_of` fallback. The prelude's
+guards worked because they are not file globals of the file being checked. The test is now
+`is_local && !is_file_global`: a `let`-bound shadow still declines, a file global is the
+predicate. The probe above checks clean; the strict gate over `std/`+`tests/` is unchanged.
+Confirmed on the way: the sweep WOULD have stripped a guard — `reflect/source-signatures`
+renders the declared `(any -> (is int))` as `(any -> bool)`, equal to the inference —
+so `scripts/redundant-sigs.blsp` now exempts any span whose text carries `(is `.
+
+**Guard.** `types::check::tests::scope_and_guards`: a bare local over a known union, the
+unknown behind an access path (bedit's shape), a guard declared in ANOTHER module, and the
+one legitimate job of the early return — a lexical shadow of the name does not narrow. The
+first two carry a `-> bool` control that must still warn, so a silent checker cannot pass.
+
+**Who wants it.** bedit, immediately. Its trusted-sig acknowledgements went 24 → 10 on
+2026-09-17 by guarding each read with a *built-in* predicate instead of declaring its type
+(`(if (int? top) top 0)` where `(or … 0)` read unknown). The ten that remain are exactly
+the ones a built-in cannot prove: a `(tuple int int int int)` off an open widget context,
+a record off the open model, and seven late-bound `reflect/eval` command results. Each is
+one `(sig p? (any -> (is T)))` away from being proved at the read — once a declared guard
+narrows.
+
+
+## KI-162 — `nest check --fix-sigs` writes each `sig` ABOVE its `defn`, which `sig_placement.rs` forbids tree-wide ✅ FIXED 2026-09-17
+
+**Symptom.** `project-check/fix-sigs` splices `(sig f …)` at the line of `(defn f …)`, so the
+sig lands above the definition; `tests/project_test.blsp` "every signature lands directly
+above its own definition" asserts exactly that. `crates/lisp/tests/sig_placement.rs` asserts
+the opposite for every `.blsp` in this tree: a `sig` above its own `defn` breaks the module
+under `BROOD_CONTRACTS=1`, where `sig` becomes a rebinding of a name that does not exist
+yet (KI-81, KI-113). The two agree only because `--fix-sigs` never runs over this tree; a
+downstream project that runs it gets files contracts mode cannot load.
+
+**Fix (2026-09-17).** The locator reads the **CST**, not the lines. `sig-defn-sites` walks
+the root's children, counting each node's newlines to carry a running line number, and
+records every top-level `(defn …)`/`(defn- …)` as `[spelling, one-past-its-last-line]` —
+the extent comes from `parse-source`, so nothing guesses at a placement. Three things fall
+out of the shape rather than being coded: the sig lands **below** its definition; a
+definition whose head is laid out across lines is located like any other (the old line-shaped
+matcher skipped it, and the test that pinned the skip now pins the location); and
+"top level" is *being a root child* rather than *starting at column 0*, so a
+`check-allow`-wrapped `defn` is still declined — a signature spliced inside that wrapper
+would parse and mean something else.
+
+**What did NOT reproduce, recorded so the next reader does not assume it.** The harm above —
+"files contracts mode cannot load" — could not be reproduced on this binary: a forward `sig`
+over a `defn`, over a `defn-`, and inside a `check-allow` pair all loaded under
+`BROOD_CONTRACTS=1` *and* enforced the contract (the wrong-typed call raised in both
+placements). So the rule `sig_placement.rs` enforces tree-wide is what is certainly true;
+whether the loader still fails a forward sig, and in what shape, is unverified — the history
+it cites (KI-81's 211 sigs, KI-113's eleven modules) is real, and the loader's reserved-name
+exemption may have since covered the simple case. Either way a writer that emits what the
+project's own gate rejects is a bug, which is what this fixed.
+
+## KI-167 — a loop handed to its recompiled body (ADR-366) ran the rest of its life NESTED: every `receive` parked the worker dirty, and a native preempt fell to the interpreter ✅ FIXED 2026-09-20
+
+**Symptom.** Two, found from opposite ends on the same day.
+
+1. **Perf.** `collatz` cost **80M more instructions (+6.5%)** under the default lazy loading
+   than under `BROOD_NO_LAZY_LOAD=1`, `sort` **+5.7%** — same binary, same program. The
+   checked run (the benchmark harness's) did not show it, because the pre-flight loads
+   `math` eagerly; `BROOD_NO_CHECK=1` did. `BROOD_PERF_STATS` put the difference in the
+   VM: `self_tail` 86 799 against 24 574, `vm_native_link` 30 408 against 3 665 —
+   `sweep`'s loop ran ~3.5× more iterations interpreted before settling native.
+2. **Fairness.** A self-tail server loop whose first iteration misses on a lazily-loaded
+   module — `(defn drive (i acc) … (drive (- i 1) (math/max acc (rpc i))))` — parked
+   **20 000 of 20 000** of its receives dirty (`dirty-receive-block gateway-token=0` under
+   `BROOD_JIT_BAIL_TRACE`): the OS worker blocked instead of the process being captured
+   and migrated. `(defn serve (state) … (receive …) (serve next))` whose first iteration
+   touches `log/`, `json/` or any other lazily-loaded module is exactly this shape. (Forty
+   such servers on twelve workers did not deadlock — checked — but the unfairness is real
+   and the class is the one §7.13 removed from the VM→native direct call.)
+
+**Cause.** ADR-366's handoff. A `SelfCall` loop adopts its recompiled body through the
+hot-reload guard's tail transition, and that transition was a NESTED `apply_value` — "one
+native frame for the transition only". The frame was not the cost: the recompiled body ran
+**the rest of the loop's life** under it. Under a nested (non-capture) driver a `receive`
+cannot be state-captured, so it blocks the worker; and a native preempt has no driver to
+yield to, so `vm_run_bc` hands the frame to `exec_chunk`, which interprets **up to 256
+iterations** before its back-edge boundary re-tiers — the mechanism the capture path's
+preempt fix (2026-09-12) documented and fixed for the top-level driver only. 919 preempts
+on `collatz` × up to 256 iterations is the 62 000 extra interpreted iterations the counters
+showed. The pre-existing `def`-of-a-running-loop transition had the same shape; it is rare.
+A lazy load on the first iteration is not.
+
+**Fix.** The transition is a `ChunkExit::Tail` — `dispatch(callee, argv, tail = true)`, the
+un-run `Step::Tail` handed to the driver, which reuses the frame exactly as a tail
+`Inst::Call` does. Nothing runs nested. `collatz` 1 299M → 1 221M instructions unchecked,
+`sort` 827M → 782M; the lazy path now equals the eager one on both, and the probe parks
+zero receives dirty.
+
+**Guard.** `crates/cli/tests/stale_loop_handoff.rs`: the probe program, pinned at zero
+dirty parks by the runtime's own counter, refusing to be vacuous (the `[compile]
+stale-bindings arm=drive` line must appear, or the transition never ran). Sabotage:
+restoring the nested `apply_value` reads 20 000.
+
+**Lesson.** "One frame for the transition" is only true when the transition returns. A
+handoff that never returns — a loop — makes the frame's *properties* (capturable? can it
+yield?) the loop's properties for its whole life. Check what runs under a frame, not how
+many frames there are.
+
+## KI-168 — `make tier-audit` red: `bench-supervisor/fill` lowered, hosted a parking `receive`, parked its worker dirty once and was latched ✅ FIXED 2026-09-20
+
+**Symptom.** `make tier-audit` (not in CI; `make green-all`) reported the `supervisor` row:
+`[jit-bail] arm=bench-supervisor/fill reason=suspend-latched`. Reproduced on the `5fa10170`
+and `0dc79768` baseline binaries, so it predates the day it was noticed.
+
+**Cause.** `fill` — `(defn fill (i) (if (>= i n) nil (do (start-child …) (fill (+ i 1)))))`,
+a named self-tail loop with one non-tail call — passes the profitability gate (self-loop,
+no float slot), so it lowered (twice: the small native and its xcall re-lowering). Its
+first `start-child` → `gen/call` → `receive` ran nested under the native gateway, where a
+receive cannot be state-captured; it dirty-parked the OS worker, and `jit_latch_suspend_host`
+latched the arm `BAILED` — the designed safety net, and the right steady state (the VM's
+frame path suspends cleanly). The route to it was two wasted compiles and one dirty park,
+and the audit could not tell it from a thrasher. The direct `%receive` fence
+(`chunk_in_jit_subset`) sees only the arm's own chunk; `fill`'s receive is three named hops
+away.
+
+**Fix.** `compile::arm_hosts_receive` — asked in `jit_tier_in_frame` before the enqueue —
+follows the arm's NON-tail call sites through named, already-compiled callees
+(`cached_arm_for`, read-only; a visited set of 64) and refuses the arm by name
+(`[jit-bail] arm=fill reason=hosts-receive`) when any reaches `%receive`. A tail site is not
+followed: a native arm's staged tail call is dispatched by the driver at frame level, where
+a receive suspends cleanly — `vm_direct_call.rs`'s `via` is that shape and still lowers. An
+uncompiled callee or a computed head reads as "no receive"; the latch remains the net for
+what the walk cannot see. On the `supervisor` row four other arms now read `hosts-receive`
+where they read `chunk-outside-jit-subset` before (a direct `%receive`, refused earlier
+and by the more specific name); `make tier-audit`: 29 rows clean.
+
+**Guard.** `crates/cli/tests/hosts_receive_fence.rs`: `fill`'s shape must be refused by
+that name with zero `suspend-latched` and zero dirty parks; skipping the fence puts both
+back (sabotage-verified).
+
+## KI-169 — `(stdimage/status)`'s `:installed` reported the PRELUDE snapshot's count on an opted-out warm boot ✅ FIXED 2026-09-20
+
+**Symptom.** `tests/lazy_load_test.blsp` "a function head into an imaged module loads at
+first call" failed under `BROOD_NO_STDIMAGE=1` on a warm prelude image: the child printed
+`imaged=true after-ref=true` — the probe said the stdlib image was installed while
+`require` demonstrably read source (the `url/` head loaded at the referencing load,
+undeferred). A cold boot under the same flag printed `imaged=false` and passed. CI never
+saw it: its no-image job sets `BROOD_NO_PRELUDE_IMAGE=1` too.
+
+**Cause.** ADR-314's boot restores the prelude's bindings from a snapshot of the boot that
+wrote the image. `%std-image-reinstall!` clears every registry that snapshot carries —
+sources, path, sections, edges, impls, regs — then re-decides the install through
+`%std-image-wanted?`. It did not clear `*std-image-installed*`, the snapshot's ANSWER to
+"what did this process install", so a boot that declined the install kept the writing
+boot's count. `stdimage_reporting.rs` guards the suite's summary line, which reads `:state`
+from disk and never asked the probe.
+
+**Fix.** One line: `(def- *std-image-installed* nil)` beside the other resets. **Guard:**
+`stdimage_reporting.rs` case 4 — a fresh prelude image written over a live stdlib image,
+then an opted-out warm boot must report `:installed nil` (and the default warm boot a
+count, so the probe is not vacuously nil). Sabotage: dropping the line reds it. Also fixed
+alongside: `lazy_load_test`'s ADR-370 probes guarded on the substring `[image] install`,
+which a stale image prints too (`install: nil sections`), so with no live image for the
+binary they asserted on an empty trace; `adr370-imaged?` now requires a section count.
+
+## KI-176 — killing a monitored process walked the whole monitor table ✅ FIXED 2026-09-21
+
+**Seen:** a 200k-process lifecycle probe (spawn+exit, hold, kill), the first step of the
+"processes must be super cheap to spin up, hold and kill" thread. `exit :kill` on a parked
+UNMONITORED child: 0.7–0.8 µs. On a child whose parent held a monitor on each of the 200k:
+**1.2 ms** — 1 500×, and the probe's whole kill phase.
+
+**Cause:** `process/monitor.rs` indexed monitors by TARGET only. A target's death fans its
+watchers out in O(watchers) — fine — but a WATCHER's death (`sweep_dead_watcher`, run on
+every exit) and a `demonitor` had to find their entries by walking every target's list:
+O(all monitors) per death, O(n²) for a fleet. The comment said "cold death path, so the
+full-table walk is fine", true at ten monitors. Erlang keeps both sides' monitor lists on
+the process, so both are O(own entries).
+
+**Fix:** `MONITORS` is a `MonitorTable` with `by_target` (the fan-out) and `by_watcher`
+(local pid → {mref → target}); `insert`/`take_target`/`remove_local`/`remove_watcher` each
+touch their own entries; the cold REMOTE retirements (node-down, `Frame::Demonitor`) keep
+the walk and retire both indexes. Monitored kill 1 236 022 → 1 266 ns per process
+(unmonitored 800 — the remainder is the `[:down …]` delivery); `monitor` 265 → 420 ns for
+the reverse insert.
+
+**Guards:** `tests/concurrency_test.blsp` pins the two indexes in step (demonitor one of
+many across targets and on one target; a watcher's death releases its monitors —
+sabotage-verified with `remove_watcher` stubbed), and `crates/lisp/tests/monitor_scaling.rs`
+pins monitored/unmonitored kill of 20k children as a RATIO under 8× (measured ~1×; the
+pre-index walk reads 38× at that n, sabotage-verified).
+
+## KI-180 — `gui`'s handle registries were created on first use: a check-then-define race across processes ✅ FIXED 2026-09-21
+
+**Seen:** the merged tree's armed full suite (`nest test`, 6153 tests): `ui_test` "stereo
+halves the seconds per byte" read `nil` for `(gui/sound-seconds snd)` of a handle just
+allocated, and "a display without :texture still hands back a sized handle" read `[2 1]` —
+the size the NEIGHBOURING test uploaded — for its 1×1. Both passed three times run alone.
+
+**Cause:** `std/gui.blsp`'s `textures`/`sounds` did `(when (nil? *textures*) (def *textures*
+(table/new)))` — lazily, "so a stdlib image never snapshots a live table". Globals are shared
+by every process and `def` is not atomic with the read: two processes allocating their first
+handle in the same window each saw nil and each defined a table. The second `def` replaced the
+table the first process had just written to, so its handle was unknown (nil), and the two
+tables' `:next` counters both started at 1, so handle 1's size was whichever table survived
+(`[2 1]`). The full suite runs `ui_test`'s display tests beside dozens of other first-uses;
+alone, one process wins by default.
+
+**Fix:** both registries are `(def … (table/new))` at load. The image concern was stale: a
+table global images by value (`KIND_TABLE`) and restores as a fresh table — empty, since
+nothing uploads at build. **Guard:** `tests/gui_test.blsp` "forty processes each allocate a
+texture and a sound and read back their own" — with the lazy init restored it reads red on
+two of three runs (a race), green ×3 with the fix.
+
+**Lesson:** `(when (nil? x) (def x …))` is not `defonce` and `defonce` is not atomic either;
+a shared registry is created at load or not at all.
+
+## KI-195 — `net_reactor_death` asserted the death sweep before it could have finished ✅ FIXED 2026-09-25
+
+**Seen:** `brood::net_reactor_death reactor_death_errors_instead_of_hanging` FAIL in 0.009 s,
+`the death sweep must drain the registry`, on VM run 3 of a four-run capped full-suite loop
+(3× VM + 1× tree-walker, `BROOD_FEATURES_AUDIT=1`); the other three runs were 1714/1714.
+
+**Cause.** The runtime's order is right and documented: `reactor_died` stores `REACTOR_DOWN`
+(SeqCst) *first*, then drains the registry, because every socket creator re-checks the flag
+after inserting — flag-then-drain is what guarantees no entry lands behind the sweep. The test
+polled for the flag (a refused `listen`) and then asserted `local_port(lid).is_none()` once, so
+a reader between the store and the drain saw the listener still registered.
+
+**Why it survived.** The window is the width of one `eprintln!` plus a mutex; on an idle box the
+reactor thread finishes it before the test thread's 20 ms poll wakes. It needed a loaded
+12-core machine to lose.
+
+**Fix.** The test waits for the drain under the same deadline as the flag. No runtime change.
+
+**Guard.** The test itself. Reproduced deterministically first with a 100 ms sleep after the
+store (red), green with the fix under the same sleep; sabotage — the sweep `iter()`s instead of
+`drain()`s — reds it at the 10 s deadline with the same message.
+
+## KI-194 — a module file loaded inside `require-one` published before its `provide` ✅ FIXED 2026-09-23
+
+**Seen:** `module_publish_test` "no name or registration of a loading module is visible before
+it is provided" read `seen` 1 once in a traced suite run, then 3/40 and 6/40 standalone on the
+2026-09-23 review tree (with KI-193 fixed) — against 0/40 on HEAD and 0/40 with
+`BROOD_NO_JIT=1`. The JIT is not on the path (the observer's arm never lowers); it only moves
+the timing.
+
+**How it was found.** A stale cache was the first theory — KI-193 had just been one — and it
+was wrong. A copy of the test printed, at the offending poll, the three names and `*features*`
+twice: through the ordinary read and through `%registry-member?`, which bypasses every cache.
+`early=true late=true rec=true cached-features=false table-features=true`: the names were in
+the table and `*features*` was not yet, then was a few microseconds later. Two writes.
+
+**Cause.** KI-170 wrapped a directly `load`ed `defmodule` file in an ADR-344 frame. It did so
+unconditionally — including when the load runs inside `require-one`'s own frame, which is
+every require (`%require-force` loads the file inside `%with-load-journal`). The inner frame
+published the file's definitions to the live table when the file ended; `%require-force`
+then made the `provide`, which went to the OUTER frame and published afterwards.
+`enter_journalled_load` already knew the rule — "a `load` reached from inside a `require`'s
+frame IS that require's load" — but applied it only to the frame's `direct` flag.
+
+**Fix.** `load` opens a frame only when none is open; a nested module load's writes join the
+enclosing frame and publish with its `provide`.
+
+**Guard:** `module_publish_test` "a module file loaded inside an open load (KI-194)": inside
+`%with-load-journal`, load a module file, then ask a freshly spawned process — which has no
+frame and so reads the live table — whether its name is bound. Deterministic: the probe sits
+in the window rather than racing it. Sabotaged by opening the frame unconditionally again:
+red; restored: green. The observer test went 6/40 → 0/40.
+
+## KI-193 — the table swaps bumped the cache keys after unlocking (fixed) — the `imported NOTHING` wave it was found under is a WATCH, `BROOD_FEATURES_AUDIT` armed ☑️ CLOSED 2026-10-09 (no recurrence in 105 full-suite jobs)
+
+**Seen:** `brood_suite_passes` TMT at 900 s in the review's full VM run (TRY 1; TRY 2 passed)
+with the `[refer] (:use sse) imported NOTHING` wave, then 2/2 solo — at the same scope numbers
+as the first (`sse` at 277, `editor/serve` at 305). HEAD passed. Removing the review's KI-192
+fast path passed 2/2, then 3/3 as "variant B" (the rooted slow path kept, the `env_get` fast
+path dropped) — but that fast path returns exactly what `eval` returns for a bound symbol, and
+no semantic difference could be found. So the fast path moved the timing onto an existing
+window; `BROOD_TRACE_GLOBAL=sse/frame` suppressed the wave in five traced runs.
+
+**Cause.** Every process caches globals twice: `global_lookup_cached` keys on
+`runtime.version`, the VM's `GlobalIc` (and the JIT) on `runtime.code_epoch`. The two
+multi-name table writers bumped both AFTER the write guard dropped:
+
+- `restore_globals` (`%isolate`): `*self.runtime.globals_write() = table;` — the guard is a
+  temporary and drops at the semicolon; the bumps follow.
+- `publish_module_load`: the insert block closes, the writes are journalled, then the bumps.
+
+A reader that took the restored table (a module's names gone) and then read `*features*`
+from its cache got the pre-restore map, still listing the module. `require-one` short-circuits
+on that, `%refer` imports nothing, and every bare use in the file dies `unbound symbol` in
+whatever process reaches it — the shape KI-119, KI-120 and KI-170 each ended in, by a fourth
+route. The single-name `def` path has the same order, but it promises nothing across names.
+
+**Fix.** Both swaps bump `version` and `code_epoch` while holding the write guard. A reader
+that acquires the table after the swap is then ordered after the bumps, so its caches miss.
+The generations lock is only ever taken on its own, so nesting it inside the globals guard
+in the publish cannot invert an order.
+
+**Guard:** `core::heap::table_swap_tests` — a `cfg(test)` probe (`heap::table_swap_probe`)
+reads both counters just before each swap takes the guard and just after it drops, and both
+must have moved (the publish case rebinds, as a real load's `*features*` does). Sabotaged by
+moving the bumps back past the unlock: both red with `version 2 -> 2, code_epoch 1 -> 1`.
+With it, the suite wrapper went 3/3 green solo with the fast path restored — and then failed
+again, same wave and scopes, inside the next full parallel `cargo nextest run`. So this was
+one route to the shape, not the only one.
+
+**The watch (2026-09-23 evening).** A detector run after every publish and restore caught the
+state being created once: `*features*` listed `text`, `term`, `repl`, `reload`, `scaffold`,
+`workspace`, `renames` and `sexp` with their bindings gone, first seen at a publish by one of
+`std_check_test`'s workers (scope 253) — modules that earlier files had loaded and kept. Every
+heavier instrument (`BROOD_TRACE_GLOBAL` with full values, a check on every live `def`)
+suppressed the race, and after ~14:50 it stopped reproducing at all: 13 full parallel runs
+green, across code states with and without each candidate change (KI-183's reorder included,
+confirmed by sabotage), with the check cache cold, and under synthetic load. Ruled out on the
+way: `reflect/check-file` does not provide the module it checks; `*features*` has no whole-map
+writer; the `%isolate` reap and in-flight wait key on registry liveness, not monitors. The
+detector is now `BROOD_FEATURES_AUDIT` (`core/heap/features_audit.rs`): cheap enough to leave
+armed in a full run, it remembers which modules were ever seen bound, so it is silent about
+modules that define nothing public, and names the event that leaves a listed module unbound.
+
+## KI-192 — a thin-wrapper elision whose inner head lazily loaded a module staled the caller's arguments ✅ FIXED 2026-09-23
+
+**Seen:** the tree-walker half of `make test-both` on the 2026-09-23 review's tree — two `nest`
+tests red once each, both `use-after-GC: bytes handle (nursery slot 1) is from epoch 3, but
+that generation is now epoch 4` in `bytes_to_list ← call_native ← eval_tail_loop`, the stack
+KI-185 had. Both passed 3/3 in isolation on that tree and once on HEAD, so under load it was a
+flake; with `BROOD_GC_STRESS=1` it failed on BOTH trees at the identical epoch, and in any
+`nest new` project's `BROOD_VM=0 nest test`. Not the review's changes — they were not on the
+path (every frame is the tree-walker's), and HEAD fails the same way under stress.
+
+**Cause.** `eval_tail_loop`'s thin-wrapper elision (`passthrough_arm`) resolves a wrapper's
+inner head and forwards the already-evaluated `cur_argv` to it. The resolution was a full
+`eval`, under a comment saying "a symbol lookup — no GC, so `cur_argv` stays valid". Lazy
+module loading (ADR-335) ended that: an unbound qualified head is a module LOAD — arbitrary
+evaluation and a collection — and `cur_argv` was not rooted across it. `BROOD_GC_VERIFY=1`
+named the store: the stale handle was bound into the inner call's frame (here `seq`'s `coll`).
+Contracts are not involved (`BROOD_CONTRACTS=0` fails the same way).
+
+**Why it survived.** The comment was true when written. The VM path resolves heads through its
+IC and was never affected, so every default-engine suite was green; the tree-walker job needs
+the load to land in the elision AND a collection to be due there, which is why it read as a
+one-in-many flake until stress made it deterministic.
+
+**Fix.** A bound, non-dynamic symbol takes `env_get`, which cannot collect (the hot case —
+this runs for every elided `+`); anything else goes through `eval` with the args, the call
+form and the env rooted, re-read after.
+
+**Guard:** `crates/cli/tests/passthrough_lazy_head.rs` — `(defn wrap-encode (x) (json/encode
+x))` applied to fresh LOCAL data under `BROOD_VM=0 BROOD_GC_STRESS=1`. Sabotaged by restoring
+the unrooted `eval`: the run reports `use-after-GC: pair handle …` (by hand) and the test goes
+red (timed out at the 120 s cap); restored: green.
+
+## KI-191 — two JIT cold paths could run or resume the wrong arm across a concurrent rebind ✅ FIXED 2026-09-23
+
+**Seen:** not observed — found in the 2026-09-23 VM/perf review (`handoff.md`), confirmed by
+reading. Both windows need a `def` on another core between two adjacent loads, so neither was
+reproduced; the fixes are argued from construction, which is recorded here so the next
+reader does not mistake the absence of a test for the absence of a mechanism.
+
+**Cause 1 — a torn read in `jit_tier`.** Thread B loads `arm.jit_code` (the old pointer).
+Thread A, sharing this `CompiledArm` (ADR-215), sees the stale epoch, resets the arm, and at
+its next call re-elects it — storing the NEW epoch into `compile_epoch` *before* its CAS
+`null → QUEUED`. B's `compile_epoch == global_epoch()` check now passes, and B enters the old
+pointer: native code whose inlined operators were validated at the old epoch.
+
+**Cause 2 — the fast-link deopt fallback resolved the callee by name.** On an IC miss (the
+epoch moved), `jit_fast_link_cold_outcome` looked the head up in the globals. A `def` in that
+window names a different arm; `jit_frame_shape_matches` compares frame sizes only, so an arm
+of equal `nslots` passed it and `jit_ckpt_resume` read the NEW arm's journal slot out of the
+OLD arm's frame and interpreted the new chunk from the old ip.
+
+**Fix.** (1) After the epoch check, `jit_code` is re-loaded and must still equal the pointer
+about to run: the peer's null store precedes its `compile_epoch` Release, so an Acquire
+re-load after seeing that epoch sees the reset, and native code is never freed, so an address
+cannot come back as another arm's. (2) `JIT_ARM_KEEPALIVE` is now a map keyed by installed
+code pointer (it pinned every arm already; now it also names them), and the fallback resolves
+IC → **the arm that code belongs to** → name. The suspend-host latch's linear
+`jit_code == code` scan became the same O(1) lookup, and it now finds the arm even after its
+`jit_code` moved. The inline xcall path carries no code pointer out of the IR and keeps the
+IC → name order.
+
+**Guard:** none by test. The dispatch and deopt paths are covered by the existing JIT suites,
+which pass unchanged.
+
+## KI-190 — a loop that redefined itself and then made a non-tail call ran the old body forever ✅ FIXED 2026-09-23
+
+**Seen:** while checking a review finding about the `SelfCall` rebind path. The probe
+
+```lisp
+(defn lp (xs n)
+  (if (= n 0)
+    (do (reflect/eval '(def lp (fn (xs n) [:new xs]))) (lp (list 1) 7))
+    (lp (list 2) (- n 1))))
+```
+
+returns `[:new (1)]` on the tree-walker and never returns on the VM or JIT: every pass
+through `n = 0` re-ran the `def`, and the source positions recorded for each re-evaluated
+form grew until `memory allocation of 5502926864 bytes failed`. The same probe with
+`(lp 1 7)` in place of `(lp (list 1) 7)` was correct.
+
+**Cause.** `Inst::SelfCall`'s hot-reload guard (ADR-013) compares the global epoch to a
+snapshot. The snapshot was a local of `exec_chunk`, taken on entry — and a frame re-enters
+`exec_chunk` after **every non-tail call** in its body. `(list 1)` is a VM call, so by the
+back-edge the snapshot had been re-read after the `def`, the epochs matched, and the loop
+took the zero-lookup path on the old body. ADR-366 had met the same re-entry with its
+stale-arm sentinel, which covered a module load but not a `def`.
+
+**Why it survived.** `vm_selfcall_reload_test` exercises a self-redefinition with a call in
+the loop body, but that call (`scr-swap`) is small enough to be inlined into the caller's
+node tree, so the frame never left `exec_chunk` between the `def` and the back-edge.
+
+**Fix.** The epoch belongs to the FRAME: `BcFrame::entry_epoch`, owned by `vm_run_bc` and
+threaded to `exec_chunk` as `&mut u64` like `back_edges`. A fresh frame starts at the current
+epoch; a frame resumed mid-arm (a deopt, a native run in place) starts at the sentinel, so its
+first back-edge re-checks. The stale-arm hint still forces the sentinel.
+
+**Guard:** `vm_selfcall_reload_test` "a redefinition before a non-tail call is still seen at
+the back-edge (KI-190)" — a table counter stops the old body after three passes so the red is
+`[:stuck (2)]`, not a hang. Sabotaged by re-reading the epoch on entry: red with exactly that
+value; restored: green.
+
+**Also changed in the same path.** The rebind branch truncated the root stack *before*
+`dispatch(…, argv, …)`, so the arguments were off the roots while a native callee could
+collect; `Inst::Call` dispatches with them still rooted and lets the driver drop them. It does
+the same now.
+
+## KI-189 — a deopt-feedback re-lowering of a leaf-spliced arm re-ran effects ✅ FIXED 2026-09-23
+
+**Seen:** found by review, then reproduced: a self-tail loop with a spliced leaf and a
+residual `table/put` call, tiered on an int param and then fed a float, counted
+**100 464 puts for 100 000 iterations** (`[jit-relower] arm=loop8 reason=polymorphic-param`
+just before). Correct with `BROOD_NO_LEAF_INLINE=1`.
+
+**Cause.** Two resets of an arm's native state existed and disagreed. The epoch
+invalidation in `jit_tier` cleared `inline_installed`, `inline_queued` and `inline_code`;
+`reset_arm_untried` — the deopt-feedback re-lowering, for a polymorphic param or floats
+arriving through erased reads — cleared only `jit_code`, `jit_calls` and
+`shared_published`. After it, the VM still sized the frame to `inline_nslots`, the recompiled
+SMALL native ran in that frame and journalled to the small layout's `ckpt_slot`, and a deopt
+took the frame size to mean the leaf-spliced layout, found no journal in the leaf slot, and
+re-ran the arm from ip 0 — repeating the put that had already happened.
+
+**Why it survived.** `jit_effect_once_test` covers leaf splicing and re-lowering separately;
+nothing drove one into the other. The reproducer has to keep both phases in one call: a
+top-level form between them (an `io/puts` that loads a module) bumps the epoch, and the epoch
+reset — the correct one — runs first.
+
+**Fix.** One `reset_native_state`, called by both. `jit_code` is cleared first so a reader
+that still sees the inline flags sees a null pointer.
+
+**Guard:** `jit_effect_once_test` case 8. Sabotaged by restoring the three inline fields after
+the reset: `7 passed, 1 failed`; restored: 8/8.
+
+## KI-188 — a closure shared by handle let the RUNTIME collector free a generation its receiver held ✅ FIXED 2026-09-23
+
+**Seen:** found by review (2026-09-23), then reproduced deterministically as a unit test:
+with a drain of generation 0 armed and the receiver already acked clean, handing it a gen-0
+closure by message and letting the sender drop its copy and ack left
+`gen_drained(&[main, sender, receiver]) == true` — generation 0 freeable while the receiver
+holds a handle into it. Both delivery paths.
+
+**Cause.** The drain completes when every live pid's entry in the shared `drain_acks` table
+reads the current epoch; a clean ack is final for the epoch because "an old-gen handle can
+never arrive by message". ADR-194's L1 path and the wire path's `Message::FnShared` both
+hand over a RUNTIME closure BY HANDLE, which is exactly that arrival:
+
+- L1 (`copy_cross_heap_rec`'s `Value::Fn` arm) withdrew nothing.
+- the wire path called `rearm_drain_ack`, which reset only the local `acked_drain_epoch`
+  cache. The re-walk then found the process dirty and — "a process reaching here holds no
+  current-epoch ack" — took no action, so the table still said clean. The message's `GenPin`
+  covered only the time in the mailbox.
+
+A freed generation's slot is reused, and the generation is one bit of the handle, so the
+receiver's closure would silently run different code.
+
+**Why it survived.** `runtime_collector.rs`'s drain tests move handles between heaps with
+`push_root`, never by message; the message-path tests never arm a drain.
+
+**Fix.** `rearm_drain_ack` withdraws the ack from the table (decrementing `drain_acked`) when
+this heap acked the CURRENT drain — the heap now records the pid it acked under — and the L1
+arm calls it. With no current ack it is a `Cell` compare and takes no lock.
+
+**Guard:** `process::message::drain_ack_tests::{an_l1_…, a_wire_…}_withdraws_the_receivers_clean_ack`
+— both red before the fix (the wire one against the `Cell`-only rearm), green after.
+
+## KI-185 — a module load inside the contract policy hook tripped the use-after-GC wire ✅ FIXED 2026-09-22
+
+**Seen:** CI red on `dc1f547d`, job `differential (tree-walker)` (`BROOD_VM=0`), case
+`nest::contracts_default::nest_test_enforces_contracts_by_default`. The child `nest`
+panicked on the per-deref tripwire:
+
+```
+use-after-GC: bytes handle (nursery slot 5) is from epoch 6, but that generation is
+now epoch 7 — a handle held across a collection without being re-rooted (handle 0x600000005)
+  check_epoch_aged ← bytes ← as_bytes ← bytes_to_list ← call_native ← eval_tail_loop
+```
+
+Only that case: `nest run` armed passed, `BROOD_CONTRACTS=0` passed, and the VM passed.
+
+**Cause.** ADR-385 moved the shim machinery out of the prelude into `std/contract.blsp` and
+had the prelude's `%contract-wrap` reach it with `require-one` **at its first armed call**.
+That call site is the problem, not the module: the hook runs wherever a BINDING comes to
+exist — a global `def`, a `%register-sig` landing on a bound name, the sweep after a
+module's bindings arrive — and each of those is reached from inside some evaluation. A
+module load is arbitrary evaluation and therefore a **collection**, so every caller on that
+stack must be GC-safe across the hook. They are not: the tree-walker had a `bytes` value
+staged for a native call, and the load moved it.
+
+The whole area is prone to this — the hook's own `contract_apply` reads `subject` and the
+declared type-form *before* `apply_engine` — so the fix is not to root more, it is to stop
+collecting there.
+
+**Fix.** The module is loaded **once at runtime boot** when `contracts_armed()`
+(`Interp::new`, beside the `=all` prelude sweep), where every boot already collects and no
+user evaluation is in flight. The hook's `require-one` is now behind
+`(unless (bound? 'contract/shim) …)`: a no-op in every armed process, and a last resort for
+the one path that arms later than boot — a `sig!` in an otherwise unarmed run.
+
+ADR-385's win is untouched, which is the point: an unarmed run still never loads the module
+(`BROOD_IMAGE_TRACE=1` reads 0 `[image] contract` lines), and the empty-file instruction
+count is unchanged at 78.9M against the 80.8M before ADR-385.
+
+**How it was found, and the cheap step that named it.** Rather than read the stack for the
+missing root, restore the *pre-ADR-385* prelude (the machinery back inline, no load in the
+hook) and re-run: it passed. Three minutes, and it identified the change rather than the
+symptom — worth preferring to a bisect build whenever the suspect edit is one file.
+
+**Lesson:** a hook the kernel calls at a binding moment may allocate, but it must not LOAD.
+Every caller of such a hook is mid-evaluation, and a load is a collection with arbitrary
+depth underneath it. If policy needs a module, load it where the runtime is between things —
+at boot, under the same condition that makes the policy live at all.
+
+## KI-184 — an error escaping a contract shim reports the shim module's line since ADR-385 ✅ FIXED 2026-09-22
+
+**Seen:** `tests/vm_prim_error_pos_test.blsp:52` — `(assert= 33 line)` reads 135 — in both the
+armed and unarmed suites on 2026-09-22, and on a clean worktree at `cf8c2821` with nothing else
+changed. Line 135 of `std/contract.blsp` is `%contract-shim-2`'s
+`(%contract-check-ret %contract-name %contract-ret (%contract-orig a b))`.
+
+**Cause:** KI-181's rule — an error raised in positionless code takes the innermost pending
+call site that HAS a position — was written when the shim templates lived in the prelude,
+whose code carries no positions, so "innermost positioned" meant the user's call. ADR-385
+moved the templates into `std/contract.blsp`, a CORE module the reader positions like any
+other, so the innermost positioned site is now inside the shim. The kernel did what the rule
+says; the rule's premise moved.
+
+**Fix:** option (b) of the three considered ((a) positionless shim closures — no mechanism
+strips a module's positions and the templates cannot move back to the prelude, KI-81; (c)
+re-pin at 135 — accepts a worse answer). `CompiledArm` now carries the closure's authoring
+module (ADR-383's `Closure::module`, which `compile_closure` already computes and hands to
+`compile_arm` as `scope.module`), and the rule in `attach_vm_trace` reads it: a position the
+`contract` module's code OWNS — the running arm is a shim and the position is one of its
+instructions' (`Inst::call_pos` over its chunk), or a pending shim frame's call site equals
+it — is treated as untagged, and the innermost positioned call outside any shim frame is the
+answer. Ownership rather than the file, because a primitive's error carries a position only.
+
+**Three wrong turns, kept for the next reader:** (1) the frame's env cannot be read in
+`attach_vm_trace` — the driver has already unwound its roots, and reading `read_root_env`
+there killed the test process (`test process died: :killed`), which the suite summary line
+reports identically to a wrong value; read the failure TEXT. (2) The shim arm's `fn_name` is
+the ORIGINAL's and its `src_file` came out as the CALLER's file (`contract_bind` carries the
+name over; the file is read from the body's first positioned form), so neither marks a shim.
+(3) The engine tags a returning error at the call site in several places (`tag_pos`,
+`exec_call`), so "skip shim frames in the search" alone never fires — the position is already
+set by the time the search runs; hence "treat a shim-owned position as untagged".
+
+
+**Reopened and properly fixed 2026-09-22 (the first fix was VM-shaped and half the story).**
+CI stayed red on `b3253e0e` in BOTH jobs, on this same assertion. Two things were wrong:
+
+1. **The skip never fired for a shim built by a tree-walked template.** `attach_vm_trace`
+   recognises a shim frame by its arm's authoring module (`CompiledArm::module`, ADR-383),
+   and that comes from the frame the closure was BUILT in — which carries a module only
+   once a boundary alias exists, and the first shim is what creates one. So the very first
+   contracted binding produced a shim whose module was `None`, the skip declined, and the
+   shim's own instruction position was reported. `contract_bind` now STAMPS the module —
+   the kernel is building a contract shim and knows it, rather than hoping the construction
+   path supplied it. (With `c.name` set to the wrapped name just above, the inference would
+   otherwise have fallen back to the module of the USER's name: wrong twice over.)
+   Sabotage-verified: `c.module = None` reds the tree-walker case.
+2. **`BROOD_VM=0` was never the tree-walker here.** The shim runs through `vm_apply` on the
+   tree-walker→VM router (ADR-318), so `exec_chunk::tag_pos` tags it at the instruction
+   level — which is why a fix written in the tree-walker's own `or_form_pos` had no effect
+   on the failing case and the backtrace, not the config name, is what said so.
+
+Beside it, a real defect the hunt turned up and which is fixed in the same commit: a module
+**materialised from the stdlib image carried positions with no file**. `from_message`
+re-stamps each rebuilt form through `set_form_pos`, which takes the file from
+`current_file` — during a materialise that is whatever the process happens to be loading,
+so imaged code reported a line from one file under another file's name. `%image-load-section`
+now takes the module key and stamps the section's own source path, the trap
+`set_form_pos_in_file` documents for the expander. Verified in all six combinations of
+engine × contracts × image.
+
+## KI-187 — a loaded module's bare type names were resolved from the checked file ✅ FIXED 2026-09-23
+
+**Seen:** CI's `check_order_differential` (`a_files_verdict_does_not_depend_on_the_order_the_files_were_given_in`)
+red from `4c2807f3` on: over `tests/`, `vt_test.blsp`'s verdict lost precision in forward
+order and not in reverse. Bisected over the files sorting before it to
+`tests/section_test.blsp`, i.e. to `editor/section` being loaded.
+
+**Cause:** `vt` declares `(deftype row (vector cell))`, and `editor/section` declares a record
+`row`. A bare alias name is resolved in the checked file's namespace, then through its
+imports, then to the one loaded module declaring it (ADR-327). That is right for the checked
+file's own `sig`s, but it was also applied INSIDE `vt`'s declarations: `terminal`'s
+`:grid (vector row)` and `(sig line (row any -> …))`. Once both modules were loaded the
+suffix rule saw two `row`s and declined, so `terminal` read as `any` and `row` as `vector`. A
+file calling `(vt/lines 7)` checked clean if and only if the process had already loaded
+`editor/section`.
+
+**Repro:** `brood --check` on
+`(defmodule p) (defn- s () (editor/section/section-render (editor/section/section :root nil nil []))) (defn- a () (vt/line 5 nil)) (defn- b () (vt/lines 7))`:
+one warning (`expects vector`) instead of two (`expects row`, `expects terminal`). Drop the
+`s` line and both appear.
+
+**Fix:** `annot::alias_ty` resolves a bare name in the DECLARING module first. That module is
+the innermost alias being expanded (`ALIASES_EXPANDING`), or the function whose heap-declared
+signature is being parsed (`DECLARING`). `sigs.rs`'s four parse sites (`declared_heap_sig`,
+`_with_vars`, `_overload`, `_value_ty`) run under `annot::in_declaring_scope(sym, …)`. The
+checked file's own names are unaffected, since neither stack is set there.
+
+**Guard:** `crates/cli/tests/deftype_through_imports.rs`
+`a_loaded_modules_alias_means_what_it_meant_where_it_was_declared` runs the repro above
+through `brood --check`. It is red with the declaring-scope lookup disabled. A unit test
+through `warnings_with` was tried first and could not fail: that helper checks one form with
+no alias table installed, so `vt/lines` gets no warning with or without the fix.
+
+## KI-186 — `nest check` replayed a stale verdict for a listed file outside the source paths ✅ FIXED 2026-09-23
+
+**Seen:** `nest check bin/tool.blsp` in a project, then an edit to `bin/tool.blsp` that calls
+an unbound function, then the same command: the second run printed the first run's (clean)
+verdict and exited 0.
+
+**Cause:** the ADR-382 whole-project verdict record (`project-verdict-key`,
+`std/tool/project-check.blsp`) is keyed on the cache stamp, the manifest, the sorted listed
+paths and `(project-image/fingerprint-of (all-files root))`. `all-files` walks the source and
+test trees only, so a listed file outside them contributed its PATH and never its content.
+Stale warnings replayed the same way as a stale clean did.
+
+**Fix:** the fingerprint covers `(append (all-files root) listed)`. **Guard:**
+`crates/nest/tests/check_incremental.rs`
+`an_edit_to_a_listed_file_outside_the_source_paths_is_not_replayed` asserts the exit code and
+the warning, the two things a gate reads. With the listed files taken back out of the
+fingerprint it goes red and its two neighbours stay green.
+
+## KI-183 — `:monitored-by` read 2 after a watcher's death, once, in CI ✅ FIXED 2026-09-23
+
+**Fixed (2026-09-23).** The ordering hole the "next sighting" note suspected is real.
+`retire_pid_tail` (`process/scheduler/lifecycle.rs`) ran `take_target` + `fire_down` for the
+dying pid's watchers, and only afterwards `sweep_dead_watcher` for the monitors the dying pid
+itself held. The down is what makes a death observable, so the test's `receive` of
+`[:down ^mw …]` could return, and `(%process-info t)` could run, inside the gap.
+
+**Reproduced on demand**, which the CI box's slowness had only made likelier. Four processes
+each ran the test's round 2000 times (the shape of the looped test below). The
+release VM read a stale count 1, 5 and 0 times in 8000; `BROOD_VM=0` read 5. With the sweep
+moved ahead of the fan-out it read 0 in 64 000 rounds.
+
+**Fix:** `sweep_dead_watcher(pid)` runs before `take_target(pid)`. The same sequential
+discipline applies: MONITORS then PENDING_REMOTE, each released, and never nested. A process
+monitoring itself is now swept before its own fan-out, so it sends no down to itself. That is
+correct, because it is dead. **Guard:** "a watcher's death is observable only after its
+monitors are released (looped)" in `tests/concurrency_test.blsp`. It reads 3, 3 and 7 with the
+old order restored, and passes under the VM, `BROOD_VM=0` and `BROOD_GC_STRESS=1`. The window
+predates KI-176. The index only made the sweep faster to reach, not wrong.
+
+### As filed
+
+**Seen:** CI run for `653d41d9`, tree-walker job, `brood_suite_passes` TRY 1:
+`tests/concurrency_test.blsp:295: monitor: death notification › a watcher's death releases
+the monitors it held — assert= (get (%process-info t) :monitored-by) 0, actual 2`. The wrapper
+retried; the job was red for two unrelated reasons (a duplicated ADR heading, an image-only
+probe on the source path), both fixed the same day, so the retry's verdict was not recorded.
+
+**Why it is filed rather than shrugged:** KI-176 (2026-09-21) added the watcher-side index to
+`MonitorTable`, and "a watcher's death releases the monitors it held" is the one behaviour
+that index now implements. A first sighting the day after is the kind a green loop hides.
+
+**Not reproduced:** the armed and unarmed suites, twice each, on the same tree and on the
+tree with the day's prelude changes — all green. The tree-walker job runs `BROOD_VM=0`, which
+changes scheduling density, and the CI box is slower.
+
+**Next sighting:** keep the job log; loop `tests/concurrency_test.blsp` under `BROOD_VM=0` and
+`BROOD_GC_STRESS=1` beside a busy `nextest -j` run; read whether the target's `:monitored-by`
+is decremented by the watcher's exit processing (`sweep_dead_watcher`) BEFORE the exit is
+observable to a monitor of the watcher — if a `receive` of the watcher's `:down` can run before
+the sweep, the test's read is legal and the sweep's placement is the bug.
+
+**A second guard (2026-09-23, from the VM/perf review, which found the same hole
+independently):** `process::scheduler::lifecycle::down_order_tests` builds the monitor table
+with fake pids, retires one, and a `cfg(test)` probe inside `fire_down` records whether the
+dying pid still held watcher entries when its down fired. Deterministic where the looped test
+is statistical: red 3/3 with the old order. (That review's own first attempt, a 300-iteration
+loop, passed against the old order in two full parallel runs and was discarded.)
+
+## KI-182 — the `startup` row +6% at the 422c92a5 refresh: the unarmed contract offer tiers `not` at boot, and the prelude image carries def sites ✅ FIXED 2026-09-22
+
+**Seen:** the brood-benchmarks Brood-column refresh at `422c92a5` (min of three interleaved
+invocations) read `startup` 12.9 → 13.6 ms. `make ab BASE=136b14d7 ROWS=startup ARGS=--floor
+N=15`, std image live on both arms: **16 → 17 ms, +6.2% against a 0.0% floor**, reproduced
+alone. `perf stat -e instructions:u` on `bench/brood/startup.blsp` (`(io/puts 0)`, the run
+pre-flight cached): **74.4M → 81.3M**; on an empty file 58.6M → 62.2M; `--version` unchanged.
+
+**Attributed** on unstripped `release-fast` builds of both commits (`CARGO_PROFILE_RELEASE_FAST_STRIP=false`),
+`perf record -e instructions:u` over 60 invocations each, symbols summed by family:
+
+| family | 136b14d7 | 422c92a5 | delta |
+|---|---|---|---|
+| Cranelift / JIT compile | 0.5M | 4.6M | **+4.1M** (sampled; `BROOD_NO_JIT=1` measures 1.55M of it) |
+| `FormPos` table inserts | 1.7M | 2.3M | +0.6M |
+| image load | 5.4M | 5.8M | +0.4M |
+| freeze | 5.4M | 5.7M | +0.3M |
+| interning | 10.5M | 10.8M | +0.3M |
+
+**The JIT half — the mechanism.** `BROOD_JIT_DUMP_IR=1` prints exactly one lowered arm on the
+new binary — `not` (`Local JumpIfFalse Const Jump Const`) — none on the old, and none on an
+empty file, so it is `io`'s materialisation that makes `not` hot. `contract_apply`
+(`builtins/contracts.rs`) is called at every `def` of a name with a declared arrow and applies
+the Brood hook `%contract-wrap` unconditionally; the hook (`std/prelude/contracts.blsp`)
+decides `(if (or (%contract-exempt? name) (not (or (%contracts-armed?) (%table-has?
+%*contract-forced* name)))) orig …)`. Under `brood file` contracts are unarmed, so every one
+of those calls declines — after running `not` once. `io` and its chain declare enough names to
+put `not` past `TIER_THRESHOLD`, the background compiler instantiates `CraneliftBackend` and
+lowers it, and that is ~1.5M instructions (~0.3 ms) on every short run. The `provide`-time
+sweep already stands aside unarmed (`(when (%contracts-armed?) (%contracts-sweep! key))`,
+`tools.blsp`); the per-`def` offer is the path that does not.
+
+**The other half** is not a bug: ADR-382 put def sites in the prelude image (`[boot] … (802
+entries)` → `(1328 entries)`, each a `set_def_site` insert with two decoded strings), and the
+prelude grew by `contracts.blsp` (287 lines) and the ADR-377/379 additions, which the freeze
+and the image load pay per binding. Worth a look at whether def sites can decode lazily, but
+the JIT half is the one to fix first.
+
+**The second caller, found when the first fix left the arm lowering.** With the offer gated,
+`BROOD_JIT_DUMP_IR=1` still printed `not` on `(io/puts 0)` — and `io` declares no sigs at all,
+so the hook was never its caller. Rebinding `not` under the loader exemption to throw-and-catch
+for a trace named it: `%contract-check-op-result` from `require-one`. ADR-381 made `impl` wrap
+every op body under a declared `:->` return in that Brood function, whose first test is
+`(not (%contracts-armed?))` — a closure call plus a `not` per ability-op RESULT, whatever the
+mode, on every op call in the program, not only at load. A `require`'s worth of op calls is
+past the threshold on its own. The `impl` macro now emits
+`(let (%op-result (do body…)) (if (%contracts-armed?) (%contract-check-op-result … %op-result) %op-result))`:
+the ask is the cached-bool primitive inline, the checker is entered only armed, and the body
+is evaluated once. `(math/max 1 2)` lowers `not` on the 136b14d7 binary too — a pre-existing
+caller in `math`'s load, not this regression; left as the watch item below.
+
+**Fix (2026-09-22), first half:** `contract_apply` returns before `apply_engine` when `!contracts_armed()`
+and `name` is not `sig!`-forced (`Heap::is_contract_forced` — the kernel set ADR-383 moved the
+forced names into, merged under this fix; the first cut read the prelude's `%*contract-forced*`
+table, which that merge deleted, and the guard's `sig!` case is what would have caught it) — the hook's own first test, hoisted into the mechanism so the policy is
+only consulted when it can wrap. **Guard:** `crates/cli/tests/contract_offer_unarmed.rs`. The
+hook is a reserved prelude name, so the probe rebinds it through `%load-module-source` (the
+loader that holds the reserved-name exemption) to a closure that records each name offered and
+delegates to the original. Unarmed it reads `offered f=false above=false g=true` — a `sig`
+above or below its `defn` never reaches the policy, `sig!` does and still raises `:contract`;
+armed (`BROOD_CONTRACTS=1`) all three are offered and all three enforce, which is what keeps the
+unarmed half from passing on a hook that was never wired. Sabotage: `if false &&` on the early
+return reads `offered f=true above=true g=true` and fails. **Re-measured** (same rig, both fixes in): `BROOD_JIT_DUMP_IR=1` on `(io/puts 0)` lowers **no arm** (was `not`), and `BROOD_NO_JIT=1` no longer moves the instruction count (80.91M vs 80.95M — it was a 1.55M gap), so the Cranelift instantiation at boot is gone. `make ab BASE=136b14d7 ROWS=startup ARGS=--floor N=15`: **16 → 16 ms, +0.0%** (was 16 → 17, +6.2%); interleaved pinned `perf stat -r 40 -e task-clock`, three rounds: **12.85 → 13.68 ms CPU (+6.4%)**, so the wall's flat reading is the millisecond's rounding, not recovery. What remains is the non-JIT half, 74.97M → 80.91M (+5.9M): +2.8M on an empty file (the prelude image's def sites and the larger prelude — boot 7.5 → 7.9 ms in `BROOD_BOOT_TRACE`) and +3.1M across `io`'s load and the run. Not a regression the row can see; the def-site half is the watch below.
+
+**The residual, profiled on unstripped builds of both commits** (`perf record`, 60 runs each,
+`(def x io/puts)` — the load alone — and an empty file): no symbol moves more than 0.75M.
+Empty file +2.8M: `localize_for_freeze` +0.70 (a bigger prelude: `contracts.blsp`'s 287 lines,
+the ADR-377/379 additions, 969 → 998 globals), `load_prelude_image` +0.33, `FormPos` inserts +
+`set_def_site` + the `SourceLoc` map +0.4 (526 def-site entries), interning and mimalloc the
+rest. `io` load +3.2M: `env_get` +0.73, alloc +0.67, `list_with_tail` +0.50, `FormPos` +0.65,
+`decode_msg_at` + `from_message` +0.63, `exec_chunk` +0.27 — more of everything, no new thing.
+Levers, both design calls rather than fixes: (1) the shim machinery does not need to be prelude
+now that the hook is never entered unarmed — `sig!`, `%contracts-armed?`, `%contract-force!`
+and the hook stay, the `%contract-shim-*` templates and spec parsing move to a module the hook
+loads on its first armed call, and every unarmed boot stops localizing and freezing them;
+(2) def sites decode on the first `def-site` question rather than at boot. The row was back before either was taken: after the
+replay and `nth` change below and ADR-383's op-function check (merged the same day), interleaved
+pinned task-clock against 136b14d7 reads **13.06 vs 13.05 ms** over three rounds, 76.3M vs
+78.4M instructions, and the 653d41d9 benchmark column has `startup` at 13.1 ms. ADR-385 took lever 1 the same day regardless (a smaller
+prelude is right on its own terms); lever 2 stays written up; the KI is closed on the measurement.
+
+**The watch item, closed 2026-09-22:** `(math/max 1 2)` lowered `not` on the 136b14d7 binary as
+well. Rebinding `not` under `%load-module-source` to raise an uncaught error on its Nth call
+named the chain from the top-level report: `%replay-std-impls!` → `%register-impl` →
+`%register-impl-check-arity` → `%impl-fn-arity` → `take-while` (the arity DIAGNOSTIC, re-run
+per impl at every replay from the image although the `impl` form ran it when the image was
+written), and beside it `nth` from the replay's `for` loop — whose first `cond` test was
+`(not (int? i))`, a Brood call on every `nth` in the language. Two changes: the replay takes
+the registration proper (`%install-impl`, split out of `%register-impl`), and `nth` tests
+`int?` positively. `not` calls during a load: `math` 164 → 20, `io` 127 → 16, `datetime`
+291 → 14; no arm lowers on any of them. Guard `crates/cli/tests/image_replay_stays_cold.rs`
+(count under 64 AND no lowered arm, `[image] math` required so a source load cannot pass it
+vacuously); each half sabotage-verified.
+
+**Lesson:** a hook called per definition is a hot loop at load time, and the JIT's tier
+threshold turns a cheap decline into a Cranelift instantiation per process. Gate policy calls
+on the fact that decides them when the kernel already holds that fact.
+
+**Addendum (2026-09-22, the same fix reached twice in parallel):** the second half's shape
+moved once more. Wrapping the method body in `(let (%op-result …) (if (%contracts-armed?) …))`
+inside `impl` keeps `not` cold but makes every impl a real activation — `(impl Port :native
+(write [p s] (%port-write p s)))` is no longer the pass-through the dispatcher elides to its
+primitive, a per-op-call cost in every mode since ADR-381 — and the wrapped closure itself
+tiers at 128 calls (`<closure>` lowered beside `not` on a run with one more `io/puts`). The
+check now lives in the OP FUNCTION `defability` generates — `(if (%contracts-armed?)
+(%contract-check-op-result 'A 'op 'ret (impl …)) (impl …))`, the resolved call in tail
+position unarmed — and `impl` registers methods as written; an impl registered through
+`%register-impl` directly is checked too, since every call goes through the op. Guards beside
+`contract_offer_unarmed.rs`: `builtins::contracts::tests` (a hook bound to THROW when
+consulted, via `env_define` — no loader exemption needed in-process) and
+`cli::contracts_mode::an_unarmed_startup_run_lowers_no_arm` (the `BROOD_JIT_DUMP_IR` probe
+on the real cache, the image confirmed live in a separate run: asking `stdimage/status` is
+itself enough work to tier `not` and `%identity-of`). Each half alone reds its guard.
+
+
+**Lever 1 taken (2026-09-22, ADR-385) — the shim machinery is no longer prelude.**
+`std/contract.blsp` is a CORE module the hook loads with `require-one` at its first ARMED
+call; the prelude keeps `%contract-wrap`, `%contract-exempt?` and `sig!` (278 → 69 lines).
+So an unarmed boot no longer localizes, freezes or images 200 lines it never reaches.
+Callgrind, debug, image live: empty file **80.84M → 78.99M**, `(io/puts 0)` **101.06M →
+99.29M**; deleting the machinery outright reads 78.68M, so the lazy load captures 86% of the
+available. The hook resolves through `reflect/eval` (a NATIVE under a module prefix, so not a
+module reference) rather than a literal `contract/shim` head, which on a cold boot would have
+to resolve while the prelude is still being built — this area's recurring shape (KI-81,
+KI-113). Guard: `cli::contracts_mode::the_contract_machinery_loads_only_when_armed` reads
+`BROOD_IMAGE_TRACE` both ways in one test. **Still open:** lever 2 (lazy def-site decode) and
+the `io`-load half (+3.2M, diffuse), so the row is not expected back in full; re-measure with
+the KI's rig on a box that can.
+## KI-181 — an error raised in positionless code took the CATCH site's position, two frames from the failing form ✅ FIXED 2026-09-21
+
+**Seen:** the armed suite (ADR-381 turns contracts on under `nest test`): `vm_prim_error_pos_test`
+"a table/has? type error reports the prim's line, not the call site" read line 24 — the test's
+own `try` — where line 20, the `(table/has? pep-t k)` inside `pep-probe`, was pinned. Unarmed
+it passed.
+
+**Cause:** `table/has?` carries a `sig`, so armed it is a contract shim — a closure built by
+`%contract-shim-2` in the prelude, whose code carries no source positions. Its call to the
+original `has?` (thin, so elided) ran the primitive inline in the shim's positionless frame:
+the error was tagged nowhere and "picks up the position of whatever frame catches it", the
+`try`. Unarmed, the elision ran the primitive inline in `pep-probe`'s frame and tagged it there
+— which is why the guard never saw the class before. Under `nest run`/`nest test` every error
+escaping any `sig`'d function's callee was reported at its catch site.
+
+**Fix:** `attach_vm_trace` gives an error with no position the innermost pending call site
+that HAS one — the user form whose call led into the positionless code, the same site the
+`:trace` already records. `or`-semantics: a position a primitive tagged is never moved. A
+TAIL call into a shim reuses the caller's frame, so there the nearest positioned site is the
+caller's caller (the BEAM's answer too); a non-tail call reports its own line. The two tests
+then had to say what they test: `vm_prim_error_pos_test` calls the raw `%table-has?` (the
+fused arm the guard exists for — a shim is not the inline path, by design), and gains a
+`sig!`-forced non-tail shim case pinning the new rule (sabotage-verified: the rule disabled
+reads the `try`'s line); `lazy_load_test`'s ADR-366 child runs `BROOD_CONTRACTS=0`, because a
+contracted `math/rem` is a closure and the inlined `Rem` it looks for cannot exist.
+
+**Lesson:** a diagnostics guard that measured a fast path through an elision measured the
+elision. Pin the primitive the guard is about.
+
+## KI-179 — the incremental check cache hit only image → image: a cold build or an edit re-checked the whole project ✅ FIXED 2026-09-21 (ADR-382)
+
+**Seen:** measuring `docs/large-project-scaling.md`'s "unchanged re-check 16 s" on the 1 000 ×
+3k rig from a cleared cache (release `nest`): cold `nest check` 186 s; the next check of the
+UNCHANGED project **154 s**; only the one after that 15 s. A one-function edit: **188 s** —
+the whole project again. The doc's 16 s was the third run's number.
+
+**Cause:** `types::check::deps::fact_of_sym` reads `heap.def_site(sym)` and answers
+`D<file>@<mtime>` for a user global; with no def site it answers `F`. `%image-write` never
+encoded def sites (bindings, sigs and privacy only), and materialising evaluates no `def`, so
+a project module from the image had none. The first check after a build ran from source
+(`D…`), the next from the image (`F`): every fingerprint differed. After an edit the image is
+stale, so the check runs from source (`D…`) against a cache written from the image (`F`): every
+fingerprint differed again. The only pairing that matched was image → image, i.e. a second
+unchanged run. A comment in `project-check.blsp` described exactly this flip as the reason
+`nest run`'s pre-flight has its own manifest, and read it as the manifests' problem.
+
+Found on the way: `nest check FILE…` keyed the per-file manifest by the path AS SPELLED, so a
+relative listed path never matched the absolute key the whole check wrote — CI's explicit-list
+invocation re-checked every listed file every time.
+
+**Fix:** the image carries def sites (`boot/image.rs` `KIND_DEF_SITE`, a name-and-no-value
+entry like privacy); the fact is a function of the source tree whichever way a module arrived.
+On top of it, an unchanged project replays its recorded verdict without loading anything
+(ADR-382), and listed paths are absolutised at the door. Rig, release: unchanged `nest check` **154 s / 15 s → 0.12 s, 118 MB** (a replay); one-function edit **188 s → 40 s**, of which 33 s is the image rebuild and 2.7 s the check (1 file re-checked); `nest check` over three listed files 9.3 s with 0 re-checked (4 s materialise + 4.6 s lints — the lints still scan every file); the require-graph parse 2.9 s → 0.04 s.
+
+**Gate:** `crates/nest/tests/check_incremental.rs` — after a cold build the listed form reuses
+every verdict (`[check] reuse-test (0 to re-check)`), a leaf edit re-checks 1, a dependency's
+arity change re-checks 2 and reports the dependent's new warning. Sabotage: def-site entries
+not written → `8 to re-check`; replay key forced true → the stale, warning-free replay.
+
+**Lesson:** a cache that "works" on the second identical run and nothing else reads as
+working in every quick check. Measure the transition the user actually makes — build → check,
+edit → check — not the steady state.
+
+## KI-178 — the JIT's inline `pair?` answered `false` for a range and a seq-view ✅ FIXED 2026-09-21
+
+**Seen:** with runtime contracts armed (ADR-381), a micro-benchmark's `(into [] xs)` over
+`(def xs (range 100))` ran 1 999 times and then raised `into: argument 2 expected seqable,
+got :pair (…)` — `type-of` itself calling the value a pair. A probe loop counting the wrong
+answers of `(pair? xs)`, `(list? xs)` and `(or (list? xs) (vector? xs))` over 20 000
+activations read 9 631 / 19 476 / 19 475 wrong on the JIT and 0 / 0 / 0 under
+`BROOD_NO_JIT=1`; the installed `brood` on `PATH` (`f67dd4c8`) agreed, so this was on
+`main` since the lowering was written.
+
+**Cause:** `PrimOp1::IsPair` (`jit_lower/prim.rs`) compared the operand's discriminant
+byte to `TAG_PAIR` (9). `Value::Range` is 11 and `Value::SeqView` is 12; both are `pair` to
+the language — `tag()`, `type-of`, and the native `pair?` (`Pair | Range | SeqView`) all say
+so — and the comment beside the lowering claimed they "also carry TAG_PAIR". The
+`type_of_kw_table` path (`TypeIs`, `type-of`) goes through `tag()` and was right; only the
+inline compare was wrong, so `(= (type-of x) :pair)` and `(pair? x)` disagreed in native
+code.
+
+**Fix:** `TAG_RANGE`/`TAG_SEQVIEW` in `jit_layout`, pinned by `value_layout_is_stable_for_the_jit`
+beside `TAG_PAIR`/`TAG_VECTOR`; the lowering ORs the three compares.
+`tests/jit_pair_predicate_test.blsp` runs the probe on every tier and requires zero wrong
+answers (19 841 on the unfixed binary).
+
+**Lesson:** a comment is not a layout pin. Every discriminant a lowering compares against
+must be a named constant the layout test asserts — `TAG_PAIR` was, and the two bytes the
+comment waved at were not.
+
+## KI-177 — the default crash reporter was fed every `exit :kill` and fell behind without bound ✅ FIXED 2026-09-21
+
+**Seen:** the same probe, counting allocator armed: ~180 B of live bytes accruing per KILLED
+process, round after round (290 → 496 → 690 → 813 B/proc over four rounds of 100k), none
+for a normal exit, none with `BROOD_NO_CRASH_REPORT=1`. `%mailbox-size` on the reporter:
+91 714 queued after round one, 165 000, 237 873, 309 458.
+
+**Cause:** `sysmon::emit_exit` filtered only `:normal` from the `:exit-abnormal` selection,
+so every `exit :kill` — the reason a supervisor tears a subtree down with — built a
+`[:system :exit pid :kill]` and delivered it to the reporter, which read it and discarded it
+(`crash-report-crash?` says `:kill` is not a crash) at ~14 µs a message. The parent killed
+100 000 children in 80 ms; the reporter never drained faster than the next round refilled it.
+The subscription's doc said the filter ran "before any message is built" — for `:normal`
+it did.
+
+**Fix:** `is_clean` mirrors the reporter's table (`:normal`, `:kill`/`:killed`,
+`:shutdown`, `[:shutdown x]`), so `:exit-abnormal` means a CRASH and a deliberate exit costs
+one relaxed load. A `:exit` subscriber still sees every exit. Backlog 0 on every round, live
+bytes flat. `tests/sysmon_test.blsp` pins both halves (sabotage-verified: the old
+`:normal`-only filter reports the kill first).
+
+**Lesson:** a "leak" measured in live bytes can be a mailbox. Read `%mailbox-size` on every
+long-lived subscriber before reading the allocator.
+
+## KI-175 — the checker seeded a fold callback's accumulator from the fold's result, losing `init` ✅ FIXED 2026-09-20
+
+**Symptom.** `nest check --strict` on `fold-for`'s docstring example — `(fold-for (best nil
+x [3 9 4]) (if (or (nil? best) (> x best)) x best))`, which expands to a `fold` seeded with
+`nil` — reported `nil?: this can never be true — best is 3 | 4 | 9`. The same on a bare
+`(fold [3 9 4] nil (fn (b x) (if (or (nil? b) (> x b)) x b)))`, in PLAIN mode: a false
+positive, the one class the checker's invariant forbids (ADR-123/124).
+
+**Cause.** `walk::calls::fold_callback_seed` typed the callback's accumulator parameter as
+`expr_ty(form)` — the type of the whole fold. The fold RESULT rule (`infer.rs`) is right to
+drop `init` over a provably non-empty input: the step ran, so the result is a step result.
+But the accumulator the callback is HANDED includes `init` on the first step, whatever the
+input's length. The two questions were answered with one type.
+
+**Fix.** The seed is `init ∪ result` for the with-init `fold`/`reduce`, and `first element
+∪ result` for the no-init `(reduce coll f)`. Every other consumer of the result type is
+unchanged.
+
+**Guards.** `closure_inference::a_fold_callbacks_accumulator_is_handed_init_on_its_first_step`:
+the `nil` seed is quiet; the same guard over a `0` seed still reports `nil?` as dead (the
+finding stays a finding); the no-init `reduce` is quiet. Sabotage (seed from the result
+alone) reds the first. One strict finding the fix uncovered was the checker being right —
+`linmap_soundness_test`'s `lm-fold` is called with the seed `5` on purpose by one assertion,
+so the caller-derived `seed` includes `5` and the `assoc` in its callback can see it; opted
+out with `check-allow :type-mismatch` beside its sibling.
+
+**Lesson.** "What does this expression evaluate to" and "what is this parameter handed"
+are different questions when the first excludes a case the second must include.
+
+## KI-174 — the JIT fast-frame's debug cross-check fired on a rebind between the IR's epoch load and the callback ✅ FIXED 2026-09-20
+
+**Symptom.** CI run 35532017776 (`b63401d7`, 2026-09-20): `test` red on ONE case,
+`concurrency_race::fanout_with_concurrent_global_rebind_matches_serial`, aborted with
+`fast-link mirror desynced from the call IC (site 0, head 2160): mirror=(code=…, nslots=3,
+env=0xffff…, bases=(0, 0)) auth=None — the IR's epoch+sym+argc guard should make this
+unreachable` from `jit_dispatch_fast_frame` (`link.rs:521`), a `debug_assert!` inside a
+`panic in a function that cannot unwind` — so SIGABRT. Twelve local runs passed; the race
+needs the runner's interleaving. The commit under test changed two `seq.blsp` declarations.
+
+**Cause.** A TOCTOU in the cross-check, not in the mechanism. JIT'd code validates a call
+site's flat mirror (`FastLink`) against the global epoch with a raw load, then calls
+`brood_rt_fast_frame` → `jit_dispatch_fast_frame`, which read `heap.global_epoch()` AGAIN and
+asked `vm_call_ic_fast_link` at that epoch. The test rebinds a global from other workers
+while the fan-out runs; a `def` landing between the IR's load and the callback bumps
+`code_epoch`, the probe answers `None` for the new epoch, and a mirror that was valid when
+the IR read it is reported as desynced. The release path is unaffected —
+`jit_run_fast_link` re-validates against its `epoch` and falls through to the slow path on
+a move; that is the documented "IC moved under us" outcome.
+
+The check was also weaker than it read: `vm_call_ic_fast_link` reads the mirror FIRST, so
+probing through it compared the mirror with itself and reached the authoritative
+`CallIcEntry` only when the epoch had moved — exactly when the comparison was wrong.
+
+**Fix.** `debug_check_fast_link_mirror` (`link.rs`): compare the mirror against the fat
+entry — `fast_link_from_entry`, the authoritative half factored out of the probe, publishing
+nothing — at the mirror's OWN epoch (`vm_fast_link_epoch`). A `None` there is legitimate
+exactly when the entry's epoch has moved past the mirror's (`vm_call_ic_entry_epoch`) or the
+slot was cleared; an entry at the same epoch that the rules refuse is still a desync.
+
+**Guards.** `link::tests::mirror_check_tolerates_a_rebind_between_the_irs_load_and_the_callback`
+rebuilds the race's state deterministically — tier a caller/callee pair until the site's
+mirror is published, `def` the callee (the epoch moves), run the check with the values the
+IR would hold — and must not fire; sabotage (probe at `heap.global_epoch()`, the old shape)
+reds it. `mirror_check_still_fires_on_a_real_desync` hands it a frame size the entry does
+not resolve to at the same epoch and must fire, so the check stays a check.
+
+**Lesson.** A guard that compares "what I read" against "what is true now" is only a guard
+under a lock; without one it must compare against "what was true when I read". And a
+cross-check that goes through the cache it is checking checks nothing.
+
+**Addendum (same day, `2c1e6cf4`).** The fix's second assertion — a mirror at epoch E whose
+entry at E does not fast-link — fired deterministically (4/4) on `jit::type_mixed_join_edges_
+stay_exact`: `code` deopts sixteen times in a row on its int/bool parameter and latches
+`BAILED`, while `work`'s site 0 still mirrors its old native. That is by design
+(`vm_fast_link_clear_site`'s doc: a demotion leaves the mirror, the old native is valid code
+that only deopts — the raw-load hit path never consults `jit_code`), and ADR-372's re-lowering
+(`jit_code` → null, then `QUEUED`) has the same shape for a shared arm's peers. The `None`
+branch now also accepts an entry whose arm has no installed native
+(`Heap::vm_call_ic_entry_native_installed`); the `Some` branch — a live entry disagreeing with
+the mirror — is untouched, so `mirror_check_still_fires_on_a_real_desync` still fires.
+Attribution note for the record: the same bug was diagnosed in parallel in another session
+(bumping the epoch inside `jit_dispatch_fast_frame` reproduced CI's message byte for byte on
+the first run; the first hypothesis, the ADR-372 relower desyncing peers' mirrors, was
+implemented and dropped because a stale mirror and a stale entry AGREE on the old code and so
+can never answer `None`); that fix passed `fl.epoch` down and was dropped at the merge in
+favour of this one, which compares against the entry rather than the mirror.
+
+## KI-173 — a module the pre-flight check loaded ran without the optimiser's source rewrites ✅ FIXED 2026-09-20
+
+**Symptom.** Two stdlib images of the SAME std, written by two processes, disagreed with the
+checker: `debug/hits` read `(map any number)` under an image `brood build.blsp` wrote and
+`(or map table)` under one `nest test` wrote (the writer differential, 2026-09-20). The
+images differed in size (3 927 195 vs 3 948 977 bytes), and `BROOD_LINMAP=0` wrote a
+3 525 629-byte one — the `brood`-written image sat between "rewritten" and "unrewritten".
+Then, on the source path with no image at all: `seq/frequencies` over 750k keys took
+**860 ms** under `brood file.blsp` and **343 ms** with `BROOD_NO_CHECK=1`, and 920 ms with
+the rewrite switched off.
+
+**Cause.** `macroexpand_all` applies three semantics-preserving source rewrites (ADR-360
+§6/§7: the tally, the pipeline fusion, the counted range loop). The checker holds
+`NoSourceRewrites` so it reads the file under check as the author wrote it — but it holds
+it across `macros::compile`, which is also what infers and performs the file's `require`s
+(ADR-227), and the transitive scan (ADR-340) loads more from inside the same check. Every
+module those loads brought in was expanded WITHOUT the rewrites, stayed loaded, and the
+program then ran the unrewritten bodies. `stdimage/build` from such a process captured
+them, and every later run that installed that image ran them too.
+
+**Fix.** The loader holds the inverse guard, `SourceRewritesOn`, in `load` and
+`%load-module-source` (`builtins/evaluation.rs`): a module's bodies are the runtime's,
+whoever triggers the load. That makes the loaded `frequencies` body the rewritten one in
+every process — whose out-of-fold shape `(if (= :table (type-of R)) (%table-snapshot R) R)`
+the checker typed as `map | table`. So `guards::type_of_eq_guard` now reads
+`(= :tag (type-of x))` as the type guard it is (both branches; the tally rewrite spells the
+test through `type-of` because it is a total PrimOp1), and `debug/hits` reads `map`.
+One precision residue: the source form gave `(map any number)`; the snapshot of the
+in-place table is `(map any any)`.
+
+**Guards.** `crates/lisp/tests/check_loads_run_rewritten.rs` — a check whose file names
+`seq/frequencies` loads `seq` (source path, own process), and the loaded closure's body
+must carry the rewrite's marker `%table-from-map`; sabotage (the loader guard removed)
+reds it. `crates/cli/tests/image_writer_differential.rs` — an image written by a `brood`
+that checked first and one by a `brood` that did not must give `reflect/file-signatures`
+the same answer over the modules that reach a rewritten body; the same sabotage reds it on
+`debug/hits` exactly as first seen. `scope_and_guards::a_type_of_equality_guards_like_the_predicate`
+pins the guard in both operand orders, the else-branch complement, and a keyword naming no
+tag.
+
+**Lesson.** A thread-local "mode" held across a call that can recurse into the loader is
+held by the loader too. `NoSourceRewrites` was documented as "the evaluator never holds
+one" — true, and beside the point: the checker holds it while the evaluator runs under it.
+
+## KI-171 — the checker's transitive materialisation was a no-op unless `BROOD_IMAGE_TRACE` was set ✅ FIXED 2026-09-20
+
+**Symptom.** None a gate saw — which is the entry. Ranking which names make a check load a
+module (2026-09-20), the trace run of `brood --check` on a `datetime`-using program named
+`math`, `os` and `reflect` as materialised, and the same run untraced materialised none of
+them. ADR-340's whole point — a loaded module's body inferred down to the leaf that
+declares its type, `buffer-current-line` reading `int` through `text/char->line` — had been
+off in every ordinary process since ADR-370 landed (eb7a0977, 2026-09-18): the checker read
+each loaded body up to its first unmaterialised qualified name and `any` below it.
+
+**Cause.** ADR-370 rewrote the scan from "collect module prefixes" to "collect names, skip
+the ones the footer types, load the rest", and wrote the load-set insert into the trace
+condition: `if trace && wanted.insert(module) && … { eprintln!(…) }`. `&&` short-circuits,
+so with the flag unset `wanted` stayed empty and the loop below it loaded nothing.
+
+**Why no gate saw it.** The one test of the scan (`tests/lazy_load_test.blsp` § ADR-370)
+observes the loads THROUGH the trace — its child runs with `BROOD_IMAGE_TRACE=1` — so it
+exercised the only configuration in which the scan worked. `nest::image_sigs_differential`
+compares the footer arm against `BROOD_NO_IMAGE_SIGS=1`, and both arms went through the same
+dead insert, so they agreed. The KI-150 measurements of 2026-09-18 ("13.2M after") were
+taken traced, and are therefore the cost of a scan that the shipped binary did not run.
+
+**Fix.** `types/check.rs`: `wanted.insert(module)` unconditionally; the trace prints beside
+it, now once per NAME rather than once per module, so the whole list of references that hold
+a load open is readable from one run (the tool the coverage work below needed).
+
+**Guard.** `check/tests/image_sigs.rs::transitive_scan_loads_without_the_trace`: a fixture
+module whose body names `table/get` — a result that is `any` by nature, so no declaration
+can ride for it and no curated entry stands in — loaded through `reflect/load`, then the
+scan called directly with the trace UNSET (the test refuses to run traced: traced, it would
+have passed against the bug). Sabotage-verified: with `if trace { wanted.insert(module) }`
+restored it fails on `the transitive scan did not load table`. The first shape of this guard
+used a std edge (`json` → `reflect`), which the same session's curated-skip removed; a
+planted edge is the point.
+
+**Lesson.** A trace flag must never be on the path of the thing it traces. And a
+differential whose two arms share the broken code agrees on the broken answer — the
+`lazy_load_test` case is now documented as observing the traced path, which is what it does.
+
+## KI-170 — a direct `reflect/load` of a module file could leave the module LOADED WITH NOTHING BOUND, permanently ✅ FIXED 2026-09-20
+
+**Symptom.** A spawned child dying `unbound symbol: set` (`.brood_crash_dump`, 2026-09-20
+14:12 UTC) in a `brood_suite_passes` run under load, with `[refer] (:use set) imported
+NOTHING — no public set/ global is bound; *features* lists it: true` beside it; `sexp` and
+`sse` the same shape in the same run. The end state KI-119 and KI-120 both landed in, on a
+tree carrying both fixes — so a third mechanism.
+
+**Cause.** The window between a module's *provide* and its *definitions*. `defmodule`
+`provide`s the file's feature key at the TOP of the file when no `require` is driving the
+load (`%defmodule-provide`, `std/prelude/tools.blsp` — under `require-one` the key waits for
+`%require-force`, precisely because this window was once how a concurrent requirer slipped
+through). A file reached by a DIRECT `(reflect/load …)` — a test file loaded by the runner,
+a `load` from a REPL or a tool — ran inside neither the staging frame (ADR-344) nor the load
+journal (ADR-339/KI-134): each `def` landed in the live table one write at a time,
+journalled by nobody. So a globals snapshot taken by a concurrent `%isolate` between the
+provide and the definitions recorded the module as **loaded with nothing bound**, and the
+restore that followed made it permanent — the provide was in the saved table, the
+definitions came after it and nothing replays them, and `require-one` short-circuits on
+`*features*`, so the one path that could repair the module is exactly the one that
+declines to. Every later `(:use m)` imports nothing; every bare use dies `unbound symbol`
+in whichever process reaches it, far from the cause.
+
+**Fix.** `builtins/evaluation.rs` `load`: when the file's first form is a `defmodule`, the
+load runs inside `enter_journalled_load` / `publish_module_load` (or
+`discard_module_load` on a throw) — the frame `require-one` already gives a required
+module. Everything the file defines and registers publishes in ONE write, so no snapshot
+can fall between the provide and the definitions, and the batch is journalled, so a
+concurrent restore replays it instead of discarding it. Only a file that declares a module
+gets the frame: a plain script has no feature key, nothing to be half-published, and
+staging its defs would change when another process can see them. Frames stack, so a module
+that `require`s another mid-load is unchanged.
+
+**Guard.** `crates/cli/tests/load_provide_window.rs`: a module whose definition arrives
+700 ms after its provide, loaded from a spawned process while the driver runs an
+`%isolate` across that window; the invariant asserted is the one every caller relies on —
+if `*features*` lists the module, its names are bound. Sabotage-verified: with the frame
+removed the test prints `features=true bound=false`. The same race driven through
+`require-one` is the control in the same test: it must come out consistent either way,
+which is what says a failure of the direct case is the window and not a sleep that fired
+in the wrong order.
+
+**Lesson.** Two load paths, one contract. `require-one` was hardened three times
+(ADR-339, ADR-344, KI-134) and each time the direct load kept "the immediate provide it
+always had" — documented in the code as the harmless case, because no requirer was in
+flight to race it. The racer was never a requirer; it was `%isolate`'s snapshot, which
+races every unjournalled write in the runtime.
+**Addendum, the same evening — the frame broke two gates on landing, both fixed and pinned
+(`crates/nest/tests/direct_load_frame.rs`, sabotage-verified each way).** (1) The journal
+replayed the file's own defs over its OWN isolate's restore, so every test file's top-level
+def leaked into the next (`nest::named_files_scoped`, `bare_names_test` — red on
+`c8c58c41`). A direct frame's journal entries carry a `direct` tag now: replayed for a
+bystander's restore (the window this entry closes), discarded — and dropped from the
+journal, or a later bystander restore would resurrect them — by the loading isolate's own;
+a `load` reached from inside a `require`'s frame is that require's and stays a runtime-wide
+fact. (2) A staged REGISTRY op bumped `version` but not `code_epoch`, so a compiled arm that
+had read the registry through a `GlobalIc` kept serving the earlier map — the second
+`defmulti` of `multimethod_test.blsp` was invisible to its `defmethod` ("no `(defmulti
+mm-cmp …)` is in scope"), deterministic through the scoped runner and latent for any
+`require`d module of that shape. The staged registry branch bumps the code epoch as the
+staged define branch already did.
+
+## KI-172 — `spawn` then `monitor` on a child that dies at once: the monitor delivers `:noproc`, and five tests waited 20 s for a reason that never came ✅ FIXED 2026-09-20
+
+**Symptom.** `brood::suite` failed try 1 of a full `make test` (passed on retry, nextest
+`FLAKY`): `tests/try_catch_test.blsp:455` "a crash escaping a finally in a process is the
+original reason" — `expect: :timeout` after the full `*test-wait-ms*` (20 s), the suite's
+slowest test that run.
+
+**Cause.** The test did `(spawn (try (error …) (finally nil)))` and THEN `(monitor p)`.
+Under a loaded suite the child ran and died before the parent's `monitor` call, and a
+monitor on a dead pid delivers `[:down m p :noproc]` (Erlang's `noproc`, and the right
+answer — reproduced deterministically with a 300 ms wait between the spawn and the
+monitor), which the pattern `[:down ^m _ [:error e]]` does not match. Not a runtime defect:
+a test that measured the scheduler's ordering. `tests/chaos_test.blsp` had the same shape
+four times (`(spawn nil)`, `(spawn 42)`, two crashing bodies), each a latent 20 s flake.
+
+**Fix.** `spawn-monitor` in all five — the prelude's atomic form establishes the monitor
+before the child can run. Other spawn-then-monitor pairs in the suite park the child on a
+`receive` or an `ex-*` loop first, or observe through a system monitor subscribed
+beforehand, and are not exposed.
+
+## KI-196 — an eval'd `def` made its bare name "known" in every namespace for the rest of the process ✅ FIXED 2026-09-29
+
+**Seen:** building `reflect/undef` (ADR-391), a test evaluated
+`(reflect/eval-string "(defmodule undef-shadow) (defn map (xs f) :shadowed) …")`, removed
+`undef-shadow/map`, and then `(reflect/eval-string "(defmodule undef-fresh) (map [1 2] inc)")`
+— a module that never defined `map` — raised `unbound symbol: undef-fresh/map`. Reproduced
+on `main` with no removal involved: `(defmodule sticky-a) (defn map …)` through one
+`reflect/eval-string`, `(defmodule sticky-b) (map [1 2] inc)` through the next →
+`unbound symbol: sticky-b/map`.
+
+**Cause.** The resolver adds every `def` head it qualifies to the process's
+`ns_known_names` (`add_ns_known_name`, so a macro-generated definition's self-reference
+qualifies). A file load brackets that set with its own pre-scan; the inheriting eval paths —
+`reflect/eval-string` without `reset_ns`, and `reflect/eval` — did not, so the addition
+outlived the call. The set is not keyed by module (`activate_ns_region` switches it only for a
+module a FILE pre-scanned), so the name stayed "known" in every namespace the process
+evaluated in afterwards, and the resolver's first test — `ns_knows_name` — qualified it.
+
+**Why it survived.** Every eval-string test defines names no later evaluation references
+bare, or references them only in the same module, where the qualification is right. It took
+a module shadowing a ROOT name (Zubr's rolled-back `map`) and a second module using the root
+name, in one process.
+
+**Fix.** `eval_string_inner` (inheriting path) and `eval_builtin` save the caller's set and
+put it back after the call. Nothing needs the addition afterwards: a name the call defined is
+bound by then, which is the evidence the resolver reads.
+
+**Guard.** `tests/eval_vm_test.blsp` "an eval'd definition does not leak its bare name into
+other modules (KI-196)" — both cases (through `reflect/eval-string`, and form by form
+through `reflect/eval`) red with the restores removed (2 of 17 fail), green with them.
+
+## KI-197 — a quasiquote chain built at runtime overflowed the native stack ✅ FIXED 2026-09-30
+
+**Seen:** the 2026-09-30 robustness review evaluated constructed forms through `reflect/eval`
+(the reader caps source nesting at 256 levels, so a constructed form is the only way past it).
+`(reflect/eval (fold (range 0 3000) 1 (fn (acc i) (list 'quasiquote (list 'unquote acc)))))`
+printed `thread '<unknown>' has overflowed its stack` / `fatal runtime error: stack overflow,
+aborting` — exit 134, nothing in `.brood_crash_dump` (a SIGSEGV leaves none). Depth 300
+answered `1`, the right value.
+
+**Cause.** Two Rust walkers in `eval/macros.rs` recursed once per level with no bound:
+`has_autogensym` (does the template contain an `x#`?) and `expand_qq_rec`, the compile-pass
+rewrite of an autogensym-free `quasiquote` into builder code, whose `~x` case re-entered
+itself on the unquoted form. The expansion walk (`macroexpand_all_depth_step`) carries the
+256-level cap, but it never descends into a `quasiquote` template, so these two saw the
+whole chain. `has_autogensym` also recursed along a list's *cdr*, so a long flat template
+was a deep one to it.
+
+**Why it survived.** The reader's cap made every literal template shallow, and the cap test
+(`parser_rejects_deeply_nested_input_instead_of_overflowing`) is a reader test. No test
+evaluated a constructed form deeper than the reader allows.
+
+**Fix.** Both walkers take a depth and stop at `MAX_DEPTH`. The rewrite leaves a form it does
+not reach alone — it is an optimisation, and the evaluator expands a `quasiquote` it meets
+one level per tail-loop turn, which is why depth 3000 already answered correctly once the
+walkers stopped crashing. `has_autogensym` answers `false` past the cap (a template that deep
+cannot expand — `qq_elem` refuses it — so the answer only chooses which path reaches that
+error) and walks a list's spine in a loop.
+
+**Guard.** `tests/robustness_limits_test.blsp` "a quasiquote chain built at runtime": 3000
+and 100 000 levels evaluate to `1`, a 200 000-element flat template costs no depth, and
+auto-gensym still takes the runtime path. Sabotage-verified: with either cap removed the file
+aborts (exit 134).
+
+## KI-198 — a self-expanding macro defined and used in one form hung the evaluator ✅ FIXED 2026-09-30
+
+**Seen:** `(reflect/eval '(do (defmacro mm (x) (list 'mm x)) (mm 1)))` never returned (killed
+at the 20 s timeout, no output). The same macro at top level, used in the NEXT form, raised
+`macro expansion did not reach a fixpoint after 256 rounds` as designed.
+
+**Cause.** The compile pass expands macros before evaluation, bounded by `MAX_EXPAND_ROUNDS`
+— but `mm` did not exist when the `do` was walked, so `(mm 1)` reached the evaluator as a
+call whose head turned out to be a macro. That lazy path (`eval.rs`, the `ValueRef::Macro`
+arm) applied the expander once and `continue 'tail`ed with the result, which was the same
+call, forever. The comment on `macroexpand` even names the shape and the cap; the runtime
+path never got one.
+
+**Why it survived.** Every lazy-expansion test uses a macro that terminates. A
+self-expanding macro is a bug in user code, and the compile-time cap answered the one
+spelling anyone tried.
+
+**Fix.** `eval` counts consecutive lazy expansions against `MAX_EXPAND_ROUNDS` (now
+`pub(crate)`), with the same message as the compile-time cap. The counter resets whenever a
+closure body is entered, so a tail-recursive loop that passes through a lazily expanded
+macro on every iteration — one expansion per closure entry — is never charged for its
+iterations (guarded: a 100 000-iteration loop through a same-form `defmacro`).
+
+**Guard.** `tests/robustness_limits_test.blsp` "a macro that expands to itself, defined and
+used in one form" — sabotage-verified: with the increment removed the case hangs to the
+timeout.
+
+## KI-199 — one call could eat the machine: `math/pow` and `repeat` died with an allocation failure ✅ FIXED 2026-09-30
+
+**Seen:** `(math/pow 2 100000000)` → `memory allocation of 331368 bytes failed`, exit 134,
+under the 16 GB address-space cap — for a result that is 12.5 MB. `(repeat 100000000000 :x)`
+the same. Neither is a `LispError`; `try` cannot see an allocator abort.
+
+**Cause.** `pow-acc` multiplied linearly: a hundred million products of a bignum that grows
+by one bit each step, quadratic time and — on the runtime's allocator, between safepoints —
+memory to match. `repeat` consed the whole list with no ceiling, where a range realised past
+`MAX_REALISED_RANGE` (2^26) has been refused as a catchable error since the range work.
+
+**Why it survived.** `pow`'s tests use small exponents; the bignum tests use `bit/shift-left`,
+which has had a shift cap since the bitboard work. Nothing asked what a large exponent costs.
+
+**Fix.** `pow-acc` is exponentiation by squaring (`(math/pow 2 100000000)` is 27
+multiplications and equals `(bit/shift-left 1 100000000)`); the square is taken only while
+another round needs it, so the last step never builds twice the answer. `%pow-check-size`
+refuses, before any multiplication, a result estimated past 2^27 bits — the shift cap, so
+the two spellings of 2^n agree on what is too big — from `(* exp (log2 |base|))`, with 1024
+bits as the floor for a base already past f64. `repeat` refuses past 2^26 elements.
+
+**Guard.** `tests/robustness_limits_test.blsp` "math/pow" (the shift equality, odd/even/
+negative/float/reciprocal exponents, a bignum base, and the two refusals) and "repeat".
+Sabotage-verified: with the linear product restored the `2^100000000` case aborts; with the
+`repeat` ceiling raised, the same.
+
+## KI-200 — a deep pattern asked for gigabytes before the expansion cap could refuse it ✅ FIXED 2026-09-30
+
+**Seen:** `(reflect/eval (list 'match [1] (list <100 000-level vector pattern> 1) '(_ 2)))` →
+`memory allocation of 6442450944 bytes failed`, exit 134. Measured on the way there: depth
+250 0.26 s / 118 MB, 500 0.87 s / 187 MB, 1000 3.4 s / 427 MB, 2000 13 s / 1.4 GB — and
+every one of those ended in `macro expansion nested too deeply (max 256 levels)`, the cap
+doing its job on the code the pattern compiler had produced, after the work.
+
+**Cause.** The pattern compiler (`std/prelude/match.blsp`) walks the whole generated code
+per clause (`%match-count-sym`, to decide how to splice the fail continuation) and the
+whole pattern per level (`%pattern-vars`, threaded as `bound`), so lowering is quadratic in
+the pattern's depth. The 256-level cap is checked on the *output*, so the quadratic work
+runs first.
+
+**Why it survived.** Real patterns are a few levels deep, and the reader keeps a literal
+under 256. Depth 100 costs 0.1 s, which no test would notice.
+
+**Fix.** `%match-compile-clause` — the one entry every lowering surface reaches (`match`,
+`fn` params, destructuring `let`, `receive`) — refuses a pattern deeper than 128 levels
+before lowering it, with a walk that stops descending the moment it is past the cap (so the
+check is O(min(depth, cap)), and plain recursion rather than `any?`, which lives in a later
+prelude file than `match`). The quadratic walks are unchanged: at 128 levels they are cheap,
+and past it they never run.
+
+**Guard.** `tests/robustness_limits_test.blsp` "a pattern nested past the lowering cap" —
+all four surfaces, a map pattern (walked through its values), and depth 100 still lowering.
+Sabotage-verified: with the check disabled the `match` case aborts.
+
+## KI-201 — `math/sqrt` of a bignum past f64's range answered `inf` ✅ FIXED 2026-09-30
+
+**Seen:** `(math/sqrt (math/pow 10 400))` → `inf`. The root is `1e200`.
+
+**Cause.** `%f64-sqrt` coerced through `num_to_f64`, which answers `inf` for a bignum past
+f64's range, and `inf.sqrt()` is `inf`. A silent wrong answer: no error, no test.
+
+**Fix.** For a `BigInt` wider than 1000 bits the primitive factors out an even power of two
+— sqrt(m · 2^2k) = sqrt(m) · 2^k — sizing `m` to fit a double, so the result is f64-exact
+wherever f64 can hold it; past 2^2048 the honest float answer is still `inf`.
+
+**Guard.** `tests/robustness_limits_test.blsp` "math/sqrt of a bignum" — sabotage-verified
+(`inf` returns with the branch disabled).
+
+## KI-202 — four messages read `math/max` where they meant `max`, and three diagnostics named the wrong thing ✅ FIXED 2026-09-30
+
+**Seen:** `macro expansion nested too deeply (math/max 256 levels)`, `quasiquote template
+nested too deeply (math/max 256 levels)`, `bit/shift-left: shift amount … too large (math/max
+134217728)`, `->fixed: decimal places … too large (math/max 1000)`. And: `(sleep 0.5)` →
+`receive: timeout must be an integer (milliseconds) or nil`; `(receive :after 0 :t)` (the
+Erlang spelling) → `first: expected list, vector, set, map or bytes, got keyword (:after)`
+from `%receive-prep`; `(string/substring "abc" 0 (math/pow 2 70))` → `string/substring:
+expected int, got int (1180591620717411303424)`.
+
+**Cause.** The `max` → `math/max` rename wave rewrote the English word inside format
+strings; `crates/lisp/tests/basic.rs` pinned the reader's copy whole for exactly this reason
+(its comment names the wave) and the other four were never pinned. `sleep` is a `receive`
+with a timeout and did no checking of its own. `receive`'s clause walk assumed every clause
+is a list. `expect_int` rejects a `BigInt` through the generic wrong-type error, and a
+bignum's tag name is `int`.
+
+**Why it survived.** A corrupted message breaks nothing — the error is still raised — so a
+`contains("nested too deeply")` test stayed green. The other three are true statements about
+the wrong layer.
+
+**Fix.** The four strings repaired; `sleep` checks for a non-negative int or nil and names
+itself; `%receive-check-after` names a non-list clause and the `(after ms body…)` spelling;
+`expect_int` says "expected an int in the 64-bit range, got N" for a bignum.
+
+**Guard.** `tests/robustness_limits_test.blsp` "diagnostics that named the wrong thing" —
+each message pinned whole. Sabotage-verified: each old message returns with its fix reverted.
+
+## KI-203 — the checker panicked on a comparison against `i64::MAX` ✅ FIXED 2026-09-30
+
+**Seen:** the run pre-flight over a probe file printed `thread 'brood-main' panicked at
+crates/lisp/src/types/check/guards.rs:1430:56: attempt to add with overflow`, caught by
+`check_forms`'s catch_unwind and reported as a crash. Reproduced with one line:
+`(defn f (x) (if (<= x 9223372036854775807) :a :b))` — under `brood --check`, a plain run
+(the pre-flight), and `reflect/check-string-structured`.
+
+**Cause.** `comparison_facts` narrows the else branch of `L ≤ R` to `L ≥ R.lo + 1`; with
+`R.lo = i64::MAX` that is an overflow, a panic in a debug build and a wrapped bound in
+release. The then branch, the strict forms and the index-offset fact (`k - 1`) have the
+same shape at the other end.
+
+**Why it survived.** No test compared against the ends of `i64`; the narrowing tests use
+small literals.
+
+**Fix.** The four bound adjustments and the index offset saturate.
+
+**Guard.** `tests/robustness_limits_test.blsp` "the checker's comparison narrowing at the
+ends of i64" — sabotage-verified: with `lo + back` restored the check panics and the
+structured result carries one crash entry, so the count-is-zero assertion fails.
+
+## KI-204 — a value nested past 256 levels could not be sent, stored in a table, or tallied ✅ FIXED 2026-09-30
+
+**Seen:** `value nested deeper than 256 levels (cannot serialise)` from `send`, from
+`table/put`, and — the surprising one — from `seq/frequencies` over deep keys: its fold is
+rewritten to build in a table (ADR-360 §6), so the pure `assoc` code the user reads worked
+and the rewrite's table path raised. A persistent stack built as `[x acc]` was unsendable
+at 300 elements.
+
+**Cause.** `MAX_MESSAGE_DEPTH = 256` was a stack-safety bound: `to_message_rec`,
+`from_message`, `copy_cross_heap_rec`, `message_fits`, the wire codec and the derived
+`Clone`/`Drop` of `Message` all recurse once per level, and the dist threads run on a
+2 MiB stack. The bound was honest about that and low for the language, whose values
+(built at runtime, `def`'d, compared, hashed, printed) have no such limit — every one of
+those walkers already grows its stack.
+
+**Fix (ADR-394).** `process::grow` (`stacker::maybe_grow`) at every container step of
+every walker, on both sides of the wire; a hand-written `Clone` (containers grow) and an
+iterative `Drop` (children are moved into a worklist before any is freed); the cap is now
+`1 << 20`, a sanity bound on a runaway structure. The test-only by-value matches the manual
+`Drop` forbids were rewritten by reference.
+
+**Guard.** `message::depth_tests` (a million-deep message clones, is measured by
+`message_fits` and drops on a 2 MiB thread; every container kind) and
+`wire_tests::a_deeply_nested_message_round_trips_on_a_small_stack` (200 000 levels through
+the codec on a 2 MiB thread) — sabotage-verified: with the `Clone` growth removed the test
+process aborts with `has overflowed its stack`. `tests/adversarial_test.blsp`'s two send
+tests, which pinned the refusal, now round-trip 100 000-deep values, and
+`tests/robustness_limits_test.blsp` "a value nested past 256 levels crosses a send and a
+table" covers `send`, a table key and value, and `seq/frequencies`.
+
+## KI-205 — `%map-into` accepted a malformed entry ✅ FIXED 2026-09-30
+
+**Seen:** `(into {} [[1]])` → `{1 nil}`; `(into {} [[1 2 3]])` → `{1 2}`.
+
+**Cause.** `pair_kv` read an entry with `first`/`second` semantics — a missing slot was
+`nil`, an extra one was ignored — so a malformed entry made a map silently.
+
+**Fix.** An entry is exactly two items (a vector or a list), else
+`%map-into: expected a [key value] entry, got …`. `zipmap` and `select-keys` share the
+hook and are unaffected: they build well-formed entries.
+
+**Guard.** `tests/robustness_limits_test.blsp` "a map entry must be a [key value] pair" —
+sabotage-verified (the lenient read restored: `{1 nil}` again).
+
+## KI-206 — a silent `sig`, and five diagnostics that named the wrong layer ✅ FIXED 2026-09-30
+
+**Seen:** `(sig f 5)` and `(sig f "int")` raised nothing — the spec was registered and
+the checker, which warns on an unknown type NAME, had no name to read. `(string/format "%d"
+1.5)` → `"1.5"`; `(string/format "%99999999999s" "x")` → `range too large to realise`;
+`(json/decode "1e999")` → `inf`, which `json/encode` refuses; `(math/mod 5.5 2)` →
+`rem: expected int`; `(http/fetch "")` → `%tcp-connect: expected string, got nil`;
+`(count identity)`, `(map 5 inc)` → `empty?: expected collection`.
+
+**Fix.** `sig` refuses a spec that is neither a list nor a symbol (a type name or alias)
+at the declaration, with `if`/`%eq` only, since it expands before `cond` exists. `%d`
+takes an integer and names the column; a width past a million is refused by name.
+`json/decode` refuses a number that only overflows. `mod` checks its own arguments.
+`http/request` refuses a URL with no host. `count` names itself, and `seq` — the one
+entry `map`/`fold`/`filter` coerce through — refuses a scalar (an int, float, keyword,
+symbol, bool, fn, native, macro, ratio, decimal) by name; everything else still passes
+through it as before.
+
+**Guard.** `tests/robustness_limits_test.blsp` "a sig spec that is not a type",
+"string/format", "errors that named a layer the caller never wrote" — each sabotage-verified
+(every restored behaviour reds its own case, 2 + 7 failures across two rounds).
+
+## KI-207 — `reflect/eval` of a quasiquote inside a module qualified `unquote` ✅ FIXED 2026-09-30
+
+**Seen:** in a module file, `(reflect/eval (reflect/read-string "`[1 ~(+ 1 1)]"))` →
+`[1 (zzq/unquote (+ 1 1))]`; `(reflect/eval '(do (defmacro g (x) `(+ ~x 1)) (g 1)))` →
+`unbound symbol: zzq/unquote`. The same forms in the file itself, or at root, were fine.
+
+**Cause.** The eval path's resolver runs with `ns_assume_own` (KI-24): a bare name bound
+nowhere is taken to be this namespace's. `unquote`, `unquote-splicing` and a `#`-suffixed
+auto-gensym are bound nowhere by design — the quasiquote expander reads them by name — so
+they were qualified, and the expander no longer saw them.
+
+**Why it survived.** Every quasiquote test is in a file (the compile pass, no assume-own)
+or at root (no namespace). The REPL is the path that has both, and nobody had typed a
+`defmacro` with `~` into it inside a module.
+
+**Fix.** `is_template_marker` beside `is_syntax_keyword` in the assume-own branch.
+
+**Guard.** `tests/robustness_limits_test.blsp` "quasiquote through reflect/eval inside a
+module namespace" (the test file is a module) — sabotage-verified: the exemption removed,
+`[1 (robustness-limits-test/unquote …)]` returns.
+
+## KI-208 — `string/repeat` was quadratic and aborted at fifty million characters ✅ FIXED 2026-09-30
+
+**Seen:** `(file/spit path (string/repeat "x" 50000000))` → `memory allocation of
+2147483648 bytes failed` under the 16 GB cap. Measured before the fix: 1 M chars 0.6 s /
+624 MB, 5 M chars 2.8 s / 2.4 GB — ~500 bytes per character.
+
+**Cause.** `(apply str (map (range (max 0 n)) (fn (_) s)))`: an n-element list, then an
+n-argument `apply`. Every `string/pad-*` is built on it.
+
+**Fix.** Doubling in Brood (`%repeat-doubling`, O(log n) concatenations of O(n) total
+work): 5 M chars 0.26 s / 133 MB, 50 M chars 0.13 s / 375 MB. A result past a gibibyte is
+refused by name (the allocation it asks for fails as an abort, and the pads inherit it —
+`(string/pad-left "x" 1e11)` used to fail as `range too large to realise`).
+
+**Guard.** `tests/robustness_limits_test.blsp` "string/repeat" — sabotage-verified: with the
+old body the 50 M case aborts the file.
+
+## KI-209 — `file/walk-files` entered symlinked directories, walking a loop forty levels deep ✅ FIXED 2026-09-30
+
+**Seen:** a tree with `a/up -> ..` and `a/f` answered 42 paths, `/tmp/x/a/up/a/up/a/…/f`
+among them; the walk stopped only where the kernel refused a path with too many links
+(ELOOP), which `dir?` then read as "not a directory".
+
+**Fix.** A symlink to a directory is listed and not entered (`file/stat` once per entry,
+`:dir?` and not `:symlink?`), the way `find` without `-L` behaves.
+
+**Guard.** The same file, "file/walk-files and a symlink to a directory" — sabotage-verified
+(42 returns).
+
+## KI-210 — the reader's first line and its odd bytes ✅ FIXED 2026-09-30
+
+**Seen:** `#!/usr/bin/env brood` on line 1 → `parse error: '#' is a dispatch character`,
+so a script marked executable could not run. A file saved with a byte-order mark began
+with a symbol named U+FEFF. `a\0b` read as one three-character symbol. `"\u{D800}"` and
+`"é"` were reported as "an unknown letter escape like \d \w \s" — the regex-footgun
+message — rather than as a malformed `\u`.
+
+**Fix.** `Scanner::new` starts past a first-line `#!` (the line-start table already counts
+it, so positions hold); U+FEFF is trivia and a delimiter; a control character inside an
+atom is named (`control character U+0000 inside a symbol`); `read_string` names the escape
+it found (`\u`, `\x`, or the letter case). Verified on real files: a shebang script and a
+BOM-prefixed file both run.
+
+**Guard.** The same file, "the reader's first line and its odd bytes" — each case
+sabotage-verified (the BOM sabotage panics the reader outright).
+
+## KI-211 — abilities, imports and `node/connect` accepted the malformed silently ✅ FIXED 2026-09-30
+
+**Seen:** `(defability ZM (zm (self)))` — the `defn` spelling of the parameter list —
+registered an ability with no ops, so every `impl` of it registered nothing; a duplicated
+op was accepted and the second `defn` shadowed the first; `(impl ZA r1 (zb [x] 1))` for a
+`zb` that is not an op of `ZA` registered silently; `(:use math :only [zz-nope])` was
+accepted; `(node/connect nil)` said `string/length: expected string`.
+
+**Fix.** `%defability-check-specs` (every list in the form is an op spec except a
+`:derive-record` recipe; a non-vector parameter list and a duplicated op are refused by
+name); `%register-impl-check-arity` refuses a method that is not an op of a KNOWN ability
+(an impl ahead of its `defability` stays legal, ADR-172 late binding); `node/connect` checks
+its argument first. **The `:only` refusal was withdrawn the same day:** `%refer` refused a
+name the module did not define once the module was provided, and `nest`'s imaged start on
+a require cycle red on it — at refer time a module may be mid-load (a cycle), batched but
+not reached by the project loader (every sibling claimed in one journalled load), or
+provided by a project image whose bindings materialise on first use. `:only` resolves
+lazily by design, for exactly those three; the existence question belongs to the checker,
+which does not ask it yet (`brood --check` is silent on `(:use math :only [zz-nope])`) —
+an open follow-up, not a runtime check.
+
+**Guard.** The same file, "abilities and imports refuse what they used to accept silently"
+and "node/connect" — each sabotage-verified (`nil` returns for all three acceptances).
+
+## KI-212 — a dispatch could not exceed roughly 200 arms ✅ FIXED 2026-09-30
+
+**Seen:** `case` with 300 literal arms, `cond` with 300 clauses, `match` with 300
+patterns, `receive` with 200 clauses: `macro expansion nested too deeply (max 256 levels)`.
+The forms are FLAT in source — the reader's own 256-level cap is untouched — but each
+lowers to one nested `if`/`let` per arm.
+
+**Cause.** `MAX_DEPTH = 256` on the expansion walk, a stack-safety bound: the expansion
+step, `compile_node` and `emit_node` recurse once per level with no growth.
+
+**Fix (ADR-395).** The cap is 1024 (`MAX_EXPAND_ROUNDS` too, so a 900-deep chain of
+`and` expands); the three walkers grow their native stack (`stacker`, every 32 levels
+where a depth is carried, per compound form otherwise). Measured: 900 arms of every
+dispatch form and 900-deep `if`/`let`/`->`/`do` chains at all three tiers, under
+`BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, and a 900-arm `cond` source file through
+`brood --check`. On the 16 MiB worker stack the growth is a margin rather than the
+enabler (900 levels compile without it in a debug build); it is what makes the cap a
+bound on runaway expansion instead of a stack limit.
+
+**Guard.** The same file, "a dispatch with hundreds of arms" — sabotage-verified: with
+the cap back at 256, four cases red.
+
+## KI-213 — `demonitor` raced the death path's push, leaking a `[:down …]` past its flush ✅ FIXED 2026-09-30
+
+**Seen:** `tests/stream_test.blsp:344` "stream/next against a dead or silent producer › the
+monitor leaves no [:down] behind in the caller's mailbox" — red in two of four full
+`nest test` runs on 2026-09-30, green 60 of 60 alone under load. Its own comment recorded
+one earlier sighting. Reproduced on demand with the same shape (monitor a target that
+exits right after answering, receive, `demonitor`, flush with `(after 0)`, then look): **31
+leaked downs in 80 000 rounds** across 40 processes.
+
+**Cause.** `retire_pid_tail` takes the dead target's watchers under `MONITORS`
+(`take_target`), releases the lock — deliberately: nothing here delivers with a table lock
+held — and then `fire_down` pushes each down. `demonitor` in that window found no entry to
+remove (already taken), the flush found nothing queued (not yet pushed), and the down
+landed after. `demonitor`'s doc said "a down already queued is not recalled", which the
+flush handles; the in-flight case it did not name.
+
+**Why it survived.** The window is a few hundred nanoseconds on another thread; the shape
+needs a target that dies the instant it answers, and a watcher that demonitors the instant
+it receives. `stream/next` is exactly that, and only a full suite loads the box enough.
+
+**Fix.** The death path pushes the LOCAL downs while it still holds `MONITORS`
+(`fire_down_held`), so `take_target` and the pushes are one step to a `demonitor` on
+another thread: either the entry is still there and no down will ever come, or the down
+is already queued where the flush finds it. Safe to hold: `deliver` takes only the
+target's mailbox lock and a scheduler queue, and nothing takes those and then
+`MONITORS`; a remote down goes over the wire after the lock is released, and the NOPROC
+path in `add_monitor` still fires with it released. The test-only down-order probe
+(KI-183) reads from the guard in hand rather than re-taking the lock. **A first cut was
+wrong**: an in-flight mark that `demonitor` spun on (`yield_now`) passed every local
+test and then stalled crashing processes' deaths for 25 s in a loaded full suite
+(`sysmon_test`, `spawn_monitor_test` timing out) — a spinning scheduler worker under
+three concurrent suites; the atomic form has no wait at all.
+
+**Guard.** `crates/lisp/tests/demonitor_race.rs` — the 80 000-round shape evaluated as the
+ROOT process through `Interp` (0.5 s), asserting zero leaks; sabotage-verified: with the
+lock released between the take and the pushes it reports 150. Also
+`monitor::in_flight_tests` (a `demonitor` blocks while a holder of the lock is mid-push —
+a property of the design, not of the death path, so it survived the sabotage) and the
+Brood-level `tests/robustness_limits_test.blsp` "demonitor and a down in flight", which
+ran green under every sabotage inside the runner — the runner's own load hides the
+window — and is kept as a load test only. The lesson recorded here: a race guard must run
+in the shape that reproduced the race, and this one reproduced only as a script.
+
+## KI-214 — `brood-lsp` aborted on a `Content-Length` it could not allocate ✅ FIXED 2026-09-30
+
+**Seen:** `printf 'Content-Length: 99999999999\r\n\r\n{}' | brood-lsp` → `memory allocation
+of 99999999999 bytes failed`, exit 134. Every other malformed input in the same battery
+(garbage framing, bad JSON, a request before `initialize`, an out-of-range hover
+position, a 5 MB `didOpen`, a double `shutdown`) was a clean protocol error or a
+well-formed reply.
+
+**Cause.** `lsp_server::Connection::stdio()`'s reader allocates the declared length before
+reading the body. The crate is the transport; the cap has to be ours.
+
+**Fix.** `stdio_capped` in `crates/lsp/src/main.rs`: a reader thread parses the headers
+itself, refuses a `Content-Length` past `MAX_FRAME_BYTES` (64 MiB), negative, absent or
+unparsable as `InvalidData`, reads exactly the body and decodes the crate's `Message`;
+the writer thread and the `exit`-stops-the-reader rule mirror the crate's. The
+connection is `Connection { sender, receiver }` over two rendezvous channels, so
+`main_loop` is untouched.
+
+**Guard.** `frame_cap_tests` in the same file — a well-formed frame reads, a length past
+the cap (and one byte over it) is refused before the body is read, a missing, negative
+or unparsable length is refused. Deterministic.
+
+## KI-215 — `nest` entered a symlinked directory under `src/` ✅ FIXED 2026-09-30
+
+**Seen:** a project with `src/up -> ..` — `nest check`: `Building loop (202 files)` then
+a failure on `src/up/src/up/src/up/…`, forty levels of it.
+
+**Cause.** `project/collect-sources` recursed on `file/dir?`, which follows the link —
+KI-209's mechanism, in the project tool rather than `file/walk-files`.
+
+**Fix.** A symlinked directory is neither entered nor listed (`file/stat` once per entry).
+
+**Guard.** `tests/robustness_limits_test.blsp` "the project source collector and a symlink
+to a directory" — sabotage-verified: with the link followed again the phantom paths
+return and the assertion reds.
+
+## KI-216 — a return-checked contracted tail call keeps a frame per call ✅ FIXED 2026-10-03 (ADR-396)
+
+**Seen** (the 2026-10-02 type-system review): under `BROOD_CONTRACTS=1`, two functions
+declared `(sig ping (int -> keyword))` / `(sig pong (int -> keyword))` and calling each
+other in tail position pass at 1M levels and fail at 5M with a clean `recursion too deep`
+— the VM's `MAX_BC_FRAMES` (1 048 576). Unarmed, the same program is flat.
+
+**Cause.** A contract shim checks the declared result AFTER the original returns, so its
+call to the original cannot be a tail call: each level leaves one pending check behind.
+
+**What was fixed alongside it.** Two problems that looked like this one were not: the JIT's
+stack margin equalled `vm_apply`'s native reserve (512 KiB), so non-tail contracted
+recursion died near 4k levels where unarmed reaches 200k (the margin is now 1 MiB with a
+compile-time assert that it stays at least twice the VM's); and a shim declared `-> any`
+now calls the original in tail position, so mutual tail recursion through those is flat.
+Guard: `crates/cli/tests/contracts_mode.rs`
+`contracted_recursion_keeps_its_depth_and_its_tail_calls`, sabotage-verified both ways.
+
+**The fix, when it is wanted** — an ADR, not a patch: a VM frame kind that records a
+pending return check, collapsing into an identical check already directly beneath it
+(Racket's contract system does this). It is on the call path at every tier, so it needs
+`make ab-vm` as well as `make ab`.
+
+**Fixed 2026-10-03 (ADR-396) — without a new frame kind, and off the ordinary call path.**
+A suspended shim is already a pending-check frame; what was missing was a way to RECOGNISE
+one. The templates now wrap the call to the original in `(%contract-await ret …)`, which
+compiles to a `Prim2` mark: a frame whose resume point is that instruction is a shim about
+to check against `ret`, and `ret` is the operand directly below the callee's frame. Before
+calling, a shim asks `(%contract-tail? ret)` — a `Prim1` whose VM arm exits to the driver,
+the only code that holds the frame stack — and calls its original in tail position when
+the frame it returns into is such a mark with an `equal` type. Both ops keep a chunk out of
+the JIT subset, so shims stay on the VM while the originals tier. No instruction on the
+ordinary call path changed, so the `ab`/`ab-vm` gate this entry asked for does not apply;
+the contracted path pays one driver round trip per checked call.
+
+What it does not do: the tree-walker and a shim at the bottom of a nested run answer
+`false` and check as before (sound, not flat), and a collapsed chain's failure names its
+outermost function where the tree-walker names the innermost. Guard: `contracts_mode.rs`
+`return_checked_tail_calls_collapse_and_still_check` — 2M levels at tiers 1 and 2, a
+violation at the bottom of a chain, and both narrowing directions (`narrow` under `wide`,
+`outer` over `inner`), sabotage-verified both ways.
+
+## KI-217 — the nightly AddressSanitizer job was red for eight days and hid everything behind its first crash ✅ FIXED 2026-10-09
+
+**Symptom.** Nightly `AddressSanitizer (kernel tests)` failed every night from 2026-10-01:
+`ERROR: AddressSanitizer: stack-overflow` in `brood-<hash>` (`-p brood --lib`), unsymbolized.
+The test running was `dist::wire::tests::a_deeply_nested_message_round_trips_on_a_small_stack`
+— the only wire test that never printed `ok`; its 2 MiB thread was the overflowing T115.
+
+**Cause.** Every recursive walker calls `stacker::maybe_grow(red_zone, segment, …)`, a promise
+that the next step's frames fit in `red_zone`. That promise is about frame SIZES, which the
+build decides: ASan gives every local its own slot plus redzones. The wire decoder checks every
+32nd level, and 32 instrumented levels outran 64 KiB on a 2 MiB thread. Behind that crash, with
+it fixed, the same mistake in the checker: `seq_aware_call_ty` is 4 KiB in a release build and
+94 KiB under ASan — one frame past its 64 KiB red zone — which surfaced as a stack overflow, a
+TLS "unknown-crash", and once a SEGV in Cranelift's optimiser on the JIT thread, depending on
+which thread and test hit it. Separately, and in every build: a root thread's `RootCtxGuard`
+retires its pid from a TLS destructor and interns the exit reason; with the thread's symbol
+cache destroyed first, `intern` panicked ("cannot access a Thread Local Storage value during or
+after destruction"), the guard's `catch_unwind` swallowed it, and retirement stopped before
+`retire_pid_tail` — a monitor on that thread never got its DOWN.
+
+**Why it survived.** ASan is nightly-only and the job stops at its first failure, so after
+2026-10-01 nothing behind the decoder test ran under ASan at all. The TLS panic printed but its
+test passed — the panic was caught, and no test asserted what retirement does after the intern.
+
+**Fix.** `crate::stack::maybe_grow` is the one door to `stacker`: under `--cfg brood_asan` it
+raises every red zone to 1 MiB and every segment to 8 MiB; `clippy.toml` refuses a direct
+`stacker::maybe_grow`. `intern` and `symbol_hash` use `try_with` and fall back to the global
+tables when their caches are gone.
+
+**Guard.** The ASan lib suite, 1020/1020 single-threaded and at four threads (it crashed in
+every configuration before). `process::scheduler::root_ctx_tests::
+a_monitor_on_a_root_thread_gets_its_down_when_the_thread_exits` — red with `with` restored
+(`mailbox_len` 0, not 1). The clippy rule — a restored direct call is `error: use of a
+disallowed method stacker::maybe_grow`.
+
+## KI-218 — `manifest_race` lost a concurrent add to a torn lockfile read ✅ FIXED 2026-09-24 (`b97d3190`), reproduced and completed 2026-10-09
+
+**Symptom.** `manifest_race::a_concurrent_remove_does_not_resurrect_or_erase_an_add` failed
+once in CI (2026-09-24, `9de9f2d3`): the manifest held `d3` but not `d2` — "an add was lost
+by the removal". **Cause.** The manifest edits were sound (`%file-swap`: an exclusive lock
+outside the tree across re-read and write, then temp-and-rename). The lockfile was not:
+`write-lockfile`, and `ensure-deps`' rewrite-if-changed, wrote `project.lock.blsp` with a
+plain empty-then-write spit, and a concurrent `nest add` reading it in that window failed to
+parse it and rolled its own manifest edit back. **Why it survived.** One write call wide —
+1 run in 360 under load with the plain spit — and the test printed no command output, so the
+manifest could not say which command gave up. `b97d3190` fixed `write-lockfile` the same day
+but recorded the cause as suspected (0 of 20). **Fix.** Both writers go through
+`write-lockfile`'s temp-and-rename, with a `uuid/v4` temp name (a shared timestamp made two
+writers share one). **Guard.** `package_test` "a lock rewrite is never seen half-written":
+a reader racing 20 rewrites counts torn reads — 12 with a plain spit, 0 fixed.
+
+## KI-219 — the stranded-work report dropped a worker as `<locked>` ✅ FIXED 2026-10-09
+
+**Symptom.** `stranded_watchdog::queued_work_no_worker_can_find_is_reported_within_the_window`
+failed in CI (2026-09-24, `2bbd0a6f`): `w0: <locked>` with no flags and no queue. `17309f41`
+then loosened the test to accept it; the report was never changed. **Cause.** The report
+reads each peer's queue with a single `try_lock` (it must not block: it holds its own queue
+lock). Over-counted parked workers re-probe on the same 10 ms cadence, so the scan coincides
+with a peer re-taking its OWN lock to park or wake (confirmed with temporary lock stamps) —
+7 of 480 contended runs, 0 of 240 pinned to one CPU. **Fix.** `stranded_report_queue`
+retries a busy lock (`try_lock` + `yield_now`) for up to 100 ms, still deadlock-free; the
+atomics (`parked`/`dirty`/`busy`) are always printed; a poisoned lock is read. **Guard.**
+The test is strict again — every `wN:` line must carry state and `queue=[` — sabotage-verified
+red; 0 of 320 contended runs after.
+
+## KI-220 — `proc_test`'s `:int` case lost its only ^C between fork and exec ✅ FIXED 2026-09-25 (`5e778f64`), attributed 2026-10-09
+
+**Symptom.** Nightly 2026-09-25 (`bda4f693`), both tries: "`:int` ends a foreground command
+and the shell running it" — `actual: :timeout`, `expect: :closed`. **Cause.** The shell
+prints `ready` before forking `sleep`; a SIGINT that lands between that fork and the exec is
+handled by the child's inherited handler and discarded by the exec, so `sleep` lives and the
+shell waits — nothing exits at all. `os/signal` is not at fault: plain `setsid sh -c 'echo
+ready; sleep 30'` loses the first ^C 64 times in 200 here. (5b4fc7b9, "a child's exit is
+reported when it exits", is unrelated — here nothing exits.) **Fix.** `5e778f64` resends ^C
+every 500 ms (up to 11). **Guard.** The test; the old commit's file reproduced 1 in 20, a
+40-shot copy of the old single-signal test loses 7 of 40 on current code, HEAD passed 78/78
+under contention. A trap for whoever reruns it: a background shell job starts its children
+with SIGINT ignored, so run it in the foreground.
+
+## KI-221 — a TLS server silently dropped bytes past 64 KiB pending ✅ FIXED 2026-10-09
+
+**Symptom.** Found by the inbound-backpressure work: a TLS client that read its response
+slowly received a stream with bytes missing from the middle. **Cause.** rustls caps a server
+connection's outbound plaintext buffer at 64 KiB by default; the reactor's `Cmd::Send`
+ignored the short write. **Fix.** The server path lifts the rustls limit, as the client path
+already did, so the 16 MiB `OUT_CAP` governs and drops the connection loudly. **Guard.**
+`tests/tcp_backpressure_test.blsp` case 6 — red before the fix.
+
+## KI-222 — CI's tree-walker suite outgrew its 15-minute budget and passed only on retry ✅ FIXED 2026-10-09
+
+**Symptom.** The `differential (tree-walker)` job reported `1 flaky` run after run:
+`TRY 1 TMT [900.04s] brood::suite brood_suite_passes`, then `TRY 2 PASS [~650s]`. In the 10
+runs before 2026-10-09, four first tries timed out and the passing ones took 880–898 s.
+**Cause.** No hang — the timed-out try had finished 6445 of 6465 tests. The job runs the
+whole `.blsp` suite on the tree-walker (`BROOD_VM=0`, ~10× slower) from the SOURCE boot
+(`BROOD_NO_STDIMAGE`/`BROOD_NO_PRELUDE_IMAGE`, KI-78), and the suite grew past the default
+profile's `binary(suite)` budget (15 × 60 s). **Why it survived.** `retries = 1` turned
+every timeout into `FLAKY 2/2` and a green job; nothing reads the flaky count. It was seen
+while attributing the 2026-10-09 run's real failure. **Fix.** A `tree-walker` nextest
+profile overrides only `binary(suite)` to 25 minutes, and ci.yml's tree-walker step runs
+with `--profile tree-walker`; the VM jobs keep the 15-minute kill. **Guard.** The next CI
+runs' tree-walker suite line should read `PASS` on the first try — a `TRY 1 TMT` there is
+this entry again.

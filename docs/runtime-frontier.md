@@ -527,7 +527,7 @@ is the `Box<Process>` itself (1352 — 168 B of fields grew since July; shave 1:
 first-touch slabs, and the closure template/promote pair — each 100–250 B and each a
 design question rather than a fix.
 
-**Not the shipped floor:** under the tree-walker (`BROOD_VM=0`) a `spawn` copies the
+**Not the shipped floor:** under the tree-walker (`BROOD_TIER=0`) a `spawn` copies the
 spawner's whole env frame into the child, so a process holding a growing accumulator costs
 O(n) — 36 KB/proc at n=500, 242 KB at 4 000, a 7 GiB block asked for at 20 000. The VM's
 closure conversion captures only free variables. Legacy-engine only; the ratchet skips it.

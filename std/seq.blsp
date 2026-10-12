@@ -248,16 +248,6 @@ vector comes FIRST here, unlike the rest of this module — see the note above.
 ;; armed a 2-parameter contract over a 2-3 argument function under BROOD_CONTRACTS=1.
 (sig subvec (vector int & int -> vector))
 
-(defn vector-ref (v i)
-  "The element at index i of vector v."
-  (%vector-ref v i))
-(sig vector-ref ((vector ?A) int -> ?A))
-
-(defn vector-length (v)
-  "The number of elements in vector v."
-  (%vector-length v))
-(sig vector-length (vector -> int))
-
 ;; ---- early termination (ADR-376) ---------------------------------------------------
 ;; `(reduced acc)` ends a `transduce` at once with `acc` as its result. It is a NON-LOCAL
 ;; EXIT, not a returned box: the stage throws a `%reduced` record and `transduce` catches
@@ -421,11 +411,6 @@ when the caller needs indexed access. The complement of [[filterv]].
 (defn iterate-times (f x n)
   "The list `(x f(x) f²(x) … fⁿ(x))` — the `n`+1 successive states of applying `f`,
 starting from `x`. `times` returns only the last of these; this keeps the trajectory.
-
-This was a PRIVATE prelude helper (`%iterate-times`) that nothing in `std/` called, yet
-`tests/sequence_test.blsp` exercised it directly and `docs/deferred.md` cited it as the
-supported workaround for unbounded `iterate`. Private, tested and documented is a
-contradiction; it is public here, where its callers can reach it.
 
     (seq/iterate-times (fn (n) (* n 2)) 1 4)   → (1 2 4 8 16)
     (seq/iterate-times inc 0 0)                → (0)"

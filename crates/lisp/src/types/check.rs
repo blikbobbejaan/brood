@@ -37,10 +37,10 @@
 //!    a `Sig` ([contract point #6, enforced](../docs/types.md#compatibility-contract))
 //!    so the checker just reads it from the global env (see
 //!    [`sigs::primitive_sig`]). There is no parallel table to maintain.
-//! 2. **Curated stdlib** — a small hand-vetted table for the variadic /
-//!    `reduce`-based / higher-order Brood closures the checker can't infer but
-//!    that matter (`+ - * / < <= > >= mod map filter reduce`; see
-//!    [`sigs::curated_sig`]). Each is a Brood `defn`, but its sig is pinned by hand.
+//! 2. **Declared and curated** — a std `(sig …)` (read from the loaded module or the
+//!    image's signature index), and a small hand-vetted table for the closures nothing
+//!    else types (`map`, `reduce`, `io/puts`; see [`sigs::curated_sig`]). The full
+//!    precedence is stated once, on [`sigs::sig_of`].
 //! 3. **Inference** ([`sigs::infer_sig`]) — a bounded, sound, one-step-deep inferencer
 //!    (no unification / global solve). **Parameters** come from *unconditional* type
 //!    demands across the body (a guarded use never constrains a param). **The return** is
@@ -90,7 +90,7 @@
 //!   names across the forms in a file.
 //!
 //! Inference now covers control-flow returns (`if`/`cond`/`let`/`do`/`case`), recursion,
-//! multi-arity/variadic closure *returns*, a file's own functions (`check_file`'s Pass 2.8
+//! multi-arity/variadic closure *returns*, a file's own functions (`check_file`'s same-file inference
 //! fixpoint, form-based since the file isn't loaded while checked), inferred *parameters*
 //! (ADR-190 — a caller's arguments are checked against a derived param type), **`and`/`or`-
 //! chained guard narrowing** (every `and` conjunct narrows the then-branch; a same-variable
@@ -255,9 +255,7 @@ fn ensure_loaded(heap: &mut Heap, mod_sym: Symbol) {
 /// references name. The checker's inference then reads a loaded body up to the first
 /// unmaterialised qualified name and stops: `buffer-current-line` inferred `-> any`, though
 /// `text/char->line` DECLARES `(rope int -> int)`, and every derivation above it — the whole
-/// point of declaring the leaf — was lost, in `nest check` and the LSP alike. Found through
-/// bedit's `git-scan-rows` (2026-09-13): its `int` result read as `number` because the
-/// buffer's current line had no type.
+/// point of declaring the leaf — was lost, in `nest check` and the LSP alike.
 ///
 /// Fixpoint: scan each loaded module's bindings once (a per-thread memo, since a project
 /// check runs this per file), collect the module prefixes its closures' bodies mention, load
@@ -326,7 +324,7 @@ pub fn materialise_referenced_modules(heap: &mut Heap) {
             // footer and ahead of inference (`sig_of`'s order), so its verdict never depends
             // on the load either: `seq/filter` is curated and named by 38 std modules'
             // bodies, `io/puts` by 26, and each check materialised `seq` and `io` for a type
-            // it already had (2026-09-20).
+            // it already had.
             if crate::eval::derive::image_sigs_enabled()
                 && (heap.env_get(global_env, name).is_some()
                     || crate::eval::derive::image_sig_text(heap, name).is_some()
@@ -847,7 +845,7 @@ fn sig_arity(sig: &Sig) -> Arity {
     }
 }
 
-/// Warn when one file binds the same top-level name twice in one module (Pass 2.9): the
+/// Warn when one file binds the same top-level name twice in one module: the
 /// later `def`/`defn`/`defn-`/`defmacro`/`defdyn`/`defrecord` silently replaces the
 /// earlier, so the first is dead code that still reads as the definition. Found the hard
 /// way: `project.blsp` carried a public sorted `source-files` and, 1,300 lines later, a
@@ -953,7 +951,7 @@ fn lint_duplicate_defs_in_inner(
     }
 }
 
-/// Validate this file's hand-written `(sig …)` declarations (Pass 2.85) — see the
+/// Validate this file's hand-written `(sig …)` declarations (the declaration check) — see the
 /// call site for why an unreadable annotation is worse than no annotation.
 ///
 /// Reads the *un-expanded* forms, which is where a hand-written declaration is
@@ -1034,8 +1032,7 @@ fn collect_register_sig_forms_inner(heap: &mut Heap, form: Value, out: &mut Vec<
         return;
     };
     // `(do …)` and `(%lint-allow :category …)` — what `check-allow` expands to — both wrap
-    // definitions; a `(sig …)` inside a `check-allow` block used to be dropped here, so it
-    // declared nothing (its `defn` was walked unseeded) while reading as declared.
+    // definitions; a `(sig …)` inside a `check-allow` block must still declare its `defn`.
     if crate::core::value::symbol_is(head, kw::DO)
         || crate::core::value::symbol_is(head, "%lint-allow")
     {
@@ -1201,7 +1198,7 @@ fn collect_required_modules(
 }
 
 /// Extend `mods` with every module reachable from it through the standard library's own
-/// require edges (B8, 2026-09-17). A baked-in module's direct requires are read from its
+/// require edges (B8). A baked-in module's direct requires are read from its
 /// embedded source once per process (`STD_REQUIRES`); a name that is not a baked-in module
 /// is a leaf here (the whole-project driver has already closed the project's own edges).
 fn close_through_std(heap: &mut Heap, mods: &mut HashSet<String>) {
@@ -1316,7 +1313,7 @@ fn collect_raw_qualified(heap: &Heap, forms: &[Value]) -> HashSet<String> {
 /// already loaded (`project--ensure-loaded`), so `check_file` can set up imports directly
 /// instead of re-macroexpanding + re-evaling + re-compiling every file's header — the eval
 /// path's per-file `provide`/`require`/`%refer` all-globals scans + `*module-docs*` rebind +
-/// compile made a whole-project check O(files²) (see docs/devlog.md 2026-07-03).
+/// compile made a whole-project check O(files²).
 ///
 /// Mirrors `defmodule`'s `(:use)`/`(:alias)` expansion (std/prelude.blsp) + the `%refer`/
 /// `%alias` builtins exactly: `(:use mod)` refers mod's public (non-`--`) names bare;
@@ -1324,7 +1321,7 @@ fn collect_raw_qualified(heap: &Heap, forms: &[Value]) -> HashSet<String> {
 /// `short/` → `mod` prefix alias. A used module that isn't loaded (a bare-file check outside a
 /// project) is `require`d first — rare, and correctness there beats the O(files²) speed win.
 /// The modules a `(defmodule …)` header brings into scope, as the type-alias resolver
-/// needs them (ADR-327 follow-up, 2026-09-12): the ROOTED names of every `:use`d module —
+/// needs them (ADR-327): the ROOTED names of every `:use`d module —
 /// a bare alias name resolves to one of theirs before the loaded-module-wide unique-suffix
 /// rule — and each `(:alias mod :as short)` prefix, so `short/name` in a `sig` reaches
 /// `mod/name`. Accumulated across a file's headers (the region model, ADR-223).
@@ -1755,7 +1752,7 @@ fn capture_file_signatures(heap: &Heap, expanded: &[Value], ctx: &Ctx) {
                     // obligation to describe the definition's shape, and for a function
                     // whose params the checker could not type at all it is bare
                     // `(-> ret)`. Written into a file that way it declares a NULLARY
-                    // function, which ADR-259's Pass 2.85 then rejects as contradicting
+                    // function, which ADR-259's the declaration check then rejects as contradicting
                     // its `defn` — so a suggestion must never be offered in that state.
                     Some(sig) => (reconcile_arity(heap, rhs, sig), false),
                     None => continue,
@@ -1896,51 +1893,23 @@ fn check_forms(
     inherit_context: bool,
 ) -> Vec<(Option<Pos>, String)> {
     let mut out = Vec::new();
-    // Block the copying GC for the whole check: this fn holds LOCAL handles in
-    // Rust `Vec`s (`forms`/`expanded`) *across* the `eval` of `(require …)` forms
-    // below, and a collection there would relocate them (copying moves objects),
-    // leaving the Vec copies stale. Bumping `GC_BLOCK` makes those inner evals run
-    // at depth ≥ 2 so the outermost-eval safepoint never fires mid-check — the
-    // same guard `macroexpand_all` uses for its partially-built forms. The
-    // checker's allocations are bounded (one file) and reclaimed at the next real
-    // safepoint after it returns. See ADR-054 / `docs/memory-review.md`.
+    // Block the copying GC for the whole check: LOCAL handles are held in Rust `Vec`s
+    // across the `eval` of `(require …)` forms, and a collection would relocate them.
+    // Inner evals then run at depth ≥ 2, so the outermost-eval safepoint never fires
+    // mid-check (ADR-054); the checker's allocations are reclaimed at the next safepoint.
     let _gc_block = crate::process::GcBlockGuard::enter();
     // Every inferred load is EAGER for the duration (ADR-335): the unbound verdict for a
-    // qualified typo (`json/prase`) depends on `json` being loaded — `is_unbound` stays
-    // silent on a prefix it does not know — so the checker must load what the file names,
-    // where a program would load it on first use.
-    // Guarded by `unknown_module_qualified_name_is_not_unbound` (`(io/no-such-fn 1)` must warn),
-    // which reds without this scope.
+    // qualified typo (`json/prase`) depends on `json` being loaded, so the checker loads
+    // what the file names where a program would load it on first use.
     let _eager = crate::eval::derive::EagerLoadScope::enter();
-    // Fresh per-pass signature-inference memo: this file's inferred sigs must not leak
-    // into another file, nor (in the long-lived LSP) survive a source edit (KI-13).
+    // Per-file state: one file's inferred sigs, abilities and aliases must not leak into
+    // the next, nor (in the long-lived LSP) survive a source edit (KI-13).
     sigs::clear_sig_memo();
-    // Fresh per-file sealed-ability-as-a-type table (ADR-181); repopulated below once the
-    // expanded tree is built, so a bare `(sig f (Shape -> …))` resolves. Cleared here so a
-    // panic mid-check can't leak one file's abilities into the next.
     annot::clear_ability_types();
     annot::set_type_aliases(HashMap::new(), None, ImportScope::default());
-    // Pass 1: macroexpand each form (recording the expanded shape we'll also
-    // walk in pass 2). A macroexpand failure isn't this pass's job to report,
-    // so we fall back to the un-expanded form silently.
-    //
-    // When a top-level form is `(require 'mod …)`, also *evaluate* it so the
-    // module's macros and globals become resolvable for the rest of the file.
-    // Otherwise the next form using a macro the module brought in
-    // (`defserver`, `cast`, `!`, etc. from `std/proc/gen.blsp`) would expand as
-    // an un-known head and trip the unbound-symbol diagnostic. `require` is
-    // idempotent (it checks `*features*`), so a later real run re-evaluating
-    // the same form is a no-op. Failures are swallowed: the checker is
-    // advisory and shouldn't gate on a missing module.
-    let root = heap.global();
-    // Namespace-aware checking (ADR-065): if the file declares `(ns foo)`, set the
-    // compile namespace + forward-ref pre-scan so pass 1's resolve qualifies both
-    // definition heads and references to `foo/…` — otherwise every qualified
-    // reference would look unbound. Restored before returning.
-    // ROOTED (ADR-070): `%in-ns` roots what `(defmodule tutor)` declares, so at run time the
-    // namespace is `bedit/tutor`. The checker has to set the SAME rooted namespace, or every
-    // comparison against it disagrees with the runtime — most visibly the `--` privacy rule,
-    // which then reads a module's reference to its own helper as a foreign private access.
+    // The namespace the file declares, ROOTED as `%in-ns` roots it (ADR-065/070), so
+    // the resolve qualifies definition heads and references exactly as the runtime does —
+    // otherwise the `--` privacy rule reads a module's own helper as a foreign access.
     let declared_ns = crate::eval::macros::file_ns(heap, forms).map(|ns| heap.root_module_name(ns));
     // Forms checked "here" (`check_forms_here`) that open no module of their own are
     // resolved in the namespace already open, as `eval` would resolve them.
@@ -1950,20 +1919,17 @@ fn check_forms(
     } else {
         declared_ns
     };
-    // `*load-path*` is a global, and pass 1 evaluates any form that changes it (see
-    // `is_load_path_form`). Save it here and restore below so one file's path setup
-    // cannot change how the NEXT file of a project check resolves its modules: a
-    // relative entry like "compiler" names a different directory from each file, so
-    // leaking it is order-dependent in a way `require`'s idempotent module load is not.
-    // Safe to hold across the check — GC is blocked for its whole duration above.
+    // `*load-path*` is a global the expansion pass may change (`is_load_path_form`). Save
+    // and restore it so one file's path setup cannot change how the NEXT file of a
+    // project check resolves its modules (a relative entry names a different directory
+    // from each file). Safe to hold across the check — GC is blocked.
     let load_path_sym = crate::core::value::intern(reg::LOAD_PATH);
     let saved_load_path = heap.env_get(heap.global(), load_path_sym);
     let prev_ns = heap.set_compile_ns(file_ns);
     // Region model (ADR-223): a file may declare more than one `(defmodule …)`. Install the
-    // per-module forward-ref pre-scan and start the active set on the FIRST module's region;
-    // the pass-1 loop below switches compile-ns + region at each subsequent `defmodule`
-    // (the checker doesn't `eval` `%in-ns`, so it must mirror that switch itself). A
-    // single-module file has one region equal to the old whole-file scan.
+    // per-module forward-ref pre-scan and start on the FIRST module's region; the
+    // expansion pass switches at each later `defmodule` (the checker doesn't `eval`
+    // `%in-ns`, so it mirrors that switch itself).
     let regions = if declared_ns.is_some() {
         crate::eval::macros::scan_regions(heap, forms)
     } else {
@@ -1984,991 +1950,26 @@ fn check_forms(
         HashMap::new()
     };
     let prev_imports = heap.set_imports(inherited_imports);
-    // Root the input forms and the expanding-into vec across the loop:
-    // each iteration may call `eval` on a `(require …)`, which runs a
-    // GC safepoint at outermost depth — any LOCAL `Value` held only in
-    // a Rust local would be swept. The `roots_len`/`truncate_roots`
-    // pairing is balanced even if a panic unwinds through here (a future
-    // `panic = abort` wouldn't need this, but today's `unwind` would
-    // leak roots otherwise).
+    // The input forms and their expansions are rooted from here (a module load can
+    // collect); `truncate_roots` below balances them even when a panic unwinds.
     let roots_base = heap.roots_len();
-    // Panic containment (host-panic hardening, 2026-07-23): the checker is
-    // advisory and runs inside long-lived hosts (brood-lsp, `nest check`, the
-    // REPL's background check) — an internal panic must not tear the host
-    // down, and must not leave the compile-ns / known-names / imports / GC
-    // roots captured above poisoned for the next check. The whole analysis
-    // runs under `catch_unwind`; the restores below run on BOTH paths, and a
-    // panic degrades to one "checker internal error" diagnostic.
+    // Panic containment: the checker is advisory and runs inside long-lived hosts
+    // (brood-lsp, `nest check`, the REPL's background check) — an internal panic must not
+    // tear the host down, nor leave the compile-ns / known-names / imports / GC roots
+    // captured above poisoned for the next check. The restores below run on BOTH paths,
+    // and a panic degrades to one "checker internal error" diagnostic.
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // Where a file's check spends its time, under `BROOD_DERIVE_DBG`: the joint
-        // fixpoint (Pass 2.9's derivation walks + return re-inference) against the whole.
-        let file_started = std::time::Instant::now();
-        let derive_dbg = std::env::var_os("BROOD_DERIVE_DBG").is_some();
-        let joint_elapsed: std::time::Duration;
-        let mut joint_derive_elapsed = std::time::Duration::ZERO;
-        let mut joint_rounds = 0u32;
-        let mut site_walks = (0u32, 0u32);
-        for &f in forms {
-            heap.push_root(f);
-        }
-        let n = forms.len();
-        let mut expanded: Vec<Value> = Vec::with_capacity(n);
-        let mut import_scope = ImportScope::default();
-        for j in 0..n {
-            // Re-read the (relocated) form from the root stack, NOT the `forms` slice:
-            // an earlier iteration's `(require …)` `eval` can collect at any depth
-            // (ADR-061) and relocate it, so the slice's copy is stale by now.
-            let f = heap.root_at(roots_base + j);
-            // Compile pass: macroexpand then namespace-resolve, so the analysed tree
-            // matches what `eval` will see (qualified defs + references). A compile
-            // ERROR is a real diagnostic now (ADR-146 module-privacy violations
-            // surface here — the file would fail to load), not silently swallowed;
-            // the un-expanded form still feeds the rest of the walk so the other
-            // lints run.
-            // The checker reads the author's code: no optimiser source rewrites here.
-            let _plain = crate::eval::macros::NoSourceRewrites::enter();
-            let exp = match crate::eval::macros::compile(heap, f, root) {
-                Ok(e) => e,
-                // Re-read the relocated form: `compile` now infers `(require …)` from
-                // qualified references (ADR-227 follow-up), and that module load can
-                // collect at any depth, so `f` captured above is stale on the error path.
-                Err(err) => {
-                    // A macro's own `(error …)` during expansion carries no position; the
-                    // form it was expanding does. Report there rather than nowhere.
-                    out.push((
-                        err.pos.or_else(|| heap.form_pos_only(forms[j])),
-                        format!("does not compile: {}", err.message),
-                    ));
-                    heap.root_at(roots_base + j)
-                }
-            };
-            // Root the just-built expansion *before* possibly triggering a
-            // collect via `eval`; otherwise this LOCAL handle dies between
-            // here and the next iteration's macroexpand.
-            heap.push_root(exp);
-            expanded.push(exp);
-            // `compile` above can collect (it infers `(require …)` from qualified
-            // references, ADR-227 follow-up), relocating `f` — re-read the live handle
-            // from the root stack before the header checks that dereference it.
-            let f = heap.root_at(roots_base + j);
-            if let Some(message) = reserved_def_warning(heap, exp) {
-                out.push((heap.form_pos_only(f), message));
-            }
-            // Make the file's imports + required modules resolvable for the rest of the walk.
-            // For a `(defmodule … (:use …))` header, populate the import table DIRECTLY from its
-            // clauses (`setup_check_imports`) instead of evaling the expanded header — the eval
-            // re-macroexpands + re-compiles it and runs per-file O(globals) `provide`/`require`/
-            // `%refer` scans, which made a whole-project check O(files²). A standalone
-            // `(require …)` form (not a header) is still evaluated so its macros/globals resolve.
-            if is_ns_header(heap, f) {
-                // Region model (ADR-223): a later `(defmodule …)` opens a new region — switch
-                // the checker's compile-ns + forward-ref set to it, exactly as `%in-ns` does
-                // at run time, so this module's defs/refs qualify to it and not the first.
-                if let Some(m) = crate::eval::macros::defmodule_form_name(heap, f) {
-                    let rooted = heap.root_module_name(m);
-                    heap.set_compile_ns(Some(rooted));
-                    heap.activate_ns_region(m);
-                }
-                import_scope.extend(setup_check_imports(heap, f));
-            } else if is_require_form(heap, exp) || is_load_path_form(heap, exp) {
-                let _ = crate::eval::eval(heap, exp, root);
-            }
-        }
-        // What the modules loaded so far refer to, transitively — so the inference passes
-        // below read a loaded body all the way down to the leaf that declares its type.
-        materialise_referenced_modules(heap);
-        // A pass-1 `(require …)` `eval` can collect at ANY depth (ADR-061), which
-        // relocates the rooted forms/expansions — so the `expanded` Vec and the
-        // `forms` slice now hold **stale** handles, even though the data survives on
-        // the root stack. Re-read the live, relocated handles from the root stack for
-        // the analysis passes below. Layout: `forms` at `roots_base..+n`, their
-        // expansions at `roots_base+n..+2n` (pushed in pass 1, in order).
-        let n = forms.len();
-        let forms: Vec<Value> = (0..n).map(|j| heap.root_at(roots_base + j)).collect();
-        let expanded: Vec<Value> = (0..n).map(|j| heap.root_at(roots_base + n + j)).collect();
-        // Pass 2: collect every `(def name …)` in the expanded tree (top level
-        // *or* nested — `defn` inside `test`/`describe`/`when`/… still defines a
-        // global once it runs, so the checker honours that). `defmacro` stays a
-        // special form (it doesn't expand to `def`), so we match it too.
-        let mut ctx = Ctx::default();
-        ctx.set_strict(strict);
-        // Whole-file mode: enable operand / value-slot unbound checking (every
-        // top-level def is accumulated below, and the project image is loaded, so an
-        // unresolved operand is genuinely unbound — not the ambiguous free variable a
-        // bare fragment might carry).
-        ctx.enable_operand_checks();
-        // The set of namespace prefixes the loaded image knows — every `mod/` for which
-        // some `mod/<name>` global exists (the requires above are already evaluated). A
-        // qualified reference whose module isn't here can't be proven unbound (it may be
-        // defined dynamically or in an unloaded file), so the unbound check stays silent
-        // on it; a typo in a *known* module is still flagged. See `Ctx::known_ns`.
-        // Cached + shared (`Heap::known_ns_prefixes`): rebuilding this by scanning all globals
-        // per file was the residual O(files²) after the header-eval redesign — an O(1) `Arc`
-        // clone on all but the first file of a whole-project check.
-        ctx.set_known_ns_arc(heap.known_ns_prefixes());
-        // KI-17: arm the unrequired-module lint. `required_mods` is what THIS file
-        // pulls in (its `:use`/`require` + own ns); `raw_qualified` restricts the lint
-        // to references the user literally wrote. In a whole-project check every module
-        // is bound image-wide, so a user-written `mod/name` whose `mod` is absent here
-        // resolves only by load-order luck — the walk flags it. (In single-file mode an
-        // un-required module isn't bound at all, so the lint is naturally inert there.)
-        let mut required = collect_required_modules(heap, &forms, file_ns);
-        required.extend(extra_required.iter().cloned());
-        // Package-rooted namespaces (ADR-070): a `(:use b)`/`require` target roots to
-        // `pkg/b` at load, and the resolved `pkg/b/name` references this lint checks are
-        // rooted too — so the reachable set must carry each entry's ROOTED form as well,
-        // or an intra-package reference is falsely flagged "unrequired". `root_module_name`
-        // is identity for an external / std / already-rooted name, so the unrooted entries
-        // stay valid too (both forms are kept). Inert outside a package context.
-        let rooted: Vec<String> = required
-            .iter()
-            .map(|m| value::symbol_name(heap.root_module_name(value::intern(m))))
-            .collect();
-        required.extend(rooted);
-        let raw_qualified = collect_raw_qualified(heap, &forms);
-        // The file's WORLD (B8): what its registry reads may see. Wider than the KI-17 set
-        // — a std module reached only by a qualified `tempo/new!` is loaded on first use
-        // (ADR-335) and needs no `:use`, so every qualified prefix counts too — and closed
-        // through the standard library: the driver closes over PROJECT files, so a std
-        // module is a leaf there, but what it requires is in the file's world as well
-        // (`tempo` reaches `datetime`), and a value the file can construct must never be
-        // read as invisible.
-        let mut visible: HashSet<String> = required.clone();
-        visible.extend(
-            raw_qualified
-                .iter()
-                .filter_map(|q| q.rfind('/').map(|slash| q[..slash].to_string())),
-        );
-        close_through_std(heap, &mut visible);
-        ctx.set_required_mods(required);
-        ctx.set_raw_qualified(raw_qualified);
-        for &form in &expanded {
-            collect_def_names(heap, form, &mut ctx);
-        }
-        // Pass 2.5: collect `(sig name (… -> …))` declarations — the authoritative
-        // signatures the call-check consults first. Two sources, both fed through the
-        // same parsers + namespace-qualification (`register_declared_sig`):
-        //
-        //  (a) the *un-expanded* top-level `(sig …)` forms — a hand-written declaration
-        //      (the `sig` macro's own output is dropped from the analysed tree, so the
-        //      un-expanded form is where a plain top-level sig is legible); and
-        //  (b) every `(%register-sig 'name 'type)` in the *expanded* tree — which is
-        //      what BOTH a `(sig …)` and a *macro-emitted* sig lower to. `defrecord`
-        //      expands to `(sig …)` forms nested in its `(do …)`, invisible to (a) (which
-        //      only sees the `(defrecord …)` head); (b) recovers them. Idempotent overlap
-        //      with (a) for a hand-written sig — the second register is a no-op.
-        //
-        // The declared name is qualified to the file's namespace exactly as the resolve
-        // pass qualifies a def head and the call site — `(sig g …)` inside `(defmodule
-        // ns …)` keys the sig under `ns/g`, matching the `ns/g` the walk resolves the
-        // call head to. Without this a module-local sig was silently dropped (keyed bare
-        // `g` while the call resolved to `ns/g`), so no user `(sig …)` in a module ever
-        // reached the call-argument check.
-        let file_ns_name: Option<String> = file_ns.map(value::symbol_name);
-        // Populate the sealed-ability-as-a-type table (ADR-181) from the expanded tree +
-        // registry BEFORE parsing sigs, so a `(sig f (Shape -> …))` / `:-> Shape` referring
-        // to a sealed ability (this file's or an imported one) resolves to the union of its
-        // members' record shapes rather than being dropped as an unknown type name.
-        annot::set_ability_types(protocol::ability_type_table(heap, &expanded));
-        // Which ids are records — the tiebreak for an unqualified sealed member that also
-        // spells a built-in kind (`ratio`, `map`, …). See `annot::sealed_members_ty`.
-        annot::set_record_ids(protocol::record_id_names(heap, &expanded));
-        // The type aliases a `sig` may name (ADR-326): loaded modules' from the heap, this
-        // file's from its expanded `%register-type` forms, qualified to the file's namespace.
-        out.append(&mut import_scope.unknown_only);
-        annot::set_type_aliases(
-            protocol::type_alias_table(heap, &expanded, file_ns_name.as_deref()),
-            file_ns_name.clone(),
-            import_scope,
-        );
-        // A `deftype` whose shape exceeds the lattice's node budget (`MAX_TY_NODES`) is
-        // widened to its bare tags by the constructors — SILENTLY, which turned every
-        // `model`-typed read in bedit to `number` the day its `model` record crossed the
-        // line by one optional field. A written shape that came back with no fields (or
-        // no positions) is that case exactly; say so at the declaration.
-        for &form in &expanded {
-            let mut aliases = HashMap::new();
-            protocol::collect_register_types_into(heap, form, None, &mut aliases);
-            let mut aliases: Vec<(String, Value)> = aliases.into_iter().collect();
-            aliases.sort_by(|a, b| a.0.cmp(&b.0)); // report order, not hash order (B8)
-            for (name, ty_form) in aliases {
-                let Some(ty) = annot::parse_type(heap, ty_form) else {
-                    continue;
-                };
-                let declares_shape = list_items(heap, ty_form)
-                    .and_then(|items| items.first().copied())
-                    .is_some_and(|h| matches!(h, Value::Sym(s) if value::symbol_is(s, "record") || value::symbol_is(s, "tuple")));
-                if declares_shape && ty.record_fields().is_none() && ty.positional_elems().is_none()
-                {
-                    out.push((
-                        heap.form_pos_only(form),
-                        format!(
-                            "deftype {name}: the shape exceeds the checker's budget of {} nodes and is read as a bare `{}` — every field is unrefined; split it into named parts",
-                            crate::types::MAX_TY_NODES,
-                            ty
-                        ),
-                    ));
-                }
-            }
-        }
-        // ADR-299: the operator sugar's domains — `number` plus the records `num/*` /
-        // `compare-to` have methods for — from this file's `defmethod`s + the registry.
-        sigs::set_operator_domains(protocol::operator_domains(&protocol::build_multi_info(
+        check_file_passes(
             heap,
-            &expanded,
-            Some(&visible),
-        )));
-        // Reconstruct a `(sig name type)` form from each `%register-sig` in the expanded
-        // tree (building forms needs `&mut heap`, so collect first, register after — GC
-        // is blocked for the whole check, so the handles stay live).
-        let mut macro_sig_forms: Vec<Value> = Vec::new();
-        for &form in &expanded {
-            collect_register_sig_forms(heap, form, &mut macro_sig_forms);
-        }
-        // THIS file's records' declared field types, BEFORE any other sig is parsed: a
-        // `(sig f (pt -> …))` resolves the record NAME to a shape carrying them
-        // (`annot::record_ty`), and the file is not loaded while it is checked, so the
-        // constructor's sig — where `defrecord` puts the field types — is nowhere else.
-        // A constructor's sig is the one whose name IS a registered record id and whose
-        // result is a record shape.
-        {
-            let mut field_types = HashMap::new();
-            for &form in &macro_sig_forms {
-                let Some((name, sig)) = annot::parse_sig_decl(heap, form) else {
-                    continue;
-                };
-                let id = value::symbol_name(qualify_decl_name(&ctx, file_ns_name.as_deref(), name));
-                if let Some(fields) = sig.ret.record_fields() {
-                    field_types.entry(id).or_insert_with(|| fields.clone());
-                }
-            }
-            annot::set_record_field_types(field_types);
-        }
-        // ADR-190: build the ability facts + the sealed-op occurrence-typing domains HERE —
-        // before any pass runs `sig_of` (Gap A, Pass 2.8, the body walk) — so an imported
-        // function's inferred sig is never cached *without* the sealed-op demand. Keyed by op
-        // name off `AbilityInfo`, which sees this file's abilities AND imported ones (via the
-        // heap registries), so the demand fires for a same- or other-file sealed op alike.
-        // Restricted to the file's world (B8): another file's imported abilities, left in the
-        // process registry by checking it first, are none of this file's business.
-        let ability_info = std::sync::Arc::new(protocol::build_ability_info_visible(
-            heap,
-            &expanded,
-            Some(&visible),
-        ));
-        annot::set_sealed_op_domains(protocol::build_sealed_op_domains(&ability_info));
-        // …and on the ctx from here, not only from the body walk: the demand walk asks
-        // `is_ability_op` of `ctx.ability()` to tell an op function from a same-file
-        // function that spells its name (ADR-350), and Pass 2.8 runs before the walk.
-        ctx.set_ability(ability_info.clone());
-        for &form in &forms {
-            register_declared_sig(heap, &mut ctx, file_ns_name.as_deref(), form);
-        }
-        for &form in &macro_sig_forms {
-            register_declared_sig(heap, &mut ctx, file_ns_name.as_deref(), form);
-        }
-        // Pass 2.7: infer a current value type for an *undeclared* global defined
-        // exactly once by `(def g <non-fn-expr>)` (Gap A — docs/type-gating.md). The
-        // RHS's `expr_ty` becomes `g`'s current-image type, consulted by `expr_ty` /
-        // `gradual_of` as `dynamic_within` (the `∩` relation — reload-safe, warns only
-        // on provable disjointness). Skipped for: a declared global (authoritative,
-        // handled by `add_inferred_value_ty`); a global defined more than once
-        // (ambiguous type → stays `dynamic()`); a macro; and a function/native value
-        // (its arrow is inferred separately, and gating a bare function name used as a
-        // value is a different concern).
-        //
-        // Reads `top_level_defs`, not `expanded`: a `def-` expands to `(do (def g …)
-        // (%mark-private 'g))`, and a pass over the raw forms never saw the `def` inside —
-        // so a private `(def- k 10)` stayed `dynamic()` while a public `(def k 10)` was an
-        // `int`, and `(+ x k)` on the private one read as `number` and tripped every int
-        // consumer downstream (`math/quot`, `string/char-at`, a declared `int` parameter).
-        {
-            let mut def_count: HashMap<Symbol, usize> = HashMap::new();
-            for &form in &expanded {
-                count_defs(heap, form, &mut def_count);
-            }
-            for form in top_level_defs(heap, &expanded) {
-                let Some((name, rhs)) = def_name_and_value(heap, form) else {
-                    continue;
-                };
-                if value::is_gensym(name) {
-                    continue;
-                }
-                // Skip a global defined more than once (ambiguous), a macro, and a
-                // **dynamic variable** (`defdyn`): a dynvar's `def` sets only the
-                // default, but `binding` rebinds it to any type in a dynamic extent, so
-                // its value type isn't fixed — it must stay `dynamic()`.
-                // Also skip an **earmuffed** `*name*` global: it is dynamic by convention
-                // (reassigned over its lifetime — the lazy-init `(when (nil? *g*) (def *g*
-                // …))` pattern is common), so pinning it to its load-time default value would
-                // false-positive once it is reassigned — and, now that Pass 2.8 infers a
-                // function's return from its body, that narrow value would propagate into the
-                // return of any function that reads the global (e.g. `telemetry--metrics`).
-                // `global_value_ty` already skips earmuffed globals; this makes the inferred
-                // (Gap A) path — consulted first — agree.
-                if def_count.get(&name) != Some(&1)
-                    || ctx.is_file_macro(name)
-                    || value::is_dynamic(name)
-                    || infer::is_earmuffed(name)
-                {
-                    continue;
-                }
-                if let Some(ty) = infer::expr_ty(heap, rhs, &ctx) {
-                    if !ty.contains_tag(value::Tag::Fn) && !ty.contains_tag(value::Tag::Native) {
-                        ctx.add_inferred_value_ty(name, ty);
-                    }
-                }
-            }
-        }
-        // Pass 2.8: **same-file function inference.** The file being checked isn't
-        // loaded, so `sigs::sig_of`'s loaded-closure inference can't see its own `(defn …)`s
-        // — a same-file caller got no checking (only cross-module callers of *loaded*
-        // functions did). Infer each single-def, unshadowed, un-declared function's return
-        // from its FORM (`sigs::infer_return_from_form`) and record it in `ctx`, so a
-        // same-file call flows the result exactly as a loaded-function call already does.
-        //
-        // A bounded fixpoint resolves callees leaf-up: `infer_return_from_form` returns
-        // `None` (defers, records nothing) until every function its return depends on is
-        // already recorded, so a function is only ever stored with its callees' FINAL sigs —
-        // no stale/narrow intermediate leaks (sound at any cap; a cross-function cycle or a
-        // chain deeper than the cap simply stays deferred). The stored sig now also carries
-        // the function's inferred **parameter demands** (ADR-190), so a same-file caller's
-        // arguments are checked — sound because those demands under-constrain (a superset of
-        // the true type, so a flagged arg genuinely errors). Runs after Gap A so a
-        // `(def g <expr>)` value type its body reads is already in scope.
-        {
-            let mut def_count: HashMap<Symbol, usize> = HashMap::new();
-            for &form in &expanded {
-                count_defs(heap, form, &mut def_count);
-            }
-            let candidates: Vec<(Symbol, Value)> = top_level_defs(heap, &expanded)
-                .into_iter()
-                .filter_map(|form| {
-                    let (name, rhs) = def_name_and_value(heap, form)?;
-                    (def_count.get(&name) == Some(&1)
-                        && !ctx.is_file_macro(name)
-                        && !value::is_dynamic(name)
-                        && !value::is_gensym(name)
-                        && ctx.declared_sig(name).is_none())
-                    .then_some((name, rhs))
-                })
-                .collect();
-            // Keep each candidate's form reachable for call-site specialization
-            // (`sigs::specialized_ret`): a call whose flat inferred return is `any` re-types
-            // the body under the call's own argument types.
-            for &(name, rhs) in &candidates {
-                ctx.add_fn_form(name, rhs);
-            }
-            // A multi-clause `defn`'s clauses — read from the UN-EXPANDED form, the only
-            // place a pattern- or `:when`-dispatched definition still has clauses (it lowers
-            // to one variadic `fn` over `match*`, ADR-226) — go in BEFORE the fixpoint: a
-            // same-file caller typed inside it (a `reduce` over the clauses' function)
-            // needs the arms to be there. The per-arm signatures are derived again after
-            // the fixpoint, when every callee's return is final.
-            let mut clause_defs: Vec<(Symbol, Vec<Value>)> = Vec::new();
-            for &form in &forms {
-                if let Some((name, clauses)) = defn_clauses(heap, form) {
-                    let qn = qualify_decl_name(&ctx, file_ns_name.as_deref(), name);
-                    if let Some(arms) = sigs::infer_overload_from_clauses(heap, &clauses, &ctx) {
-                        ctx.add_inferred_overload(qn, arms);
-                    }
-                    ctx.add_clause_arms(qn, clauses.clone());
-                    clause_defs.push((qn, clauses));
-                }
-            }
-            // Inline PATTERN-clause `fn` literals get the same surface record, keyed by
-            // their printed clause-head list (there is no name to key by): the expanded
-            // tree holds only the lowered variadic `match*` lambda, whose embedded
-            // `[:match-error … (quote heads)]` data is how `sigs::clause_lambda_ret`
-            // finds its way back here from a combinator call site.
-            for &form in &forms {
-                record_fn_literal_clauses(heap, form, &mut ctx);
-                lint_unused_pattern_binders(heap, form, &mut out);
-            }
-            // Iterate to a fixed point; break as soon as a pass records nothing new. The cap
-            // bounds a pathological deep chain (the tail just stays deferred — sound).
-            // The names whose return was still moving when the bound below ended the ascent:
-            // a value on an ascending chain cut short is an UNDER-approximation, so each of
-            // them falls back to its demands with an `any` return (sound), and the file
-            // says so (B6, 2026-09-17) — before this the last intermediate was kept, silently.
-            let mut still_moving: Vec<Symbol> = Vec::new();
-            let mut older_returns: HashMap<Symbol, Ty> = HashMap::new();
-            for round in 0..16 {
-                still_moving.clear();
-                for &(name, rhs) in &candidates {
-                    if let Some(mut ret) = sigs::infer_return_from_form(heap, rhs, Some(name), &ctx)
-                    {
-                        // The same ascent discipline as the joint loop below (ADR-349/350):
-                        // an interval that moved since the last round goes to its infinity,
-                        // a value that nests its previous one folds into a recursive type,
-                        // and past the early rounds the rest is cut to a depth. A self-call
-                        // is ⊥ in its first round, so `(cons x (self …))` used to lengthen
-                        // by one per round here and run the loop out (B6, 2026-09-17).
-                        let current = ctx.inferred_fn_sig(name).map(|s| s.ret);
-                        if let Some(prev) = &current {
-                            ret = ret.widen_intervals_against(prev);
-                        }
-                        for prev in current.iter().chain(older_returns.get(&name)) {
-                            if let Some(folded) = Ty::fold_recursive(prev, &ret) {
-                                ret = folded;
-                                break;
-                            }
-                        }
-                        if round >= sigs::WIDEN_AFTER_ROUND {
-                            ret = ret.widened_below(sigs::WIDEN_DEPTH);
-                        }
-                        if let Some(current) = current.clone() {
-                            older_returns.insert(name, current);
-                        }
-                        if current != Some(ret.clone()) {
-                            // ADR-190: carry the inferred parameter demands too, so a same-file
-                            // caller's arguments are checked (not just the return). Sound:
-                            // `infer_params_from_form` under-constrains, so a flagged arg is one
-                            // that genuinely errors. Params are body-derived (independent of this
-                            // fixpoint, which only resolves returns), so recomputing is stable.
-                            let sig = match sigs::infer_params_from_form(heap, rhs, &ctx) {
-                                Some(demands) => demands.into_sig(ret),
-                                None => crate::types::Sig::new(Vec::new(), ret),
-                            };
-                            if derive_dbg {
-                                eprintln!(
-                                    "[derive] pass 2.8 {} -> {}",
-                                    value::symbol_name_ref(name),
-                                    sig.ret
-                                );
-                            }
-                            ctx.add_inferred_fn_sig(name, sig);
-                            still_moving.push(name);
-                        }
-                    }
-                }
-                if still_moving.is_empty() {
-                    break;
-                }
-            }
-            for &name in &still_moving {
-                let rhs = candidates
-                    .iter()
-                    .find(|(n, _)| *n == name)
-                    .map(|&(_, rhs)| rhs);
-                let sig = rhs
-                    .and_then(|rhs| sigs::infer_params_from_form(heap, rhs, &ctx))
-                    .map(|demands| demands.into_sig(crate::types::Ty::ANY))
-                    .unwrap_or_else(|| crate::types::Sig::new(Vec::new(), crate::types::Ty::ANY));
-                ctx.add_inferred_fn_sig(name, sig);
-                out.push((
-                    rhs.and_then(|rhs| heap.form_pos_only(rhs)),
-                    format!(
-                        "checker gave up: the return of {} was still moving after 16 inference rounds — read as unknown here and by every caller",
-                        value::symbol_name_ref(name)
-                    ),
-                ));
-            }
-            // A **multi-arm** candidate has no single signature — Pass 2.8's fixpoint
-            // above records nothing for it — so record each arm's own instead, and the
-            // call check rules a call out only when every arity-relevant arm rejects it.
-            for &(name, rhs) in &candidates {
-                if let Some(arms) = sigs::infer_overload_from_form(heap, rhs, &ctx) {
-                    ctx.add_inferred_overload(name, arms);
-                }
-            }
-            // …and from the **un-expanded** `defn` clauses recorded above, now that the
-            // fixpoint has settled every same-file return an arm's tail may name.
-            for (qn, clauses) in &clause_defs {
-                if let Some(arms) = sigs::infer_overload_from_clauses(heap, clauses, &ctx) {
-                    ctx.add_inferred_overload(*qn, arms);
-                }
-            }
-            // A candidate whose return stayed **deferred** (e.g. it returns an ability op the
-            // ability facts aren't on `ctx` for yet) still gets its inferred param demands
-            // (ADR-190) with an `ANY` return — so its callers are argument-checked even without
-            // a resolved return. Runs after the fixpoint, so the return dynamics are untouched.
-            for &(name, rhs) in &candidates {
-                if ctx.inferred_fn_sig(name).is_none() {
-                    if let Some(demands) = sigs::infer_params_from_form(heap, rhs, &ctx) {
-                        ctx.add_inferred_fn_sig(name, demands.into_sig(crate::types::Ty::ANY));
-                    }
-                }
-            }
-        }
-        // Pass 2.9: **caller-derived parameter types** (every single-arm function this file
-        // defines, ADR-341). The union of what a function's call sites in this file hand its
-        // parameters is a sound binding for the walk of its body — and
-        // for the return its same-file callers read, where Pass 2.8 above bound the
-        // parameters to their bottom-up DEMANDS alone (`(+ i 1)` says `number`; the callers
-        // say `int`). This is what lets a leaf `sig` be enough: `int` flows from the public
-        // entry down through every private helper without a declaration on each. The
-        // derivation and the return inference feed each other (a helper's sharper return is
-        // a caller's sharper argument), so the two alternate until the derived types settle.
-        {
-            let private = private_def_names(heap, &expanded);
-            let mut def_count: HashMap<Symbol, usize> = HashMap::new();
-            for &form in &expanded {
-                count_defs(heap, form, &mut def_count);
-            }
-            // Pass 2.8's candidates again (the same criteria), split into the private ones
-            // this pass derives and the public ones whose returns it refreshes afterwards.
-            let all_candidates: Vec<(Symbol, Value)> = top_level_defs(heap, &expanded)
-                .into_iter()
-                .filter_map(|form| {
-                    let (name, rhs) = def_name_and_value(heap, form)?;
-                    (def_count.get(&name) == Some(&1)
-                        && !ctx.is_file_macro(name)
-                        && !value::is_dynamic(name)
-                        && !value::is_gensym(name)
-                        && ctx.declared_sig(name).is_none()
-                        && ctx.fn_form(name).is_some())
-                    .then_some((name, rhs))
-                })
-                .collect();
-            // EVERY candidate is derived, public or private (2026-09-13, the second cut). The
-            // closed-caller premise the first cut rested on is not what the soundness needs:
-            // a derived type is a fact about THIS FILE's calls, a body warning under it says
-            // "every call in this file would fail here" — true whatever callers exist
-            // elsewhere — and the sharpened return is read by this file's callers only,
-            // whose arguments it covers; a caller in another file reads the demand-based
-            // loaded inference as before. `private` still says which names are in the
-            // privacy expansion, for the site walk's `%mark-private` skip.
-            let _ = &private;
-            let candidates: HashMap<Symbol, Value> = all_candidates.iter().copied().collect();
-            let joint_started = std::time::Instant::now();
-            if !candidates.is_empty() {
-                // A JOINT least fixpoint of the derived parameters and the candidates'
-                // returns. Pass 2.8's returns were read under the demands alone — `number`
-                // for an index — and two helpers that hand each other an index through
-                // their returns can never leave `number` from that start: every round
-                // reads the other's `number`. So the candidates' returns START at ⊥ and
-                // rise with the parameters (Kleene), and only the fixpoint is used: it is
-                // one, so it over-approximates every call's return like any other answer.
-                // A round that cannot type a return keeps the demand-based one Pass 2.8
-                // found. No fixpoint within the bound: everything is restored as it was.
-                let original: HashMap<Symbol, Option<crate::types::Sig>> = candidates
-                    .keys()
-                    .map(|&name| (name, ctx.inferred_fn_sig(name)))
-                    .collect();
-                // Only a LIVE function's return starts at ⊥. An escaped or site-less one is
-                // never derived, and its in-file callers read its return while the others
-                // iterate: a ⊥ there would make THEIR derived parameters under-approximate.
-                let live = sigs::live_private_functions(heap, &expanded, &candidates, &ctx)
-                    .unwrap_or_default();
-                // The count relations between a live function's parameters that its sites
-                // establish (ADR-350) — syntactic, so settled once here, and live for every
-                // typed round below and for the walk.
-                sigs::derive_count_aliases(heap, &expanded, &candidates, &live, &mut ctx);
-                for (&name, sig) in &original {
-                    if let (Some(sig), true) = (sig, live.contains_key(&name)) {
-                        let mut floor = sig.clone();
-                        floor.ret = crate::types::Ty::NEVER;
-                        ctx.add_inferred_fn_sig(name, floor);
-                    }
-                }
-                let mut previous: HashMap<Symbol, Vec<Option<crate::types::Ty>>> = HashMap::new();
-                // Which returns a round has TYPED — as opposed to typed as `never`, which is a
-                // real answer (every call raises: a body demanding `int` whose callers all pass
-                // a string) and must not be mistaken for a floor that never typed.
-                let mut typed: HashSet<Symbol> = HashSet::new();
-                let mut converged = false;
-                // Whether anything the derivation reads — a return, lifted or re-inferred —
-                // moved since the derivation last ran. When nothing did, re-running it would
-                // walk the file again to reproduce `previous` exactly (the inner fixpoint is a
-                // deterministic function of the returns and its seed), so the round reuses it.
-                let mut inputs_moved = true;
-                // Each return's value from the round before last, for the fold (a value
-                // that recurses through another function grows every other round).
-                let mut older_returns: HashMap<Symbol, Ty> = HashMap::new();
-                // The site walks, memoised per form across every round below
-                // (`sigs::SiteCache`), with the names whose return or derived parameters
-                // moved since the last derivation — `None` before the first, which walks
-                // everything.
-                let mut site_cache = sigs::SiteCache::new(heap, &expanded, &candidates);
-                let mut moved: Option<HashSet<Symbol>> = None;
-                let mut derivation_declined = false;
-                for round in 0..32 {
-                    let round_started = std::time::Instant::now();
-                    let derivation_ran = inputs_moved;
-                    // A specialization is typed under the round's returns and derived
-                    // parameters; the memo of them must not outlive the round.
-                    sigs::clear_specializations();
-                    let derived = if inputs_moved {
-                        sigs::caller_derived_params(
-                            heap,
-                            &expanded,
-                            &candidates,
-                            &live,
-                            &ctx,
-                            &previous,
-                            &mut site_cache,
-                            moved.as_ref(),
-                        )
-                    } else {
-                        previous.clone()
-                    };
-                    joint_derive_elapsed += round_started.elapsed();
-                    joint_rounds += 1;
-                    // A derivation that declined leaves every parameter unknown for the
-                    // rest of this file: say so (B6), once.
-                    if let Some(why) = sigs::take_derivation_decline() {
-                        if !derivation_declined {
-                            derivation_declined = true;
-                            out.push((
-                                None,
-                                match why {
-                                    sigs::DeriveDecline::Opaque => "checker gave up: an unexpanded macro call keeps every caller-derived parameter unknown in this file".to_string(),
-                                    sigs::DeriveDecline::NoFixpoint => format!(
-                                        "checker gave up: the caller-derived parameters did not settle in {} rounds — every parameter is read as unknown in this file",
-                                        sigs::MAX_DERIVE_ROUNDS
-                                    ),
-                                },
-                            ));
-                        }
-                    }
-                    let mut moved_now: HashSet<Symbol> = derived
-                        .keys()
-                        .chain(previous.keys())
-                        .copied()
-                        .filter(|name| derived.get(name) != previous.get(name))
-                        .collect();
-                    ctx.set_derived_params(derived.clone());
-                    let mut returns_moved = false;
-                    // In DEFINITION order, never the map's: a return re-read here is
-                    // applied at once, so a later name reads an earlier one's new value,
-                    // and the widening below is history-dependent — iterated in hash
-                    // order the same file settled at `(int 0 2)` on five runs and
-                    // `0 | 1 | 2` on the sixth (2026-09-17).
-                    for &(name, rhs) in &all_candidates {
-                        let Some(Some(base)) = original.get(&name) else {
-                            continue;
-                        };
-                        // Only a DERIVED candidate's return is re-read: an escaped or site-less one
-                        // keeps Pass 2.8's (restored below) — its `any` is what lets the recursive
-                        // call-site specialization sharpen it, where a demand-based `number` would
-                        // not.
-                        if ctx.derived_params(name).is_none() {
-                            continue;
-                        }
-                        // A return this round cannot type stays where it is (⊥, or the last
-                        // round's): falling back to Pass 2.8's demand-based return would put a
-                        // value ABOVE the least fixpoint into a monotone ascent, and nothing
-                        // could bring it back down. What never types at all is restored below.
-                        let Some(mut ret) =
-                            sigs::infer_return_from_form(heap, rhs, Some(name), &ctx)
-                        else {
-                            continue;
-                        };
-                        typed.insert(name);
-                        // A return whose last value appears inside this round's folds into a
-                        // recursive type (`Ty::fold_recursive`, ADR-349) — `json`'s value
-                        // type is `μX. nil | bool | number | string | vector<X> | map<string,
-                        // X>`, confirmed when the next round folds back to it — and the
-                        // widening the parameter ascent applies (`sigs::WIDEN_AFTER_ROUND`)
-                        // is applied to the returns on the same schedule, for what neither
-                        // converges nor folds.
-                        let current = ctx.inferred_fn_sig(name).map(|s| s.ret);
-                        // An interval that moved goes to its infinity (ADR-350), before
-                        // the fold so a moving length does not hide a nesting.
-                        if let Some(prev) = &current {
-                            ret = ret.widen_intervals_against(prev);
-                        }
-                        for prev in current.iter().chain(older_returns.get(&name)) {
-                            if let Some(folded) = Ty::fold_recursive(prev, &ret) {
-                                ret = folded;
-                                break;
-                            }
-                        }
-                        if round >= sigs::WIDEN_AFTER_ROUND {
-                            ret = ret.widened_below(sigs::WIDEN_DEPTH);
-                        }
-                        if let Some(current) = current.clone() {
-                            older_returns.insert(name, current);
-                        }
-                        if current != Some(ret.clone()) {
-                            let mut sig = base.clone();
-                            sig.ret = ret;
-                            ctx.add_inferred_fn_sig(name, sig);
-                            returns_moved = true;
-                            moved_now.insert(name);
-                        }
-                    }
-                    if derived == previous && !returns_moved {
-                        // A live function whose return never typed is still at the floor,
-                        // and the others have been reading it as ⊥. Lift it to Pass 2.8's
-                        // answer (a sound value, above ⊥, so the ascent stays monotone) and
-                        // go again; only a round with nothing left to lift is the fixpoint.
-                        let mut lifted = false;
-                        for (&name, sig) in &original {
-                            if let Some(sig) = sig {
-                                if !typed.contains(&name)
-                                    && ctx.inferred_fn_sig(name).is_some_and(|s| s.ret.is_never())
-                                    && !sig.ret.is_never()
-                                {
-                                    ctx.add_inferred_fn_sig(name, sig.clone());
-                                    lifted = true;
-                                    moved_now.insert(name);
-                                }
-                            }
-                        }
-                        if !lifted {
-                            converged = true;
-                            break;
-                        }
-                        inputs_moved = true;
-                    } else {
-                        inputs_moved = returns_moved;
-                    }
-                    // What the next derivation must re-walk: everything that moved since
-                    // the cache's last walk — this round's movers, plus the earlier ones
-                    // when this round skipped the derivation.
-                    moved = Some(match moved.take() {
-                        Some(mut earlier) if !derivation_ran => {
-                            earlier.extend(moved_now);
-                            earlier
-                        }
-                        _ => moved_now,
-                    });
-                    previous = derived;
-                }
-                site_walks = (site_cache.walks, site_cache.reuses);
-                if !converged {
-                    for (&name, sig) in &original {
-                        if let Some(sig) = sig {
-                            ctx.add_inferred_fn_sig(name, sig.clone());
-                        }
-                    }
-                    ctx.set_derived_params(HashMap::new());
-                    // Sound — every return is back at Pass 2.8's and no parameter is derived
-                    // — and reported (B6): a file whose derivation gave up is checked with
-                    // its parameters unknown, which reads as "zero warnings" otherwise.
-                    out.push((
-                        None,
-                        "checker gave up: the caller-derived parameters and returns did not settle in 32 joint rounds — every parameter is read as unknown in this file".to_string(),
-                    ));
-                } else {
-                    // A candidate that was not derived, or whose return never typed (still at
-                    // the floor): give it Pass 2.8's answer back.
-                    for (&name, sig) in &original {
-                        if let Some(sig) = sig {
-                            if ctx.derived_params(name).is_none()
-                                || (!typed.contains(&name)
-                                    && ctx.inferred_fn_sig(name).is_some_and(|s| s.ret.is_never())
-                                    && !sig.ret.is_never())
-                            {
-                                ctx.add_inferred_fn_sig(name, sig.clone());
-                            }
-                        }
-                    }
-                    // …and the returns of the candidates that were NOT derived (no site, or an
-                    // escape), read in Pass 2.8 before any return was sharpened, are read
-                    // again over the sharper ones.
-                    let undecided: Vec<(Symbol, Value)> = all_candidates
-                        .iter()
-                        .filter(|(name, _)| ctx.derived_params(*name).is_none())
-                        .copied()
-                        .collect();
-                    refresh_returns(heap, &undecided, &mut ctx);
-                }
-            }
-            joint_elapsed = joint_started.elapsed();
-        }
-        // Pass 2.85 (ADR-259): **the declaration must be readable, and it must match what it
-        // annotates.** A `(sig …)` is trusted ahead of every other signature source, so
-        // a declaration the parser silently drops is worse than none at all — the
-        // annotated position widens to `any` and the author is told nothing. Three ways
-        // that used to happen without a word: a misspelled type name or constructor
-        // (`strng`, `(tupel int)`); a sig whose parameter count contradicts its `defn`
-        // (which *suppressed* the correct arity check — the call then type-checked clean
-        // and died at run time); and a sig for a name the file never defines.
-        check_sig_declarations(heap, &forms, file_ns_name.as_deref(), &ctx, &mut out);
-        lint_duplicate_defs(heap, &forms, &mut out);
-        // With the signature passes done, hand the per-function answer to a `file_signatures`
-        // capture if one is armed (a no-op otherwise).
-        capture_file_signatures(heap, &expanded, &ctx);
-        // Pass 2.6: protocol/behaviour conformance. Model `(defprotocol …)` /
-        // `(defbehaviour …)` (from the un-expanded forms + the runtime registry of
-        // imported ones), then check that every `(defimpl …)` provides each declared op
-        // at the right arity, and every `(:implements …)` module *defines* them (read
-        // from the expanded tree, so macro-generated defns count).
-        let protocols = protocol::collect(heap, &forms);
-        protocol::check_impls(heap, &forms, &protocols, &mut out);
-        protocol::check_behaviours(heap, &forms, &expanded, &protocols, &mut out);
-        // Ability call-site checks: the syntactic pass (literals / direct ctor args) runs
-        // now; the same facts go into `ctx` so `check_into`'s inference hook can also flag
-        // a record-typed *variable* passed to an op with no impl.
-        protocol::check_ability_calls(heap, &expanded, &ability_info, &mut out);
-        protocol::check_sealed(&ability_info, &mut out);
-        // Super-ability conformance (ADR-193): an id implementing an ability must also implement
-        // that ability's `:requires` prerequisites.
-        protocol::check_requires(&ability_info, &mut out);
-        // Op names must be unique within a module: two abilities declaring the same op
-        // name would clobber each other's generic function (ADR-172).
-        protocol::check_op_collisions(&ability_info, &mut out);
-        // Multimethod missing-method: a direct `defmulti` generic call whose full argument
-        // tuple is statically known but has no exact method and no `:default` (ADR-179).
-        let multi_info =
-            std::sync::Arc::new(protocol::build_multi_info(heap, &expanded, Some(&visible)));
-        protocol::check_multi_calls(heap, &expanded, &multi_info, &mut out);
-        ctx.set_multi(multi_info);
-        // Ability impl-return conformance: an op declaring `:-> RET` has each of its
-        // impls' bodies checked against that return type (gradual, false-positive-clean).
-        // Runs with `ctx` carrying the ability facts set above (before Pass 2.8).
-        walk::check_impl_returns(heap, &expanded, &ctx, &mut out);
-        // Pass 3: check each expanded form with the accumulated file-globals, plus the
-        // names *this* form guards with `(bound? 'name)` — a deliberately conditional
-        // reference to an ambient another module defines, which must not read as unbound.
-        for &form in &expanded {
-            let mut guarded = HashSet::new();
-            collect_bound_guards(heap, form, &mut guarded);
-            ctx.set_bound_guarded(guarded);
-            check_into(heap, form, &ctx, &mut out);
-        }
-        ctx.set_bound_guarded(HashSet::new()); // the exemption is per-form; don't leak it
-                                               // Pass 3.5: flag non-tail self-recursion (overflow footgun — Brood loops
-                                               // must be tail-recursive). Walks the same expanded tree.
-        for &form in &expanded {
-            recursion::check_recursion(heap, form, &mut out);
-        }
-        // Pass 3.6: sealed-`match` exhaustiveness (ADR-187 part 2). Reads the *un-expanded*
-        // forms (a `match` survives only pre-expansion) with `ctx` carrying the file's sigs
-        // and abilities, so a scrutinee typed as a sealed ability resolves to its record-id
-        // set. Sound: anything it can't prove total defers to silence.
-        // (No backfill here: this pass reads the UN-expanded forms and positions each warning
-        // at its `match`, which the reader positioned. A backfill from "some top-level form"
-        // would put a wrong location on a warning, which is worse than none.)
-        exhaustive::check_matches(heap, &forms, &ctx, &mut out);
-        // Pass 3.7: guard purity (advisory) — flag an effectful primitive in a `:when`
-        // guard. Also reads the *un-expanded* forms (a `:when` guard lowers to a plain
-        // `if`-test on expansion). A guard runs on rejected clauses and, in a `receive`,
-        // re-runs per mailbox scan, so an effect there fires on paths never selected.
-        guard_effects::check_guards(heap, &forms, &mut out);
-        // Pass 3.8: discarded catch (advisory) — a `(catch e <constant>)` that swallows the
-        // error unread. Also reads the *un-expanded* forms: a `catch` clause survives only
-        // pre-expansion, and only there is an author-written catch distinguishable from
-        // the one `assert-error` builds.
-        discarded_catch::check_discarded_catches(heap, &forms, &mut out);
-        // Pass 3.9: declared properties (ADR-351) — a `:pure` function whose body reaches
-        // an effect, a `:total` function whose self-call decreases nothing, and a
-        // `ui-memo` thunk that performs an effect. (`:total`'s coverage half is the walk's:
-        // a `match` failure it cannot prove unreachable, at the failure.)
-        properties::check_properties(heap, &expanded, &ctx, &mut out);
-        // (The macro binding-capture lint was retired when automatic binding hygiene
-        // shipped — ADR-066 amendment: a template's `let`/`fn` binders are alpha-renamed
-        // to fresh gensyms by the expander, so a plain literal binder can no longer
-        // capture spliced caller code and the lint would only false-positive.)
-        // Pass 4.5: unused `(:use …)` imports — a `:use` clause that contributes no
-        // symbol ever referenced in the file's expanded forms. Read the `:use` module
-        // names from the *unexpanded* header (the clause is gone after expansion), then
-        // group the imported qualified names by source module and scan the expanded tree
-        // for references. Warn only when the module contributed ≥1 public name and none
-        // appear.
-        {
-            // A file with an unresolved BARE reference has, by construction, an import
-            // table that doesn't cover everything it names — so "module M contributed
-            // nothing you reference" is not provable: the name we failed to resolve may
-            // be M's. Emitting both is self-contradictory advice, and the dangerous half
-            // is this one ("delete the import your code needs"). So the lint stands down
-            // whenever the unbound diagnostic fired on a bare name. It stays fully live
-            // for a file that resolves cleanly, which is the case it exists for.
-            let unresolved_bare = out.iter().any(|(_, m)| {
-                m.strip_prefix("unbound symbol: ")
-                    .is_some_and(|rest| !rest.split(' ').next().unwrap_or("").contains('/'))
-            });
-            let use_modules = extract_use_module_names(heap, &forms);
-            if !use_modules.is_empty() && !unresolved_bare {
-                // Both trees. A MACRO head — `defserver` from `gen`, `describe` from
-                // `test` — is gone from the expanded forms by definition, so a module
-                // imported only for its macros read as contributing nothing. (The
-                // comment below once claimed a "macro-only module is silent"; that
-                // holds only for a module exporting *nothing but* macros, which leaves
-                // it out of the import table entirely. `gen` exports functions too, so
-                // it is in the table, and a file using just `defserver` was told to
-                // delete the import it needs.) Counting a name that expansion later
-                // discards can only SUPPRESS a warning, which is the safe direction for
-                // a lint whose bad advice is "remove a load-bearing import".
-                let mut all_refs = collect_all_syms(heap, &expanded);
-                all_refs.extend(collect_all_syms(heap, &forms));
-                let imported = heap.imported_pairs();
-                // Group each module's contributed names by source module. We record BOTH
-                // the qualified name AND the local (unqualified) alias the file actually
-                // calls — a `(:use …)` import is normally referenced *unqualified*
-                // (`*green*`, not `theme/*green*`), so matching only the qualified form
-                // (the old bug) reported every unqualified-used import as unused.
-                let mut module_names: std::collections::HashMap<String, Vec<Symbol>> =
-                    std::collections::HashMap::new();
-                for (local, qual) in &imported {
-                    let qname = value::symbol_name(*qual);
-                    if let Some(slash) = qname.rfind('/') {
-                        let e = module_names.entry(qname[..slash].to_string()).or_default();
-                        e.push(*local);
-                        e.push(*qual);
-                    }
-                }
-                // Module prefixes referenced via a *qualified* `mod/name` symbol anywhere
-                // in the file — so a file that reaches a module only by qualified reference
-                // (including to its module-private names, which aren't imported at all) still
-                // counts the `:use` as load-bearing.
-                let mut qualified_mods: HashSet<String> = HashSet::new();
-                for &s in &all_refs {
-                    let n = value::symbol_name(s);
-                    if let Some(slash) = n.rfind('/') {
-                        qualified_mods.insert(n[..slash].to_string());
-                    }
-                }
-                for mod_name in &use_modules {
-                    // Only actionable when the module contributed importable names (it's in
-                    // the table) — a failed require / macro-only / empty module is silent.
-                    if let Some(names) = module_names.get(mod_name) {
-                        let used = names.iter().any(|s| all_refs.contains(s))
-                            || qualified_mods.contains(mod_name);
-                        if !used {
-                            out.push((None, format!("unused :use import: {mod_name}")));
-                        }
-                    }
-                }
-            }
-        }
-        // (Unused module-private `defn`s are checked at the *whole-project* layer
-        // — `std/tool/project.blsp` `project-unused-private-warnings` — not here: a
-        // `--` name is a convention, not enforced privacy, so the editor legitimately
-        // references it from other modules and tests by its qualified name, which a
-        // single-file pass can't see. A per-file check produced false positives.)
-        // The two per-file budgets that DECLINE rather than answer (B6, 2026-09-17): past
-        // the specialization fuel every re-typing question answers "unknown", and past
-        // the expression depth cap a nest types as unknown. Both are sound and both
-        // used to be silent, so a file the checker had largely given up on read as
-        // checked. One line each, at the end, counted like a warning.
-        if sigs::fuel_exhausted() {
-            out.push((
-                None,
-                format!(
-                    "checker gave up: the specialization budget ({} re-typings) ran out — every later call-site specialization in this file read as unknown",
-                    sigs::MAX_SPECIAL_FUEL
-                ),
-            ));
-        }
-        let depth_hits = infer::expr_ty_depth_hits();
-        if depth_hits > 0 {
-            out.push((
-                None,
-                format!(
-                    "checker gave up: {depth_hits} expression{} nested past the depth cap ({}) read as unknown",
-                    if depth_hits == 1 { "" } else { "s" },
-                    infer::MAX_EXPR_TY_DEPTH
-                ),
-            ));
-        }
-        if derive_dbg {
-            eprintln!(
-                "[derive] {}: joint fixpoint {} ms ({} ms deriving over {} rounds, {} form walks, {} reused) of {} ms",
-                file_ns_name.as_deref().unwrap_or("<no module>"),
-                joint_elapsed.as_millis(),
-                joint_derive_elapsed.as_millis(),
-                joint_rounds,
-                site_walks.0,
-                site_walks.1,
-                file_started.elapsed().as_millis(),
-            );
-        }
+            forms,
+            roots_base,
+            extra_required,
+            strict,
+            file_ns,
+            &mut out,
+        )
     }));
-    // Balance the GC roots pushed for pass 1 (input forms + their expansions) and
+    // Balance the GC roots pushed while expanding (input forms + their expansions) and
     // restore the compile-namespace state — on the clean AND the panic path.
     heap.truncate_roots(roots_base);
     if let Some(saved) = saved_load_path {
@@ -2979,31 +1980,969 @@ fn check_forms(
     heap.set_ns_known_names(prev_known);
     heap.set_ns_known_by_module(prev_by_module);
     heap.set_imports(prev_imports);
-    if let Err(p) = panicked {
-        let msg = if let Some(s) = p.downcast_ref::<&str>() {
-            (*s).to_string()
-        } else if let Some(s) = p.downcast_ref::<String>() {
-            s.clone()
+    if let Err(payload) = panicked {
+        let message = if let Some(text) = payload.downcast_ref::<&str>() {
+            (*text).to_string()
+        } else if let Some(text) = payload.downcast_ref::<String>() {
+            text.clone()
         } else {
             "non-string panic payload".to_string()
         };
         out.push((
             None,
-            format!("checker internal error (advisory pass aborted; please report): {msg}"),
+            format!("checker internal error (advisory pass aborted; please report): {message}"),
         ));
     }
     // One finding per site: a macro that copies a sub-form into two branches — `match`
     // falls through to a clause from both its tag test and its shape test — walks the same
-    // positioned source twice, and reported `inc: … got string` twice on one line. First
-    // occurrence wins, so the order is unchanged.
+    // positioned source twice. First occurrence wins, so the order is unchanged.
     let mut seen = HashSet::new();
-    out.retain(|(pos, msg)| seen.insert((pos.map(|p| (p.line, p.col)), msg.clone())));
+    out.retain(|(pos, message)| seen.insert((pos.map(|p| (p.line, p.col)), message.clone())));
     out
 }
 
-/// A `(def NAME RHS)` form → `(NAME, RHS)`. `None` for anything else — a
-/// non-`def` head, a `(defmacro …)` (which stays a special form, never expands to
-/// `def`), or a malformed def. Used by Gap A's undeclared-global type inference.
+/// The most rounds the joint fixpoint of caller-derived parameters and returns runs
+/// before it gives up (and says so).
+const MAX_JOINT_ROUNDS: usize = 32;
+
+/// The most rounds the same-file return inference runs before the names still moving
+/// fall back to an `any` return (and the file says so).
+const MAX_RETURN_ROUNDS: usize = 16;
+
+/// Where a file's check spent its time, printed under `BROOD_DERIVE_DBG`.
+#[derive(Default)]
+struct DeriveTiming {
+    /// The whole joint fixpoint: derivation walks plus return re-inference.
+    joint: std::time::Duration,
+    /// The derivation walks alone.
+    deriving: std::time::Duration,
+    rounds: u32,
+    site_walks: u32,
+    site_reuses: u32,
+}
+
+fn derive_debug() -> bool {
+    std::env::var_os("BROOD_DERIVE_DBG").is_some()
+}
+
+/// Every pass of a file check, in the order they run. Each pass reads what the ones
+/// before it recorded on `ctx`, so the order is load-bearing.
+fn check_file_passes(
+    heap: &mut Heap,
+    forms: &[Value],
+    roots_base: usize,
+    extra_required: &[String],
+    strict: bool,
+    file_ns: Option<Symbol>,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    let file_started = std::time::Instant::now();
+    let (forms, expanded, import_scope) = expand_and_load(heap, forms, roots_base, out);
+    let (mut ctx, visible) =
+        collect_file_scope(heap, &forms, &expanded, extra_required, strict, file_ns);
+    let file_ns_name: Option<String> = file_ns.map(value::symbol_name);
+    let multi_info =
+        std::sync::Arc::new(protocol::build_multi_info(heap, &expanded, Some(&visible)));
+    install_type_vocabulary(
+        heap,
+        &expanded,
+        file_ns_name.as_deref(),
+        import_scope,
+        &multi_info,
+        out,
+    );
+    let ability_info = register_declarations(
+        heap,
+        &forms,
+        &expanded,
+        &mut ctx,
+        file_ns_name.as_deref(),
+        &visible,
+    );
+    infer_global_value_types(heap, &expanded, &mut ctx);
+    let candidates = infer_same_file_functions(
+        heap,
+        &forms,
+        &expanded,
+        &mut ctx,
+        file_ns_name.as_deref(),
+        out,
+    );
+    let mut timing = DeriveTiming::default();
+    let joint_started = std::time::Instant::now();
+    derive_caller_params(heap, &expanded, &candidates, &mut ctx, out, &mut timing);
+    timing.joint = joint_started.elapsed();
+    // A `(sig …)` is trusted ahead of every other signature source, so one the parser
+    // drops, or that contradicts its `defn`, is worse than none (ADR-259).
+    check_sig_declarations(heap, &forms, file_ns_name.as_deref(), &ctx, out);
+    lint_duplicate_defs(heap, &forms, out);
+    // With the signatures settled, hand them to a `file_signatures` capture if armed.
+    capture_file_signatures(heap, &expanded, &ctx);
+    ctx.set_multi(multi_info.clone());
+    check_conformance(
+        heap,
+        &forms,
+        &expanded,
+        &ability_info,
+        &multi_info,
+        &ctx,
+        out,
+    );
+    // The body walk, with the names each form guards with `(bound? 'name)` — a
+    // deliberately conditional reference to an ambient another module defines, which
+    // must not read as unbound. The exemption is per form.
+    for &form in &expanded {
+        let mut guarded = HashSet::new();
+        collect_bound_guards(heap, form, &mut guarded);
+        ctx.set_bound_guarded(guarded);
+        check_into(heap, form, &ctx, out);
+    }
+    ctx.set_bound_guarded(HashSet::new());
+    run_shape_lints(heap, &forms, &expanded, &ctx, out);
+    lint_unused_imports(heap, &forms, &expanded, out);
+    report_exhausted_budgets(out);
+    if derive_debug() {
+        eprintln!(
+            "[derive] {}: joint fixpoint {} ms ({} ms deriving over {} rounds, {} form walks, {} reused) of {} ms",
+            file_ns_name.as_deref().unwrap_or("<no module>"),
+            timing.joint.as_millis(),
+            timing.deriving.as_millis(),
+            timing.rounds,
+            timing.site_walks,
+            timing.site_reuses,
+            file_started.elapsed().as_millis(),
+        );
+    }
+}
+
+/// Macroexpand and namespace-resolve every form, so the analysed tree matches what `eval`
+/// will see, and make the file's imports and required modules resolvable for the rest of
+/// the check. Returns the forms and their expansions re-read from the root stack (a
+/// module load can collect at any depth and relocate them), plus the header's import
+/// scope.
+///
+/// A `(defmodule … (:use …))` header populates the import table directly from its
+/// clauses (`setup_check_imports`) rather than evaluating the expanded header, which
+/// re-runs per-file O(globals) scans and made a whole-project check O(files²). A
+/// standalone `(require …)` or `*load-path*` form is evaluated, so the macros and globals
+/// it brings in resolve. A compile error is a real diagnostic (the file would fail to
+/// load); the un-expanded form still feeds the walk so the other lints run.
+fn expand_and_load(
+    heap: &mut Heap,
+    forms: &[Value],
+    roots_base: usize,
+    out: &mut Vec<(Option<Pos>, String)>,
+) -> (Vec<Value>, Vec<Value>, ImportScope) {
+    let root = heap.global();
+    for &f in forms {
+        heap.push_root(f);
+    }
+    let n = forms.len();
+    let mut import_scope = ImportScope::default();
+    for j in 0..n {
+        // Re-read the form from the root stack, NOT the `forms` slice: an earlier
+        // iteration's module load can collect at any depth (ADR-061) and relocate it.
+        let form = heap.root_at(roots_base + j);
+        // The checker reads the author's code: no optimiser source rewrites here.
+        let _plain = crate::eval::macros::NoSourceRewrites::enter();
+        let expansion = match crate::eval::macros::compile(heap, form, root) {
+            Ok(expansion) => expansion,
+            Err(err) => {
+                // A macro's own `(error …)` during expansion carries no position; the
+                // form it was expanding does. Report there rather than nowhere.
+                out.push((
+                    err.pos.or_else(|| heap.form_pos_only(forms[j])),
+                    format!("does not compile: {}", err.message),
+                ));
+                // `compile` infers `(require …)` from qualified references, and that load
+                // can collect, so `form` above is stale here.
+                heap.root_at(roots_base + j)
+            }
+        };
+        // Root the expansion before anything below can collect.
+        heap.push_root(expansion);
+        let form = heap.root_at(roots_base + j);
+        if let Some(message) = reserved_def_warning(heap, expansion) {
+            out.push((heap.form_pos_only(form), message));
+        }
+        if is_ns_header(heap, form) {
+            // A later `(defmodule …)` opens a new region (ADR-223): switch the compile-ns
+            // and forward-ref set to it, as `%in-ns` does at run time.
+            if let Some(module) = crate::eval::macros::defmodule_form_name(heap, form) {
+                let rooted = heap.root_module_name(module);
+                heap.set_compile_ns(Some(rooted));
+                heap.activate_ns_region(module);
+            }
+            import_scope.extend(setup_check_imports(heap, form));
+        } else if is_require_form(heap, expansion) || is_load_path_form(heap, expansion) {
+            let _ = crate::eval::eval(heap, expansion, root);
+        }
+    }
+    // What the modules loaded so far refer to, transitively — so the inference passes read
+    // a loaded body all the way down to the leaf that declares its type.
+    materialise_referenced_modules(heap);
+    // Layout on the root stack: `forms` at `roots_base..+n`, expansions at `+n..+2n`.
+    let forms: Vec<Value> = (0..n).map(|j| heap.root_at(roots_base + j)).collect();
+    let expanded: Vec<Value> = (0..n).map(|j| heap.root_at(roots_base + n + j)).collect();
+    (forms, expanded, import_scope)
+}
+
+/// The file's scope on a fresh `Ctx`: every name it defines (top level or nested — a
+/// `defn` inside `describe` still defines a global once it runs), the module prefixes the
+/// image knows, the modules it requires, and the qualified names it writes. Returns the
+/// `Ctx` and the file's WORLD — what its registry reads may see.
+fn collect_file_scope(
+    heap: &mut Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    extra_required: &[String],
+    strict: bool,
+    file_ns: Option<Symbol>,
+) -> (Ctx, HashSet<String>) {
+    let mut ctx = Ctx::default();
+    ctx.set_strict(strict);
+    // Whole-file mode: enable operand / value-slot unbound checking (every
+    // top-level def is accumulated below, and the project image is loaded, so an
+    // unresolved operand is genuinely unbound — not the ambiguous free variable a
+    // bare fragment might carry).
+    ctx.enable_operand_checks();
+    // The set of namespace prefixes the loaded image knows — every `mod/` for which
+    // some `mod/<name>` global exists (the requires above are already evaluated). A
+    // qualified reference whose module isn't here can't be proven unbound (it may be
+    // defined dynamically or in an unloaded file), so the unbound check stays silent
+    // on it; a typo in a *known* module is still flagged. See `Ctx::known_ns`.
+    // Cached + shared (`Heap::known_ns_prefixes`): rebuilding this by scanning all globals
+    // per file was the residual O(files²) after the header-eval redesign — an O(1) `Arc`
+    // clone on all but the first file of a whole-project check.
+    ctx.set_known_ns_arc(heap.known_ns_prefixes());
+    // The unrequired-module lint (KI-17): `required` is what THIS file pulls in (its
+    // `:use`/`require` + own ns); `raw_qualified` restricts the lint to references the
+    // user literally wrote. In a whole-project check every module is bound image-wide,
+    // so a written `mod/name` whose `mod` is absent here resolves only by load-order luck.
+    let mut required = collect_required_modules(heap, forms, file_ns);
+    required.extend(extra_required.iter().cloned());
+    // Package-rooted namespaces (ADR-070): a `(:use b)`/`require` target roots to
+    // `pkg/b` at load, and the resolved `pkg/b/name` references this lint checks are
+    // rooted too — so the reachable set must carry each entry's ROOTED form as well,
+    // or an intra-package reference is falsely flagged "unrequired". `root_module_name`
+    // is identity for an external / std / already-rooted name, so the unrooted entries
+    // stay valid too (both forms are kept). Inert outside a package context.
+    let rooted: Vec<String> = required
+        .iter()
+        .map(|m| value::symbol_name(heap.root_module_name(value::intern(m))))
+        .collect();
+    required.extend(rooted);
+    let raw_qualified = collect_raw_qualified(heap, forms);
+    // The file's WORLD (B8): what its registry reads may see. Wider than the KI-17 set
+    // — a std module reached only by a qualified `tempo/new!` is loaded on first use
+    // (ADR-335) and needs no `:use`, so every qualified prefix counts too — and closed
+    // through the standard library: the driver closes over PROJECT files, so a std
+    // module is a leaf there, but what it requires is in the file's world as well
+    // (`tempo` reaches `datetime`), and a value the file can construct must never be
+    // read as invisible.
+    let mut visible: HashSet<String> = required.clone();
+    visible.extend(
+        raw_qualified
+            .iter()
+            .filter_map(|q| q.rfind('/').map(|slash| q[..slash].to_string())),
+    );
+    close_through_std(heap, &mut visible);
+    ctx.set_required_mods(required);
+    ctx.set_raw_qualified(raw_qualified);
+    for &form in expanded {
+        collect_def_names(heap, form, &mut ctx);
+    }
+    (ctx, visible)
+}
+
+/// The type vocabulary a `sig` may name, installed before any sig is parsed: sealed
+/// abilities as types (ADR-181, so `(sig f (Shape -> …))` resolves to the union of its
+/// members' shapes), which ids are records (the tiebreak for a sealed member that also
+/// spells a built-in kind), the type aliases (ADR-326), and the operator sugar's domains
+/// (ADR-299).
+fn install_type_vocabulary(
+    heap: &Heap,
+    expanded: &[Value],
+    file_ns_name: Option<&str>,
+    mut import_scope: ImportScope,
+    multi_info: &protocol::MultiInfo,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    annot::set_ability_types(protocol::ability_type_table(heap, expanded));
+    annot::set_record_ids(protocol::record_id_names(heap, expanded));
+    out.append(&mut import_scope.unknown_only);
+    annot::set_type_aliases(
+        protocol::type_alias_table(heap, expanded, file_ns_name),
+        file_ns_name.map(str::to_string),
+        import_scope,
+    );
+    // A `deftype` whose shape exceeds the lattice's node budget (`MAX_TY_NODES`) is
+    // widened to its bare tags by the constructors, silently: every field reads as
+    // unrefined. A written shape that came back with no fields (or no positions) is
+    // that case exactly; say so at the declaration.
+    for &form in expanded {
+        let mut aliases = HashMap::new();
+        protocol::collect_register_types_into(heap, form, None, &mut aliases);
+        let mut aliases: Vec<(String, Value)> = aliases.into_iter().collect();
+        aliases.sort_by(|a, b| a.0.cmp(&b.0)); // report order, not hash order (B8)
+        for (name, ty_form) in aliases {
+            let Some(ty) = annot::parse_type(heap, ty_form) else {
+                continue;
+            };
+            let declares_shape = list_items(heap, ty_form)
+                    .and_then(|items| items.first().copied())
+                    .is_some_and(|h| matches!(h, Value::Sym(s) if value::symbol_is(s, "record") || value::symbol_is(s, "tuple")));
+            if declares_shape && ty.record_fields().is_none() && ty.positional_elems().is_none() {
+                out.push((
+                        heap.form_pos_only(form),
+                        format!(
+                            "deftype {name}: the shape exceeds the checker's budget of {} nodes and is read as a bare `{}` — every field is unrefined; split it into named parts",
+                            crate::types::MAX_TY_NODES,
+                            ty
+                        ),
+                    ));
+            }
+        }
+    }
+    // The operator sugar's domains: `number` plus the records `num/*` / `compare-to`
+    // have methods for, from this file's `defmethod`s + the registry.
+    sigs::set_operator_domains(protocol::operator_domains(multi_info));
+}
+
+/// Register the file's `(sig …)` declarations — the authoritative signatures the call
+/// check consults first — and build its ability facts. Two sources of declarations, fed
+/// through the same parsers and namespace qualification (`register_declared_sig`):
+///
+///  (a) the *un-expanded* top-level `(sig …)` forms, where a hand-written declaration
+///      is legible (the `sig` macro's own output is dropped from the analysed tree); and
+///  (b) every `(%register-sig 'name 'type)` in the *expanded* tree — what a
+///      macro-emitted sig lowers to (`defrecord` nests its sigs in a `(do …)` that (a)
+///      cannot see). The overlap with (a) re-registers idempotently.
+///
+/// A declared name is qualified to the file's namespace exactly as the resolve pass
+/// qualifies a def head, so `(sig g …)` inside `(defmodule ns …)` keys under `ns/g`.
+fn register_declarations(
+    heap: &mut Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    ctx: &mut Ctx,
+    file_ns_name: Option<&str>,
+    visible: &HashSet<String>,
+) -> std::sync::Arc<protocol::AbilityInfo> {
+    // Building a `(sig name type)` form needs `&mut heap`, so collect first and
+    // register after — GC is blocked for the whole check, so the handles stay live.
+    let mut macro_sig_forms: Vec<Value> = Vec::new();
+    for &form in expanded {
+        collect_register_sig_forms(heap, form, &mut macro_sig_forms);
+    }
+    // THIS file's records' declared field types, BEFORE any other sig is parsed: a
+    // `(sig f (pt -> …))` resolves the record NAME to a shape carrying them
+    // (`annot::record_ty`), and the file is not loaded while it is checked, so the
+    // constructor's sig — where `defrecord` puts the field types — is nowhere else.
+    // A constructor's sig is the one whose name IS a registered record id and whose
+    // result is a record shape.
+    {
+        let mut field_types = HashMap::new();
+        for &form in &macro_sig_forms {
+            let Some((name, sig)) = annot::parse_sig_decl(heap, form) else {
+                continue;
+            };
+            let id = value::symbol_name(qualify_decl_name(ctx, file_ns_name, name));
+            if let Some(fields) = sig.ret.record_fields() {
+                field_types.entry(id).or_insert_with(|| fields.clone());
+            }
+        }
+        annot::set_record_field_types(field_types);
+    }
+    // The ability facts and the sealed-op occurrence-typing domains go in before any
+    // pass runs `sig_of`, so an imported function's inferred sig is never cached
+    // without the sealed-op demand (ADR-190). Restricted to the file's world (B8):
+    // another file's imported abilities, left in the process registry by checking it
+    // first, are none of this file's business.
+    let ability_info = std::sync::Arc::new(protocol::build_ability_info_visible(
+        heap,
+        expanded,
+        Some(visible),
+    ));
+    annot::set_sealed_op_domains(protocol::build_sealed_op_domains(&ability_info));
+    // On the ctx from here too: the demand walk asks `is_ability_op` to tell an op
+    // function from a same-file function spelling its name (ADR-350).
+    ctx.set_ability(ability_info.clone());
+    for &form in forms.iter().chain(&macro_sig_forms) {
+        register_declared_sig(heap, ctx, file_ns_name, form);
+    }
+    ability_info
+}
+
+/// The value type of each *undeclared* global defined exactly once by `(def g
+/// <non-fn-expr>)`: the RHS's `expr_ty` becomes `g`'s current-image type, read as
+/// `dynamic_within` (the `∩` relation — reload-safe, warns only on provable
+/// disjointness). Skipped: a global defined more than once, a macro, a dynamic or
+/// earmuffed variable (rebound over its lifetime), and a function value (its arrow is
+/// inferred separately).
+///
+/// Reads `top_level_defs`, not `expanded`, so the `def` inside a `def-`'s `(do (def g …)
+/// (%mark-private 'g))` is seen.
+fn infer_global_value_types(heap: &Heap, expanded: &[Value], ctx: &mut Ctx) {
+    let def_count = def_counts(heap, expanded);
+    for form in top_level_defs(heap, expanded) {
+        let Some((name, rhs)) = def_name_and_value(heap, form) else {
+            continue;
+        };
+        // An earmuffed `*name*` is dynamic by convention (the lazy-init `(when (nil? *g*)
+        // (def *g* …))` pattern), so pinning it to its load-time value would false-positive
+        // once reassigned — and flow into the return of every function that reads it.
+        if value::is_gensym(name)
+            || def_count.get(&name) != Some(&1)
+            || ctx.is_file_macro(name)
+            || value::is_dynamic(name)
+            || infer::is_earmuffed(name)
+        {
+            continue;
+        }
+        if let Some(ty) = infer::expr_ty(heap, rhs, ctx) {
+            if !ty.contains_tag(value::Tag::Fn) && !ty.contains_tag(value::Tag::Native) {
+                ctx.add_inferred_value_ty(name, ty);
+            }
+        }
+    }
+}
+
+/// How many times each name is `def`'d anywhere in the expanded tree.
+fn def_counts(heap: &Heap, expanded: &[Value]) -> HashMap<Symbol, usize> {
+    let mut counts = HashMap::new();
+    for &form in expanded {
+        count_defs(heap, form, &mut counts);
+    }
+    counts
+}
+
+/// The functions whose signatures the file infers: every top-level `(def name rhs)`
+/// defined once, undeclared, and not a macro, dynamic variable or gensym.
+fn inference_candidates(heap: &Heap, expanded: &[Value], ctx: &Ctx) -> Vec<(Symbol, Value)> {
+    let def_count = def_counts(heap, expanded);
+    top_level_defs(heap, expanded)
+        .into_iter()
+        .filter_map(|form| {
+            let (name, rhs) = def_name_and_value(heap, form)?;
+            (def_count.get(&name) == Some(&1)
+                && !ctx.is_file_macro(name)
+                && !value::is_dynamic(name)
+                && !value::is_gensym(name)
+                && ctx.declared_sig(name).is_none())
+            .then_some((name, rhs))
+        })
+        .collect()
+}
+
+/// **Same-file function inference.** The file being checked isn't loaded, so `sig_of`'s
+/// loaded-closure inference can't see its own `(defn …)`s. Infer each candidate's return
+/// from its FORM (`sigs::infer_return_from_form`) and record it, with its inferred
+/// parameter demands (ADR-190, which under-constrain, so a flagged argument genuinely
+/// errors), so a same-file call flows the result as a loaded-function call does.
+///
+/// A bounded fixpoint resolves callees leaf-up: `infer_return_from_form` defers until
+/// every function its return depends on is recorded. Runs after the global value types,
+/// which a body may read. Returns the candidates, which the caller-derived parameter
+/// pass derives next.
+fn infer_same_file_functions(
+    heap: &Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    ctx: &mut Ctx,
+    file_ns_name: Option<&str>,
+    out: &mut Vec<(Option<Pos>, String)>,
+) -> Vec<(Symbol, Value)> {
+    let derive_dbg = derive_debug();
+    let candidates = inference_candidates(heap, expanded, ctx);
+    // Each candidate's form stays reachable for call-site specialization
+    // (`sigs::specialized_ret`): a call whose flat inferred return is `any` re-types the
+    // body under the call's own argument types.
+    for &(name, rhs) in &candidates {
+        ctx.add_fn_form(name, rhs);
+    }
+    // A multi-clause `defn`'s clauses — read from the UN-EXPANDED form, the only place a
+    // pattern- or `:when`-dispatched definition still has clauses (ADR-226) — go in BEFORE
+    // the fixpoint: a same-file caller typed inside it needs the arms. The per-arm
+    // signatures are derived again after the fixpoint, when every callee's return is final.
+    let mut clause_defs: Vec<(Symbol, Vec<Value>)> = Vec::new();
+    for &form in forms {
+        if let Some((name, clauses)) = defn_clauses(heap, form) {
+            let qualified = qualify_decl_name(ctx, file_ns_name, name);
+            if let Some(arms) = sigs::infer_overload_from_clauses(heap, &clauses, ctx) {
+                ctx.add_inferred_overload(qualified, arms);
+            }
+            ctx.add_clause_arms(qualified, clauses.clone());
+            clause_defs.push((qualified, clauses));
+        }
+    }
+    // Inline PATTERN-clause `fn` literals get the same surface record, keyed by their
+    // printed clause-head list: the expanded tree holds only the lowered `match*` lambda,
+    // whose embedded `[:match-error … (quote heads)]` data is how
+    // `sigs::clause_lambda_ret` finds its way back here from a combinator call site.
+    for &form in forms {
+        record_fn_literal_clauses(heap, form, ctx);
+        lint_unused_pattern_binders(heap, form, out);
+    }
+    // The names still moving when the bound ends the ascent: a value on an ascending chain
+    // cut short is an UNDER-approximation, so each falls back to its demands with an `any`
+    // return (sound), and the file says so.
+    let mut still_moving: Vec<Symbol> = Vec::new();
+    let mut older_returns: HashMap<Symbol, Ty> = HashMap::new();
+    for round in 0..MAX_RETURN_ROUNDS {
+        still_moving.clear();
+        for &(name, rhs) in &candidates {
+            let Some(ret) = sigs::infer_return_from_form(heap, rhs, Some(name), ctx) else {
+                continue;
+            };
+            let current = ctx.inferred_fn_sig(name).map(|s| s.ret);
+            let ret = ascend_return(ret, current.as_ref(), older_returns.get(&name), round);
+            if let Some(current) = current.clone() {
+                older_returns.insert(name, current);
+            }
+            if current != Some(ret.clone()) {
+                // Parameters are body-derived (independent of this fixpoint, which only
+                // resolves returns), so recomputing them is stable.
+                let sig = match sigs::infer_params_from_form(heap, rhs, ctx) {
+                    Some(demands) => demands.into_sig(ret),
+                    None => crate::types::Sig::new(Vec::new(), ret),
+                };
+                if derive_dbg {
+                    eprintln!(
+                        "[derive] same-file return {} -> {}",
+                        value::symbol_name_ref(name),
+                        sig.ret
+                    );
+                }
+                ctx.add_inferred_fn_sig(name, sig);
+                still_moving.push(name);
+            }
+        }
+        if still_moving.is_empty() {
+            break;
+        }
+    }
+    for &name in &still_moving {
+        let rhs = candidates
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|&(_, rhs)| rhs);
+        let sig = rhs
+            .and_then(|rhs| sigs::infer_params_from_form(heap, rhs, ctx))
+            .map(|demands| demands.into_sig(Ty::ANY))
+            .unwrap_or_else(|| crate::types::Sig::new(Vec::new(), Ty::ANY));
+        ctx.add_inferred_fn_sig(name, sig);
+        out.push((
+            rhs.and_then(|rhs| heap.form_pos_only(rhs)),
+            format!(
+                "checker gave up: the return of {} was still moving after {MAX_RETURN_ROUNDS} inference rounds — read as unknown here and by every caller",
+                value::symbol_name_ref(name)
+            ),
+        ));
+    }
+    // A **multi-arm** candidate has no single signature, so record each arm's own; the
+    // call check rules a call out only when every arity-relevant arm rejects it.
+    for &(name, rhs) in &candidates {
+        if let Some(arms) = sigs::infer_overload_from_form(heap, rhs, ctx) {
+            ctx.add_inferred_overload(name, arms);
+        }
+    }
+    // …and from the un-expanded `defn` clauses, now that every same-file return an arm's
+    // tail may name has settled.
+    for (qualified, clauses) in &clause_defs {
+        if let Some(arms) = sigs::infer_overload_from_clauses(heap, clauses, ctx) {
+            ctx.add_inferred_overload(*qualified, arms);
+        }
+    }
+    // A candidate whose return stayed deferred (e.g. it returns an ability op) still gets
+    // its parameter demands with an `any` return, so its callers are argument-checked.
+    for &(name, rhs) in &candidates {
+        if ctx.inferred_fn_sig(name).is_none() {
+            if let Some(demands) = sigs::infer_params_from_form(heap, rhs, ctx) {
+                ctx.add_inferred_fn_sig(name, demands.into_sig(Ty::ANY));
+            }
+        }
+    }
+    candidates
+}
+
+/// One step of a return's ascent (ADR-349/350), shared by both return fixpoints: an
+/// interval that moved since the last round goes to its infinity, a value that nests a
+/// previous one folds into a recursive type, and past the early rounds the rest is cut to
+/// a depth — so `(cons x (self …))`, ⊥ in its first round, cannot lengthen forever.
+fn ascend_return(mut ret: Ty, current: Option<&Ty>, older: Option<&Ty>, round: usize) -> Ty {
+    if let Some(previous) = current {
+        ret = ret.widen_intervals_against(previous);
+    }
+    for previous in current.into_iter().chain(older) {
+        if let Some(folded) = Ty::fold_recursive(previous, &ret) {
+            ret = folded;
+            break;
+        }
+    }
+    if round >= sigs::WIDEN_AFTER_ROUND {
+        ret = ret.widened_below(sigs::WIDEN_DEPTH);
+    }
+    ret
+}
+
+/// **Caller-derived parameter types** (ADR-341). The union of what a function's call sites
+/// in this file hand its parameters is a sound binding for the walk of its body, and for
+/// the return its same-file callers read — where same-file inference bound the parameters
+/// to their bottom-up DEMANDS alone (`(+ i 1)` says `number`; the callers say `int`). This
+/// is what lets a leaf `sig` be enough: `int` flows from the public entry down through
+/// every helper without a declaration on each.
+///
+/// Every candidate is derived, public or private: a derived type is a fact about THIS
+/// FILE's calls, so a body warning under it says "every call in this file would fail here",
+/// true whatever callers exist elsewhere; a caller in another file reads the demand-based
+/// loaded inference.
+///
+/// The derivation and the returns feed each other (a helper's sharper return is a caller's
+/// sharper argument), so this is a JOINT least fixpoint. Starting from the demand-based
+/// returns, two helpers that hand each other an index through their returns could never
+/// leave `number`, so the returns START at ⊥ and rise with the parameters (Kleene), and only
+/// the fixpoint is used. A round that cannot type a return keeps the demand-based one. No
+/// fixpoint within [`MAX_JOINT_ROUNDS`]: everything is restored as it was, and the file
+/// says so.
+fn derive_caller_params(
+    heap: &Heap,
+    expanded: &[Value],
+    all_candidates: &[(Symbol, Value)],
+    ctx: &mut Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+    timing: &mut DeriveTiming,
+) {
+    let candidates: HashMap<Symbol, Value> = all_candidates.iter().copied().collect();
+    if candidates.is_empty() {
+        return;
+    }
+    let original: HashMap<Symbol, Option<Sig>> = candidates
+        .keys()
+        .map(|&name| (name, ctx.inferred_fn_sig(name)))
+        .collect();
+    // Only a LIVE function's return starts at ⊥. An escaped or site-less one is never
+    // derived, and its in-file callers read its return while the others iterate: a ⊥ there
+    // would make THEIR derived parameters under-approximate.
+    let live = sigs::live_private_functions(heap, expanded, &candidates, ctx).unwrap_or_default();
+    // The count relations between a live function's parameters that its sites establish
+    // (ADR-350) — syntactic, so settled once here, for every round and for the walk.
+    sigs::derive_count_aliases(heap, expanded, &candidates, &live, ctx);
+    for (&name, sig) in &original {
+        if let (Some(sig), true) = (sig, live.contains_key(&name)) {
+            let mut floor = sig.clone();
+            floor.ret = Ty::NEVER;
+            ctx.add_inferred_fn_sig(name, floor);
+        }
+    }
+    // A live function whose return never typed and is still at the ⊥ floor.
+    let at_floor = |ctx: &Ctx, typed: &HashSet<Symbol>, name: Symbol, sig: &Sig| {
+        !typed.contains(&name)
+            && ctx.inferred_fn_sig(name).is_some_and(|s| s.ret.is_never())
+            && !sig.ret.is_never()
+    };
+    let mut previous: HashMap<Symbol, Vec<Option<Ty>>> = HashMap::new();
+    // Which returns a round has TYPED — as opposed to typed as `never`, which is a real
+    // answer (every call raises) and must not be mistaken for a floor that never typed.
+    let mut typed: HashSet<Symbol> = HashSet::new();
+    let mut converged = false;
+    // Whether anything the derivation reads moved since it last ran. When nothing did,
+    // re-running it would reproduce `previous` exactly (it is a deterministic function of
+    // the returns and its seed), so the round reuses it.
+    let mut inputs_moved = true;
+    // Each return's value from the round before last, for the fold (a value that recurses
+    // through another function grows every other round).
+    let mut older_returns: HashMap<Symbol, Ty> = HashMap::new();
+    // The site walks, memoised per form across every round, with the names whose return or
+    // derived parameters moved since the last derivation — `None` walks everything.
+    let mut site_cache = sigs::SiteCache::new(heap, expanded, &candidates);
+    let mut moved: Option<HashSet<Symbol>> = None;
+    let mut derivation_declined = false;
+    for round in 0..MAX_JOINT_ROUNDS {
+        let round_started = std::time::Instant::now();
+        let derivation_ran = inputs_moved;
+        // A specialization is typed under the round's returns and derived parameters; the
+        // memo of them must not outlive the round.
+        sigs::clear_specializations();
+        let derived = if inputs_moved {
+            sigs::caller_derived_params(
+                heap,
+                expanded,
+                &candidates,
+                &live,
+                ctx,
+                &previous,
+                &mut site_cache,
+                moved.as_ref(),
+            )
+        } else {
+            previous.clone()
+        };
+        timing.deriving += round_started.elapsed();
+        timing.rounds += 1;
+        // A derivation that declined leaves every parameter unknown for the rest of this
+        // file: say so, once.
+        if let Some(why) = sigs::take_derivation_decline() {
+            if !derivation_declined {
+                derivation_declined = true;
+                out.push((
+                    None,
+                    match why {
+                        sigs::DeriveDecline::Opaque => "checker gave up: an unexpanded macro call keeps every caller-derived parameter unknown in this file".to_string(),
+                        sigs::DeriveDecline::NoFixpoint => format!(
+                            "checker gave up: the caller-derived parameters did not settle in {} rounds — every parameter is read as unknown in this file",
+                            sigs::MAX_DERIVE_ROUNDS
+                        ),
+                    },
+                ));
+            }
+        }
+        let mut moved_now: HashSet<Symbol> = derived
+            .keys()
+            .chain(previous.keys())
+            .copied()
+            .filter(|name| derived.get(name) != previous.get(name))
+            .collect();
+        ctx.set_derived_params(derived.clone());
+        let mut returns_moved = false;
+        // In DEFINITION order, never the map's: a return re-read here is applied at once,
+        // so a later name reads an earlier one's new value and the widening is
+        // history-dependent — hash order made the verdict nondeterministic (KI-158).
+        for &(name, rhs) in all_candidates {
+            let Some(Some(base)) = original.get(&name) else {
+                continue;
+            };
+            // Only a DERIVED candidate's return is re-read: an escaped or site-less one
+            // keeps its demand-based one, whose `any` lets the recursive call-site
+            // specialization sharpen it.
+            if ctx.derived_params(name).is_none() {
+                continue;
+            }
+            // A return this round cannot type stays where it is (⊥, or the last round's):
+            // the demand-based return would put a value ABOVE the least fixpoint into a
+            // monotone ascent, and nothing could bring it back down.
+            let Some(ret) = sigs::infer_return_from_form(heap, rhs, Some(name), ctx) else {
+                continue;
+            };
+            typed.insert(name);
+            let current = ctx.inferred_fn_sig(name).map(|s| s.ret);
+            let ret = ascend_return(ret, current.as_ref(), older_returns.get(&name), round);
+            if let Some(current) = current.clone() {
+                older_returns.insert(name, current);
+            }
+            if current != Some(ret.clone()) {
+                let mut sig = base.clone();
+                sig.ret = ret;
+                ctx.add_inferred_fn_sig(name, sig);
+                returns_moved = true;
+                moved_now.insert(name);
+            }
+        }
+        if derived == previous && !returns_moved {
+            // A live function whose return never typed is still at the floor, and the
+            // others have been reading it as ⊥. Lift it to its demand-based answer (sound,
+            // above ⊥, so the ascent stays monotone) and go again; only a round with
+            // nothing left to lift is the fixpoint.
+            let mut lifted = false;
+            for (&name, sig) in &original {
+                if let Some(sig) = sig {
+                    if at_floor(ctx, &typed, name, sig) {
+                        ctx.add_inferred_fn_sig(name, sig.clone());
+                        lifted = true;
+                        moved_now.insert(name);
+                    }
+                }
+            }
+            if !lifted {
+                converged = true;
+                break;
+            }
+            inputs_moved = true;
+        } else {
+            inputs_moved = returns_moved;
+        }
+        // What the next derivation must re-walk: everything that moved since the cache's
+        // last walk — this round's movers, plus the earlier ones when this round skipped
+        // the derivation.
+        moved = Some(match moved.take() {
+            Some(mut earlier) if !derivation_ran => {
+                earlier.extend(moved_now);
+                earlier
+            }
+            _ => moved_now,
+        });
+        previous = derived;
+    }
+    timing.site_walks = site_cache.walks;
+    timing.site_reuses = site_cache.reuses;
+    if !converged {
+        for (&name, sig) in &original {
+            if let Some(sig) = sig {
+                ctx.add_inferred_fn_sig(name, sig.clone());
+            }
+        }
+        ctx.set_derived_params(HashMap::new());
+        // Sound — every return is back at its demand-based one and no parameter is derived
+        // — and reported: otherwise a file whose derivation gave up reads as clean.
+        out.push((
+            None,
+            format!("checker gave up: the caller-derived parameters and returns did not settle in {MAX_JOINT_ROUNDS} joint rounds — every parameter is read as unknown in this file"),
+        ));
+        return;
+    }
+    // A candidate that was not derived, or whose return never typed (still at the floor):
+    // give it its demand-based answer back.
+    for (&name, sig) in &original {
+        if let Some(sig) = sig {
+            if ctx.derived_params(name).is_none() || at_floor(ctx, &typed, name, sig) {
+                ctx.add_inferred_fn_sig(name, sig.clone());
+            }
+        }
+    }
+    // …and the candidates that were NOT derived (no site, or an escape), whose returns were
+    // read before any return was sharpened, are read again over the sharper ones.
+    let undecided: Vec<(Symbol, Value)> = all_candidates
+        .iter()
+        .filter(|(name, _)| ctx.derived_params(*name).is_none())
+        .copied()
+        .collect();
+    refresh_returns(heap, &undecided, ctx);
+}
+
+/// The declaration and definition conformance passes: protocol and behaviour impls,
+/// ability call sites and their `:requires` and op collisions, multimethod calls with no
+/// method (ADR-179), and each ability impl's return against the op's declared `:-> RET`.
+fn check_conformance(
+    heap: &Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    ability_info: &protocol::AbilityInfo,
+    multi_info: &protocol::MultiInfo,
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    let protocols = protocol::collect(heap, forms);
+    protocol::check_impls(heap, forms, &protocols, out);
+    protocol::check_behaviours(heap, forms, expanded, &protocols, out);
+    protocol::check_dispatch_calls(heap, expanded, ability_info, multi_info, out);
+    protocol::check_sealed(ability_info, out);
+    protocol::check_requires(ability_info, out);
+    // Two abilities declaring the same op name would clobber each other's generic
+    // function (ADR-172).
+    protocol::check_op_collisions(ability_info, out);
+    walk::check_impl_returns(heap, expanded, ctx, out);
+}
+
+/// The lints that read a form's shape rather than its types, after the body walk: non-tail
+/// self-recursion, sealed-`match` exhaustiveness (ADR-187), effects in a `:when` guard, a
+/// `catch` that discards its error, and declared `:pure`/`:total` properties (ADR-351).
+/// The `match`, guard and `catch` lints read the UN-expanded forms — those shapes survive
+/// only before expansion — and position each warning at the form the reader positioned.
+fn run_shape_lints(
+    heap: &Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    ctx: &Ctx,
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    for &form in expanded {
+        recursion::check_recursion(heap, form, out);
+    }
+    exhaustive::check_matches(heap, forms, ctx, out);
+    guard_effects::check_guards(heap, forms, out);
+    discarded_catch::check_discarded_catches(heap, forms, out);
+    properties::check_properties(heap, expanded, ctx, out);
+}
+/// Unused `(:use …)` imports: a clause whose module contributed importable names, none of
+/// which the file references. The module names come from the UN-expanded header (the
+/// clause is gone after expansion). Unused module-private `defn`s are a whole-project
+/// check (`project-unused-private-warnings`), since other files reach them qualified.
+fn lint_unused_imports(
+    heap: &Heap,
+    forms: &[Value],
+    expanded: &[Value],
+    out: &mut Vec<(Option<Pos>, String)>,
+) {
+    // A file with an unresolved BARE reference has an import table that doesn't cover
+    // everything it names, so "module M contributed nothing you reference" is not
+    // provable — the unresolved name may be M's — and the advice would be to delete an
+    // import the code needs. The lint stands down whenever a bare name was unbound.
+    let unresolved_bare = out.iter().any(|(_, message)| {
+        message
+            .strip_prefix("unbound symbol: ")
+            .is_some_and(|rest| !rest.split(' ').next().unwrap_or("").contains('/'))
+    });
+    let use_modules = extract_use_module_names(heap, forms);
+    if use_modules.is_empty() || unresolved_bare {
+        return;
+    }
+    // Both trees: a MACRO head (`defserver` from `gen`) is gone from the expanded forms,
+    // so a module imported for its macros would read as unused. Counting a name expansion
+    // discards can only SUPPRESS a warning — the safe direction for this lint.
+    let mut all_refs = collect_all_syms(heap, expanded);
+    all_refs.extend(collect_all_syms(heap, forms));
+    // Each module's contributed names: the qualified name AND the local alias the file
+    // calls, since a `:use` import is normally referenced unqualified.
+    let mut module_names: HashMap<String, Vec<Symbol>> = HashMap::new();
+    for (local, qualified) in &heap.imported_pairs() {
+        let qualified_name = value::symbol_name(*qualified);
+        if let Some(slash) = qualified_name.rfind('/') {
+            let names = module_names
+                .entry(qualified_name[..slash].to_string())
+                .or_default();
+            names.push(*local);
+            names.push(*qualified);
+        }
+    }
+    // A module reached by a qualified `mod/name` anywhere (including its private names,
+    // which aren't imported at all) counts its `:use` as load-bearing.
+    let qualified_modules: HashSet<String> = all_refs
+        .iter()
+        .filter_map(|&symbol| {
+            let name = value::symbol_name(symbol);
+            name.rfind('/').map(|slash| name[..slash].to_string())
+        })
+        .collect();
+    for module_name in &use_modules {
+        // Only a module in the import table is actionable — a failed require, a
+        // macro-only or an empty module is silent.
+        if let Some(names) = module_names.get(module_name) {
+            let used = names.iter().any(|symbol| all_refs.contains(symbol))
+                || qualified_modules.contains(module_name);
+            if !used {
+                out.push((None, format!("unused :use import: {module_name}")));
+            }
+        }
+    }
+}
+
+/// The per-file budgets that DECLINE rather than answer: past the specialization fuel
+/// every re-typing question answers "unknown", and past the expression depth cap a nest
+/// types as unknown. Both are sound, and both are reported, so a file the checker largely
+/// gave up on does not read as checked.
+fn report_exhausted_budgets(out: &mut Vec<(Option<Pos>, String)>) {
+    if sigs::fuel_exhausted() {
+        out.push((
+            None,
+            format!(
+                "checker gave up: the specialization budget ({} re-typings) ran out — every later call-site specialization in this file read as unknown",
+                sigs::MAX_SPECIAL_FUEL
+            ),
+        ));
+    }
+    let depth_hits = infer::expr_ty_depth_hits();
+    if depth_hits > 0 {
+        out.push((
+            None,
+            format!(
+                "checker gave up: {depth_hits} expression{} nested past the depth cap ({}) read as unknown",
+                if depth_hits == 1 { "" } else { "s" },
+                infer::MAX_EXPR_TY_DEPTH
+            ),
+        ));
+    }
+}
+
 /// A signature reshaped to the definition's actual parameter list, filling anything the
 /// inference did not type with `any`.
 ///
@@ -3079,9 +3018,7 @@ fn top_level_defs(heap: &Heap, expanded: &[Value]) -> Vec<Value> {
     for &form in expanded {
         // A `(check-allow :category …)` around a definition is the author suppressing a
         // lint, not hiding the definition: its `def` is inferred like any other, so its
-        // callers read a return rather than `any` (`encoding-b64-encode` under
-        // `:type-mismatch` made every base64 encoder's declared `string` a trusted one,
-        // 2026-09-17). `:generated` stays opaque — the copy the linear-map rewrite keeps
+        // callers read a return rather than `any`. `:generated` stays opaque — the copy the linear-map rewrite keeps
         // is not the author's code (KI-152).
         collect_top_level_def(heap, form, &mut out);
     }
@@ -3127,6 +3064,8 @@ fn marks_private(heap: &Heap, body: &[Value]) -> bool {
     })
 }
 
+/// A `(def NAME RHS)` form → `(NAME, RHS)`. `None` for anything else — a non-`def` head,
+/// a `(defmacro …)` (a special form, never expanded to `def`), or a malformed def.
 fn def_name_and_value(heap: &Heap, form: Value) -> Option<(Symbol, Value)> {
     let items = list_items(heap, form)?;
     if items.len() != 3 {
@@ -3182,7 +3121,7 @@ fn collect_bound_guards(heap: &Heap, form: Value, out: &mut HashSet<Symbol>) {
 /// Count every `(def NAME …)` for each name across `form`, **including nested** defs (a
 /// reassignment inside a function body, a `do`, a `when`, …) — not just top-level. A global
 /// def'd more than once anywhere is *reassigned*, so its type isn't its first value; the
-/// value-type inference (Gap A) and the same-file return inference (Pass 2.8) both use this
+/// value-type inference (Gap A) and the same-file return inference (same-file inference) both use this
 /// to leave such a global `dynamic()` rather than pinning it to a stale initial value (the
 /// lazy-init `(when (nil? *g*) (def *g* (table)))` pattern — else a function returning `*g*`
 /// infers `nil` and false-flags its callers). Skips quoted subtrees.
@@ -3261,28 +3200,13 @@ mod tests;
 #[cfg(test)]
 mod soundness_oracle;
 
-/// The names this file defines PRIVATELY — every `(def name …)` inside a top-level `do`
-/// that carries the `(%mark-private …)` fingerprint of a `defn-`/`def-` expansion.
-fn private_def_names(heap: &Heap, expanded: &[Value]) -> HashSet<Symbol> {
-    let mut out = HashSet::new();
-    for &form in expanded {
-        if let Some(body) = walk::do_body(heap, form).filter(|body| marks_private(heap, body)) {
-            for inner in body {
-                if let Some((name, _)) = def_name_and_value(heap, inner) {
-                    out.insert(name);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Pass 2.8's return fixpoint over `candidates`, run again: each function's return is
+/// The same-file return fixpoint over `candidates`, run again: each function's return is
 /// re-read from its form, leaf-up, until a pass records nothing new (a cap bounds a
-/// pathological chain — the tail stays as it was, which is sound). Pass 2.9 calls it for the
-/// PUBLIC functions once the private returns beneath them have been sharpened.
+/// pathological chain — the tail stays as it was, which is sound). The caller-derived
+/// parameter pass calls it for the candidates it did not derive, once the returns beneath
+/// them have been sharpened.
 fn refresh_returns(heap: &Heap, candidates: &[(Symbol, Value)], ctx: &mut Ctx) {
-    for _ in 0..16 {
+    for _ in 0..MAX_RETURN_ROUNDS {
         let mut changed = false;
         for &(name, rhs) in candidates {
             if let Some(ret) = sigs::infer_return_from_form(heap, rhs, Some(name), ctx) {

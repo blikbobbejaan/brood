@@ -134,15 +134,12 @@ const KIND_PRIVATE: u8 = 4;
 /// Where a name was DEFINED — file, line, column — the fact `(source-location 'name)`, the
 /// LSP's go-to-definition and the incremental checker's dependency fingerprint all read
 /// (`types::check::deps::fact_of_sym`: a user global's fact is `D<file>@<mtime>`). Recorded
-/// by *evaluating* the `def`, so a materialised module had none — and that made the fact of
-/// every project global depend on HOW its module arrived: `D…` after a source load, `F` after
-/// an imaged one. Every `nest check` following a cold build (source → image) re-checked the
-/// whole project, and so did every check after an edit (image → source), because no cached
-/// fingerprint could match across the flip; the ADR-119 cache only ever hit image → image
-/// (measured 2026-09-21 at 1 000 × 3k-line files: unchanged re-check 154 s, then 15 s; a
-/// one-function edit 188 s). Carried like privacy — a name and no value — so it round-trips
-/// for a name whose binding is not encodable. The prelude image carries the same fact
-/// through `Heap::side_facts` (ADR-320); its root section now holds it twice, idempotently.
+/// by *evaluating* the `def`, so without this entry a materialised module had none and a
+/// global's fact depended on HOW its module arrived — defeating the ADR-119 check cache
+/// across every source ↔ image flip. Carried like privacy — a name and no value — so it
+/// round-trips for a name whose binding is not encodable. The prelude image carries the
+/// same fact through `Heap::side_facts` (ADR-320); its root section holds it twice,
+/// idempotently.
 const KIND_DEF_SITE: u8 = 5;
 
 /// `BROOD_IMAGE_TRACE=1` — report where image time goes, split by phase. Both sides run
@@ -239,15 +236,10 @@ fn get_str(r: &mut Cursor<Vec<u8>>) -> Option<String> {
 /// Returns the section bytes and how many entries went in.
 ///
 /// `all_sigs` asks for EVERY declared sig rather than just this section's. That is the
-/// root/project section's shape (one unnamed section carrying the whole image), and it is
-/// what `with_sigs` used to mean — the only shape there was. A NAMED section now carries
-/// the sigs of its own symbols, because the stdlib image is written as one named section
-/// per module and never writes an unnamed one: every std signature was therefore dropped on
-/// the floor, and a module restored from the image came back bound but **unsigned**. The
-/// visible effect was a gate quietly ceasing to gate — with the image installed, `nest
-/// check` lost every std signature, so a reversed-argument call it is supposed to catch
-/// (`types::check::tests::a_reversed_index_and_collection_call_is_flagged`) passed silently.
-/// Deterministic: 3/3 with the image, 0/3 without.
+/// root/project section's shape (one unnamed section carrying the whole image). A NAMED
+/// section carries the sigs of its own symbols: the stdlib image is one named section per
+/// module, and a module restored without its sigs would come back bound but **unsigned**,
+/// silently weakening `nest check`.
 fn encode_section(
     heap: &mut Heap,
     section: &str,
@@ -272,10 +264,9 @@ fn encode_section(
             continue;
         };
         // A `Value::Table` is a handle into a per-runtime registry, so it has no portable
-        // form and `to_message` refuses it — which used to forfeit the WHOLE image for the
-        // project. That is the wrong trade: `table` is the language's only sanctioned
-        // mutable structure (ADR-026/107), so `(def *cache* (table))` is the blessed way to
-        // hold shared state, and any project doing it lost image startup entirely.
+        // form and `to_message` refuses it. But `table` is the language's only sanctioned
+        // mutable structure (ADR-026/107), so `(def *cache* (table))` must not forfeit the
+        // project's image.
         //
         // Image the table by VALUE — its snapshot map — and rebuild a fresh table from
         // those pairs on restore. That reproduces "the program as it stood after loading":
@@ -461,15 +452,15 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // Directory at the END, with a footer pointing at it: an image can then be *opened* by
     // reading its header and directory alone, and one section loaded by seeking to its
     // offset — neither reads the payload.
-    let dir_off = body.len() as u64;
+    let directory_offset = body.len() as u64;
     put_u32(&mut body, dir.len() as u32);
-    for (name, off, len) in &dir {
+    for (name, offset, length) in &dir {
         put_str(&mut body, name);
-        put_u64(&mut body, *off);
-        put_u32(&mut body, *len);
+        put_u64(&mut body, *offset);
+        put_u32(&mut body, *length);
     }
     // The `defdyn` marks (which globals are dynamic vars). They live *after* the directory but
-    // still before the footer, so they sit inside the `[dir_off, footer)` span `%image-index`
+    // still before the footer, so they sit inside the `[directory_offset, footer)` span `%image-index`
     // reads whole — the image restores them when opened, no payload read. Written last (at
     // image-build time the whole runtime is loaded, so `DYNAMICS` is complete).
     let dyn_names = value::dynamic_names();
@@ -500,7 +491,7 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         put_u32(&mut body, *min);
         put_u32(&mut body, *max);
     }
-    put_u64(&mut body, dir_off);
+    put_u64(&mut body, directory_offset);
 
     let t_io = std::time::Instant::now();
     // ATOMIC: write a sibling temp file, then rename over the target. A plain
@@ -511,11 +502,9 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // so a reader observes either the old complete image or the new one, never half.
     //
     // The temp name carries the pid so two concurrent builders do not collide with
-    // each other either; last rename wins. The two builds are NOT byte-identical — three
-    // builds of one unchanged tree on 2026-09-08 gave three different files of the same
-    // size, differing from byte 103 on — so a rename moves every section offset, and a
-    // process that indexed the previous file must keep reading THAT file: `OPEN_IMAGES`
-    // holds the handle open for exactly this reason (KI-119).
+    // each other either; last rename wins. Two builds of one tree are NOT byte-identical,
+    // so a rename moves every section offset, and a process that indexed the previous
+    // file must keep reading THAT file: `OPEN_IMAGES` holds the handle open (KI-119).
     let tmp = format!("{path}.{}.tmp", std::process::id());
     std::fs::write(&tmp, &body)
         .map_err(|e| LispError::runtime(format!("%image-write: {tmp}: {e}")))?;
@@ -543,15 +532,9 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 /// This is what makes a section read agree with the directory it came from (KI-119). A
 /// directory is read once, at `%image-index`; the sections it names are read LATER, on
 /// each module's first `require`, seconds or minutes after — and in between the file at
-/// that path can be replaced: `nest` rebuilds the stdlib image on any command that finds
-/// it missing or stale, a test suite's setup script rebuilds it, and two builds of the
-/// SAME tree are not byte-identical (section order and encoding vary run to run, so every
-/// rebuild moves every offset). Reading by path then applied the old offsets to the new
-/// file — decoding some *other* module's bytes under the requested name, or running off
-/// the end — and the module's names simply never arrived: `unbound symbol: format/vec->list`
-/// in a process whose trace showed `format` "materialised" with 20 entries where the section
-/// holds 172. That is the mechanism behind a week of `brood_suite_passes` flakes and every
-/// "unbound symbol on a name that exists" sighting under load.
+/// that path can be replaced (`nest` rebuilds a stale image, and two builds of the SAME
+/// tree are not byte-identical, so every rebuild moves every offset). Reading by path
+/// would apply the old offsets to the new file and decode some *other* module's bytes.
 ///
 /// An open descriptor pins the inode: the atomic rename the writer does leaves an old
 /// reader on the old, complete file for as long as it holds the handle, so a directory and
@@ -603,12 +586,6 @@ fn read_at(file: &std::sync::Mutex<std::fs::File>, off: u64, len: usize) -> Opti
     Some(buf)
 }
 
-/// `(%image-index path fingerprint)` — open the image at `path` if it exists and its stamp
-/// equals `fingerprint`, returning its section directory as a map `{name → [offset len]}`.
-/// **nil** for any miss: absent, unreadable, wrong format version, or stale.
-///
-/// Reads the header and the directory only — never the payload — so opening a 143 MB image
-/// costs a few kilobytes of I/O.
 /// `(%boot-source)` — how this process's prelude arrived, as a keyword.
 ///
 /// A keyword rather than a string because it is a closed set the caller matches on, and
@@ -624,18 +601,21 @@ pub(crate) fn boot_source_prim(_args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 /// Decode the v7 signature index from the footer bytes `image_index` set aside — `(name,
 /// type text, min arity, max arity)` per function; a truncated tail ends the list.
 pub(crate) fn decode_sig_index(bytes: Vec<u8>) -> Vec<(String, String, u32, u32)> {
-    let mut dr = Cursor::new(bytes);
+    // An entry is at least two string lengths and two arities (16 bytes): the bytes bound
+    // the reservation, never the untrusted count alone.
+    let entry_bound = bytes.len() / 16;
+    let mut reader = Cursor::new(bytes);
     let mut out: Vec<(String, String, u32, u32)> = Vec::new();
-    let Some(count) = get_u32(&mut dr) else {
+    let Some(count) = get_u32(&mut reader) else {
         return out;
     };
-    out.reserve(count as usize);
+    out.reserve((count as usize).min(entry_bound));
     for _ in 0..count {
         match (
-            get_str(&mut dr),
-            get_str(&mut dr),
-            get_u32(&mut dr),
-            get_u32(&mut dr),
+            get_str(&mut reader),
+            get_str(&mut reader),
+            get_u32(&mut reader),
+            get_u32(&mut reader),
         ) {
             (Some(name), Some(text), Some(min), Some(max)) => out.push((name, text, min, max)),
             _ => break,
@@ -644,6 +624,12 @@ pub(crate) fn decode_sig_index(bytes: Vec<u8>) -> Vec<(String, String, u32, u32)
     out
 }
 
+/// `(%image-index path fingerprint)` — open the image at `path` if it exists and its stamp
+/// equals `fingerprint`, returning its section directory as a map `{name → [offset len]}`.
+/// **nil** for any miss: absent, unreadable, wrong format version, or stale.
+///
+/// Reads the header and the directory only — never the payload — so opening a large image
+/// costs a few kilobytes of I/O.
 pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let path = need_str(heap, arg(args, 0), "%image-index")?;
     let want = need_str(heap, arg(args, 1), "%image-index")?;
@@ -675,9 +661,9 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     if !head.starts_with(MAGIC) {
         return Ok(Value::Nil);
     }
-    let mut hr = Cursor::new(head);
-    hr.set_position(MAGIC.len() as u64);
-    let Some(got) = get_str(&mut hr) else {
+    let mut header = Cursor::new(head);
+    header.set_position(MAGIC.len() as u64);
+    let Some(got) = get_str(&mut header) else {
         return Ok(Value::Nil);
     };
     if got != want {
@@ -687,44 +673,52 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let Some(foot) = read_at(&file, size - 8, 8) else {
         return Ok(Value::Nil);
     };
-    let dir_off = u64::from_le_bytes(foot.try_into().ok().unwrap_or([0; 8]));
-    if dir_off >= size - 8 {
+    let directory_offset = u64::from_le_bytes(foot.try_into().ok().unwrap_or([0; 8]));
+    if directory_offset >= size - 8 {
         return Ok(Value::Nil);
     }
-    let Some(dir_bytes) = read_at(&file, dir_off, (size - 8 - dir_off) as usize) else {
+    let Some(dir_bytes) = read_at(
+        &file,
+        directory_offset,
+        (size - 8 - directory_offset) as usize,
+    ) else {
         return Ok(Value::Nil);
     };
-    let mut dr = Cursor::new(dir_bytes);
-    let Some(n) = get_u32(&mut dr) else {
+    // A directory entry is at least a string length + offset + length (16 bytes), so the
+    // file's own size bounds the count — never reserve from the untrusted count alone.
+    let entry_bound = dir_bytes.len() / 16;
+    let mut directory = Cursor::new(dir_bytes);
+    let Some(section_count) = get_u32(&mut directory) else {
         return Ok(Value::Nil);
     };
-    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(n as usize);
-    let mut section_names: Vec<String> = Vec::with_capacity(n as usize);
-    for _ in 0..n {
-        let Some(name) = get_str(&mut dr) else {
+    let capacity = (section_count as usize).min(entry_bound);
+    let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(capacity);
+    let mut section_names: Vec<String> = Vec::with_capacity(capacity);
+    for _ in 0..section_count {
+        let Some(name) = get_str(&mut directory) else {
             return Ok(Value::Nil);
         };
         section_names.push(name.clone());
-        let p = dr.position() as usize;
-        let b = dr.get_ref();
-        if p + 12 > b.len() {
+        let position = directory.position() as usize;
+        let bytes = directory.get_ref();
+        if position + 12 > bytes.len() {
             return Ok(Value::Nil);
         }
-        let off = u64::from_le_bytes(b[p..p + 8].try_into().unwrap());
-        let len = u32::from_le_bytes(b[p + 8..p + 12].try_into().unwrap());
-        dr.set_position((p + 12) as u64);
-        let k = heap.alloc_string(&name);
-        let v = heap.alloc_vector(vec![Value::int(off as i64), Value::int(len as i64)]);
-        pairs.push((k, v));
+        let offset = u64::from_le_bytes(bytes[position..position + 8].try_into().unwrap());
+        let length = u32::from_le_bytes(bytes[position + 8..position + 12].try_into().unwrap());
+        directory.set_position((position + 12) as u64);
+        let key = heap.alloc_string(&name);
+        let span = heap.alloc_vector(vec![Value::int(offset as i64), Value::int(length as i64)]);
+        pairs.push((key, span));
     }
     // Re-establish the `defdyn` dynamic-var marks recorded after the directory (v5): an imaged
     // start restores a dynamic global's value but skips the module load that ran the `defdyn`,
     // so `binding` on it would fail. Marking is idempotent + monotonic, so a spurious entry is
     // harmless (and a stale image is fingerprint-rejected before we get here). Done in the same
     // `%image-index` pass every install runs, so the marks are back before any section loads.
-    if let Some(dyn_count) = get_u32(&mut dr) {
-        for _ in 0..dyn_count {
-            match get_str(&mut dr) {
+    if let Some(dynamic_count) = get_u32(&mut directory) {
+        for _ in 0..dynamic_count {
+            match get_str(&mut directory) {
                 Some(name) => value::mark_dynamic(value::intern(&name)),
                 None => break,
             }
@@ -736,9 +730,9 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // the same open pass as the dynamic marks, so it is in place before any form that
     // references an imaged module expands.
     let mut macro_names: Vec<String> = Vec::new();
-    if let Some(macro_count) = get_u32(&mut dr) {
+    if let Some(macro_count) = get_u32(&mut directory) {
         for _ in 0..macro_count {
-            match get_str(&mut dr) {
+            match get_str(&mut directory) {
                 Some(name) => macro_names.push(name),
                 None => break,
             }
@@ -746,33 +740,16 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     }
     crate::eval::derive::register_image_kinds(&section_names, &macro_names);
     // v7 (ADR-370): the signature index — handed over as the footer's remaining BYTES and
-    // decoded by the first check that asks. Decoding 3104 names here (two strings and two
-    // interns each) cost every boot 8.2M instructions, `startup` +6%, for an index a run
-    // that never checks never reads.
-    let pos = dr.position() as usize;
-    let raw = dr.into_inner().split_off(pos);
+    // decoded by the first check that asks, so a run that never checks never pays for it.
+    let position = directory.position() as usize;
+    let raw = directory.into_inner().split_off(position);
     crate::eval::derive::register_image_sigs_raw(raw);
     Ok(heap.map_from_pairs(pairs))
 }
 
-/// `(%image-load-section path offset len &optional reserve?)` — materialise one section's
-/// entries: define its globals (rebuilding macros as macros) and register its declared sigs.
-/// Returns how many entries were defined, or **nil** if the bytes could not be read or decoded.
-///
-/// Seeks straight to the section, so loading one module never touches the rest of the image.
-///
-/// `reserve?` reproduces the source path's ADR-166 rule: while an embedded module loads, its
-/// FUNCTION-valued definitions join the reserved set (so a program cannot redefine
-/// `set/union`) while its data globals — its own registries — stay rebindable. Materialising
-/// evaluates no `def`, so without this a module restored from an image came back unreserved
-/// and `(def path/join …)` was accepted. The caller passes it, because only the caller knows
 /// Bind one imaged entry to its global. **The single definition site**, called from both
 /// passes of `image_load_section` — the in-order pass and the deferred-entry-point pass
-/// (KI-72). It was inlined in both, and the deferred copy carried only the `KIND_MACRO` arm:
-/// a deferred TABLE global therefore landed as the decoded map rather than a rebuilt table
-/// (`(type-of …)` answered `:map`, and `table-get` on it raised), which
-/// `tests/startup_image_test.blsp` catches. Two copies of a `match` over a kind tag is the
-/// shape that silently loses an arm, so there is one.
+/// (KI-72) — so the `match` over the kind tag cannot lose an arm in one copy.
 fn define_image_entry(
     heap: &mut Heap,
     global: EnvId,
@@ -781,15 +758,11 @@ fn define_image_entry(
     v: Value,
     reserve: bool,
 ) -> Result<(), LispError> {
-    // `env_define` clears the private mark — right for a real `def` (editing `def-` → `def`
-    // and reloading must publish the name), wrong for materialising, which is not a
-    // redefinition at all. It bit through the DEFERRED pass: a section's privacy entries are
-    // written last, so for a name whose global already exists the value entry is deferred to
-    // the second pass and lands AFTER the `KIND_PRIVATE` entry marked it — undoing the mark.
-    // That is how installing a stdlib image left `*std-impls*`, `*std-regs*` and
-    // `*std-require-edges*` public: private at image-build time, private for one pass of the
-    // load, public by the end of it. Save and restore around the define, exactly as
-    // `registry_update`/`registry_cas` do, so the order of the two entries stops mattering.
+    // `env_define` clears the private mark — right for a real `def`, wrong for
+    // materialising, which is not a redefinition. A section's privacy entries are written
+    // last, so a value entry deferred to the second pass lands AFTER the `KIND_PRIVATE`
+    // entry marked it. Save and restore around the define, as `registry_update` does, so
+    // the order of the two entries does not matter.
     let was_private = heap.is_private(sym);
     let out = define_image_entry_inner(heap, global, kind, sym, v, reserve);
     if was_private {
@@ -843,7 +816,17 @@ fn define_image_entry_inner(
     Ok(())
 }
 
-/// whether this section is an embedded module (reserved) or a project's own (not).
+/// `(%image-load-section path offset len &optional reserve?)` — materialise one section's
+/// entries: define its globals (rebuilding macros as macros) and register its declared sigs.
+/// Returns how many entries were defined, or **nil** if the bytes could not be read or decoded.
+///
+/// Seeks straight to the section, so loading one module never touches the rest of the image.
+///
+/// `reserve?` reproduces the source path's ADR-166 rule: while an embedded module loads, its
+/// FUNCTION-valued definitions join the reserved set (so a program cannot redefine
+/// `set/union`) while its data globals — its own registries — stay rebindable. Materialising
+/// evaluates no `def`, so the caller passes it, because only the caller knows whether this
+/// section is an embedded module (reserved) or a project's own (not).
 pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let path = need_str(heap, arg(args, 0), "%image-load-section")?;
     let off = match arg(args, 1) {
@@ -1183,14 +1166,10 @@ pub(crate) fn write_prelude_image(
     )?;
 
     // The SIDE FACTS — everything the prelude's evaluation RECORDED about a name rather
-    // than bound to it: privacy, `meta`, def sites, registry names, `defdyn` marks. These
-    // used to be five hand-written blocks here, one added after each of KI-72, KI-84,
-    // KI-89, KI-105 and KI-106, because "materialising evaluates nothing" is a rule prose
-    // cannot enforce over an open set of fact kinds. `Heap::side_facts` now enumerates
-    // them through an exhaustive match, so a sixth kind is carried by construction and its
-    // ENCODING is the only thing left to write — `put_fact` below, also exhaustive, which
-    // makes forgetting it a compile error rather than a silent omission surfacing in
-    // another subsystem three weeks later (ADR-320).
+    // than bound to it: privacy, `meta`, def sites, registry names, `defdyn` marks.
+    // `Heap::side_facts` enumerates them through an exhaustive match and `put_fact` encodes
+    // them through another, so a new fact kind is carried by construction and forgetting
+    // its encoding is a compile error (ADR-320).
     let facts = heap.side_facts();
     put_u32(&mut body, facts.len() as u32);
     for fact in &facts {
@@ -1213,9 +1192,7 @@ pub(crate) fn write_prelude_image(
     Ok(())
 }
 
-/// v3 (2026-09-12): the header gained the gensym floor. It used to live in the header of
-/// the ADR-138 text cache beside this file — the one fact that made the text cache
-/// impossible to delete without carrying it here first.
+/// v3: the header carries the gensym floor.
 /// v4 (ADR-383): the closure record carries its authoring module (the wire's v8 field).
 const PRELUDE_MAGIC: &[u8] = b"brood-prelude-image-v4\n";
 

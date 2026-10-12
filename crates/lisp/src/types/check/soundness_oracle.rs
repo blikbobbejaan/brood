@@ -296,8 +296,7 @@ fn expr_ty_is_a_sound_overapproximation_of_runtime_values() {
         "(last [1 2 3])",
         "(nth [10 20 30] 1)",
         "(first [])",
-        // ---- 2026-09-03: the rules added this session, each checked against the value ----
-        // exact division: the folded cases and the ±1 divisor (v0.25.0)
+        // exact division: the folded cases and the ±1 divisor
         "(/ 6 3)",
         "(/ 5 2)",
         "(/ 2)",
@@ -360,12 +359,8 @@ fn expr_ty_is_a_sound_overapproximation_of_runtime_values() {
         "(get {:a 1} :a)",
         "(get {:a 1} :missing)",
         "(assoc (assoc {} :a 1) :b :k)",
-        // tuple-producing and literal-producing forms — the two refinements the
-        // membership check above was blind to until 2026-08-28.
-        // Collection first (ADR-307). These two carried the pre-reorder order for a week
-        // without failing: `seq` is not loaded in a fresh heap, so `expr_ty` made no claim
-        // and the eval never ran. ADR-370 types `seq/split-at` from the image footer, the
-        // claim is made, and the stale case evaluated for the first time (2026-09-18).
+        // tuple-producing and literal-producing forms. Collection first (ADR-307); typed
+        // from the image footer (ADR-370), so the claim is made with `seq` unloaded.
         "(seq/split-at [1 2 3] 1)",
         "(seq/split-at [] 0)",
         // sequence rules that reshape rather than construct — each one carries an
@@ -406,7 +401,7 @@ fn expr_ty_is_a_sound_overapproximation_of_runtime_values() {
         "(math/quot 7 2)",
         "(/ 7 2)",
         "(+ 1 2.5)",
-        // ---- 2026-10-02 review: the rules whose refinement disagreed with the runtime ----
+        // ---- rules whose refinement once disagreed with the runtime ----
         "(merge {:port 80} {:port \"x\"})",
         "(merge {:a 1} {:b \"x\"})",
         "(conj [1 2] \"x\")",
@@ -516,7 +511,7 @@ const TYPED_BODIES: [&str; 35] = [
     "(str (f 1))",
     "(first xs)",
     "(first t)",
-    // 2026-10-02 review: an open later `merge` argument, `rest`/`count`/`nth`-with-default
+    // An open later `merge` argument, `rest`/`count`/`nth`-with-default
     // over a tuple, `conj`/`into`/`append` onto a declared collection, `seq` of each.
     "(merge {:extra 1} r)",
     "(merge {:a \"s\"} r)",

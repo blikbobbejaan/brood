@@ -50,15 +50,10 @@ pub(super) const ST_WAITING: u8 = 2;
 /// runtime. Maintained by [`set_status`] on every `ST_WAITING`-boundary crossing
 /// (and decremented by `deregister` for a process killed while parked). It lets the
 /// RUNTIME-drain coordinator's parked-process inspector ([`super::scheduler::
-/// report_parked_liveness`]) skip its O(all-processes) `REGISTRY` scan entirely when
-/// nothing is parked — the common case during a `spawn` fan-out, where workers
-/// compute-and-exit without ever parking. Without this gate that whole-registry scan
-/// (under the global `REGISTRY` lock, on every throttled drain-advance of every one of
-/// thousands of live workers) serialized into an O(processes²) lock storm that made a
-/// fan-out under a lingering drain regress ~300×. Relaxed: it only *gates* an
-/// optimization — an over-count merely runs a scan that finds nothing (correct, slower),
-/// and every genuine park increments it before the parked process can matter, so it never
-/// under-counts a process that needs inspecting.
+/// report_parked_liveness`]) skip its O(all-processes) `REGISTRY` scan when nothing is
+/// parked — without the gate that scan, on every drain-advance of every worker, was an
+/// O(processes²) lock storm. Relaxed: it only gates an optimization — an over-count runs
+/// a scan that finds nothing, and every park increments it before it can matter.
 static PARKED: super::scheduler::Padded<AtomicUsize> =
     super::scheduler::Padded(AtomicUsize::new(0));
 
@@ -142,46 +137,24 @@ pub(super) struct Mailbox {
     /// errored and the message is still delivered (fire-and-forget stays
     /// fire-and-forget); what a breach does is arm `overflow_hit` for the receiver.
     pub(super) max_mailbox: AtomicUsize,
-    /// Sticky breach flag: the queue length observed when an enqueue crossed
-    /// `max_mailbox` (0 = clean). The receiver's own probes take it (swap 0) and
-    /// raise a catchable `E0046` **in that process only** — the exact
-    /// `proc_limit_hit` protocol `:max-heap` uses, with the same rescue rule:
-    /// clearing the flag (`(proc/flag :max-mailbox nil)`) clears a pending trip,
-    /// so a handler that drains and clears genuinely recovers.
+    /// Sticky breach flag, one word with three states: `0` clean, `1..` armed with the
+    /// queue length observed when an enqueue crossed `max_mailbox`, or
+    /// `OVERFLOW_LATCHED` once a probe has raised it. The receiver's own probes take it
+    /// and raise a catchable `E0046` **in that process only** — the `:max-heap`
+    /// protocol, with the same rescue rule. The bound is ONE-SHOT PER ARMING (KI-103):
+    /// while latched no enqueue re-arms, so the catcher gets a window to drain or re-set
+    /// it (re-setting re-arms) instead of dying inside the very `proc/flag` call the
+    /// E0046 hint tells it to make.
     pub(super) overflow_hit: AtomicUsize,
-    /// Has a breach already been RAISED for the current arming? (KI-103.) Set when a probe
-    /// takes `overflow_hit`, cleared whenever the bound is set. While it is true no further
-    /// enqueue re-arms, which is what gives the handler a window.
-    ///
-    /// Without it the bound was unusable in the way its own error message advertises: every
-    /// send that found the queue still over the limit re-armed the sticky flag, and the
-    /// handler's very next safepoint — which is *inside* `(proc/flag :max-mailbox …)`, the
-    /// call the E0046 hint tells you to make — took it and killed the process. Only "let it
-    /// crash under a supervisor", the third of the hint's three options, actually worked.
-    ///
-    /// So the bound is ONE-SHOT PER ARMING: it fires once, the catcher gets a guaranteed
-    /// window to drain or re-set it, and re-setting re-arms the protection. A process that
-    /// catches and then ignores is not re-killed for the same flood — which is the honest
-    /// reading anyway, since the alternative is a breach it cannot act on.
     /// **Park generation** — monotonic counter bumped each time this process parks
     /// in `receive` *with a deadline* (see `wait_for_message`). It implements lazy
     /// cancellation of superseded timer entries: each `arm_timer` stamps the entry
     /// with the gen current at park time, and the timer thread (via
     /// `wake_for_timeout`) drops an entry whose gen is stale — i.e. the process has
-    /// since re-parked (a new deadline) or moved on. Without this, a server looping
-    /// `(receive … (after ms …))` that is woken by `send` each iteration leaves a
-    /// fresh entry on the TIMERS heap every iteration, none ever cancelled, each
-    /// firing a spurious wakeup when its long-past deadline finally comes due.
-    ///
-    /// Reaping a stale entry only when its deadline comes due is not, on its own, a
-    /// useful bound: it bounds each entry's *lifetime* by the deadline horizon, so the
-    /// heap's size is bounded by **arm-rate × horizon**. That is the message rate — a
-    /// server looping `(receive … (after 3600000 …))` at 10k msg/s reaches ~36M dead
-    /// entries before the first comes due. So `super::timer::arm_timer` also *compacts*
-    /// the heap against this counter (see there); this gen is what makes both the
-    /// firing-time drop and the compaction able to tell a superseded entry from a live
-    /// one. The "spurious wakeups are harmless" re-validation in `receive_match` stays
-    /// as the backstop.
+    /// since re-parked (a new deadline) or moved on. Dropping only at the deadline would
+    /// bound the heap by arm-rate × horizon (a server looping `(after 3600000 …)` at 10k
+    /// msg/s holds ~36M dead entries), so `super::timer::arm_timer` also *compacts*
+    /// against this counter. `receive_match`'s deadline re-validation is the backstop.
     pub(super) timer_gen: AtomicU64,
     /// The pid that spawned this process (`0` = none, i.e. the root). Written once before
     /// the mailbox is published to the registry and never mutated after, so `Relaxed` is
@@ -190,12 +163,9 @@ pub(super) struct Mailbox {
     /// The `%isolate` scope this process was **spawned under** (`0` = none). Written once
     /// before publication, like `parent`, and never mutated after.
     ///
-    /// This is the ownership stamp `%isolate` reaps by, and it exists because the
-    /// `parent` chain is not durable: a grandchild's link to the isolate dies with its
-    /// intermediate parent, so an orphan whose middle process exited could not be proven
-    /// owned and was left running against globals that were about to be rolled back
-    /// (KI-89 — registered record ids whose constructors the restore took away). A stamp
-    /// copied at spawn survives every death above it.
+    /// The ownership stamp `%isolate` reaps by. The `parent` chain is not durable — a
+    /// grandchild's link dies with its intermediate parent — while a stamp copied at
+    /// spawn survives every death above it (KI-89).
     pub(super) isolate_owner: AtomicU64,
     /// The scope this process stamps on the children it spawns. Equal to `isolate_owner`
     /// except while this process is *inside* `%isolate`, which swaps in a fresh token for
@@ -204,10 +174,6 @@ pub(super) struct Mailbox {
     pub(super) isolate_scope: AtomicU64,
 }
 
-/// A queued message plus, under `dev-tools`, the debugger causal context (ADR-174
-/// send-level) the sender carried. Access to the payload is always `.msg` — uniform
-/// across builds, so the receive matcher is untouched — and in a lean release this is
-/// a zero-cost newtype over `Message` (the `trace` field does not exist).
 /// What a queued envelope carries. Two shapes, because a *local* send to a **parked**
 /// receiver can copy straight into that receiver's heap (L1) and skip the wire format
 /// entirely, while every other send — a running receiver, a remote node, a monitor
@@ -223,6 +189,9 @@ pub(super) enum Payload {
     Local { slot: u32, tag: Option<u32> },
 }
 
+/// A queued message plus, under `dev-tools`, the debugger causal context (ADR-174
+/// send-level) the sender carried. Access to the payload is always `.msg`, uniform
+/// across builds, so the receive matcher is untouched.
 pub(super) struct Envelope {
     pub(super) msg: Payload,
     /// Arrival sequence, assigned under the mailbox lock by [`MailboxState::push`].
@@ -330,32 +299,18 @@ pub(super) struct MailboxState {
     pub(super) kill_hard: bool,
     /// The parked green process waiting on this mailbox, if any. `send` takes it
     /// and re-queues it. (A short-lived `Process → Arc<Mailbox> → Process` cycle
-    /// while parked; broken the moment it's re-queued or the process ends.)
-    ///
-    /// A process parked on a `(receive)` nothing will ever send to (no deadline)
-    /// holds its `Box<Process>` here for the life of the `REGISTRY` entry — which
-    /// is fine in the standalone binaries (the OS process exits) and no longer
-    /// leaks in an embedded host: `Interp::drop` runs
-    /// [`super::scheduler::shutdown_runtime_parked`], which takes each such
-    /// waiter belonging to the dropped runtime and routes it through the normal
-    /// death path (fixed 2026-07-23; it was a flagged leak).
+    /// while parked; broken the moment it's re-queued or the process ends.) A waiter
+    /// nothing will ever wake is reaped by `Interp::drop` via
+    /// [`super::scheduler::shutdown_runtime_parked`].
     pub(super) waiter: Option<Box<Process>>,
     /// How many leading messages the parked waiter already scanned and rejected
     /// (selective receive). The worker re-runs it only when a message arrives
     /// *beyond* this — not for ones it already skipped. 0 for a plain FIFO receive.
     ///
-    /// **Invariant — never reset between suspend cycles, and that is correct.**
-    /// `scanned` carries no meaning while the process is *running*; it's only read
-    /// in `run_one`'s `Suspend::Receive` arm (the park-or-requeue decision). And
-    /// every such read is preceded, *in the same suspend cycle*, by a write in
-    /// `wait_for_message` (the green branch sets `st.scanned = i` immediately before
-    /// suspending). So the value `run_one` observes is always the one this cycle's
-    /// `wait_for_message` just wrote — a stale value from a prior cycle can never be
-    /// read, because a `Suspend::Receive` is unreachable without going through that
-    /// write first. Don't add a `Suspend::Receive` path that skips the
-    /// `wait_for_message` write, or this read goes stale. (The capture-mode suspend in
-    /// `receive_match` also writes it before returning the suspend signal, so the
-    /// invariant holds there too.)
+    /// **Never reset between suspend cycles, and that is correct:** it is read only in
+    /// `run_one`'s `Suspend::Receive` arm, and every path to that arm writes it first in
+    /// the same cycle (`wait_for_message`'s green branch, or `receive_match`'s capture
+    /// suspend). Don't add a `Suspend::Receive` path that skips the write.
     pub(super) scanned: usize,
     /// The absolute deadline of the `receive` currently in progress, or `None`. A
     /// captured `receive` is re-entered from scratch on each wake (the continuation
@@ -375,20 +330,14 @@ pub(super) struct MailboxState {
     /// `Condvar::wait` atomically releases the lock into the block, and decrements on
     /// the re-acquired guard when the wait returns. Read by every wake site inside the
     /// same critical section that makes its wake-relevant change (queue push, kill,
-    /// timer check), so `wake_both` can skip the condvar notify — an unconditional
-    /// `futex(FUTEX_WAKE)` syscall per message, ~20% of `pingpong` — when nobody is
-    /// or can yet be committed to the blocked side. See `wake_both` for why the skip
-    /// cannot recreate the lost-wake bug it was added to fix.
+    /// timer check), so `wake_both` can skip the condvar notify (a `futex` syscall per
+    /// message) when nobody is or can yet be committed to the blocked side. See
+    /// `wake_both` for why the skip cannot lose a wake.
     pub(super) cv_waiters: u32,
-    /// LATCHED wake (BEAM's `ERTS_PSFLG_ACTIVE` shape): every wake site sets this under
-    /// the state lock alongside its wake-relevant change; a waiter consumes it under the
-    /// same lock before committing to `Condvar::wait`. The `cv_waiters` count already
-    /// gates the notify syscall, and its ordering argument *should* make this flag
-    /// redundant — but a counted protocol has no second chance if any site's ordering is
-    /// ever wrong, and one practical counterexample surfaced within hours of the count
-    /// landing (KI-88's chaos combo wedged one dirty-blocked reader per run; with the
-    /// latch it does not). A latch's failure mode is one extra rescan; a count's is a
-    /// process asleep forever. Both stay.
+    /// LATCHED wake: every wake site sets this under the state lock alongside its
+    /// wake-relevant change; a waiter consumes it under the same lock before committing
+    /// to `Condvar::wait`. Belt to `cv_waiters`' braces — a latch's failure mode is one
+    /// extra rescan, a miscounted protocol's is a process asleep forever (KI-88). Both stay.
     pub(super) wake_pending: bool,
 }
 
@@ -396,28 +345,17 @@ pub(super) struct MailboxState {
 /// set is 8 × `u64` stored inline in [`MailboxState`], so this costs no allocation
 /// and cannot grow.
 ///
-/// **Why a bound at all, and why this one.** An entry only has to outlive the *one*
-/// in-flight reply the alias was minted for, so the common case reclaims itself: the
-/// late reply arrives, is dropped, and [`DeadAliases::take`] forgets the entry in the
-/// same step. The capacity only matters for a caller that times out repeatedly
-/// against a server that never answers at all — nothing ever arrives to clear those
-/// entries. Eight covers any realistic nesting of in-flight calls (a process has one
-/// `gen/call` outstanding per stack frame, and a *reply* is what a `call` blocks for),
-/// and the failure mode past it is a graceful one: evicting the oldest entry restores
-/// exactly the pre-alias behaviour for that one long-abandoned ref (its late reply, if
-/// one ever comes, queues as it always did). Never a wrong drop, never unbounded.
+/// An entry only has to outlive the *one* late reply its alias was minted for, which
+/// [`DeadAliases::take`] then forgets; the cap matters only for a caller timing out
+/// repeatedly against a server that never answers. Past it the oldest entry is evicted,
+/// which merely lets that one long-abandoned ref's late reply queue as an ordinary
+/// message. Never a wrong drop, never unbounded.
 const DEAD_ALIAS_CAP: usize = 8;
 
-/// The per-mailbox set of deactivated one-shot reply aliases (OTP 24's process
-/// aliases, `{alias, demonitor}`) — ADR-244.
-///
-/// Erlang through OTP 23 answered the stale-reply problem by having the caller *exit*
-/// on a `gen_server:call` timeout, so a late reply was moot. OTP 24 added aliases: the
-/// reply is addressed to a one-shot alias rather than the pid, and once the alias is
-/// deactivated at the deadline the VM drops later replies addressed to it — they never
-/// enter the mailbox. This is that, minus the separate alias identity: a Brood `ref` is
-/// already the unforgeable request token a reply carries, so deactivating *the ref*
-/// (`%ref-deactivate`) is the same guarantee with no new `Value` kind.
+/// The per-mailbox set of deactivated one-shot reply aliases (ADR-244): a reply
+/// addressed to a `ref` deactivated at its caller's deadline (`%ref-deactivate`) is
+/// dropped at delivery and never enters the mailbox. A `ref` is already the
+/// unforgeable request token a reply carries, so it needs no separate alias identity.
 ///
 /// A tiny insertion-ordered array rather than a set: it is capped at
 /// [`DEAD_ALIAS_CAP`], so a linear scan is a handful of `u64` compares on one cache
@@ -511,12 +449,6 @@ pub fn deactivate_alias(ref_id: u64) {
 }
 
 impl Mailbox {
-    /// A mailbox for a process whose spawner is `parent` (`0` for the root, which has
-    /// none). The parent pid lives here rather than in a global `pid -> pid` map: it is
-    /// per-process data, the per-process record already exists and is already
-    /// registry-reachable, and the map cost two locked operations on every spawn and every
-    /// exit — pure contention under fan-out, for a value read in exactly one place
-    /// (`process-info`'s `:parent`).
     /// Record which runtime this process belongs to, so `send` can tell whether a RUNTIME
     /// handle is meaningful in the target without touching its heap (which, for a *busy*
     /// receiver, the sender cannot reach). The process REGISTRY is global, so a second
@@ -532,6 +464,10 @@ impl Mailbox {
         self.runtime_tag.load(Ordering::Relaxed)
     }
 
+    /// A mailbox for a process whose spawner is `parent` (`0` for the root, which has
+    /// none). The parent pid lives here, on the registry-reachable per-process record,
+    /// rather than in a global `pid -> pid` map that cost two locked operations on every
+    /// spawn and exit.
     pub(super) fn new_with_parent(parent: u64, isolate_scope: u64) -> Arc<Mailbox> {
         let mb = Mailbox::new();
         // Safe: the mailbox is not published to the registry until after this returns, so
@@ -613,9 +549,6 @@ impl Mailbox {
         crate::core::sync::lock(&self.state).kill.clone()
     }
 
-    /// Is an untrappable **hard** kill pending? The loop-top safepoint probe: a
-    /// soft exit isn't honoured there (it waits for the next `receive`). Same
-    /// fast path as [`pending_kill`](Self::pending_kill).
     /// Post-push bound check (ADR-307): called by every site that enqueues a NEW
     /// message (`deliver_envelope_timed`, `try_deliver_local`) with the queue length
     /// read under the state lock. A selective-receive rebuild re-inserts already
@@ -625,13 +558,9 @@ impl Mailbox {
     pub(super) fn note_mailbox_bound(&self, queue_len: usize) {
         let limit = self.max_mailbox.load(Ordering::Relaxed);
         if limit != 0 && queue_len > limit {
-            // Arm only from CLEAN, with a compare-exchange (KI-103). A plain
-            // check-then-store loses the race that made this bug survive its first fix: a
-            // sender reads "not yet raised", the receiver's probe latches, and the sender
-            // stores anyway — arming AFTER the latch, so the handler's next safepoint takes
-            // it and dies inside `proc/flag`, the very call it was making to recover. One
-            // word, one atomic operation, no window. Losing the CAS means someone armed
-            // first or the latch is set; both are fine, so the result is ignored.
+            // Arm only from CLEAN, with a compare-exchange (KI-103): a check-then-store
+            // could arm AFTER the receiver latched, killing its handler mid-recovery.
+            // Losing the CAS means someone armed first or the latch is set — both fine.
             let _ = self.overflow_hit.compare_exchange(
                 0,
                 queue_len,
@@ -645,17 +574,16 @@ impl Mailbox {
     /// `1..` armed with the breaching length, `LATCHED` already raised for this arming.
     const OVERFLOW_LATCHED: usize = usize::MAX;
 
-    /// Take the sticky breach flag — the receiver-side probe (safepoints + `receive` entry).
-    /// Taking LATCHES it, so the bound is one-shot per arming (KI-103): the handler that
-    /// catches E0046 gets a guaranteed window to drain or re-set the bound, where before
-    /// every further enqueue re-armed and killed it mid-recovery. Setting the bound again
-    /// (`set_max_mailbox`) clears the latch and re-arms the protection.
     /// Is an overflow waiting to be raised? A peek (`take_overflow_hit` takes and latches).
     pub(super) fn overflow_pending(&self) -> bool {
         let v = self.overflow_hit.load(Ordering::Relaxed);
         v != 0 && v != Self::OVERFLOW_LATCHED
     }
 
+    /// Take the sticky breach flag — the receiver-side probe (safepoints + `receive` entry).
+    /// Taking LATCHES it, so the bound is one-shot per arming (KI-103): the handler that
+    /// catches E0046 gets a guaranteed window to drain or re-set the bound. Setting the
+    /// bound again (`set_max_mailbox`) clears the latch and re-arms the protection.
     pub(super) fn take_overflow_hit(&self) -> Option<(usize, usize)> {
         // Take AND latch in one compare-exchange: a plain `swap(LATCHED)` would latch a
         // mailbox that never breached, and a `swap(0)` is the race this replaced.
@@ -679,6 +607,8 @@ impl Mailbox {
         }
     }
 
+    /// Is an untrappable **hard** kill pending? The loop-top safepoint probe: a soft exit
+    /// isn't honoured there (it waits for the next `receive`). One relaxed load when none.
     pub(super) fn pending_hard_kill(&self) -> bool {
         if !self.kill_pending.load(Ordering::Relaxed) {
             return false;
@@ -688,26 +618,13 @@ impl Mailbox {
     }
 }
 
-/// pid → mailbox, for `send` to find a target from any thread.
-/// `pub(super)` so the `monitor` submodule can take the REGISTRY ↔ MONITORS
-/// liveness check inside its critical section (see `monitor::add_monitor`).
 /// Number of registry shards. A power of two so the shard index is a mask, and comfortably
 /// above the worker count so a fan-out rarely collides.
 const REGISTRY_SHARDS: usize = 64;
 
-/// `pid -> Arc<Mailbox>`, sharded by pid.
-///
-/// This was a single global `Mutex<HashMap<..>>`, which every `spawn`, every `deregister`
-/// and every `deliver` (i.e. every message) had to take. Uncontended that is ~20 ns and
-/// invisible — `ring`/`pingpong` measured flat across worker counts, so message delivery
-/// was never the problem. **Fan-out is**: one process spawning while N workers deregister
-/// exited children serialises every one of them on the same mutex, and pure spawn measured
-/// 19 ms at 12 workers against 13 ms at 4 — the extra workers made it *slower*.
-///
-/// Sharding keeps the semantics exactly: a pid still resolves to a mailbox from any thread
-/// (so location-transparent `send` and the whole `dist` path are unchanged), and it is
-/// invisible to hot reload, which concerns the shared code region and globals table, never
-/// mailboxes.
+/// `pid -> Arc<Mailbox>`, sharded by pid, so `send` finds a target from any thread. A
+/// single mutex serialised a spawn fan-out against every worker's `deregister` (more
+/// workers measured *slower*); sharding keeps the semantics exactly.
 ///
 /// **Lock ordering is preserved.** `add_monitor` takes MONITORS then a registry shard
 /// (nested); `deregister` takes a shard, releases, then NAMES, then MONITORS (sequential).
@@ -806,6 +723,8 @@ impl Registry {
     }
 }
 
+/// pid → mailbox. `pub(super)` so the `monitor` submodule can take the REGISTRY ↔
+/// MONITORS liveness check inside its critical section (see `monitor::add_monitor`).
 pub(super) static REGISTRY: LazyLock<Registry> = LazyLock::new(|| Registry {
     shards: (0..REGISTRY_SHARDS)
         .map(|_| super::scheduler::Padded(Mutex::new(PidMap::default())))
@@ -887,19 +806,6 @@ pub(crate) fn deliver_traced(pid: u64, msg: Message, trace: Option<Message>) {
     );
 }
 
-/// **The L1 local-send fast path.** Try to deliver `v` to local process `pid` by copying
-/// it straight from the sender's heap into the receiver's, skipping the `Value → Message
-/// → Value` round trip. Returns `true` when it did.
-///
-/// Only fires when the receiver is **parked**: taking its `waiter` out of the mailbox
-/// state under the lock gives us its `Box<Process>`, and therefore exclusive `&mut` on
-/// its heap for the duration — the same quiescence `trim_parked` relies on. A running
-/// receiver, a remote pid, or a value the copier declines (a closure, a rope, an
-/// unrealised seq-view) all answer `false` and take the normal `Message` path with its
-/// existing semantics and error messages.
-///
-/// The copied value is parked in the receiver's `msg_roots` — a *traced* slot table —
-/// because the mailbox is not a GC root and `roots` is the operand stack.
 /// L1 hit/decline accounting, printed at exit under `BROOD_L1_STATS=1`. Plain relaxed
 /// counters — diagnostic only, never read by the runtime.
 pub mod l1_stats {
@@ -944,10 +850,9 @@ pub mod l1_stats {
     }
 }
 
-/// Outcome of the L1 attempt. When it declines, it hands back the target's runtime tag so the
-/// caller does not have to look the registry up a *second* time to decide whether a shared
-/// closure handle may cross (ADR-208). That duplicate lookup sat on the serialised send path —
-/// precisely the path a busy receiver takes, and the one ADR-208 made hot.
+/// Outcome of the L1 attempt. When it declines, it hands back the target's runtime tag so
+/// the caller does not look the registry up a *second* time to decide whether a shared
+/// closure handle may cross (ADR-208) — that lookup sat on the busy-receiver send path.
 enum LocalDelivery {
     /// Delivered into the parked receiver's heap; nothing further to do.
     Delivered,
@@ -955,6 +860,18 @@ enum LocalDelivery {
     Declined { runtime_tag: Option<u64> },
 }
 
+/// **The L1 local-send fast path.** Try to deliver `v` to local process `pid` by copying
+/// it straight from the sender's heap into the receiver's, skipping the `Value → Message
+/// → Value` round trip.
+///
+/// Only fires when the receiver is **parked**: taking its `waiter` out of the mailbox
+/// state under the lock gives us its `Box<Process>`, and therefore exclusive `&mut` on
+/// its heap for the duration — the same quiescence `trim_parked` relies on. A running
+/// receiver, a remote pid, or a value the copier declines (a closure, a rope, an
+/// unrealised seq-view) all decline and take the normal `Message` path.
+///
+/// The copied value is parked in the receiver's `msg_roots` — a *traced* slot table —
+/// because the mailbox is not a GC root and `roots` is the operand stack.
 fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
     let Some(mb) = REGISTRY.get(pid) else {
         l1_stats::bump(&l1_stats::NO_PROC);
@@ -1004,11 +921,7 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
             runtime_tag: Some(tag),
         };
     };
-    let tag = if no_msg_tag() {
-        None
-    } else {
-        leading_keyword(proc.heap_mut(), copied)
-    };
+    let tag = leading_keyword(proc.heap_mut(), copied);
     let slot = proc.heap_mut().msg_root_add(copied);
     st.push(Envelope {
         msg: Payload::Local { slot, tag },
@@ -1062,36 +975,20 @@ fn deliver_envelope_timed(pid: u64, env: Envelope) {
 /// Signal **both** wake paths for a mailbox we have just pushed to (or set a kill on):
 /// re-queue the parked green process if there was one, *and* notify the condvar.
 ///
-/// The `if parked { requeue } else { notify }` this replaces looks exhaustive and is not.
-/// It assumes a receiver is reachable by exactly one path, but the two are not mutually
-/// exclusive: a green process that entered a **native-nested** `receive` (a `receive` inside
-/// a HOF running in a Rust builtin — the §7.4 dirty-scheduler carve-out) blocks its worker on
-/// this condvar *without* clearing any `waiter` a previous park left behind. Whenever a
-/// `waiter` is present the `else` never runs, so that receiver's condvar is never notified
-/// and — with no `after` to self-wake it — it blocks forever. A condvar notify does **not
-/// latch**: delivered to no one it is discarded, and nothing later recovers it.
+/// The two paths are not mutually exclusive: a green process in a **native-nested**
+/// `receive` (§7.4) blocks its worker on this condvar *without* clearing any `waiter` a
+/// previous park left behind, so an either/or wake left it blocked forever — a condvar
+/// notify does **not latch**. With two wake mechanisms (a root thread really does block
+/// an OS thread) the invariant is: signal both, every time. A spurious wake costs one
+/// re-scan. Called with the state lock already released.
 ///
-/// BEAM has no such either/or, because it has no second wake path: `erts_queue_message`
-/// enqueues and then `erts_proc_notify_new_message` schedules the process if it is not
-/// already `ERTS_PSFLG_ACTIVE` — a **persistent state bit**, so however the interleaving
-/// falls, a process made active gets run. We keep two mechanisms (a root/file-runner thread
-/// really does block an OS thread), so the invariant has to be: signal both, every time.
-///
-/// Notifying with no waiter is a no-op, and a spurious wake costs one re-scan — `receive_match`
-/// re-scans after every `wait_for_message` return anyway. Called with the state lock already
-/// released: we pushed under it, so a receiver that locks after us sees the message on its
-/// own `queue.len() > i` check and never reaches the wait.
 /// `cv_waiter` is [`MailboxState::cv_waiters`]` > 0`, read by the caller **inside the
 /// same lock hold that made its wake-relevant change**. Skipping the notify on `false`
-/// cannot recreate the lost-wake bug this function fixed: a waiter registers its count
-/// and re-checks its wake condition under that same mutex before `Condvar::wait`
-/// atomically releases it into the block — so either the wake site's critical section
-/// ran first (the waiter sees the message/kill/deadline and never blocks) or the
-/// waiter's ran first (the wake site reads `cv_waiters > 0` and notifies). The only
-/// notify skipped is one provably delivered to nobody — which a condvar discards
-/// anyway; it was pure cost: an unconditional `notify_all` is a `futex(FUTEX_WAKE)`
-/// syscall per delivery, measured at ~850 instructions/message on `pingpong` (+20%
-/// wall, the 0.13→0.15 step the 2026-08-30 bisect pinned to this site's introduction).
+/// cannot lose a wake: a waiter registers its count and re-checks its wake condition
+/// under that same mutex before `Condvar::wait` atomically releases it — so either the
+/// wake site ran first (the waiter sees the change and never blocks) or the waiter did
+/// (the wake site reads `cv_waiters > 0` and notifies). Only a notify delivered to
+/// nobody is skipped — and it was a `futex` syscall per message.
 pub(super) fn wake_both(mb: &Mailbox, parked: Option<Box<Process>>, cv_waiter: bool) {
     if cv_waiter {
         mb.cv.notify_all();
@@ -1215,20 +1112,6 @@ pub(crate) fn read_name_address(heap: &Heap, mid: MapId) -> Result<(Symbol, Symb
     Ok((field("name")?, field("node")?))
 }
 
-/// `(%receive matcher timeout)` — selective receive. `matcher` is a unary function:
-/// given a message value it answers **which clause matched and what that clause's
-/// pattern bound**, as a `[idx var…]` vector, or `nil` on no match. Scan the mailbox in
-/// order; the first message a clause matches is removed and the matcher's answer
-/// returned. The clause **body does not run here** — the `receive` macro emits every
-/// body at the call site and dispatches on `idx` there (`std/prelude.blsp`), so bodies
-/// compile into the owning arm and a loop that tail-calls back into `receive` stays
-/// O(1) native stack. Non-matching messages stay queued (Erlang selective receive).
-///
-/// `timeout` is `nil` (wait forever) or an integer of milliseconds; on expiry this
-/// returns **`nil`**, which the macro's `after` branch tests for. That is unambiguous:
-/// a match always answers with a vector, and with a `nil` timeout expiry is unreachable.
-///
-/// A green process suspends while waiting; the root thread blocks.
 /// Upper bound on clause tags the leading-keyword filter tracks. A `receive` with more
 /// clauses than this simply scans unfiltered — the array keeps the check branch-free and
 /// off the heap, and real receives are far below it.
@@ -1259,29 +1142,13 @@ fn collect_receive_tags(heap: &Heap, tags: Value, out: &mut [u32; MAX_RECEIVE_TA
     n
 }
 
-/// Can `msg` be rejected without rebuilding it into the heap? True only when the filter
-/// is active AND the message is a vector whose head is a keyword that no clause names.
-/// Every other shape answers `false` (scan it properly) — the filter must never skip a
-/// message a clause could match.
-/// Whether the receive-mark is armed (ADR-195). `BROOD_NO_RECV_MARK=1` disables it, so every
-/// receive scans from the front as it did before — the A/B lever, the bisect lever, and the
-/// stopgap if a skipped message is ever suspected.
-///
-/// This one earns an off-switch more than most changes do: a wrong skip does not crash, it
-/// silently fails to deliver a message, which is the hardest class of fault to attribute
-/// after the fact.
+/// Whether the receive-mark is armed (ADR-195). `BROOD_NO_RECV_MARK=1` disables it, so
+/// every receive scans from the front — the A/B and bisect lever, and the stopgap if a
+/// skipped message is ever suspected (a wrong skip does not crash; it silently fails to
+/// deliver, the hardest fault to attribute).
 fn recv_mark_enabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *F.get_or_init(|| std::env::var_os("BROOD_NO_RECV_MARK").is_none())
-}
-
-#[inline]
-/// `BROOD_NO_MSGTAG=1` — deliver L1 fast-path messages without their leading-keyword tag,
-/// so the selective-receive prefilter can't use them. The A/B lever for what the tag carry
-/// is worth; off-switch only.
-fn no_msg_tag() -> bool {
-    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var_os("BROOD_NO_MSGTAG").is_some())
 }
 
 /// The leading keyword of a keyword-led vector, in the receiver's heap — the in-heap
@@ -1294,6 +1161,10 @@ fn leading_keyword(heap: &Heap, v: Value) -> Option<u32> {
     }
 }
 
+/// Can `msg` be rejected without rebuilding it into the heap? True only when the filter
+/// is active AND the message is a vector whose head is a keyword that no clause names.
+/// Every other shape answers `false` (scan it properly) — the filter must never skip a
+/// message a clause could match.
 fn tag_rejects(tagset: &[u32], msg: &Message) -> bool {
     if tagset.is_empty() {
         return false;
@@ -1307,6 +1178,20 @@ fn tag_rejects(tagset: &[u32], msg: &Message) -> bool {
     }
 }
 
+/// `(%receive matcher timeout)` — selective receive. `matcher` is a unary function:
+/// given a message value it answers **which clause matched and what that clause's
+/// pattern bound**, as a `[idx var…]` vector, or `nil` on no match. Scan the mailbox in
+/// order; the first message a clause matches is removed and the matcher's answer
+/// returned. The clause **body does not run here** — the `receive` macro emits every
+/// body at the call site and dispatches on `idx` there, so bodies compile into the
+/// owning arm and a loop that tail-calls back into `receive` stays O(1) native stack.
+/// Non-matching messages stay queued.
+///
+/// `timeout` is `nil` (wait forever) or an integer of milliseconds; on expiry this
+/// returns **`nil`**, which the macro's `after` branch tests for. That is unambiguous:
+/// a match always answers with a vector, and with a `nil` timeout expiry is unreachable.
+///
+/// A green process suspends while waiting; the root thread blocks.
 pub fn receive_match(
     heap: &mut Heap,
     matcher: Value,
@@ -1501,19 +1386,11 @@ fn receive_match_timed(
                 // running). The capture path that suspends above is flipped back by
                 // `run_one` on resume instead.
                 set_self_status(&ctx, ST_RUNNING);
-                // An `(exit …)` may have woken us (its `cv.notify_one`) rather than a
-                // message. There's no coroutine to suspend and no `run_one` boundary to
-                // check `kill_pending` for a blocked receive, so do it here — but only in
-                // a real scheduler-run green process (`in_capture_run`), where a top-level
-                // body driver exists to convert the unwinding `Control::Kill` into process
-                // death. On the root / file-runner thread there's no such driver, so a
-                // `Control::Kill` would just leak as an error; that thread isn't a killable
-                // process anyway, so leave it to re-scan/re-block (the pre-existing
-                // behaviour). Unwind with `Control::Kill` — untrappable through the
-                // enclosing `try`/`%isolate`/HOF — which `vm_run_bc` turns into
-                // `VmOutcome::Killed`, retiring the process with the reason still in
-                // `state.kill`. (Both a hard `:kill` and a soft `(exit pid reason)` die
-                // here; the reason distinguishes them at death.)
+                // An `(exit …)` may have woken us rather than a message, and a blocked
+                // receive has no `run_one` boundary to check `kill_pending`, so do it here
+                // — only in a scheduler-run green process, whose body driver turns the
+                // untrappable `Control::Kill` into death (`VmOutcome::Killed`, reason still
+                // in `state.kill`). The root thread is not killable; it re-scans.
                 if crate::process::in_capture_run()
                     && ctx.mailbox.kill_pending.load(Ordering::Relaxed)
                 {
@@ -1521,11 +1398,8 @@ fn receive_match_timed(
                     return Err(LispError::kill_signal());
                 }
                 // The mailbox bound (ADR-307), re-probed on every wake of this BLOCKING
-                // path: the entry probe above ran once, and a flood that arrives while the
-                // receive is blocked (inside a `try`, say) is otherwise noticed only if the
-                // matcher's nested VM run happens to reach a quantum rollover — which is how
-                // it was noticed, at every frame boundary, until those checks moved to the
-                // rollover. Raised like the entry probe: catchable, flag taken.
+                // path: the entry probe ran once, and a flood arriving while blocked would
+                // otherwise surface only at a quantum rollover. Raised like the entry probe.
                 if let Some((len, limit)) = ctx.mailbox.take_overflow_hit() {
                     if capture && deadline.is_some() {
                         crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
@@ -1592,15 +1466,9 @@ fn scan_mailbox(
     // the recorded index. A non-match pays one extra lock to re-insert the message at
     // `*i` (arrival order preserved) and reverts the rest of the scan to
     // peek-in-place, so a long selective-receive backlog isn't popped/re-inserted
-    // per candidate — the scan's lock count stays ≤ the peek-only scheme's for
-    // every backlog length.
-    //
-    // Since ADR-245 that is true for SMALL candidates only. Peeking in place means
-    // rebuilding under the lock, so a large candidate takes this same pop/re-insert
-    // route regardless (see the `message_fits` check below): one extra lock acquire,
-    // in exchange for a bounded hold. The leading-keyword filter is what keeps that
-    // from applying to backlog length — a message no clause could match is rejected
-    // on its tag and never rebuilt at all.
+    // per candidate. A LARGE candidate always takes the pop/re-insert route (ADR-245,
+    // `message_fits` below): peeking rebuilds under the lock, so one extra acquire buys
+    // a bounded hold; the tag filter keeps that off unmatchable backlog entirely.
     let mut optimistic = true;
     // Arrival seq of the last examined-and-declined candidate. The matcher runs with the
     // mailbox lock RELEASED and can run arbitrary user code — a clause `:when` guard that
@@ -1718,18 +1586,9 @@ fn scan_mailbox(
             } else {
                 // Peek-in-place: a Local payload must NOT be taken here (the candidate
                 // may not match and has to stay queued), so read the slot without
-                // clearing it.
-                //
-                // But `from_message` on a Wire payload is a full rebuild into this heap,
-                // and peeking means doing it WITH THE LOCK HELD, once per candidate —
-                // the receive-side twin of the send-side stall ADR-245 bounds. A Local
-                // payload is free here (`msg_root_peek` is a slot read, no rebuild), so
-                // only Wire is at issue, and only when it is big: ask first, and for
-                // anything past the budget take the optimistic branch's route instead —
-                // pop, rebuild unlocked, and let the non-match path re-insert it in seq
-                // order. That costs one extra lock acquire for that candidate and bounds
-                // the hold; the leading-keyword filter above means it applies only to
-                // candidates that could match, never to backlog length.
+                // clearing it. A Wire payload's rebuild would run WITH THE LOCK HELD, so a
+                // big one (past the ADR-245 budget) takes the optimistic route instead —
+                // pop, rebuild unlocked, re-insert in seq order on a non-match.
                 let over = match &st.queue[*i].msg {
                     Payload::Wire(w) => !crate::process::message::message_fits(
                         w,
@@ -1855,23 +1714,12 @@ fn scan_mailbox(
 /// Put an optimistically-popped candidate back **in seq order**, returning the index it
 /// landed at (the caller resumes its scan from there).
 ///
-/// The obvious thing — insert at the recorded scan position `i` — is wrong, and used to
-/// be what this did (clamped to the queue length). The matcher runs with the mailbox lock
-/// **released**, and a matcher can run arbitrary code: a `receive` clause's `:when` guard
-/// is evaluated during the scan (`std/prelude/process.blsp`), and a guard that itself runs
-/// a *consuming* nested `receive` removes messages from this very queue during that
-/// window. If it consumes entries *ahead* of `i`, everything after them shifts down and
-/// position `i` no longer names this envelope's slot — it now names a message with a
-/// **higher** `seq`. Re-inserting there leaves the queue out of order, e.g. `[10, 12, 5,
-/// 13]`, and a later `receive` pinned on a fresh `ref` then runs `partition_point` over a
-/// predicate that is not partitioned (`[T, F, T, F]`), which is free to return an index
-/// past a matchable post-mark message. Nothing crashes: the reply is silently never seen
-/// and the caller times out — the exact failure mode [`recv_mark_enabled`]'s comment calls
-/// the hardest to attribute.
-///
-/// So restore the [`Envelope::seq`] invariant instead. The recorded position is checked
-/// first (O(1)) because it is right whenever nothing shifted, which is every scan that
-/// doesn't have a mailbox-consuming guard; only the perturbed case pays the search.
+/// Not simply at the recorded scan position `i`: the matcher runs with the lock
+/// **released**, and a clause `:when` guard that runs a *consuming* nested `receive` can
+/// remove entries ahead of `i`, so `i` may now name a higher-`seq` slot. Inserting there
+/// breaks the [`Envelope::seq`] ordering, and a later ref-pinned receive's
+/// `partition_point` can then silently skip a matchable reply. The recorded position is
+/// checked first (O(1), right whenever nothing shifted); only the perturbed case searches.
 fn reinsert_at_seq(st: &mut MailboxState, i: usize, m: Envelope) -> usize {
     let seq = m.seq;
     let len = st.queue.len();
@@ -1914,22 +1762,14 @@ fn reinsert_candidate(ctx: &Ctx, i: usize, m: Envelope) -> usize {
 /// (the gate in `receive_match`).
 ///
 /// **Clock domain.** The deadline was minted on the scheduler clock
-/// (`timer::sched_now()`, see `receive_match_timed`), so the elapsed check below reads
-/// that same clock — never `Instant::now()`. Off wasm the two are literally the same
-/// function, so this costs nothing; what it buys is that the domain-mixing shape which
-/// spun the wasm pump forever at `park_on_receive` is now absent from *every* gate,
-/// rather than from all-but-one. Guarded by `crates/lisp/tests/sched_clock_domain.rs`.
+/// (`timer::sched_now()`), so the elapsed check below reads that same clock — never
+/// `Instant::now()` — or the wasm pump spins forever. Guarded by
+/// `crates/lisp/tests/sched_clock_domain.rs`.
 ///
-/// **This function does not work on wasm32 at all, for a reason unrelated to the
-/// clock** — and that is a live defect, not a theoretical one. `std`'s `no_threads`
-/// `Condvar` *panics* in `wait`/`wait_timeout`, and a Rust panic on wasm is an
-/// uncatchable `RuntimeError: unreachable`. It is reachable there: verified 2026-08-25
-/// against a `wasm-bindgen --target nodejs` build of `crates/playground`, a bare
-/// top-level `(receive (after 1 :fired))` captures and answers `:fired`, but
-/// `(do (sleep 5) :slept)` traps *here* — `sleep`'s `receive` sits inside a called
-/// function, so it takes the native-nested carve-out above instead of capturing. The
-/// fix for that is a non-blocking park for the nested case on wasm; it is not the
-/// clock, and reading `sched_now()` here neither helps nor hurts it.
+/// **Known defect: this does not work on wasm32.** `std`'s `no_threads` `Condvar`
+/// panics in `wait`, an uncatchable trap there, and a native-nested receive (e.g.
+/// `(do (sleep 5) :slept)`) reaches it. The fix is a non-blocking park for the nested
+/// case on wasm.
 fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<Instant>) {
     let st = crate::core::sync::lock(&ctx.mailbox.state);
     if st.queue.len() > i {
@@ -1990,14 +1830,6 @@ fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<Instant>) {
     }
 }
 
-/// Re-queue green process `pid` if it's still parked on the deadline identified by
-/// `gen`, so it wakes, re-scans, and — finding its deadline passed — runs its
-/// `after` clause. `gen` is the park generation the timer entry was stamped with
-/// (`arm_timer`); if the mailbox's `timer_gen` has since advanced, this entry is a
-/// **superseded** deadline (the process re-parked with a newer one, or moved on),
-/// so we drop it without waking — lazy timer cancellation (see `Mailbox::timer_gen`).
-/// A no-op too if `send` already woke it. The process always re-validates its own
-/// deadline, so even a wakeup that slips through is harmless (at most one spurious).
 /// The park generation local process `pid`'s mailbox is currently on, or `None` if it is
 /// dead/unknown. A pending timer entry is **live** iff its stamped gen equals this — the
 /// same test [`wake_for_timeout`] applies at firing time, exposed so `super::timer`'s
@@ -2010,6 +1842,14 @@ pub(super) fn current_timer_gen(pid: u64) -> Option<u64> {
         .map(|mb| mb.timer_gen.load(Ordering::Relaxed))
 }
 
+/// Re-queue green process `pid` if it's still parked on the deadline identified by
+/// `gen`, so it wakes, re-scans, and — finding its deadline passed — runs its
+/// `after` clause. `gen` is the park generation the timer entry was stamped with
+/// (`arm_timer`); if the mailbox's `timer_gen` has since advanced, this entry is a
+/// **superseded** deadline (the process re-parked with a newer one, or moved on),
+/// so we drop it without waking — lazy timer cancellation (see `Mailbox::timer_gen`).
+/// A no-op too if `send` already woke it. The process always re-validates its own
+/// deadline, so even a wakeup that slips through is harmless (at most one spurious).
 pub(super) fn wake_for_timeout(pid: u64, gen: u64) {
     let mailbox = REGISTRY.get(pid);
     if let Some(mb) = mailbox {
@@ -2128,19 +1968,9 @@ mod tests {
     use super::*;
 
     /// Seq ordering after a candidate is re-inserted — the invariant the receive-mark
-    /// (ADR-195) binary-searches on, and the one the clamped re-insert used to break.
-    ///
-    /// The interleaving: a `receive` scan resumed at index 3 (the root thread and a
-    /// native-nested receive both keep their scan index across a wait) and
-    /// *optimistically popped* that candidate; the matcher then ran with the mailbox lock
-    /// released, and a clause's `:when` guard did a **consuming nested `receive`**
-    /// (`std/prelude/process.blsp` evaluates guards during the scan, and `scan_mailbox`'s
-    /// own comment names this case). That consume shifted the queue, so the recorded scan
-    /// position no longer named this envelope's slot — it named a message with a *higher*
-    /// seq. Putting the candidate back there left `[4, 5, 3, 6]`, and a later `receive`
-    /// pinned on a fresh `ref` then ran `partition_point` over a predicate that is not
-    /// partitioned. Nothing crashes: it silently skips a matchable post-mark message and
-    /// the caller times out.
+    /// (ADR-195) binary-searches on. A scan optimistically popped a candidate, then a
+    /// clause guard's consuming nested `receive` shifted the queue; re-inserting at the
+    /// recorded position would leave it out of seq order (see `reinsert_at_seq`).
     #[test]
     fn a_consuming_matcher_cannot_leave_the_queue_out_of_seq_order() {
         // Every mailbox seq the mark could take must skip only *pre-mark* messages —

@@ -134,13 +134,13 @@ writes nothing. A file that no longer exists maps to nil and is neither counted 
             [{} (entries-of root) 0 0]
             (fn (acc file)
               (let ([result entries hits parsed] acc
-                    st (file/stat file))
-                (if (nil? st)
+                    state (file/stat file))
+                (if (nil? state)
                   ;; No such file: nothing to key on — answer nil and record nothing (the
                   ;; caller's listing said it existed a moment ago; the load reports the rest).
                   [(assoc result file nil) entries hits parsed]
-                  (let (size (get st :size)
-                        mtime (get st :mtime)
+                  (let (size (get state :size)
+                        mtime (get state :mtime)
                         e (get entries file))
                     (if (and e (= (get e 0) size) (= (get e 1) mtime))
                       [(assoc result file [(get e 2) (get e 3) (get e 4)])
@@ -177,7 +177,7 @@ present (a file with no `defmodule` maps to nil) — through `index-entries`.
     (module-index/index-files nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" nil}"
   (fold (%map-pairs (index-entries root files))
     {}
-    (fn (m kv) (let ([f e] kv) (assoc m f (if e (get e 0) nil))))))
+    (fn (m entry) (let ([f e] entry) (assoc m f (if e (get e 0) nil))))))
 (sig index-files
   ((or string nil) (or (list string) (vector string) nil) -> (map string (or (list symbol) nil))))
 
@@ -191,8 +191,8 @@ opened for an unchanged one.
     (module-index/infos-of nil (list \"/no/such/file.blsp\"))   → {\"/no/such/file.blsp\" {:module nil :requires []}}"
   (fold (%map-pairs (index-entries root files))
     {}
-    (fn (m kv)
-      (let ([f e] kv)
+    (fn (m entry)
+      (let ([f e] entry)
         (assoc m f {:module (if e (get e 1) nil) :requires (if e (get e 2) [])})))))
 (sig infos-of ((or string nil) (or (list string) (vector string) nil) -> (map string map)))
 

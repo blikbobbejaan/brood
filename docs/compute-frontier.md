@@ -1,5 +1,11 @@
 # Plan — the post-JIT single-threaded compute frontier
 
+> **Removed levers.** The A/B and experiment flags this file's measurements cite —
+> `BROOD_XADMIT`, `BROOD_MKCLO`, `BROOD_XCALL`, `BROOD_FLOAT_VETO`, `BROOD_NO_INLINE`,
+> `BROOD_NO_LEAF_INLINE`, `BROOD_NO_PARTIAL_LEAF`, `BROOD_NO_FLOAT_GLOBAL` and others — were
+> removed 2026-10-09; what they defaulted to is now unconditional. `brood --debug-flags` lists
+> what exists. The measurements stand as the record of what was decided and why.
+
 > **Note on the background docs cited below.** `jit-tier2.md`, `jit-stage1.md`,
 > `value-repr.md` and `frame-representation.md` were trimmed in `fdce5400` once the work
 > they planned had shipped. Their conclusions are folded into this file, the ADR that
@@ -114,7 +120,7 @@
 > (IEEE inf/NaN valid); covers multi-arg, `let`/`do`, rem/quot/bitwise (int) and `+ - * /` (float); a
 > native-depth cap deopts deep recursion to the boxed path. Default-on (`BROOD_NO_I64` opts out).
 > Fuzz-hardened: ~1600 chaotic int+float differential programs + boundary torture + concurrency/
-> GC_STRESS, **0 bugs**; regression guard `tests/unbox_torture_test.blsp` + `scripts/fuzz_unbox.py`.
+> GC_STRESS, **0 bugs**; regression guard `tests/unbox_torture_test.blsp`.
 > - **`fib` 227→~52 ms (5th→2nd, beats Elixir & Node); `pfib` N=31 847→~152 ms (5th→2nd, 1.3× off .NET).**
 > Also shipped: a **HOF closure-call fast path** (`range_reduce` caches the step closure's arm once →
 > `nqueens` ~9%; `BROOD_NO_HOF`), and **`let*` removed** (Brood's `let` is already sequential).
@@ -1838,7 +1844,7 @@ under 3 ms on every row. **Persisting bytecode saves ~10 µs per arm** — again
 serialised-IR format for a `Chunk` that is not self-contained (IC atomics, `NodePtr`s,
 `ConstVal::Handle`) and that the JIT does not even lower from (it reads `arm.body`). Struck.
 
-**Where the Cranelift time goes** (`make perf-brood` + `BROOD_COMPILE_TRACE=1`, `json`): 128
+**Where the Cranelift time goes** (`make perf-brood` + `BROOD_TRACE_LOWER=1`, then named `BROOD_COMPILE_TRACE`; `json`): 128
 compiles, 79 ms, **97% initial tier** (2 deferred compiles landed before exit). Median 275 µs,
 p90 1.4 ms, max 7.6 ms (`json/object-acc`); top 10 arms = 48% of the time, top 25 = 71%. Arms
 that also carry a bail line account for **9.5 ms** — so "persist the tiering decisions and skip

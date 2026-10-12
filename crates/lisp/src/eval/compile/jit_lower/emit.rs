@@ -1,17 +1,47 @@
-//! CLIF emit helpers for `jit_lower_arm_inner`, extracted from the closures that
-//! took `b: &mut FunctionBuilder` and captured the `deopt` block. Part of the
-//! `jit_lower_arm_inner` decomposition; jit-only. `Op` is the shared operand model
-//! (module scope in `jit_lower.rs`).
+//! CLIF emit helpers for `jit_lower_arm_inner`. jit-only. `Op` is the shared operand
+//! model (module scope in `jit_lower.rs`).
 #![cfg(feature = "jit")]
 use super::*;
 use crate::core::heap::VecStore as VS;
 use crate::core::value::jit_layout::{
     PAYLOAD_OFFSET, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_KEYWORD, TAG_SYM, TAG_VECTOR,
 };
+pub(super) use crate::eval::compile::DeoptReason;
 use cranelift_codegen::ir::{
     condcodes::IntCC, types, Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, StackSlot, Type,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
+
+/// The value a guard passes to its deopt block: `reason`'s code, which the shared deopt
+/// path parks on the heap (`brood_rt_note_deopt`). Every guard goes through here, so a
+/// reason is always a [`DeoptReason`] — never a bare number another guard might reuse.
+pub(super) fn deopt_code(
+    b: &mut FunctionBuilder,
+    reason: DeoptReason,
+) -> cranelift_codegen::ir::Value {
+    b.ins().iconst(types::I32, reason.code())
+}
+
+/// [`deopt_code`] with a payload known at compile time, above the reason byte.
+pub(super) fn deopt_code_with_constant(
+    b: &mut FunctionBuilder,
+    reason: DeoptReason,
+    payload: i64,
+) -> cranelift_codegen::ir::Value {
+    b.ins().iconst(types::I32, reason.code_with(payload))
+}
+
+/// [`deopt_code`] with a payload computed at run time (`payload` is an `i32`), above the
+/// reason byte.
+pub(super) fn deopt_code_with(
+    b: &mut FunctionBuilder,
+    reason: DeoptReason,
+    payload: cranelift_codegen::ir::Value,
+) -> cranelift_codegen::ir::Value {
+    let base = deopt_code(b, reason);
+    let shifted = b.ins().ishl_imm_u(payload, 8);
+    b.ins().bor(base, shifted)
+}
 
 /// The current `roots` data pointer, read straight off the heap: `Heap.roots` is a
 /// `RootsBuf` whose header is (ptr, len, cap) at +0/+8/+16 (pinned by
@@ -62,9 +92,6 @@ pub(super) struct Funcs {
     /// `brood_rt_vec2_room(heap, out) -> *mut Value` — allocate a 2-element vector and
     /// return its element storage, so the arm writes the elements in place.
     pub vec2room: FuncRef,
-    /// `brood_rt_make_closure(heap, out, inst) -> status` — build a `(fn …)` literal's
-    /// closure (exec_chunk's arm verbatim; captures staged on `roots`).
-    pub mkclo: FuncRef,
     pub makevecn: FuncRef,
     /// `brood_rt_make_map_n(heap, out, elems, npairs)` — a `{k v …}` literal from `2·npairs`
     /// staged `Value`s (`makevecn`'s shape; the map build allocates and never collects).
@@ -101,7 +128,7 @@ pub(super) struct Funcs {
     pub flbase: FuncRef,
     pub fastframe: FuncRef,
     /// `brood_rt_xcall_latch` / `brood_rt_xcall_cold` — the inline fast-frame path's
-    /// cold callbacks (§7.5, `BROOD_XCALL=1`).
+    /// cold callbacks (§7.5).
     pub xlatch: FuncRef,
     pub xcold: FuncRef,
     /// The [`crate::jit::JitArmFn`] signature `(heap, base, out) -> outcome`, for the
@@ -311,76 +338,73 @@ pub(super) fn is_bool_op(b: &FunctionBuilder, op: Op, f: Frame) -> bool {
         || matches!(op, Op::Slot(k) if f.slot_bool.borrow().get(k).copied().unwrap_or(false))
 }
 
-/// Integer arithmetic/comparison lowering (overflow-checked → deopt to BigInt).
-/// Returns the SSA result, or None if `op` is not lowered as unboxed integer arith.
-pub(super) fn emit_arith(
+/// A condition under which integer arithmetic cannot produce the VM's answer in an `i64`.
+/// [`emit_int_arith`]'s caller decides what a guard does: the general lowering deopts, the
+/// scalar-register worker sets its overflow sentinel and unwinds.
+#[derive(Clone, Copy)]
+pub(super) enum IntGuard {
+    /// `+`/`-`/`*` overflowed (the VM promotes to a bignum).
+    Overflow,
+    /// Division by zero (the VM raises).
+    DivideByZero,
+    /// `i64::MIN / -1`, the one signed-division overflow.
+    DivideOverflow,
+    /// `%div` with a nonzero remainder (the VM answers a float).
+    DivideInexact,
+}
+
+/// The integer arithmetic both lowerings share, on two `i64` SSA operands `(x, y)` (operand
+/// order already applied). `guard(b, kind, condition)` is called wherever `condition` true
+/// means the `i64` result would be wrong; it must leave `b` switched to the block where the
+/// arithmetic continues. Returns `None` for an op this table does not lower.
+///
+/// Cranelift's `sdiv`/`srem` *trap* on a zero divisor and on `i64::MIN / -1`, so both are
+/// guarded before the op; `%div` is an `Int` only on an exact quotient.
+pub(super) fn emit_int_arith(
     b: &mut FunctionBuilder,
     op: PrimOp,
     x: cranelift_codegen::ir::Value,
     y: cranelift_codegen::ir::Value,
-    deopt: cranelift_codegen::ir::Block,
+    guard: &mut dyn FnMut(&mut FunctionBuilder, IntGuard, cranelift_codegen::ir::Value),
 ) -> Option<cranelift_codegen::ir::Value> {
-    let checked = |b: &mut FunctionBuilder, r: cranelift_codegen::ir::Value, ov| {
-        let cont = b.create_block();
-        let __dr = b.ins().iconst(types::I32, 15);
-        b.ins().brif(ov, deopt, &[BlockArg::Value(__dr)], cont, &[]);
-        b.switch_to_block(cont);
-        r
-    };
     Some(match op {
         PrimOp::Add => {
             let (r, ov) = b.ins().sadd_overflow(x, y);
-            checked(b, r, ov)
+            guard(b, IntGuard::Overflow, ov);
+            r
         }
         PrimOp::Sub => {
             let (r, ov) = b.ins().ssub_overflow(x, y);
-            checked(b, r, ov)
+            guard(b, IntGuard::Overflow, ov);
+            r
         }
         PrimOp::Mul => {
             let (r, ov) = b.ins().smul_overflow(x, y);
-            checked(b, r, ov)
+            guard(b, IntGuard::Overflow, ov);
+            r
         }
         PrimOp::Lt => b.ins().icmp(IntCC::SignedLessThan, x, y),
         PrimOp::Le => b.ins().icmp(IntCC::SignedLessThanOrEqual, x, y),
         PrimOp::Eq => b.ins().icmp(IntCC::Equal, x, y),
-        // Integer division family (`rem`/`quot`/`%div`). Cranelift's `sdiv`/`srem`
-        // *trap* on a zero divisor and on the `i64::MIN / -1` overflow, so both must
-        // be guarded → deopt before the op (the VM's inline path defers exactly these
-        // edges to the native, matching). `%div` additionally yields an `Int` only on
-        // an exact quotient — a nonzero remainder means a `Float` the native builds,
-        // so deopt then too. Operand order is already `(x, y)` (map applied).
         PrimOp::Rem | PrimOp::Quot | PrimOp::Div => {
             let zero = b.ins().iconst(types::I64, 0);
             let div0 = b.ins().icmp(IntCC::Equal, y, zero);
-            let c0 = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 16);
-            b.ins().brif(div0, deopt, &[BlockArg::Value(__dr)], c0, &[]);
-            b.switch_to_block(c0);
-            // (x == i64::MIN) && (y == -1) — the one signed-division overflow.
+            guard(b, IntGuard::DivideByZero, div0);
             let min = b.ins().iconst(types::I64, i64::MIN);
             let neg1 = b.ins().iconst(types::I64, -1);
             let x_min = b.ins().icmp(IntCC::Equal, x, min);
             let y_m1 = b.ins().icmp(IntCC::Equal, y, neg1);
             let ov = b.ins().band(x_min, y_m1);
-            let c1 = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 17);
-            b.ins().brif(ov, deopt, &[BlockArg::Value(__dr)], c1, &[]);
-            b.switch_to_block(c1);
+            guard(b, IntGuard::DivideOverflow, ov);
             match op {
                 PrimOp::Rem => b.ins().srem(x, y),
                 PrimOp::Quot => b.ins().sdiv(x, y),
-                PrimOp::Div => {
-                    // Exact only: a nonzero remainder → Float → deopt to the native.
+                _ => {
                     let r = b.ins().srem(x, y);
                     let inexact = b.ins().icmp(IntCC::NotEqual, r, zero);
-                    let c2 = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 18);
-                    b.ins()
-                        .brif(inexact, deopt, &[BlockArg::Value(__dr)], c2, &[]);
-                    b.switch_to_block(c2);
+                    guard(b, IntGuard::DivideInexact, inexact);
                     b.ins().sdiv(x, y)
                 }
-                _ => unreachable!(),
             }
         }
         PrimOp::Max => {
@@ -394,17 +418,53 @@ pub(super) fn emit_arith(
         PrimOp::BitAnd => b.ins().band(x, y),
         PrimOp::BitOr => b.ins().bor(x, y),
         PrimOp::BitXor => b.ins().bxor(x, y),
+        PrimOp::Cons
+        | PrimOp::VectorRef
+        | PrimOp::TableHas
+        | PrimOp::TableGet
+        | PrimOp::MapGet
+        | PrimOp::ContractAwait => return None,
+    })
+}
+
+/// Integer arithmetic/comparison lowering (overflow-checked → deopt to BigInt).
+/// Returns the SSA result, or None if `op` is not lowered as unboxed integer arith.
+pub(super) fn emit_arith(
+    b: &mut FunctionBuilder,
+    op: PrimOp,
+    x: cranelift_codegen::ir::Value,
+    y: cranelift_codegen::ir::Value,
+    deopt: cranelift_codegen::ir::Block,
+) -> Option<cranelift_codegen::ir::Value> {
+    match op {
         PrimOp::Cons => return super::bail("prim-cons-allocates"), // never in the JIT subset
         PrimOp::VectorRef => return super::bail("prim-vector-ref-slab-read"), // out of subset
-        // Table ops: not an int-arith op — lowered as a runtime callback in the
-        // Inst::Prim2 arm below (never through this integer emitter).
+        // Table ops and the CHAMP probe are runtime callbacks lowered in `prim.rs`.
         PrimOp::TableHas | PrimOp::TableGet => return super::bail("prim-table-op-not-int-arith"),
-        // CHAMP probe through the runtime callback, like the table ops — not integer
-        // arithmetic, so it is lowered in `prim.rs`, not here.
         PrimOp::MapGet => return super::bail("prim-map-get-not-int-arith"),
         // A contract shim's mark — out of the subset (`chunk_in_jit_subset`), never here.
         PrimOp::ContractAwait => return super::bail("prim-contract-await-vm-only"),
-    })
+        _ => {}
+    }
+    let mut guard = |b: &mut FunctionBuilder, kind: IntGuard, condition| {
+        let reason = match kind {
+            IntGuard::Overflow => DeoptReason::IntArithmeticOverflow,
+            IntGuard::DivideByZero => DeoptReason::IntDivideByZero,
+            IntGuard::DivideOverflow => DeoptReason::IntDivideOverflow,
+            IntGuard::DivideInexact => DeoptReason::IntDivideInexact,
+        };
+        let cont = b.create_block();
+        let deopt_reason = deopt_code(b, reason);
+        b.ins().brif(
+            condition,
+            deopt,
+            &[BlockArg::Value(deopt_reason)],
+            cont,
+            &[],
+        );
+        b.switch_to_block(cont);
+    };
+    emit_int_arith(b, op, x, y, &mut guard)
 }
 
 /// Float arithmetic/comparison lowering (f64). Returns an `Op::Float`/`Op::Int`,
@@ -428,9 +488,9 @@ pub(super) fn emit_float_arith(
             let zero = b.ins().f64const(0.0);
             let is_zero = b.ins().fcmp(FloatCC::Equal, y, zero);
             let cont = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 19);
+            let deopt_reason = deopt_code(b, DeoptReason::FloatDivideByZero);
             b.ins()
-                .brif(is_zero, deopt, &[BlockArg::Value(__dr)], cont, &[]);
+                .brif(is_zero, deopt, &[BlockArg::Value(deopt_reason)], cont, &[]);
             b.switch_to_block(cont);
             Op::Float(b.ins().fdiv(x, y))
         }
@@ -460,13 +520,6 @@ pub(super) fn box_scalar(
     }
 }
 
-/// Is the per-slot i64 cache on? Default ON; `BROOD_NO_INT_SLOT_CACHE=1` is the A/B and
-/// bisect lever (read once).
-fn int_slot_cache_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_INT_SLOT_CACHE").is_none())
-}
-
 /// Load frame slot `k` as an unboxed `i64`, tag-checking `Int` first (a non-Int
 /// operand branches to `deopt`). A register-carried param slot skips the check, and so
 /// does a slot this lowering just stored an `i64` to (`slot_i64_cache`).
@@ -488,14 +541,12 @@ pub(super) fn load_slot_int(
     let tag = b.ins().load(types::I8, MemFlagsData::trusted(), addr, 0);
     let is_int = b.ins().icmp_imm_s(IntCC::Equal, tag, TAG_INT as i64);
     let cont = b.create_block();
-    // The reason rides in bits 8.. with the observed tag in the low byte (as `as_int`'s
-    // reason 21 does, KI-49): a deopt on
-    // a `Float` here is the arm's float-context feedback (`float_deopt_feedback`).
-    let __base = b.ins().iconst(types::I32, 20 << 8);
-    let __t32 = b.ins().uextend(types::I32, tag);
-    let __dr = b.ins().bor(__base, __t32);
+    // The observed tag rides as the payload (as `as_int`'s does, KI-49): a deopt on a
+    // `Float` here is the arm's float-context feedback (`float_deopt_feedback`).
+    let tag32 = b.ins().uextend(types::I32, tag);
+    let deopt_reason = deopt_code_with(b, DeoptReason::SlotIntGuard, tag32);
     b.ins()
-        .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(__dr)]);
+        .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(deopt_reason)]);
     b.switch_to_block(cont);
     b.ins().load(
         types::I64,
@@ -693,8 +744,8 @@ pub(super) fn as_int(b: &mut FunctionBuilder, op: Op, f: Frame) -> cranelift_cod
     if matches!(op, Op::Bool(_))
         || matches!(op, Op::Int(v) if b.func.dfg.value_type(v) == types::I8)
     {
-        let __dr = b.ins().iconst(types::I32, 27);
-        b.ins().jump(f.deopt, &[BlockArg::Value(__dr)]);
+        let deopt_reason = deopt_code(b, DeoptReason::BoolWhereNumberRequired);
+        b.ins().jump(f.deopt, &[BlockArg::Value(deopt_reason)]);
         let dead = b.create_block();
         b.switch_to_block(dead);
         return b.ins().iconst(types::I64, 0);
@@ -707,13 +758,12 @@ pub(super) fn as_int(b: &mut FunctionBuilder, op: Op, f: Frame) -> cranelift_cod
             let tagb = b.ins().band_imm_s(w0, 0xff);
             let is_int = b.ins().icmp_imm_s(IntCC::Equal, tagb, TAG_INT as i64);
             let cont = b.create_block();
-            // KI-49: carry the OBSERVED tag in the low byte of the reason id, so the deopt
-            // says not just "a Handle wasn't an Int here" but which type actually arrived.
-            let __base = b.ins().iconst(types::I32, 21 << 8);
-            let __t32 = b.ins().ireduce(types::I32, tagb);
-            let __dr = b.ins().bor(__base, __t32);
+            // KI-49: carry the OBSERVED tag as the payload, so the deopt says not just "a
+            // Handle wasn't an Int here" but which type actually arrived.
+            let tag32 = b.ins().ireduce(types::I32, tagb);
+            let deopt_reason = deopt_code_with(b, DeoptReason::HandleIntGuard, tag32);
             b.ins()
-                .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(__dr)]);
+                .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(deopt_reason)]);
             b.switch_to_block(cont);
             w1
         }
@@ -723,9 +773,9 @@ pub(super) fn as_int(b: &mut FunctionBuilder, op: Op, f: Frame) -> cranelift_cod
             let tagb = b.ins().band_imm_s(w0, 0xff);
             let is_int = b.ins().icmp_imm_s(IntCC::Equal, tagb, TAG_INT as i64);
             let cont = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 22);
+            let deopt_reason = deopt_code(b, DeoptReason::HoistedValueNotInt);
             b.ins()
-                .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(__dr)]);
+                .brif(is_int, cont, &[], f.deopt, &[BlockArg::Value(deopt_reason)]);
             b.switch_to_block(cont);
             w1
         }
@@ -733,8 +783,8 @@ pub(super) fn as_int(b: &mut FunctionBuilder, op: Op, f: Frame) -> cranelift_cod
         // specialize) — deopt to the VM. Shouldn't arise once arith dispatches by
         // operand type, but kept sound. (Dead block after the unconditional jump.)
         Op::Float(_) => {
-            let __dr = b.ins().iconst(types::I32, 23);
-            b.ins().jump(f.deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::FloatWhereIntRequired);
+            b.ins().jump(f.deopt, &[BlockArg::Value(deopt_reason)]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             b.ins().iconst(types::I64, 0)
@@ -849,7 +899,7 @@ fn float_or_promoted_int(
     tag: cranelift_codegen::ir::Value,
     payload: cranelift_codegen::ir::Value,
     f: Frame,
-    reason: i64,
+    reason: DeoptReason,
     promote: bool,
 ) -> cranelift_codegen::ir::Value {
     let is_f = b.ins().icmp_imm_s(IntCC::Equal, tag, TAG_FLOAT as i64);
@@ -864,7 +914,7 @@ fn float_or_promoted_int(
     let bits = b.ins().bitcast(types::F64, MemFlagsData::new(), payload);
     b.ins().jump(merge, &[BlockArg::Value(bits)]);
     b.switch_to_block(not_float);
-    let __dr = b.ins().iconst(types::I32, reason);
+    let deopt_reason = deopt_code(b, reason);
     // `promote` decides what an INT operand means here, and it is the whole of KI-114.
     // Promoting is the VM's semantics for a MIXED operation — `(+ 1.5 2)` really is 3.5 —
     // but only when some operand is genuinely a float. When the float path was entered on
@@ -875,14 +925,14 @@ fn float_or_promoted_int(
     let int_args: &[BlockArg] = if promote {
         &[]
     } else {
-        &[BlockArg::Value(__dr)]
+        &[BlockArg::Value(deopt_reason)]
     };
     b.ins().brif(
         is_i,
         int_target,
         int_args,
         f.deopt,
-        &[BlockArg::Value(__dr)],
+        &[BlockArg::Value(deopt_reason)],
     );
     b.switch_to_block(as_int);
     let promoted = b.ins().fcvt_from_sint(types::F64, payload);
@@ -974,8 +1024,8 @@ pub(super) fn as_f64_pair(
     match (ca, cb) {
         // An operand that can never be a float deopts, exactly as `as_f64` always did.
         (FOperand::Never, _) | (_, FOperand::Never) => {
-            let __dr = b.ins().iconst(types::I32, 26);
-            b.ins().jump(f.deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::FloatPairNeverFloat);
+            b.ins().jump(f.deopt, &[BlockArg::Value(deopt_reason)]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             let zero = b.ins().f64const(0.0);
@@ -984,10 +1034,12 @@ pub(super) fn as_f64_pair(
         (FOperand::Float(x), FOperand::Float(y)) => (x, y),
         // One side is certainly a float, so the other may promote (KI-109).
         (FOperand::Float(x), FOperand::Tagged { tag, payload }) => {
-            (x, float_or_promoted_int(b, tag, payload, f, 25, true))
+            let right = DeoptReason::FloatPairRightBesideFloat;
+            (x, float_or_promoted_int(b, tag, payload, f, right, true))
         }
         (FOperand::Tagged { tag, payload }, FOperand::Float(y)) => {
-            (float_or_promoted_int(b, tag, payload, f, 25, true), y)
+            let left = DeoptReason::FloatPairLeftBesideFloat;
+            (float_or_promoted_int(b, tag, payload, f, left, true), y)
         }
         // Neither is certainly a float: whichever proves to be one licenses the other's
         // promotion, and two non-floats deopt. Written as one fused test rather than a
@@ -1015,21 +1067,23 @@ pub(super) fn as_f64_pair(
             // A is a float, so B may be a float or an int-to-promote.
             b.switch_to_block(a_float);
             let fa = b.ins().bitcast(types::F64, MemFlagsData::new(), pa);
-            let fb = float_or_promoted_int(b, tb, pb, f, 25, true);
+            let fb =
+                float_or_promoted_int(b, tb, pb, f, DeoptReason::FloatPairSecondBesideFloat, true);
             b.ins()
                 .jump(merge, &[BlockArg::Value(fa), BlockArg::Value(fb)]);
 
             b.switch_to_block(a_notfloat);
-            let __dr = b.ins().iconst(types::I32, 27);
+            let deopt_reason = deopt_code(b, DeoptReason::FloatPairFirstNotNumber);
             let is_ia = b.ins().icmp_imm_s(IntCC::Equal, ta, TAG_INT as i64);
             b.ins()
-                .brif(is_ia, a_int, &[], f.deopt, &[BlockArg::Value(__dr)]);
+                .brif(is_ia, a_int, &[], f.deopt, &[BlockArg::Value(deopt_reason)]);
 
             // A is an int, so this is float arithmetic only if B is a float. If it is not,
             // the VM computes in ints and answers an int — deopt and let it.
             b.switch_to_block(a_int);
             let fa2 = b.ins().fcvt_from_sint(types::F64, pa);
-            let fb2 = float_or_promoted_int(b, tb, pb, f, 25, false);
+            let fb2 =
+                float_or_promoted_int(b, tb, pb, f, DeoptReason::FloatPairSecondBesideInt, false);
             b.ins()
                 .jump(merge, &[BlockArg::Value(fa2), BlockArg::Value(fb2)]);
 
@@ -1074,7 +1128,7 @@ pub(super) fn as_f64_guarded(
                 addr,
                 PAYLOAD_OFFSET as i32,
             );
-            float_or_promoted_int(b, tag, payload, f, 24, promote)
+            float_or_promoted_int(b, tag, payload, f, DeoptReason::SlotFloatGuard, promote)
         }
         Op::Handle(w0, w1, _) => {
             // A type-erased boxed `Value` (a `nth`/vector read, a call result) used as a
@@ -1083,11 +1137,11 @@ pub(super) fn as_f64_guarded(
             // words already in registers. This is what lets `(nth v k)`-fed float
             // arithmetic stay native instead of deopting on the int-path `as_int`.
             let tagb = b.ins().band_imm_s(w0, 0xff);
-            float_or_promoted_int(b, tagb, w1, f, 25, promote)
+            float_or_promoted_int(b, tagb, w1, f, DeoptReason::HandleFloatGuard, promote)
         }
         Op::Int(_) | Op::Bool(_) | Op::HoistedVec { .. } | Op::HoistedTable { .. } => {
-            let __dr = b.ins().iconst(types::I32, 26);
-            b.ins().jump(f.deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::NeverFloatOperand);
+            b.ins().jump(f.deopt, &[BlockArg::Value(deopt_reason)]);
             let dead = b.create_block();
             b.switch_to_block(dead);
             b.ins().f64const(0.0)
@@ -1118,7 +1172,8 @@ pub(super) fn set_slot_flags(b: &FunctionBuilder, dst: i64, op: Op, f: Frame) {
                 false,
                 is_i8,
                 None,
-                (!is_i8 && int_slot_cache_enabled()).then_some(v),
+                // `BROOD_NO_INT_SLOT_CACHE=1` disables the cache (the A/B and bisect lever).
+                (!is_i8 && crate::diagnostics::debug_flags::int_slot_cache()).then_some(v),
             )
         }
         Op::Float(v) => (true, false, Some(v), None),
@@ -1388,9 +1443,9 @@ pub(super) fn vector_ref(
     );
     let status = b.inst_results(c)[0];
     let cont = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 27);
+    let deopt_reason = deopt_code(b, DeoptReason::VectorRefDeclined);
     b.ins()
-        .brif(status, f.deopt, &[BlockArg::Value(__dr)], cont, &[]);
+        .brif(status, f.deopt, &[BlockArg::Value(deopt_reason)], cont, &[]);
     b.switch_to_block(cont);
     let w0 = b.ins().stack_load(types::I64, types::I64, fu.out_slot, 0);
     let w1 = b
@@ -1444,9 +1499,14 @@ pub(super) fn table_prim(
     b.ins().brif(status, slow, &[], cont, &[]);
     b.switch_to_block(slow);
     let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-    let __dr = b.ins().iconst(types::I32, 28);
-    b.ins()
-        .brif(is_err, fu.error, &[], f.deopt, &[BlockArg::Value(__dr)]);
+    let deopt_reason = deopt_code(b, DeoptReason::TableReadDeclined);
+    b.ins().brif(
+        is_err,
+        fu.error,
+        &[],
+        f.deopt,
+        &[BlockArg::Value(deopt_reason)],
+    );
     b.switch_to_block(cont);
     let w0 = b.ins().stack_load(types::I64, types::I64, fu.out_slot, 0);
     let w1 = b
@@ -1519,9 +1579,14 @@ pub(super) fn eq_dispatch(
     let status = b.inst_results(c)[0];
     let declined = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
     let decided = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 29);
-    b.ins()
-        .brif(declined, f.deopt, &[BlockArg::Value(__dr)], decided, &[]);
+    let deopt_reason = deopt_code(b, DeoptReason::EqualSeqViewOperand);
+    b.ins().brif(
+        declined,
+        f.deopt,
+        &[BlockArg::Value(deopt_reason)],
+        decided,
+        &[],
+    );
     b.switch_to_block(decided);
     let req = b.ins().icmp_imm_s(IntCC::NotEqual, status, 0);
     b.ins().jump(done, &[BlockArg::Value(req)]);
@@ -1576,8 +1641,8 @@ pub(super) fn cmp_dispatch(
     b.switch_to_block(floatb);
     // Not both ints: each is a float or an int promoted beside one, or it deopts (a
     // string compared with a number is the VM's type error to raise).
-    let fa = float_or_promoted_int(b, ta, wa[1], f, 38, true);
-    let fb = float_or_promoted_int(b, tb, wb[1], f, 38, true);
+    let fa = float_or_promoted_int(b, ta, wa[1], f, DeoptReason::CompareFirstOperand, true);
+    let fb = float_or_promoted_int(b, tb, wb[1], f, DeoptReason::CompareSecondOperand, true);
     let (x, y) = if map[0] == 0 { (fa, fb) } else { (fb, fa) };
     let fr = match emit_float_arith(b, op, x, y, f.deopt)? {
         Op::Int(v) => v,
@@ -1614,9 +1679,9 @@ pub(super) fn inline_vec_ref(
     let tagb = b.ins().band_imm_s(w0, 0xff);
     let is_vec = b.ins().icmp_imm_s(IntCC::Equal, tagb, TAG_VECTOR as i64);
     let c1 = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 30);
+    let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefNotVector);
     b.ins()
-        .brif(is_vec, c1, &[], deopt, &[BlockArg::Value(__dr)]);
+        .brif(is_vec, c1, &[], deopt, &[BlockArg::Value(deopt_reason)]);
     b.switch_to_block(c1);
     // Region: high 2 bits of the handle == 0 (LOCAL). PRELUDE/RUNTIME take the FFI
     // (`brood_rt_vector_ref`, which reads any region) rather than deopting: the shared
@@ -1684,9 +1749,9 @@ pub(super) fn inline_vec_ref(
     let idxc = b.ins().iconst(types::I64, idx);
     let in_bounds = b.ins().icmp(IntCC::UnsignedLessThan, idxc, lenw);
     let c4 = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 32);
+    let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefOutOfRange);
     b.ins()
-        .brif(in_bounds, c4, &[], deopt, &[BlockArg::Value(__dr)]);
+        .brif(in_bounds, c4, &[], deopt, &[BlockArg::Value(deopt_reason)]);
     b.switch_to_block(c4);
     // Element read: slot_ptr + JIT_ITEMS_OFF + idx*size_of::<Value>().
     let elem_off = VS::JIT_ITEMS_OFF as i64 + idx * STRIDE;
@@ -1721,9 +1786,14 @@ pub(super) fn inline_vec_ref(
     b.switch_to_block(heap_blk);
     let is_spill = b.ins().icmp_imm_s(IntCC::Equal, disc, VS::JIT_SPILL_TAG);
     let spill_blk = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 33);
-    b.ins()
-        .brif(is_spill, spill_blk, &[], deopt, &[BlockArg::Value(__dr)]);
+    let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefUnexpectedStore);
+    b.ins().brif(
+        is_spill,
+        spill_blk,
+        &[],
+        deopt,
+        &[BlockArg::Value(deopt_reason)],
+    );
     b.switch_to_block(spill_blk);
     let sptr = b.ins().load(
         types::I64,
@@ -1740,9 +1810,9 @@ pub(super) fn inline_vec_ref(
     let idxc2 = b.ins().iconst(types::I64, idx);
     let in_b = b.ins().icmp(IntCC::UnsignedLessThan, idxc2, slen);
     let sok = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 34);
+    let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefSpilledOutOfRange);
     b.ins()
-        .brif(in_b, sok, &[], deopt, &[BlockArg::Value(__dr)]);
+        .brif(in_b, sok, &[], deopt, &[BlockArg::Value(deopt_reason)]);
     b.switch_to_block(sok);
     let elem2 = b.ins().iadd_imm_s(sptr, idx * STRIDE);
     let s0 = b.ins().load(types::I64, MemFlagsData::trusted(), elem2, 0);
@@ -1780,9 +1850,9 @@ pub(super) fn inline_vec_ref(
     );
     let hstatus = b.inst_results(hc)[0];
     let hok = b.create_block();
-    let __dr = b.ins().iconst(types::I32, 35);
+    let deopt_reason = deopt_code(b, DeoptReason::InlineVectorRefDeclined);
     b.ins()
-        .brif(hstatus, deopt, &[BlockArg::Value(__dr)], hok, &[]);
+        .brif(hstatus, deopt, &[BlockArg::Value(deopt_reason)], hok, &[]);
     b.switch_to_block(hok);
     let h0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
     let h1 = b

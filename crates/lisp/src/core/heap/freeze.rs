@@ -7,7 +7,6 @@
 //! handles, so `localize_for_freeze` deep-copies anything reachable that is not — a
 //! prelude global can reach a RUNTIME string through the VM's constant pool, and
 //! re-tagging that in place silently aliased an unrelated prelude string (KI-12).
-//! Split out of `heap.rs` on 2026-09-07 (handoff item 1, move b).
 
 use super::*;
 
@@ -268,9 +267,8 @@ impl Heap {
         // what make the local→prelude re-tag a pure bit-flip), so the slabs
         // also hold boot *garbage*: intermediates from macroexpansion and
         // top-level eval. Expander code legitimately creates closures that
-        // capture a local frame while it runs (the receive matcher expansion
-        // was the first to do so in the prelude — devlog 2026-07-22); dead by
-        // freeze time, they must not trip the dangling-env assert below. The
+        // capture a local frame while it runs (the receive matcher expansion);
+        // dead by freeze time, they must not trip the dangling-env assert below. The
         // assert stays HARD for reachable closures — a live captured frame
         // really would dangle once the env slab is wiped — and dead ones get
         // their env scrubbed instead, which is unobservable (nothing can
@@ -370,19 +368,13 @@ impl Heap {
             slabs.ropes.is_empty(),
             "a Rope cannot appear in the prelude — it is pure Brood with no rope literals",
         );
-        // Inline-extract any `Shared` string entries the builder created
-        // (~9 prelude docstrings exceed `SHARED_BLOB_THRESHOLD` at the time
-        // of writing). PRELUDE is shared `Arc<SharedCode>` across runtimes;
-        // `Arc<SharedBlob>` is per-runtime, so leaving them as `Shared` here
-        // would entangle their lifetimes. The blob's `Arc` drops as the old
-        // `LocalString::Shared` is overwritten — freeing the blob if no other
-        // handle remains (none does, at freeze time).
+        // Inline-extract any `Shared` string entries the builder created (long
+        // docstrings exceed `SHARED_BLOB_THRESHOLD`). PRELUDE is shared
+        // `Arc<SharedCode>` across runtimes; `Arc<SharedBlob>` is per-runtime, so
+        // leaving them as `Shared` here would entangle their lifetimes.
         for entry in slabs.strings.iter_mut() {
-            if let StrData::Shared(arc) = &entry.data {
-                let bytes: Vec<u8> = arc.as_bytes().to_vec();
-                *entry = LocalString::inline(
-                    String::from_utf8(bytes).expect("prelude blob is valid UTF-8"),
-                );
+            if let StrData::Shared(_) = &entry.data {
+                *entry = LocalString::inline(entry.as_str().to_owned());
             }
         }
         for p in &mut slabs.pairs {
@@ -539,13 +531,9 @@ fn to_prelude(v: Value) -> Value {
         ValueRef::BigInt(id) => Value::bigint(BigIntId::prelude(id.index())),
         ValueRef::Decimal(id) => Value::decimal(DecimalId::prelude(id.index())),
         ValueRef::Ratio(id) => Value::ratio(RatioId::prelude(id.index())),
-        // A `bytes` handle used to fall through the `other` arm below, keeping its
-        // LOCAL tag — so a `#b"…"` literal reaching a prelude global would resolve
-        // in the wiped builder heap after the freeze. No prelude form produces one
-        // today (the bit-syntax matcher only mentions them in comments), so this is
-        // latent, but silence was the wrong default for a region re-tag: every kind
-        // is either flipped or explicitly guarded (see `Rope`). Noticed while
-        // investigating KI-12.
+        // Every kind is either flipped or explicitly guarded (see `Rope`): a handle
+        // falling through to `other` would keep its LOCAL tag and resolve in the
+        // wiped builder heap after the freeze.
         ValueRef::Bytes(id) => Value::bytes(BytesId::prelude(id.index())),
         ValueRef::Fn(id) => Value::func(ClosureId::prelude(id.index())),
         ValueRef::Macro(id) => Value::macro_(ClosureId::prelude(id.index())),

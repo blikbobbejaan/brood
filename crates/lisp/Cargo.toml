@@ -86,8 +86,8 @@ perf-stats = []
 # JIT tier-1 (ADR-101) — **a default feature**, so an ordinary `cargo build`, `cargo test`,
 # rust-analyzer and every binary get it; `--no-default-features` (what `make install`/
 # `nest release` build from) re-adds it explicitly unless `./configure --without-jit`.
-# It is tier 2 of the execution ladder (ADR-222): `BROOD_TIER=1` (or its `BROOD_NO_JIT`
-# alias) turns native tiering off at RUN time without a rebuild.
+# It is tier 2 of the execution ladder (ADR-222): `BROOD_TIER=1` turns native tiering
+# off at RUN time without a rebuild.
 #
 # The heavy Cranelift backend (cranelift-jit/-module/-codegen/-frontend) is pulled in only
 # by this feature. What it enables, by module: `src/jit/` — `backend.rs` (the `JitBackend`

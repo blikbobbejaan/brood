@@ -13,7 +13,7 @@ fn file_signatures_reports_what_the_checker_inferred() {
     assert!(!sigs[0].2, "an inferred sig must not read as declared");
 }
 
-// The demand walk reaches into a vector, map or set LITERAL (2026-09-12): every element
+// The demand walk reaches into a vector, map or set LITERAL: every element
 // evaluates, so `[(- a b)]` demands `number` of `a` and `b` exactly as `(list (- a b))`
 // does. KI-70's hole, in the inference rather than the walk — and the ordinary shape of a
 // Brood function that returns a tuple or a record.
@@ -36,12 +36,11 @@ fn a_literal_carries_its_elements_demands_to_the_parameters() {
     assert_eq!(sigs.len(), 4, "{sigs:?}");
 }
 
-// A keyword in call-head position is deliberately NOT a demand (2026-09-12): `(:end a)`
-// raises on a non-keyed `a`, so `nil | map | set` would be sound — and it was measured
-// before being kept: one signature moved over std, and 40 strict findings appeared in
-// bedit, one per unsigged function that reads a model's field and hands the model on to a
-// declared parameter (strict reads a positively-known bound by inclusion). The parameter
-// stays `any`; this pins the decision so a future "obvious" rule is measured first.
+// A keyword in call-head position is deliberately NOT a demand: `(:end a)` raises on a
+// non-keyed `a`, so `nil | map | set` would be sound — but it would flag every unsigged
+// function that reads a model's field and hands the model on to a declared parameter
+// (strict reads a positively-known bound by inclusion). The parameter stays `any`; this
+// pins the decision so a future "obvious" rule is measured first.
 #[test]
 fn a_keyword_call_is_not_read_as_a_demand() {
     let sigs = signatures("(defn f (a) (:end a))");
@@ -50,10 +49,9 @@ fn a_keyword_call_is_not_read_as_a_demand() {
 }
 
 // A tuple accumulator whose slots feed each other stabilises a step later than a scalar,
-// and a position read over a UNION of tuple terms is exact (2026-09-12): `[0 '()]` under
-// `[(inc j) (cons j acc)]` is `(tuple int list<int>)`, where the one-step fixpoint fell to
-// the `any`-seeded reading and `j` came out `number` — a strict false positive in
-// `std/editor/markdown`'s `md-spread`.
+// and a position read over a UNION of tuple terms is exact: `[0 '()]` under
+// `[(inc j) (cons j acc)]` is `(tuple int list<int>)`; a one-step fixpoint falls to the
+// `any`-seeded reading and `j` comes out `number` — a strict false positive.
 #[test]
 fn a_tuple_accumulator_that_feeds_itself_reaches_its_fixpoint() {
     let sigs = signatures(
@@ -69,7 +67,7 @@ fn a_tuple_accumulator_that_feeds_itself_reaches_its_fixpoint() {
 }
 
 // A lambda handed to ANY function whose signature declares an arrow at that position is
-// walked with the arrow's parameters (2026-09-12) — the general case of the fold and
+// walked with the arrow's parameters — the general case of the fold and
 // element-combinator seeds. Under strict, `(+ start l)` inside the lambda is the `int`
 // the arrow declares, not the `number` the lambda's own body would infer.
 #[test]
@@ -122,7 +120,7 @@ fn file_signatures_covers_guarded_clauses_and_skips_non_functions() {
 #[test]
 fn file_signatures_reads_pattern_clauses() {
     // A PATTERN-dispatched multi-clause `defn` lowers to one variadic `fn` over `match*`,
-    // which used to read as an arity-0 `(-> any)`; the un-expanded clauses say what each
+    // which alone reads as an arity-0 `(-> any)`; the un-expanded clauses say what each
     // position admits (a non-empty list pattern is `pair`, a literal its own type) and
     // the position-wise union over the arms is the signature a reader sees.
     let sigs = signatures(
@@ -227,8 +225,8 @@ fn a_pass_through_parameter_specializes_at_the_call_site() {
 
 #[test]
 fn a_declared_callback_signature_is_honoured_by_the_combinators() {
-    // A `(sig …)` on the callback used to buy nothing under `map`: the callback path
-    // consulted only the loaded image. The same-file declaration is authoritative.
+    // A `(sig …)` on the callback counts under `map`: the callback path must consult the
+    // same-file declaration, not only the loaded image.
     let sigs = signatures(
         "(sig g (string -> int))
 (defn g (v) (string/length v))
@@ -269,10 +267,8 @@ fn file_signatures_costs_nothing_when_unarmed() {
 #[test]
 fn a_module_private_function_is_inferred_and_its_call_sites_are_checked() {
     // `defn-` expands to `(do (def name (fn …)) (%mark-private 'name))`, so every pass
-    // keyed on a top-level `(def …)` used to see NO definition at all for a private
-    // function — and most definitions in a real module are private (40 of
-    // `std/json.blsp`'s 42). The consequence was silent: their call sites went
-    // unchecked, in exactly the internals where an argument-order slip lives.
+    // keyed on a top-level `(def …)` must see through the `do` — most definitions in a
+    // real module are private, and their call sites are where an argument-order slip lives.
     let warnings = file_warnings(
         r#"
         (defmodule privacy-demo)
@@ -318,9 +314,8 @@ fn a_macros_generated_temporary_is_never_typed() {
 #[test]
 fn a_failed_equality_test_narrows_the_else_branch_for_a_literal() {
     // The tagged-union dispatch every Brood program writes: after `(= tag :ok)` fails,
-    // a `(or :ok :err)` tag is `:err`. This needed the literal complement to be exact —
-    // `¬:ok` used to widen to `any`, so the else branch learned nothing and the guard
-    // was one-sided (`then_only`).
+    // a `(or :ok :err)` tag is `:err`. This needs the literal complement to be exact —
+    // a `¬:ok` widened to `any` would teach the else branch nothing.
     let w = file_warnings(
         r#"
         (defn describe (tag)

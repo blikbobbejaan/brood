@@ -184,45 +184,96 @@ fn footer(bytes: &[u8]) -> Option<(usize, usize)> {
     Some((bytes.len() - total, alen))
 }
 
-/// The bundle embedded in *this* executable, read once from `current_exe()`.
-/// `&None` for a plain `brood`/`nest` (the common case) — no behaviour change.
+/// Read the bundle appended to the executable at `path`.
 ///
-/// The not-a-bundle case reads only the 20-byte footer (not the whole multi-MB
-/// binary): a plain `nest run` reaches here on every non-std `require`, so the
-/// common path must stay cheap. Only a real bundle reads its archive bytes.
-pub fn mounted() -> &'static Option<Bundle> {
-    static MOUNTED: OnceLock<Option<Bundle>> = OnceLock::new();
-    MOUNTED.get_or_init(|| {
-        use std::io::{Read, Seek, SeekFrom};
-        let exe = std::env::current_exe().ok()?;
-        let mut f = std::fs::File::open(exe).ok()?;
-        let len = f.metadata().ok()?.len();
-        if len < FOOTER_LEN as u64 {
-            return None;
+/// `Ok(None)` when the file does not end in our magic — a plain binary. Once the magic
+/// matches the file IS a bundle, so anything wrong after that (a format version this
+/// runtime cannot read, an archive length the file cannot hold, a truncated or corrupt
+/// archive) is an `Err`: acting as a plain runtime would silently run the wrong program.
+///
+/// The not-a-bundle case reads only the 20-byte footer (not the whole multi-MB binary).
+pub fn read_bundle(path: &Path) -> Result<Option<Bundle>, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Ok(None);
+    };
+    let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+        return Ok(None);
+    };
+    if length < FOOTER_LEN as u64 {
+        return Ok(None);
+    }
+    let mut foot = [0u8; FOOTER_LEN];
+    let read_foot = file
+        .seek(SeekFrom::Start(length - FOOTER_LEN as u64))
+        .and_then(|_| file.read_exact(&mut foot));
+    if read_foot.is_err() || &foot[0..8] != MAGIC {
+        return Ok(None);
+    }
+    let corrupt = |why: String| {
+        Err(format!(
+            "corrupt release bundle in {}: {why}",
+            path.display()
+        ))
+    };
+    let Some(archive_length) = decode_footer(&foot) else {
+        let version = u32::from_le_bytes(foot[8..12].try_into().unwrap_or_default());
+        return corrupt(format!(
+            "format version {version}, this runtime reads {FORMAT_VERSION}"
+        ));
+    };
+    // `archive_length` is untrusted: `checked_add` and the `length < total` guard come
+    // BEFORE the subtraction, so a crafted value near `u64::MAX` is an error, not a panic.
+    let total = match (FOOTER_LEN as u64).checked_add(archive_length) {
+        Some(total) if total <= length => total,
+        _ => {
+            return corrupt(format!(
+                "the footer claims a {archive_length}-byte archive in a {length}-byte file"
+            ))
         }
-        // Footer first — 20 bytes off the end decides bundle-or-not.
-        f.seek(SeekFrom::Start(len - FOOTER_LEN as u64)).ok()?;
-        let mut foot = [0u8; FOOTER_LEN];
-        f.read_exact(&mut foot).ok()?;
-        let alen = decode_footer(&foot)?;
-        // `alen` is attacker-controlled (the last 8 footer bytes of a file handed to
-        // us). Compute the total with `checked_add` and guard `len < total` BEFORE the
-        // subtraction — exactly as `footer()` does — so a crafted `alen` near `u64::MAX`
-        // degrades to "not a bundle" instead of overflowing the add / underflowing the
-        // sub (a panic under debug-assertions, a wrapped giant seek + ~16 EiB `vec!`
-        // capacity-overflow panic in release). The module contract is graceful, not panic.
-        let total = (FOOTER_LEN as u64).checked_add(alen)?;
-        if len < total {
-            return None;
-        }
-        // Real bundle — read just the archive bytes (not the base binary).
-        f.seek(SeekFrom::Start(len - total)).ok()?;
-        // `try_from` for the same reason as in `footer()`: `as usize` would truncate a
-        // >4 GiB claim on a 32-bit target and read the wrong window instead of bailing.
-        let mut archive = vec![0u8; usize::try_from(alen).ok()?];
-        f.read_exact(&mut archive).ok()?;
-        parse_archive(&archive)
+    };
+    // `try_from`, not `as`: a >4 GiB claim must not truncate on a 32-bit target.
+    let Ok(archive_size) = usize::try_from(archive_length) else {
+        return corrupt(format!(
+            "a {archive_length}-byte archive does not fit in memory"
+        ));
+    };
+    let mut archive = vec![0u8; archive_size];
+    if let Err(error) = file
+        .seek(SeekFrom::Start(length - total))
+        .and_then(|_| file.read_exact(&mut archive))
+    {
+        return corrupt(format!("reading the archive: {error}"));
+    }
+    match parse_archive(&archive) {
+        Some(bundle) => Ok(Some(bundle)),
+        None => corrupt("the archive does not parse".to_string()),
+    }
+}
+
+fn mounted_state() -> &'static Result<Option<Bundle>, String> {
+    static MOUNTED: OnceLock<Result<Option<Bundle>, String>> = OnceLock::new();
+    MOUNTED.get_or_init(|| match std::env::current_exe() {
+        Ok(executable) => read_bundle(&executable),
+        Err(_) => Ok(None),
     })
+}
+
+/// The bundle embedded in *this* executable, read once from `current_exe()`.
+/// `&None` for a plain `brood`/`nest` (the common case) — and for a corrupt bundle,
+/// which a binary must refuse at startup by checking [`mount_error`] first.
+pub fn mounted() -> &'static Option<Bundle> {
+    static NONE: Option<Bundle> = None;
+    match mounted_state() {
+        Ok(bundle) => bundle,
+        Err(_) => &NONE,
+    }
+}
+
+/// Why this executable's appended bundle could not be read, when it carries one that is
+/// corrupt. A binary checks this before anything else and exits on it.
+pub fn mount_error() -> Option<&'static str> {
+    mounted_state().as_ref().err().map(String::as_str)
 }
 
 /// Whether this executable is a release bundle (an app), not a plain runtime.
@@ -358,7 +409,7 @@ mod tests {
     fn crafted_overflow_footer_degrades_gracefully() {
         // A valid magic+version but an archive-len near u64::MAX must not overflow the
         // footer math — it degrades to "not a bundle", never a panic / 16-EiB `vec!`
-        // capacity-overflow. `mounted()` shares this `checked_add`-then-guard shape.
+        // capacity-overflow. `read_bundle` shares this `checked_add`-then-guard shape.
         let mut file = b"some base binary bytes".to_vec();
         file.extend_from_slice(MAGIC);
         file.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -378,6 +429,50 @@ mod tests {
         assert_eq!(strip_existing(&rereleased), base);
         // A plain binary is returned untouched.
         assert_eq!(strip_existing(base), base);
+    }
+
+    fn read_bytes_as_executable(name: &str, bytes: &[u8]) -> Result<Option<Bundle>, String> {
+        let path = std::env::temp_dir().join(format!("brood-bundle-{name}-{}", std::process::id()));
+        std::fs::write(&path, bytes).unwrap();
+        let result = read_bundle(&path);
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    #[test]
+    fn read_bundle_tells_a_plain_binary_from_a_valid_bundle() {
+        let plain = read_bytes_as_executable("plain", b"an ordinary executable's bytes");
+        assert!(matches!(plain, Ok(None)), "{plain:?}");
+        let file = fake_release(b"BASE", "(project :name foo)", &[("a".into(), "1".into())]);
+        let bundle = read_bytes_as_executable("valid", &file).unwrap().unwrap();
+        assert_eq!(bundle.module_src("a"), Some("1"));
+    }
+
+    #[test]
+    fn read_bundle_reports_a_bundle_whose_archive_is_corrupt() {
+        // A valid footer over an archive that does not parse: the binary is a bundle, so
+        // this must be an error — not a plain runtime that runs the wrong program.
+        let mut file = fake_release(b"BASE", "(project :name foo)", &[("a".into(), "1".into())]);
+        let archive_start = 4;
+        file[archive_start..archive_start + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let corrupt = read_bytes_as_executable("corrupt", &file);
+        assert!(
+            corrupt
+                .as_ref()
+                .is_err_and(|error| error.contains("corrupt release bundle")),
+            "{corrupt:?}"
+        );
+        // A footer claiming more archive than the file holds is the same: an error.
+        let mut oversized = b"BASE".to_vec();
+        oversized.extend_from_slice(MAGIC);
+        oversized.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+        oversized.extend_from_slice(&(u64::MAX - 3).to_le_bytes());
+        assert!(read_bytes_as_executable("oversized", &oversized).is_err());
+        // An unreadable format version too.
+        let mut versioned = fake_release(b"BASE", "m", &[]);
+        let version_at = versioned.len() - 12;
+        versioned[version_at..version_at + 4].copy_from_slice(&(FORMAT_VERSION + 1).to_le_bytes());
+        assert!(read_bytes_as_executable("version", &versioned).is_err());
     }
 }
 

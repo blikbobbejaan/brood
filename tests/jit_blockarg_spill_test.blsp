@@ -28,8 +28,7 @@
 ;;;
 ;;; These cases need enough iterations for the arm to tier to native, which is why they
 ;;; run a thousand elements several times rather than once. They pass on every tier;
-;;; before the fix the default build failed and `BROOD_TIER=1` / `BROOD_NO_JIT=1` /
-;;; `BROOD_NO_DEOPT_RESUME=1` passed.
+;;; before the fix the default build failed and `BROOD_TIER=1` passed.
 
 (defmodule jit-blockarg-spill-test (:use test))
 

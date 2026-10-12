@@ -31,19 +31,12 @@ module's namespace-rooted globals (ADR-070) back to it."
       embedded
       (let (path (%require-find (str key ".blsp") *load-path*)) (when path (file/slurp path))))))
 
-;; The module docstring: a module's first top-level form, when it is a string
-;; literal (mirrors the function-docstring rule). nil if there's no leading
-;; string. The form is discarded when the module is *loaded*, so it is read here
-;; from source.
+;; The module docstring: the string right after the name in the file's leading
+;; `(defmodule NAME "doc" …)`, or nil. Read from source.
 (defn- docs-leading-doc (src)
   (let (form (reflect/read-first src))
-    (cond
-      (string? form) form
-      ; bare-string (legacy)
-      (and (pair? form) (= (first form) 'defmodule))
-        (let (more (rest (rest form)))
-          (when (string? (first more)) (first more)))
-      else nil)))
+    (when (and (pair? form) (= (first form) 'defmodule) (string? (nth form 2)))
+      (nth form 2))))
 
 ;; The bare module title from a file path: "a/b/foo.blsp" -> "foo".
 (defn- docs-basename (path)
@@ -390,16 +383,6 @@ bare-surface (prelude) name, whose references are bare already."
         (docs-leading-doc src)
         (docs-added before (reflect/global-names))))))
 (sig model-file (string -> (record :defs any :doc any :module any :types vector :qualified? true)))
-
-(defn model-module (modname)
-  "The doc-model module entry for the module named `modname` (a symbol or string),
-  resolved baked-in or on `*load-path*`. Errors if it can't be found."
-  (let (key (->string modname) src (docs-source key))
-    (if (nil? src)
-      (error "docs: cannot find module '" key "'")
-      (let (before (reflect/global-names))
-        (require-one modname)
-        (docs-module-model key (docs-leading-doc src) (docs-added before (reflect/global-names)))))))
 
 (defn model-project ()
   "The whole-project doc model — `{:name :version :modules […]}` — found from the cwd,

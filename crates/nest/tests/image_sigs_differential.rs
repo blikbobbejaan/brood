@@ -56,7 +56,7 @@ fn check(root: &Path, files: &[PathBuf], image_sigs: bool) -> String {
         .arg("--suggest-sigs")
         .args(files)
         .env("BROOD_NO_CHECK_CACHE", "1")
-        // Engine-independent question; do not inherit the tree-walker job's `BROOD_VM=0`.
+        // Engine-independent question; do not inherit the tree-walker job's `BROOD_TIER=0`.
         .env("BROOD_TIER", "2");
     if !image_sigs {
         command.env("BROOD_NO_IMAGE_SIGS", "1");

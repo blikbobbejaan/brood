@@ -262,42 +262,10 @@
         (is (includes? logged "kaboom!"))))))
 
 ;; overlay-route — the modal-overlay dispatch fallthrough shared by the editor's
-;; transient overlays and the observer's minibuffer.
+;; transient overlays and the observer's minibuffer. An overlay is a record implementing
+;; `Overlay` (ADR-183); a record that skips `overlay-owns?` is capture-all and one that
+;; skips `overlay-exit` needs no dismiss step.
 (describe "overlay-route"
-  ;; two overlays: a capture-all "mini" (owns every key) and a "pop" that owns only "x".
-  (def overlays
-    (list {:active? (fn (m) (get m :mini))
-           :owns? nil
-           :handle (fn (m k) (assoc m :typed k))
-           :exit nil}
-      {:active? (fn (m) (get m :pop))
-       :owns? (fn (m k) (= k "x"))
-       :handle (fn (m k) (assoc m :popped k))
-       :exit (fn (m) (assoc m :pop nil :exited true))}))
-  (defn fallback (m k) (assoc m :dispatched k))
-  (test "no overlay open → fallback"
-    (assert= (get (overlay-route overlays {} "a" fallback) :dispatched) "a"))
-  (test "capture-all overlay handles every key (owns? nil)"
-    (let (r (overlay-route overlays {:mini true} "a" fallback))
-      (assert= (get r :typed) "a")
-      (is (nil? (get r :dispatched)))))
-  (test "an owning overlay handles its key"
-    (assert= (get (overlay-route overlays {:pop true} "x" fallback) :popped) "x"))
-  (test "a non-owned key exits the overlay then falls through (dismiss-and-process)"
-    (let (r (overlay-route overlays {:pop true} "a" fallback))
-      (is (get r :exited))
-      (is (nil? (get r :pop)))
-      (assert= (get r :dispatched) "a")))
-  (test "list order is precedence (first active wins)"
-    (assert= (get (overlay-route overlays {:mini true :pop true} "x" fallback) :typed) "x"))
-  (test "overlay-active returns the first active overlay, or nil"
-    (is (nil? (overlay-active overlays {})))
-    (assert= (get (overlay-active overlays {:pop true}) :active?) (get (second overlays) :active?))))
-
-;; Overlay as an ability (ADR-183): an overlay is a record implementing `Overlay`;
-;; a record that skips `overlay-owns?` is capture-all and one that skips
-;; `overlay-exit` needs no dismiss step — the same nil policy the map vtable had.
-(describe "overlay-route — Overlay ability records"
   (defrecord ov-mini ()) ; capture-all: only active?/handle implemented
   (impl Overlay
     ov-mini
@@ -312,25 +280,25 @@
     (overlay-exit [_ m] (assoc m :pop nil :exited true)))
   (def rec-overlays (list (ov-mini) (ov-pop)))
   (defn rec-fallback (m k) (assoc m :dispatched k))
-  (test "a record overlay routes like a vtable"
-    (assert= (get (overlay-route rec-overlays {} "a" rec-fallback) :dispatched) "a")
+  (test "no overlay open → fallback"
+    (assert= (get (overlay-route rec-overlays {} "a" rec-fallback) :dispatched) "a"))
+  (test "an owning overlay handles its key"
     (assert= (get (overlay-route rec-overlays {:pop true} "x" rec-fallback) :popped) "x"))
   (test "a record without overlay-owns? captures every key (the :default policy)"
     (let (r (overlay-route rec-overlays {:mini true} "a" rec-fallback))
       (assert= (get r :typed) "a")
       (is (nil? (get r :dispatched)))))
-  (test "a record with overlay-exit dismisses then falls through"
+  (test "a non-owned key exits the overlay then falls through (dismiss-and-process)"
     (let (r (overlay-route rec-overlays {:pop true} "a" rec-fallback))
       (is (get r :exited))
+      (is (nil? (get r :pop)))
       (assert= (get r :dispatched) "a")))
-  (test "records and legacy vtables mix in one overlay list"
-    (let (mixed (list (ov-pop)
-                  {:active? (fn (m) (get m :mini))
-                   :owns? nil
-                   :handle (fn (m k) (assoc m :typed k))
-                   :exit nil})
-          r (overlay-route mixed {:mini true} "q" rec-fallback))
-      (assert= (get r :typed) "q"))))
+  (test "list order is precedence (first active wins)"
+    (assert= (get (overlay-route rec-overlays {:mini true :pop true} "x" rec-fallback) :typed)
+      "x"))
+  (test "overlay-active returns the first active overlay, or nil"
+    (is (nil? (overlay-active rec-overlays {})))
+    (assert= (overlay-active rec-overlays {:pop true}) (ov-pop))))
 
 ;; ui-coalesce-motion — collapse a flood of per-cell mouse :drag / :move events to the
 ;; latest of its kind, so a fast drag renders once at the final position instead of once

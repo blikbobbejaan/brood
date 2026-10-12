@@ -1,22 +1,21 @@
-//! How the checker finds out *what shape a name has*. Three sources,
-//! simplest-first (see `docs/types.md` Step 3) — **no inference engine**:
+//! How the checker finds out *what shape a name has* — [`sig_of`] states the order of
+//! the sources (operator, declared, primitive, image, curated, inferred). The ones that
+//! need explaining:
 //!
-//! 1. **Primitive** — every [`NativeFn`](crate::core::value::NativeFn) carries
-//!    its `Sig` and `Arity` in the global env (contract point #6, enforced
-//!    at construction). [`primitive_sig`] / [`arity_of`] just read it.
-//! 2. **Curated stdlib** — a small hand-vetted table for variadic /
-//!    `reduce`-based / higher-order closures the checker can't infer but
-//!    that matter (`+ - * /`, `map`, `filter`, `reduce`, …). See
-//!    [`curated_sig`].
-//! 3. **Body inference** ([`infer_sig`]), two sound tiers. (a) *Precise* — a body
-//!    that is one direct call to a known sig pins each parameter to the callee's
-//!    expectation (sound: a straight-line use is unconditional). (b) *Return-only*
-//!    — for any other single-arm body, the return type is `expr_ty` of the body
-//!    tail (parameters left `ANY`), so a multi-step/branchy function's *result* is
-//!    typed. Sound (`expr_ty` over-approximates and unions branches) and — by not
-//!    constraining parameters — free of the guarded-use false positive that full
-//!    parameter inference would create. Complete parameter inference stays out
-//!    (needs occurrence-typing; ADR-011).
+//! - **Primitive** — every [`NativeFn`](crate::core::value::NativeFn) carries its `Sig`
+//!   and `Arity` in the global env (contract point #6, enforced at construction).
+//!   [`primitive_sig`] / [`arity_of`] just read it.
+//! - **Curated** — a small hand-vetted table for the closures nothing else types
+//!   (`map`, `reduce`, `io/puts`, …). See [`curated_sig`].
+//! - **Body inference** ([`infer_sig`]), two sound tiers. (a) *Precise* — a body
+//!   that is one direct call to a known sig pins each parameter to the callee's
+//!   expectation (sound: a straight-line use is unconditional). (b) *Return-only*
+//!   — for any other single-arm body, the return type is `expr_ty` of the body
+//!   tail (parameters left `ANY`), so a multi-step/branchy function's *result* is
+//!   typed. Sound (`expr_ty` over-approximates and unions branches) and — by not
+//!   constraining parameters — free of the guarded-use false positive that full
+//!   parameter inference would create. Complete parameter inference stays out
+//!   (needs occurrence-typing; ADR-011).
 //!
 //! `arity_of` is independent: it works for any callable (primitive or
 //! closure) without needing a sig.
@@ -36,14 +35,20 @@ use super::ctx::Ctx;
 use super::infer::expr_ty;
 use super::walk::list_items;
 
-/// Curated stdlib sigs, keyed by interned `Symbol`. Built once at first
-/// use — every entry's name is interned via `value::intern`, and a lookup
-/// is a `SymbolMap` (FxHash-on-`u32`) probe rather than a string compare
-/// chain. Pre-consolidation the checker walked every call form, allocated
-/// a `String` via `symbol_name`, then matched `name.as_str()` against this
-/// table — that allocation was the review's hottest finding for the
-/// type-check walk. (`SymbolMap` is the same hasher `eval::SPECIAL_IDS`
-/// uses.)
+/// The declared std names still curated — see the comment at their entries. The gate
+/// `no_curated_name_is_declared_in_std` allows exactly these.
+#[cfg(test)]
+pub(super) const CURATED_DECLARED_EXCEPTIONS: [&str; 5] = [
+    "math/even?",
+    "math/odd?",
+    "string/starts-with?",
+    "string/ends-with?",
+    "index-of",
+];
+
+/// Curated stdlib sigs, keyed by interned `Symbol` (a `SymbolMap` probe, no spelling
+/// allocated per call). The last authored source [`sig_of`] consults — see its doc for
+/// the order — so it holds only names no other source types.
 static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     #[allow(non_upper_case_globals)]
     const int: Ty = Ty::of(Tag::Int);
@@ -74,8 +79,7 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     const bool_ty: Ty = Ty::of(Tag::Bool);
     // `count` accepts a string, map, bytes, or sequence (the prelude
     // `count` dispatches string?/map?/else-fold, and bytes counts its octets) —
-    // but not a number/keyword/etc. Rope and Table joined in ADR-253: both have an
-    // O(1) size and both used to raise. A signature narrower than the function is a
+    // but not a number/keyword/etc. Rope and Table too (ADR-253). A signature narrower than the function is a
     // false positive on correct code, so this list has to move with the dispatch.
     #[allow(non_upper_case_globals)]
     const countable: Ty = Ty::COUNTABLE;
@@ -87,96 +91,28 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     let mut put = |name: &str, sig: Sig| {
         m.insert(value::intern(name), sig);
     };
-    // Variadic arithmetic. A numeric arg — or a `Num` RECORD, which the kernel's
-    // `%add`/`%sub`/`%mul`/`%div` fallback dispatches to the `num/*` multimethods (ADR-172
-    // §7, ADR-179) — so `(+ money money)` is legal. These curated entries are the widest
-    // reading, `number | map`; they are SHADOWED by `operator_sig` (ADR-299), which reads
-    // the domain off the registry — `number` plus exactly the records with methods — and
-    // is what every lookup consults first. The RESULT of a pure-numeric call is typed
-    // precisely by `numeric_call_ty` (int/float) either way.
-    let num_or_record = num.union(Ty::of(Tag::Map));
-    for n in ["+", "-", "*", "/"] {
-        put(
-            n,
-            Sig::variadic(num_or_record.clone(), num_or_record.clone()),
-        );
-    }
-    // variadic comparison: a numeric arg OR an `Ord` record — `< <= > >=` route through the
-    // `compare-to` multimethod on the record cold path (ADR-179), so `(< (usd 1) (usd 2))` is
-    // legal; boolean result. (A record is a map, hence the `num_or_record` domain.)
-    for n in ["<", "<=", ">", ">="] {
-        put(n, Sig::variadic(num_or_record.clone(), Ty::of(Tag::Bool)));
-    }
-    // `mod` is Brood (over `rem`), but its types are fixed
-    put("math/mod", Sig::new(vec![int, int], int));
-    // Common helpers the checker can't infer (branchy / nested-param bodies),
-    // hand-vetted against std/prelude.blsp — same soundness basis as the rest of
-    // this table. Conservative on the domain (widest type the body accepts) so a
-    // tighter type never false-positives:
-    //   even?/odd? — body reduces via `rem`/`=`; require a number → bool.
-    //   abs        — `(if (< n 0) (- n) n)`: numeric in and out.
-    //   not/math/zero?  — accept any value (truthiness / dispatch), but pin the `bool`
-    //                result, so a non-bool sink like `(+ 1 (not x))` is catchable.
-    //   count      — a string, map, or sequence → int.
+    // Only what NOTHING ELSE types belongs here: an operator (`operator_sig`), a primitive
+    // (its `NativeFn` sig) or a name `std/` declares (`(sig …)`) is never curated. An entry
+    // also marks its name as KNOWN, which suppresses the unbound lint — so every key is
+    // the name a program writes (`math/zero?`, never a moved bare `zero?`), and a name
+    // nothing defines must never be added (`tests/curated_sigs_exist.rs`).
     //
-    // **Keyed QUALIFIED for the three ADR-227 moved out of the prelude.** An entry here
-    // does more than supply a type: a name in this table is one the checker treats as
-    // *known*, which suppressed the unbound lint. So after `even?`/`odd?`/`abs` moved into
-    // `std/math.blsp`, `nest check` stayed silent on a bare `(even? 4)` — no import, unbound
-    // at runtime — and reported a *type* warning on `(even? "x")` instead of the truth. Its
-    // sibling moves that were never curated (`sum`, `frequencies`) correctly said "unbound
-    // symbol", which is what pinned the cause. `nest check` is the gate that exits nonzero on
-    // any warning, so this let a program that dies on an unbound symbol pass CI.
-    //
-    // Keyed as `math/…`, all three cases come out right: a bare use with no import draws the
-    // unbound lint, a qualified `math/abs` gets the vetted signature (it previously got
-    // nothing — lookup is by exact symbol), and a `(:use math)` bare use is known via the
-    // module's exports and simply carries no curated sig, exactly like every other module
-    // function. If these are ever wanted for the `:use`d bare spelling too, the fix is a
-    // bare→owning-module index, NOT re-adding the bare key — that would restore the masking.
-    put("math/even?", Sig::new(vec![num], bool_ty));
-    put("math/odd?", Sig::new(vec![num], bool_ty));
-    put("math/abs", Sig::new(vec![num], num));
+    // `not`/`math/zero?` and the float predicates accept any value but pin the `bool`
+    // result, so a non-bool sink like `(+ 1 (not x))` is catchable.
     put("not", Sig::new(vec![any], bool_ty));
     put("math/zero?", Sig::new(vec![any], bool_ty));
     put("math/nan?", Sig::new(vec![any], bool_ty));
     put("math/infinite?", Sig::new(vec![any], bool_ty));
-    // `min`/`max`/`rem`/`quot`/`mod`/`->fixed`/`floor` moved to `math` on 2026-08-27, and
-    // their kernel halves took the `%` prefix (`%max`, `%rem`, …) so the PRELUDE can do
-    // arithmetic without loading a module. The registered Sig therefore sits on the `%`
-    // name, which user code never writes — these entries put it back on the name that IS
-    // written, so `(math/min "a" 2)` is still flagged.
-    // `math/max`/`math/min` are NOT here: they take the record-aware signature further
-    // down (they route through `compare-to`, ADR-179), and a duplicate `put` would just
-    // let source order decide which one the checker used.
-    put("math/rem", Sig::new(vec![int, int], int));
-    put("math/quot", Sig::new(vec![int, int], int));
-    put("math/floor", Sig::new(vec![num], int));
-    put("math/->fixed", Sig::new(vec![num, int], str_ty));
-    put("math/numerator", Sig::new(vec![num], int));
-    put("math/denominator", Sig::new(vec![num], int));
     put("math/rational", Sig::new(vec![num, num], num));
     put("reflect/read-string", Sig::new(vec![str_ty], any));
     put("reflect/read-all", Sig::new(vec![str_ty], any));
     put("reflect/read-first", Sig::new(vec![str_ty], any));
     put("count", Sig::new(vec![countable], int));
-    // NO `length` entry: there is no `length` function, and there never was. It was added
-    // 2026-05-31 alongside `count` as if it were an alias ("each vetted against
-    // std/prelude.blsp" — this one was not), and because a curated entry marks its name
-    // *known* and so suppresses the unbound lint, `nest check` accepted `(length x)` in
-    // silence for months while the runtime raised `unbound symbol: length`. The string case
-    // is `string-length`, which has its own entry; sequences use `count`.
-    // Output fns: io/puts / io/write are Brood closures with rest params,
-    // so infer_sig bails — pin their nil result so `(+ 1 (io/puts x))` is caught.
+    // Output fns: rest-param closures `infer_sig` bails on — pin their nil result so
+    // `(+ 1 (io/puts x))` is caught.
     for n in ["io/puts", "io/write"] {
         put(n, Sig::variadic(any, nil_ty));
     }
-    // `math/min` / `math/max` are no longer curated (2026-09-13): `std/math.blsp` declares
-    // them `(& ?A -> ?A)` — the result IS an argument — which is the contract the
-    // by-name extremum rule (`infer::is_extremum`) also reads; a curated `number | map`
-    // return beside that declaration only tripped the widening gate. (They were curated
-    // module-qualified since the math wave: bare `min`/`max` do not exist, and curating
-    // them under the old names made the checker vouch for names the runtime had moved.)
     // higher-order: the callback is of a *known arity* — what the combinator calls
     // it with. The arrow's parameter count drives the callback-arity check
     // (ADR-078): `(map xs f)` calls `(f x)` → 1-ary; `(fold xs init f)` calls
@@ -226,19 +162,11 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     // signature exists for is caught by the seqable slot either way.
     put("take", Sig::new(vec![seq, num.clone()], any));
     put("drop", Sig::new(vec![seq, num], any));
-    // Predicates: branchy / `or`-expanded bodies that infer_sig can't walk.
-    // All are widest-safe domains (any/any) so a tighter call never warns falsely.
-    //   number? — body is (or (int? x) (float? x)); or-expansion hides the pattern.
-    //   empty?  — cascading if chain over type-of.
-    //   list?   — body is (or (nil? x) (pair? x)).
-    for n in ["number?", "empty?", "list?"] {
+    // Predicates: `or`-expanded bodies that infer_sig can't walk, with the widest-safe
+    // domain so a tighter call never warns falsely.
+    for n in ["number?", "list?"] {
         put(n, Sig::new(vec![any], bool_ty));
     }
-    //   contains? — map-key probe (map or a live transient); bool result.
-    // `member?` used to be curated here. It no longer exists — it became `includes?`,
-    // with the arguments the other way round — and the entry is NOT remapped, because a
-    // signature under a name nothing defines is worse than none: the checker treats a
-    // curated name as known, so it stopped reporting `member?` as unbound at all.
     put(
         "contains?",
         Sig::new(vec![Ty::of_tags(&[Tag::Map, Tag::Set]), any], bool_ty),
@@ -255,14 +183,7 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     for n in ["any?", "every?"] {
         put(n, Sig::new(vec![seq, cb1.clone()], bool_ty));
     }
-    // String operations: branchy or `apply`-based bodies; infer_sig bails.
-    //   join           — complex if/apply body; always returns a string.
-    //   capitalize     — if-branches, both arms produce strings.
-    //   string-split   — accumulator recursion; returns a list of strings
-    //                    (unrefined list — list<string> would warn on (first …) = nil).
-    put("string/join", Sig::new(vec![seq, any], str_ty));
-    put("string/capitalize", Sig::new(vec![str_ty], str_ty));
-    // `->string` renders ANY value as text (ADR-258's rename of `name`): always a string.
+    // `->string` renders ANY value as text: always a string.
     put("->string", Sig::new(vec![Ty::ANY], str_ty));
     // Equality: `=`/`not=` are multi-arm closures; infer_sig bails on multi-arm.
     // Pin the bool result so `(+ 1 (= x y))` is caught.
@@ -272,53 +193,23 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     // String conversions: branchy bodies or `apply` — infer_sig bails.
     //   string/->symbol — if-guard over (string? s).
     put("string/->symbol", Sig::new(vec![str_ty], sym_ty));
-    // String predicates: nested calls or let+branch bodies.
-    //   starts-with?/ends-with? — let + and + branch.
-    //   blank?                  — let + cond recursion.
+    //   includes? — polymorphic membership over list/vector/string and map (values).
+    put("includes?", Sig::new(vec![any, any], bool_ty));
+    put("string/list->", Sig::new(vec![seq], str_ty));
+    put("seq/index-where", Sig::new(vec![seq, cb1], int));
+    // KNOWN EXCEPTIONS to "never curate a declared name" — `CURATED_DECLARED_EXCEPTIONS`.
+    // The caller-derived demand walk reads this table ahead of a loaded declaration, and
+    // these still carry a looser curated domain than their std `(sig …)`: removing them
+    // makes the stricter declaration reach call sites whose parameters the derivation
+    // does not yet prove (`jit_makemap_test`'s `keyed-loop` via `math/odd?`, `nest`'s
+    // `split-eq`/`parse-words` via `index-of`). Delete each once the derivation types
+    // those sites.
+    put("math/even?", Sig::new(vec![num], bool_ty));
+    put("math/odd?", Sig::new(vec![num], bool_ty));
     for n in ["string/starts-with?", "string/ends-with?"] {
         put(n, Sig::new(vec![str_ty, str_ty], bool_ty));
     }
-    //   includes? — polymorphic membership `(>= (index-of coll x) 0)` over
-    //   list/vector/string (string/substring) and map (values); both args stay `any`.
-    put("includes?", Sig::new(vec![any, any], bool_ty));
-    put("string/blank?", Sig::new(vec![str_ty], bool_ty));
-    // String transforms: all call recursive helpers or use `apply`; infer_sig bails.
-    //   trim/triml/trimr   — call tail-recursive aux helpers.
-    //   replace            — if-branch over join/string-split.
-    //   string-repeat      — (apply str (repeat n s)).
-    //   pad-left/pad-right — let + if.
-    //   char-at            — (string/substring s i (inc i)): nested call.
-    for n in ["string/trim", "string/triml", "string/trimr"] {
-        put(n, Sig::new(vec![str_ty], str_ty));
-    }
-    put(
-        "string/replace",
-        Sig::new(vec![str_ty, str_ty, str_ty], str_ty),
-    );
-    put("string/repeat", Sig::new(vec![str_ty, int], str_ty));
-    for n in ["string/pad-left", "string/pad-right"] {
-        put(n, Sig::new(vec![str_ty, int], str_ty));
-    }
-    put("string/char-at", Sig::new(vec![str_ty, int], str_ty));
-    // String/list conversions: recursive helpers or `apply`.
-    //   string->list        — (string/split s "").
-    //   list->string        — (apply str cs).
-    //   codepoints->string  — (apply str (map string/int->char cs)).
-    // (string/->codepoints is a primitive now — its sig rides on the NativeFn.)
-    put("string/->list", Sig::new(vec![str_ty], Ty::LIST));
-    put("string/list->", Sig::new(vec![seq], str_ty));
-    put("string/codepoints->", Sig::new(vec![seq], str_ty));
-    // format: variadic with a required string template arg and a string result.
-    put("string/format", Sig::with_rest(vec![str_ty], any, str_ty));
-    // Search → int: all have branchy/recursive/optional-param bodies.
-    //   index-of      — multi-clause cond over collection type; &optional from.
-    //   index-where   — tail-recursive helper; 1-ary predicate.
-    //   string/last-index-of — &optional before param; infer_sig bails.
     put("index-of", Sig::new(vec![any, any], int));
-    // `seq/` since ADR-227 — keyed qualified for the same reason as `math/abs` above: a
-    // bare key here would suppress the unbound lint on a name that no longer exists bare.
-    put("seq/index-where", Sig::new(vec![seq, cb1], int));
-    put("string/last-index-of", Sig::new(vec![str_ty, str_ty], int));
     m
 });
 
@@ -421,8 +312,6 @@ pub(super) fn primitive_sig(heap: &Heap, sym: Symbol) -> Option<Sig> {
     }
 }
 
-/// Signatures for the stable stdlib **closures** the checker can't infer but
-/// that matter: the arithmetic/comparison kernel (variadic over numbers) and the
 /// **The one place a data-first combinator's argument positions are stated (ADR-308).**
 ///
 /// `map`/`keep`/`fold`/`reduce` all take the collection FIRST and the callback LAST — the
@@ -488,20 +377,18 @@ pub(super) fn fuel_exhausted() -> bool {
     SPECIAL_FUEL.with(|f| f.get() == 0)
 }
 
-/// Reset the per-pass inference memo. `check_file` calls this at the start of each file so
-/// one file's inferred signatures never leak into the next — and, in the long-lived LSP,
-/// so an edit re-infers rather than serving a stale cached sig.
-/// Drop the completed specializations alone — once per JOINT ROUND of Pass 2.9. A
-/// specialization re-types a body under this file's returns and derived parameters as
-/// they stand, and the memo is keyed by `(name, argument types)` only, so an answer
-/// computed in round one (under the floored returns) was handed back in every later
-/// round: the fixpoint's answer depended on which question was asked first, and the
-/// site cache (`SiteCache`), which asks fewer, read different verdicts from the same
-/// file (2026-09-17). The fuel is not reset — it bounds the file, not the round.
+/// Drop the completed specializations alone — once per round of the joint caller-derived
+/// fixpoint. A specialization re-types a body under the file's returns and derived
+/// parameters as they stand, and the memo is keyed by `(name, argument types)` only, so
+/// an answer kept across rounds would make the fixpoint depend on which question was
+/// asked first. The fuel is not reset — it bounds the file, not the round.
 pub(super) fn clear_specializations() {
     SPECIAL_MEMO.with(|m| m.borrow_mut().clear());
 }
 
+/// Reset the per-pass inference memo. `check_file` calls this at the start of each file so
+/// one file's inferred signatures never leak into the next — and, in the long-lived LSP,
+/// so an edit re-infers rather than serving a stale cached sig.
 pub(super) fn clear_sig_memo() {
     SIG_MEMO.with(|m| m.borrow_mut().clear());
     OVERLOAD_MEMO.with(|m| m.borrow_mut().clear());
@@ -533,7 +420,7 @@ thread_local! {
     /// its total work. The memo makes a REPEATED question free, but a question refused
     /// by the guard (a name in flight, the depth cap) has no answer to memoize, and the
     /// walker asks it again at every enclosing level: the `(:use io)` header of a
-    /// two-line file drove 933k specializations of `require-one` (2026-08-30) and timed
+    /// two-line file drove 933k specializations of `require-one` and timed
     /// out. Past the budget the answer is `None` — the flat signature stands, sound —
     /// and the file check finishes. Reset per file by [`clear_sig_memo`].
     static SPECIAL_FUEL: Cell<u32> = const { Cell::new(MAX_SPECIAL_FUEL) };
@@ -556,7 +443,7 @@ thread_local! {
     /// by argument tuple) and consulted by [`specialize_call`] BEFORE it types the call's
     /// operands: on bedit that operand walk was the profile's hottest frame, and for these
     /// names it bought nothing. Same-file names never enter — their arms arrive during
-    /// Pass 2.8. Reset per file with the memo.
+    /// same-file inference. Reset per file with the memo.
     static NO_ARMS: RefCell<HashSet<Symbol>> = RefCell::new(HashSet::new());
     static SPECIAL_MEMO: RefCell<HashMap<(Symbol, Vec<Option<Ty>>), Option<Ty>>> =
         RefCell::new(HashMap::new());
@@ -649,7 +536,7 @@ struct FixedArm {
 /// binding parameters positionally to argument types would be wrong.
 /// `(arms, stable)` — `stable` when the arms came from the LOADED image, whose bodies and
 /// signatures do not move during a file check, so a `None` answer for them can be
-/// memoized; a same-file body's answer depends on the Pass 2.8 fixpoint and cannot be.
+/// memoized; a same-file body's answer depends on the same-file inference fixpoint and cannot be.
 fn fixed_arms_of(heap: &Heap, sym: Symbol, ctx: &Ctx) -> Option<(Vec<FixedArm>, bool)> {
     // A same-file multi-clause `defn`: its expanded form is one variadic `fn` over
     // `match*` and has no fixed arms; the un-expanded clauses are the arms.
@@ -817,7 +704,7 @@ pub(super) fn specialized_ret(
     };
     let Some((arms, stable)) = fixed_arms_of(heap, sym, ctx) else {
         // Nothing to re-type. For a builtin or an unknown name that is a fact about the
-        // image; for a SAME-FILE global it is a fact about the moment — Pass 2.8 has not
+        // image; for a SAME-FILE global it is a fact about the moment — same-file inference has not
         // recorded its form yet, and a memoized `None` here would outlive the fixpoint
         // that records it (the bug: `step`'s first call, typed before its `defn`, pinned
         // every later specialization of it to `None`).
@@ -836,9 +723,8 @@ pub(super) fn specialized_ret(
     // argument types and the result — see [`specialize_recursive`]. Binding the parameters
     // to the first call's argument types and skipping the recursive branch would type an
     // accumulator loop from its FIRST base case — `(sum-acc xs 0)` as `0`, where later
-    // iterations return the `number` the accumulator has grown into — so until 2026-09-13
-    // this declined and the flat inference (parameters at their demands, `-> any` for
-    // every accumulator loop) stood.
+    // iterations return the `number` the accumulator has grown into — so without the
+    // ascent the flat inference (`-> any` for every accumulator loop) would stand.
     if arms.iter().any(|a| form_mentions(heap, a.tail, sym)) {
         let out = specialize_recursive(heap, sym, &arms, inputs, ctx);
         if out.is_some() || stable {
@@ -901,7 +787,7 @@ pub(super) fn specialized_ret(
     let out = if matched { ret } else { None };
     // A positive answer is always memoized. A `None` only for a LOADED body: for a
     // same-file one it is a fact about the moment — an arm whose tail names a function
-    // Pass 2.8 has not recorded yet — and the fixpoint that follows may turn it into an
+    // same-file inference has not recorded yet — and the fixpoint that follows may turn it into an
     // answer. (An in-flight cycle's `None` never reaches this line: `?` returns above.)
     if out.is_some() || stable {
         memo_specialization(key, out.clone());
@@ -1029,7 +915,7 @@ fn specialize_recursive(
         }
         // Unchanged parameters and an untypeable tail: every later round is this one.
         // (A parameter that went unknown — an unknown callback's result feeding an
-        // accumulator — lands here on its second round, where it used to spend six.)
+        // accumulator — lands here on its second round.)
         if next == params && next_ret.is_none() {
             return None;
         }
@@ -1047,7 +933,7 @@ fn specialize_recursive(
 /// bindings make them — `(let (j2 (+ j dir)) … (self rows j2 …))` hands `j2` over as `int`
 /// when `j` is — which is what lets the recursive call's arguments say anything: typed under
 /// the parameters alone, `j2` was unbound, the parameter went unknown, and `(inc j)` read as
-/// `number` (bedit's `git-scan-rows`, 2026-09-13). A `letrec` binds its names unknown first;
+/// `number`. A `letrec` binds its names unknown first;
 /// an inner `fn`'s parameters are unknown (a self-call inside it types its arguments to the
 /// extent the outer scope decides them — sound, wider). Descends through lists, vectors and
 /// maps in source order; a self-call inside quoted data is collected too, which can only
@@ -1168,7 +1054,7 @@ pub(super) fn self_call_sites(
 /// the same position already gets the full clause machinery via `specialized_ret`; an
 /// inline literal fell to `any`, so `(reduce toks '() (fn (((x y & acc) "+") …)
 /// ((acc val) …)))` said nothing while the identical clauses under a `defn` typed
-/// precisely (found on an RPN reduce, 2026-08-31).
+/// precisely.
 ///
 /// Two spellings reach here:
 ///  - **arity-only clause literals** survive expansion as clause syntax and are read
@@ -1520,7 +1406,7 @@ fn infer_overload_inner(heap: &Heap, sym: Symbol) -> Option<Vec<Sig>> {
 }
 
 /// The same, read from a **form** rather than a loaded closure — the same-file
-/// counterpart (`check_file` Pass 2.8), where the file being checked is not loaded.
+/// counterpart (`check_file` same-file inference), where the file being checked is not loaded.
 pub(super) fn infer_overload_from_form(heap: &Heap, fn_form: Value, ctx: &Ctx) -> Option<Vec<Sig>> {
     let items = super::walk::list_items(heap, fn_form)?;
     if !matches!(items.first(), Some(&Value::Sym(s)) if super::walk::is_fn_head(s)) {
@@ -1696,7 +1582,7 @@ pub(super) fn bind_head(heap: &Heap, ctx: Ctx, head: Value, ty: Option<Ty>) -> C
 const MAX_SELF_ASCENT_ROUNDS: usize = 8;
 
 /// The return of a body that calls ITSELF, typed in ONE question — a LOADED closure
-/// ([`infer_sig`], [`infer_overload_of`]), where Pass 2.8's file-level fixpoint never runs.
+/// ([`infer_sig`], [`infer_overload_of`]), where same-file inference's file-level fixpoint never runs.
 ///
 /// `type_round` types the body (its tail, or every arm's) under the scope it is handed,
 /// in which the function's own name is bound to the arrow `(any… -> R)`. The ascent starts
@@ -1709,7 +1595,7 @@ const MAX_SELF_ASCENT_ROUNDS: usize = 8;
 /// Before this the single pass typed the self-call as ⊥ ("Kleene from ⊥", true only of
 /// an ITERATED fixpoint) and kept the first round's answer: `(defn h (n) (if (= n 0) nil
 /// (cons n (h (- n 1)))))` in a required module inferred `-> nil`, so `(nth (h 3) 2)`
-/// warned "got nil", and `(when (nil? x) (self 0))` read as a diverging guard (2026-10-02).
+/// warned "got nil", and `(when (nil? x) (self 0))` read as a diverging guard.
 /// A body that does not mention its own name is typed once, exactly as before.
 fn self_ascent(
     heap: &Heap,
@@ -1778,16 +1664,10 @@ fn infer_sig_inner(heap: &Heap, sym: Symbol) -> Option<Sig> {
     // (see [`param_domains`]). Params nothing constrains stay `ANY`, recovering the
     // return-only behaviour exactly.
     //
-    // There used to be a "Tier 1" ahead of this: a body that was exactly one call to a
-    // primitive/curated callee read its parameters off that call's signature — and
-    // ONLY the arguments that were directly a parameter, then returned without ever
-    // running the walk below. It predated the domain walk and, once that existed,
-    // could only lose: `(defn v (s) (+ 1 (string/length s)))` inferred `(any)` here and
-    // `(string)` from the file (Pass 2.8 never had the tier), so the SAME function
-    // constrained its callers in its own module and not from any other — which is
-    // where `str`, `io/puts`, `+`, `-`, `=`, `<` and `vector` heads put most one-line
-    // functions. The domain walk subsumes it: a direct parameter argument takes the
-    // callee's demand at that position, and a nested one is walked (2026-09-13).
+    // No shortcut for a body that is one call: the domain walk subsumes it (a direct
+    // parameter argument takes the callee's demand at that position, a nested one is
+    // walked), and a shortcut reading only direct arguments would make the same function
+    // constrain its callers differently here than in its own file.
     let mut names = params.clone();
     names.extend(rest_binder);
     let mut param_tys = param_domains(heap, &arm.body, &names, &Ctx::default());
@@ -1961,7 +1841,7 @@ pub(super) fn infer_return_from_form(
             None => base_ctx.clone(),
         };
         // A module-private function's parameters are also bounded by what its callers
-        // hand it (Pass 2.9, ADR-341): the MEET of the demand and the caller-derived type
+        // hand it (the caller-derived parameter pass, ADR-341): the MEET of the demand and the caller-derived type
         // over-approximates every successful call's argument, so the tail under it is still
         // the return of every successful call — and `(+ i 1)` under `i : int` is `int`, not
         // the `number` the demand alone says.
@@ -2068,8 +1948,7 @@ pub(super) fn infer_params_from_form(
     // `rest_element_demand`. An `&optional` position constrains only an argument that IS
     // passed — an omitted one binds its default — so its demand is the body's domain
     // widened by the default's type (`nil` with none): the body runs over that value too,
-    // so it is in the domain by construction. (Optionals were skipped outright until
-    // 2026-10-02, so `(h 1 :kw)` into a `string | number` optional went unchecked.)
+    // so it is in the domain by construction.
     let raw = match plist {
         Value::Vector(id) => heap.vector(id).to_vec(),
         _ => super::walk::list_items(heap, plist).unwrap_or_default(),
@@ -2260,8 +2139,7 @@ fn domain_of_inner(
     // A vector, map or set LITERAL evaluates every element (keys too — a map key is
     // data only once evaluated, KI-70), so each element's demands hold. Returning a
     // tuple `[(- a b)]` or a record `{:k (- a b)}` is the ordinary shape of Brood
-    // code, and until 2026-09-12 both left every parameter at `any` while `(list (- a
-    // b))` typed them — the demand walk had the hole KI-70 closed for the checking walk.
+    // code, so the demand walk descends into both (KI-70's class).
     match form {
         Value::Vector(id) => {
             return heap
@@ -2302,7 +2180,7 @@ fn domain_of_inner(
         let acc = items[1..].iter().fold(any_domain(n), |acc, &arg| {
             meet(acc, domain_of(heap, arg, params, scope, ctx))
         });
-        // A KEYWORD in call-head position is NOT a demand, deliberately (2026-09-12). `(:end
+        // A KEYWORD in call-head position is NOT a demand, deliberately. `(:end
         // a)` does raise on anything but a map, a set or nil, so `nil | map | set` would be a
         // sound domain for `a` — and it moved ONE signature over std (std reaches for `get`)
         // while manufacturing 40 strict findings in bedit: every unsigged function that reads
@@ -2466,7 +2344,7 @@ fn domain_of_inner(
     // A lexical local shadows the global, so its type is not the declared one; and this
     // stays a table lookup like the three below, never `infer_sig`, so it cannot recurse
     // into the inference that called it.
-    // …and a same-file function's INFERRED sig (Pass 2.8's fixed point) right after: a
+    // …and a same-file function's INFERRED sig (same-file inference's fixed point) right after: a
     // table lookup on `ctx`, so still no recursion — and the largest single source of
     // demands the corpus was missing, since most calls in a module are to its own
     // functions. Its domain over-approximates the callee's valid arguments, so a caller
@@ -2689,16 +2567,6 @@ fn is_match_failure(heap: &Heap, arg: Value) -> bool {
         if value::symbol_name_ref(tag) == "match-error")
 }
 
-/// A **user-declared** signature for `sym` — the `(sig name (A -> B))` the author
-/// wrote, recorded on the heap (keyed by the module-qualified global) by the
-/// `%register-sig` primitive when the `(sig …)` form evaluated at load time. Read
-/// *first* by [`sig_of`], so the author's stated contract overrides body inference
-/// — the whole point of the cross-module/intra-module authoritative-sig path. Only
-/// an arrow type-expr yields a caller sig (a value `(sig x int)` records nothing
-/// here, mirroring [`annot::parse_sig_decl`]). The file-local `ctx.declared_sig`
-/// (walk.rs) still wins ahead of this for a bare file; this is the store that makes
-/// a declared sig authoritative where the file-local ctx misses (a qualified
-/// intra-module call, or a cross-module caller).
 /// The [`SigWithVars`] a loaded module declared for `sym`, when its declaration carries
 /// type variables — the live-image counterpart of `Ctx::declared_sig_with_vars`.
 pub(super) fn declared_heap_sig_with_vars(
@@ -2709,6 +2577,13 @@ pub(super) fn declared_heap_sig_with_vars(
     annot::in_declaring_scope(sym, || annot::parse_arrow_type_with_vars(heap, type_value))
 }
 
+/// A **user-declared** signature for `sym` — the `(sig name (A -> B))` the author wrote,
+/// recorded on the heap (keyed by the module-qualified global) by `%register-sig` when
+/// the `(sig …)` form evaluated at load time. Only an arrow type-expr yields a caller
+/// sig (a value `(sig x int)` is [`declared_heap_value_ty`]'s). The file-local
+/// `ctx.declared_sig` still wins ahead of this for the file being checked; this is the
+/// store that makes a declaration authoritative for a qualified intra-module call or a
+/// cross-module caller.
 pub(super) fn declared_heap_sig(heap: &Heap, sym: Symbol) -> Option<Sig> {
     let type_value = super::deps::obs_declared_sig_value(heap, sym)?;
     annot::in_declaring_scope(sym, || annot::parse_type(heap, type_value))?
@@ -2752,25 +2627,24 @@ pub(super) fn declared_heap_value_ty(heap: &Heap, sym: Symbol) -> Option<Ty> {
     Some(ty)
 }
 
-/// The signature for `sym`, from any of the sources (user-declared → primitive →
-/// curated → inferred). A user `(sig …)` declaration is **authoritative** — read
-/// first so it overrides the body-inferred sig (e.g. a `number`-inferring body the
-/// author declared `int`). The non-inferring middle half is exposed as
-/// [`primitive_sig`] + [`curated_sig`] so [`infer_sig`] can consult the callee's
-/// sig *without* kicking off another inference (the rule says inference is one step
-/// deep).
+/// The signature for `sym`. The sources, in the order they are consulted — the one place
+/// the precedence is stated:
+///
+/// 1. **operator** ([`operator_sig`]) — `+ - * / < <= > >=` and the extrema, their domain
+///    read off the multimethod registry (ADR-299) rather than the native's widest reading;
+/// 2. **declared** ([`declared_heap_sig`]) — a loaded module's `(sig …)`, authoritative
+///    over everything below (a body inferring `number` the author declared `int`);
+/// 3. **primitive** ([`primitive_sig`]) — a native's own `Sig`;
+/// 4. **image** ([`image_heap_sig`]) — a std declaration read without loading its module,
+///    so a check that never loads `math` reads what one that did would (ADR-370). After
+///    the primitives because a native is never in the index and is asked about most;
+/// 5. **curated** ([`curated_sig`]) — only names no source above types;
+/// 6. **inferred** ([`infer_sig`]) — one step deep from a loaded body.
+///
+/// The non-inferring sources are exposed separately so [`infer_sig`] can consult a
+/// callee's sig without starting another inference. (The checked file's own `(sig …)`
+/// and inferred signatures live on `Ctx` and are read by the walk ahead of all of these.)
 pub(super) fn sig_of(heap: &Heap, sym: Symbol) -> Option<Sig> {
-    // The operator sugar's registry-derived domain (ADR-299) wins over the widest reading
-    // the native declares, whichever registry that reading arrives through.
-    // The footer sits AHEAD of the curated table, not after it: it carries declarations only
-    // (`check::image_carried_sig`), and a loaded module's declaration outranks a curated
-    // entry — `math/even?` is curated `(number -> bool)` and declared `(int -> bool)`, and a
-    // check that never loads `math` must read what a check that did would (the ADR-370
-    // invariant; `nest::image_sigs_differential` holds it). It sits AFTER the primitives
-    // because a native is never in the footer (the scan indexes `defn`s), and `sig_of` is
-    // asked about natives far more than anything else: with the footer first every one of
-    // those paid a cache probe for nothing — +1.7% instructions on a `--check` (callgrind,
-    // 2026-09-20).
     operator_sig(heap, sym)
         .or_else(|| declared_heap_sig(heap, sym))
         .or_else(|| primitive_sig(heap, sym))
@@ -2779,17 +2653,21 @@ pub(super) fn sig_of(heap: &Heap, sym: Symbol) -> Option<Sig> {
         .or_else(|| infer_sig(heap, sym))
 }
 
-/// The stdlib image's signature for `sym` (ADR-370): what the checker derived for the
-/// function at image-build time, declared or inferred, read from the promoted form the
-/// runtime store holds — the same `parse_type` a declared sig goes through. Consulted after
-/// every authored source and before inferring a body, so an imaged callee's type is known
-/// without its module in the heap; `None` when the image has none (an un-imaged module, or
-/// `BROOD_NO_IMAGE_SIGS=1`).
+/// The signature index's declaration for `sym` (ADR-370): a std function's `(sig …)`,
+/// when the checker can read it as-is (`check::image_carried_sig`) — declarations only,
+/// never an inferred signature. The image footer caches the index; a process booted
+/// without an image scans the one module the question is about on demand, so the answer
+/// is the same either way. Consulted before inferring a body, so a std callee's type is
+/// known without its module in the heap; `None` for an undeclared function or under
+/// `BROOD_NO_IMAGE_SIGS=1`.
 pub(super) fn image_heap_sig(heap: &Heap, sym: Symbol) -> Option<Sig> {
     use std::collections::HashMap;
     use std::sync::{OnceLock, RwLock};
-    // Parsed once per process per name — `Ty` is `Arc`-backed plain data, so the cache is
-    // shared by every checking process; a name with no rendering caches its `None` too.
+    // Parsed once per process per name, and keyed by the name alone: the index is a fact
+    // about the std sources embedded in THIS binary (its stdlib id is a build constant),
+    // `BROOD_NO_IMAGE_SIGS` is read once per process, and the parse runs with every
+    // per-file table empty — so a name's answer cannot change within a process. A name
+    // with no declaration caches its `None` too.
     static CACHE: OnceLock<RwLock<HashMap<Symbol, Option<Sig>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
     if let Some(hit) = cache.read().unwrap_or_else(|e| e.into_inner()).get(&sym) {
@@ -2816,6 +2694,7 @@ pub(super) fn image_heap_sig_with_vars(
 ) -> Option<super::ctx::SigWithVars> {
     use std::collections::HashMap;
     use std::sync::{OnceLock, RwLock};
+    // Keyed by the name alone for the reason `image_heap_sig`'s cache is.
     static CACHE: OnceLock<RwLock<HashMap<Symbol, Option<super::ctx::SigWithVars>>>> =
         OnceLock::new();
     let cache = CACHE.get_or_init(|| RwLock::new(HashMap::new()));
@@ -2896,7 +2775,7 @@ pub(super) fn arity_of(heap: &Heap, sym: Symbol) -> Option<Arity> {
 /// The callee's parameter NAMES, rendered `coll` / `acc x` / `coll x & more`, or `None`
 /// when the name resolves to neither a primitive nor a closure. Mirrors [`arity_of`]'s
 /// lookup so the checker's arity warning can name what is missing, exactly as the runtime
-/// error does — the two used to disagree in wording as well as in content.
+/// error does.
 pub(super) fn param_names_of(heap: &Heap, sym: Symbol) -> Option<String> {
     match super::deps::obs_global(heap, sym)? {
         Value::Native(id) => {
@@ -3124,7 +3003,7 @@ fn global_fn_arrow(heap: &Heap, arg: Value, ctx: &Ctx) -> Option<Ty> {
     Some(Ty::arrow(sig))
 }
 
-// ---- Pass 2.9: caller-derived parameter types for module-private functions (ADR-341) ----
+// ---- the caller-derived parameter pass: caller-derived parameter types for module-private functions (ADR-341) ----
 
 /// Bound on the rounds of [`caller_derived_params`]: a chain of private helpers settles in
 /// one round per level, and `json`'s parser is ten levels deep (`decode` → `json-value` →
@@ -3177,13 +3056,13 @@ pub(super) fn caller_derived_params(
     let targets: HashSet<Symbol> = candidates.keys().copied().collect();
     // A LEAST fixpoint starts at ⊥: the live candidates — those with a site and no
     // escape (`live`, name → arity, found by [`live_private_functions`] ONCE per file since
-    // neither depends on any type; this used to be re-walked here on every joint round)
+    // neither depends on any type)
     // — begin with every parameter `never`, so a self-call's `(+ i 1)` contributes nothing
     // until some other caller has said what `i` is. Started at UNKNOWN instead, that same
     // argument read `number` in the first round and nothing could ever narrow it back.
     // An escaped or site-less candidate stays out of the map, hence unknown: its callers
     // are not all here, so nothing may be assumed of the arguments its body hands on.
-    // …or from `resume_from`, the previous joint round's result (Pass 2.9 alternates this
+    // …or from `resume_from`, the previous joint round's result (the caller-derived parameter pass alternates this
     // with the returns): computed under LOWER returns, it lies below the fixpoint sought
     // now, so continuing from it is the same ascent with the early rounds already done.
     let mut derived: HashMap<Symbol, Vec<Option<Ty>>> = live
@@ -3365,8 +3244,7 @@ impl Site {
                     *arg == b
                         && !scope.is_lexical_local(*head)
                         && (value::symbol_is(*head, "count")
-                            || value::symbol_is(*head, "string/length")
-                            || value::symbol_is(*head, "seq/vector-length"))
+                            || value::symbol_is(*head, "string/length"))
                 }
                 _ => false,
             },
@@ -3422,8 +3300,8 @@ impl CollectedSites {
     }
 }
 
-/// The site walk, memoised per top-level form across the rounds of one file's derivation
-/// (2026-09-17). The walk is the derivation's cost — it re-types every `let` binding and
+/// The site walk, memoised per top-level form across the rounds of one file's derivation.
+/// The walk is the derivation's cost — it re-types every `let` binding and
 /// every guard in the file (`let_bind_scope`, `branch_scopes`) to build the scope each site
 /// is typed in — and it ran whole on every round of every joint round: 4.2 s of the 11 s
 /// `nest check` spent over `std/`, against 0.2 s typing the sites it collected. A form's
@@ -4117,8 +3995,8 @@ pub(super) fn derive_count_aliases(
 
 /// The candidates [`caller_derived_params`] will derive — those with a call site and no
 /// escape — or `None` when the file holds an unexpanded macro call. Type-independent (a
-/// site is an arity match, an escape a spelling), so Pass 2.9 can learn it BEFORE it floors
-/// any return: a function not in this set keeps Pass 2.8's return through the whole
+/// site is an arity match, an escape a spelling), so the caller-derived parameter pass can learn it BEFORE it floors
+/// any return: a function not in this set keeps same-file inference's return through the whole
 /// iteration, since its in-file callers read that return and a ⊥ there would make their
 /// derived parameters under-approximate.
 pub(super) fn live_private_functions(
@@ -4143,7 +4021,7 @@ pub(super) fn live_private_functions(
     // parameter at ⊥ and a self-call's arguments are typed under those very parameters,
     // so a function whose ONLY sites are its own recursion derives ⊥ for every parameter,
     // its body reads as dead code, and nothing in it — not even `(string/length 5)` —
-    // is ever reported (2026-09-17). Its callers are not all here (a public function's
+    // is ever reported. Its callers are not all here (a public function's
     // never are; a private one's would be a bug of another kind), so it is site-less.
     Some(
         first

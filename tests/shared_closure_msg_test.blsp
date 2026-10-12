@@ -10,7 +10,7 @@
 ;;
 ;; So the interesting property is not just "the closure still runs" — a deep copy runs fine —
 ;; it is "the shared region did not grow". `runtime-closures` is therefore an assertion here,
-;; not a diagnostic. `BROOD_NO_SHARE_FN_MSG=1` reverts to the copy.
+;; not a diagnostic. `BROOD_NO_SHARE_FN=1` reverts to the copy.
 ;;
 ;; The lifetime half of the change (a queued handle pins its RUNTIME generation, and
 ;; materialising one re-arms the receiver's drain ack) is exercised rather than asserted

@@ -1,11 +1,9 @@
 ;; leaf_splice — partial leaf splicing's benchmark (ADR-210).
 ;; N=<iterations> brood scripts/fuzz/stress/leaf_splice.blsp
-;; Run it twice and compare:
 ;;   brood scripts/fuzz/stress/leaf_splice.blsp                         # ~220 ms at N=2M
-;;   BROOD_NO_PARTIAL_LEAF=1 brood scripts/fuzz/stress/leaf_splice.blsp  # ~520 ms
-;; Expect the mechanism to be worth ~2.4x. If that collapses to ~1x, partial splicing
-;; stopped applying to this shape — and the FIRST thing to check is not the derivation but
-;; whether the arm still lowers:
+;; Without partial splicing this shape ran ~2.4x slower. If the time regresses toward that,
+;; partial splicing stopped applying to this shape — and the FIRST thing to check is not
+;; the derivation but whether the arm still lowers:
 ;;   BROOD_INLINE_DBG=1 … | grep 'leaf probe hot'   # journalled=true — derivation happened
 ;;   BROOD_JIT_DUMP_IR=1 … | grep '(hot)'           # must appear TWICE: small + spliced
 ;; Those two are independent, and that is the trap this file exists to guard. A derivation

@@ -458,8 +458,8 @@ fn run_main_offers_modules_not_file_paths() {
 
 // ── the Rust-side mirror ───────────────────────────────────────────────────
 //
-// Completion is Brood (`std/tool/nest.blsp`, ADR-322), and the three subcommands still in
-// Rust — `release`, `mcp`, `stdimage` — are mirrored there as `nest/*rust-commands*` so
+// Completion is Brood (`std/tool/nest.blsp`, ADR-322), and the two subcommands still in
+// Rust — `release`, `stdimage` — are mirrored there as `nest/*rust-commands*` so
 // their flags complete without booting clap's model. A mirror drifts; these cases pin it
 // to clap's own definition through the binary: the `--long` flags `nest <sub> --help`
 // prints are exactly the ones `nest complete -- <sub> --` offers, and the subcommands

@@ -8,7 +8,7 @@
 //!
 //! **Both execution engines are measured side by side** (ADR-076): every eval
 //! benchmark runs once under the closure-compiling **VM** (the default engine)
-//! and once under the **tree-walker** (`BROOD_VM=0`'s fallback), labelled `Vm` /
+//! and once under the **tree-walker** (`BROOD_TIER=0`), labelled `Vm` /
 //! `Tw` in the arg column. The engine is pinned per-input via
 //! `compile::set_forced_engine` (the same override the differential test uses),
 //! so a single `cargo bench` shows the speedup the VM buys — e.g. `fib 20` is
@@ -24,7 +24,7 @@ fn main() {
 
 /// A benchmark row's tier ceiling, wrapped only to control how divan labels it: `Debug` prints
 /// `Tier::short()` (`Jit` / `Vm` / `Tw`) rather than the variant name, because
-/// `scripts/bench_ratio.py` reads those labels out of the arg column and
+/// `scripts/bench-ratio.awk` reads those labels out of the arg column and
 /// `docs/benchmarking.md` quotes them. The identity is the library's `Tier` — this file keeps no
 /// list of its own.
 #[derive(Clone, Copy)]
@@ -49,14 +49,13 @@ fn interp_on(eng: Eng) -> Interp {
 /// iterates. Built from `Tier::ALL`, so a new tier gives every bench a row without editing a
 /// single `#[divan::bench]`.
 ///
-/// The tier-1 row is new with ADR-222 and earns its place: JIT-vs-no-JIT per row is a
-/// measurement the frontier docs quote (`fib` 54×, `collatz` 40×, and `nbody`'s 3.2× is what
-/// exposed a silent bail) and it previously had to be produced by hand with `BROOD_NO_JIT`.
+/// The tier-1 row earns its place: JIT-vs-no-JIT per row is a measurement the frontier docs
+/// quote, and a row that stops moving between tiers is how a silent bail shows.
 ///
 /// What makes the ratio load-robust is that every engine is measured **in the same
 /// process** (`docs/benchmarking.md` §1 — under load they slow down together), not the
 /// order of this list: divan sorts rows by their printed label, so it controls the
-/// output order regardless of what this emits. `scripts/bench_ratio.py` pairs rows by
+/// output order regardless of what this emits. `scripts/bench-ratio.awk` pairs rows by
 /// `(bench, size)`, so print order does not matter to it either.
 macro_rules! engine_grid {
     ($($n:expr),+ $(,)?) => {{

@@ -1,6 +1,6 @@
 ;; Metamorphic / property-based arithmetic identities.
 ;;
-;; The engine differential (fuzz_programs.py) catches jit-vs-tree DIVERGENCE, but
+;; The engine differential (stress/fuzz_programs.blsp) catches jit-vs-tree DIVERGENCE, but
 ;; is BLIND to a bug where every engine agrees on the same WRONG answer — a
 ;; systematic error in a shared primitive (builtins.rs). Algebraic identities
 ;; catch that class: they must hold no matter how the primitive is implemented,

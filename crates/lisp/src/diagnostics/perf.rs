@@ -10,7 +10,7 @@
 //!
 //! **Zero cost when the feature is off.** [`perf_bump!`] expands to nothing, so a
 //! normal or release build — and the timing benches — carry no counter overhead.
-//! Build `--features perf-stats` to arm them, then read `(%)` or run with
+//! Build `--features perf-stats` to arm them, then read `(%vm-stats)` or run with
 //! `BROOD_PERF_STATS=1`.
 //!
 //! This is a *counting* tool, not a *timing* one: the atomics perturb timing, so
@@ -170,7 +170,7 @@ mod imp {
 pub use imp::{reset, C};
 
 /// Snapshot of all counters as `(name, value)` pairs, or `None` when the
-/// `perf-stats` feature is off. Read by the `(%)` builtin.
+/// `perf-stats` feature is off. Read by the `(%vm-stats)` builtin.
 #[cfg(feature = "perf-stats")]
 pub fn snapshot() -> Option<Vec<(&'static str, u64)>> {
     Some(imp::snapshot())

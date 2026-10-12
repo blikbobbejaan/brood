@@ -392,10 +392,10 @@ image and so took wrappers away from requests that were still running (KI-107)."
   "Advisory type-check `src` (the `:check` request's core): `{:ok true :diagnostics
 (…) :ms}` with the checker's `{:line :col :message}` maps whole — `()` for a source that
 does not parse — or `:ok false` with `:error` when the checker itself raised. Never throws."
-  (let (t0 (os/now))
+  (let (started (os/now))
     (try
-      {:ok true :diagnostics (or (reflect/check-string-structured src) ()) :ms (- (os/now) t0)}
-      (catch e {:ok false :error (error-message e) :ms (- (os/now) t0)}))))
+      {:ok true :diagnostics (or (reflect/check-string-structured src) ()) :ms (- (os/now) started)}
+      (catch e {:ok false :error (error-message e) :ms (- (os/now) started)}))))
 
 (defn eval-capturing (src &optional trace-names)
   "Evaluate source string `src` (all its forms, in order) with stdout captured;
@@ -424,7 +424,7 @@ In-image caveat for long-lived callers: evaluated source that calls
 `(%capture-begin)` without a matching take strands OUR buffer on the calling
 process's capture stack (later prints are swallowed). Irrelevant on the server
 path — the per-request evaluator process dies — but worth knowing when embedding."
-  (let (t0 (os/now)
+  (let (started (os/now)
         pids-before (proc/list)
         ;; `:all` is truthy and not a collection, so it counts as traced without being
         ;; measured — it resolves to a name list only at install time, in the image.
@@ -456,7 +456,7 @@ path — the per-request evaluator process dies — but worth knowing when embed
         out (eval-server-bound-output (or (%capture-take) ""))
         r2 (assoc r
              :output out
-             :ms (- (os/now) t0)
+             :ms (- (os/now) started)
              :procs (eval-server-process-report pids-before)))
     (if acc
       (do

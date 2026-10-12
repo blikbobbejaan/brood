@@ -40,10 +40,9 @@ fn no_warning_for_tail_recursion_or_higher_order() {
 
 #[test]
 fn a_docstringd_multi_arity_fn_is_read_arm_by_arm() {
-    // `(defn f "doc" ((a) …) ((a b) …))` expands to `(fn "doc" ((a) …) ((a b) …))`, and the
-    // docstring used to make the analyser read the arms as one single-arity BODY — so the
-    // first arm's tail self-call sat in "non-tail" position and was flagged. `gui/texture`
-    // (a 2-arity arm delegating to its own 4-arity arm) tripped the std zero-warning gate.
+    // `(defn f "doc" ((a) …) ((a b) …))` expands to `(fn "doc" ((a) …) ((a b) …))`; the
+    // docstring must not make the analyser read the arms as one single-arity BODY, which
+    // would put the first arm's tail self-call in "non-tail" position.
     assert!(recursion_warnings("(defn tx \"doc\" ((a) (tx a 1)) ((a b) (+ a b)))").is_empty());
     // …and the docstring does not hide a REAL non-tail self-call in an arm.
     assert!(
@@ -201,8 +200,7 @@ fn curated_equality_and_string_sigs() {
     // format returns a string.
     assert!(warnings("(string/length (string/format \"hi %s\" x))").is_empty());
     // index-of/index-where/string/last-index-of return int — safe to add.
-    // (`last-index-of` moved into the `string` module on 2026-08-27; the curated
-    // entry is keyed qualified, so the bare name is now correctly unbound.)
+    // (The curated `last-index-of` entry is keyed qualified; the bare name is unbound.)
     assert!(warnings("(+ 1 (index-of coll x))").is_empty());
     assert!(warnings("(+ 1 (string/last-index-of s needle))").is_empty());
     // Correct uses stay silent.
@@ -268,8 +266,7 @@ fn unbound_inside_an_error_testing_form_is_still_flagged() {
 #[test]
 fn a_reversed_index_and_collection_call_is_flagged() {
     // Data-first (ADR-308): the COLLECTION comes first, so an index-first call is the
-    // reversal. This pair flipped with the convention — the shapes below used to be the
-    // correct ones.
+    // reversal.
     for (src, fname) in [
         ("(seq/remove-nth 1 [1 2 3])", "remove-nth"),
         ("(seq/take-last 2 (list 1 2 3))", "take-last"),
@@ -306,11 +303,8 @@ fn the_correct_collection_first_order_stays_silent() {
     }
 }
 
-/// KI-70 — the walk used to `return` for any form that was not a `Pair`, so every
-/// expression nested inside a vector or map LITERAL was invisible to every lint.
-/// Hiccup-shaped code is written entirely that way, which is how `(str (max 2 …))`
-/// survived in hive's `/docs` renderer long after `max` moved to `math`, with
-/// `nest check` green and only a page render raising it.
+/// KI-70 — every expression nested inside a vector or map LITERAL must reach the lints;
+/// hiccup-shaped code is written entirely that way.
 #[test]
 fn unbound_inside_a_vector_or_map_literal_is_flagged() {
     for src in [
@@ -445,9 +439,9 @@ fn atoms_and_malformed_forms_do_not_panic() {
         "()",
         "(5 6 7)",
         "(first)",
-        // a bare `(fn)` — no params, no body — panicked the recursion analyzer's
-        // body slice (`&items[2..]` on length 1), live in bedit 2026-08-31; the
-        // letrec shape is the exact path that crashed an unguarded worker thread
+        // a bare `(fn)` — no params, no body — must not panic the recursion analyzer's
+        // body slice (`&items[2..]` on length 1); the letrec shape is the path that
+        // reaches it from a worker thread
         "(fn)",
         "(letrec (go (fn)) (go))",
         "(let (f (fn)) (f))",
@@ -495,7 +489,7 @@ fn combinator_collection_slot_rejects_the_old_argument_order() {
     }
 }
 
-// ---- one file, one name, two definitions (Pass 2.9) ----
+// ---- one file, one name, two definitions ----
 // `project.blsp` carried a public sorted `source-files` and, 1,300 lines later, a private
 // unsorted one; every caller ran the second while the first's docstring made the promise.
 // The cross-file lint is per-namespace across files; this is the same-file half.

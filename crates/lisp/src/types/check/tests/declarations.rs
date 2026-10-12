@@ -1,11 +1,11 @@
-//! The declaration itself must be readable (Pass 2.85): misspelled type names and constructors, arity contradictions, sigs for names never defined.
+//! The declaration itself must be readable: misspelled type names and constructors, arity contradictions, sigs for names never defined.
 
 use super::*;
 
-// ---- the declaration itself must be readable (Pass 2.85) ----
+// ---- the declaration itself must be readable ----
 // A `(sig …)` is read ahead of every other signature source, so a declaration the
 // parser silently drops is worse than none: the position widens to `any` and the
-// author is told nothing. All four shapes below used to exit 0 with no diagnostic.
+// author is told nothing. Each shape below must produce a diagnostic.
 
 #[test]
 fn a_misspelled_type_name_in_a_sig_is_reported() {
@@ -35,8 +35,7 @@ fn a_misspelled_type_constructor_in_a_sig_is_reported() {
 // A KNOWN constructor given the wrong arity must be told apart from an unknown one: only a
 // head that fails to parse reaches `type_expr_problem`, so a constructor missing from
 // `TYPE_HEADS` reports "unknown type constructor" for what is really an arity mistake.
-// `set` did exactly that until 2026-09-17 — `(set int)` was always fine, so nothing noticed
-// — and `seqable` gained the same shape with C11 (ADR-365).
+// `set` and `seqable` (C11, ADR-365) are the constructors with this shape.
 #[test]
 fn a_known_constructor_with_the_wrong_arity_is_named_as_an_arity_mistake() {
     for (src, wanted) in [
@@ -144,10 +143,9 @@ fn every_type_constructor_the_grammar_parses_is_known_to_the_validator() {
 }
 
 // A declaration that names exactly the REQUIRED positions of a `defn` with `&optional`
-// parameters seeds those positions. It used to be refused whole (the closure's parameter
-// count fell outside the declared arity range), so every parameter of such a function was
-// unknown — bedit's `ed-visible-lines`, ten declared over ten required and two optionals,
-// read `(+ y k)` as `number` with `y` declared `int` two lines up. The undeclared optionals
+// parameters seeds those positions, though the closure's parameter count falls outside
+// the declared arity range — refusing it whole would leave every parameter unknown. The
+// undeclared optionals
 // stay unknown; a declaration that misaligns the required positions is still refused.
 #[test]
 fn a_sig_over_the_required_positions_seeds_a_defn_with_undeclared_optionals() {
@@ -197,7 +195,7 @@ fn a_deftype_past_the_shape_budget_is_reported_at_the_declaration() {
     );
 }
 
-// A5 (2026-09-17): the declaration is authoritative (ADR-259), and outside contracts mode
+// A5: the declaration is authoritative (ADR-259), and outside contracts mode
 // nothing else stands between a wrong one and its callers — so where the body's result is
 // the unknown and the declared return could not be checked against anything, strict says
 // the declaration is TRUSTED there. Plain mode stays silent: a declaration is what the
@@ -236,7 +234,7 @@ fn a_declared_return_the_body_cannot_verify_is_reported_as_trusted_under_strict(
     assert!(allowed.is_empty(), "{allowed:?}");
 }
 
-// C10 (2026-09-17) — the merely-wider residue, re-probed under intervals.
+// C10 — the merely-wider residue, re-probed under intervals.
 //
 // The item this closes said: a body typed exactly `number` under a declared `int` is
 // "silent by design", because pinning it would need occurrence/range analysis and flagging

@@ -15,7 +15,7 @@ i=0
 while true; do
   s=$((start + i * batch))
   echo "=== batch $i: seeds ${s}..$((s + batch - 1))  $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-  if ! BROOD="$BROOD" python3 -u stress/fuzz_programs.py --seeds "$batch" --start "$s"; then
+  if ! BROOD="$BROOD" "$BROOD" stress/fuzz_programs.blsp -- --seeds "$batch" --start "$s"; then
     echo "!!!! DIVERGENCE in batch $i (seeds from ${s}) — parking soak for triage"
     exit 1
   fi

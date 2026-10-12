@@ -19,7 +19,7 @@ fn let_binding_propagates_its_rhs_type() {
 #[test]
 fn let_binding_from_nested_call_propagates() {
     // RHS is a known primitive whose return type is int — exactly `2`, since a literal
-    // knows its length (2026-09-17). So `x : 2`, and `(first x)` flags.
+    // knows its length. So `x : 2`, and `(first x)` flags.
     let w = warnings("(let (x (string/length \"hi\")) (first x))");
     assert!(
         w.iter().any(|s| s.contains("first") && s.contains("got 2")),
@@ -339,11 +339,9 @@ fn flags_too_few_arguments() {
 
 #[test]
 fn flags_too_many_arguments() {
-    // `inc` is `exact(1)`; calling with 2 is wrong. This used to use `rem`, which moved to
-    // `math` on 2026-08-27 — and `warnings()` builds a bare `Interp::new()` with no module
-    // loaded, so a `math/…` name has no bound function for the ARITY check to read (the
-    // curated sig supplies types only). A still-bare function keeps the test about what it
-    // is about.
+    // `inc` is `exact(1)`; calling with 2 is wrong. A bare prelude function on purpose:
+    // `warnings()` builds an `Interp::new()` with no module loaded, so a `math/…` name has
+    // no bound function for the ARITY check to read (the curated sig supplies types only).
     assert!(warnings("(inc 1 2)")
         .iter()
         .any(|w| w.contains("inc") && w.contains("expected 1") && w.contains("got 2")));

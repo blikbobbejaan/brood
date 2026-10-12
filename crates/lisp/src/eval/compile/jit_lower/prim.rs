@@ -6,9 +6,9 @@
 //! the whole arm to the VM.
 #![cfg(feature = "jit")]
 use super::emit::{
-    as_f64_guarded, as_f64_pair, as_int, call_handle, cmp_dispatch, emit_arith, emit_float_arith,
-    eq_dispatch, inline_vec_ref, load_slot_int, op_is_float, op_maybe_float, read_words,
-    slot_untyped, table_prim, vector_ref, Frame, Funcs,
+    as_f64_guarded, as_f64_pair, as_int, call_handle, cmp_dispatch, deopt_code, emit_arith,
+    emit_float_arith, eq_dispatch, inline_vec_ref, load_slot_int, op_is_float, op_maybe_float,
+    read_words, slot_untyped, table_prim, vector_ref, DeoptReason, Frame, Funcs,
 };
 use super::Op;
 use super::OrBail;
@@ -97,9 +97,14 @@ pub(super) fn emit_prim1(
                 b.ins().brif(status, not_ok, &[], ok, &[]);
                 b.switch_to_block(not_ok);
                 let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-                let __dr = b.ins().iconst(types::I32, 4);
-                b.ins()
-                    .brif(is_err, funcs.error, &[], deopt, &[BlockArg::Value(__dr)]);
+                let deopt_reason = deopt_code(b, DeoptReason::PairAccessorDeclined);
+                b.ins().brif(
+                    is_err,
+                    funcs.error,
+                    &[],
+                    deopt,
+                    &[BlockArg::Value(deopt_reason)],
+                );
                 b.switch_to_block(ok);
                 let o0 = b
                     .ins()
@@ -130,12 +135,9 @@ pub(super) fn emit_prim1(
                 // Non-LOCAL (PRELUDE/RUNTIME) reads take the `car`/`cdr` callback rather
                 // than deopting. Deopting here was a **70x cliff on `def`'d data**: the
                 // deopt fires per element, the arm's consecutive-deopt counter bails it,
-                // and the whole loop reverts to the interpreter — measured 2026-07-28 at
-                // 77 ns/element walking a `def`'d list against 1 ns for the identical loop
-                // over a LOCAL one, i.e. exactly the `BROOD_NO_JIT=1` time. A global
-                // holding a data structure is ordinary Brood (`sort` walks a `def`'d list;
-                // `matmul` derefs a `def`'d matrix ~16 M times), so this is not the rare
-                // path the old comment assumed.
+                // and the whole loop reverts to the interpreter. A global holding a data
+                // structure is ordinary Brood (`sort` walks a `def`'d list; `matmul` derefs
+                // a `def`'d matrix), so this is not a rare path.
                 //
                 // The shared regions cannot use the inline `base + idx*48` form at all:
                 // their slabs are `boxcar::Vec`, chunked rather than contiguous, so there
@@ -280,9 +282,14 @@ pub(super) fn emit_prim1(
                 b.ins().brif(status, not_ok, &[], ok, &[]);
                 b.switch_to_block(not_ok);
                 let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-                let __dr = b.ins().iconst(types::I32, 5);
-                b.ins()
-                    .brif(is_err, funcs.error, &[], deopt, &[BlockArg::Value(__dr)]);
+                let deopt_reason = deopt_code(b, DeoptReason::IsEmptyDeclined);
+                b.ins().brif(
+                    is_err,
+                    funcs.error,
+                    &[],
+                    deopt,
+                    &[BlockArg::Value(deopt_reason)],
+                );
                 b.switch_to_block(ok);
                 // `*out` is a `Value::Bool`: only the payload's low byte is the `bool`
                 // (the upper bytes are uninitialised padding — see `emit_jump_if_false`).
@@ -314,18 +321,18 @@ pub(super) fn emit_prim1(
                     let zero = b.ins().f64const(0.0);
                     let pos = b.ins().fcmp(FloatCC::GreaterThan, v, zero);
                     let cont = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 6);
+                    let deopt_reason = deopt_code(b, DeoptReason::SqrtFloatNotPositive);
                     b.ins()
-                        .brif(pos, cont, &[], deopt, &[BlockArg::Value(__dr)]);
+                        .brif(pos, cont, &[], deopt, &[BlockArg::Value(deopt_reason)]);
                     b.switch_to_block(cont);
                     stack.push(Op::Float(b.ins().sqrt(v)));
                 }
                 Op::Int(v) if b.func.dfg.value_type(v) == types::I64 => {
                     let pos = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, v, 0);
                     let cont = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 7);
+                    let deopt_reason = deopt_code(b, DeoptReason::SqrtIntNotPositive);
                     b.ins()
-                        .brif(pos, cont, &[], deopt, &[BlockArg::Value(__dr)]);
+                        .brif(pos, cont, &[], deopt, &[BlockArg::Value(deopt_reason)]);
                     b.switch_to_block(cont);
                     let f = b.ins().fcvt_from_sint(types::F64, v);
                     stack.push(Op::Float(b.ins().sqrt(f)));
@@ -346,24 +353,24 @@ pub(super) fn emit_prim1(
                     let zero = b.ins().f64const(0.0);
                     let posf = b.ins().fcmp(FloatCC::GreaterThan, fv, zero);
                     let fok = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 8);
+                    let deopt_reason = deopt_code(b, DeoptReason::SqrtBoxedFloatNotPositive);
                     b.ins()
-                        .brif(posf, fok, &[], deopt, &[BlockArg::Value(__dr)]);
+                        .brif(posf, fok, &[], deopt, &[BlockArg::Value(deopt_reason)]);
                     b.switch_to_block(fok);
                     let fr = b.ins().sqrt(fv);
                     b.ins().jump(done, &[BlockArg::Value(fr)]);
                     b.switch_to_block(not_f);
                     let is_i = b.ins().icmp_imm_s(IntCC::Equal, tagb, TAG_INT as i64);
                     let iblk = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 9);
+                    let deopt_reason = deopt_code(b, DeoptReason::SqrtOperandNotNumber);
                     b.ins()
-                        .brif(is_i, iblk, &[], deopt, &[BlockArg::Value(__dr)]);
+                        .brif(is_i, iblk, &[], deopt, &[BlockArg::Value(deopt_reason)]);
                     b.switch_to_block(iblk);
                     let posi = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, w1, 0);
                     let iok = b.create_block();
-                    let __dr = b.ins().iconst(types::I32, 10);
+                    let deopt_reason = deopt_code(b, DeoptReason::SqrtBoxedIntNotPositive);
                     b.ins()
-                        .brif(posi, iok, &[], deopt, &[BlockArg::Value(__dr)]);
+                        .brif(posi, iok, &[], deopt, &[BlockArg::Value(deopt_reason)]);
                     b.switch_to_block(iok);
                     let fi = b.ins().fcvt_from_sint(types::F64, w1);
                     let ir = b.ins().sqrt(fi);
@@ -418,8 +425,9 @@ pub(super) fn emit_prim1(
             let len = b.inst_results(c)[0];
             let ok = b.ins().icmp_imm_s(IntCC::SignedGreaterThanOrEqual, len, 0);
             let cont = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 40);
-            b.ins().brif(ok, cont, &[], deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::VectorLengthNotVector);
+            b.ins()
+                .brif(ok, cont, &[], deopt, &[BlockArg::Value(deopt_reason)]);
             b.switch_to_block(cont);
             stack.push(Op::Int(len));
         }
@@ -637,7 +645,7 @@ pub(super) fn emit_prim3_callback(
     frame: Frame,
     funcs: Funcs,
     fref: cranelift_codegen::ir::FuncRef,
-    deopt_code: i64,
+    reason: DeoptReason,
 ) -> Option<()> {
     let bv = stack.pop().or_bail("operand-stack-underflow")?;
     let av = stack.pop().or_bail("operand-stack-underflow")?;
@@ -658,13 +666,13 @@ pub(super) fn emit_prim3_callback(
     b.ins().brif(status, slow, &[], cont, &[]);
     b.switch_to_block(slow);
     let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-    let __dr = b.ins().iconst(types::I32, deopt_code);
+    let deopt_reason = deopt_code(b, reason);
     b.ins().brif(
         is_err,
         funcs.error,
         &[],
         frame.deopt,
-        &[BlockArg::Value(__dr)],
+        &[BlockArg::Value(deopt_reason)],
     );
     b.switch_to_block(cont);
     let w0 = b
@@ -833,9 +841,9 @@ pub(super) fn emit_prim3_table_put(
         b.ins().brif(status, slow, &[], merge, &[]);
         b.switch_to_block(slow);
         let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-        let __dr = b.ins().iconst(types::I32, 11);
+        let deopt_reason = deopt_code(b, DeoptReason::HoistedTablePutDeclined);
         b.ins()
-            .brif(is_err, error, &[], deopt, &[BlockArg::Value(__dr)]);
+            .brif(is_err, error, &[], deopt, &[BlockArg::Value(deopt_reason)]);
         b.switch_to_block(merge);
         stack.push(Op::Handle(w0, w1, w2));
     } else {
@@ -855,9 +863,9 @@ pub(super) fn emit_prim3_table_put(
         b.ins().brif(status, slow, &[], cont, &[]);
         b.switch_to_block(slow);
         let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
-        let __dr = b.ins().iconst(types::I32, 12);
+        let deopt_reason = deopt_code(b, DeoptReason::TablePutDeclined);
         b.ins()
-            .brif(is_err, error, &[], deopt, &[BlockArg::Value(__dr)]);
+            .brif(is_err, error, &[], deopt, &[BlockArg::Value(deopt_reason)]);
         b.switch_to_block(cont);
         let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
         let w1 = b
@@ -1032,9 +1040,9 @@ pub(super) fn emit_prim2(
             let idx = as_int(b, bb_op, frame);
             let oob = b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, idx, len);
             let cont = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 13);
+            let deopt_reason = deopt_code(b, DeoptReason::HoistedVectorIndexOutOfRange);
             b.ins()
-                .brif(oob, deopt, &[BlockArg::Value(__dr)], cont, &[]);
+                .brif(oob, deopt, &[BlockArg::Value(deopt_reason)], cont, &[]);
             b.switch_to_block(cont);
             let off = b.ins().imul_imm_s(idx, STRIDE);
             let elem = b.ins().iadd(ptr, off);
@@ -1173,9 +1181,9 @@ pub(super) fn emit_prim2_slot_slot(
             let idx = load_slot_int(b, slot_b as i64, frame);
             let oob = b.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, idx, vlen);
             let cont = b.create_block();
-            let __dr = b.ins().iconst(types::I32, 14);
+            let deopt_reason = deopt_code(b, DeoptReason::HoistedSlotVectorIndexOutOfRange);
             b.ins()
-                .brif(oob, deopt, &[BlockArg::Value(__dr)], cont, &[]);
+                .brif(oob, deopt, &[BlockArg::Value(deopt_reason)], cont, &[]);
             b.switch_to_block(cont);
             let off = b.ins().imul_imm_s(idx, STRIDE);
             let elem = b.ins().iadd(ptr, off);

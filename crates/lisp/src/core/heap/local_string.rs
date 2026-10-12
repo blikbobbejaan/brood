@@ -5,9 +5,8 @@
 //! test free), its lazily-built side tables ([`StrAux`], the sparse char→byte [`CharIndex`]
 //! that keeps a rising-index scan linear on non-ASCII text), and `Heap`'s six string readers
 //! (`str_metrics`, the two index conversions, `str_scan_table`, `with_string_slot`, `string`).
-//! The tests that pin the index geometry and the entry size travel with it. Split out of
-//! `heap.rs` on 2026-09-08 (handoff item 1, move d); a `use super::*` child, so it reaches
-//! `Heap`'s private fields and the `local_gc_check!` macro exactly as before.
+//! The tests that pin the index geometry and the entry size travel with it. A `use super::*`
+//! child, so it reaches `Heap`'s private fields and the `local_gc_check!` macro.
 
 use super::*;
 
@@ -152,16 +151,19 @@ impl LocalString {
         }
     }
 
-    pub(super) fn shared(b: Arc<SharedBlob>) -> Self {
-        // Build first, then measure through `as_str` so the UTF-8 handling (and its
-        // debug-only validation) lives in exactly one place.
-        let mut me = LocalString {
-            data: StrData::Shared(b),
-            chars: 0,
+    /// A string slot over a shared TEXT blob ([`SharedBlob::from_text`]). Panics on a
+    /// raw-bytes blob: a string slot must never present arbitrary bytes as a `&str`.
+    pub(super) fn shared(blob: Arc<SharedBlob>) -> Self {
+        let chars = blob
+            .as_str()
+            .expect("a string slot was handed a raw-bytes blob")
+            .chars()
+            .count();
+        LocalString {
+            data: StrData::Shared(blob),
+            chars,
             aux: OnceLock::new(),
-        };
-        me.chars = me.as_str().chars().count();
-        me
+        }
     }
 
     /// The cached number of Unicode scalars — O(1).
@@ -257,20 +259,8 @@ impl LocalString {
     pub(super) fn as_str(&self) -> &str {
         match &self.data {
             StrData::Inline(s) => s.as_str(),
-            // SAFETY: `SharedBlob::new` is the only constructor and takes
-            // `&[u8]` from a `&str`'s `as_bytes()` (see [`Heap::alloc_string`]).
-            // Blobs are immutable after construction. The wire decoder
-            // (`get_str` in `dist::wire`) validates UTF-8 on entry before
-            // allocating, so a cross-node payload satisfies the invariant
-            // too. In debug builds an extra `from_utf8` round-trip catches
-            // a missed entry-point — the unchecked read only ships in
-            // release.
-            #[cfg(not(debug_assertions))]
-            StrData::Shared(b) => unsafe { std::str::from_utf8_unchecked(b.as_bytes()) },
-            #[cfg(debug_assertions)]
-            StrData::Shared(b) => {
-                std::str::from_utf8(b.as_bytes()).expect("shared blob bytes are valid UTF-8")
-            }
+            // `LocalString::shared` admits only a text blob, so this never falls through.
+            StrData::Shared(blob) => blob.as_str().unwrap_or_default(),
         }
     }
 }
@@ -373,6 +363,36 @@ impl Heap {
             }),
             _ => unreachable!("invalid handle region"),
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_text_tests {
+    use super::*;
+
+    /// A string's shared storage is read back as `&str`, so a raw-bytes blob (arbitrary
+    /// data, here not UTF-8) must never become a string slot — the receive path's
+    /// entry point refuses it rather than store bytes it would later present as text.
+    #[test]
+    #[should_panic(expected = "raw-bytes blob")]
+    fn a_raw_bytes_blob_never_becomes_a_string() {
+        let mut heap = Heap::new();
+        heap.alloc_string_from_shared(SharedBlob::new(&[0xff, 0xfe, b'x']));
+    }
+
+    /// The text constructor is what a long string uses, and it round-trips.
+    #[test]
+    fn a_long_string_is_stored_as_shared_text() {
+        let mut heap = Heap::new();
+        let text = "é".repeat(SHARED_BLOB_THRESHOLD);
+        let value = heap.alloc_string(&text);
+        let ValueRef::Str(id) = value.unpack() else {
+            panic!("alloc_string did not return a string");
+        };
+        assert!(heap
+            .local_shared_blob(id)
+            .is_some_and(|blob| blob.is_text()));
+        assert_eq!(&*heap.string(id), text.as_str());
     }
 }
 
@@ -488,7 +508,7 @@ mod char_index_tests {
     fn a_shared_blob_slot_is_indexed_too() {
         let s = "aé漢🙂x".repeat(CHAR_INDEX_MIN_CHARS);
         assert!(s.len() > SHARED_BLOB_THRESHOLD);
-        let e = LocalString::shared(SharedBlob::new(s.as_bytes()));
+        let e = LocalString::shared(SharedBlob::from_text(&s));
         assert!(e.char_index().is_some());
         for ci in [0, 1, 31, 32, 33, 500, e.char_len() - 1, e.char_len()] {
             assert_eq!(e.char_to_byte(ci), walk_char_to_byte(&s, ci), "char {}", ci);

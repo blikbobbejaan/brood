@@ -433,6 +433,15 @@
       (file/spit path "(defn f (x)\n        (+ x 1))\n")
       (assert= (format/file path) :rewrote)
       (is (format/format-parses? (file/slurp path)))))
+  (test "collecting a tree with a symlink cycle terminates and skips what it must"
+    (let (dir (temp-dir "brood-fmt-safe-"))
+      (os/cmd "sh"
+        ["-c"
+          (str "mkdir -p "
+            dir "/a/target " dir "/a/.git && ln -s .. " dir "/a/up && touch " dir "/a/f.blsp " dir
+            "/a/target/t.blsp " dir "/a/.git/g.blsp " dir "/a/project.lock.blsp " dir "/a/notes.txt")])
+      (assert= (format/format-collect-blsp dir) (list (path/join dir "a/f.blsp")))
+      (file/rmdir dir)))
   (test "an already-formatted file is left unchanged"
     (let (dir (temp-dir "brood-fmt-safe-")
           path (path/join dir "clean.blsp"))

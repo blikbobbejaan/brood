@@ -1,5 +1,5 @@
 //! A file's verdict is a function of the file, not of what the process checked before it
-//! (B8, 2026-09-17). The registries are process state — a module's `defmethod`s stay
+//! (B8). The registries are process state — a module's `defmethod`s stay
 //! registered after its load — so a check that reads them whole answers differently after
 //! another file required that module. The checker reads a registration only when its
 //! namespace is in the file's require closure.

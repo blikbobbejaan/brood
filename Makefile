@@ -96,8 +96,20 @@ define install_binaries
 	install -m755 $(1)/brood-lsp $(PREFIX)/bin/brood-lsp
 endef
 
+# The address-space cap every test-running step sits behind (CLAUDE.md "Build uncapped, run
+# capped"): one runaway dies in seconds with its panic site named instead of eating the box.
+# 16 GB, not less — the runtime reserves ~3 GB before doing any work. Put it in front of the
+# RUN step only, never a build: the linker inherits it and dies with `LLVM ERROR: out of memory`.
+RUN_CAP := ulimit -v 16000000;
+
+# The profiling builds get their OWN profiles, so neither overwrites $(RELEASE_DIR)/brood —
+# the binary `make ab` and every timing compares against. Both inherit `release-fast`, so the
+# flags match `release-brood` except for what each build exists to add.
+PERF_DIR    := target/$(TARGET_SUBDIR)release-perf
+SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
+
 .DEFAULT_GOAL := help
-.PHONY: help build release perf-brood test test-light test-both breakagetests check-examples check-stress smoke-bedit ensure-nextest bench benchmark quickbench suite repl configure install uninstall fmt clippy check clean
+.PHONY: help build release perf-brood perf-symbols test test-light test-both breakagetests check-examples check-stress smoke-bedit ensure-nextest bench benchmark quickbench suite repl configure install uninstall fmt clippy check clean
 
 help: ## Show this help
 	@echo "Brood — available make targets:"
@@ -119,10 +131,10 @@ test: ## Run Rust tests + the in-language suite via cargo-nextest (each test cas
 	# The .blsp grammar tests also self-skip when absent, so a bare `cargo nextest`
 	# (no grammars) stays green too.
 	# The `SETUP warm-boot-cache` line comes from a nextest setup script that boots
-	# `brood`/`nest` once (~2.4s) before the fan-out, so the spawned children don't
-	# each pay the cold prelude expansion — KI-38. `BROOD_NO_WARM_BOOT_CACHE=1`
-	# turns it off; see .config/nextest.toml.
-	cargo nextest run --no-fail-fast --features brood/treesit-grammars
+	# `brood`/`nest` once before the fan-out (KI-38); `BROOD_NO_WARM_BOOT_CACHE=1` turns it
+	# off — see .config/nextest.toml. Built uncapped, then run under $(RUN_CAP).
+	cargo nextest run --no-run --features brood/treesit-grammars
+	$(RUN_CAP) cargo nextest run --no-fail-fast --features brood/treesit-grammars
 	cargo test --doc   # nextest doesn't run doctests; none today, kept so future ones still run
 
 # Concurrency cap for `test-light` — override on the command line, e.g. `make test-light LIGHT_JOBS=4`.
@@ -149,30 +161,27 @@ test-light: ## Like `make test` but capped + de-prioritized so it won't saturate
 	# if you know you're not touching those, but it can't be a default here.
 	@command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest' (or install from https://nexte.st)"; exit 1; }
 	nice -n 19 env CARGO_BUILD_JOBS=$(LIGHT_JOBS) \
+		cargo nextest run --no-run --features brood/treesit-grammars
+	$(RUN_CAP) nice -n 19 \
 		cargo nextest run --no-fail-fast --features brood/treesit-grammars -j $(LIGHT_JOBS)
 	nice -n 19 cargo test --doc
 
 test-both: ## Run the whole suite through BOTH engines (tree-walker + VM) — the differential gate (ADR-076)
-	# The VM is the default engine; this also exercises the tree-walker escape hatch
-	# (BROOD_VM=0) so a regression in either is caught. `differential.rs` additionally
-	# checks per-expression engine agreement within one run.
+	# The VM (+ JIT) is the default; this also runs the tree-walker (BROOD_TIER=0) so a
+	# regression in either is caught. `differential.rs` additionally checks per-expression
+	# engine agreement within one run.
 	@command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest'"; exit 1; }
-	# BOTH halves run, whatever the first one does, and the target fails at the end if
-	# either did. They used to be two recipe lines, which meant make ABORTED after the VM
-	# half — so on any machine where the VM half has a failure the tree-walker half never
-	# ran at all, and the differential gate silently checked one engine. That is exactly
-	# what happens here every capped run: `wasm_sandbox_limits_test` fails under the 16 GB
-	# ulimit CLAUDE.md prescribes, so the escape hatch had not been exercised in a long
-	# time. A gate that stops before the thing it exists to check is the KI-68/KI-69 class.
+	# BOTH halves run whatever the first one does, and the target fails at the end if
+	# either did — a gate that stops before the thing it exists to check is no gate.
+	cargo nextest run --no-run
 	@vm=0; tw=0; \
-	 echo ">>> suite under the VM (default engine)"; \
-	 BROOD_VM=1 cargo nextest run --no-fail-fast || vm=$$?; \
-	 echo ">>> suite under the tree-walker (BROOD_VM=0 escape hatch)"; \
-	 BROOD_VM=0 cargo nextest run --no-fail-fast || tw=$$?; \
+	 echo ">>> suite under the default ceiling (VM + JIT)"; \
+	 ( $(RUN_CAP) cargo nextest run --no-fail-fast ) || vm=$$?; \
+	 echo ">>> suite under the tree-walker (BROOD_TIER=0)"; \
+	 ( $(RUN_CAP) BROOD_TIER=0 cargo nextest run --no-fail-fast ) || tw=$$?; \
 	 if [ $$vm -ne 0 ] || [ $$tw -ne 0 ]; then \
 	   echo ">>> test-both FAILED — VM exit $$vm, tree-walker exit $$tw"; \
-	   echo ">>> (a red on ONE engine is a differential finding; a red on BOTH is usually"; \
-	   echo ">>>  the shared cause — judge the wasm files uncapped before believing either)"; \
+	   echo ">>> (a red on ONE engine is a differential finding; a red on BOTH is usually the shared cause)"; \
 	   exit 1; \
 	 fi; \
 	 echo ">>> test-both: both engines green"
@@ -192,71 +201,40 @@ BREAKAGE_SKIP :=
 BREAKAGE_ENV_map_volcano := BROOD_MEM_SOFT_LIMIT=4000000000 BROOD_MEM_LIMIT=6000000000
 
 check-imaged: ## Run the checker gate WITH the prelude image on (KI-106) — the feature's own tests all passed while `nest check` went red
-	# Every test written FOR the prelude image passed on 2026-09-04 — the boot differential,
-	# the stale-directory guard, all 1377 suite cases — and `nest check` over std/+tests/+
-	# examples/ went red on the first run with the image on (a multi-file check lost every
-	# derived multimethod mirror). The feature's tests are shaped by what its authors thought
-	# could break; the project's gates are not. So run the project's gate UNDER the flag.
-	# The script warms nest's own per-binary image first and ASSERTS the boot took the image
-	# path — a gate that quietly ran the source path and printed "clean" proves nothing.
-	@./scripts/check-imaged.sh
+	# A feature's own tests are shaped by what its authors thought could break; the project's
+	# gate is not — so run that gate UNDER the image (KI-106). The script asserts the boot
+	# took the image path: a gate that quietly ran the source path proves nothing.
+	@$(RUN_CAP) ./scripts/check-imaged.sh
 
 check-examples: ## Run every `examples/` program and fail on an unbound symbol — the gate `examples/` never had
-	# `examples/` sits outside `make test`, `nest check` AND the breakage suite, so nothing
-	# ever ran it — and it rotted three ways unnoticed: `examples/editor` has called a module
-	# that left the repo on 2026-05-31 (KI-45), ADR-227's stdlib move needed a `:use` in
-	# `life.blsp`, and ADR-229's `require` removal stopped `webserver`/`hot-reload`/`editor`
-	# loading at all. Same pattern as KI-42/43/44; this is the counter for examples/.
-	#
-	# It asserts NO `unbound symbol` diagnostic rather than exit 0, because several examples
-	# legitimately cannot finish here (servers run until killed, `node_client` wants a peer,
-	# `font-zoom` wants --features gui) — but an unbound name is never environment noise.
-	@./scripts/check-examples.sh
+	# `examples/` sits outside every other gate (KI-45). Asserts NO `unbound symbol` rather
+	# than exit 0: servers run until killed and some examples want a peer or a display, but
+	# an unbound name is never environment noise.
+	@$(RUN_CAP) ./scripts/check-examples.sh
 
 check-corpora: ## STATICALLY check examples/ stress/ fuzz-stress/ breakage/ for names that don't resolve — the paths a RUN never takes
-	# The three runtime gates beside this one (check-examples, check-stress, breakagetests) all
-	# work by RUNNING the programs, so they only ever catch a dead name on an EXECUTED path.
-	# With all three green on 2026-08-27, a static pass over the same files found 74 unresolvable
-	# names sitting on branches no run had taken. Bar is zero `unbound symbol`, not zero warnings
-	# — these corpora are adversarial on purpose; a genuinely dynamic global says so with
-	# `(check-allow :unbound …)`.
-	@./scripts/check-corpora.sh
+	# The runtime gates only catch a dead name on an EXECUTED path; this static pass covers the
+	# branches no run takes. Bar is zero `unbound symbol`, not zero warnings — these corpora are
+	# adversarial on purpose; a genuinely dynamic global says so with `(check-allow :unbound …)`.
+	@$(RUN_CAP) ./scripts/check-corpora.sh
 
 check-stress: ## Run every `stress/` + `scripts/fuzz/stress/` harness and fail on an unbound symbol — the gate the stress dirs never had
-	# Same rot, same counter, one directory over. `stress/` and `scripts/fuzz/stress/` sit
-	# outside `make test`, `nest check`, the breakage suite AND `check-examples`, so nothing
-	# ever loaded them — and on 2026-08-20 EIGHT files could not load, rotted by two separate
-	# rename waves (ADR-230's `string/*` and ADR-236's prefix rollout), some double-prefixed.
-	# Grepping for the newer wave's names found three of them; RUNNING them found eight.
-	#
-	# Like `check-examples`, it asserts NO `unbound symbol` rather than exit 0 — these are
-	# soaks and storms that legitimately never finish under a gate — except for
-	# `stress/*_test.blsp`, which are real tests, cheap (78 cases), and held to passing.
-	@./scripts/check-stress.sh
+	# Same counter as `check-examples`, one directory over: asserts NO `unbound symbol` (soaks
+	# and storms never finish under a gate), except `stress/*_test.blsp`, held to passing.
+	@$(RUN_CAP) ./scripts/check-stress.sh
 
 GC_STRESS_TESTS := concurrency receive_filter receive_under_lock mailbox_order proc \
                    ref_alias supervisor gen agent pid_identity offload process_limit
 
 gcstress: ## Run the concurrency/mailbox tests with GC_STRESS+GC_VERIFY armed — the use-after-GC hunt
-	# `make test` collects on a threshold, so a handle held across a collection is only
-	# caught when a collection happens to land inside the window — which is why KI-57 (a
-	# stale `tags` handle in the selective-receive scan) survived every green run and the
-	# CI breakage job, whose tripwire is armed but whose collections are threshold-driven.
-	# BROOD_GC_STRESS collects at EVERY eval safepoint, which turns that window into a
-	# certainty; BROOD_GC_VERIFY adds the whole-graph walk that catches a stale handle
-	# *stored* rather than dereferenced.
-	#
-	# Only the process/mailbox-heavy files, because stress is slow and this is where the
-	# class lives: values crossing heaps, held across an `apply` that can collect.
-	# The DEBUG build, deliberately — and this was verified, not assumed. `--release` with
-	# `-C debug-assertions=on` (what `make breakagetests` uses) reports KI-57 CLEAN on the
-	# faithful pre-fix code, while the debug build catches it on every run. Optimised
-	# builds shift where allocations and safepoints land, so the collection stops falling
-	# inside the window the stale handle spans. A gate that cannot fail on the bug it was
-	# written for is not a gate.
-	@echo ">>> building brood (debug — see the note above; release cannot see KI-57) ..."
+	# A threshold-driven collection only catches a handle held across a collection when one
+	# happens to land in the window (KI-57); BROOD_GC_STRESS collects at EVERY safepoint and
+	# BROOD_GC_VERIFY catches a stale handle *stored* rather than dereferenced. Only the
+	# process/mailbox-heavy files, where values cross heaps. The DEBUG build deliberately:
+	# a release build with debug-assertions reported KI-57 clean on the pre-fix code.
+	@echo ">>> building brood (debug — release cannot see KI-57) ..."
 	cargo build -p cli
-	@bin=target/debug/brood; fail=0; \
+	@$(RUN_CAP) bin=target/debug/brood; fail=0; \
 	for t in $(GC_STRESS_TESTS); do \
 		printf ">>> %-24s " "$$t"; \
 		if BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1 $$bin --test tests/$$t\_test.blsp >/tmp/gcstress.$$t.log 2>&1; then \
@@ -288,7 +266,7 @@ breakagetests: ## Run the aggressive `breakage/` stress suite (JIT on, GC tripwi
 	# summary still prints. Exits non-zero if any file failed or crashed.
 	@echo ">>> building brood (release, +jit, debug-assertions armed) ..."
 	RUSTFLAGS="$(RUSTFLAGS) -C debug-assertions=on" cargo build --release -p cli
-	@bin=target/release/brood; fail=0; \
+	@$(RUN_CAP) bin=target/release/brood; fail=0; \
 	echo ">>> running breakage suite with $$bin"; \
 	for f in breakage/*.blsp; do \
 		case " $(BREAKAGE_SKIP) " in *" $$f "*) \
@@ -336,10 +314,7 @@ ab: ## A/B the working tree against a git ref on the cross-language rows: make a
 	./scripts/ab-bench.sh $(if $(BASE),-b $(BASE),) $(if $(N),-n $(N),) $(ROWS) $(ARGS)
 
 green: ## Answer one question honestly: is this tree green? (completed CI runs + the gates `make check` skips)
-	# The two ways that question got answered WRONGLY for two days (KI-68/KI-69): every CI run
-	# after a failure is CANCELLED by the next push, so the run list showed no red while the last
-	# three completed runs had all failed; and `make check` is clippy+test, which skips the four
-	# .blsp gates CI also runs (v0.14.0 was tagged with `nest format --check` red for that reason).
+	# A cancelled CI run is not evidence, and `make check` is not what CI runs (KI-68/KI-69).
 	# `--local` skips the CI half, `--remote` skips the local half.
 	@./scripts/green.sh $(ARGS)
 
@@ -354,26 +329,17 @@ tier-audit: release-brood ## Every benchmark row under BROOD_JIT_BAIL_TRACE — 
 	@./scripts/tier-audit.sh
 
 wasm-test: ## Run the wasm32 cooperative scheduler BEHAVIOURALLY (build + wasm-bindgen + node)
-	# CI's wasm job is build-only ("there is no wasm test runner here"), so an entire
-	# alternate scheduler — the cooperative pump, the non-blocking park, the frozen logical
-	# clock and fire_next_timer — was compiled every run and executed none. The native
-	# suite cannot cover it by construction: off wasm there are OS workers and `sched_now()`
-	# IS `Instant::now()`, so every gate agrees whether or not the wasm path works. This
-	# runs the real artifact (the profile the site serves) under node.
+	# The native suite cannot cover the cooperative scheduler by construction (off wasm there
+	# are OS workers and a real clock), so this runs the real artifact under node.
 	# Needs: rustup target add wasm32-unknown-unknown; cargo install wasm-bindgen-cli
 	# --version 0.2.128; node.
 	@./scripts/wasm-suite.sh
 
 smoke-bedit: ## Run bedit's gates (nest check, --check-boot, nest test) against THIS tree's nest — the downstream smoke CI's `downstream-bedit` job runs
-	# bedit is where a brood regression surfaces first (the ADR-302 rename wave, 2026-08-30,
-	# broke an installed brood with std/ + tests/ green). Uses ../bedit (or BEDIT_DIR) and the
+	# bedit is where a brood regression surfaces first. Uses ../bedit (or BEDIT_DIR) and the
 	# NEWEST nest under target/ (or NEST=...); a missing checkout is a note, not a failure.
-	# TRAP: "newest" is not "most capable". The tree-sitter grammars are opt-in
-	# (`--features brood/treesit-grammars`), and anything that builds the workspace in
-	# debug — `cargo nextest run --workspace`, notably — leaves a grammar-less
-	# target/debug/nest newer than your featured release build. bedit's ruby/elixir mode
-	# tests then fail (3 of them) and read as a regression. Pass NEST=... explicitly after
-	# a workspace test run, and note the script prints which binary it chose.
+	# "Newest" is not "most capable": a grammar-less debug nest fails bedit's ruby/elixir
+	# mode tests, which reads as a regression — pass a treesit-grammars NEST=... explicitly.
 	@./scripts/smoke-bedit.sh $(ARGS)
 
 doctor: ## Report the things that make a measurement or a gate lie (build drift, strays, boot cache, litter)
@@ -384,11 +350,8 @@ doctor: ## Report the things that make a measurement or a gate lie (build drift,
 	@./scripts/doctor.sh $(ARGS)
 
 ab-pin: ## A/B against a PINNED baseline binary that survives ab-clean: make ab-pin BASE=<ref> ROWS="pipeline nqueens" N=15
-	# `make ab` rebuilds its baseline in a throwaway worktree that `make ab-clean` removes, so
-	# two runs on different days measure against two different binaries — and a few-percent row
-	# cannot then be told from drift. ADR-228 hit exactly that: two best-of-15 runs of the same
-	# comparison read -9.1% and -5.6%, so the ADR records a range instead of a number.
-	#
+	# `make ab` rebuilds its baseline in a throwaway worktree, so runs on different days
+	# measure against different binaries and a few-percent row cannot be told from drift.
 	# This keeps the baseline in target/ab-pinned/<sha>/brood (gitignored, NOT under target/ab/)
 	# and runs base-vs-base as the floor, which is the method CLAUDE.md prescribes.
 	N=$(or $(N),15) ./scripts/ab-pin.sh $(or $(BASE),HEAD) $(or $(ROWS),pipeline nqueens)
@@ -410,10 +373,11 @@ check-cost: ## Instruction cost of `brood --check` per program, this tree vs BAS
 	@./scripts/check-cost.sh --base $(or $(BASE),HEAD) $(if $(SCAN_ALIVE),--scan-alive,)
 
 suite: ## Run the in-language suite via the project runner (discovers tests/**/*_test.blsp)
-	$(NEST) test
+	cargo build -q -p nest
+	$(RUN_CAP) target/debug/nest test
 
 stress: build ## The occasional BIG stress run (property/differential/race tests, 3 engines) — not part of CI
-	./stress/run.sh
+	$(RUN_CAP) ./stress/run.sh
 
 # ASAN_OPTIONS=symbolize=0 because the system llvm-symbolizer stalls ~90 s at
 # EVERY exit against the 65 MB sancov binary (found 2026-07-23 — it made the
@@ -431,14 +395,9 @@ loom: ## Loom model-check of the dense-table migration protocol (exhaustive inte
 asan: ## AddressSanitizer over the kernel-exercising Rust tests (needs nightly + rust-src; system-alloc so ASAN can intercept allocations instead of mimalloc's un-instrumented arena). Catches genuine OOB / use-after-free in the unsafe substrate (mmap table, JIT codegen buffers) that TSAN and the logical GC tripwires miss. `--tests` skips doctests, which don't LINK under ASAN + -Zbuild-std (a toolchain quirk, not a finding).
 	# `--cfg brood_asan` sizes `WORKER_STACK_BYTES` to 64 MiB for this build, because ASAN's
 	# redzones roughly double every Rust frame: the instrumented prelude boot measured
-	# 16 768 736 bytes against the ordinary 16 MiB stack, i.e. 8 KB of headroom.
-	#
-	# This used to be `BROOD_STACK_BUDGET=64 MiB` instead, which is LARGER than the stack and
-	# so disables the stale-base backstop — `the_stack_guard_thresholds_are_ordered_and_non_
-	# degenerate` asserts it cannot be, and that test landed 2026-08-29 while the workaround
-	# dated from 2026-08-17. This gate could not pass from that day until 2026-09-02, and
-	# nothing noticed because ASAN is manual, not CI. No budget satisfies both constraints;
-	# the wrong constant was the stack.
+	# 16 768 736 bytes against the ordinary 16 MiB stack. Raise the stack, never
+	# BROOD_STACK_BUDGET: a budget larger than the stack disables the stale-base backstop.
+	# No $(RUN_CAP) here or on tsan: the sanitizers reserve terabytes of shadow address space.
 	RUSTFLAGS="-Zsanitizer=address --cfg brood_asan" cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p brood --release --features brood/system-alloc --tests
 
 repl: ## Start the REPL
@@ -458,51 +417,33 @@ release-brood: ## Build ONLY the `brood` binary into $(RELEASE_DIR) — the perf
 	# relink $(RELEASE_DIR)/brood and silently benchmarks a stale binary.
 	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-fast -p cli $(RUN_FEATURES) $(CARGO_TARGET)
 
-perf-symbols: ## Build an UNSTRIPPED `brood` for `perf` (release-fast keeps strip=true, which hides every symbol)
-	# `perf` on a `release-fast` binary reports bare addresses, because that profile sets
-	# `strip = true` — a profile you cannot act on, and it looks like perf's fault rather
-	# than the build's. Same flags as `release-brood` otherwise: profiling a binary built
-	# differently from the one `make ab` measures answers a question nobody asked.
-	#
-	# Needs `perf` permitted too — Ubuntu's `perf_event_paranoid=4` refuses all
-	# unprivileged use. `scripts/enable-perf.sh --check` says whether it is, and
-	# `make enable-perf-check` is the same thing.
-	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-fast --bin brood \
+perf-symbols: ## Build an UNSTRIPPED `brood` for `perf` into $(SYMBOLS_DIR) (release-fast strips every symbol)
+	# `perf` on a `release-fast` binary reports bare addresses (that profile strips). Same
+	# flags as `release-brood` otherwise, in its own profile so the timing binary is untouched.
+	# Needs `perf` permitted — `make enable-perf-check` says whether it is.
+	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-symbols --bin brood \
 		$(RUN_FEATURES) $(CARGO_TARGET) \
-		--config 'profile.release-fast.strip=false' \
-		--config 'profile.release-fast.debug=1'
+		--config 'profile.release-symbols.inherits="release-fast"' \
+		--config 'profile.release-symbols.strip=false' \
+		--config 'profile.release-symbols.debug=1'
 	@echo
-	@echo "  unstripped brood in $(RELEASE_DIR) — and it OVERWRITES the timing binary, so:"
-	@echo "  re-run \`make release-brood\` before timing anything (same trap as perf-brood)."
-	@echo "  perf record --call-graph dwarf -- $(RELEASE_DIR)/brood bench.blsp"
+	@echo "  perf record --call-graph dwarf -- $(SYMBOLS_DIR)/brood bench.blsp"
 	@echo "  perf report --no-children      # self time, which the frontier tables quote"
 
 enable-perf-check: ## Report whether `perf` can profile here (no root, no changes)
 	@./scripts/enable-perf.sh --check
 
-perf-brood: ## Build a counter-armed `brood` into $(RELEASE_DIR) — the attribution build ((perf/report), BROOD_PERF_STATS, BROOD_DEOPT_TRACE)
+perf-brood: ## Build a counter-armed `brood` into $(PERF_DIR) — the attribution build ((perf/report), BROOD_PERF_STATS, BROOD_DEOPT_TRACE)
 	# The VM work-attribution counters are a cargo feature (`diagnostics/perf.rs`), so a normal
-	# binary — including an installed one — cannot answer "where does the time go".
-	# This is that binary, and the reason it is a target rather than a documented
-	# command line: the flags have to match `release-brood`'s exactly except for the
-	# added feature, or you are comparing two different builds.
-	#
-	# Then: `BROOD_PERF_STATS=1 $(RELEASE_DIR)/brood prog.blsp` dumps the counters at
-	# exit, or `(perf/report)` / `(perf/summary)` reads them in-image with the
-	# docs/benchmarking.md §2 interpretation applied. `BROOD_DEOPT_TRACE=1` also needs
-	# this build.
-	#
-	# NOT for timing. The counters are atomics on the hot path, so this binary is the
-	# wrong one to measure *times* with — that is `make ab` / `scripts/bench-ratio.sh`
-	# on a counter-free build. Keeping the two apart is what docs/benchmarking.md is
-	# about; it was written after conflating them cost an afternoon.
-	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-fast -p cli \
+	# binary cannot answer "where does the time go". Flags match `release-brood` except for the
+	# added feature, in its own profile so the timing binary is never the counter-armed one.
+	# NOT for timing: the counters are atomics on the hot path (docs/benchmarking.md).
+	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-perf -p cli \
+		--config 'profile.release-perf.inherits="release-fast"' \
 		$(INSTALL_FEATURES) --features brood/perf-stats $(CARGO_TARGET)
-	@echo "counter-armed brood: $(RELEASE_DIR)/brood"
-	@echo "  NOTE this OVERWRITES the same path \`make release-brood\`/\`make ab\` use —"
-	@echo "  re-run \`make release-brood\` before timing anything, or you will time the counters."
-	@echo "  BROOD_PERF_STATS=1 $(RELEASE_DIR)/brood prog.blsp   # dump counters at exit"
-	@echo "  (require 'perf) (perf/summary)                       # in-image triage"
+	@echo "counter-armed brood: $(PERF_DIR)/brood"
+	@echo "  BROOD_PERF_STATS=1 $(PERF_DIR)/brood prog.blsp   # dump counters at exit"
+	@echo "  (perf/summary)                                   # in-image triage"
 
 release: release-brood ## Build optimized `brood`, `nest` and `brood-lsp` into $(RELEASE_DIR) (gitignored; does NOT install — ./configure --with-gui first for the window)
 	# Build the configured (./configure) binaries into the local, gitignored
@@ -538,23 +479,6 @@ uninstall: ## Remove the installed binaries from $(PREFIX)/bin (leaves the local
 	# in $(RELEASE_DIR) is left alone (use `make clean` to remove that).
 	rm -f $(PREFIX)/bin/brood $(PREFIX)/bin/nest $(PREFIX)/bin/brood-lsp
 
-gui-debug: ## Build + install JIT+GUI brood/nest with GC debug-assertions ARMED, for debugging the JIT+GC bug (bug #2). Then `nest run` in your project.
-	# The diagnostic build for chasing the JIT+GC use-after-GC (bug #2): JIT ON (so
-	# it still reproduces), GUI ON (so the app renders), and `-C debug-assertions=on`
-	# so the per-deref GC tripwire + the `[jit-staged-stale]` staging check fire AT
-	# the corruption site instead of surfacing as a distant OOB / `*: got nil`.
-	# Installs over $(PREFIX)/bin so a plain `nest run` picks it up. Restore the fast
-	# build afterwards with `make install` (or `make release && make install`).
-	RUSTFLAGS="$(RUSTFLAGS) -C debug-assertions=on" cargo build --release -p cli  --features "brood/jit brood/gui"
-	RUSTFLAGS="$(RUSTFLAGS) -C debug-assertions=on" cargo build --release -p nest --features "brood/jit brood/gui"
-	@mkdir -p $(PREFIX)/bin
-	install -m755 target/release/brood $(PREFIX)/bin/brood
-	install -m755 target/release/nest  $(PREFIX)/bin/nest
-	@echo ">>> debug-armed (JIT+GUI, debug-assertions) brood+nest installed to $(PREFIX)/bin"
-	@echo ">>> now reproduce with diagnostics:  BROOD_GC_VERIFY=1 nest run"
-	@echo ">>> capture the '[jit-staged-stale]' / 'use-after-GC' line + .brood_crash_dump"
-	@echo ">>> (run 'make install' later to restore the fast, non-armed build)"
-
 fmt: ## Format all Rust code
 	cargo fmt
 
@@ -575,13 +499,9 @@ hooks: ## Install the local git pre-push hook (`make prepush` on every push, bef
 	fi
 	@cp scripts/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push
 	@echo "installed .git/hooks/pre-push (bypass a single push with --no-verify)"
-	# A global `core.hooksPath` REPLACES `.git/hooks`, it does not add to it — so with one
-	# set, the hook just installed can never run and `git push` silently skips every gate
-	# below. Found 2026-09-17, after an unformatted commit reached `main` from a checkout
-	# whose hook was installed and inert. Say so here rather than let `installed …` read as
-	# armed; the fix is a chaining hook in that directory (the machine's own `commit-msg`
-	# already chains to a repo-local one for exactly this reason), or `--no-verify`-free
-	# discipline plus `make prepush` by hand.
+	# A global `core.hooksPath` REPLACES `.git/hooks`, so with one set the hook just
+	# installed never runs. Say so rather than let `installed …` read as armed; the fix is
+	# a chaining hook in that directory, or `make prepush` by hand.
 	@hp=$$(git config --get core.hooksPath || true); \
 	if [ -n "$$hp" ]; then \
 		echo ""; \

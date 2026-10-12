@@ -28,7 +28,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![string, int], socket_ty),
         &["host", "port"],
-        "Connect to host:port; inbound data is delivered to the calling process as [:tcp sock data] / [:tcp-closed sock] messages. Returns a socket. Throws on failure.",
+        "Start connecting to host:port and return the socket at once; name resolution and the handshake run off the scheduler. The outcome arrives at the calling process as [:tcp-connected sock] (reads have started: [:tcp sock data] / [:tcp-closed sock] follow) or [:tcp-error sock msg]. Low-level — tcp/connect waits for the outcome and throws on failure.",
         tcp_connect);
     primitives.def(
         "%tcp-listen",

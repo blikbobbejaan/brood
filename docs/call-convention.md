@@ -137,7 +137,8 @@ Levers, cheapest first, each a one-session measurement:
 
 Together these are a 20–30% cut of the VM call, not a 5× — which is the point: **the VM
 call cannot reach the native call's floor**, so Part B is a stopgap for the refused arms
-while A makes admission win. Re-run `BROOD_XADMIT=1` (§7.12) after A lands: the
+while A makes admission win. Re-measure hot admission (§7.12; its `BROOD_XADMIT` lever was
+removed 2026-10-09, so this now means re-adding the experiment) after A lands: the
 admission verdict was taken at 640 and re-taken at 218 instructions per call; at ~40 it may
 flip, and then the interpreter's call stops being the number these rows pay.
 
@@ -171,7 +172,7 @@ flip, and then the interpreter's call stops being the number these rows pay.
 | A4 | callee-prologue nil-fill by first-safepoint write set | call loop ≤ 50; GC stress + verify over every `jit_*` file, the KI-49 tuple matchers in particular — **FIRST HALF LANDED 2026-09-17**: the callee nils its own locals, unrolled (`jit_lower.rs`, three stores per slot from the first `let` binder to `nslots`, before the stack guard so a guard-trip deopt hands the VM a nil frame), and the inline blob's fill loop is gone (`call.rs` keeps the capacity guard and the `len = frame_end` store). A Rust gateway still `extend_roots_to_nil`s and the callee then stores nil over nil — one `memset` plus three stores per slot on a path that costs thousands. Counted: a 5M-call loop whose callee has six locals 380 → **321** instructions per call (~10 per slot, as the row predicted); a callee with no locals is unchanged (there was nothing to fill). Rows: `bintree` −4.5% (its `check-node` temporaries), every other row inside its floor. GC stress + verify over every `jit_*` file, the tier-transition, metamorphic and linmap fuzzers clean. **The second half — skipping a slot the body definitely writes before its first safepoint — is not done**: it needs the write-set analysis over the chunk, and it buys three stores per such slot |
 | C1 | POD `TraceFrame` + inline arm-pointer push | `errors-deep` (expect ≤ 6%); `try_catch_test` trace assertions unchanged; crash-report tests |
 | B1–B3 | the VM-call levers | the tier-1 loop (2 938/iteration) and `json`/`regex`/`nqueens` at default tier |
-| — | re-run `BROOD_XADMIT=1` | if admission now wins on json/nqueens, that is the row-level payoff of A |
+| — | re-measure hot admission (the `BROOD_XADMIT` lever is gone) | if admission now wins on json/nqueens, that is the row-level payoff of A |
 
 Each rung lands on its own, green, with its numbers in `docs/compute-frontier.md` §7 and
 its decision as an ADR; a rung that reads noise on the counted loop is reverted (the

@@ -137,9 +137,8 @@ impl Sig {
         // Whatever the rest tails, `self` must not REQUIRE more arguments than the
         // fewest `other` may be called with: `(int string & any -> int)` is not usable
         // where `(int -> int)` is wanted, since a one-argument call is an arity error.
-        // The variadic-`self` arm below used to skip this, so that sig read as a
-        // subtype of `(int -> int)` and of `(-> int)`, and a union of the two arrows
-        // absorbed the one a caller could actually use.
+        // Checked ahead of the variadic-`self` arm below, or a union of two arrows
+        // would absorb the one a caller could actually use.
         if self.params.len() > other.params.len() {
             return false;
         }

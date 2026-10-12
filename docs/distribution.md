@@ -29,7 +29,9 @@
 (receive ([:pong _] :done))                   ; location-transparent reply
 
 ;; --- across machines: TCP, explicit host:port -----------------------------
-(node/start :a "0.0.0.0:9001")                ; listen over TCP
+(node/start :a "0.0.0.0:9001")                ; listen over TCP (advertised as this
+                                              ; node's host — the part after `@`, else
+                                              ; localhost — with the port actually bound)
 (connect "a@10.0.0.4:9001")                   ; dial a remote peer
 ```
 

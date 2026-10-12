@@ -58,4 +58,4 @@ if ! NO_COLOR=1 cargo bench --quiet --bench eval -- \
   exit 1
 fi
 
-python3 "$root/scripts/bench_ratio.py" "$out"
+awk -f "$root/scripts/bench-ratio.awk" "$out"

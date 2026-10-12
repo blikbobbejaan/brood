@@ -6,10 +6,9 @@
 //! the live-count / capacity / park-trim helpers the collector's sizing reads, [`CodeSlabs`]
 //! (the append-only `boxcar` slabs of one RUNTIME code generation), and [`SlabRef`], the borrow
 //! shim every accessor returns — a direct reference into a LOCAL/PRELUDE slab, or a pinned one
-//! into a RUNTIME generation. Split out of `heap.rs` on 2026-09-08 (handoff item 1, move e).
-//! Fields and constructors are `pub(super)` because `heap.rs`, `gc.rs` and `gc_runtime.rs`
-//! address the slabs directly; `heap.rs` re-exports `VecStore`, `INLINE_VEC_CAP` and `SlabRef`
-//! at their previous visibility so paths outside the module are unchanged.
+//! into a RUNTIME generation. Fields and constructors are `pub(super)` because `heap.rs`,
+//! `gc.rs` and `gc_runtime.rs` address the slabs directly; `heap.rs` re-exports `VecStore`,
+//! `INLINE_VEC_CAP` and `SlabRef`.
 
 use super::*;
 
@@ -246,11 +245,9 @@ pub(super) struct Slabs {
 /// the byte-weighted [`slab_bytes`], which does count it for footprint).
 impl Slabs {
     /// A fresh, empty `Slabs` whose per-slab `Vec`s carry the **capacity of
-    /// `like`'s lengths** — the flip-side nursery allocator. A minor collection
-    /// used to install `Slabs::default()` (zero capacity), so every cycle
-    /// re-paid the full Vec-doubling ladder up to the nursery threshold — each
-    /// doubling memmoves everything allocated so far, ~12 % of an
-    /// allocation-bound run (bintree) went to those copies. The previous
+    /// `like`'s lengths** — the flip-side nursery allocator. A zero-capacity
+    /// nursery would re-pay the full Vec-doubling ladder every cycle (each
+    /// doubling memmoves everything allocated so far). The previous
     /// nursery's *lengths* are the steady-state high-water mark (each cycle
     /// allocates about as much as the last), so reserving them up front makes
     /// the next cycle's pushes copy-free while releasing the memory of any
@@ -287,40 +284,20 @@ pub(super) fn slab_live_count(s: &Slabs) -> usize {
         + s.envs.len()
 }
 
-/// Byte-weighted footprint of a [`Slabs`] (`Σ slab.len() * size_of::<elem>`) —
-/// the slab arrays themselves, not nested/shared content (inner spilled vectors,
-/// string bytes, `Arc`-shared ropes/blobs). A comparative figure, not exact RSS.
-/// Counts `natives` too (unlike [`slab_live_count`]). Backs [`Heap::local_bytes`].
-///
-/// **O(1)** — every term is `slab.len() * size_of::<elem>`, no per-element walk.
-/// This matters: [`Heap::local_bytes`] is republished on every `receive` park, and
-/// an earlier `Σ vectors.spilled_bytes()` term (walking every VecStore) made it
-/// O(heap) — ~50% of a tight message-passing loop. Excluding spilled buffers also
-/// squares the code with this doc's "not nested/shared content" contract; a
-/// process with large spilled vectors under-reports `:memory` by their buffer
-/// bytes, acceptable for a comparative observability figure (the hard memory cap
-/// uses the global allocator counter, not this).
 /// How much retained capacity must have accumulated **since the last trim** before
 /// [`Heap::trim_parked`] does anything.
 ///
-/// Note the "since the last trim": an absolute size threshold is the obvious design and it
-/// is wrong in both directions, which the 2026-07-28 measurements showed plainly.
-///
-/// * A **high** absolute gate (32 KiB) is latency-safe but makes memory non-monotonic in
-///   allocation: a process that consed 1,000 pairs crossed it and got trimmed to 8.5 KB,
-///   while one that consed *100* stayed under and kept **14.5 KB** — allocating more used
-///   less, which is indefensible to explain to a user.
-/// * A **low** absolute gate (4 KiB) fixes that (5.4 → 8.5 → 8.5 KB, monotonic) and costs
-///   `pingpong` **+193%** (213 → 624 ms), because that row parks 200k times and each park
-///   now pays a collection.
+/// An absolute size threshold is wrong in both directions: a high one makes memory
+/// non-monotonic in allocation (a process that allocated less can keep more), and a low
+/// one makes a process that parks constantly pay a collection per park.
 ///
 /// Growth-since-last-trim gets both. A responder that parks constantly reaches a steady
 /// working set, so after one trim its capacity stops growing and it never trims again — it
 /// pays one subtraction per park. A process that actually accumulated something trims once
 /// per accumulation, regardless of how large its heap is in absolute terms.
 ///
-/// Measured in [`park_trim_probe`] slots rather than bytes so the gate stays a few loads:
-/// 64 slots is roughly a few KiB of pairs, i.e. the same intent as the 4 KiB it replaces.
+/// Counted in [`park_trim_probe`] slots rather than bytes so the gate stays a few loads:
+/// 64 slots is roughly a few KiB of pairs.
 pub(super) const PARK_TRIM_GROWTH_SLOTS: usize = 64;
 
 /// Retained *capacity* of a slab set, in bytes — what the process is holding from the
@@ -374,6 +351,15 @@ pub(super) fn shrink_slabs(s: &mut Slabs) {
     s.envs.shrink_to_fit();
 }
 
+/// Byte-weighted footprint of a [`Slabs`] (`Σ slab.len() * size_of::<elem>`) —
+/// the slab arrays themselves, not nested/shared content (inner spilled vectors,
+/// string bytes, `Arc`-shared ropes/blobs). A comparative figure, not exact RSS.
+/// Counts `natives` too (unlike [`slab_live_count`]). Backs [`Heap::local_bytes`].
+///
+/// **O(1)** — no per-element walk, because [`Heap::local_bytes`] is republished on
+/// every `receive` park. A process with large spilled vectors therefore under-reports
+/// `:memory` by their buffer bytes, acceptable for a comparative figure (the hard
+/// memory cap uses the global allocator counter, not this).
 pub(super) fn slab_bytes(s: &Slabs) -> usize {
     use std::mem::size_of;
     s.pairs.len() * size_of::<(Value, Value)>()
@@ -440,9 +426,8 @@ pub(super) struct CodeSlabs {
 /// alive until `&mut self`. So a concurrent Stage-4 free ([`Heap::free_runtime_gen`],
 /// ADR-091) can swap a generation out without invalidating an in-flight read, and a read
 /// costs no refcount traffic. `Deref`s to `T`, so call sites use it exactly like `&T`.
-///
-/// It used to hold an `Arc` clone per RUNTIME borrow (and before that an `ArcSwap` guard):
-/// two atomic RMWs on a count every core shares, per trie level of a `def`'d map read.
+/// (An `Arc` clone per borrow would cost two shared atomic RMWs per trie level of a
+/// `def`'d map read.)
 pub struct SlabRef<'a, T: ?Sized> {
     /// Points into the borrowed slot. Valid for the wrapper's whole lifetime: LOCAL and
     /// PRELUDE storage is `&'a self`'s, and a RUNTIME generation's slabs are kept alive for

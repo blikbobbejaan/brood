@@ -40,16 +40,16 @@ pub(super) fn check_matches(
     ctx: &Ctx,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    let mut ns: Option<String> = None;
+    let mut namespace: Option<String> = None;
     for &form in forms {
         if let Some(items) = list_items(heap, form) {
             if matches!(items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "defmodule")) {
-                if let Some(&Value::Sym(m)) = items.get(1) {
-                    ns = Some(value::symbol_name(m));
+                if let Some(&Value::Sym(module)) = items.get(1) {
+                    namespace = Some(value::symbol_name(module));
                 }
             }
         }
-        walk(heap, form, ctx, ns.as_deref(), out);
+        walk(heap, form, ctx, namespace.as_deref(), out);
     }
 }
 
@@ -67,9 +67,10 @@ fn sig_of(
     heap: &Heap,
     ctx: &Ctx,
     name: value::Symbol,
-    ns: Option<&str>,
+    namespace: Option<&str>,
 ) -> Option<crate::types::Sig> {
-    let qualified = ns.map(|n| value::intern(&format!("{}/{}", n, value::symbol_name(name))));
+    let qualified =
+        namespace.map(|module| value::intern(&format!("{}/{}", module, value::symbol_name(name))));
     ctx.declared_sig(name)
         .or_else(|| qualified.and_then(|q| ctx.declared_sig(q)))
         .or_else(|| declared_heap_sig(heap, name))
@@ -82,7 +83,7 @@ fn walk(
     heap: &Heap,
     form: Value,
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
@@ -96,23 +97,23 @@ fn walk(
             match value::symbol_name(h).as_str() {
                 "quote" | "quasiquote" => return,
                 "defn" | "defmacro" => {
-                    walk_defn(heap, &items, ctx, ns, out);
+                    walk_defn(heap, &items, ctx, namespace, out);
                     return;
                 }
                 "def" => {
-                    walk_def(heap, &items, ctx, ns, out);
+                    walk_def(heap, &items, ctx, namespace, out);
                     return;
                 }
                 "fn" => {
-                    walk_fn(heap, &items, ctx, ns, out);
+                    walk_fn(heap, &items, ctx, namespace, out);
                     return;
                 }
                 "let" | "letrec" => {
-                    walk_let(heap, &items, ctx, ns, out);
+                    walk_let(heap, &items, ctx, namespace, out);
                     return;
                 }
                 "match" | "match*" => {
-                    analyze_match(heap, form, &items, ctx, ns, out);
+                    analyze_match(heap, form, &items, ctx, namespace, out);
                     return;
                 }
                 _ => {}
@@ -127,7 +128,7 @@ fn walk(
             forget_symbols_in(heap, ctx, &items[1..])
         };
         for &it in &items {
-            walk(heap, it, &scope, ns, out);
+            walk(heap, it, &scope, namespace, out);
         }
     })
 }
@@ -140,20 +141,20 @@ fn walk_defn(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     let (Some(&Value::Sym(name)), Some(&params_form)) = (items.get(1), items.get(2)) else {
-        recurse_rest(heap, items, ctx, ns, out);
+        recurse_rest(heap, items, ctx, namespace, out);
         return;
     };
     // Only a bare parameter *list* is the seedable single-arity shape; a clause head
     // `((a) …)` (multi-arity) or a docstring is not.
     if !matches!(params_form, Value::Pair(_) | Value::Nil) {
-        recurse_rest(heap, items, ctx, ns, out);
+        recurse_rest(heap, items, ctx, namespace, out);
         return;
     }
-    let sig = sig_of(heap, ctx, name, ns);
+    let sig = sig_of(heap, ctx, name, namespace);
     let params = fn_params(heap, params_form);
     // A destructuring parameter (`(fn ([s]) …)`) binds names `fn_params` does not list.
     let mut scope = forget_symbols_in(heap, ctx, &[params_form]);
@@ -161,7 +162,7 @@ fn walk_defn(
         scope = scope.bind(p, sig.as_ref().and_then(|s| s.param(i)));
     }
     for &b in items.get(3..).unwrap_or(&[]) {
-        walk(heap, b, &scope, ns, out);
+        walk(heap, b, &scope, namespace, out);
     }
 }
 
@@ -170,19 +171,19 @@ fn walk_def(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2)) {
-        if let Some(vitems) = list_items(heap, val) {
-            if matches!(vitems.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "fn")) {
-                let sig = sig_of(heap, ctx, name, ns);
-                walk_fn_seeded(heap, &vitems, ctx, ns, out, sig.as_ref());
+        if let Some(value_items) = list_items(heap, val) {
+            if matches!(value_items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "fn")) {
+                let sig = sig_of(heap, ctx, name, namespace);
+                walk_fn_seeded(heap, &value_items, ctx, namespace, out, sig.as_ref());
                 return;
             }
         }
     }
-    recurse_rest(heap, items, ctx, ns, out);
+    recurse_rest(heap, items, ctx, namespace, out);
 }
 
 /// `(fn (params…) body…)` — params are binders (unknown type unless seeded); walk the body.
@@ -190,17 +191,17 @@ fn walk_fn(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    walk_fn_seeded(heap, items, ctx, ns, out, None);
+    walk_fn_seeded(heap, items, ctx, namespace, out, None);
 }
 
 fn walk_fn_seeded(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
     sig: Option<&crate::types::Sig>,
 ) {
@@ -209,7 +210,7 @@ fn walk_fn_seeded(
     };
     if !matches!(params_form, Value::Pair(_) | Value::Nil) {
         for &b in items.get(1..).unwrap_or(&[]) {
-            walk(heap, b, ctx, ns, out);
+            walk(heap, b, ctx, namespace, out);
         }
         return;
     }
@@ -220,7 +221,7 @@ fn walk_fn_seeded(
         scope = scope.bind(p, sig.and_then(|s| s.param(i)));
     }
     for &b in items.get(2..).unwrap_or(&[]) {
-        walk(heap, b, &scope, ns, out);
+        walk(heap, b, &scope, namespace, out);
     }
 }
 
@@ -230,7 +231,7 @@ fn walk_let(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     let mut scope = ctx.clone();
@@ -240,7 +241,7 @@ fn walk_let(
             while i + 1 < binds.len() {
                 let target = binds[i];
                 let rhs = binds[i + 1];
-                walk(heap, rhs, &scope, ns, out);
+                walk(heap, rhs, &scope, namespace, out);
                 if let Value::Sym(s) = target {
                     let ty = expr_ty(heap, rhs, &scope);
                     scope = scope.bind(s, ty);
@@ -254,7 +255,7 @@ fn walk_let(
         }
     }
     for &b in items.get(2..).unwrap_or(&[]) {
-        walk(heap, b, &scope, ns, out);
+        walk(heap, b, &scope, namespace, out);
     }
 }
 
@@ -262,11 +263,11 @@ fn recurse_rest(
     heap: &Heap,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     for &it in items.iter().skip(1) {
-        walk(heap, it, ctx, ns, out);
+        walk(heap, it, ctx, namespace, out);
     }
 }
 
@@ -277,7 +278,7 @@ fn analyze_match(
     form: Value,
     items: &[Value],
     ctx: &Ctx,
-    ns: Option<&str>,
+    namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     if let Some(&scrutinee) = items.get(1) {
@@ -286,22 +287,22 @@ fn analyze_match(
                 check_coverage(heap, &items[2..], &ids, heap.form_pos_only(form), out);
             }
         }
-        walk(heap, scrutinee, ctx, ns, out);
+        walk(heap, scrutinee, ctx, namespace, out);
         for &clause in &items[2..] {
-            if let Some(citems) = list_items(heap, clause) {
-                let guarded = matches!(citems.get(1),
+            if let Some(clause_items) = list_items(heap, clause) {
+                let guarded = matches!(clause_items.get(1),
                     Some(&Value::Keyword(k)) if value::symbol_is(k, "when"));
                 let body_start = if guarded { 3 } else { 1 };
                 // The pattern's binders shadow the enclosing scope for the guard and body
                 // (`((record c {:x s}) (match s …))` matches the FIELD, not the outer `s`).
-                let clause_scope = forget_symbols_in(heap, ctx, &citems[..1]);
+                let clause_scope = forget_symbols_in(heap, ctx, &clause_items[..1]);
                 if guarded {
-                    if let Some(&g) = citems.get(2) {
-                        walk(heap, g, &clause_scope, ns, out);
+                    if let Some(&g) = clause_items.get(2) {
+                        walk(heap, g, &clause_scope, namespace, out);
                     }
                 }
-                for &b in citems.get(body_start..).unwrap_or(&[]) {
-                    walk(heap, b, &clause_scope, ns, out);
+                for &b in clause_items.get(body_start..).unwrap_or(&[]) {
+                    walk(heap, b, &clause_scope, namespace, out);
                 }
             }
         }
@@ -334,14 +335,14 @@ fn check_coverage(
 ) {
     let mut covered: BTreeSet<String> = BTreeSet::new();
     for &clause in clauses {
-        let Some(citems) = list_items(heap, clause) else {
+        let Some(clause_items) = list_items(heap, clause) else {
             return;
         };
-        let Some(&pat) = citems.first() else {
+        let Some(&pat) = clause_items.first() else {
             return;
         };
         // A guard means the clause is not guaranteed to fire; reasoning past it is unsound.
-        if matches!(citems.get(1), Some(&Value::Keyword(k)) if value::symbol_is(k, "when")) {
+        if matches!(clause_items.get(1), Some(&Value::Keyword(k)) if value::symbol_is(k, "when")) {
             return;
         }
         if is_catch_all(pat) {

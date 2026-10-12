@@ -512,32 +512,21 @@ pub(crate) fn unregister(name: Symbol) -> bool {
 /// Used by the scheduler's death reporter to name a crashed process
 /// (`process ticker (pid 6) died: …`) instead of only its opaque pid. O(n) over
 /// the (small) `NAMES` table, and only on the cold death path, so the linear
-/// scan is fine. Must be read *before* `unregister_dead_pid` clears the entry.
+/// scan is fine. Must be read *before* [`unregister_dead_pid_while`] clears the entry.
 pub(crate) fn name_for_pid(pid: u64) -> Option<Symbol> {
     crate::core::sync::read(&NAMES)
         .iter()
         .find_map(|(&name, &p)| if p == pid { Some(name) } else { None })
 }
 
-/// Remove every `NAMES` entry pointing at `pid` — called from
-/// `process::deregister` when a process dies, so a name registered under it
-/// doesn't go stale. Without this, `(proc/whereis :foo)` could return a dead pid
-/// and `(spawn :foo …)` (named-spawn) would mistake the stale entry for
-/// "already running" and never re-spawn the worker. Erlang's `register`
-/// semantics: a name lives only as long as its process does.
+/// The death path's name sweep: remove every `NAMES` entry pointing at `pid` (a name
+/// lives only as long as its process — else `whereis` returns a corpse and named-spawn
+/// never respawns), and prune `pid` from every `NODE_MONITORS` watcher list.
 ///
-/// Also sweeps `NODE_MONITORS` so that dead pids don't accumulate as
-/// permanent watcher entries: without this, every future `fire_nodedown`
-/// for a peer the dead process watched would iterate and attempt delivery
-/// to a non-existent pid.
-pub(crate) fn unregister_dead_pid(pid: u64) {
-    unregister_dead_pid_while(pid, || ());
-}
-
-/// [`unregister_dead_pid`], running `retire` (the death path's `REGISTRY` removal)
-/// **inside** the same `NAMES` write lock as the name sweep — so no [`register`] can
-/// fall between the sweep and the removal, see the pid still alive, and bind a name the
-/// sweep has already passed. NAMES → REGISTRY is the nesting [`spawn_or_get`] and
+/// `retire` (the `REGISTRY` removal) runs **inside** the same `NAMES` write lock as
+/// the sweep, so no [`register`] can fall between them, see the pid still alive, and
+/// bind a name the sweep has already passed — and a pid absent from `REGISTRY` is
+/// already absent from `NAMES`. NAMES → REGISTRY is the nesting [`spawn_or_get`] and
 /// [`register`] already use, so this adds no new lock order.
 pub(crate) fn unregister_dead_pid_while<R>(pid: u64, retire: impl FnOnce() -> R) -> R {
     let retired = {
@@ -836,7 +825,7 @@ pub(crate) fn monitor_node(name: Symbol, pid: u64) {
 
 /// Cancel `pid`'s node monitor for `name`. A no-op if no monitor is registered.
 /// Needed when a live process wants to stop watching a node before it exits;
-/// `unregister_dead_pid` handles the death case automatically.
+/// [`unregister_dead_pid_while`] handles the death case automatically.
 ///
 /// **Residual race**: `fire_nodedown` snapshots the watcher list under a *read*
 /// lock and then delivers outside any lock. If a `fire_nodedown` for `name` is
@@ -1090,21 +1079,43 @@ pub(crate) fn node_also_listen(addr: &str) -> io::Result<()> {
 /// per-connection handshake reads `NODE` at accept time — so it serves both the
 /// first listener (`node_listen`) and any added later (`node_also_listen`).
 fn start_listener(addr: &str) -> io::Result<()> {
-    if let Some(path) = addr.strip_prefix("unix:") {
+    // What peers are told to dial: the BOUND address, never the requested one — a
+    // requested port 0 would otherwise be advertised as port 0.
+    let advertised = if let Some(path) = addr.strip_prefix("unix:") {
         bind_unix_listener(path)?;
-    } else if let Some(hostport) = addr.strip_prefix("tcp:") {
-        let listener = TcpListener::bind(hostport)?;
+        addr.to_string()
+    } else if let Some(host_and_port) = addr.strip_prefix("tcp:") {
+        let listener = TcpListener::bind(host_and_port)?;
+        let bound = listener.local_addr()?;
         spawn_acceptor(move || listener.accept().map(|(s, _)| Stream::Tcp(s)));
+        // A wildcard host (`0.0.0.0`, `::`) listens everywhere but is not an address
+        // anyone can dial from another machine: advertise the node's own host instead.
+        if bound.ip().is_unspecified() {
+            format!("tcp:{}:{}", node_host(), bound.port())
+        } else {
+            format!("tcp:{bound}")
+        }
     } else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("node address must start with 'unix:' or 'tcp:' (got {addr})"),
         ));
-    }
+    };
     // Record only after a successful bind, so a failed listener doesn't leave a
     // dead address we'd advertise to peers.
-    crate::core::sync::write(&LISTEN_ADDRS).push(addr.to_string());
+    crate::core::sync::write(&LISTEN_ADDRS).push(advertised);
     Ok(())
+}
+
+/// The host this node is reachable at, for advertising a wildcard listener: the host
+/// half of its qualified `name@host` identity (ADR-073), else `localhost`.
+fn node_host() -> String {
+    let name = crate::core::sync::read(&NODE).name;
+    value::symbol_name(name)
+        .split_once('@')
+        .map(|(_, host)| host.to_string())
+        .filter(|host| !host.is_empty())
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 /// Roll back a failed `node-start` — used when the first listener's bind fails
@@ -1644,9 +1655,7 @@ fn accept_link(mut stream: Stream) -> io::Result<()> {
 ///   new link always wins: the old one is retired as a node-down of that old life
 ///   (`retire_previous_incarnation` — `[:nodedown]` to node monitors, `:noconnection`
 ///   to every monitor and link made over it), then this link registers as a
-///   brand-new peer. Refusing it instead left the restarted peer's `node/connect`
-///   returning Ok and immediately delivering `[:nodedown]`, on every retry, until our
-///   heartbeat expired the corpse.
+///   brand-new peer.
 /// - **A second link to the same live peer** (same incarnation: two dials crossing,
 ///   or two dials from one side racing). Both reach the live peer, so tearing either
 ///   down must not reach a monitor: the symmetric connector tie-break picks one, and
@@ -1667,18 +1676,49 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
     let (tx, rx) = mpsc::sync_channel::<Arc<[u8]>>(WRITER_QUEUE_CAP);
     let last_seen = Arc::new(AtomicU64::new(now_millis()));
     let id = NEXT_LINK.fetch_add(1, Ordering::Relaxed);
+    let link = Conn {
+        id,
+        connector,
+        incarnation,
+        addr: peer_addr,
+        tx: tx.clone(),
+        sock: Arc::clone(&sock),
+        last_seen: Arc::clone(&last_seen),
+    };
+    let Some(was_new) = register_link(peer, link) else {
+        // We lost the tie-break: close our socket, register and spawn nothing.
+        let _ = sock.shutdown(Shutdown::Both);
+        return;
+    };
 
-    // Decide winner vs. any existing link, and register atomically under the lock.
-    // Compare connectors by *name* (spelling) — interned ids differ per process,
-    // but both ends share the names, so they pick the same physical link.
-    // `was_new` distinguishes a brand-new peer (gossip the cluster about it) from
-    // a reconnect/duplicate-replacement (peers already know this name). Assigned
-    // on the registering path; the losing path diverges (`return`).
-    let was_new;
-    let evicted: Option<Conn> = loop {
+    ensure_heartbeat();
+
+    // The link is authenticated and registered: split the session into its two
+    // directional ciphers (ADR-089) — the writer owns the send cipher, the reader the
+    // receive cipher, so neither shares crypto state.
+    let Session { send, recv } = session;
+    spawn_link_writer(peer, Arc::clone(&sock), rx, send);
+    spawn_link_reader(peer, id, sock, tx, recv, last_seen);
+
+    // A brand-new peer just joined: tell the cluster (ADR-088) — one broadcast sends the
+    // newcomer our other peers and tells our peers about the newcomer. Skipped for a
+    // reconnect/duplicate (the name was already known) and when meshing is disabled.
+    if was_new && mesh_enabled() {
+        broadcast_peer_table();
+    }
+}
+
+/// Register `link` as THE link to `peer`, resolving a duplicate against any existing
+/// one (see [`establish`]). Returns `None` when an existing link to the same life of
+/// the peer wins the tie-break, else whether `peer` was brand-new (no link before).
+///
+/// Connectors are compared by *name* — interned ids differ per process, but both ends
+/// share the names, so they pick the same physical link.
+fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
+    let (was_new, evicted) = loop {
         let mut nodes = crate::core::sync::write(&NODES);
         match nodes.get(&peer) {
-            Some(existing) if existing.incarnation != incarnation => {
+            Some(existing) if existing.incarnation != link.incarnation => {
                 // The peer restarted. Retire the previous life's link OUTSIDE the
                 // lock — its node-down delivers to monitors and sweeps the process
                 // tables — and with `NODES` empty for this name meanwhile, so a
@@ -1693,216 +1733,178 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
                 continue;
             }
             Some(existing)
-                if value::symbol_name(connector) >= value::symbol_name(existing.connector) =>
+                if value::symbol_name(link.connector) >= value::symbol_name(existing.connector) =>
             {
-                // The existing link to this same life of the peer wins (its
-                // connector sorts first, or it's the same initiator = a plain
-                // duplicate). We lose: close our socket and don't register or spawn.
-                let _ = sock.shutdown(Shutdown::Both);
-                return;
+                // The existing link to this same life of the peer wins (its connector
+                // sorts first, or it's the same initiator — a plain duplicate).
+                return None;
             }
             other => {
                 // We win (or there was no existing link). Take over the slot; any
                 // evicted link is torn down below, outside the lock.
-                was_new = other.is_none();
+                let was_new = other.is_none();
                 let old = nodes.remove(&peer);
-                nodes.insert(
-                    peer,
-                    Conn {
-                        id,
-                        connector,
-                        incarnation,
-                        addr: peer_addr,
-                        tx: tx.clone(),
-                        sock: Arc::clone(&sock),
-                        last_seen: Arc::clone(&last_seen),
-                    },
-                );
-                break old;
+                nodes.insert(peer, link);
+                break (was_new, old);
             }
         }
     };
     if let Some(old) = evicted {
-        // Its reader unblocks, and no-ops on the new id.
+        // Its reader unblocks, and its `drop_link` no-ops on the new id.
         let _ = old.sock.shutdown(Shutdown::Both);
-        // Whatever was still queued on the evicted link dies with its writer — a
-        // `Monitor`/`Link` request among it never reaches the peer, and the peer (which
-        // resolves the same tie-break) may have discarded that connection unread anyway.
-        // The evicted reader's `drop_link` no-ops on the new id, so nothing else would
-        // ever resolve the couplings made over it: run the net-split cleanup for them
-        // now — every pending remote monitor and link to `peer` gets its `:noconnection`
-        // (each fires once: the entries are claimed), and the peer's watchers on our
-        // pids are dropped. Done before this link's reader starts, so nothing it carries
-        // is swept. No `[:nodedown]`: the node is still connected, over the winner.
+        // Whatever was queued on the evicted link dies with its writer, so nothing else
+        // would ever resolve the couplings made over it: run the net-split cleanup now —
+        // every pending remote monitor and link to `peer` gets its `:noconnection` (each
+        // once: the entries are claimed), and the peer's watchers on our pids are dropped.
+        // Done before this link's reader starts, so nothing it carries is swept. No
+        // `[:nodedown]`: the node is still connected, over the winner.
         process::handle_node_down(peer);
         process::handle_link_node_down(peer);
     }
+    Some(was_new)
+}
 
-    ensure_heartbeat();
-
-    // The link is authenticated and registered: split the session into its two
-    // directional ciphers (ADR-089). The writer owns the send cipher, the reader
-    // the receive cipher — neither shares crypto state, which is exactly why this
-    // per-direction-AEAD scheme fits the reader/writer thread split (a single TLS
-    // connection couldn't be driven from both). A tie-break loser returned above,
-    // dropping `session` unused.
-    let Session {
-        send: mut seal,
-        recv: open,
-    } = session;
-
-    // Writer: pull each plaintext frame payload off the channel, **seal** it, and
-    // write the ciphertext. A per-write timeout (`WRITE_TIMEOUT`) prevents a
-    // slowloris peer from pinning the writer and ballooning `rx`; a timeout or a
-    // seal failure is treated like any I/O error — fall through to shutdown.
-    let writer_sock = Arc::clone(&sock);
-    if let Err(e) = writer_sock.set_write_timeout(Some(WRITE_TIMEOUT)) {
+/// The link's writer thread: pull each plaintext frame payload off the channel, **seal**
+/// it, and write the ciphertext. A per-write timeout (`WRITE_TIMEOUT`) keeps a slowloris
+/// peer from pinning the writer and ballooning the queue; a timeout or a seal failure is
+/// treated like any I/O error — shut the socket down.
+fn spawn_link_writer(
+    peer: Symbol,
+    sock: Arc<Stream>,
+    queue: mpsc::Receiver<Arc<[u8]>>,
+    mut seal: session::SealKey,
+) {
+    if let Err(error) = sock.set_write_timeout(Some(WRITE_TIMEOUT)) {
         eprintln!(
-            "dist: warning: could not set write timeout on link to {}: {e}",
+            "dist: warning: could not set write timeout on link to {}: {error}",
             value::symbol_name(peer)
         );
     }
     spawn_bg("dist-writer", move || {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            for payload in rx {
+            for payload in queue {
                 match seal.seal(&payload) {
-                    Ok(framed) if (&*writer_sock).write_all(&framed).is_ok() => {}
+                    Ok(framed) if (&*sock).write_all(&framed).is_ok() => {}
                     _ => {
-                        let _ = writer_sock.shutdown(Shutdown::Both);
+                        let _ = sock.shutdown(Shutdown::Both);
                         break;
                     }
                 }
             }
         }));
     });
+}
 
-    // Reader: every inbound frame refreshes liveness; a `Ping` is answered with a
-    // `Pong`. On EOF/error (incl. a `shutdown` from the writer or the heartbeat)
-    // it runs `drop_link`, which removes the entry iff it's still this generation.
-    let reader_sock = Arc::clone(&sock);
-    let reader_tx = tx;
-    // One shared Pong buffer per reader; sending is an `Arc::clone` (atomic
-    // incr), not a `Vec` copy.
+/// The link's reader thread: every inbound frame refreshes liveness and is dispatched by
+/// [`handle_inbound_frame`]. On EOF/error (incl. a `shutdown` from the writer or the
+/// heartbeat) it runs `drop_link`, which removes the entry iff it's still this
+/// generation. The receive cipher is owned solely by this thread; a tag failure (a
+/// tampered, forged, replayed or reordered frame) ends the loop and tears the link down.
+fn spawn_link_reader(
+    peer: Symbol,
+    id: u64,
+    sock: Arc<Stream>,
+    writer_queue: SyncSender<Arc<[u8]>>,
+    mut open: session::OpenKey,
+    last_seen: Arc<AtomicU64>,
+) {
+    // One shared Pong buffer per reader; sending is an `Arc::clone`, not a copy.
     let pong: Arc<[u8]> = Arc::from(encode_payload(&Frame::Pong).expect("encode Pong"));
     spawn_bg("dist-reader", move || {
-        let mut r: &Stream = &reader_sock;
-        // The receive cipher, owned solely by this reader (no lock needed). Each
-        // `open` authenticates + decrypts one frame; a tag failure (a tampered,
-        // forged, replayed, or reordered frame) ends the loop and tears the link
-        // down — closing ADR-081's post-handshake injection hole.
-        let mut open = open;
-        // Loop until peer closes, protocol error, or a deliberate `shutdown`.
-        // `peer` is the *authenticated* node name from the handshake — every
-        // process-coupling frame (Monitor/Demonitor/Link/Unlink/Exit) is keyed
-        // to it, never to wire-supplied data, so a malicious peer can't claim to
-        // be node X and inject `[:down …]` / link-exit deliveries to processes
-        // coupled with X. (These frames carry no `from_node` field at all — see
-        // the security note on the `Frame` enum.)
+        let mut reader: &Stream = &sock;
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            while let Ok(frame) = open.open(&mut r) {
+            while let Ok(frame) = open.open(&mut reader) {
                 last_seen.store(now_millis(), Ordering::Release);
-                match frame {
-                    Frame::Send { target, msg } => deliver_inbound(target, msg),
-                    Frame::Ping => {
-                        // Bounded queue: if we can't even enqueue a Pong, the writer
-                        // is stalled (peer not draining) or gone — sever and let
-                        // `drop_link` below deregister, rather than buffer.
-                        if reader_tx.try_send(Arc::clone(&pong)).is_err() {
-                            let _ = reader_sock.shutdown(Shutdown::Both);
-                            break;
-                        }
+                if let Frame::Ping = frame {
+                    // Bounded queue: if we can't even enqueue a Pong, the writer is
+                    // stalled (peer not draining) or gone — sever and let `drop_link`
+                    // below deregister, rather than buffer.
+                    if writer_queue.try_send(Arc::clone(&pong)).is_err() {
+                        let _ = sock.shutdown(Shutdown::Both);
+                        break;
                     }
-                    // A peer asked to watch one of our local pids — re-use the
-                    // shared `add_monitor` core with a `Watcher::Remote` so the
-                    // alive-target / dead-target paths are exactly the local
-                    // monitor's, just with a different delivery channel.
-                    Frame::Monitor {
-                        watcher_pid,
-                        target,
-                        mref,
-                    } => process::add_monitor(
-                        target,
-                        process::Watcher::Remote {
-                            node: peer,
-                            pid: watcher_pid,
-                            mref,
-                        },
-                    ),
-                    // Peer dropped a remote monitor — same `drop_monitor` the
-                    // local `demonitor` uses, with a predicate matching the
-                    // Remote variant identity (node + pid + mref).
-                    Frame::Demonitor { watcher_pid, mref } => process::drop_monitor(|w| {
-                        matches!(*w, process::Watcher::Remote { node, pid, mref: r }
-                                     if node == peer && pid == watcher_pid && r == mref)
-                    }),
-                    // A monitor we asked the peer to keep just fired. Retire our
-                    // `PENDING_REMOTE` entry (the one-shot has delivered — a later
-                    // node-down must not fire it again, KI-96), then deliver the
-                    // `[:down …]`. The dying pid is node-qualified by the
-                    // authenticated `peer`, never by wire data.
-                    Frame::Down {
-                        watcher_pid,
-                        mref,
-                        target_pid,
-                        reason,
-                    } => process::deliver_remote_down(peer, watcher_pid, mref, target_pid, reason),
-                    // A peer linked its `from_pid` to our local `to_pid` — record
-                    // our half (keyed by the trusted connection `peer`, not the
-                    // wire's `from_node`, same as the monitor handlers).
-                    Frame::Link { from_pid, to_pid } => {
-                        // `to_pid` is wire data: the peer may name a pid that is dead or
-                        // never existed. Recording that would leak an entry forever (see
-                        // `record_remote_link`), so on a dead target we tell the peer
-                        // instead — its linked process gets `:noproc`, exactly what a
-                        // LOCAL `link` to a dead pid delivers.
-                        if !process::record_remote_link(to_pid, peer, from_pid) {
-                            send_link_exit(
-                                peer,
-                                from_pid,
-                                to_pid,
-                                Message::Keyword(value::intern(pk::NOPROC)),
-                            );
-                        }
-                    }
-                    Frame::Unlink { from_pid, to_pid } => {
-                        process::drop_remote_link(to_pid, peer, from_pid);
-                    }
-                    // An exit signal for our local `to_pid`. A link death goes
-                    // through the trap-or-propagate path; an explicit remote exit
-                    // is routed straight to `scheduler::exit` (kill-style).
-                    Frame::Exit {
-                        from_pid,
-                        to_pid,
-                        reason,
-                        link,
-                    } => {
-                        if link {
-                            process::deliver_remote_link_exit(to_pid, peer, from_pid, reason);
-                        } else {
-                            process::exit(to_pid, reason);
-                        }
-                    }
-                    // Cluster-mesh gossip: the peer is telling us about other
-                    // nodes it knows. Dial any we're not already connected to,
-                    // so connecting to one member joins the whole mesh (ADR-088).
-                    Frame::Peers { peers } => mesh_consider(peers),
-                    // Handshake-only frames in steady state: a peer that
-                    // re-sends one after the link is up is malformed but harmless
-                    // — keep reading.
-                    Frame::Pong | Frame::Hello { .. } | Frame::Auth { .. } => {}
+                } else {
+                    handle_inbound_frame(peer, frame);
                 }
             }
         }));
         drop_link(peer, id);
     });
+}
 
-    // A brand-new peer just joined: tell the cluster. Send the new peer our other
-    // peers (so it dials them) and tell our existing peers about the newcomer (so
-    // they dial it). Both directions fall out of one broadcast (ADR-088). Skipped
-    // for a reconnect/duplicate (the name was already known cluster-wide) and when
-    // meshing is disabled.
-    if was_new && mesh_enabled() {
-        broadcast_peer_table();
+/// Act on one steady-state frame from `peer`. `peer` is the *authenticated* node name
+/// from the handshake — every process-coupling frame (Monitor/Demonitor/Link/Unlink/Exit)
+/// is keyed to it, never to wire-supplied data, so a malicious peer can't claim to be
+/// node X and inject `[:down …]` / link-exit deliveries to processes coupled with X.
+/// (These frames carry no `from_node` field at all — see the security note on `Frame`.)
+fn handle_inbound_frame(peer: Symbol, frame: Frame) {
+    match frame {
+        Frame::Send { target, msg } => deliver_inbound(target, msg),
+        // A peer asked to watch one of our local pids — the shared `add_monitor` core
+        // with a `Watcher::Remote`, so the alive/dead-target paths are the local ones.
+        Frame::Monitor {
+            watcher_pid,
+            target,
+            mref,
+        } => process::add_monitor(
+            target,
+            process::Watcher::Remote {
+                node: peer,
+                pid: watcher_pid,
+                mref,
+            },
+        ),
+        // Peer dropped a remote monitor — the local `demonitor`'s `drop_monitor`, matching
+        // the Remote variant's identity (node + pid + mref).
+        Frame::Demonitor { watcher_pid, mref } => process::drop_monitor(|watcher| {
+            matches!(*watcher, process::Watcher::Remote { node, pid, mref: r }
+                         if node == peer && pid == watcher_pid && r == mref)
+        }),
+        // A monitor we asked the peer to keep just fired. Retire our `PENDING_REMOTE`
+        // entry (a later node-down must not fire it again, KI-96), then deliver the
+        // `[:down …]`, the dying pid node-qualified by the authenticated `peer`.
+        Frame::Down {
+            watcher_pid,
+            mref,
+            target_pid,
+            reason,
+        } => process::deliver_remote_down(peer, watcher_pid, mref, target_pid, reason),
+        // A peer linked its `from_pid` to our local `to_pid` — record our half.
+        Frame::Link { from_pid, to_pid } => {
+            // `to_pid` is wire data and may name a dead pid; recording that would leak
+            // an entry forever (see `record_remote_link`), so tell the peer instead — its
+            // linked process gets `:noproc`, exactly what a LOCAL `link` to a dead pid gets.
+            if !process::record_remote_link(to_pid, peer, from_pid) {
+                send_link_exit(
+                    peer,
+                    from_pid,
+                    to_pid,
+                    Message::Keyword(value::intern(pk::NOPROC)),
+                );
+            }
+        }
+        Frame::Unlink { from_pid, to_pid } => {
+            process::drop_remote_link(to_pid, peer, from_pid);
+        }
+        // An exit signal for our local `to_pid`: a link death goes through the
+        // trap-or-propagate path; an explicit remote exit is kill-style.
+        Frame::Exit {
+            from_pid,
+            to_pid,
+            reason,
+            link,
+        } => {
+            if link {
+                process::deliver_remote_link_exit(to_pid, peer, from_pid, reason);
+            } else {
+                process::exit(to_pid, reason);
+            }
+        }
+        // Cluster-mesh gossip: dial any node the peer knows that we don't (ADR-088).
+        Frame::Peers { peers } => mesh_consider(peers),
+        // `Ping` is answered by the reader itself. Handshake-only frames in steady state
+        // are malformed but harmless — keep reading.
+        Frame::Ping | Frame::Pong | Frame::Hello { .. } | Frame::Auth { .. } => {}
     }
 }
 
@@ -2587,6 +2589,41 @@ mod tests {
             !crate::core::sync::read(&NODE).started,
             "must stay a non-node"
         );
+    }
+
+    /// A port-0 listener advertises the port the OS actually bound, and that address
+    /// dials — peers learn it through the handshake and gossip.
+    #[test]
+    fn a_port_zero_listener_advertises_its_bound_port() {
+        start_listener("tcp:127.0.0.1:0").expect("bind a port-0 listener");
+        let advertised = advertised_addr();
+        let host_and_port = advertised
+            .strip_prefix("tcp:127.0.0.1:")
+            .unwrap_or_else(|| panic!("unexpected advertised address {advertised}"));
+        let port: u16 = host_and_port.parse().expect("a numeric port");
+        assert_ne!(
+            port, 0,
+            "advertised the requested port 0, not the bound one"
+        );
+        TcpStream::connect(("127.0.0.1", port)).expect("the advertised address dials");
+    }
+
+    /// A wildcard listener advertises the node's host, never `0.0.0.0` (which no peer
+    /// on another machine can dial), with the bound port.
+    #[test]
+    fn a_wildcard_listener_advertises_the_node_host() {
+        start_listener("tcp:0.0.0.0:0").expect("bind a wildcard listener");
+        let advertised = advertised_addr();
+        let port: u16 = advertised
+            .strip_prefix("tcp:localhost:")
+            .unwrap_or_else(|| panic!("unexpected advertised address {advertised}"))
+            .parse()
+            .expect("a numeric port");
+        assert_ne!(
+            port, 0,
+            "advertised the requested port 0, not the bound one"
+        );
+        TcpStream::connect(("localhost", port)).expect("the advertised address dials");
     }
 }
 

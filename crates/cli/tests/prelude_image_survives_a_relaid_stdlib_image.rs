@@ -85,8 +85,6 @@ fn brood(
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_BOOT_TRACE", "1")
         .env("BROOD_TIER", "1")
-        .env_remove("BROOD_VM")
-        .env_remove("BROOD_NO_JIT")
         .env_remove("BROOD_NO_STDIMAGE")
         .env_remove("BROOD_COVERAGE")
         .env_remove("BROOD_NO_PRELUDE_IMAGE");

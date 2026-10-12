@@ -42,12 +42,12 @@
       (is (or (= vc "8") (= vc "9") (= vc "a") (= vc "b")))))
   (test "passes uuid? validation"
     (is (uuid/valid? (uuid/v7))))
-  (test "timestamp prefix is all hex"
-    (let (u (uuid/v7)
+  (test "the timestamp prefix is the current time in milliseconds"
+    (let (before (os/now)
+          u (uuid/v7)
           ;; Timestamp in positions 0-7 (p0) and 9-12 (p1), skipping dash at 8
-          ts (str (string/substring u 0 8) (string/substring u 9 13)))
-      (assert= 12 (string/length ts))
-      (is (uuid/all-hex? ts 0 12))))
+          ms (string/->number (str (string/substring u 0 8) (string/substring u 9 13)) 16))
+      (is (and (int? ms) (<= before ms (os/now))))))
   (test "generates unique values"
     (let (a (uuid/v7) b (uuid/v7))
       (is (not (= a b))))))

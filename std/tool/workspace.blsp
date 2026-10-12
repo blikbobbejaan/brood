@@ -2,26 +2,25 @@
 ;;
 ;; Drives `nest ws`. The Brood ecosystem is many sibling git repos (brood, hatch, hive,
 ;; bedit, pong, …); an ecosystem-wide change means the same check → commit → push in each.
-;; This runs that fan-out, in Brood over `%os-cmd` / `os/run-process`. It discovers the sibling
-;; repos of the current directory: any sibling with a `.git` dir AND a `project.blsp`, plus
-;; `brood` itself. Nothing here force-pushes, resets, stashes, or checks out.
+;; A sibling counts when it has a `.git` dir AND a `project.blsp`. Every command runs with an
+;; explicit argv and working directory — no shell. Nothing here force-pushes, resets,
+;; stashes, or checks out.
 (defmodule workspace
   "Drive every Brood repo in the workspace with one command — what `nest ws` runs. Discovers
   the sibling repos of the current directory and fans a check, commit or push out across
   them."
   (:use file))
 
-(defn- brood-repos ()
-  (seq/filter (map (file/ls "..") (fn (n) (str "../" n)))
+(defn- brood-repos (parent)
+  (seq/filter (sort (map (file/ls parent) (fn (name) (path/join parent name))))
     (fn (dir)
-      (and (file/dir? (str dir "/.git"))
-        (or (= dir "../brood") (file/exists? (str dir "/project.blsp")))))))
+      (and (file/dir? (path/join dir ".git")) (file/exists? (path/join dir "project.blsp"))))))
 
-(defn- repo-name (dir) (last (string/split dir "/")))
+(defn- repo-name (dir) (path/basename dir))
 
 (defn- git-out (dir git-args)
   "Trimmed stdout of `git -C dir <git-args…>`."
-  (string/trim (get (%os-cmd "git" (cons "-C" (cons dir git-args))) :stdout)))
+  (string/trim (get (os/cmd "git" (cons "-C" (cons dir git-args))) :stdout)))
 
 (defn- git-run (dir git-args)
   "Run `git -C dir <git-args…>` inheriting stdio; returns the exit code."
@@ -29,51 +28,64 @@
 
 (defn- dirty-count (dir)
   (count (seq/filter (string/split (git-out dir (list "status" "--short")) "\n")
-           (fn (l) (not (string/blank? l))))))
+           (fn (line) (not (string/blank? line))))))
 
 (defn- ahead-count (dir)
-  (let (a (git-out dir (list "rev-list" "--count" "@{u}..HEAD")))
-    (if (string/blank? a) "0" a)))
+  (let (ahead (git-out dir (list "rev-list" "--count" "@{u}..HEAD")))
+    (if (string/blank? ahead) "0" ahead)))
 
-(defn- list-repos ()
-  (for (dir (brood-repos)) (io/puts (repo-name dir))))
+(defn- failed (dir step)
+  "Report that `step` failed in `dir`; one failure to count."
+  (io/puts (str "  " step " FAILED: " (repo-name dir)) :to *err*)
+  1)
 
-(defn- status ()
-  (for (dir (brood-repos))
-    (let (d (dirty-count dir) a (ahead-count dir))
-      (when (or (> d 0) (not (= a "0")))
-        (io/puts (repo-name dir) "  uncommitted=" d " unpushed=" a)))))
+(defn- fan-out (parent step)
+  "Run `step` (dir → failure count) over every repo under `parent`; the total failures."
+  (fold (brood-repos parent) 0 (fn (failures dir) (+ failures (step dir)))))
 
-(defn- check ()
-  (for (dir (brood-repos))
-    (when (file/exists? (str dir "/project.blsp"))
-      (io/puts "=== " (repo-name dir) " ===")
-      ;; `nest check` reads the project in its own dir, so run it there (via the shell's cd).
-      (when (not (= 0 (os/run-process "sh" (list "-c" (str "cd " dir " && nest check")))))
-        (io/puts "  CHECK FAILED: " (repo-name dir))))))
+(defn- check-repo (dir)
+  (io/puts "=== " (repo-name dir) " ===")
+  ;; `nest check` reads the project of its working directory.
+  (let (result (os/cmd "nest" ["check"] {:cwd dir}))
+    (io/write (get result :stdout))
+    (io/write (get result :stderr) :to *err*)
+    (if (= (get result :exit) 0) 0 (failed dir "check"))))
 
-(defn- commit (message)
-  (for (dir (brood-repos))
-    (when (> (dirty-count dir) 0)
-      (git-run dir (list "add" "-A"))
-      (when (= 0 (git-run dir (list "commit" "-q" "-m" message)))
-        (io/puts "committed: " (repo-name dir))))))
-
-(defn- push ()
-  (for (dir (brood-repos))
-    (when (not (= (ahead-count dir) "0"))
-      (when (= 0 (git-run dir (list "push")))
-        (io/puts "pushed: " (repo-name dir))))))
-
-(defn run (action message)
-  "Dispatch for `nest ws <action> [message]`."
+(defn- commit-repo (message dir)
   (cond
-    (= action "list") (list-repos)
-    (= action "status") (status)
-    (= action "check") (check)
-    (= action "commit")
-      (if (nil? message)
-        (io/puts "nest ws commit needs a message")
-        (commit message))
-    (= action "push") (push)
-    else (io/puts "nest ws: unknown action '" action "' (list|status|check|commit|push)")))
+    (= (dirty-count dir) 0) 0
+    (not (= 0 (git-run dir (list "add" "-A")))) (failed dir "git add")
+    (not (= 0 (git-run dir (list "commit" "-q" "-m" message)))) (failed dir "git commit")
+    else (do (io/puts "committed: " (repo-name dir)) 0)))
+
+(defn- push-repo (dir)
+  (cond
+    (= (ahead-count dir) "0") 0
+    (not (= 0 (git-run dir (list "push")))) (failed dir "git push")
+    else (do (io/puts "pushed: " (repo-name dir)) 0)))
+
+(defn run (action message &optional parent)
+  "Dispatch for `nest ws <action> [message]` over the git repos with a `project.blsp` under
+`parent` (default: the current directory's parent). Returns how many repo steps failed —
+`nest ws` exits non-zero when any did."
+  (let (parent (or parent (path/dirname (file/cwd))))
+    (cond
+      (= action "list") (do (doseq (dir (brood-repos parent)) (io/puts (repo-name dir))) 0)
+      (= action "status")
+        (do
+          (doseq (dir (brood-repos parent))
+            (let (dirty (dirty-count dir) ahead (ahead-count dir))
+              (when (or (> dirty 0) (not (= ahead "0")))
+                (io/puts (repo-name dir) "  uncommitted=" dirty " unpushed=" ahead))))
+          0)
+      (= action "check") (fan-out parent check-repo)
+      (= action "commit")
+        (if (nil? message)
+          (do (io/puts "nest ws commit needs a message" :to *err*) 1)
+          (fan-out parent (fn (dir) (commit-repo message dir))))
+      (= action "push") (fan-out parent push-repo)
+      else
+        (do
+          (io/puts (str "nest ws: unknown action '" action "' (list|status|check|commit|push)")
+            :to *err*)
+          1))))

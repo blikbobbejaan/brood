@@ -262,7 +262,5 @@ Reach for this instead of writing a program-specific constant like
 copies of the program fight over one file, and anyone on the machine can create that
 path first — as a symlink to something you own — so the `file/spit` overwrites their choice
 of file with your privileges. Neither is possible with a name they cannot predict."
-  ;; `%random-token`, not the `rand/token` wrapper: this is prelude code, so it must
-  ;; not depend on a module the caller may never have required.
-  (path/join "/tmp" (str prefix (%random-token 16))))
+  (path/join "/tmp" (str prefix (encoding/hex-encode-bytes (%random-bytes 16)))))
 (sig temp (string -> string))

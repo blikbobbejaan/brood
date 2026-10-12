@@ -620,7 +620,8 @@ pub(crate) fn resolve_prim(heap: &Heap, h: Symbol) -> Option<(PrimOp, [usize; 2]
     // `get`, which keeps the set / string / integer-index branches and `%lookup-miss` in
     // Brood. See [`PrimOp::MapGet`].
     if value::symbol_is(h, "get") {
-        if !inline::mapget_enabled() {
+        // `BROOD_NO_MAPGET` opts out.
+        if !crate::diagnostics::debug_flags::map_get_lowering() {
             return None;
         }
         return match v.unpack() {

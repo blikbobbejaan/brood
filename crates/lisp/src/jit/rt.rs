@@ -28,13 +28,8 @@
 
 use crate::core::heap::{FastLink, Heap};
 
-#[cfg(debug_assertions)]
-fn jit_cb_trace_enabled() -> bool {
-    static CB_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *CB_TRACE.get_or_init(|| {
-        std::env::var("BROOD_JIT_CB_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
-    })
-}
+// Debug builds trace each callback under `BROOD_JIT_CB_TRACE=1`
+// (`debug_flags::jit_callback_trace`).
 
 /// Preemption poll (ADR-027). JIT'd loop back-edges call this; returns nonzero when the
 /// process should yield. Mirrors the VM's loop-top exactly: only a **capture-mode green
@@ -76,7 +71,7 @@ pub unsafe extern "C" fn brood_rt_tick_n(heap: *mut Heap, n: i64) -> u8 {
 #[no_mangle]
 pub extern "C" fn brood_rt_tick(_heap: *mut Heap) -> u8 {
     #[cfg(debug_assertions)]
-    if jit_cb_trace_enabled() {
+    if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!("[jit-cb] brood_rt_tick()");
     }
     if crate::process::in_capture_run() {
@@ -110,7 +105,7 @@ pub extern "C" fn brood_rt_in_capture(_heap: *mut Heap) -> u8 {
 #[no_mangle]
 pub unsafe extern "C" fn brood_rt_gc_safepoint(heap: *mut Heap) {
     #[cfg(debug_assertions)]
-    if jit_cb_trace_enabled() {
+    if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!("[jit-cb] brood_rt_gc_safepoint()");
     }
     let h = &mut *heap;
@@ -174,79 +169,6 @@ pub unsafe extern "C" fn brood_rt_vec2_room(
     let (handle, items) = (*heap).alloc_vector2_room();
     *out = handle;
     items
-}
-
-/// Build a closure for a JIT'd arm's `Inst::MakeClosure` — **`exec_chunk`'s arm, verbatim**:
-/// the `ncap` capture values are staged on top of `roots` (exactly where the VM's operand
-/// stack leaves them), a fresh flat env frame off GLOBAL is built for them (plus the
-/// `letrec` self-name, when present), and the closure goes through `make_closure_cached`.
-/// The fresh closure is written to `*out`; the staged captures are consumed (truncated).
-///
-/// `inst` points at the arm's own `Inst::MakeClosure` — into the chunk, which the permanent
-/// arm keep-alive pins for the process lifetime, the same contract `brood_rt_const_load`'s
-/// `*const ConstVal` already runs under (bug #2's fix). `fn_rest` is a `ConstVal`, so a
-/// RUNTIME compaction rewrites it in place and `.load()` here sees current bits.
-///
-/// GC: every allocation on this path (env frame, closure slab push, template parse) only
-/// GROWS — no LOCAL collection can run — and the const-closure promote branch (the one
-/// route to `runtime_collect`) requires a capture-free closure, i.e. `ncap == 0`, so staged
-/// captures can never be relocated out from under this call. They are staged on `roots`
-/// anyway (not a raw slot) so the discipline survives future changes to
-/// `make_closure_cached`.
-///
-/// Returns 0 on success, 1 with the error parked in `jit_pending_error` (the caller's IR
-/// routes to its error exit, outcome 3).
-///
-/// # Safety
-/// `heap` live; `out` writable; `inst` points at a live `Inst::MakeClosure` of an installed
-/// arm's chunk; the top `ncap` roots are the staged capture values, in `names` order.
-#[no_mangle]
-pub unsafe extern "C" fn brood_rt_make_closure(
-    heap: *mut Heap,
-    out: *mut crate::core::value::Value,
-    inst: *const crate::eval::compile::Inst,
-) -> i64 {
-    let h = &mut *heap;
-    let crate::eval::compile::Inst::MakeClosure {
-        fn_rest,
-        names,
-        self_name,
-        module,
-    } = &*inst
-    else {
-        // Emitted only for MakeClosure sites; anything else is a lowering bug, and parking
-        // an error (rather than UB) keeps it diagnosable.
-        h.jit_pending_error = Some(crate::error::LispError::type_err(
-            "brood_rt_make_closure: inst is not MakeClosure",
-        ));
-        return 1;
-    };
-    let ncap = names.len();
-    let n = h.roots_len();
-    let env = if ncap == 0 && self_name.is_none() {
-        h.global()
-    } else {
-        let frame = h.new_env(Some(h.global()));
-        for i in 0..ncap {
-            let v = h.root_at(n - ncap + i);
-            h.env_define(frame, names[i], v);
-        }
-        frame
-    };
-    h.truncate_roots(n - ncap); // drop the staged captures
-    match crate::eval::make_closure_cached(h, fn_rest.load(), env, *module) {
-        Ok(closure) => {
-            if let Some(name) = self_name {
-                h.env_define(env, *name, closure);
-            }
-            *out = closure;
-            0
-        }
-        Err(e) => {
-            h.jit_pending_error = Some(e);
-            1
-        }
-    }
 }
 
 /// Build an `n`-element vector from `n` `Value`s staged contiguously at `elems`
@@ -557,7 +479,7 @@ pub unsafe extern "C" fn brood_rt_table_has(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table-has?", key) {
+    if let Err(e) = crate::core::table::check_key("table/has?", key) {
         h.jit_pending_error = Some(e);
         return 2;
     }
@@ -599,7 +521,7 @@ pub unsafe extern "C" fn brood_rt_table_get2(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table-get", key) {
+    if let Err(e) = crate::core::table::check_key("table/get", key) {
         h.jit_pending_error = Some(e);
         return 2;
     }
@@ -643,7 +565,7 @@ pub unsafe extern "C" fn brood_rt_table_put(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table-put", key) {
+    if let Err(e) = crate::core::table::check_key("table/put", key) {
         h.jit_pending_error = Some(e);
         return 2;
     }
@@ -1215,8 +1137,9 @@ pub unsafe extern "C" fn brood_rt_const_load(
     // LOCAL handle, and never an invalid tag. A LOCAL/garbage value here means the baked
     // `cv` points at a freed/relocated chunk (use-after-free of a recompiled CompiledArm),
     // which would feed garbage into the arm (e.g. a garbage map_get key).
+    // `BROOD_DBG_CONST`.
     #[cfg(debug_assertions)]
-    if std::env::var_os("BROOD_DBG_CONST").is_some() {
+    if crate::diagnostics::debug_flags::debug_constants() {
         use crate::core::value::ValueRef;
         let bad = match v.unpack() {
             ValueRef::Pair(id) => Some(("pair", id.region())),
@@ -1293,7 +1216,7 @@ pub unsafe extern "C" fn brood_rt_global(
     // Rung A1: this callback consults activation state, so it asserts its own first.
     crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
     #[cfg(debug_assertions)]
-    if jit_cb_trace_enabled() {
+    if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!(
             "[jit-cb] brood_rt_global(sym={})",
             crate::core::value::symbol_name(sym)
@@ -1330,7 +1253,7 @@ pub unsafe extern "C" fn brood_rt_global_ic(
     // Rung A1: this callback consults activation state, so it asserts its own first.
     crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
     #[cfg(debug_assertions)]
-    if jit_cb_trace_enabled() {
+    if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!(
             "[jit-cb] brood_rt_global_ic(sym={}, site={})",
             crate::core::value::symbol_name(sym),
@@ -1370,7 +1293,7 @@ pub unsafe extern "C" fn brood_rt_call_slow(
     // Rung A1: this callback consults activation state, so it asserts its own first.
     crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
     #[cfg(debug_assertions)]
-    if jit_cb_trace_enabled() {
+    if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!("[jit-cb] brood_rt_call_slow(argc={})", argc);
     }
     match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head) {
@@ -1521,9 +1444,8 @@ pub unsafe extern "C" fn brood_rt_fast_frame(
     }
 }
 
-/// Suspend-host latch resolution for the **inline** fast-frame path (§7.5,
-/// `BROOD_XCALL=1`): emitted code compared `blocked_under_gateway` against its gateway
-/// token and branches here (cold, at most once per arm ever) on a match. `site_head`
+/// Suspend-host latch resolution for the **inline** fast-frame path (§7.5): emitted code
+/// compared `blocked_under_gateway` against its gateway token and branches here (cold, at most once per arm ever) on a match. `site_head`
 /// packs the call site (high 32) and head symbol (low 32).
 ///
 /// # Safety

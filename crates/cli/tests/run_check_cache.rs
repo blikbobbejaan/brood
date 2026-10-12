@@ -141,7 +141,6 @@ fn a_hit_replays_the_loads_the_walk_made() {
         // Build it on the same engine the three runs below use, so the image under test is
         // the one the shipped configuration writes (and so this step is not tree-walked).
         .env("BROOD_TIER", "2")
-        .env_remove("BROOD_VM")
         .env_remove("BROOD_NO_STDIMAGE")
         .env_remove("BROOD_NO_PRELUDE_IMAGE")
         .arg("build-image.blsp")
@@ -164,14 +163,9 @@ fn a_hit_replays_the_loads_the_walk_made() {
             // Pin the engine to the shipped ceiling. What this test observes is a COMPILE:
             // a form compiled before `io` loaded is marked stale and recompiles (ADR-366),
             // which `BROOD_TRACE_COMPILE` prints. The tree-walker compiles no chunk, so at
-            // `BROOD_VM=0` the line cannot appear for any of the three runs — the control
-            // asserts its own absence and the test panics before testing anything, which is
-            // how CI's `differential (tree-walker)` job read this as a failure on `d35cbdde`.
-            // Same fix and same reason as `stale_loop_handoff`: a gate must not assert an
-            // artifact of an engine it is not about.
+            // `BROOD_TIER=0` the line cannot appear for any of the three runs — a gate must
+            // not assert an artifact of an engine it is not about.
             .env("BROOD_TIER", "2")
-            .env_remove("BROOD_VM")
-            .env_remove("BROOD_NO_JIT")
             .env_remove("BROOD_NO_CHECK")
             .env_remove("BROOD_NO_CHECK_CACHE")
             .env_remove("BROOD_NO_STDIMAGE")

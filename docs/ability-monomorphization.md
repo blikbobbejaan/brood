@@ -54,7 +54,7 @@ the call can go straight to the impl.
 ## The pipeline (where a rewrite would live)
 
 `parse → macros::compile (macroexpand-all + ns-resolve) → compile::run` (the closure-VM,
-`BROOD_VM` default on) or `eval::eval` (tree-walker, `BROOD_VM=0`). Dispatch point:
+the default) or `eval::eval` (tree-walker, `BROOD_TIER=0`). Dispatch point:
 `crates/lisp/src/lib.rs:463-483`.
 
 The compiler lowers each macroexpanded form into a `Node` IR via `compile_node`

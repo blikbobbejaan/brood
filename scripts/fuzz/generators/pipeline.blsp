@@ -1,0 +1,126 @@
+;; Pipeline fusion + counted range loop fuzzer (ADR-360 §7, `eval/macros.rs`).
+;;
+;; Each program runs a random `seq/l*` stage chain under a `fold`/`reduce` TWICE: once as the
+;; literal pipeline the compiler fuses — stages substituted or called by name, a range base
+;; looped — and once with the view built first into a `def` and folded from there, which the
+;; rewrite cannot see (it fuses only a chain written under the fold). The oracle is in the
+;; program: a difference prints `BAD`. Every engine must agree on the printed result (a value
+;; or an error sentinel), and none may crash.
+;;
+;; What varies: the base (a range with random bounds and step — including empty and negative
+;; — a list, a vector, nil), one to four stages of every kind with literal or named functions
+;; (a literal that reads an OUTER variable named like an earlier stage's parameter, to catch
+;; a capture; one that rebinds its own parameter, which must be called rather than
+;; substituted), the reducer (`+`, a literal, a named function), an init that is a number or
+;; a list, and elements that make a stage raise mid-way.
+;;
+;;   brood scripts/fuzz/generators/pipeline.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- the grammar
+(def bases
+  ["(range 7)"
+    "(range 0)" "(range 2 9)" "(range 9 2 -3)" "(range 0 20 5)" "(range -3 3)" "(list 1 2 3 4 5)"
+    "[3 1 4 1 5]" "nil" "(range 40)" "[]" "(list 3)" "{:k 1}"])
+
+;; [stage stage-functions]; an `x` in a body may be shadowed by the stage's own param
+(def stages
+  [["seq/lmap"
+     ["(fn (v) (* v v))"
+       "(fn (v) (+ v x))" "(fn (x) (+ x 1))" "(fn (x) (let (x (* x 2)) x))" "inc" "pf-sq"
+       "(fn (v) (if (= v 3) (str v) v))"]]
+    ["seq/lfilter" ["(fn (v) (> v 1))" "(fn (x) (< x x2))" "pf-even?" "(fn (v) (not= v 4))"]]
+    ["seq/lreject" ["(fn (v) (= v 2))" "pf-even?" "(fn (x) (> x x))"]]
+    ["seq/lkeep" ["(fn (v) (when (> v 2) (* v 10)))" "(fn (x) (if (= 0 (math/rem x 2)) x nil))"]]])
+
+(def reducers
+  ["+"
+    "(fn (a v) (+ a v))" "(fn (acc v) (cons v acc))" "pf-add" "(fn (a v) (+ a (* 2 v)))" "conj"])
+
+(def inits ["0" "nil" "[]" "100"])
+
+(defn wrap-stages (chain remaining)
+  (if (<= remaining 0)
+    chain
+    (let ([stage functions] (draw-choice stages))
+      (wrap-stages (str "(" stage " " chain " " (draw-choice functions) ")") (- remaining 1)))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (base (draw-choice bases)
+        chain (wrap-stages base (draw-int 1 4))
+        reducer (draw-choice reducers)
+        init (draw-choice inits)
+        head (draw-choice ["fold" "reduce"])
+        ;; A plain fold with a literal over the base — the collection dispatch alone —
+        ;; against the same body as a NAMED function, which the rewrite leaves to `fold`.
+        plain (if (< (draw-float) 0.4)
+                (let (body (draw-choice ["(+ a v)"
+                                          "(cons v a)"
+                                          "(if (= v 3) (failure \"stop\") (if (int? a) (+ a v) a))"
+                                          "(+ a (* v x))"]))
+                  (str "(defn pf-step (a v) "
+                    body
+                    ")
+(def c (try (show (fold "
+                    base " " init " (fn (a v) " body
+                    "))) (catch e (str \"E:\" (error-message e)))))
+(def d (try (show (fold "
+                    base " " init
+                    " pf-step)) (catch e (str \"E:\" (error-message e)))))
+(io/puts (if (= c d) \"fold-ok\" (str \"BAD fold=\" c \" ref=\" d)))"))
+                ""))
+    (str
+      "(def x 7)
+(def x2 4)
+(defn pf-sq (v) (* v v))
+(defn pf-even? (v) (= 0 (math/rem v 2)))
+(defn pf-add (a v) (+ a v))
+(defn show (r) (pr-str (if (seqview? r) (seq r) r)))
+(def a (try (show ("
+      head " " chain " " init " " reducer
+      ")) (catch e (str \"E:\" (error-message e)))))
+(def view "
+      chain
+      ")
+(def b (try (show ("
+      head " view " init " " reducer
+      ")) (catch e (str \"E:\" (error-message e)))))
+(io/puts (if (= a b) a (str \"BAD fused=\" a \" ref=\" b)))
+"
+      plain
+      "
+")))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/pl_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "pipeline programs"))

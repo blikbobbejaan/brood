@@ -236,8 +236,6 @@ and a set its elements, as everywhere else `seq` applies.
     (vec nil)        → []"
   (into [] coll))
 
-(defn- %append-two (a b) "Concatenate two lists (`a` before `b`)." (fold (reverse a) b %flip-cons))
-
 ;; Prepend every element of `lst` onto `acc` (so `acc` collects all elements in
 ;; reverse); `append` folds this over the lists, then reverses once. Argument order
 ;; is fold's (`acc` first), which is why this exists at all rather than callers

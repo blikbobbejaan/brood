@@ -101,7 +101,7 @@ behind a clean commit, and re-verify with the KI-20 discipline below.
 ## Correctness plan (same discipline as the KI-20 fix)
 
 1. `cargo test --release -p brood --test jit --test differential` after **each** step —
-   JIT output must stay bit-identical to `BROOD_VM=0` and the VM.
+   JIT output must stay bit-identical to `BROOD_TIER=0` and the VM.
 2. Debug run under `BROOD_GC_STRESS=1 BROOD_JIT_VERIFY=1` (the reserved-resolved callee
    still stages args through `roots`; the GC/handle checks must stay clean).
 3. Full `make test`.

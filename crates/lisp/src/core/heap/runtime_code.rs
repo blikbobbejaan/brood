@@ -428,8 +428,7 @@ pub struct RuntimeCode {
     /// `runtime_collect`'s per-process rewrite never touches them — a shared arm
     /// rewritten by two processes would double-forward its handles). Publish is
     /// idempotent: every process compiles the identical closure from the same shared
-    /// AST, so last-writer-wins is safe. `BROOD_NO_SHARED_ARMS=1` bypasses (ADR-175's
-    /// off-switch). Arm site ids are arm-relative (Phase A), so a shared arm's ICs
+    /// AST, so last-writer-wins is safe. Arm site ids are arm-relative (Phase A), so a shared arm's ICs
     /// work in every process, each against its own block.
     /// Value is `(free_epoch_at_compile, closure)`. The stamp is read **before** the
     /// publisher compiles and validated against the live `free_epoch` on lookup, so a
@@ -634,11 +633,6 @@ impl Heap {
             return None;
         }
         Some(GenPin::new(Arc::clone(&self.runtime), id.code_gen()))
-    }
-
-    /// Are there shared-closure messages in flight against generation `gen`?
-    pub fn gen_has_inflight(&self, gen: usize) -> bool {
-        self.runtime.gen_inflight[gen].load(Ordering::Acquire) != 0
     }
 
     /// Withdraw this process's "clean" ack of the current drain — the shared `drain_acks`

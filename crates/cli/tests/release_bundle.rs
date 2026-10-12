@@ -264,3 +264,26 @@ fn a_release_replaces_a_running_binary() {
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
+
+#[test]
+fn a_bundle_with_a_corrupt_archive_is_refused_not_run_as_plain_brood() {
+    // A valid footer over an archive that does not parse. Falling through to plain
+    // `brood` would start the REPL (or run argv as a file) in place of the app.
+    let brood = env!("CARGO_BIN_EXE_brood");
+    let base = std::fs::read(brood).expect("read brood binary");
+    let mut archive = brood::bundle::serialize("(project :name \"t\")", &[]);
+    archive[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let dir = std::env::temp_dir().join(format!("brood-release-corrupt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let app = dir.join("app");
+    brood::bundle::write_release(&base, &archive, &app).expect("write release binary");
+    let out = run_bundle(Command::new(&app).arg("--version"));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a corrupt bundle ran: {stderr}");
+    assert!(
+        stderr.contains("corrupt release bundle"),
+        "stderr: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

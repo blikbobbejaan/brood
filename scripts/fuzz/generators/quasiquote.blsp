@@ -1,0 +1,95 @@
+;; Quasiquote fuzzer with an explicit-constructor oracle. Build a template tree, render it
+;; two ways — as a quasiquote with `~` / `~@`, and as the equivalent explicit
+;; `(append (list ...) ...)` construction — and assert they are `=`. Literals are
+;; ints/keywords only (self-quoting both ways). Vars in scope: x=7, y=:m, and the spliceable
+;; lists xs/ys/ws. Each program prints OK / BAD; runs under all engines.
+;;
+;;   brood scripts/fuzz/generators/quasiquote.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- templates: [:literal text] | [:unquote var] | [:splice var] | [:list children]
+(defn draw-leaf ()
+  (let (roll (draw-float))
+    (cond
+      (< roll 0.4) [:literal (draw-choice ["1" "2" "0" ":k" ":q" "42"])]
+      (< roll 0.7) [:unquote (draw-choice ["x" "y"])]
+      :else [:splice (draw-choice ["xs" "ys" "ws"])])))
+
+;; Depth-bounded tree walks: the recursion is at most a few levels deep by construction.
+(check-allow :non-tail-recursion
+  ;; a list node with 0..4 children: leaves, or (rarely) nested lists
+  (defn draw-template (depth)
+    [:list
+      (map (range (draw-int 0 4))
+        (fn (_)
+          (if (and (> depth 0) (< (draw-float) 0.25))
+            (draw-template (- depth 1))
+            (draw-leaf))))])
+
+  (defn render-quasiquoted (node)
+    (let ([kind payload] node)
+      (case kind
+        :literal payload
+        :unquote (str "~" payload)
+        :splice (str "~@" payload)
+        (str "(" (string/join (map payload render-quasiquoted) " ") ")"))))
+
+  ;; the segment a node contributes to its parent list's `append`
+  (defn render-segment (node)
+    (let ([kind payload] node)
+      (case kind
+        :splice payload
+        :list (str "(list " (render-element node) ")")
+        (str "(list " payload ")"))))
+
+  ;; the single value a (non-splicing) node denotes
+  (defn render-element (node)
+    (let ([kind payload] node)
+      (if (= kind :list)
+        (str "(append " (string/join (map payload render-segment) " ") ")")
+        payload))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (template (draw-template 3))
+    (str "(let (x 7 y :m xs (list 1 2 3) ys (list) ws (list :a :b))\n"
+      "  (let (a `"
+      (render-quasiquoted template)
+      "\n"
+      "        b "
+      (render-element template)
+      ")\n"
+      "    (io/puts (if (= a b) \"OK\" (str \"BAD a=\" (pr-str a) \" b=\" (pr-str b))))))\n")))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/qq_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "quasiquote programs"))

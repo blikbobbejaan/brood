@@ -2,8 +2,7 @@
 //!
 //! - [`is_syntactic_keyword`] — which heads are *not* callables, so an
 //!   "unbound symbol" warning doesn't fire on them. (The "don't descend
-//!   into this body" predicate that used to live here is now folded into
-//!   `walk::SPECIAL_HEAD` so the dispatch is one `SymbolMap` probe.)
+//!   into this body" predicate is `walk::SPECIAL_HEAD`'s `SkipBody` arm.)
 //! - [`guard_assertion`] / [`literal_eq_guard`] — pull a `(sym, type)` pair
 //!   out of an `if`-test when it's a recognised guard, so the walk can
 //!   narrow the variable in each branch.
@@ -64,10 +63,8 @@ pub(super) fn is_syntactic_keyword(name: &str) -> bool {
     )
 }
 
-// `skips_body` used to live here; it's now folded into the
-// `SpecialHead::SkipBody` arm of `walk::SPECIAL_HEAD` (one `SymbolMap` probe
-// shared with the special-form dispatch, no per-call string allocation).
-// Names that route through `SkipBody`: `quote`, `quasiquote`, `comment` —
+// "Skip this body" is the `SpecialHead::SkipBody` arm of `walk::SPECIAL_HEAD` (one
+// `SymbolMap` probe shared with the special-form dispatch). Names that route through `SkipBody`: `quote`, `quasiquote`, `comment` —
 // syntax, never evaluated, so nothing in them is a reference.
 //
 // `error-of` and `assert-error` (and the `%try` THEY expand to) route through
@@ -392,9 +389,8 @@ fn guard_assertion_inner(heap: &Heap, test: Value, ctx: &Ctx) -> Option<Guard> {
             return Some(Guard {
                 sym: s,
                 // `Ty::truthy()` — the ONE definition of falsiness in the checker, so it
-                // cannot drift from the evaluator's. It used to be spelled out here as
-                // `nil ∪ false` negated, which silently excluded `failure` when that kind
-                // arrived and left `(or (parse s) 0)` reading `number | failure`.
+                // cannot drift from the evaluator's (a local `nil ∪ false` negation would
+                // miss any falsy kind added later).
                 ty: Ty::truthy(),
                 then_only: false,
                 else_only: false,
@@ -441,7 +437,7 @@ fn guard_assertion_inner(heap: &Heap, test: Value, ctx: &Ctx) -> Option<Guard> {
         // §6: `type-of` is a total PrimOp1, a predicate call is not). Exactly the guard
         // `(table? x)` is, both branches: `type-of` answers one keyword per tag, so the
         // else branch is the complement. Without it a LOADED `seq/frequencies` read
-        // `map | table` at every call (KI-173, 2026-09-20).
+        // `map | table` at every call (KI-173).
         if let Some((sym, ty)) = type_of_eq_guard(heap, ctx, items[1], items[2])
             .or_else(|| type_of_eq_guard(heap, ctx, items[2], items[1]))
         {
@@ -488,8 +484,8 @@ fn guard_assertion_inner(heap: &Heap, test: Value, ctx: &Ctx) -> Option<Guard> {
     // `(and …)` surface is already this shape); the `or` expansion
     // `(if g g _)` is deliberately *not* matched (a truthy `or` implies nothing
     // about its first operand). This is what lets the `match` compiler's
-    // `(if (and (vector? m) (= (vector-length m) 2)) …)` narrow `m` to a vector,
-    // so the guarded `vector-ref m i` isn't flagged against a list/other scrutinee.
+    // `(if (and (vector? m) (= (%vector-length m) 2)) …)` narrow `m` to a vector,
+    // so the guarded `%vector-ref m i` isn't flagged against a list/other scrutinee.
     // **`then_only`:** a falsy `and` may have failed on a later conjunct, so the
     // else-branch must NOT be narrowed to `¬E` (that was a real false positive —
     // an else-branch `(vector-ref m i)` on a value that *is* a longer vector).
@@ -648,10 +644,7 @@ fn chain_shape(heap: &Heap, test: Value, want_then_g: bool) -> Option<(Value, Va
 /// may have failed on a later conjunct). The one construction the checker's three `if` readers share —
 /// `check_if` (the walk), `gradual_of` (the checked value type) and `expr_ty` (the inferred
 /// type, which drives a function's inferred return) — so all three see the same branch
-/// types. `expr_ty` used to union both branches under the UNnarrowed scope, so
-/// `(or (string/->number s) -1)` inferred `nil | number`: the truthy half of an `or` is the
-/// one case this reads every time, and every `--strict` caller of such a function paid
-/// for the `nil` that cannot occur.
+/// types — so `(or (string/->number s) -1)` infers `number`, not `nil | number`.
 pub(super) fn branch_scopes(heap: &Heap, test: Value, ctx: &Ctx) -> (Ctx, Ctx) {
     let (mut then_ctx, mut else_ctx) = match guard_assertion(heap, test, ctx) {
         Some(g) => {
@@ -716,8 +709,8 @@ pub(super) fn branch_scopes(heap: &Heap, test: Value, ctx: &Ctx) -> (Ctx, Ctx) {
 /// `(contains? r :k)` over a local whose type is a union of record shapes: a true test
 /// rules out every CLOSED alternative that does not declare `:k`, a false one every
 /// alternative that declares `:k` as REQUIRED — `(if (contains? r :ok) (:ok r) (:error
-/// r))` over `(or (record :ok int) (record :error string))` reads `int`, then `string`
-/// (2026-10-02). An open shape, a non-record term, and a `defrecord` value (whose key set
+/// r))` over `(or (record :ok int) (record :error string))` reads `int`, then `string`.
+/// An open shape, a non-record term, and a `defrecord` value (whose key set
 /// a `Lookup` impl may present differently) are kept on both sides. `None` when nothing is
 /// ruled out either way, or the test is any other shape.
 pub(in crate::types::check) fn contains_key_narrowing(
@@ -1338,9 +1331,7 @@ fn cmp_side(heap: &Heap, form: Value, ctx: &Ctx) -> Option<CmpSide> {
                 // narrowed nothing and bounded nothing.
                 return local_plus_offset(heap, form, ctx).map(|(i, k)| CmpSide::Offset(i, k));
             };
-            let counts = value::symbol_is(head, "count")
-                || value::symbol_is(head, "string/length")
-                || value::symbol_is(head, "seq/vector-length");
+            let counts = value::symbol_is(head, "count") || value::symbol_is(head, "string/length");
             if counts && !ctx.is_lexical_local(head) && ctx.is_lexical_local(target) {
                 return Some(CmpSide::Count(target));
             }
@@ -1391,19 +1382,15 @@ fn side_narrowing(side: &CmpSide, r: Range) -> Option<(Symbol, Ty)> {
 /// it ([`counted_collection`]).
 ///
 /// Shared because a `let` is bound in THREE places — the walk (`binders::let_bind_scope`),
-/// inference (`infer::expr_ty`) and the return check (`calls::gradual_of_compound`) — and
-/// only the first recorded this, so the fact reached an argument check and not a return
-/// one: `(let (n (count words)) (if (>= n 4) (nth words 3) ""))` declared `string` warned
-/// `nil | string`, while the identical read passed into a `(string -> int)` was clean
-/// (2026-09-17, C12). One function, called from all three, so they cannot drift again.
+/// inference (`infer::expr_ty`) and the return check (`calls::gradual_of_compound`). One
+/// function, called from all three, so an argument check and a return check cannot
+/// disagree about `(let (n (count words)) (if (>= n 4) (nth words 3) ""))` (C12).
 pub(super) fn count_alias_target(heap: &Heap, rhs: Value, ctx: &Ctx) -> Option<Symbol> {
     let items = list_items(heap, rhs)?;
     let [Value::Sym(head), Value::Sym(target)] = items[..] else {
         return None;
     };
-    let counts = value::symbol_is(head, "count")
-        || value::symbol_is(head, "string/length")
-        || value::symbol_is(head, "seq/vector-length");
+    let counts = value::symbol_is(head, "count") || value::symbol_is(head, "string/length");
     (counts && !ctx.is_lexical_local(head) && ctx.is_lexical_local(target)).then_some(target)
 }
 

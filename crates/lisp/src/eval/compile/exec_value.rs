@@ -257,7 +257,7 @@ pub(crate) fn prim2_inline_exec(
         // propagate — bit-identical to the dispatched native.
         None if op == PrimOp::TableHas => {
             if let ValueRef::Table(tid) = x.unpack() {
-                crate::core::table::check_key("table-has?", y)?;
+                crate::core::table::check_key("table/has?", y)?;
                 crate::perf_bump!(prim2_inline);
                 return Ok(Some(Value::boolean(crate::core::table::has(heap, tid, y)?)));
             }
@@ -265,7 +265,7 @@ pub(crate) fn prim2_inline_exec(
         }
         None if op == PrimOp::TableGet => {
             if let ValueRef::Table(tid) = x.unpack() {
-                crate::core::table::check_key("table-get", y)?;
+                crate::core::table::check_key("table/get", y)?;
                 crate::perf_bump!(prim2_inline);
                 return Ok(Some(crate::core::table::get(heap, tid, y, Value::Nil)?));
             }

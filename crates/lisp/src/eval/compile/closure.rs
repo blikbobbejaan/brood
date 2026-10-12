@@ -447,8 +447,8 @@ pub(crate) fn compile_arm(
 /// way whether the capture is global or local.
 pub(crate) fn compile_closure(heap: &Heap, id: ClosureId) -> Option<CompiledClosure> {
     crate::perf_bump!(n_compile);
-    // TEMP diagnostic: which closures compile, and how often.
-    if std::env::var_os("BROOD_TRACE_COMPILE").is_some() {
+    // `BROOD_TRACE_COMPILE`: which closures compile, and how often.
+    if crate::diagnostics::debug_flags::trace_compile() {
         let c = heap.closure(id);
         let body_region = c
             .arms
@@ -659,11 +659,9 @@ pub(crate) fn probe_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Option<A
     }
     // Read-only peek at the cross-process cache — an entry there was compiled by a real
     // call, so it carries its own metadata and is safe to use (and not ours to install).
-    if !crate::core::heap::Heap::shared_arms_disabled() {
-        if let Some(cc) = heap.shared_closure_lookup(key.shared_bits()) {
-            if !cc.stale_bindings() {
-                return cc.arm_for(argc).cloned();
-            }
+    if let Some(cc) = heap.shared_closure_lookup(key.shared_bits()) {
+        if !cc.stale_bindings() {
+            return cc.arm_for(argc).cloned();
         }
     }
     compile_closure(heap, id).and_then(|cc| cc.arm_for(argc).cloned())
@@ -713,6 +711,7 @@ pub(crate) fn arm_calls_receive(arm: &CompiledArm) -> bool {
 /// this process has already compiled are read (`cached_arm_for`, no compile here); a
 /// computed head, an unbound name or an uncompiled callee reads as "no receive", and the
 /// latch stays the safety net for what this cannot see. Bounded by a visited set of 64.
+#[cfg(feature = "jit")]
 pub(crate) fn arm_hosts_receive(heap: &Heap, arm: &CompiledArm, env: EnvId) -> bool {
     let receive_sym = crate::core::value::intern("%receive");
     let Some(chunk) = arm.chunk.as_ref() else {
@@ -781,7 +780,6 @@ pub(crate) fn cached_arm_stale(heap: &Heap, id: ClosureId, argc: usize) -> Optio
 
 pub(crate) fn compiled_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Option<Arc<ArmHandle>> {
     let key = cache_key(heap, id)?;
-    let shareable = !crate::core::heap::Heap::shared_arms_disabled();
     // (ADR-366: a body marked stale by a module load was dropped by the lookup's own sync,
     // so a hit here is never stale, and a miss recompiles with the bindings present.)
     if let Some(hit) = heap.vm_cache_arm_handle(key, argc) {
@@ -805,30 +803,28 @@ pub(crate) fn compiled_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Optio
     // `MakeClosure` defers rather than embed an unstable `fn_rest`), the captured
     // *values* are read from the closure's env at call time rather than baked in, and
     // slot layout is a property of the AST. Without this, a process that runs a fresh
-    // closure once — every `receive` matcher, every spawned handler — recompiled it:
-    // measured one compile per process at 8.1 µs, a third of `spawn-live`'s per-unit time.
-    if shareable {
-        // A peer's stale entry (ADR-366) is dropped, not installed — whoever recompiles
-        // first republishes.
-        if let Some(cc) = heap
-            .shared_closure_lookup(key.shared_bits())
-            .filter(|cc| !cc.stale_bindings())
-        {
-            heap.vm_cache_put(key, Some(cc.clone()));
-            // Re-enter through the cache rather than deriving here, so this arity's handle
-            // is memoized for every call after this one — but do NOT trust the cache to
-            // still hold what we just put there: `vm_cache_arm_handle` begins with
-            // `sync_free_epoch`, and a *peer* process can advance `free_epoch` at any
-            // instant (`free_runtime_gen` runs from another worker's ordinary safepoint,
-            // no stop-the-world), which clears this cache. Falling through to the arm we
-            // already hold keeps that race a lost memo instead of a spurious "no VM arm",
-            // which would silently tree-walk a compiled body — or panic a caller that
-            // resolved twice.
-            return heap
-                .vm_cache_arm_handle(key, argc)
-                .flatten()
-                .or_else(|| cc.arm_for(argc).cloned().map(ArmHandle::new));
-        }
+    // closure once — every `receive` matcher, every spawned handler — recompiled it.
+    //
+    // A peer's stale entry (ADR-366) is dropped, not installed — whoever recompiles first
+    // republishes.
+    if let Some(cc) = heap
+        .shared_closure_lookup(key.shared_bits())
+        .filter(|cc| !cc.stale_bindings())
+    {
+        heap.vm_cache_put(key, Some(cc.clone()));
+        // Re-enter through the cache rather than deriving here, so this arity's handle
+        // is memoized for every call after this one — but do NOT trust the cache to
+        // still hold what we just put there: `vm_cache_arm_handle` begins with
+        // `sync_free_epoch`, and a *peer* process can advance `free_epoch` at any
+        // instant (`free_runtime_gen` runs from another worker's ordinary safepoint,
+        // no stop-the-world), which clears this cache. Falling through to the arm we
+        // already hold keeps that race a lost memo instead of a spurious "no VM arm",
+        // which would silently tree-walk a compiled body — or panic a caller that
+        // resolved twice.
+        return heap
+            .vm_cache_arm_handle(key, argc)
+            .flatten()
+            .or_else(|| cc.arm_for(argc).cloned().map(ArmHandle::new));
     }
     // Read the free-epoch BEFORE compiling: if a generation is freed while we compile,
     // the arm we produce may hold handles into it, and publishing under the pre-compile
@@ -837,10 +833,8 @@ pub(crate) fn compiled_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Optio
     // Cold: compile + cache the closure once, then take the arm.
     let compiled = compile_closure(heap, id).map(Arc::new);
     heap.vm_cache_put(key, compiled.clone());
-    if shareable {
-        if let Some(cc) = &compiled {
-            heap.shared_closure_publish(key.shared_bits(), fe, cc.clone());
-        }
+    if let Some(cc) = &compiled {
+        heap.shared_closure_publish(key.shared_bits(), fe, cc.clone());
     }
     // As above: take the handle back out of the cache so it is memoized, not re-derived —
     // with the same fallback, for the same peer-`free_epoch` race.
@@ -878,23 +872,6 @@ pub fn precompile(heap: &mut Heap, f: Value) -> bool {
     did
 }
 
-/// The higher-order-fn closure-call fast path (gated). A `reduce`/`fold`/… driver calls
-/// the SAME step closure once per element; the general per-call path (`apply_value` → `dispatch`)
-/// re-resolves the closure's arm (`vm_cache_arm`) and re-runs the passthrough/arity matching every
-/// element — ~40–50% of `pipeline`/`nqueens` per the profile, and a user-closure fold is ~60× a
-/// primitive one for identical work. This resolves the arm ONCE ([`hof_resolve`]); the driver then
-/// calls [`hof_apply_step`] per element, which only re-reads the (rooted, GC-current) closure for
-/// its captured env and calls the cached arm via `vm_apply` — skipping the re-resolution.
-///
-/// **Default ON**; `BROOD_NO_HOF` opts out (the A/B lever). A modest, broad win — ~8% on
-/// `nqueens`, ~19% on a light-closure `range-reduce` — for any Rust HOF driver folding a user
-/// closure. (It removes dispatch's self-overhead, not the per-call `push_frame`/`vm_run_bc`
-/// protocol — that's the separate lean-native-call lever.)
-pub(crate) fn hof_fast_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_HOF").is_none())
-}
-
 /// A step closure resolved once for the HOF fast path: the closure identity (re-checked per call
 /// so a late-rebind falls back) + its compiled arm (GC-stable `Arc`, off the heap graph).
 pub(crate) struct HofArm {
@@ -909,24 +886,24 @@ pub(crate) struct HofArm {
     pub(crate) bases: (u32, u32),
 }
 
-/// Resolve `f` to a cached [`HofArm`] if it's a **plain fixed-arity-`argc` VM closure** (not a
-/// thin passthrough wrapper, no optional/rest) — else `None` (the driver uses its general path).
-/// Returns `None` when the gate is off. Call once, before the per-element loop.
+/// The higher-order-fn closure-call fast path. A `reduce`/`fold`/… driver calls the SAME step
+/// closure once per element; the general per-call path (`apply_value` → `dispatch`) re-resolves
+/// the closure's arm and re-runs the passthrough/arity matching every element. This resolves the
+/// arm ONCE; the driver then calls [`hof_apply_step`] per element.
+///
+/// Resolve `f` to a cached [`HofArm`] if it's a **plain fixed-arity-`argc` VM closure** (no
+/// optional/rest) — else `None` (the driver uses its general path). Returns `None` when the gate
+/// is off (`BROOD_NO_HOF=1`). Call once, before the per-element loop.
 pub(crate) fn hof_resolve(heap: &Heap, f: Value, argc: usize) -> Option<HofArm> {
-    if !hof_fast_enabled() {
+    if !crate::diagnostics::debug_flags::higher_order_fast_path() {
         return None;
     }
     let id = match f.unpack() {
         ValueRef::Fn(id) => id,
         _ => return None,
     };
-    // A thin-wrapper passthrough used to be refused here — "`>` → `%lt` redirects; leave
-    // those to `dispatch`" — which handed every reducer shaped `(fn (acc x) (+ acc x))` to
-    // the generic path: two redirects per element, each an `env_get` of the head and a
-    // SmallVec remap, ~2 000 instructions (137 ns) against 25 ns for the same lambda with a
-    // non-passthrough body (2026-09-17). The compiled arm of a passthrough IS the cheap
-    // form — its body inlines to a `Prim2` or a direct native call — so it takes the same
-    // cached-arm path as any other closure.
+    // A thin-wrapper passthrough takes this path too: its compiled arm IS the cheap form —
+    // its body inlines to a `Prim2` or a direct native call.
     let arm = compiled_arm_for(heap, id, argc)?;
     if arm.nrequired != argc || arm.noptional != 0 || arm.rest_slot.is_some() {
         return None;
@@ -965,8 +942,9 @@ pub(crate) fn hof_apply_step(
     // trampoline + `jit_tier` every element — ~25%+ of both per the profile). Falls back to
     // `vm_apply` when the arm isn't natively callable (not tiered yet / over the native cap /
     // shape) or deopts.
+    // `BROOD_NO_HOF_JIT=1` opts out of the native fast frame alone.
     #[cfg(feature = "jit")]
-    if hof_native_enabled() {
+    if crate::diagnostics::debug_flags::higher_order_native() {
         if let Some(r) = hof_apply_native(heap, hof.arm.arc(), args, cenv, hof.bases) {
             return Some(r);
         }
@@ -985,14 +963,6 @@ pub(crate) fn hof_apply_step(
 /// `capture_value` fill (the fast frame bypasses `push_frame`, so captured lexicals must be filled
 /// here), and the same 0/3/4/deopt outcome handling. `hof_resolve` already proved the arm is
 /// fixed-arity-`argc` with no optionals/rest, so `capture_base == argc`.
-/// Default ON; `BROOD_NO_HOF_JIT` opts out (the A/B / correctness lever for the HOF native
-/// fast-frame, independent of `BROOD_NO_HOF` which disables the whole cached-arm path).
-#[cfg(feature = "jit")]
-pub(crate) fn hof_native_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_HOF_JIT").is_none())
-}
-
 #[cfg(feature = "jit")]
 pub(crate) fn hof_apply_native(
     heap: &mut Heap,
@@ -1160,13 +1130,13 @@ pub(crate) fn hof_apply_native(
                         .map(crate::eval::compile::jit_plan::codegen::inst_opcode_name)
                         .unwrap_or("<out-of-range>");
                     eprintln!(
-                        "[jit-deopt] arm={name} resume_ip={ip} op={op} reason#{} (journalled)",
-                        heap.jit_deopt_reason()
+                        "[jit-deopt] arm={name} resume_ip={ip} op={op} reason={} (journalled)",
+                        crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
                     );
                 }
                 None => eprintln!(
-                    "[jit-deopt] arm={name} no journal — re-runs from ip 0 (ckpt_slot={slot}) reason#{}",
-                    heap.jit_deopt_reason()
+                    "[jit-deopt] arm={name} no journal — re-runs from ip 0 (ckpt_slot={slot}) reason={}",
+                    crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
                 ),
             }
         }

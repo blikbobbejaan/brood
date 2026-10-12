@@ -33,13 +33,10 @@ use brood::{process, Interp};
 /// True when this run can never observe a dirty block, so the phase-1 hunt is pointless.
 ///
 /// A dirty block is a park under a NATIVE frame; with the ceiling below [`Tier::Native`]
-/// (`BROOD_TIER=0|1`, `BROOD_VM=0`, `BROOD_NO_JIT=1`) no arm ever lowers, so phase 1's
-/// forty rounds — a 150 ms sleep plus a 50 000-iteration re-heat each — can only walk to
-/// the vacuous exit the long way. On the tree-walker that walk is the whole 120 s nextest
-/// budget: the `BROOD_VM=0` differential job timed out on this file from 2026-08-30 06:57Z
-/// until this guard, while the same test passed vacuously in the default job. Asks the
-/// runtime rather than the environment (the ceiling has three spellings — see
-/// `tier_ceiling`).
+/// (`BROOD_TIER=0|1`) no arm ever lowers, so phase 1's forty rounds — a 150 ms sleep plus a
+/// 50 000-iteration re-heat each — can only walk to the vacuous exit the long way, which on
+/// the tree-walker is the whole 120 s nextest budget. Asks the runtime (`tier_ceiling`)
+/// rather than the environment.
 fn ceiling_below_native() -> bool {
     if tier_ceiling() < Tier::Native {
         eprintln!(
@@ -99,7 +96,7 @@ fn an_arm_hosting_a_parked_receive_latches_and_later_parks_capture() {
             .expect("re-heat errored");
     }
     if !saw_dirty {
-        // The step never went native (no-JIT build, BROOD_NO_JIT/BROOD_TIER<2, or the
+        // The step never went native (no-JIT build, BROOD_TIER<2, or the
         // machine never tiered it): every park captured, which is the healthy baseline —
         // there is nothing to latch. The latch behaviour is covered by the default-config
         // suite run.

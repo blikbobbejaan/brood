@@ -28,7 +28,7 @@ env:
   # `gh api repos/broodlang/bedit/commits/main -q .sha`), paste it here, and run
   # `make smoke-bedit` against that checkout first — bump it whenever bedit adopts a
   # brood change (a rename wave, a new std name) that its previous commit predates.
-  BEDIT_REF: 0591798e34f78355cec4ebcde1bd1aeaa4d0955c
+  BEDIT_REF: dc5f847c76a36c9568c5ea8c5ff3f20a25228903
 
 jobs:
   # Is the version in Cargo.toml actually released? Not a gate — a NOTICE, because the
@@ -282,39 +282,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      # PINNED, not the floating `@nextest` tag. That tag resolves to the newest release after
-      # a ~1-day cooldown, and on 2026-09-12 it moved to cargo-nextest 0.9.144 (published
-      # 09-10) whose checksum verification then failed on every run — `::error::install-action`
-      # under "verifying sha256 checksum", two consecutive pushes, before any test ran. 0.9.143
-      # had served green for five weeks. A floating tool version is an unreviewed dependency
-      # bump on every CI run; bump this deliberately, and only after it installs cleanly.
+      # PINNED, not the floating `@nextest` tag: a floating tool version is an unreviewed
+      # dependency bump on every run (0.9.144's checksum failure redded CI before any test
+      # ran). Bump deliberately, after it installs cleanly.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
 
-      # The no-JIT configuration (`BROOD_NO_JIT` has a build-level counterpart —
-      # CLAUDE.md documents `--no-default-features` as supported). It broke silently
-      # once (ungated `crate::jit` refs, found 2026-07-19); this check keeps every
-      # `#[cfg(feature = "jit")]` seam honest without a second full test run.
-      # NOTE the `-p brood`, not `--workspace`. `--workspace --no-default-features`
-      # CANNOT see a lean-build break: `crates/nest` depends on `brood` WITHOUT
-      # `default-features = false`, so Cargo's feature unification turns `dev-tools`
-      # (and friends) back on for the shared `brood` build and the check passes.
-      # Demonstrated 2026-08-20 — an ungated `gc_stats` calling a dev-tools-gated
-      # `gc_stats_map` gave `--workspace` exit 0 and `-p brood` exit 101, and the break
-      # reached a developer's `make install` instead of CI. That is the second time this
-      # configuration broke silently (the first, ungated `crate::jit` refs on 2026-07-19,
-      # is what this step was added for — so the guard has never actually worked).
+      # The no-default-features build (no JIT, no dev-tools): keeps every
+      # `#[cfg(feature = …)]` seam honest without a second full test run.
+      # `-p brood`, not `--workspace`: `crates/nest` depends on `brood` with default
+      # features, so workspace feature unification would turn them back on and hide
+      # a lean-build break.
       - name: Check (no default features)
         run: cargo check -p brood --no-default-features
 
-      # The `--workspace` check above UNIFIES features across members, so a member
-      # that pulls `brood/dev-tools` (a brood default) re-enables it for the whole
-      # invocation — which is how an ungated fn calling a `#[cfg(dev-tools)]` helper
-      # (`gc_stats` → `gc_stats_map`, 2026-08-20) sailed through it and only broke at
-      # `make install` / the hive Docker build. Isolate the LEAN runtime feature set
-      # the way `make release-brood` does (`-p cli`, not `--workspace`) so that class
-      # of dev-tools-gating slip fails here instead of at deploy time.
+      # The LEAN runtime feature set, isolated the way `make release-brood` builds it
+      # (`-p cli`), so a dev-tools-gating slip fails here instead of at deploy time.
       - name: Check (lean runtime — isolated -p cli, matches release-brood)
         run: cargo check -p cli --no-default-features --features brood/jit
 
@@ -345,11 +329,7 @@ jobs:
       # it loads the project image first, so cross-module and qualified names
       # still resolve. Deliberate lints opt out in-source with `check-allow`.
       #
-      # Reached zero 2026-07-31 (was 81 on 2026-07-25): every deliberate
-      # non-tail recursion in std/ + tests/ now carries a justified
-      # `(check-allow :non-tail-recursion …)`, the bootstrap `append--2` became
-      # tail-recursive, and `gui-open`'s Sig admits its nil-able optionals. Keep
-      # it at zero — a new warning here is either a real finding or a missing
+      # Keep it at zero — a new warning here is either a real finding or a missing
       # justified opt-out.
       - name: Type-checker gate (nest check — zero warnings)
         shell: bash
@@ -358,15 +338,11 @@ jobs:
           cargo run -q -p nest --features brood/treesit-grammars -- \
             check std/**/*.blsp tests/**/*.blsp examples/**/*.blsp
 
-      # The STRICT gate over the standard library (2026-08-30): a positively-known bound
-      # is read by inclusion, so `number` where `int` is declared, or `nil | string`
-      # handed to a string function, is a warning. std reached zero on 2026-08-30 (from
-      # 336) by declaring ~350 signatures and making every nil source honest; six
-      # checker gaps closed on the way. Keep it at zero — a new strict warning is either
-      # an undeclared function or a real maybe-nil. `tests/` joined the gate on
-      # 2026-09-17 (from 32 findings): a test that hands a function what its sig would
-      # not admit ON PURPOSE says so with `(check-allow :type-mismatch …)`, and a read
-      # that assumes non-emptiness spells it `(or (first xs) (error …))`, which narrows.
+      # The STRICT gate: a positively-known bound is read by inclusion, so `number` where
+      # `int` is declared, or `nil | string` handed to a string function, is a warning.
+      # Keep it at zero — a new strict warning is an undeclared function or a real
+      # maybe-nil. A test that passes what a sig would not admit ON PURPOSE says so with
+      # `(check-allow :type-mismatch …)`.
       - name: Type-checker STRICT gate over std + tests (nest check --strict — zero warnings)
         shell: bash
         run: |
@@ -375,7 +351,7 @@ jobs:
             check --strict std/**/*.blsp tests/**/*.blsp
 
   # The ADR-076 differential gate — the whole suite through the tree-walker
-  # escape hatch (`BROOD_VM=0`), the second half of `make test-both`. The VM is
+  # (`BROOD_TIER=0`), the second half of `make test-both`. The VM is
   # the default engine and `differential.rs` already checks per-expression
   # agreement inside the normal run, so this is the belt-and-braces pass that
   # catches a divergence only a full tree-walked suite would show.
@@ -394,12 +370,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      # PINNED, not the floating `@nextest` tag. That tag resolves to the newest release after
-      # a ~1-day cooldown, and on 2026-09-12 it moved to cargo-nextest 0.9.144 (published
-      # 09-10) whose checksum verification then failed on every run — `::error::install-action`
-      # under "verifying sha256 checksum", two consecutive pushes, before any test ran. 0.9.143
-      # had served green for five weeks. A floating tool version is an unreviewed dependency
-      # bump on every CI run; bump this deliberately, and only after it installs cleanly.
+      # Pinned for the same reason as build-test's.
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.143
@@ -416,25 +387,15 @@ jobs:
       # code.
       # `--failure-output immediate-final` repeats every failure in one block at the end, which
       # is what makes the parse below a parse rather than a guess.
-      - name: Test (nextest, BROOD_VM=0)
+      - name: Test (nextest, BROOD_TIER=0)
         id: tw
         env:
-          BROOD_VM: 0
-          # KI-78: keep ONE job deliberately on the stdlib image's SOURCE path.
-          #
-          # The image is default-ON (v0.15.0), and nextest's `build-std-image` setup script now
-          # builds one before the suite so the other jobs exercise that default. Without this
-          # line every job would run imaged and source-path coverage would silently vanish —
-          # trading one gap for its mirror image. This variable is the setup script's own off
-          # switch, so setting it here gives a source-path setup and a source-path run together.
-          #
-          # This job is the right one to carry it: it already exists to run the suite in a
-          # non-default configuration (the tree-walker, BROOD_VM=0), so "the other configuration"
-          # is its whole purpose. The pairing is engine x load-path, not either alone.
+          BROOD_TIER: 0
+          # KI-78: this job, already the "other configuration", also keeps the stdlib image's
+          # and the prelude image's SOURCE paths covered (both artifacts are default-on, so
+          # without this every job would run imaged). BROOD_NO_STDIMAGE is also the nextest
+          # `build-std-image` setup script's own off switch.
           BROOD_NO_STDIMAGE: 1
-          # Same reason, one artifact over: the PRELUDE image is default-on too (ADR-314, since
-          # 2026-09-04), so this job also keeps the SOURCE boot path covered on purpose — the
-          # only fallback there is, since the ADR-138 text cache was deleted (2026-09-12).
           BROOD_NO_PRELUDE_IMAGE: 1
         shell: bash
         run: |

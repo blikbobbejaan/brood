@@ -94,3 +94,17 @@ fn an_ordinary_warning_carries_no_deprecated_tag() {
         .expect("expected a callback-arity warning");
     assert_eq!(hit.tags, None, "only a deprecation is tagged: {hit:?}");
 }
+
+#[test]
+fn a_finding_without_a_position_is_published_at_the_start_of_the_document() {
+    // An unused `:use` import is a file-level finding the checker reports with no position.
+    // The CLI prints it; the editor must show it too, anchored at the top of the file.
+    let src = "\n\n(defmodule foo (:use string))\n(defn bar (x) x)\n";
+    let diags = warnings(src);
+    let hit = diags
+        .iter()
+        .find(|d| d.message.contains("unused :use import"))
+        .unwrap_or_else(|| panic!("expected the unused-import warning: {diags:?}"));
+    assert_eq!(hit.range.start, lsp_types::Position::new(0, 0), "{hit:?}");
+    assert_eq!(hit.severity, Some(DiagnosticSeverity::WARNING));
+}

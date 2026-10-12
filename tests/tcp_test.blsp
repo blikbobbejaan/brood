@@ -633,3 +633,14 @@
           (tcp/close ls)
           (assert= (type-of data) :string)
           (assert= data "plain text"))))))
+
+(describe "tcp: connect failure"
+  :isolated (test "a refused connect raises a structured error carrying E0050"
+    ;; Bind then close a listener so the port is known and nothing is listening on it.
+    (let (ls (tcp/listen "127.0.0.1" 0)
+          port (listen-port ls))
+      (tcp/close ls)
+      (let (e (check-allow :discarded-catch
+                (try (tcp/connect "127.0.0.1" port) (catch e e))))
+        (assert= (get e :code) "E0050")
+        (is (includes? (error-message e) (str "tcp-connect 127.0.0.1:" port)))))))

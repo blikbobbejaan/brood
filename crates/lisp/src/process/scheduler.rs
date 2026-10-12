@@ -131,16 +131,11 @@ pub(super) struct Ctx {
     pub(super) mailbox: Arc<Mailbox>,
     /// The **output-capture stack**. Empty means no capture; output goes to real
     /// stdout. When non-empty, this process's `print` / terminal output appends to
-    /// the **top** buffer instead (see builtins' `capture_write`). It's a *stack*
-    /// so captures **nest**: `begin_capture` pushes a fresh buffer, `take_capture`
-    /// pops the top and returns its text — so a `with-out-str` running inside a
-    /// `nest mcp` `tools/call` (which itself installs a capture) drains only its
-    /// own buffer and the MCP envelope's capture survives underneath. A SPAWNED
-    /// child **inherits** a snapshot of the parent's stack (the same `Arc`s), so a
-    /// process tree the dispatcher ran under a watchdog still diverts off the
-    /// JSON-RPC channel even on a worker thread. Each `Arc` is minted fresh per
-    /// `begin_capture`, so concurrent captures never share a buffer. Rides
-    /// `CURRENT`, so it's saved/restored across suspend for free.
+    /// the **top** buffer instead (see builtins' `capture_write`). A *stack* so
+    /// captures **nest** (`with-out-str` inside an MCP `tools/call` drains only its
+    /// own buffer). A SPAWNED child **inherits** a snapshot of the parent's stack (the
+    /// same `Arc`s), so a whole process tree stays diverted. Each `Arc` is minted fresh
+    /// per `begin_capture`. Rides `CURRENT`, so it survives suspend for free.
     pub(super) capture: Vec<Arc<Mutex<String>>>,
 }
 
@@ -150,20 +145,10 @@ thread_local! {
 
 thread_local! {
     /// The `CURRENT` a quantum displaced, so `save_ctx` can put it back rather than
-    /// clearing it.
-    ///
-    /// On a worker thread there is nothing to put back — the thread runs processes and
-    /// nothing else — which is why clearing was indistinguishable from restoring for as long
-    /// as processes only ever ran on workers. On wasm there are no worker threads: `wait`
-    /// drives the run queue on the CALLING thread, so a quantum runs on top of the caller's
-    /// own context. The playground calls `begin_stdout_capture` (which creates that context
-    /// and puts the capture buffer in it), runs the snippet, then reads the buffer back —
-    /// and the snippet's own quantum was clearing the context holding it, so `take_capture`
-    /// found nothing and every `io/puts` vanished from the page (KI-115).
-    ///
-    /// A stack, not a slot: nothing nests today, but a pump re-entered from inside a
-    /// quantum would silently lose a frame, and that is not a failure worth discovering
-    /// twice.
+    /// clearing it. On a worker there is nothing to restore, but on wasm the run queue
+    /// is pumped on the CALLING thread, whose own context (holding the playground's
+    /// stdout capture) a quantum must not erase (KI-115). A stack, so a re-entered pump
+    /// cannot lose a frame.
     static DISPLACED: RefCell<Vec<Option<Ctx>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -174,19 +159,6 @@ thread_local! {
     /// resets it to `REDUCTION_BUDGET` before each `resume` (see `run_one`); `eval`
     /// decrements it via `tick`, and the process yields when it hits zero.
     static REDUCTIONS: Cell<u32> = const { Cell::new(0) };
-
-    /// An eval **deadline** (wall clock) for this thread, or `None`. The `nest mcp`
-    /// dispatcher sets it around an `eval`/`load` so a runaway (an infinite Brood
-    /// loop) is aborted — see [`deadline_exceeded`], checked in eval's `'tail:`
-    /// loop — instead of wedging the server. Inline (no spawn), so the dispatcher's
-    /// error / panic / output-capture handling is untouched; a *native* blocking
-    /// call still can't be interrupted (it never reaches the check — the same limit
-    /// `(exit … :kill)` has).
-    static DEADLINE: std::cell::Cell<Option<web_time::Instant>> = const { std::cell::Cell::new(None) };
-    /// Call counter so [`deadline_exceeded`] reads the clock only every ~1024 ticks;
-    /// the no-deadline fast path is a single `Cell` get, so eval's loop pays ~nothing.
-    static DEADLINE_TICK: Cell<u32> = const { Cell::new(0) };
-
 }
 
 /// How many `eval` loop iterations a process runs before it must yield its worker
@@ -247,36 +219,6 @@ pub(crate) fn charge_native(t0: web_time::Instant) -> Option<u128> {
     }
 }
 
-/// Set (or clear with `None`) this thread's eval deadline. Paired set/clear by the
-/// `nest mcp` dispatcher around a guarded `eval`/`load`. Thread-local: only the
-/// thread running the guarded eval is affected.
-pub fn set_deadline(at: Option<web_time::Instant>) {
-    DEADLINE.with(|d| d.set(at));
-    DEADLINE_TICK.with(|c| c.set(0));
-}
-
-/// True iff a deadline is set and has passed. The clock is read only every ~1024
-/// calls, so the common (no-deadline) path is one `Cell` get — eval's loop checks
-/// this every combination but pays almost nothing when no deadline is armed.
-pub fn deadline_exceeded() -> bool {
-    DEADLINE.with(|d| match d.get() {
-        None => false,
-        Some(at) => DEADLINE_TICK.with(|c| {
-            let n = c.get().wrapping_add(1);
-            c.set(n);
-            n % 1024 == 0 && web_time::Instant::now() >= at
-        }),
-    })
-}
-
-/// Reduction budget exhausted at a `tick()` site. With no coroutine, there's nothing to
-/// yield to here: the **top-level** VM driver does capture-mode preemption itself
-/// (`tick_capture` → capture the continuation + re-enqueue). This path is reached only by
-/// runs that are *not* the body driver — a NESTED native callback's `vm_apply`, the
-/// tree-walker, the root thread, the prelude build — so it just accumulates the quantum's
-/// reductions into `process-info`'s `:reductions` (if a process ctx exists) and refreshes
-/// the budget so the caller keeps running. (A long native callback thus runs as a "dirty"
-/// section — not preempted mid-call — the §7.4 carve-out.)
 /// A NESTED (non-capture) run's reduction rollover: book the quantum and refill the budget
 /// — [`preempt`] for the VM's loop safepoints, which test the rollover with
 /// [`tick_capture`] so they can run their once-per-quantum checks first.
@@ -284,6 +226,11 @@ pub(crate) fn refill_nested_quantum() {
     preempt();
 }
 
+/// Reduction budget exhausted at a `tick()` site. Nothing to yield to here: the
+/// **top-level** VM driver does capture-mode preemption itself (`tick_capture`). This is
+/// reached only by runs that are *not* the body driver — a nested native callback, the
+/// tree-walker, the root thread, the prelude build — so it books the quantum into
+/// `process-info`'s `:reductions` and refreshes the budget (the §7.4 dirty carve-out).
 fn preempt() {
     if let Some(c) = CURRENT.with(|c| c.borrow().clone()) {
         c.mailbox
@@ -436,15 +383,10 @@ pub(crate) fn set_capture_top_level(on: bool) -> bool {
 ///
 /// A tree-walker frame is a *native* frame for capture purposes — the capture
 /// driver can't reify it — so a `receive` reached through one must take the
-/// blocking (§7.4 dirty-scheduler) path, never the capture path. Without this,
-/// TW code reached from inside a capture-mode VM driver (`BROOD_VM=0` runs of
-/// `%isolate`/`%try`/HOF callbacks, or a VM tw-defer) saw the driver's stale
-/// `true`, "captured" across the un-reifiable TW frames, and the resume
-/// **re-ran the whole native thunk from the top** — repeating its side effects
-/// (the §8.1 footgun; surfaced 2026-07-19 as the test runner re-running
-/// `:isolated` bodies under `BROOD_VM=0`). Entered at the tree-walker's two
-/// entry points (`eval::eval`, `eval::apply`), so every seam into the TW is
-/// covered; nested entries are cheap no-op re-clears.
+/// blocking (§7.4 dirty-scheduler) path, never the capture path — capturing across
+/// un-reifiable TW frames makes the resume **re-run the whole native thunk**, repeating
+/// its side effects (the §8.1 footgun). Entered at the tree-walker's two entry points
+/// (`eval::eval`, `eval::apply`); nested entries are cheap no-op re-clears.
 pub(crate) struct TreeWalkGuard(bool);
 
 impl TreeWalkGuard {
@@ -459,9 +401,6 @@ impl Drop for TreeWalkGuard {
     }
 }
 
-/// Reduction tick for the capture-mode VM driver: like [`tick`] but **returns**
-/// whether the budget is exhausted (so the driver captures + yields a `Preempted`).
-/// Decrements otherwise. The budget is refreshed by `run_one` at the next resume.
 /// Test hook: set this thread's remaining reduction budget directly, so a unit test can
 /// drive the capture-mode VM through preemptions without a scheduler (`run_one` refills
 /// the budget on every resume; a test standing in for it must too).
@@ -470,6 +409,9 @@ pub(crate) fn set_reduction_budget_for_test(n: u32) {
     REDUCTIONS.with(|r| r.set(n));
 }
 
+/// Reduction tick for the capture-mode VM driver: like [`tick`] but **returns**
+/// whether the budget is exhausted (so the driver captures + yields a `Preempted`).
+/// Decrements otherwise. The budget is refreshed by `run_one` at the next resume.
 pub(crate) fn tick_capture() -> bool {
     REDUCTIONS.with(|r| {
         let n = r.get();
@@ -504,28 +446,13 @@ pub(crate) fn tick_capture_n(n: u32) -> bool {
 /// [`tick`], additionally reporting whether an untrappable hard `:kill` is pending —
 /// the reduction tick for every eval path that **cannot capture** a continuation.
 ///
-/// The top-level VM body driver honours a hard kill by returning `VmOutcome::Killed`
-/// from its safepoint (`tick_capture` + `capture_hard_kill_pending`). Every other
-/// execution path — the tree-walker's `'tail:` loop, its `'dispatch` passthrough
-/// redirect, and a *nested* VM run behind `eval`/`try`/an HOF native — used plain
-/// [`tick`], which is pure accounting: on rollover, `preempt()` refreshes the budget
-/// and the loop keeps going. Nothing on those paths ever looked at the kill flag, so
-/// a process evaluating code via `eval`/`reflect/eval-string` was **unkillable**: `(exit pid
-/// :kill)` latched the flag and the target spun forever. (Measured: a spinning child
-/// died from a direct call but survived the identical loop under `reflect/eval-string`. The
-/// decisive routing detail: the loop's `>`/`-` are thin-wrapper passthroughs, so the
-/// hot path ticks in `passthrough_redirect_ok` — the same spot the eval *deadline*
-/// once escaped through, and for the same reason.)
-///
-/// A non-capturing path can't *return* an outcome across its native frames, but a
-/// kill doesn't need one — only unwinding. On `true` the caller raises
-/// [`LispError::kill_signal`](crate::error::LispError::kill_signal): untrappable
-/// (`%try` and the cleanup natives re-raise control signals), converted to
-/// `VmOutcome::Killed` by the body driver exactly as the native-nested-`receive`
-/// kill already is. The check runs only on rollover — once per ~2000-reduction
-/// quantum — so the hot path stays a plain thread-local decrement, and on the root
-/// thread (`CURRENT` unset) it is always `false`, so the REPL's own top-level eval
-/// can never kill itself.
+/// The top-level VM body driver honours a hard kill from its safepoint; every other
+/// path (the tree-walker, a *nested* VM run behind `eval`/`try`/an HOF native) ticks
+/// here, or a process looping under `reflect/eval-string` is unkillable. On `true` the
+/// caller raises the untrappable
+/// [`LispError::kill_signal`](crate::error::LispError::kill_signal), which the body
+/// driver turns into `VmOutcome::Killed`. Checked only on rollover (once per quantum),
+/// and always `false` on the root thread, so the REPL can never kill itself.
 pub(crate) fn tick_reporting_hard_kill() -> bool {
     let rolled_over = REDUCTIONS.with(|r| {
         let n = r.get();
@@ -604,18 +531,13 @@ static STOLEN: AtomicU64 = AtomicU64::new(0);
 /// across worker threads (ADR-100 §7). Read by the live-migration regression test as
 /// direct evidence that captured continuations actually crossed threads.
 static MIGRATED: AtomicU64 = AtomicU64::new(0);
-/// child pid → the pid that `spawn`ed it. Populated at `spawn`, removed at
-/// `deregister` (a parent record lives only as long as the child). Backs
-/// `process-info`'s `:parent` (and a future process-tree view). A side table
-/// rather than a `Process` field because the `Process` isn't reachable from the
-/// registry while it runs; this is.
 
-/// The pid that spawned `pid`, or `None` for the root process (or a dead pid).
+/// The pid that spawned `pid`, or `None` for the root process (or a dead pid). Backs
+/// `process-info`'s `:parent`.
 pub fn parent_of(pid: u64) -> Option<u64> {
-    // The parent rides the process's own mailbox (see `Mailbox::parent`) rather than a
-    // global `pid -> pid` map: same answer, no lock, and nothing to clean up on exit.
-    // `0` is the root's "no parent" sentinel, reported as `None` exactly as the absent
-    // map entry used to be.
+    // The parent rides the process's own mailbox (`Mailbox::parent`) — readable while
+    // the `Process` runs, no lock, nothing to clean up on exit. `0` is the root's
+    // "no parent" sentinel.
     REGISTRY
         .get(pid)
         .map(|mb| mb.parent.load(Ordering::Relaxed))
@@ -731,46 +653,27 @@ static STEALABLE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 /// work of its own. A backstop, not the primary wakeup: a worker is woken
 /// immediately when a process is enqueued onto *its* queue (a preempt re-enqueue
 /// or a spawn placed here), but it is *not* notified when a **peer's** queue
-/// grows — so it re-checks for stealable work every `STEAL_BACKOFF`. Short
-/// enough that a steal opportunity isn't missed for long. Tunable.
-///
-/// This is the cadence while work exists *somewhere* (`STEALABLE > 0`). It used to be the
-/// cadence always, and the comment here claimed a genuinely idle pool then "wakes rarely"
-/// because each wake is a single `STEALABLE` load. That measured the wrong thing: the load
-/// is free, the **wake** is not. At 10 ms every parked worker takes a futex timeout and a
-/// context switch 100×/s, so an idle runtime cost 0.25% of a core *per worker* — 6-8% of a
-/// core on a 28-core box, forever, with nothing to run. It showed up as a `nest mcp` server
-/// that had burned 10 hours of CPU sitting idle for five days. See `IDLE_BACKOFF_MAX`.
+/// grows — so it re-checks for stealable work every `STEAL_BACKOFF`. This is the
+/// cadence while work exists *somewhere* (`STEALABLE > 0`); see `IDLE_BACKOFF_MAX` for
+/// the empty pool.
 const STEAL_BACKOFF: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// The park backstop once `STEALABLE == 0` — nothing queued on any worker, so a re-probe
-/// has nothing to find *by definition*, and the only thing the timeout buys is the wake
-/// itself. A worker doubles its own backstop from `STEAL_BACKOFF` up to this bound while it
-/// keeps finding an empty pool, and drops straight back to `STEAL_BACKOFF` the moment it
-/// runs anything or wakes to a non-empty pool.
-///
-/// **Nothing about the loaded scheduler changes**: with `STEALABLE > 0` the cadence is
-/// `STEAL_BACKOFF`, exactly as before, which is the regime stealing and the stranded-work
-/// watchdog both live in. Real work is unaffected either way — a process enqueued onto a
-/// worker's queue notifies *that worker's* condvar directly (see `enqueue`), and a spawn
-/// wakes an idle peer (`wake_a_parked_peer`); neither path is a timeout.
+/// The park backstop once `STEALABLE == 0` — a re-probe has nothing to find, so the
+/// timeout buys only the wake, and a 10 ms wake on every worker cost an idle runtime
+/// 0.25% of a core per worker. A worker doubles its backstop from `STEAL_BACKOFF` up to
+/// this bound while it keeps finding an empty pool, and drops straight back the moment it
+/// runs anything or the pool is not empty. Real work never waits on this timeout: an
+/// enqueue notifies its worker directly, and a spawn wakes an idle peer
+/// (`wake_a_parked_peer`).
 const IDLE_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// How long a newly enqueued process is left for its **owning** worker before a thief may
-/// take it. The owner is exempt — it pops its own queue without consulting this — so the
-/// window costs nothing when the owner is about to drain anyway.
-///
-/// It exists because the two workloads want opposite things from a spawn, and the
-/// difference between them is *time*. A spawner that blocks right after spawning (the
-/// `supervisor` shape: spawn, then `receive` the reply) yields within a microsecond or two,
-/// and its child should run right there on a warm cache — stealing it costs that row 2.6×.
-/// A spawner that keeps running (the `latency` dispatcher, busy-waiting to its next
-/// scheduled instant) will not yield for a whole quantum, and its child should go to an idle
-/// peer — leaving it local costs p50 27 µs against 9 µs. A few microseconds of first refusal
-/// separates the two without having to predict which kind of spawner we have.
-/// `BROOD_STEAL_GRACE_NS=<n>` overrides it (0 disables first refusal entirely) — the A/B
-/// lever, since this constant is precisely the knob that trades the two rows against each
-/// other. Read once.
+/// take it. The owner is exempt, so the window costs nothing when it is about to drain.
+/// A spawner that blocks right after spawning (spawn, then `receive` the reply) yields
+/// within microseconds and its child should run locally on a warm cache; one that keeps
+/// running won't yield for a quantum and its child should go to an idle peer. A few
+/// microseconds of first refusal separates the two without predicting which we have.
+/// `BROOD_STEAL_GRACE_NS=<n>` overrides it (0 disables first refusal). Read once.
 fn steal_grace_ns() -> u64 {
     static G: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *G.get_or_init(|| {
@@ -784,14 +687,9 @@ fn steal_grace_ns() -> u64 {
 /// The running process's `spawns_since_park`, held in a thread-local for the duration of a
 /// quantum — the same install-and-read-back shape `Ctx`/the capture stack use, because the
 /// worker multiplexes processes and the spawn site (deep inside `eval`) cannot reach the
-/// `Process` box it is running inside.
-///
-/// It exists to tell the two spawner shapes apart, which is the whole difficulty in placing
-/// a child. A supervisor spawns one child and immediately blocks for the reply, so its child
-/// should stay local on a warm cache; a dispatcher spawns and keeps running, so its child
-/// should go to an idle peer. Both look identical at the moment of the spawn. The counter
-/// distinguishes them by *history* instead of prediction: a process that has spawned again
-/// without ever blocking in between is, demonstrably, not about to block.
+/// `Process` box it is running inside. It tells the two spawner shapes apart by
+/// *history*: a process that has spawned again without blocking in between is a
+/// dispatcher, not a supervisor about to block, so its children should reach an idle peer.
 pub(super) fn spawns_since_park_bump() -> u32 {
     SPAWNS_SINCE_PARK.with(|c| {
         let n = c.get().saturating_add(1);
@@ -827,19 +725,11 @@ static WORKER_BUSY: LazyLock<Vec<Padded<AtomicBool>>> = LazyLock::new(|| {
 });
 
 /// Per-worker "is parked on its condvar" flag, and a count of how many are. Together they
-/// let [`enqueue`](crate::process::scheduler::pool::enqueue) hand a *steal opportunity* to
-/// an idle peer instead of leaving it to the `STEAL_BACKOFF` timer.
-///
-/// Why this exists: a worker is woken when work lands on **its own** queue, never when a
-/// peer's queue grows, so an idle peer could only discover stealable work on its 10 ms
-/// re-probe. That is far too slow to matter, which made stealing a background rebalancer
-/// rather than a latency mechanism — and left a child enqueued behind a **CPU-bound**
-/// spawner waiting a full quantum. Measured on the `latency` row: p50 27 µs, of which
-/// essentially all was spawn→first-instruction (with the handler doing no work at all it
-/// was still 26 µs), against 11 µs when placement was forced round-robin.
-///
-/// The count is the cheap gate — one relaxed load on the enqueue path — so a saturated
-/// pool (no one parked) pays nothing and never issues a wake.
+/// let the spawn path ([`wake_a_parked_peer`](crate::process::scheduler::pool::wake_a_parked_peer))
+/// hand a *steal opportunity* to an idle peer instead of leaving it to the `STEAL_BACKOFF`
+/// re-probe — a worker is woken only when work lands on its own queue, so without this a
+/// child behind a CPU-bound spawner waited a full quantum. The count is the cheap gate: a
+/// saturated pool (no one parked) pays one load and never issues a wake.
 static WORKER_PARKED: LazyLock<Vec<Padded<AtomicBool>>> = LazyLock::new(|| {
     (0..WORKERS.len())
         .map(|_| Padded(AtomicBool::new(false)))
@@ -905,77 +795,51 @@ fn assign_worker() -> usize {
     best
 }
 
-/// Pick the worker a freshly **spawned** `Process` is placed on — cheaply, without
-/// the O(workers) least-loaded scan [`assign_worker`] does. The BEAM model: a process
-/// spawned from inside a worker goes on **that worker's own queue** (cache locality, and
-/// the spawner is about to keep running anyway), and work-stealing ([`try_steal`])
-/// rebalances lazily — so a spawn burst doesn't pay an O(n) `try_lock` scan per child.
-/// Off-worker (the root program on the main thread, or an overflow drainer) there is no
-/// "own" queue, so round-robin — one relaxed atomic add, still no scan. A dirty-blocked
-/// current worker (parked in a native-nested receive, §7.4) won't drain its queue, so
-/// fall back to round-robin rather than strand the child there.
+/// Pick the worker a freshly **spawned** `Process` is placed on — cheaply, without the
+/// O(workers) scan [`assign_worker`] does. A child spawned from inside a worker stays on
+/// **that worker's own queue** while the queue is short (warm cache; the spawner keeps
+/// running); once the backlog reaches [`spawn_spill_threshold`] it spills round-robin,
+/// because a dispatcher spawning a handler per request onto its own queue lets one slow
+/// handler block all the rest, and stealing rebalances too little of that. Off-worker
+/// (the root program, an overflow drainer) or on a dirty-blocked worker (§7.4 — it won't
+/// drain its queue) there is no usable own queue, so round-robin. Either way the cost is
+/// one atomic add or one `try_lock` on our own queue; a failed `try_lock` reads as "no
+/// backlog" (the only contender is a thief, which is draining it anyway).
 fn pick_spawn_worker() -> usize {
-    let n = WORKERS.len().max(1);
-    if spawn_round_robin() {
-        // `BROOD_SPAWN_RR=1`: place every child round-robin instead of on the spawner's
-        // worker. The A/B lever for the tail-latency question — a dispatcher that spawns a
-        // handler per request puts them all on its own queue, where one slow handler blocks
-        // the rest, and stealing only rebalanced 12% of them on the `latency` row.
-        return NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % n;
-    }
+    let worker_count = WORKERS.len().max(1);
     match CURRENT_WORKER.with(|c| c.get()) {
-        Some(w) if w < n && !WORKER_DIRTY[w].load(Ordering::Relaxed) => {
-            // Local placement is right while our own queue is short — the child is about to
-            // run on a warm cache and the spawner keeps going. It is wrong once we have a
-            // backlog: a dispatcher spawning a handler per request piles every one onto its
-            // own queue, where a single slow handler blocks all of them, and stealing only
-            // rebalanced 12% of them on the `latency` row (p50 142µs local vs 11µs
-            // round-robin). So spill to another worker once the backlog crosses a threshold.
-            //
-            // Cost is one `try_lock` on our OWN queue — uncontended in the common case, and
-            // nothing like the O(workers) scan `assign_worker` runs. A failed `try_lock`
-            // reads as "no backlog" and keeps the child local: the only contender for that
-            // lock is a thief, whose presence means the queue is being drained anyway.
-            let backlog = match WORKERS[w].0 .0.try_lock() {
-                Ok(q) => q.len(),
+        Some(worker) if worker < worker_count && !WORKER_DIRTY[worker].load(Ordering::Relaxed) => {
+            let backlog = match WORKERS[worker].0 .0.try_lock() {
+                Ok(queue) => queue.len(),
                 Err(_) => 0,
             };
             if backlog >= spawn_spill_threshold() {
-                NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % n
+                NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % worker_count
             } else {
-                w
+                worker
             }
         }
-        _ => NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % n,
+        _ => NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % worker_count,
     }
 }
 
-/// Backlog at which a spawn stops going to the spawner's own worker and spills round-robin.
-/// `BROOD_SPAWN_SPILL=<n>` overrides; `0` spills always (equivalent to `BROOD_SPAWN_RR=1`),
-/// and a huge value restores the pre-2026-07-30 always-local behaviour for an A/B.
+/// Backlog at which a spawn stops going to the spawner's own worker and spills
+/// round-robin. `BROOD_SPAWN_SPILL=<n>` overrides (`0` always spills; a huge value keeps
+/// every child local).
 ///
-/// Default **1**: keep the child local only when our queue is *empty*, which is the case the
-/// locality argument is actually about (a supervisor spawning one child, the spawner about to
-/// continue). One already-waiting process means we are dispatching, and dispatching to our own
-/// queue is what produced the tail. Swept on the `latency` row (median of 5, p50/p99/p99.9):
-/// always-local 141/674/2902 µs · spill 8 78/457/3354 · spill 4 62/397/3852 · spill 2 48/289
-/// · **spill 1 27/232/562** · always-RR 12/168/3864. Always-RR looks tempting on p50 and is
-/// not the answer: it costs `supervisor` 2.6× (862 → 2223 ms) by scattering every child of a
-/// request/reply spawn across workers. Spill 1 leaves that row at 843 ms.
+/// Default **1**: keep the child local only when our queue is *empty* — the case locality
+/// is about (a supervisor spawning one child). One waiting process means we are
+/// dispatching. On the `latency` row spill 1 cut p50/p99 ~5×/3× against always-local, and
+/// unlike always-round-robin it leaves `supervisor` unharmed (round-robin scatters every
+/// child of a request/reply spawn: 2.6× slower).
 fn spawn_spill_threshold() -> usize {
-    static T: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *T.get_or_init(|| {
+    static THRESHOLD: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THRESHOLD.get_or_init(|| {
         std::env::var("BROOD_SPAWN_SPILL")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(1)
     })
-}
-
-/// Whether spawn placement is forced round-robin (`BROOD_SPAWN_RR=1`). Read once, cached.
-fn spawn_round_robin() -> bool {
-    static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var_os("BROOD_SPAWN_RR").is_some())
 }
 
 /// Total processes spawned since program start (read by `(%)`).
@@ -1050,17 +914,10 @@ pub fn worker_threads() -> u64 {
 /// value, else ≈ `nproc`. Called exactly once — at the `WORKERS` LazyLock
 /// init — so the env read never lands on the spawn hot path.
 ///
-/// **Floored at 2.** A native-nested `receive` *blocks* its worker thread like a BEAM
-/// dirty scheduler (§7.4) instead of capturing a continuation, and `drain_worker_queue`
-/// re-routes anything queued behind it off the (now stranded) worker. With a single
-/// worker there is nowhere to re-route to — `assign_worker` hands the work back to the
-/// same dirty worker — so a process queued behind the block never runs. That deadlocks
-/// e.g. a test that spawns a child and then receives from it under `--max-parallel 1`
-/// (the spawned child is stranded; the receive times out). The pool therefore always
-/// keeps at least one spare thread to drain a dirty-blocked worker, exactly as BEAM
-/// runs dirty schedulers in addition to its normal scheduler count. `--max-parallel`
-/// still caps how many tests the framework runs *concurrently*; it just can't starve
-/// the runtime of the spare a dirty-block needs.
+/// **Floored at 2.** A native-nested `receive` *blocks* its worker (§7.4) and
+/// `drain_worker_queue` re-routes its backlog to another worker; with a single worker
+/// there is nowhere to re-route to, so a child queued behind the block never runs. The
+/// pool always keeps a spare to drain a dirty-blocked worker.
 fn worker_count() -> usize {
     let requested = std::env::var_os("BROOD_J")
         .and_then(|s| s.to_str().and_then(|t| t.parse::<usize>().ok()))
@@ -1208,25 +1065,16 @@ pub fn live_pids() -> Vec<u64> {
     REGISTRY.pids()
 }
 
-/// Tear down every **permanently-parked** green process belonging to
-/// `runtime` — the embedded-host teardown the mailbox waiter-slot comment
-/// long flagged as missing. A process parked on a `(receive)` nothing will
-/// ever send to (no deadline) holds its `Box<Process>` (and its whole heap)
-/// in its mailbox's waiter slot for the life of the `REGISTRY` entry; the
-/// standalone binaries exit the OS process so it never mattered there, but a
-/// long-lived embedded host dropping an `Interp` leaked them until host
-/// exit. Called from `Interp::drop`.
+/// Tear down every **permanently-parked** green process belonging to `runtime` — one
+/// parked on a `(receive)` nothing will ever send to holds its whole heap in its
+/// mailbox's waiter slot, which an embedded host dropping an `Interp` would leak. Called
+/// from `Interp::drop`.
 ///
-/// Each reaped process goes through the **normal death path** (`deregister`
-/// with reason `:killed`): monitors fire `[:down …]`, links propagate, names
-/// unregister, sockets close. Only *parked* waiters of *this* runtime are
-/// touched — a runnable/running process is left to finish or park (a host
-/// should quiesce before dropping; a later drop of another `Interp` sharing
-/// the scheduler reaps nothing of ours since our entries are gone). Racing
-/// `send`s are safe: the waiter is taken under the state lock, so a
-/// concurrent deliver either woke it first (we skip) or queues into a
-/// mailbox that is removed right after (a send to a dead pid — a no-op).
-/// Returns how many processes were reaped.
+/// Each reaped process goes through the **normal death path** (`deregister` with reason
+/// `:killed`). Only *parked* waiters of *this* runtime are touched; a running process is
+/// left to finish or park. Racing `send`s are safe: the waiter is taken under the state
+/// lock, so a concurrent deliver either woke it first (we skip) or queues into a mailbox
+/// removed right after. Returns how many processes were reaped.
 pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) -> usize {
     let pids: Vec<u64> = REGISTRY.pids();
     let mut reaped = 0;
@@ -1258,11 +1106,9 @@ pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) ->
 /// this process reports whether it still references the draining generation. Called
 /// only when [`Heap::drain_active`](crate::core::heap::Heap::drain_active) already
 /// returned true. **Throttled** to 1/`DRAIN_REPORT_STRIDE` safepoints via
-/// [`Heap::drain_report_due`]: while a drain lingers, a fan-out re-reports on nearly
-/// every frame, almost all cheap no-op cell-hits whose cost is the redundant contended
-/// shared-atomic loads — the residual `spawn` collector overhead. Only this safepoint path
-/// throttles; the parked-process inspector and the drain-completion tests call
-/// `report_gen_liveness` directly. A process with no ctx (not in the live set) is skipped.
+/// [`Heap::drain_report_due`] (a lingering drain would otherwise re-report on nearly
+/// every frame); the parked-process inspector calls `report_gen_liveness` directly. A
+/// process with no ctx (not in the live set) is skipped.
 pub fn report_drain_liveness(heap: &Heap) {
     if !heap.drain_report_due() {
         return;
@@ -1276,37 +1122,23 @@ pub fn report_drain_liveness(heap: &Heap) {
 /// process (suspended in `receive`) can't report its own liveness for a drain armed
 /// *after* it parked — it isn't running, so it never reaches a safepoint. Left
 /// unhandled, an idle server parked on current-generation code would block **every**
-/// later drain forever (the parked-can't-ack problem). So the drain coordinator inspects
-/// each parked process's captured continuation directly and drives its self-report: a
-/// paused process's live values sit on its own heap's `roots`/`env_roots`/`live_vm_arms`
-/// (the continuation is relocatable heap data — ADR-100), which [`report_gen_liveness`]
-/// walks, acking it iff it's clean of the draining generation. This is exactly Erlang's
-/// `check_process_code` inspecting a process externally — no wakeup, no kill. A process
-/// genuinely paused *in* old-generation code stays dirty (correct: it will resume that
-/// code and so still pins the generation).
+/// later drain forever. So the drain coordinator inspects each parked process's captured
+/// continuation directly (relocatable heap data — ADR-100) via [`report_gen_liveness`],
+/// acking it iff it's clean of the draining generation — no wakeup, no kill. A process
+/// paused *in* old-generation code stays dirty, correctly.
 ///
 /// [`report_gen_liveness`]: crate::core::heap::Heap::report_gen_liveness
 fn report_parked_liveness() {
-    // Nothing parked → nothing to inspect. An O(1) global-counter load ([`parked_count`])
-    // that lets us skip the O(all-processes) `REGISTRY` walk below entirely. This is the
-    // common case under a lingering fan-out drain — the workers compute-and-exit without
-    // ever parking — where re-walking every live process (under the global `REGISTRY`
-    // lock) on each throttled drain-advance of every worker was the O(processes²) lock
-    // storm behind the ~300× `spawn` regression.
+    // Nothing parked → skip the O(all-processes) walk below (the common case under a
+    // fan-out drain, where it was an O(processes²) lock storm).
     if parked_count() == 0 {
         return;
     }
-    // Snapshot the **parked** processes only: filter on the lock-free `status` cell
-    // (`ST_WAITING`) while holding REGISTRY — a cheap atomic load per entry — and clone
-    // just those. This is what makes a lingering fan-out drain affordable: a running
-    // process (the overwhelming majority during a `spawn` fan-out) never has its mailbox
-    // *state* locked here, so the O(all-processes) mailbox-lock storm that made `spawn`
-    // regress ~300× becomes O(parked) locks + O(all) cheap atomic reads. A racy status
-    // read is harmless: a process that parks/unparks right at the check is re-inspected
-    // on the next attempt (or self-reports once running). Never hold REGISTRY across a
-    // per-mailbox lock (the crate lock discipline) — hence the collect. A parked
-    // process's heap is quiescent (no worker owns it) and shares the runtime `Arc`, so
-    // its `report_gen_liveness` writes the shared drain ack map on its own behalf.
+    // Snapshot the **parked** processes only, filtering on the lock-free `status` cell,
+    // so only parked mailboxes are locked. A racy status read is harmless (re-inspected
+    // next attempt). Never hold REGISTRY across a per-mailbox lock — hence the collect.
+    // A parked process's heap is quiescent and shares the runtime `Arc`, so its
+    // `report_gen_liveness` writes the shared drain ack map on its own behalf.
     let parked: Vec<(u64, Arc<Mailbox>)> = REGISTRY
         .entries()
         .into_iter()
@@ -1332,22 +1164,11 @@ pub fn old_gen_drained(heap: &Heap) -> bool {
     if !heap.drain_active() {
         return false;
     }
-    // Two-stage O(1) gate, then the authoritative walk. The subtle ordering point is that
-    // the parked-process inspector ([`report_parked_liveness`]) must **not** run until every
-    // *running* process has already acked clean — otherwise, during a `spawn` fan-out where
-    // thousands of running workers pin the draining generation (each never acks until it
-    // exits), its O(all-processes) `REGISTRY` walk runs on every throttled drain-advance of
-    // every worker: an O(processes²) lock storm (the ~300× regression). The running workers
-    // alone keep the drain un-completable, so inspecting parked processes then is pure waste.
-    //
-    // `acked` counts processes that reported clean; `parked_count()` counts those suspended
-    // (which can't self-ack — they need the inspector). If `acked + parked < live`, at least
-    // one *running* process still hasn't acked (so still pins the generation) — bail before
-    // any scan; it'll self-ack at its own safepoint. Only once the sole holdouts are parked
-    // do we inspect them, then fold their acks into the authoritative `gen_drained` walk.
-    // Both counts are O(1) relaxed loads; over-counting the sum (a parked process that
-    // already acked is in both) only opens the gate an inspection early — `gen_drained`
-    // below still guards the actual free, so a racy count never frees a referenced gen.
+    // Two-stage O(1) gate, then the authoritative walk. The parked-process inspector must
+    // not run while any *running* process is still un-acked (it would be pure waste, and
+    // an O(processes²) storm under a fan-out): if `acked + parked < live`, some running
+    // process still pins the generation and will self-ack at its own safepoint. An
+    // over-count only opens the gate early — `gen_drained` below still guards the free.
     let live = REGISTRY.len() as u64;
     if heap.drain_acked_count() + (parked_count() as u64) < live {
         return false;

@@ -388,10 +388,10 @@ delimiter back over that form (paredit `backward-slurp-sexp`).
             prev (last (seq/filter (forms-of parent) (fn (f) (<= (get f :end) es)))))
         (if (nil? prev)
           nil
-          (let (ps (get prev :start))
-            [(str (string/substring text 0 ps)
+          (let (previous-start (get prev :start))
+            [(str (string/substring text 0 previous-start)
                (string/char-at text es)
-               (string/substring text ps es)
+               (string/substring text previous-start es)
                (string/substring text (inc es)))
               point]))))))
 
@@ -427,11 +427,11 @@ form's siblings (paredit `raise-sexp`).
     (if (nil? ctx)
       nil
       (let ([tr enc] ctx
-            cur (seq/find (forms-of enc)
-                  (fn (f) (and (<= (get f :start) point) (<= point (get f :end))))))
-        (if (nil? cur)
+            current (seq/find (forms-of enc)
+                      (fn (f) (and (<= (get f :start) point) (<= point (get f :end))))))
+        (if (nil? current)
           nil
-          (let (cs (get cur :start) ce (get cur :end))
+          (let (cs (get current :start) ce (get current :end))
             [(str (string/substring text 0 (sexp-start enc))
                (string/substring text cs ce)
                (string/substring text (sexp-end enc)))
@@ -515,14 +515,14 @@ at `next.end` (the whitespace between the two forms is preserved in place).
                (last (seq/filter sibs (fn (f) (<= (get f :end) (get next :start)))))))
     (if (or (nil? prev) (nil? next))
       nil
-      (let (ps (get prev :start)
+      (let (previous-start (get prev :start)
             pe (get prev :end)
             ns (get next :start)
             ne (get next :end))
-        [(str (string/substring text 0 ps)
+        [(str (string/substring text 0 previous-start)
            (string/substring text ns ne) ; the later form, moved before …
            (string/substring text pe ns) ; … the separator between them, kept as-is …
-           (string/substring text ps pe) ; … then the earlier form
+           (string/substring text previous-start pe) ; … then the earlier form
            (string/substring text ne))
           ne]))))
 (sig point-transpose (string any -> (or nil (vector any))))

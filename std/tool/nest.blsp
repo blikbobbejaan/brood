@@ -1,18 +1,11 @@
 ;; std/tool/nest.blsp — the `nest` command line, in Brood (ADR-322).
 ;;
 ;; `nest` is a thin shell over the project tooling, the way `brood` bootstraps into
-;; `(repl/run)` (ADR-048). Until now that shell was 2,700 lines of Rust: clap parsing plus one
-;; `cmd_*` function per subcommand that formatted a Brood form as a STRING and evaluated it.
-;; Policy written in the host language, one printf away from the language it drives — the
-;; largest remaining "write the language in the language" gap (CLAUDE.md).
-;;
-;; This module takes the subcommands over one at a time. `main.rs` routes a subcommand whose
-;; name is in its `BLSP_SUBCOMMANDS` here BEFORE clap sees it, so each move deletes a Rust
-;; arm and adds an entry to `*commands*`. What stays in Rust is what needs Rust: building the
+;; `(repl/run)` (ADR-048). `main.rs` routes a subcommand whose name is in its
+;; `BLSP_SUBCOMMANDS` here BEFORE clap sees it. What stays in Rust is what needs Rust: building the
 ;; interpreter, the exit code, the crash dump, the stdlib-image bootstrap, the process-wide
 ;; knobs that must be set before the interpreter exists (the scheduler pool size, the
-;; coverage env flags), and the two arms that are Rust mechanism: `stdimage` (KI-112) and
-;; `mcp`'s transport — plus `release`'s byte assembly and boot check.
+;; coverage env flags), `stdimage` (KI-112), and `release`'s byte assembly and boot check.
 ;;
 ;; `(nest/main argv)` returns the process exit code as an int; it never exits itself, so it
 ;; can be called from a test in-image. Errors it does not expect propagate: the Rust side
@@ -41,20 +34,20 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
   {"doc" {:about "Emit Markdown documentation — the whole project, or one named module."
           :flags {"--all" :bool}
           :positional ["module" "module"]
-          :run (fn (o) (run-doc o))}
+          :run (fn (options) (run-doc options))}
    "docs" {:about "Generate a browsable HTML documentation site from docstrings (default `doc/`)."
            :flags {"--all" :bool "--out" "DIR" "-o" "DIR"}
-           :run (fn (o) (run-docs o))}
+           :run (fn (options) (run-docs options))}
    "doctest" {:about "Check every `expr ;=> result` docstring example still holds; exit non-zero on a mismatch."
               :flags {}
-              :run (fn (o) (run-doctest o))}
+              :run (fn (options) (run-doctest options))}
    "grammar" {:about "Emit an editor syntax grammar generated from `(reflect/special-forms)` (ADR-092), to stdout."
               :flags {}
               :positional ["target" ["tmlanguage" "emacs" "tree-sitter"]]
-              :run (fn (o) (run-grammar o))}
+              :run (fn (options) (run-grammar options))}
    "format" {:about "Format every `.blsp` in the project (`--check`: CI mode, `--changed`: git-narrowed)."
              :flags {"--check" :bool "-c" :bool "--changed" :bool}
-             :run (fn (o) (run-format o))}
+             :run (fn (options) (run-format options))}
    "check" {:about "Advisory type-check the project (every `.blsp` under `src/` + `tests/`), or specific files; exit non-zero on any warning."
             :flags {"--fix-renames" :bool
                     "--dry-run" :bool
@@ -70,7 +63,7 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
             ;; The rewrite is project-wide, so scoping it to a file list would fix one
             ;; caller and leave the rest.
             :no-positional-with ["--fix-renames"]
-            :run (fn (o) (run-check o))}
+            :run (fn (options) (run-check options))}
    "test" {:about "Run the project's tests (every `tests/**/*_test.blsp`), or specific test files — `FILE`, or `FILE:LINE` for the one test at that line."
            :flags {"--only" {:value "SELECTOR" :repeat true :complete "selector"}
                    "--exclude" {:value "SELECTOR" :repeat true :complete "selector"}
@@ -92,7 +85,7 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
                    "--cover-min" {:value "PCT" :int [0 100]}}
            :positional ["file" "test-file"]
            :many true
-           :run (fn (o) (run-test o))}
+           :run (fn (options) (run-test options))}
    "run" {:about "Run the project's entry point (`:main`, default `main/main`), or a `.blsp` FILE with the project's sources reachable; a non-`.blsp` FILE is handed to `:main` as a document. Outside a project FILE is required and runs like `brood FILE`. Trailing words go to the entry function as strings."
           :flags {"--watch" {:value "PATH" :repeat true}
                   "--for" "DURATION"
@@ -109,22 +102,22 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
                        ["--check-boot" "--for"]
                        ["--check-boot" "--no-check"]]
           :no-positional-with ["--check-boot"]
-          :run (fn (o) (run-run o))}
+          :run (fn (options) (run-run options))}
    "new" {:about "Scaffold a new project: NAME becomes the directory and the manifest's `:name` (`.` scaffolds into the current directory). `--template` picks the starter code; an unknown name lists the set."
           :flags {"--template" {:value "NAME" :complete "template"}
                   "-t" {:value "NAME" :complete "template"}}
           :positional ["name" nil]
           :arity 1
-          :run (fn (o) (run-new o))}
+          :run (fn (options) (run-new options))}
    "update-tooling" {:about "Refresh the AI-assistant tooling `nest new` drops into a project — `docs/brood-for-claude.md` and the `.claude/skills/writing-brood` skill — from THIS binary. Run it after upgrading Brood; code, manifest and `CLAUDE.md` are left untouched."
                      :flags {}
-                     :run (fn (o) (run-update-tooling o))}
+                     :run (fn (options) (run-update-tooling options))}
    "update-brood" {:about "Update the installed `brood`, `nest` and `brood-lsp` to the latest GitHub release (what `install.sh` installs), checked against its SHA-256 and written into the directory this `nest` runs from. `--check` only reports; `--version TAG` installs that release; `--dir DIR` installs somewhere else."
                    :flags {"--check" :bool
                            "--version" "TAG"
                            "--dir" "DIR"}
                    :conflicts [["--check" "--version"]]
-                   :run (fn (o) (run-update-brood o))}
+                   :run (fn (options) (run-update-brood options))}
    "rename" {:about "Context-aware rename of an identifier across the project's `.blsp` sources: OLD → NEW, leaving docstrings, comments and quoted data alone unless asked."
              :flags {"--swap" :bool
                      "--refs-only" :bool
@@ -141,68 +134,71 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
                           ["--text" "--refs-only"]
                           ["--text" "--defs-only"]
                           ["--text" "--in-quote"]]
-             :run (fn (o) (run-rename o))}
+             :run (fn (options) (run-rename options))}
    "fetch" {:about "Resolve the project's dependencies and write project.lock.blsp (ADR-037): a `:path` dep must exist and records its content hash."
             :flags {}
-            :run (fn (o) (run-fetch o))}
+            :run (fn (options) (run-fetch options))}
    "update" {:about "Re-resolve dependency refs and re-lock, advancing moving refs. With no NAMES every dependency; with NAMES only those, the rest keep their pins."
              :flags {}
              :positional ["name" "dep"]
              :many true
-             :run (fn (o) (run-update o))}
+             :run (fn (options) (run-update options))}
    "tree" {:about "Print the project's resolved dependency tree (root → direct → transitive)."
            :flags {}
-           :run (fn (o) (run-tree o))}
+           :run (fn (options) (run-tree options))}
    "add" {:about "Add a dependency to project.blsp and re-lock: `nest add NAME :path PATH` (NAME is the local require-name; the manifest is rewritten preserving its comments)."
           :flags {}
           :positional ["name" nil]
           :names ["name" "spec"]
           :arity [1 nil]
           :trailing true
-          :run (fn (o) (run-add o))}
+          :run (fn (options) (run-add options))}
    "remove" {:about "Remove a dependency from project.blsp and re-lock."
              :flags {}
              :positional ["name" "dep"]
              :arity 1
-             :run (fn (o) (run-remove o))}
+             :run (fn (options) (run-remove options))}
    "publish" {:about "Publish this project's release to the hosted package registry (a source tarball + sha256, Bearer-authenticated; releases are immutable). `--source-url` publishes an EXTERNAL release — metadata only, the URL fetched once for its checksum. `--bump LEVEL` bumps the project's own :version (patch/minor/major), commits, then publishes."
               :flags {"--source-url" "URL" "--bump" "LEVEL"}
               :positional ["index" nil]
               :arity [0 1]
-              :run (fn (o) (run-publish o))}
+              :run (fn (options) (run-publish options))}
    "search" {:about "Search the package registry for a term (name or description). INDEX overrides the configured `:registry`; `--enhances APP` keeps only packages that declare they plug into that application."
              :flags {"--enhances" "APP"}
              :positional ["query" nil]
              :names ["query" "index"]
              :arity [1 2]
-             :run (fn (o) (run-search o))}
+             :run (fn (options) (run-search options))}
    "key" {:about "Manage the ed25519 signing key `nest publish` uses (ADR-212): `nest key gen` writes it 0600 under the config dir and prints the public key to share; `--force` replaces an existing one."
           :flags {"--force" :bool}
           :positional ["action" ["gen"]]
           :arity 1
-          :run (fn (o) (run-key o))}
+          :run (fn (options) (run-key options))}
    "ws" {:about "Drive every sibling Brood repo in the workspace at once: list | status | check | commit \"MESSAGE\" | push. Discovers the siblings of the current directory (a `.git` + `project.blsp`, plus `brood`)."
          :flags {}
          :positional ["action" ["list" "status" "check" "commit" "push"]]
          :names ["action" "message"]
          :arity [1 2]
-         :run (fn (o) (run-ws o))}
+         :run (fn (options) (run-ws options))}
    "repl" {:about "Start a REPL. Inside a project every source file is pre-loaded and the prompt starts in the project's main namespace, so its functions are callable bare; outside one, the plain language REPL (`brood` would do the same). Ctrl-D exits."
            :flags {}
-           :run (fn (o) (run-repl o))}
+           :run (fn (options) (run-repl options))}
    "observe" {:about "Open a live process observer — a full-screen TUI of processes, status, mailbox and memory (Erlang-observer style, ADR-046). With no `--connect`, a standalone demo over a fresh runtime's own processes; with `--connect name@host:port`, attach to a RUNNING program over the node link (it must have called `node-start` + `observe-serve`). `q`/Esc/Ctrl-C quits."
               :flags {"--connect" "NODE" "--cookie" "COOKIE"}
-              :run (fn (o) (run-observe o))}
+              :run (fn (options) (run-observe options))}
    "attach" {:about "Attach this terminal — or, with `--gui`, a native window — to a `ui-run` app served by a running daemon — the `emacsclient` to its `--daemon` (ADR-090). SPEC is the served node: a bare `name` over the local Unix socket, or `name@host:port` over TCP. The cookie comes from `--cookie`, `$BROOD_COOKIE`, else the shared `~/.config/brood/cookie`. The app's own quit key detaches; the window's X does too. `--gui` is the frontend as its own process: the app runs headless in the daemon and this window is all the display it has (a game served by b2d, an editor served by bedit)."
              :flags {"--cookie" "COOKIE" "--gui" :bool}
              :positional ["spec" nil]
              :arity 1
-             :run (fn (o) (run-attach o))}
+             :run (fn (options) (run-attach options))}
+   "mcp" {:about "Serve the project over Model Context Protocol on stdio, so an agent (Claude Code etc.) can eval / lookup / format / expand / run tests / read docs against its live image (ADR-036, docs/mcp.md)."
+          :flags {}
+          :run (fn (_options) (if (require-project "mcp" nil) (mcp/main) 2))}
    "completions" {:about "Print a shell integration script enabling TAB completion for `nest` — install it by sourcing: bash `eval \"$(nest completions bash)\"`, zsh `eval \"$(nest completions zsh)\"`, fish `nest completions fish | source`."
                   :flags {}
                   :positional ["shell" ["bash" "zsh" "fish"]]
                   :arity 1
-                  :run (fn (o) (run-completions o))}
+                  :run (fn (options) (run-completions options))}
    ;; Hidden: the candidate engine the shell scripts call on every keypress
    ;; (`nest complete -- <words…>`), not a command a person types.
    "complete" {:about "Print completion candidates for a partial command line, one per line (used by the scripts from `nest completions`; not usually run by hand). Always exits 0 — a completion must never fail."
@@ -211,18 +207,22 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
                :positional ["words" nil]
                :many true
                :trailing true
-               :run (fn (o) (run-complete o))}})
+               :run (fn (options) (run-complete options))}})
 
 ;; Short flags are aliases; canonicalise on parse so handlers read one spelling.
 (def- *short-aliases* {"-c" "--check" "-o" "--out" "-t" "--template"})
 
 (defn subcommands ()
   "The subcommands this module implements, sorted — hidden ones (`complete`) excluded."
-  (sort (seq/filter (keys *commands*) (fn (c) (not (get (get *commands* c) :hidden))))))
+  (sort (seq/filter (keys *commands*) (fn (cmd) (not (get (get *commands* cmd) :hidden))))))
+
+(defn- command-spec (cmd)
+  "`cmd`'s table entry: this module's, else the Rust-side mirror's (flags only), else nil."
+  (or (get *commands* cmd) (get *rust-commands* cmd)))
 
 (defn flags-of (cmd)
-  "The flag spellings of `cmd`, sorted — `()` for a command this module does not own."
-  (let (spec (get *commands* cmd))
+  "The flag spellings of `cmd` — Brood-side or Rust-side — sorted; `()` for an unknown one."
+  (let (spec (command-spec cmd))
     (if spec (sort (keys (get spec :flags))) (list))))
 
 (defn- positional-values-of (spec)
@@ -246,7 +246,8 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 ;; ── argv → options ───────────────────────────────────────────────────────────────────
 
 (defn- flag-kind (spec word)
-  (get (get spec :flags) (or (get *short-aliases* word) word)))
+  (let (flags (get spec :flags))
+    (or (get flags word) (get flags (get *short-aliases* word)))))
 
 (defn- flag-value-name (kind)
   "The `<NAME>` a valued flag shows in usage and errors."
@@ -275,18 +276,25 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
       [word nil])))
 
 (defn- parse-words (spec words acc)
-  "Fold `words` into `{:flags {} :positionals () :error nil}`. Unknown flag → `:error`."
+  "Fold `words` into `{:flags {} :positionals () :error nil}`. Unknown flag → `:error`; a
+`--help`/`-h` read as nest's own flag sets `:help`."
   (if (empty? words)
     acc
     (let ([word inline] (split-eq (first words))
           rest-words (rest words))
       (cond
         (= word "--") (assoc acc :positionals (append (get acc :positionals) rest-words))
+        (or (= word "--help") (= word "-h")) (parse-words spec rest-words (assoc acc :help true))
         (string/starts-with? word "-")
           (let (kind (flag-kind spec word)
                 canon (or (get *short-aliases* word) word))
             (cond
               (nil? kind) (assoc acc :error (str "unexpected argument '" word "'"))
+              (and (= kind :bool) inline)
+                (assoc acc
+                  :error
+                    (str "unexpected value '"
+                      inline "' for '" word "' found; no more were expected"))
               (= kind :bool)
                 (parse-words spec rest-words (assoc acc :flags (assoc (get acc :flags) canon true)))
               inline (parse-words spec rest-words (store-flag acc canon kind inline))
@@ -309,40 +317,43 @@ Brood (ADR-322). `(nest/main argv)` runs one and returns its exit code.")
 
 (defn- arity-bounds (spec)
   "`:arity` as `[lo hi]` — `n` is `[n n]`, `[lo nil]` is unbounded above; nil when unset."
-  (let (a (get spec :arity))
-    (cond (nil? a) nil (int? a) [a a] else [(nth a 0) (nth a 1)])))
+  (let (arity (get spec :arity))
+    (cond (nil? arity) nil (int? arity) [arity arity] else [(nth arity 0) (nth arity 1)])))
 
 (defn- check-positional (spec parsed)
   "Reject a second positional (unless `:many`/`:arity`), one outside the allowed set, more
 than `:arity` admits, or fewer than it demands."
-  (let (pos (get spec :positional)
-        ps (get parsed :positionals)
+  (let (positional (get spec :positional)
+        positionals (get parsed :positionals)
+        given (count positionals)
         allowed (positional-values-of spec)
         bounds (arity-bounds spec)
         lo (if bounds (nth bounds 0) 0)
         hi (if bounds (nth bounds 1) nil))
     (cond
       (get parsed :error) parsed
-      (and (nil? pos) (not (empty? ps)))
-        (assoc parsed :error (str "unexpected argument '" (first ps) "'"))
-      (and (> (count ps) 1) (not (get spec :many)) (nil? bounds))
-        (assoc parsed :error (str "unexpected argument '" (nth ps 1) "'"))
-      (and bounds hi (> (count ps) hi))
-        (assoc parsed :error (str "unexpected argument '" (nth ps hi) "'"))
-      (and bounds (< (count ps) lo))
+      (and (nil? positional) (not (empty? positionals)))
+        (assoc parsed :error (str "unexpected argument '" (first positionals) "'"))
+      (and (> given 1) (not (get spec :many)) (nil? bounds))
+        (assoc parsed :error (str "unexpected argument '" (nth positionals 1) "'"))
+      (and bounds hi (> given hi))
+        (assoc parsed :error (str "unexpected argument '" (nth positionals hi) "'"))
+      (and bounds (< given lo))
         (assoc parsed
           :error
             (str "the following required arguments were not provided:\n  "
-              (string/join (map (take (drop (positional-names spec) (count ps)) (- lo (count ps)))
-                             (fn (n) (str "<" (string/upper n) ">")))
+              (string/join (map (take (drop (positional-names spec) given) (- lo given))
+                             (fn (name) (str "<" (string/upper name) ">")))
                 "\n  ")))
-      (and (not (empty? allowed)) (not (empty? ps)) (not (contains? (into #{} allowed) (first ps))))
+      (and (not (empty? allowed))
+        (not (empty? positionals))
+        (not (contains? (into #{} allowed) (first positionals))))
         (assoc parsed
           :error
             (str "invalid value '"
-              (first ps)
+              (first positionals)
               "' for <"
-              (string/upper (nth pos 0))
+              (string/upper (nth positional 0))
               ">\n  [possible values: "
               (string/join allowed ", ")
               "]"))
@@ -352,13 +363,13 @@ than `:arity` admits, or fewer than it demands."
   "The cross-flag rules clap enforced declaratively: `:requires`, `:conflicts`,
 `:no-positional-with`. First violation wins, in clap's words."
   (let (flags (get parsed :flags)
-        on? (fn (f) (get flags f))
+        on? (fn (flag) (get flags flag))
         conflict (first (seq/filter (get spec :conflicts)
                           (fn (pair) (and (on? (nth pair 0)) (on? (nth pair 1))))))
         missing (first (seq/filter (seq (get spec :requires))
-                         (fn (kv) (and (on? (first kv)) (not (on? (second kv)))))))
+                         (fn ([flag needed]) (and (on? flag) (not (on? needed))))))
         lonely (first (seq/filter (get spec :no-positional-with)
-                        (fn (f) (and (on? f) (not (empty? (get parsed :positionals))))))))
+                        (fn (flag) (and (on? flag) (not (empty? (get parsed :positionals))))))))
     (cond
       (get parsed :error) parsed
       conflict
@@ -411,7 +422,7 @@ clap's words."
           else (assoc acc :flags (assoc (get acc :flags) flag n)))))))
 
 (defn- check-int-flags (spec parsed)
-  (fold (seq (get spec :flags)) parsed (fn (acc kv) (check-int-flag acc (first kv) (second kv)))))
+  (fold (get spec :flags) parsed (fn (acc [flag kind]) (check-int-flag acc flag kind))))
 
 (defn parse (cmd words)
   "Parse `words` (argv after the subcommand) against `cmd`'s table entry:
@@ -431,36 +442,38 @@ arrives as an int; a `:repeat` flag's as a list."
   "`<REQUIRED>` up to `lo`, `[OPTIONAL]` up to `hi`, `[LAST]...` when unbounded."
   (let ([lo hi] (arity-bounds spec)
         names (positional-names spec)
-        required (map (take names lo) (fn (n) (str " <" (string/upper n) ">")))
+        required (map (take names lo) (fn (name) (str " <" (string/upper name) ">")))
         optional (if hi
-                   (map (drop (take names hi) lo) (fn (n) (str " [" (string/upper n) "]")))
+                   (map (drop (take names hi) lo) (fn (name) (str " [" (string/upper name) "]")))
                    (list (str " ["
                            (string/upper (if (> (count names) lo) (nth names lo) (last names)))
                            "]..."))))
     (apply str (append required optional))))
 
 (defn- usage-line (cmd)
-  (let (spec (get *commands* cmd) pos (get spec :positional))
+  (let (spec (get *commands* cmd) positional (get spec :positional))
     (str "Usage: nest "
       cmd
       (if (empty? (get spec :flags)) "" " [OPTIONS]")
       (cond
         (get spec :arity) (positional-usage spec)
-        pos (str " [" (string/upper (nth pos 0)) "]" (if (get spec :many) "..." ""))
+        positional (str " [" (string/upper (nth positional 0)) "]" (if (get spec :many) "..." ""))
         else ""))))
 
 (defn- usage (cmd)
-  (let (spec (get *commands* cmd) pos (get spec :positional) allowed (positional-values-of spec))
+  (let (spec (get *commands* cmd)
+        positional (get spec :positional)
+        allowed (positional-values-of spec))
     (io/puts (get spec :about))
     (io/puts "")
     (io/puts (usage-line cmd))
     (when (not (empty? allowed))
-      (io/puts (str "  " (string/upper (nth pos 0)) ": one of " (string/join allowed ", "))))
+      (io/puts (str "  " (string/upper (nth positional 0)) ": one of " (string/join allowed ", "))))
     (when (not (empty? (get spec :flags)))
       (io/puts "Options:")
-      (doseq (f (sort (keys (get spec :flags))))
-        (let (kind (get (get spec :flags) f))
-          (io/puts (str "  " f (if (= kind :bool) "" (str " <" (flag-value-name kind) ">")))))))
+      (doseq (flag (sort (keys (get spec :flags))))
+        (let (kind (get (get spec :flags) flag))
+          (io/puts (str "  " flag (if (= kind :bool) "" (str " <" (flag-value-name kind) ">")))))))
     0))
 
 (defn- require-project (cmd hint)
@@ -476,9 +489,8 @@ false (the caller exits 2 — clap's usage-error code)."
 
 (defn- readable-files? (cmd files)
   "The boundary guard for a FILE list: every path must exist and not be a directory. Says
-so at the CLI boundary and returns false (exit 2) — before this, a mistyped filename
-surfaced as `check-file-deps: cannot read …` with a four-frame Brood trace."
-  (let (bad (first (seq/filter files (fn (p) (not (file/regular? p))))))
+so at the CLI boundary and returns false (exit 2), rather than a trace from deep inside."
+  (let (bad (seq/find files (fn (path) (not (file/regular? path)))))
     (cond
       (nil? bad) true
       (file/dir? bad)
@@ -490,8 +502,8 @@ surfaced as `check-file-deps: cannot read …` with a four-frame Brood trace."
 
 ;; ── the subcommands ──────────────────────────────────────────────────────────────────
 
-(defn- run-doc (o)
-  (let (all (get (get o :flags) "--all") module (first (get o :positionals)))
+(defn- run-doc (options)
+  (let (all (get (get options :flags) "--all") module (first (get options :positionals)))
     (cond
       all (do (io/puts (docs/document-all)) 0)
       module (do (io/puts (docs/generate module)) 0)
@@ -500,8 +512,8 @@ surfaced as `check-file-deps: cannot read …` with a four-frame Brood trace."
         (do (io/puts (docs/generate)) 0)
       else 2)))
 
-(defn- run-docs (o)
-  (let (all (get (get o :flags) "--all") out (get (get o :flags) "--out"))
+(defn- run-docs (options)
+  (let (all (get (get options :flags) "--all") out (get (get options :flags) "--out"))
     (if (or all (require-project "docs" "For the language reference: nest docs --all"))
       (do
         (if all
@@ -510,25 +522,25 @@ surfaced as `check-file-deps: cannot read …` with a four-frame Brood trace."
         0)
       2)))
 
-(defn- run-doctest (o)
+(defn- run-doctest (options)
   (if (require-project "doctest" nil)
     (let (failures (docs/run-doctests))
       (if (and (int? failures) (> failures 0)) 1 0))
     2))
 
-(defn- run-grammar (o)
-  (let (target (or (first (get o :positionals)) "tmlanguage"))
+(defn- run-grammar (options)
+  (let (target (or (first (get options :positionals)) "tmlanguage"))
     (io/puts (cond
                (= target "emacs") (grammar/emacs)
                (= target "tree-sitter") (grammar/tree-sitter-highlights)
                else (grammar/tmlanguage)))
     0))
 
-(defn- run-format (o)
+(defn- run-format (options)
   (if (require-project "format" nil)
     (do
       (project/load-config)
-      (let (flags (get o :flags))
+      (let (flags (get options :flags))
         (cond
           ;; --check is CI's clean-tree gate: it must see the whole project, so --changed
           ;; does not narrow it (a stale committed file would slip by).
@@ -545,8 +557,8 @@ surfaced as `check-file-deps: cannot read …` with a four-frame Brood trace."
     (int? result) 1
     else (do (eputs "nest check: checker returned a non-integer (" (str result) ")") 1)))
 
-(defn- run-check (o)
-  (let (flags (get o :flags) files (get o :positionals))
+(defn- run-check (options)
+  (let (flags (get options :flags) files (get options :positionals))
     ;; Strict is a process-wide checker mode, not an argument, so it is set before the
     ;; first file is read. Only the flag is set here: the env spelling (`BROOD_CHECK_STRICT`)
     ;; is the kernel flag's own default, so every checker entry point reads it alike.
@@ -620,62 +632,57 @@ out of range — exits 0 having run zero tests, which in CI reads as green. Say 
   "The option list `project-run/run-tests` and friends take, from the parsed flags: bare
 keywords for switches, `keyword value` pairs otherwise, and a `:filter` only when something
 narrows or reorders the run — the plain case passes none, so the runner keeps its fast path."
-  (let (f (fn (k) (get flags k))
-        cover-lines (f "--cover-lines")
-        cover-branches (f "--cover-branches")
-        cover-min (f "--cover-min")
-        plain? (and (nil? (f "--only"))
-                 (nil? (f "--exclude"))
-                 (nil? (f "--include"))
+  (let (flag (fn (name) (get flags name))
+        cover-lines (flag "--cover-lines")
+        cover-branches (flag "--cover-branches")
+        cover-min (flag "--cover-min")
+        plain? (and (nil? (flag "--only"))
+                 (nil? (flag "--exclude"))
+                 (nil? (flag "--include"))
                  (empty? lines)
-                 (nil? (f "--seed"))
-                 (nil? (f "--partitions")))
+                 (nil? (flag "--seed"))
+                 (nil? (flag "--partitions")))
         filter (if plain?
                  nil
-                 (test/test-make-filter (f "--only")
-                   (f "--exclude")
-                   (f "--include")
+                 (test/test-make-filter (flag "--only")
+                   (flag "--exclude")
+                   (flag "--include")
                    lines
                    nil
-                   (f "--seed")
-                   (f "--partitions")
-                   (or (f "--shard") 0)))
-        when-flag (fn (k & items) (if (f k) items (list))))
+                   (flag "--seed")
+                   (flag "--partitions")
+                   (or (flag "--shard") 0)))
+        when-flag (fn (name & items) (if (flag name) items (list))))
     (append (when-flag "--trace" :trace)
-      (when-flag "--formatter" :formatter (f "--formatter"))
+      (when-flag "--formatter" :formatter (flag "--formatter"))
       (when-flag "--stale" :stale)
       (when-flag "--failed" :failed)
       ;; `--cover-min` implies `--cover`: a floor without a measurement is never what
       ;; someone means. A line/branch run reports its own (stricter) number.
-      (if (or (f "--cover") (and cover-min (not cover-lines) (not cover-branches)))
+      (if (or (flag "--cover") (and cover-min (not cover-lines) (not cover-branches)))
         (list :cover)
         (list))
       (when-flag "--cover-lines" :cover-lines)
       (when-flag "--cover-branches" :cover-branches)
       (when-flag "--cover-min" :cover-min cover-min)
-      (when-flag "--max-failures" :max-failures (f "--max-failures"))
-      (when-flag "--repeat-until-failure" :repeat (f "--repeat-until-failure"))
-      (when-flag "--timeout" :timeout (f "--timeout"))
-      (when-flag "--slowest" :slowest (f "--slowest"))
+      (when-flag "--max-failures" :max-failures (flag "--max-failures"))
+      (when-flag "--repeat-until-failure" :repeat (flag "--repeat-until-failure"))
+      (when-flag "--timeout" :timeout (flag "--timeout"))
+      (when-flag "--slowest" :slowest (flag "--slowest"))
       (if filter (list :filter filter) (list)))))
 
 (defn- run-suite (thunk)
-  "Run the suite and turn its verdict into an exit code. The runner signals failure by
-RAISING (`N test(s) failed`, `coverage below minimum`) so `brood --test` exits non-zero; for
-`nest test` that raise is not an error to report — the failures were already printed, in
-detail — so it becomes a silent exit 1. Anything else (a broken manifest, an unloadable
-file) is rethrown for the normal error report."
+  "Run the suite and turn its verdict into an exit code. A red run throws the runner's
+`:suite-failed` verdict (so `brood --test` exits non-zero); its failures are already
+printed, so here it is a silent exit 1. Anything else (a broken manifest, an unloadable
+file) propagates for the normal error report."
   (try
     (do (thunk) 0)
-    (catch e
-      (let (msg (error-message e))
-        (if (or (includes? msg "test(s) failed") (includes? msg "coverage below minimum"))
-          1
-          (throw e))))))
+    (catch e (if (test/suite-failed? e) 1 (throw e)))))
 
-(defn- run-test (o)
-  (let (flags (get o :flags)
-        [paths lines] (file-lines (get o :positionals))
+(defn- run-test (options)
+  (let (flags (get options :flags)
+        [paths lines] (file-lines (get options :positionals))
         problem (shard-error flags))
     (cond
       problem (do (eputs "nest test: " problem) 2)
@@ -690,33 +697,38 @@ file) is rethrown for the normal error report."
           (project/load-config)
           (run-suite (fn () (apply project-run/run-tests (test-opts flags lines)))))
       else
-      ;; Named files: each is loaded inside its own rolled-back scope and the suite runs
-      ;; once — `run-named-tests`, the same per-file scoping as the whole-project run, so a
-      ;; test's top-level defs never reach the next file. Inside a project the image is
-      ;; loaded first so cross-module names resolve, and `--failed`/`--cover` mean what
-      ;; they mean on a whole-project run; outside one there is no record to keep.
-        (let (root (project/find-root (file/cwd)))
-          (when root
-            (project/load-config)
-            (project/setup root)
-            (project/load-sources root))
+      ;; Named files, each in its own rolled-back scope (`run-named-tests`). Inside a
+      ;; project its image is loaded first so cross-module names resolve.
+        (do
+          (load-project-image)
           (require-one 'test)
           (run-suite (fn () (apply project-run/run-named-tests paths (test-opts flags lines))))))))
+
+(defn- load-project-image ()
+  "Inside a project, load its config and its sources (image-backed) and return the root;
+outside one, nil."
+  (let (root (project/find-root (file/cwd)))
+    (when root
+      (project/load-config)
+      (project/setup-tooling-image root))))
 
 ;; `nest run` -------------------------------------------------------------------------
 
 (defn duration-ms (s)
   "`--for`'s DURATION as milliseconds: `2s`, `500ms`, `1.5s`, or a bare count of
 milliseconds; nil for anything else (garbage, a negative)."
-  (let (t (string/trim s)
-        [num scale] (cond
-                      (string/ends-with? t "ms") [(string/substring t 0 (- (string/length t) 2)) 1]
-                      (string/ends-with? t "s")
-                        [(string/substring t 0 (- (string/length t) 1)) 1000]
-                      else [t 1])
-        n (string/->number (string/trim num)))
-    ;; `failure?` first and alone: the checker narrows `n` on that test, not through an `or`.
-    (if (failure? n) nil (if (or (not (number? n)) (< n 0)) nil (math/floor (* n scale))))))
+  (let (text (string/trim s)
+        [digits scale] (cond
+                         (string/ends-with? text "ms")
+                           [(string/substring text 0 (- (string/length text) 2)) 1]
+                         (string/ends-with? text "s")
+                           [(string/substring text 0 (- (string/length text) 1)) 1000]
+                         else [text 1])
+        amount (string/->number (string/trim digits)))
+    ;; `failure?` first and alone: the checker narrows `amount` on that test, not through an `or`.
+    (if (failure? amount)
+      nil
+      (if (or (not (number? amount)) (< amount 0)) nil (math/floor (* amount scale))))))
 
 (defn- run-wrapped (thunk timed-ms label)
   "`--watch`/`--for`: run the program as a linked process and park here on its exit. The link
@@ -725,16 +737,25 @@ read a finished program as a failure ~1 run in 6), and `proc/trap-exit` turns th
 message. A `:normal` exit and the `--for` cap are success; a program that DIED is exit 1 — its
 reason was already printed, so the caller exits silently."
   (proc/trap-exit true)
-  (let (p (%spawn-link thunk))
+  (let (program (%spawn-link thunk))
     (if timed-ms
       (receive
-        ([:EXIT ^p reason] (io/puts "[exit]" reason) (if (= reason :normal) 0 1))
+        ([:EXIT ^program reason] (io/puts "[exit]" reason) (if (= reason :normal) 0 1))
         (after timed-ms (io/puts (str "[stopped after " label "]")) 0))
       (receive
-        ([:EXIT ^p reason] (io/puts "[exit]" reason) (if (= reason :normal) 0 1))))))
+        ([:EXIT ^program reason] (io/puts "[exit]" reason) (if (= reason :normal) 0 1))))))
 
-(defn- run-program (file args watch for-spec main nm no-check)
-  (let (in-project (not (nil? (project/find-root (file/cwd))))
+(defn- run-program (root options)
+  "`nest run` past the guards: `root` is the project root (nil outside one), `options` the
+parsed command line."
+  (let (flags (get options :flags)
+        file (first (get options :positionals))
+        args (rest (get options :positionals))
+        watch (or (get flags "--watch") (list))
+        for-spec (get flags "--for")
+        main (get flags "--main")
+        node-name (get flags "--name")
+        in-project (not (nil? root))
         ;; A non-`.blsp` FILE inside a project is a DOCUMENT for the entry point (the editor
         ;; opens it), not a script: `nest run notes.txt` edits notes.txt. It need not exist —
         ;; creating a file is the ordinary editor case — so only a script path is checked.
@@ -773,28 +794,28 @@ reason was already printed, so the caller exits silently."
             ;; (a file under `src/` would otherwise run twice).
             (cond
               (nil? file) (do (project/load-config) (when main (project/set-project-main main)))
-              in-project
-                (do
-                  (project/load-config)
-                  (let (root (project/find-root (file/cwd))) (when root (project/setup root))))
+              in-project (do (project/load-config) (project/setup root))
               else nil)
             (when (and main file) (eputs "nest run: --main is ignored when a FILE is given"))
             ;; Advisory single-file pre-flight for an explicit FILE (`:main` runs check via
             ;; `project-run/run`); `BROOD_NO_CHECK=1` opts out, as everywhere.
             (when (and file (not (= (os/env "BROOD_NO_CHECK") "1")))
-              (doseq (w (%check-file file)) (io/puts w :to *err*)))
+              (doseq (warning (%check-file file)) (io/puts warning :to *err*)))
             ;; `--name`: a local Unix-socket node before the program runs (the Emacs
             ;; `--daemon` model), so the file is pure app logic.
-            (when nm (node/start (keyword nm)))
+            (when node-name (node/start (keyword node-name)))
             ;; `--watch`: re-`load` on save; inside a project also re-check the sources (the
             ;; live trigger for ADR-123's soundness-under-reload).
             (when (not (empty? watch))
               (require-one 'reload)
-              (let (on-reload (if in-project (fn (_p) (project-check/check-sources)) nil))
-                (doseq (w watch) (reload/on-change w on-reload))))
+              (let (on-reload (if in-project (fn (_path) (project-check/check-sources)) nil))
+                (doseq (path watch) (reload/on-change path on-reload))))
             (let (thunk (cond
                           (nil? file)
-                            (fn () (project-run/run all-args no-check (not (empty? watch))))
+                            (fn ()
+                              (project-run/run all-args
+                                (get flags "--no-check")
+                                (not (empty? watch))))
                           ;; Unwrapped, a FILE runs as its own green process (ADR-135) so it
                           ;; matches `brood FILE`; wrapped it is already inside a spawn, and a
                           ;; nested program-process spawn+block would native-nest.
@@ -804,15 +825,16 @@ reason was already printed, so the caller exits silently."
                 (run-wrapped thunk timed-ms (and for-spec (string/trim for-spec)))
                 (do (thunk) 0))))))))
 
-(defn- run-run (o)
-  (let (flags (get o :flags)
-        positionals (get o :positionals)
-        file (first positionals)
-        main (get flags "--main"))
+(defn- run-run (options)
+  (let (flags (get options :flags)
+        file (first (get options :positionals))
+        main (get flags "--main")
+        root (project/find-root (file/cwd)))
     (cond
-      (and (nil? file)
-        (not (require-project "run" "To run one file outside a project: nest run <file>.blsp")))
-        2
+      (and (nil? file) (nil? root))
+        (do
+          (require-project "run" "To run one file outside a project: nest run <file>.blsp")
+          2)
       ;; Load every module and resolve `:main`, run NOTHING (KI-66). `--main` still applies:
       ;; checking that a *specific* entry boots is the point when a project ships several.
       (get flags "--check-boot")
@@ -821,43 +843,36 @@ reason was already printed, so the caller exits silently."
           (when main (project/set-project-main main))
           (project-run/check-boot)
           0)
-      else
-        (run-program file
-          (rest positionals)
-          (or (get flags "--watch") (list))
-          (get flags "--for")
-          main
-          (get flags "--name")
-          (get flags "--no-check")))))
+      else (run-program root options))))
 
 ;; `nest new`, `update-tooling`, `rename` ---------------------------------------------------
 
-(defn- run-new (o)
+(defn- run-new (options)
   ;; `load-config` first: the user config decides e.g. whether the scaffold runs `git init`.
-  (let (nm (first (get o :positionals)) template (get (get o :flags) "--template"))
+  (let (name (first (get options :positionals)) template (get (get options :flags) "--template"))
     (project/load-config)
     (require-one 'scaffold)
-    (if template (scaffold/new-project nm template) (scaffold/new-project nm))
+    (if template (scaffold/new-project name template) (scaffold/new-project name))
     0))
 
-(defn- run-update-tooling (o)
+(defn- run-update-tooling (options)
   (if (require-project "update-tooling" nil)
     (do (project/load-config) (scaffold/update-tooling) 0)
     2))
 
-(defn- run-update-brood (o)
+(defn- run-update-brood (options)
   ;; Not a project command: it updates the toolchain, from anywhere.
-  (let (flags (get o :flags))
+  (let (flags (get options :flags))
     (require-one 'update-brood)
     (update-brood/update {:version (get flags "--version")
                           :dir (get flags "--dir")
                           :check (get flags "--check")})))
 
-(defn- run-rename (o)
+(defn- run-rename (options)
   ;; The positionals are a LIST, so `[old new]` would not match — take them by position.
-  (let (flags (get o :flags)
-        old (first (get o :positionals))
-        new (second (get o :positionals)))
+  (let (flags (get options :flags)
+        old (first (get options :positionals))
+        new (second (get options :positionals)))
     (cond
       ;; A reversed-args rename: every 2-arg call `(OLD a b)` → `(NEW b a)`.
       (get flags "--swap") (codemod/swap2 old new)
@@ -875,86 +890,82 @@ reason was already printed, so the caller exits silently."
 
 ;; The package manager (ADR-037) ------------------------------------------------------
 
-(defn- with-package (cmd f)
-  "The bootstrap every package command shares, then `f`. `load-config` is load-bearing: the
-user config supplies `:registry`, and a `:version` dependency cannot resolve without it —
-these commands once skipped it and used the hardcoded default index no matter what the user
-had configured."
+(defn- with-package (cmd body)
+  "The bootstrap every package command shares, then `body`. `load-config` is load-bearing:
+the user config supplies `:registry`, which a `:version` dependency resolves against."
   (if (require-project cmd nil)
-    (do (project/load-config) (require-one 'package) (f) 0)
+    (do (project/load-config) (require-one 'package) (body) 0)
     2))
 
-(defn- run-fetch (o)
+(defn- run-fetch (options)
   (with-package "fetch" (fn () (package/fetch))))
 
-(defn- run-update (o)
-  (with-package "update" (fn () (apply package/update (get o :positionals)))))
+(defn- run-update (options)
+  (with-package "update" (fn () (apply package/update (get options :positionals)))))
 
-(defn- run-tree (o)
+(defn- run-tree (options)
   (with-package "tree" (fn () (package/tree))))
 
-(defn- run-add (o)
+(defn- run-add (options)
   ;; `(add NAME & SPEC)` — the positionals are already in that shape.
-  (with-package "add" (fn () (apply package/add (get o :positionals)))))
+  (with-package "add" (fn () (apply package/add (get options :positionals)))))
 
-(defn- run-remove (o)
-  (with-package "remove" (fn () (package/remove-dep (first (get o :positionals))))))
+(defn- run-remove (options)
+  (with-package "remove" (fn () (package/remove-dep (first (get options :positionals))))))
 
 (defn- plist-when (key value)
   (if value (list key value) (list)))
 
-(defn- run-publish (o)
+(defn- run-publish (options)
   (with-package "publish"
     (fn ()
-      (let (flags (get o :flags)
-            opts (append (plist-when :index (first (get o :positionals)))
+      (let (flags (get options :flags)
+            opts (append (plist-when :index (first (get options :positionals)))
                    (plist-when :source-url (get flags "--source-url"))))
         (if (get flags "--bump")
           (apply package/release (get flags "--bump") opts)
           (apply package/publish opts))))))
 
-(defn- run-search (o)
+(defn- run-search (options)
   ;; `package/search` resolves the registry through the project's config, so it needs a
   ;; project today — guard it for a clean message rather than an internal trace.
   (with-package "search"
     (fn ()
-      (let (query (first (get o :positionals))
-            opts (append (plist-when :index (second (get o :positionals)))
-                   (plist-when :enhances (get (get o :flags) "--enhances"))))
+      (let (query (first (get options :positionals))
+            opts (append (plist-when :index (second (get options :positionals)))
+                   (plist-when :enhances (get (get options :flags) "--enhances"))))
         (apply package/search query opts)))))
 
-(defn- run-key (o)
+(defn- run-key (options)
   ;; A user-level operation (a signing key in the config dir), not a project one.
   (project/load-config)
   (require-one 'package)
-  (if (get (get o :flags) "--force") (package/key-gen :force true) (package/key-gen))
+  (if (get (get options :flags) "--force") (package/key-gen :force true) (package/key-gen))
   0)
 
-(defn- run-ws (o)
-  ;; A workspace command, not a project one — it drives the SIBLING repos.
-  (workspace/run (first (get o :positionals)) (second (get o :positionals)))
-  0)
+(defn- run-ws (options)
+  ;; A workspace command, not a project one — it drives the SIBLING repos. Exit 1 when any
+  ;; repo's step failed.
+  (if (> (workspace/run (first (get options :positionals)) (second (get options :positionals))) 0)
+    1
+    0))
 
 ;; `nest repl` ------------------------------------------------------------------------
 
-(defn- run-repl (o)
+(defn- run-repl (options)
   ;; The REPL is Brood (`std/tool/repl.blsp`, ADR-048), the same loop `brood` bootstraps
   ;; into. Inside a project, load its sources and start the prompt in the `:main` module so
   ;; a bare project fn resolves without qualification (the interactive half of package
   ;; rooting, ADR-070); other project modules still need their `mod/fn`. The raw-mode line
   ;; editor's normal teardown is its own `term-raw-leave`; the Rust router also holds a
   ;; terminal guard for a panic unwind.
-  (let (root (project/find-root (file/cwd)))
-    (if root
-      (do
-        (project/load-config)
-        (project/setup root)
-        (project/load-sources root)
-        (repl/start-in! (first *project-main*))
-        (eputs "nest repl — project sources loaded, in the project's main namespace; Ctrl-D to exit"))
-      (eputs "nest repl — no project.blsp here; plain REPL (`brood` would do the same)"))
-    (repl/run)
-    0))
+  (if (load-project-image)
+    (do
+      (repl/start-in! (first *project-main*))
+      (eputs "nest repl — project sources loaded, in the project's main namespace; Ctrl-D to exit"))
+    (eputs "nest repl — no project.blsp here; plain REPL (`brood` would do the same)"))
+  (repl/run)
+  0)
 
 ;; `nest observe` / `nest attach` — the full-screen frontends -------------------------
 
@@ -978,8 +989,8 @@ so a matching local setup needs no flag."
   (let (env (os/env "BROOD_COOKIE"))
     (or flag (if (and env (not (= env ""))) env nil))))
 
-(defn- run-observe (o)
-  (let (flags (get o :flags)
+(defn- run-observe (options)
+  (let (flags (get options :flags)
         connect (get flags "--connect")
         cookie (link-cookie (get flags "--cookie")))
     (cond
@@ -999,13 +1010,13 @@ so a matching local setup needs no flag."
           (observer/observe-run)
           0))))
 
-(defn- run-attach (o)
-  (let (spec (first (get o :positionals))
-        cookie (link-cookie (get (get o :flags) "--cookie")))
+(defn- run-attach (options)
+  (let (spec (first (get options :positionals))
+        cookie (link-cookie (get (get options :flags) "--cookie")))
     (cond
       ;; A window needs no terminal: the frontend is its own process, and the app it
       ;; attaches to tells it what kind of window it wants (`[:window …]`, ADR-374).
-      (get (get o :flags) "--gui")
+      (get (get options :flags) "--gui")
         (do
           (editor/serve/attach-display spec
             (editor/ui/gui-display {:title (str "brood — " spec)})
@@ -1022,41 +1033,44 @@ so a matching local setup needs no flag."
 (check-allow :trusted
   (defn main (argv)
     "Run `argv` — the subcommand and its words, as a list of strings (what `main.rs` builds
-with `blsp_string_list`) — and return the exit code. `--help`/`-h` anywhere prints the
-command's usage."
-    (let (cmd (first argv) words (rest argv) spec (get *commands* cmd))
-      (cond
-        (nil? spec) (do (eputs "nest: '" cmd "' is not implemented in std/tool/nest.blsp") 2)
-        (or (contains? (into #{} words) "--help") (contains? (into #{} words) "-h")) (usage cmd)
-        else
-          (let (o (parse cmd words))
-            (if (get o :error)
+with `blsp_string_list`) — and return the exit code. `--help`/`-h` where nest reads its own
+flags prints the command's usage; after `--`, or among a `:trailing` command's program
+words, it is the program's."
+    (let (cmd (first argv) spec (get *commands* cmd))
+      (if (nil? spec)
+        (do (eputs "nest: '" cmd "' is not implemented in std/tool/nest.blsp") 2)
+        (let (options (parse cmd (rest argv)))
+          (cond
+            (get options :help) (usage cmd)
+            (get options :error)
               (do
-                (eputs "error: " (get o :error))
+                (eputs "error: " (get options :error))
                 (eputs "")
                 (eputs (usage-line cmd))
                 (eputs "")
                 (eputs "For more information, try '--help'.")
                 2)
-              ((get spec :run) o)))))))
+            else ((get spec :run) options)))))))
 ;; `list`, not `vector`: the router passes `(list "check" …)`, and a `vector` contract refused
 ;; every Brood-routed subcommand under BROOD_CONTRACTS=1 (found by KI-113's sweep).
 (sig main (list -> int))
 
 (defn- print-matching (candidates current)
   "Print each of `candidates` that starts with `current`, one per line, skipping empties."
-  (doseq (c candidates)
-    (when (and (not (= c "")) (string/starts-with? c current)) (io/puts c))))
+  (doseq (candidate candidates)
+    (when (and (not (= candidate "")) (string/starts-with? candidate current))
+      (io/puts candidate))))
 
 (defn complete (cmd prior current)
-  "Print the completion candidates for `cmd` given the words typed so far: the value of a
-flag left pending by the previous word (its `:complete` kind, or nothing — the shell then
-falls back to filenames, which beats a wrong list), flags when `current` starts with `-`
-(the command's own plus the global `--max-parallel`/`--jobs`), else the positional's
-allowed values or the candidates of its kind (`doc`'s module names, `check`'s `.blsp`
-files, `test`'s test files). Never raises; prints nothing when it cannot tell."
+  "Print the completion candidates for `cmd` (a Brood-side or Rust-side subcommand) given
+the words typed so far: the value of a flag left pending by the previous word (its
+`:complete` kind, or nothing — the shell then falls back to filenames, which beats a wrong
+list), flags when `current` starts with `-` (the command's own plus the global
+`--max-parallel`/`--jobs`), else the positional's allowed values or the candidates of its
+kind (`doc`'s module names, `check`'s `.blsp` files, `test`'s test files). Never raises;
+prints nothing when it cannot tell."
   (try
-    (let (spec (get *commands* cmd)
+    (let (spec (command-spec cmd)
           previous (last prior)
           pending (and previous
                     (string/starts-with? previous "-")
@@ -1076,10 +1090,9 @@ files, `test`'s test files). Never raises; prints nothing when it cannot tell."
 
 ;; ── completion: the whole command line ───────────────────────────────────────────────
 ;;
-;; `nest complete -- <words…>` is what the shell scripts call on every keypress. It used to
-;; be Rust, because the subcommand list and the flags of the clap-side arms came from clap's
-;; own model; with every command but three in `*commands*` the model IS this table, and the
-;; three that remain (`release`, `mcp`, `stdimage`) are mirrored below — a mirror that
+;; `nest complete -- <words…>` is what the shell scripts call on every keypress. The model
+;; is `*commands*`; the two Rust-side commands (`release`, `stdimage`) are
+;; mirrored below — a mirror that
 ;; `crates/nest/tests/complete.rs` asserts against clap's definition through the binary, so
 ;; a flag added on one side fails the build until the other side has it.
 
@@ -1090,7 +1103,6 @@ files, `test`'s test files). Never raises; prints nothing when it cannot tell."
                       "--runtime" "PATH"
                       "--target" "TRIPLE"
                       "--no-smoke" :bool}}
-   "mcp" {:flags {}}
    "stdimage" {:flags {}}})
 
 ;; The one option clap owns for every subcommand (`-j` is its short form; only `--long`
@@ -1102,45 +1114,24 @@ files, `test`'s test files). Never raises; prints nothing when it cannot tell."
 ones still implemented in Rust."
   (sort (append (subcommands) (keys *rust-commands*))))
 
-(defn- rust-flags-of (cmd)
-  "The flag spellings of a Rust-side `cmd`, sorted — `()` for an unknown one."
-  (let (spec (get *rust-commands* cmd))
-    (if spec (sort (keys (get spec :flags))) (list))))
-
-(defn- complete-rust (cmd prior current)
-  "Candidates for a Rust-side subcommand: its flags (plus the global ones) when `current`
-starts with `-`; nothing for a pending value or a positional, so the shell falls back to
-filenames — which beats a confidently wrong list."
-  (let (previous (last prior)
-        pending (and previous
-                  (string/starts-with? previous "--")
-                  (not (includes? previous "="))
-                  (let (kind (get (get (get *rust-commands* cmd) :flags) previous))
-                    (and kind (not (= kind :bool))))))
-    (cond
-      pending nil
-      (string/starts-with? current "-")
-        (print-matching (sort (append (rust-flags-of cmd) *global-flags*)) current)
-      else nil)))
-
 (defn complete-words (words)
   "Print the candidates for `words` — everything typed after `nest`, the (possibly empty)
 partial word last, one candidate per line. With no settled subcommand yet, the subcommand
-names; a Brood-implemented one completes through [[complete]] from `*commands*`, a
-Rust-side one through its mirror in `*rust-commands*`. Never raises."
+names; a settled one completes through [[complete]] — from `*commands*`, or a Rust-side
+one from its mirror in `*rust-commands*`. Never raises."
   (try
     (let (current (or (last words) "")
           prior (if (empty? words) (list) (seq/drop-last words 1))
           known (into #{} (all-subcommands))
-          cmd (seq/find prior (fn (w) (and (not (string/starts-with? w "-")) (contains? known w)))))
-      (cond
-        (nil? cmd) (print-matching (all-subcommands) current)
-        (get *commands* cmd) (complete cmd (rest (drop prior (index-of prior cmd))) current)
-        else (complete-rust cmd prior current)))
+          cmd (seq/find prior
+                (fn (word) (and (not (string/starts-with? word "-")) (contains? known word)))))
+      (if (nil? cmd)
+        (print-matching (all-subcommands) current)
+        (complete cmd (rest (drop prior (index-of prior cmd))) current)))
     (catch _ (check-allow :discarded-catch nil))))
 
-(defn- run-complete (o)
-  (complete-words (get o :positionals))
+(defn- run-complete (options)
+  (complete-words (get options :positionals))
   0)
 
 ;; ── completion: the shell scripts ────────────────────────────────────────────────────
@@ -1199,8 +1190,8 @@ complete -c nest -f -a '(__nest_complete)'
 complete -c nest -a '(__fish_complete_path)'
 ")
 
-(defn- run-completions (o)
-  (io/write (case (first (get o :positionals))
+(defn- run-completions (options)
+  (io/write (case (first (get options :positionals))
               "bash" *bash-script*
               "zsh" *zsh-script*
               "fish" *fish-script*))

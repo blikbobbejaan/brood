@@ -1227,11 +1227,7 @@ fn jit_lowers_fused_prims_map_and_overflow() {
 #[test]
 fn jit_tier_compiles_a_hot_arm_then_runs_native() {
     // These exercise native tiering directly, so they need ceiling 2 — say so rather than rely
-    // on the default. Before ADR-222 they did not have to: `jit_tier` read its own
-    // `BROOD_NO_JIT` and knew nothing about the engine selector, so under `BROOD_VM=0` the
-    // selector said tree-walker while this test still got native code. That incoherence is
-    // exactly what the ceiling removes — and removing it is what made these two fail in the
-    // tree-walker half of `make test-both` until they were pinned.
+    // on the default, or the tree-walker half of `make test-both` fails them.
     set_forced_ceiling(Some(Tier::Native));
 
     let prim2 = |op: PrimOp, head: &str| Inst::Prim2 {
@@ -1421,11 +1417,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
 #[test]
 fn vm_run_bc_runs_a_tiered_arm_via_the_hook() {
     // These exercise native tiering directly, so they need ceiling 2 — say so rather than rely
-    // on the default. Before ADR-222 they did not have to: `jit_tier` read its own
-    // `BROOD_NO_JIT` and knew nothing about the engine selector, so under `BROOD_VM=0` the
-    // selector said tree-walker while this test still got native code. That incoherence is
-    // exactly what the ceiling removes — and removing it is what made these two fail in the
-    // tree-walker half of `make test-both` until they were pinned.
+    // on the default, or the tree-walker half of `make test-both` fails them.
     set_forced_ceiling(Some(Tier::Native));
 
     let prim2 = |op: PrimOp, head: &str| Inst::Prim2 {
@@ -2465,7 +2457,7 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
     // must decline on size, not on the mere presence of an inlined body.
     //
     // Gated on the tier ceiling (ADR-222). Under the `differential (tree-walker)` CI job
-    // (`BROOD_VM=0`, i.e. ceiling `TreeWalk`) — and under `BROOD_TIER=1`/`BROOD_NO_JIT` —
+    // (`BROOD_TIER=0`) — and under `BROOD_TIER=1` —
     // `jit_tier_in_frame` correctly refuses to run *any* native, so this half would fail for
     // a reason that has nothing to do with what it tests. The half above still runs at every
     // ceiling: declining is the safe answer, so it is the assertion that must hold always.
@@ -2599,7 +2591,7 @@ fn the_vector_base_hoist_is_off_for_any_allocating_arm() {
 #[cfg(feature = "jit")]
 #[test]
 fn a_letrec_loop_is_a_self_call_and_a_shadowed_name_is_not() {
-    // Under `BROOD_VM=0` (CI's tree-walker job) there is no VM arm to inspect: force the
+    // Under `BROOD_TIER=0` (CI's tree-walker job) there is no VM arm to inspect: force the
     // ceiling, as the tiering test below does.
     set_forced_ceiling(Some(Tier::Native));
     let mut interp = crate::Interp::new();

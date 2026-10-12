@@ -36,10 +36,10 @@ fn assert_parity(src: &str) {
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = dir.join(format!("brood_errfmt_{}_{n}.blsp", std::process::id()));
     std::fs::write(&path, src).expect("write temp program");
-    // Default build = bytecode VM + JIT; BROOD_NO_JIT = VM only; BROOD_VM=0 = tree-walker.
-    let vm_jit = run_stderr(&path, &[]);
-    let vm_only = run_stderr(&path, &[("BROOD_NO_JIT", "1")]);
-    let tree = run_stderr(&path, &[("BROOD_VM", "0")]);
+    // Default build = bytecode VM + JIT; BROOD_TIER=1 = VM only; BROOD_TIER=0 = tree-walker.
+    let vm_jit = run_stderr(&path, &[("BROOD_TIER", "2")]);
+    let vm_only = run_stderr(&path, &[("BROOD_TIER", "1")]);
+    let tree = run_stderr(&path, &[("BROOD_TIER", "0")]);
     let _ = std::fs::remove_file(&path);
     assert_eq!(
         vm_jit, tree,

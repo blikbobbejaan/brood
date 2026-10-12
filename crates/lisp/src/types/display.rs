@@ -136,8 +136,7 @@ impl fmt::Display for Ty {
             return f.write_str("never");
         }
         // A union of terms renders as its terms, joined — `(tuple int) | (tuple
-        // string)`, the shape that used to print as bare `vector` because the union
-        // had nowhere to keep both (ADR-262). Each term renders by the rules below.
+        // string)`, not bare `vector` (ADR-262). Each term renders by the rules below.
         if let Some(terms) = self.alt_terms() {
             let rendered: Vec<String> = terms.iter().map(Ty::to_string).collect();
             return f.write_str(&rendered.join(" | "));
@@ -814,7 +813,7 @@ impl Ty {
         // tags *outside* that family, none of the branches above fire and the
         // fall-through renders bare tag names — silently dropping the refinement.
         // `int | vector<int>` is exactly such a term: the union merged exactly, so it
-        // is a single term rather than an `alts` case, and it used to render as
+        // is a single term rather than an `alts` case, and must not render as
         // `(or int vector)`. Split it into per-tag projections and let each render
         // itself; a projection has one tag, so this recursion terminates.
         let mut structural_tags = 0u32;

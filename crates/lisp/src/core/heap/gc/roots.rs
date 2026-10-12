@@ -39,12 +39,9 @@ impl Heap {
     /// Reserve `n` fresh slots at the top of `roots` and return a pointer to the first —
     /// the JIT's per-call argument staging, written **in place** by the caller's own stores.
     ///
-    /// Replaces the store-to-stack-slot-then-[`push_roots_n`] pair: the JIT used to write
-    /// each argument's three words into a Cranelift stack slot and then copy the block onto
-    /// `roots`, which LBR attribution put at **4.4% of `bintree`** in the copy alone, plus
-    /// the stores feeding it. Handing back the destination lets the same stores land where
-    /// the value is needed, so the copy stops existing rather than getting cheaper — the one
-    /// shape of change that has actually moved this row (docs/compute-frontier.md §2j).
+    /// Handing back the destination lets the caller's stores land where the value is
+    /// needed, instead of staging into a stack slot and copying the block onto `roots`
+    /// (docs/compute-frontier.md §2j).
     ///
     /// # Safety
     /// The returned slots are **live roots holding uninitialised memory** until the caller

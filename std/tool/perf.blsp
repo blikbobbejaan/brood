@@ -158,7 +158,7 @@ representative; the *counts* still are."
      ;; flags, which a hand-rolled `cargo build` would not.
      :hint (if on?
              nil
-             "make perf-brood   # then: BROOD_PERF_STATS=1 target/release-fast/brood prog.blsp")
+             "make perf-brood   # then: BROOD_PERF_STATS=1 target/release-perf/brood prog.blsp")
      :ratios rs
      :vm vm
      :gc gc

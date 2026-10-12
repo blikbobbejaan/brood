@@ -96,9 +96,9 @@ fn a_map_read_primitive_answers_what_get_answers() {
     let (_dir, file) = fixture("mapget", EVERY_BRANCH);
     // The two reference arms are pinned to the native ceiling, and the loops are 60 000
     // iterations (the tiering threshold is well under that): the `differential
-    // (tree-walker)` job runs the whole suite under `BROOD_VM=0`, where these arms would
-    // otherwise tree-walk ~1M `get`s each on a 2-core runner — the run hit nextest's 120 s
-    // cap there (2026-09-17). The tree-walker still covers every branch below, through the
+    // (tree-walker)` job runs the whole suite under `BROOD_TIER=0`, where these arms would
+    // otherwise tree-walk ~1M `get`s each on a 2-core runner — past nextest's 120 s cap. The
+    // tree-walker still covers every branch below, through the
     // `BROOD_TIER=0` run of the loop that follows.
     let pin = &[("BROOD_TIER", "2")];
     let off = run(&file, false, pin);
@@ -139,12 +139,10 @@ fn the_prim_is_what_makes_a_field_reading_body_inlinable() {
 (io/puts (str (hot 300000 0)))\n";
     let (_dir, file) = fixture("mapget-inline", source);
     // Pin the tier ceiling to Native. This asserts a JIT derivation happened, and the
-    // `differential (tree-walker)` CI job runs the whole suite under `BROOD_VM=0` — where
+    // `differential (tree-walker)` CI job runs the whole suite under `BROOD_TIER=0` — where
     // nothing ever lowers, so `[leaf …]` cannot print and the assertion fails for a reason
-    // that has nothing to do with the prim (KI-69's class, and its fix: a JIT-asserting
-    // test names the ceiling it needs rather than inheriting the job's). `BROOD_TIER` wins
-    // over the job's `BROOD_VM`/`BROOD_NO_JIT` by the ADR-222 precedence, so this test
-    // checks the same thing on every job.
+    // that has nothing to do with the prim (KI-69's class: a JIT-asserting test names the
+    // ceiling it needs rather than inheriting the job's).
     let env = &[("BROOD_INLINE_DBG", "1"), ("BROOD_TIER", "2")];
     let off = run(&file, false, env);
     let on = run(&file, true, env);

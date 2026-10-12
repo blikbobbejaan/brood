@@ -22,10 +22,9 @@ impl Heap {
     ///
     /// For a startup image (ADR-218) this is a fact, not a hint: every closure the restore
     /// promoted is bound to a global, so a compaction immediately afterwards walks the whole
-    /// region and reclaims nothing. Measured on a 16 300-file project, that pointless
-    /// compaction was **4.0 s of an 8.3 s restore** — it fired at the first safepoint after
-    /// the restore, because the closure count had shot past a threshold set when the region
-    /// was still empty.
+    /// region and reclaims nothing — yet it would fire at the first safepoint after the
+    /// restore, because the closure count shot past a threshold set while the region was
+    /// still empty.
     ///
     /// Applies exactly the rule the safepoint applies after a real collection —
     /// `max(floor, live * 2)` — so this skips only the *discovery*, never the policy.
@@ -245,8 +244,8 @@ impl Heap {
         }
         let old_guard = self.runtime.gens[g].load();
         let dst_guard = self.runtime.gens[cur].load();
-        let mut fwd = RuntimeForward::for_gens(g, cur);
-        flush_rt_value(&old_guard, &dst_guard, &mut fwd, v)
+        let mut forward = RuntimeForward::for_gens(g, cur);
+        flush_rt_value(&old_guard, &dst_guard, &mut forward, v)
     }
 
     pub fn migrate_live_globals(&self, old_gen: usize) -> usize {
@@ -258,7 +257,7 @@ impl Heap {
         let dst_guard = self.runtime.gens[dest_gen].load();
         let old_slab: &CodeSlabs = &old_guard;
         let dst_slab: &CodeSlabs = &dst_guard;
-        let mut fwd = RuntimeForward::for_gens(old_gen, dest_gen);
+        let mut forward = RuntimeForward::for_gens(old_gen, dest_gen);
 
         // (a) Snapshot the shared roots still resident in `old_gen`: globals + the
         // declared `(sig …)` type-exprs. (Read lock — released before the flush.)
@@ -283,11 +282,11 @@ impl Heap {
         // boxcar append is concurrency-safe). Record (symbol, migrated handle).
         let glob_new: Vec<(Symbol, Value)> = glob_snap
             .iter()
-            .map(|(k, v)| (*k, flush_rt_value(old_slab, dst_slab, &mut fwd, *v)))
+            .map(|(k, v)| (*k, flush_rt_value(old_slab, dst_slab, &mut forward, *v)))
             .collect();
         let sig_new: Vec<(Symbol, Value)> = sig_snap
             .iter()
-            .map(|(k, v)| (*k, flush_rt_value(old_slab, dst_slab, &mut fwd, *v)))
+            .map(|(k, v)| (*k, flush_rt_value(old_slab, dst_slab, &mut forward, *v)))
             .collect();
 
         // (b2) Carry `(form-pos …)` entries for every forwarded pair to its new index,
@@ -299,7 +298,7 @@ impl Heap {
                 .positions
                 .write()
                 .unwrap_or_else(|e| e.into_inner());
-            for (&old_idx, &new_idx) in fwd.pairs.iter() {
+            for (&old_idx, &new_idx) in forward.pairs.iter() {
                 if let Some(entry) = p.get(&rt_pos_key(old_idx as usize, old_gen)).cloned() {
                     p.insert(rt_pos_key(new_idx as usize, dest_gen), entry);
                 }
@@ -573,15 +572,9 @@ impl Heap {
         // A process 100 000 frames deep seeds ~1.7 million values per walk (KI-14).
         let epoch = self.runtime.drain_epoch.load(Ordering::Relaxed);
 
-        // **A cached stale-dirty verdict short-circuits the WHOLE probe, Phase 1 included.**
-        // This check used to sit between the two phases, which meant a process dirty via
-        // Phase 2 still paid a full Phase-1 walk on every safepoint — and then threw the
-        // result away, because the verdict below is `true` regardless of what Phase 1 found.
-        // Pure waste, invisible while Phase 1 really was cheap. It is not cheap for a deeply
-        // recursing process: `roots` grows with depth, and the KI-14 run measured 78 000
-        // Phase-1 walks over a 1.7-million-entry root stack inside a *single* drain epoch,
-        // which is why that run never finished. Hoisting the check changes no verdict — it
-        // only skips work whose result was already discarded.
+        // **A cached stale-dirty verdict short-circuits the WHOLE probe, Phase 1 included**:
+        // the verdict is `true` regardless of what Phase 1 would find, and Phase 1 is not
+        // cheap for a deeply recursing process (KI-14).
         if self.p2_dirty_epoch.get() == epoch {
             let t = self.p2_dirty_tick.get().wrapping_add(1);
             self.p2_dirty_tick.set(t);
@@ -1139,7 +1132,7 @@ impl Heap {
         let new = CodeSlabs::default();
         // Same-generation compaction: copy from the current gen back into itself.
         let cg = self.runtime.cur_gen();
-        let mut fwd = RuntimeForward::for_gens(cg, cg);
+        let mut forward = RuntimeForward::for_gens(cg, cg);
         let mut roots: Vec<Value> = self.runtime.globals_read().values().copied().collect();
         roots.extend(self.roots.iter().copied());
         roots.extend(self.staged_values());
@@ -1148,9 +1141,9 @@ impl Heap {
         roots.extend(self.msg_roots.iter().flat_map(|t| t.slots.iter()).copied());
         let cur = self.runtime.cur_code();
         for r in roots {
-            flush_rt_value(&cur, &new, &mut fwd, r);
+            flush_rt_value(&cur, &new, &mut forward, r);
         }
-        (new, fwd)
+        (new, forward)
     }
 
     /// Test/diagnostic hook for Step 2a: `(total RUNTIME closures, live closures in
@@ -1160,7 +1153,7 @@ impl Heap {
     /// compacted region.
     pub fn runtime_evacuate_check(&self) -> (usize, usize, bool) {
         let total = self.runtime.cur_code().closures.count();
-        let (new, _fwd) = self.runtime_evacuate();
+        let (new, _forward) = self.runtime_evacuate();
         let live = new.closures.count();
         let ok = verify_rt_slabs(&new);
         (total, live, ok)
@@ -1233,14 +1226,14 @@ impl Heap {
         let old_code = self.runtime.gens[cur].swap(Arc::new(CodeSlabs::default()));
         let new = CodeSlabs::default();
         // In-place compaction copies the current generation back into itself.
-        let mut fwd = RuntimeForward::for_gens(cur, cur);
+        let mut forward = RuntimeForward::for_gens(cur, cur);
 
         // 1. Globals (the primary roots).
         {
             let rt = Arc::get_mut(&mut self.runtime).unwrap();
             let mut g = rt.globals.write().unwrap_or_else(|e| e.into_inner());
             for v in g.values_mut() {
-                *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+                *v = flush_rt_value(&old_code, &new, &mut forward, *v);
             }
         }
         // 1b. Declared `(sig …)` type-expressions — also promoted RUNTIME handles held
@@ -1252,12 +1245,12 @@ impl Heap {
             let rt = Arc::get_mut(&mut self.runtime).unwrap();
             let mut s = rt.declared_sigs.write().unwrap_or_else(|e| e.into_inner());
             for v in s.values_mut() {
-                *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+                *v = flush_rt_value(&old_code, &new, &mut forward, *v);
             }
         }
         // 2. This process's roots, env roots, and dynamic bindings.
         for v in self.roots.iter_mut() {
-            *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+            *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         // 2b. Delivered-message slots (L1). A shared RUNTIME closure sent to a parked
         // receiver is handed over BY HANDLE (`copy_cross_heap`'s share-fn path) and
@@ -1267,39 +1260,39 @@ impl Heap {
         // dispatches a stranger (or panics on a dead handle). The LOCAL collector has
         // always treated these as roots; the RUNTIME side never did.
         for v in self.msg_roots.iter_mut().flat_map(|t| t.slots.iter_mut()) {
-            *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+            *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         for e in self.env_roots.iter_mut() {
-            *e = flush_rt_env(&old_code, &new, &mut fwd, *e);
+            *e = flush_rt_env(&old_code, &new, &mut forward, *e);
         }
         for (_, v) in self.dynamics.iter_mut() {
-            *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+            *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         #[cfg(feature = "dev-tools")]
         if let Some(v) = &mut self.trace_context {
-            *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+            *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         // ...and the caller's extra live roots (the auto path's `expr`/`env`).
         for v in extra_roots.iter_mut() {
-            *v = flush_rt_value(&old_code, &new, &mut fwd, *v);
+            *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         for e in extra_envs.iter_mut() {
-            *e = flush_rt_env(&old_code, &new, &mut fwd, *e);
+            *e = flush_rt_env(&old_code, &new, &mut forward, *e);
         }
         // 3. The LOCAL heap (both generations) — any slot may embed a RUNTIME handle.
-        rewrite_local_rt_handles(&mut self.local, &old_code, &new, &mut fwd);
+        rewrite_local_rt_handles(&mut self.local, &old_code, &new, &mut forward);
         if let Some(o) = self.old.as_deref_mut() {
-            rewrite_local_rt_handles(o, &old_code, &new, &mut fwd);
+            rewrite_local_rt_handles(o, &old_code, &new, &mut forward);
         }
         // 3b. The LIVE compiled-VM arms on this process's execution stack. Their
         // `Arc`'d node trees are off the GC root graph (and held by `&Node` during
         // execution, so the `Arc` can't be swapped), but they embed promoted RUNTIME
         // handles in their `Const`/`MakeClosure` literals — the one holder the root
-        // walk above can't reach. Rewrite them in place with the SAME `fwd`, so a
+        // walk above can't reach. Rewrite them in place with the SAME `forward`, so a
         // literal shared with an already-evacuated global maps to the same new index,
         // and a literal reachable ONLY from a live arm is evacuated here on first
         // sight. Clone the registry (cheap `Arc` bumps) to drop the `&self` borrow
-        // before the `&old_code`/`&mut fwd` closure. This is what lets the safepoint
+        // before the `&old_code`/`&mut forward` closure. This is what lets the safepoint
         // compact even while the VM is mid-call (no deferral, region stays bounded).
         //
         // **Visit each DISTINCT arm once** — the same reason the probe walk above dedupes,
@@ -1318,14 +1311,14 @@ impl Heap {
                 continue;
             }
             crate::eval::compile::rewrite_arm_handles(arm, &mut |v| {
-                flush_rt_value(&old_code, &new, &mut fwd, v)
+                flush_rt_value(&old_code, &new, &mut forward, v)
             });
         }
         // 3c. Remap RUNTIME form-position keys through the same forwarding. `positions`
         // is keyed by raw pair slab index and lives off the graph, so — like
         // `declared_sigs` — a relocation strands its keys on recycled pairs; without this
         // `(form-pos …)` / source-location diagnostics return a stranger's position (or
-        // none) after a compaction. `fwd.pairs` is fully populated by the walks above.
+        // none) after a compaction. `forward.pairs` is fully populated by the walks above.
         // Diagnostics-only, but the same stale-after-relocation class. Entries whose pair
         // didn't survive are dropped.
         {
@@ -1338,7 +1331,7 @@ impl Heap {
             for (key, val) in old {
                 if key >> 32 != cur as u64 {
                     p.insert(key, val);
-                } else if let Some(&new_idx) = fwd.pairs.get(&(key as u32)) {
+                } else if let Some(&new_idx) = forward.pairs.get(&(key as u32)) {
                     p.insert(rt_pos_key(new_idx as usize, cur), val);
                 }
             }
@@ -1654,7 +1647,12 @@ fn runtime_gen_of(v: Value) -> Option<usize> {
 /// Copy a value's RUNTIME sub-graph into `new`, returning the value with its RUNTIME
 /// handles rewritten to their new indices. Non-RUNTIME values (atoms, LOCAL,
 /// PRELUDE) are returned unchanged — only the runtime region moves.
-fn flush_rt_value(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, v: Value) -> Value {
+fn flush_rt_value(
+    old: &CodeSlabs,
+    new: &CodeSlabs,
+    forward: &mut RuntimeForward,
+    v: Value,
+) -> Value {
     // Deep-car-nesting guard — see `WALKER_RED_ZONE`, and the identical guard on the
     // LOCAL twin `gc::flush_value`. The cdr spine below is iterative, but *car* nesting
     // still recurses `flush_rt_value` ⇄ `flush_rt_pair` one native frame per level, and a
@@ -1663,82 +1661,87 @@ fn flush_rt_value(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, v:
     // fires at auto-safepoints (ADR-091), so the collecting thread's remaining stack is
     // arbitrary; grow into heap-backed segments rather than assume there is room.
     crate::stack::maybe_grow(WALKER_RED_ZONE, WALKER_STACK_CHUNK, || {
-        flush_rt_value_grown(old, new, fwd, v)
+        flush_rt_value_grown(old, new, forward, v)
     })
 }
 
 fn flush_rt_value_grown(
     old: &CodeSlabs,
     new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
+    forward: &mut RuntimeForward,
     v: Value,
 ) -> Value {
     // Only forward handles resident in the *source* generation; a handle already in
     // the destination generation (or PRELUDE, whose `region() != RUNTIME`) is left
     // untouched — load-bearing for cross-generation migration, where a live global's
     // graph can already straddle both generations.
-    let g = fwd.old_gen;
+    let g = forward.old_gen;
     match v.unpack() {
         ValueRef::Pair(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::pair(flush_rt_pair(old, new, fwd, id))
+            Value::pair(flush_rt_pair(old, new, forward, id))
         }
         ValueRef::Vector(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::vector(flush_rt_vector(old, new, fwd, id))
+            Value::vector(flush_rt_vector(old, new, forward, id))
         }
         // A range's backing `[lo hi step]` vector moves like any other vector;
         // keep the `Range` wrapper on the forwarded handle.
         ValueRef::Range(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::range(flush_rt_vector(old, new, fwd, id))
+            Value::range(flush_rt_vector(old, new, forward, id))
         }
         // Like a range, a seq-view's backing vector moves under a runtime
         // compaction; `flush_rt_vector` forwards its elements. Keep the wrapper.
         ValueRef::SeqView(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::seqview(flush_rt_vector(old, new, fwd, id))
+            Value::seqview(flush_rt_vector(old, new, forward, id))
         }
         // Map, set and failure share one CHAMP store — forward the trie once and
         // re-wrap in the kind that came in. One arm in place of two near-identical ones.
         ValueRef::Map(id) | ValueRef::Set(id) | ValueRef::Failure(id)
             if id.region() == RUNTIME && id.code_gen() == g =>
         {
-            crate::core::value::champ_rewrap(v, flush_rt_map(old, new, fwd, id))
+            crate::core::value::champ_rewrap(v, flush_rt_map(old, new, forward, id))
         }
         ValueRef::Str(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::str_(flush_rt_string(old, new, fwd, id))
+            Value::str_(flush_rt_string(old, new, forward, id))
         }
         ValueRef::BigInt(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::bigint(flush_rt_bigint(old, new, fwd, id))
+            Value::bigint(flush_rt_bigint(old, new, forward, id))
         }
         ValueRef::Decimal(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::decimal(flush_rt_decimal(old, new, fwd, id))
+            Value::decimal(flush_rt_decimal(old, new, forward, id))
         }
         ValueRef::Ratio(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::ratio(flush_rt_ratio(old, new, fwd, id))
+            Value::ratio(flush_rt_ratio(old, new, forward, id))
         }
         ValueRef::Bytes(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::bytes(flush_rt_bytes(old, new, fwd, id))
+            Value::bytes(flush_rt_bytes(old, new, forward, id))
         }
         ValueRef::Rope(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::rope(flush_rt_rope(old, new, fwd, id))
+            Value::rope(flush_rt_rope(old, new, forward, id))
         }
         ValueRef::Fn(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::func(flush_rt_closure(old, new, fwd, id))
+            Value::func(flush_rt_closure(old, new, forward, id))
         }
         ValueRef::Macro(id) if id.region() == RUNTIME && id.code_gen() == g => {
-            Value::macro_(flush_rt_closure(old, new, fwd, id))
+            Value::macro_(flush_rt_closure(old, new, forward, id))
         }
         _ => v,
     }
 }
 
-fn flush_rt_pair(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: PairId) -> PairId {
-    let (key, src_gen, dest) = (id.index() as u32, fwd.old_gen, fwd.dest_gen);
-    if let Some(&n) = fwd.pairs.get(&key) {
+fn flush_rt_pair(
+    old: &CodeSlabs,
+    new: &CodeSlabs,
+    forward: &mut RuntimeForward,
+    id: PairId,
+) -> PairId {
+    let (key, src_gen, dest) = (id.index() as u32, forward.old_gen, forward.dest_gen);
+    if let Some(&n) = forward.pairs.get(&key) {
         return PairId::runtime_gen(n as usize, dest);
     }
     // `boxcar` is append-only (no write-back), so we can't reserve-then-fill. RUNTIME
     // code lists are **immutable and acyclic** — no cons cycle is constructible — so
     // flush the car/cdr *first*, then push the finished cell once. Sharing (a DAG)
-    // is handled by the `fwd` check on revisit; a true cycle would only arise
+    // is handled by the `forward` check on revisit; a true cycle would only arise
     // through a closure, and `flush_rt_closure` breaks that with `OnceLock`.
     //
     // Walk the cdr spine **iteratively** (mirroring the LOCAL `flush_pair`): a
@@ -1756,29 +1759,29 @@ fn flush_rt_pair(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id:
         spine.push((cur_id.index() as u32, h));
         match t.unpack() {
             // Another not-yet-copied RUNTIME pair: continue the spine. A
-            // shared/already-copied cell resolves via the `fwd` check below
+            // shared/already-copied cell resolves via the `forward` check below
             // (handled by `flush_rt_value` on the terminal), so we only extend
             // the spine for fresh cells.
             ValueRef::Pair(p)
                 if p.region() == RUNTIME
                     && p.code_gen() == src_gen
-                    && !fwd.pairs.contains_key(&(p.index() as u32)) =>
+                    && !forward.pairs.contains_key(&(p.index() as u32)) =>
             {
                 cur_id = p;
             }
             // Nil / atom / dotted tail / other-generation or shared-or-copied RUNTIME
             // pair: flush it (cheap, no spine recursion) and stop.
-            other => break flush_rt_value(old, new, fwd, other),
+            other => break flush_rt_value(old, new, forward, other),
         }
     };
     // Build the cells in reverse so each cdr is the already-pushed next handle.
     // Car flushes run after the whole spine is known; sharing through a car
-    // resolves via `fwd` once that car's cell is pushed.
+    // resolves via `forward` once that car's cell is pushed.
     let mut next = tail;
     for (key, car) in spine.into_iter().rev() {
-        let new_car = flush_rt_value(old, new, fwd, car);
+        let new_car = flush_rt_value(old, new, forward, car);
         let new_idx = new.pairs.push((new_car, next));
-        fwd.pairs.insert(key, new_idx as u32);
+        forward.pairs.insert(key, new_idx as u32);
         next = Value::pair(PairId::runtime_gen(new_idx, dest));
     }
     match next.unpack() {
@@ -1787,9 +1790,14 @@ fn flush_rt_pair(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id:
     }
 }
 
-fn flush_rt_vector(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: VecId) -> VecId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.vectors.get(&key) {
+fn flush_rt_vector(
+    old: &CodeSlabs,
+    new: &CodeSlabs,
+    forward: &mut RuntimeForward,
+    id: VecId,
+) -> VecId {
+    let (key, dest) = (id.index() as u32, forward.dest_gen);
+    if let Some(&n) = forward.vectors.get(&key) {
         return VecId::runtime_gen(n as usize, dest);
     }
     let src = old.vectors.get(id.index()).expect("rt vector");
@@ -1798,107 +1806,45 @@ fn flush_rt_vector(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, i
     // acyclic, so recording the forwarding after the build (as the pair path
     // here also does) is safe. `src` and `flush_rt_value` share `old`'s
     // immutable borrow; `new` is append-only via interior mutability.
-    let store = VecStore::from_flushed(n, |i| flush_rt_value(old, new, fwd, src[i]));
+    let store = VecStore::from_flushed(n, |i| flush_rt_value(old, new, forward, src[i]));
     let new_idx = new.vectors.push(store);
-    fwd.vectors.insert(key, new_idx as u32);
+    forward.vectors.insert(key, new_idx as u32);
     VecId::runtime_gen(new_idx, dest)
 }
 
-fn flush_rt_string(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: StrId) -> StrId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.strings.get(&key) {
-        return StrId::runtime_gen(n as usize, dest);
-    }
-    let s = old.strings.get(id.index()).expect("rt string").clone();
-    let new_idx = new.strings.push(s);
-    fwd.strings.insert(key, new_idx as u32);
-    StrId::runtime_gen(new_idx, dest)
+/// Generate a `flush_rt_*` for a LEAF kind during a runtime-region compaction: clone the
+/// value into the new region (a blob or rope clone is an `Arc` bump, not a byte copy) and
+/// record the forwarding. The kinds differ only in their slab field and handle type.
+macro_rules! flush_rt_leaf {
+    ($name:ident, $field:ident, $id:ty, $what:literal) => {
+        fn $name(old: &CodeSlabs, new: &CodeSlabs, forward: &mut RuntimeForward, id: $id) -> $id {
+            let (key, dest) = (id.index() as u32, forward.dest_gen);
+            if let Some(&index) = forward.$field.get(&key) {
+                return <$id>::runtime_gen(index as usize, dest);
+            }
+            let leaf = old.$field.get(id.index()).expect($what).clone();
+            let new_index = new.$field.push(leaf);
+            forward.$field.insert(key, new_index as u32);
+            <$id>::runtime_gen(new_index, dest)
+        }
+    };
 }
 
-fn flush_rt_bigint(
+flush_rt_leaf!(flush_rt_string, strings, StrId, "rt string");
+flush_rt_leaf!(flush_rt_bigint, bigints, BigIntId, "rt bigint");
+flush_rt_leaf!(flush_rt_decimal, decimals, DecimalId, "rt decimal");
+flush_rt_leaf!(flush_rt_ratio, ratios, RatioId, "rt ratio");
+flush_rt_leaf!(flush_rt_bytes, bytes, BytesId, "rt bytes");
+flush_rt_leaf!(flush_rt_rope, ropes, RopeId, "rt rope");
+
+fn flush_rt_map(
     old: &CodeSlabs,
     new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
-    id: BigIntId,
-) -> BigIntId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.bigints.get(&key) {
-        return BigIntId::runtime_gen(n as usize, dest);
-    }
-    let v = old.bigints.get(id.index()).expect("rt bigint").clone();
-    let new_idx = new.bigints.push(v);
-    fwd.bigints.insert(key, new_idx as u32);
-    BigIntId::runtime_gen(new_idx, dest)
-}
-
-/// Flush a RUNTIME decimal during a runtime-region compaction (mirrors
-/// [`flush_rt_bigint`]). A leaf — clone the value into the new region.
-fn flush_rt_decimal(
-    old: &CodeSlabs,
-    new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
-    id: DecimalId,
-) -> DecimalId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.decimals.get(&key) {
-        return DecimalId::runtime_gen(n as usize, dest);
-    }
-    let v = old.decimals.get(id.index()).expect("rt decimal").clone();
-    let new_idx = new.decimals.push(v);
-    fwd.decimals.insert(key, new_idx as u32);
-    DecimalId::runtime_gen(new_idx, dest)
-}
-
-/// Flush a RUNTIME ratio during a runtime-region compaction (mirrors
-/// [`flush_rt_decimal`]). A leaf — clone the value into the new region.
-fn flush_rt_ratio(
-    old: &CodeSlabs,
-    new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
-    id: RatioId,
-) -> RatioId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.ratios.get(&key) {
-        return RatioId::runtime_gen(n as usize, dest);
-    }
-    let v = old.ratios.get(id.index()).expect("rt ratio").clone();
-    let new_idx = new.ratios.push(v);
-    fwd.ratios.insert(key, new_idx as u32);
-    RatioId::runtime_gen(new_idx, dest)
-}
-
-/// Flush a RUNTIME bytes value during a runtime-region compaction (mirrors
-/// [`flush_rt_bigint`]). Byte-clean — clone the `Arc<SharedBlob>` into the new region.
-fn flush_rt_bytes(
-    old: &CodeSlabs,
-    new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
-    id: BytesId,
-) -> BytesId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.bytes.get(&key) {
-        return BytesId::runtime_gen(n as usize, dest);
-    }
-    let v = old.bytes.get(id.index()).expect("rt bytes").clone();
-    let new_idx = new.bytes.push(v);
-    fwd.bytes.insert(key, new_idx as u32);
-    BytesId::runtime_gen(new_idx, dest)
-}
-
-fn flush_rt_rope(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: RopeId) -> RopeId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.ropes.get(&key) {
-        return RopeId::runtime_gen(n as usize, dest);
-    }
-    let r = old.ropes.get(id.index()).expect("rt rope").clone();
-    let new_idx = new.ropes.push(r);
-    fwd.ropes.insert(key, new_idx as u32);
-    RopeId::runtime_gen(new_idx, dest)
-}
-
-fn flush_rt_map(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: MapId) -> MapId {
-    let (key, src_gen, dest) = (id.index() as u32, fwd.old_gen, fwd.dest_gen);
-    if let Some(&n) = fwd.maps.get(&key) {
+    forward: &mut RuntimeForward,
+    id: MapId,
+) -> MapId {
+    let (key, src_gen, dest) = (id.index() as u32, forward.old_gen, forward.dest_gen);
+    if let Some(&n) = forward.maps.get(&key) {
         return MapId::runtime_gen(n as usize, dest);
     }
     let node = old.maps.get(id.index()).expect("rt map");
@@ -1911,7 +1857,7 @@ fn flush_rt_map(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: 
         .iter()
         .map(|&c| {
             if c.region() == RUNTIME && c.code_gen() == src_gen {
-                flush_rt_map(old, new, fwd, c)
+                flush_rt_map(old, new, forward, c)
             } else {
                 c
             }
@@ -1921,8 +1867,8 @@ fn flush_rt_map(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: 
         .iter()
         .map(|&(k, v)| {
             (
-                flush_rt_value(old, new, fwd, k),
-                flush_rt_value(old, new, fwd, v),
+                flush_rt_value(old, new, forward, k),
+                flush_rt_value(old, new, forward, v),
             )
         })
         .collect();
@@ -1934,18 +1880,18 @@ fn flush_rt_map(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, id: 
         data: new_data,
         children: new_children,
     });
-    fwd.maps.insert(key, new_idx as u32);
+    forward.maps.insert(key, new_idx as u32);
     MapId::runtime_gen(new_idx, dest)
 }
 
 fn flush_rt_closure(
     old: &CodeSlabs,
     new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
+    forward: &mut RuntimeForward,
     id: ClosureId,
 ) -> ClosureId {
-    let (key, dest) = (id.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.closures.get(&key) {
+    let (key, dest) = (id.index() as u32, forward.dest_gen);
+    if let Some(&n) = forward.closures.get(&key) {
         return ClosureId::runtime_gen(n as usize, dest);
     }
     let cl = old
@@ -1958,7 +1904,7 @@ fn flush_rt_closure(
     // Reserve-then-fill (OnceLock) breaks cyclic closures (a closure whose captured
     // env binds the closure itself), exactly as `promote_closure` does.
     let new_idx = new.closures.push(OnceLock::new());
-    fwd.closures.insert(key, new_idx as u32);
+    forward.closures.insert(key, new_idx as u32);
     let arms = cl
         .arms
         .iter()
@@ -1967,18 +1913,18 @@ fn flush_rt_closure(
             optionals: arm
                 .optionals
                 .iter()
-                .map(|&(s, d)| (s, flush_rt_value(old, new, fwd, d)))
+                .map(|&(s, d)| (s, flush_rt_value(old, new, forward, d)))
                 .collect(),
             rest: arm.rest,
             body: arm
                 .body
                 .iter()
-                .map(|&f| flush_rt_value(old, new, fwd, f))
+                .map(|&f| flush_rt_value(old, new, forward, f))
                 .collect(),
             passthrough: arm.passthrough.clone(),
         })
         .collect();
-    let env = cl.env.map(|e| flush_rt_env(old, new, fwd, e));
+    let env = cl.env.map(|e| flush_rt_env(old, new, forward, e));
     let _ = new.closures.get(new_idx).unwrap().set(Closure {
         name: cl.name,
         arms,
@@ -1990,14 +1936,19 @@ fn flush_rt_closure(
     ClosureId::runtime_gen(new_idx, dest)
 }
 
-fn flush_rt_env(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, env: EnvId) -> EnvId {
+fn flush_rt_env(
+    old: &CodeSlabs,
+    new: &CodeSlabs,
+    forward: &mut RuntimeForward,
+    env: EnvId,
+) -> EnvId {
     // Leave the global env, PRELUDE frames, and frames already in the destination
     // generation untouched — only source-generation frames are copied.
-    if env == EnvId::GLOBAL || env.region() != RUNTIME || env.code_gen() != fwd.old_gen {
+    if env == EnvId::GLOBAL || env.region() != RUNTIME || env.code_gen() != forward.old_gen {
         return env;
     }
-    let (key, dest) = (env.index() as u32, fwd.dest_gen);
-    if let Some(&n) = fwd.envs.get(&key) {
+    let (key, dest) = (env.index() as u32, forward.dest_gen);
+    if let Some(&n) = forward.envs.get(&key) {
         return EnvId::runtime_gen(n as usize, dest);
     }
     let (parent, vars_snapshot): (Option<EnvId>, EnvVars) = {
@@ -2010,11 +1961,11 @@ fn flush_rt_env(old: &CodeSlabs, new: &CodeSlabs, fwd: &mut RuntimeForward, env:
         (frame.parent, frame.vars.iter().copied().collect())
     };
     let new_idx = new.envs.push(OnceLock::new());
-    fwd.envs.insert(key, new_idx as u32);
-    let new_parent = parent.map(|p| flush_rt_env(old, new, fwd, p));
+    forward.envs.insert(key, new_idx as u32);
+    let new_parent = parent.map(|p| flush_rt_env(old, new, forward, p));
     let vars: EnvVars = vars_snapshot
         .iter()
-        .map(|&(s, v)| (s, flush_rt_value(old, new, fwd, v)))
+        .map(|&(s, v)| (s, flush_rt_value(old, new, forward, v)))
         .collect();
     let _ = new.envs.get(new_idx).unwrap().set(EnvFrame {
         vars,
@@ -2116,7 +2067,7 @@ fn verify_rt_slabs(s: &CodeSlabs) -> bool {
 }
 
 /// Rewrite every RUNTIME handle held in a LOCAL [`Slabs`] (one generation) to its
-/// evacuated index, evacuating it from `old` into `new` on first sight (`fwd`
+/// evacuated index, evacuating it from `old` into `new` on first sight (`forward`
 /// memoizes). Used by [`Heap::runtime_collect`] for both `local` and `old`. Visiting
 /// every slot directly is what makes the one-pass evacuate-and-rewrite correct: any
 /// RUNTIME handle anywhere is reached without graph-walking LOCAL structure (LOCAL
@@ -2127,21 +2078,21 @@ fn rewrite_local_rt_handles(
     s: &mut Slabs,
     old: &CodeSlabs,
     new: &CodeSlabs,
-    fwd: &mut RuntimeForward,
+    forward: &mut RuntimeForward,
 ) {
     for (a, b) in s.pairs.iter_mut() {
-        *a = flush_rt_value(old, new, fwd, *a);
-        *b = flush_rt_value(old, new, fwd, *b);
+        *a = flush_rt_value(old, new, forward, *a);
+        *b = flush_rt_value(old, new, forward, *b);
     }
     for vec in s.vectors.iter_mut() {
         for x in vec.iter_mut() {
-            *x = flush_rt_value(old, new, fwd, *x);
+            *x = flush_rt_value(old, new, forward, *x);
         }
     }
     for node in s.maps.iter_mut() {
         for (k, v) in node.data.iter_mut() {
-            *k = flush_rt_value(old, new, fwd, *k);
-            *v = flush_rt_value(old, new, fwd, *v);
+            *k = flush_rt_value(old, new, forward, *k);
+            *v = flush_rt_value(old, new, forward, *v);
         }
     }
     for cl in s.closures.iter_mut() {
@@ -2153,22 +2104,22 @@ fn rewrite_local_rt_handles(
         // invalidated by the same `gen_version` bump, so fresh closures re-share after.
         for arm in std::sync::Arc::make_mut(&mut cl.arms).iter_mut() {
             for f in arm.body.iter_mut() {
-                *f = flush_rt_value(old, new, fwd, *f);
+                *f = flush_rt_value(old, new, forward, *f);
             }
             for (_, d) in arm.optionals.iter_mut() {
-                *d = flush_rt_value(old, new, fwd, *d);
+                *d = flush_rt_value(old, new, forward, *d);
             }
         }
         if let Some(e) = cl.env {
-            cl.env = Some(flush_rt_env(old, new, fwd, e));
+            cl.env = Some(flush_rt_env(old, new, forward, e));
         }
     }
     for fr in s.envs.iter_mut() {
         for (_, v) in fr.vars.iter_mut() {
-            *v = flush_rt_value(old, new, fwd, *v);
+            *v = flush_rt_value(old, new, forward, *v);
         }
         if let Some(p) = fr.parent {
-            fr.parent = Some(flush_rt_env(old, new, fwd, p));
+            fr.parent = Some(flush_rt_env(old, new, forward, p));
         }
     }
 }

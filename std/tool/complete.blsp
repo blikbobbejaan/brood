@@ -29,20 +29,10 @@
 names, module names, test files. Every function returns a (possibly empty) list
 and never raises: it runs on each TAB press, so a failure must degrade to \"no
 suggestions\", never to an error on the user's command line."
-  ;; DELIBERATELY DEPENDENCY-FREE. This module used to open with
-  ;; `(:use-internals project)` for four twenty-line helpers, which loaded all 2967
-  ;; lines of `project` (and `scaffold`, and `project` again behind it) on every TAB
-  ;; press: measured 2026-08-18, that was 770 ms of the 950 ms a single dynamic
-  ;; completion took in a debug build; release went 92-123 ms -> 18-19 ms. Rule 2 in
-  ;; the header says never load the project image; requiring the module that IS the
-  ;; project image broke that rule at the very top of the file.
-  ;;
-  ;; So the handful of things completion needs from the project — where its root is,
-  ;; which directories it declares, which files are under them — are read straight
-  ;; off the filesystem below. They are small, and reading them here is the same
-  ;; trade the tag scanner already makes on purpose: read the project as text and
-  ;; data, never by loading it. Keep it that way; a new `foo/bar` reference in this
-  ;; file silently re-introduces a load-time require (ADR-229 loads by inference).
+  ;; DELIBERATELY DEPENDENCY-FREE: loading `project` costs most of a TAB press's budget.
+  ;; What completion needs from the project — its root, its declared directories, the
+  ;; files under them — is read straight off the filesystem below. A new `foo/bar`
+  ;; reference to a std module here silently re-introduces a load (ADR-229).
 )
 
 ;; --- safety net ---------------------------------------------------------------
@@ -53,8 +43,8 @@ suggestions\", never to an error on the user's command line."
 (defn- complete-safely (thunk) (check-allow :discarded-catch (try (thunk) (catch _ nil))))
 
 ;; --- the project's shape, read not loaded --------------------------------------
-;; Walk up from `dir` looking for project.blsp. `parent-directory` is its own fixed point
-;; at "/" and ".", which terminates the walk.
+;; Walk up from `dir` looking for project.blsp. A copy of `project/find-root` ON PURPOSE:
+;; calling that one would load `project` on every TAB press (see the module header).
 (defn- complete-find-root (dir)
   (cond
     (file/exists? (path/join dir "project.blsp")) dir
@@ -63,24 +53,21 @@ suggestions\", never to an error on the user's command line."
 
 (defn- complete-root () (complete-safely (fn () (complete-find-root (file/cwd)))))
 
-;; Every path under `dir` (recursively) whose filename ends in `suffix`.
-;;
-;; `cons` a file (O(1)); splice a subdirectory's list with `%append-two`, which copies
-;; only that small list and SHARES `acc`. A plain `(append acc …)` recopies the
-;; growing accumulator once per entry — O(files²), which is quadratic on a large
-;; project. `project` learned that the hard way; don't reintroduce it here. Order is
-;; reversed (prepend), which is fine: callers sort or filter.
-(defn- complete-under (dir suffix)
+;; Every path under `dir` (recursively) whose filename ends in `suffix`, in no particular
+;; order (callers sort or filter). One accumulator threads the whole walk, so it stays
+;; linear in the file count.
+(defn- complete-under (dir suffix) (complete-under-into dir suffix nil))
+(defn- complete-under-into (dir suffix found)
   (if (file/dir? dir)
     (fold (file/ls dir)
-      nil
+      found
       (fn (acc entry)
-        (let (p (path/join dir entry))
+        (let (path (path/join dir entry))
           (cond
-            (file/dir? p) (%append-two (complete-under p suffix) acc)
-            (string/ends-with? entry suffix) (cons p acc)
+            (file/dir? path) (complete-under-into path suffix acc)
+            (string/ends-with? entry suffix) (cons path acc)
             else acc))))
-    nil))
+    found))
 
 ;; The value after key `k` in a flat kv list, or nil — the manifest is a plist.
 ;;

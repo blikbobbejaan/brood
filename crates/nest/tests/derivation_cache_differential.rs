@@ -56,7 +56,7 @@ fn check(root: &Path, files: &[PathBuf], cache: bool) -> String {
         .args(files)
         .env("BROOD_NO_CHECK_CACHE", "1")
         // Engine-independent question, so the child does not inherit the tree-walker job's
-        // `BROOD_VM=0` (four whole-tree checks: 52 s solo on the VM, ~1.6x tree-walked).
+        // `BROOD_TIER=0` (four whole-tree checks: 52 s solo on the VM, ~1.6x tree-walked).
         // That 1.6x is this test's child, the `[profile.test]` `nest`; the same check on
         // the RELEASE binary is ~17% (9.1/12.1 s VM against 9.1/14.2 s tree-walked), since
         // the release JIT is the other side of the comparison. Read a ratio with its binary.

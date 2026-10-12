@@ -1,4 +1,4 @@
-//! Regressions from the 2026-10-08 review: interval arithmetic that overflows `i64`
+//! Interval arithmetic that overflows `i64`
 //! widens instead of saturating (ADR-350), and a top-level definition of a reserved name
 //! is reported before it fails at run time (ADR-166).
 

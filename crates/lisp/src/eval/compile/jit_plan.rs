@@ -71,8 +71,7 @@ pub(crate) fn jit_spill_reserve(code: &[Inst]) -> usize {
     // nil-inits on every activation, so reserving for an arm that never lowers (a prelude
     // function with out-of-subset ops — `send`/`receive`/`spawn` machinery, string/map
     // work — which the JIT can't compile anyway) is pure dead weight on the interpreter
-    // path. Blanket-reserving every ≥2-non-tail-call arm regressed `spawn` ~1.9× (20 000
-    // procs paying bloated prelude frames), even under `BROOD_VM=0`. Gating on the subset
+    // path (`spawn` paid for it in bloated prelude frames). Gating on the subset
     // keeps the reserve on `fib`-shaped arms (which lower and win) and off everything else.
     if !chunk_in_jit_subset(code) {
         return 0;
@@ -260,19 +259,14 @@ fn max_leader_depth(code: &[Inst]) -> usize {
 /// arm (a redefinition mid-run bumps the epoch and invalidates the arm before
 /// it re-enters native code). Such arms skip checkpointing entirely — the
 /// journal writes after every non-tail call were ~5 % of bintree's
-/// *instructions* (two self-calls per node × 819k nodes; invisible in
-/// wall-clock noise, plain in `perf stat -e instructions` and matching the
-/// `BROOD_NO_DEOPT_RESUME=1` lever). Anything else — a call to another fn or
-/// a native (where all effects live), a computed callee, `table-put`, a catch
-/// frame — keeps the exactly-once checkpoint machinery.
+/// *instructions*. Anything else — a call to another fn or a native (where all
+/// effects live), a computed callee, `table-put`, a catch frame — keeps the
+/// exactly-once checkpoint machinery.
 pub(super) fn jit_ckpt_depth(
     code: &[Inst],
     self_name: Option<Symbol>,
     self_arity: Option<usize>,
 ) -> Option<usize> {
-    if std::env::var_os("BROOD_NO_DEOPT_RESUME").is_some() {
-        return None; // chicken switch: legacy from-ip-0 re-run everywhere
-    }
     if let Some(me) = self_name {
         let pure_self = code.iter().all(|i| match i {
             // `me` is the CLOSURE's name, shared by every arm of a multi-arity `defn`
@@ -416,13 +410,6 @@ fn non_tail_call_count(code: &[Inst]) -> usize {
 /// per-*chunk*, and the chunk a lowering walks may be a spliced body rather than `arm.chunk`
 /// (the inlined-upgrade path), so it belongs where the chunk is known. Ungated for the same
 /// reason `jit_spill_reserve` is: the frame size depends on it.
-/// Is `Inst::MakeClosure` admitted to the JIT subset? Opt-in via `BROOD_MKCLO=1` — see the
-/// subset predicate's comment for the measured default-off rationale. Read once and cached.
-fn mkclo_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_MKCLO").is_some_and(|v| v == "1"))
-}
-
 pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
     let in_subset_op = |op: &PrimOp| {
         matches!(
@@ -455,14 +442,9 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
     // `%receive` fences the whole chunk out of the subset. A `receive` is just a `Call` to
     // this primitive, and it SUSPENDS: the nested-run machinery re-raises the park as a
     // `Control::Suspend` (an empty-message `LispError`), which the JIT's outcome-3 path
-    // takes as a plain parked error — the process dies with `runtime error: ` (empty).
-    // Before `MakeClosure` joined the subset this fence existed BY ACCIDENT: every
-    // `receive` emits its matcher as a `(fn (msg) …)` literal, so every receive-bearing
-    // chunk carried a `MakeClosure` and never lowered. Admitting `MakeClosure` removed the
-    // accidental fence and `local_send_race`'s collector arm lowered, parked inside the
-    // native boundary, and died — deterministically by round 4 on a 2-worker pool. This is
-    // the fence made explicit; lifting it is §7.3's design work (the receive as a native
-    // exit point), not a predicate tweak. Guarded by
+    // takes as a plain parked error — the process would die with `runtime error: ` (empty).
+    // Today every receive also carries a `MakeClosure` (its matcher), which keeps the chunk
+    // out anyway; this fence keeps that true if closures are ever admitted. Guarded by
     // `receive_bearing_chunks_stay_out_of_the_jit_subset` (compile/tests.rs).
     let receive_sym = crate::core::value::intern("%receive");
     code.iter().all(|inst| match inst {
@@ -504,22 +486,9 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
         // good — `(get {:a 1} :zz 2)` in a loop bailed `chunk-outside-jit-subset` (found
         // writing ADR-368's native check). Same cap as the vector, in values.
         Inst::MakeMap(n) => 2 * *n <= 32,
-        // A `(fn …)` literal — lowered as one `brood_rt_make_closure` callback that runs
-        // `exec_chunk`'s own arm verbatim (captures staged on `roots` exactly as the VM
-        // leaves them on its operand stack). Capped like `MakeVector`. NOTE the `%receive`
-        // fence above — admitting this is what made it necessary.
-        //
-        // **Opt-in (`BROOD_MKCLO=1`), default OFF — the BROOD_MONO pattern.** Admitting it
-        // by default tiered up ~47 extra BOOT-path closure arms (fib: 83 → 130 compiles)
-        // for a measured **+11 ms constant** on every short-lived run (BENCH_N-invariant,
-        // so pure fixed cost) and pinned-sweep noise from the busier compiler thread —
-        // while the intended winners (nqueens' `solve`, pipeline's steps) still bail on
-        // the `call-mediated-boxed` GATE. §7.1 step 2 (2026-08-29) tried flipping this
-        // default together with removing that gate, and measurement rejected the whole
-        // combination (nqueens +20%, spawn +72% unpinned — see the gate's doc comment),
-        // so the default stays off until partial lowering gives the admitted closures a
-        // way to actually win.
-        Inst::MakeClosure { names, .. } => names.len() <= 32 && mkclo_enabled(),
+        // A `(fn …)` literal (`MakeClosure`) stays out: admitting it tiered up dozens of
+        // boot-path closure arms for a fixed per-run compile cost, while the arms that
+        // would benefit still fail the `call-mediated-boxed` gate.
         _ => false,
     })
 }
@@ -835,25 +804,11 @@ pub(super) mod codegen {
             _ => false,
         }
     }
-    /// Is `BROOD_JIT_DUMP_IR` armed? Read once and cached, so an ordinary run pays one
-    /// `var` at most. Shared by every lowering path that reports an arm — the general one and
-    /// the scalar-register worker — so "did this arm lower?" has a single switch rather than
-    /// one per code generator.
-    pub fn jit_dump_ir_enabled() -> bool {
-        static DUMP_IR: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *DUMP_IR.get_or_init(|| {
-            std::env::var("BROOD_JIT_DUMP_IR")
-                .map(|v| !v.is_empty() && v != "0")
-                .unwrap_or(false)
-        })
-    }
-
-    /// Is the unboxed-`i64` fast path enabled? **Default ON** (`BROOD_NO_I64` opts out — the A/B
-    /// baseline lever). Read once (all processes of a runtime must agree — the code is shared and
-    /// the eligibility/frame decisions must be deterministic).
+    /// Is the unboxed-`i64` fast path enabled? Default ON; `BROOD_NO_I64` opts out. Read once:
+    /// all processes of a runtime must agree, since the code is shared and the eligibility and
+    /// frame decisions must be deterministic.
     pub fn jit_i64_enabled() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("BROOD_NO_I64").is_none())
+        crate::diagnostics::debug_flags::jit_scalar_worker()
     }
 
     // ===================== the go/no-go =====================
@@ -886,11 +841,9 @@ pub(super) mod codegen {
         }
     }
 
-    /// The backend-independent go/no-go for the **general** (boxed) lowering of `arm`, given its
-    /// tier-time `slot_tags`.
+    /// The backend-independent go/no-go for the **general** (boxed) lowering of `arm`.
     ///
-    /// Exactly the profitability gate that used to sit inline in `jit_lower_arm`, and nothing
-    /// else. Two things it deliberately does **not** do:
+    /// The profitability gate, and nothing else. Two things it deliberately does **not** do:
     ///
     /// - It does not gate the **scalar-register** path. That path is tried first, and this gate's
     ///   predicate describes `fib`/`pfib` — the arms it wins biggest on — so consulting it first
@@ -898,24 +851,16 @@ pub(super) mod codegen {
     ///   makes the mis-ordering dangerous: no test fails, only a benchmark moves.
     /// - It does not run [`chunk_in_jit_subset`]. That check is per-*chunk*, and the chunk a
     ///   lowering walks may be a spliced body rather than `arm.chunk` (the inlined-upgrade path),
-    ///   so it stays where the chunk is known. Hoisting it here would change which arms lower —
-    ///   precisely what this move must not do.
+    ///   so it stays where the chunk is known. Hoisting it here would change which arms lower.
     ///
     /// Returns `Ok(())` rather than a plan struct: the caller's only other decision is whether the
     /// scalar path is enabled ([`jit_i64_enabled`]), and it must consult that *before* this.
-    /// Bundling the two into one value would invite exactly the mis-ordering above (ADR-011 — a
-    /// shape with no reader is a shape that misleads).
     ///
-    /// **Removing this gate was tried and REJECTED 2026-08-29 (§7.1 step 2).** The hypothesis
-    /// was that deopt feedback (watching every non-loop arm since `8fa9f2f7`) could replace the
-    /// static bail by demoting bad admissions dynamically. Measured, unpinned, interleaved
-    /// best-of-7: nqueens +20.2%, pipeline +18.3%, nbody +12.6%, spawn +71.8%, pingpong +9.6% —
-    /// every intended winner lost too. The mechanism: an admitted call-mediated arm compiles
-    /// *correctly* and never type-deopts, so feedback has no signal — this gate encodes a COST
-    /// model, and no correctness-triggered mechanism can learn it. The design that can beat it
-    /// is partial lowering (exit to the VM at the un-lowerable op, ADR-210's checkpoint
-    /// precedent), not admission-plus-feedback. See docs/compute-frontier.md §7.1.
-    pub fn plan_general_lowering(arm: &CompiledArm, slot_tags: &[u8]) -> Result<(), BailReason> {
+    /// **This gate encodes a COST model, so deopt feedback cannot replace it**: an admitted
+    /// call-mediated arm compiles correctly and never type-deopts, so feedback has no signal.
+    /// Removing the gate regressed every measured row (docs/compute-frontier.md §7.1); the
+    /// design that can beat it is partial lowering, not admission-plus-feedback.
+    pub fn plan_general_lowering(arm: &CompiledArm) -> Result<(), BailReason> {
         let Some(chunk) = arm.chunk.as_ref() else {
             return Ok(()); // no chunk to judge — the lowerer's own pre-bail handles it
         };
@@ -939,7 +884,6 @@ pub(super) mod codegen {
             )
         });
         let has_self_loop = code.iter().any(|i| matches!(i, Inst::SelfCall { .. }));
-        let has_float_slot = slot_tags.contains(&(crate::core::value::Tag::Float as u8));
         // The static call-mediated profitability bail — but for **top-level defns only**
         // (`dbg_name` set). A CLOSURE arm (a `reduce`/`fold` step, the HOF shape) is exempt:
         // making it native is what lets `hof_apply_native` skip the `vm_apply` trampoline per
@@ -948,52 +892,26 @@ pub(super) mod codegen {
         // closure shape self-heals instead of needing this static guess. Named defns keep the
         // gate verbatim: they are name-called from everywhere — including the per-process
         // compile machinery (macro expansion runs prelude Brood like `%match-count-sym`, `seq`,
-        // `fold`) — and admitting those regressed `spawn` 0.08 → 0.3–1.3 s erratic (contention
-        // around per-process compile + shared-install under 10k-process fan-out) for zero row
-        // wins. (Re-verified 2026-08-29: admitting them regressed spawn +71.8% — see the doc
-        // comment above.)
+        // `fold`) — and admitting those regressed `spawn` badly (contention around per-process
+        // compile + shared-install under 10k-process fan-out) for zero row wins.
         //
         // The unboxing signals that earn the general lowering:
         //   * a `VectorRef`/`MakeVector` (rules bintree/matmul back in — they lower and win), or
         //   * a self-tail loop (`fold--loop`, hence `reduce`/`pipeline`; `row-sum`).
-        //
-        // Until 2026-09-20 a self-tail loop was vetoed when the profile showed a `Float` slot
-        // ("a recursive `f64` accumulator like `newvel`, whose floats still arrive boxed from
-        // calls — no win"). That was priced under a runtime where `->float` deopt-thrashed and
-        // every float such a loop received came boxed from the VM (KI-109); lead 1 of KI-109
-        // ended that, and re-measured (`docs/compute-frontier.md` §7.9) the clause vetoed
-        // exactly ONE arm in the benchmark corpus — `mandelbrot`'s `row-sum` — and protected
-        // none: `nbody`'s refused arms fail the self-loop test, not this one. Admitting it:
-        // `mandelbrot` −4.3% instructions / −4.7% cycles at `BENCH_N=1400` (three reps,
-        // ±0.24%), −2.2% wall at the default N; every other row inside its floor. The
-        // per-op icache price the veto's author asked for is +17% of a 2.8M-miss total —
-        // nothing against 4.5G cycles. `BROOD_FLOAT_VETO=1` restores the clause, for a bisect.
         if arm.dbg_name.is_some()
             && non_tail_call_count(code) >= 1
             && !has_inline_vec
-            && (!has_self_loop || (has_float_slot && float_veto_enabled()))
+            && !has_self_loop
         {
-            return Err(trace_bail(arm, BailReason::CallMediatedBoxed));
+            return Err(record_bail(BailReason::CallMediatedBoxed));
         }
         Ok(())
     }
 
-    /// `BROOD_FLOAT_VETO=1` restores the pre-2026-09-20 float-slot veto on a named self-tail
-    /// arm with non-tail calls (see the gate above) — the bisect lever, off by default.
-    fn float_veto_enabled() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("BROOD_FLOAT_VETO").is_some())
-    }
-
-    /// Report a refusal under `BROOD_JIT_BAIL_TRACE=1` and hand it back. One `var_os` behind a
-    /// cached bool when off, so an ordinary run pays nothing.
-    fn trace_bail(_arm: &CompiledArm, reason: BailReason) -> BailReason {
-        // Record only. The caller drops this `Err` through `.ok()?`, and
-        // `jit_runtime::trace_lower_declined` then prints the ONE arm-named `[jit-bail]`
-        // line with whatever was recorded. This used to print its own line here too and
-        // record nothing, so every plan refusal produced two lines — this one, and a
-        // second reading `lowering-returned-none`: the "unexplained" bail one line after
-        // its explanation. With the record in place, a print here is a duplicate.
+    /// Record a refusal for `BROOD_JIT_BAIL_TRACE=1` and hand it back. The caller drops the
+    /// `Err` through `.ok()?`, and `jit_runtime::trace_lower_declined` then prints the ONE
+    /// arm-named `[jit-bail]` line carrying the recorded reason.
+    fn record_bail(reason: BailReason) -> BailReason {
         crate::eval::compile::jit_lower::record_mid_emit_reason(reason.as_str());
         reason
     }
@@ -1023,7 +941,7 @@ mod tests {
     #[test]
     fn block_argument_spills_never_reach_the_deopt_journal() {
         // Ceiling 2 explicitly: this asserts on VM-compiled arms and JIT lowering arithmetic,
-        // so under `BROOD_VM=0` (the differential job) nothing compiles and the probe inspects
+        // so under `BROOD_TIER=0` (the differential job) nothing compiles and the probe inspects
         // zero chunks — the same pin `compile/tests.rs` documents for its two native tests.
         set_forced_ceiling(Some(Tier::Native));
         let mut interp = Interp::new();
@@ -1091,7 +1009,7 @@ mod tests {
     #[test]
     fn the_block_argument_want_is_clamped_to_the_reserve() {
         // Ceiling 2 explicitly: this asserts on VM-compiled arms and JIT lowering arithmetic,
-        // so under `BROOD_VM=0` (the differential job) nothing compiles and the probe inspects
+        // so under `BROOD_TIER=0` (the differential job) nothing compiles and the probe inspects
         // zero chunks — the same pin `compile/tests.rs` documents for its two native tests.
         set_forced_ceiling(Some(Tier::Native));
         let mut interp = Interp::new();

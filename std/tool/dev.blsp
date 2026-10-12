@@ -104,7 +104,7 @@
 ;; capturing `t0`/`r` if the caller happens to use those names.
 (defmacro bench (label expr)
   "Evaluate `expr`, print `label: N ms`, and return `expr`'s value."
-  (let (t0 (gensym "t0") r (gensym "r"))
-    `(let (~t0 (%now) ~r ~expr)
-       (io/puts (str ~label ": " (- (%now) ~t0) " ms"))
+  (let (started (gensym "t0") r (gensym "r"))
+    `(let (~started (%now) ~r ~expr)
+       (io/puts (str ~label ": " (- (%now) ~started) " ms"))
        ~r)))

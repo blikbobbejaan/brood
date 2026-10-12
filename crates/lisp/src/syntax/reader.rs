@@ -97,8 +97,8 @@ struct Parser<'a> {
 
 /// Bound on parser-recursion depth. A new frame is taken for each delimited
 /// form (`(`/`[`/`{`/`'`/`` ` ``/`~`); past this we return a parse error
-/// instead of growing the native Rust stack (which would abort the process
-/// — see `docs/devlog.md` 2026-05-28 hardening). 256 is comfortably above any
+/// instead of growing the native Rust stack (which would abort the process).
+/// 256 is comfortably above any
 /// hand-written program; pathological deeply-nested input from disk, the LSP,
 /// or `reflect/eval-string` is rejected with `LispError::parse`.
 ///
@@ -271,13 +271,9 @@ impl<'a> Parser<'a> {
     /// character**: `#{…}` (set) and `#b"…"` (bytes) are the only two forms, and
     /// anything else after a leading `#` is a reader error.
     ///
-    /// It used to fall through to `read_atom`, so an unrecognised `#…` interned as
-    /// a *symbol* — `#foo` was a legal name, and `#|a comment|#` read as the
-    /// symbol `|#\|a comment\|#|`. That quietly spent the `#` space: any `#` form
-    /// added after 1.0 would be taking a token that had been a valid name, which is
-    /// a breaking change. Rejecting the whole space now costs nothing (no real
-    /// program names anything `#foo`) and keeps every future `#` literal purely
-    /// additive — the same reasoning as the digit-led rule in
+    /// Rejecting the whole `#` space (rather than reading `#foo` as a symbol) keeps
+    /// every future `#` literal purely additive — the same reasoning as the digit-led
+    /// rule in
     /// [`AtomKind::ReservedNumeric`](crate::syntax::atom::AtomKind::ReservedNumeric).
     ///
     /// The Clojure/Scheme/EDN forms Brood does not have get a teaching hint naming
@@ -294,10 +290,8 @@ impl<'a> Parser<'a> {
             // `#{…}` — a set literal (`Value::Set`). Consume the '#' and read the
             // brace-delimited elements; the evaluator evaluates + dedups them.
             // A set literal nests through `read_form` exactly like `(`/`[`/`{`, so it
-            // takes a depth level too (`enter`). Without one it bypassed the cap
-            // altogether: `#{#{…}}` nested deeply enough aborted the process on a
-            // native stack overflow (measured at 300k levels) — the very thing
-            // `MAX_DEPTH` exists to prevent.
+            // takes a depth level too (`enter`), or deeply nested `#{#{…}}` would
+            // overflow the native stack past `MAX_DEPTH`.
             Some('{') => {
                 self.s.bump(); // '#'
                 self.enter()?;
@@ -461,9 +455,8 @@ impl<'a> Parser<'a> {
     }
 
     /// A lone `.` inside a `[…]` / `{…}` / `#{…}` literal. Only a list has a
-    /// dotted tail, so this is always a mistake — and reading it as the *symbol*
-    /// `.` (what used to happen) silently produced a collection of the wrong
-    /// length: `[1 . 2]` was a three-element vector, with no diagnostic.
+    /// dotted tail, so this is always a mistake — reading it as the *symbol* `.`
+    /// would silently make `[1 . 2]` a three-element vector.
     fn dot_not_allowed(&self, kind: &str) -> LispError {
         self.err(format!(
             "'.' is the dotted-pair separator for lists — a {kind} literal has no dotted tail"
@@ -576,8 +569,8 @@ impl<'a> Parser<'a> {
             StringScan::Unterminated => Err(self.err_incomplete("unterminated string")),
             StringScan::BadEscape { at } => Err(self.err_at(
                 self.s.pos_at(at),
-                // Name the escape that failed: a malformed `\u{…}` used to be reported as
-                // an unknown letter escape, i.e. the regex footgun (2026-09-30).
+                // Name the escape that failed, so a malformed `\u{…}` is not reported as
+                // an unknown letter escape (the regex footgun).
                 match self.s.char_at(at + 1) {
                     Some('u') => {
                         "malformed \\u escape: write \\u{H…H} with 1 to 6 hex digits of a \
@@ -603,8 +596,7 @@ impl<'a> Parser<'a> {
         let token_start = self.s.pos();
         let token = self.s.read_atom();
         // A control character is not a delimiter (it is not whitespace), so a NUL in the
-        // source used to become PART of a symbol — `a\0b` read as one three-character
-        // name, a lone NUL as an empty-looking one (2026-09-30). Name it instead.
+        // source would become PART of a symbol. Name it instead.
         if let Some(c) = token.chars().find(|c| c.is_control()) {
             return Err(self.err_at(
                 self.s.pos_at(token_start),

@@ -35,5 +35,5 @@
   "`n` cryptographically-strong random bytes from the OS RNG, hex-encoded as a 2·n-char string.
 
     (count (rand/token 8))   → 16   ; hex, two chars per byte"
-  (%random-token n))
+  (encoding/hex-encode-bytes (%random-bytes n)))
 (sig token (int -> string))

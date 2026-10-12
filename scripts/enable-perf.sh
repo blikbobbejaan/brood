@@ -115,11 +115,9 @@ Second half, which no sysctl can fix: `[profile.release-fast]` sets `strip = tru
 profile of the ordinary build shows addresses, not symbols. Build unstripped, with the SAME
 flags `make ab` measures, or you are profiling a different binary:
 
-  RUSTFLAGS="-C debug-assertions=off -C overflow-checks=off" \
-    cargo build --profile release-fast --bin brood \
-    --config 'profile.release-fast.strip=false' --config 'profile.release-fast.debug=1'
+  make perf-symbols      # release-fast's flags, unstripped, in its own profile
 
-  perf record --call-graph dwarf -- ./target/release-fast/brood bench.blsp
+  perf record --call-graph dwarf -- ./target/release-symbols/brood bench.blsp
   perf report --no-children          # --no-children: self time, which is what the
                                      # compute-frontier tables quote
 EOF

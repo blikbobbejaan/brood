@@ -105,7 +105,7 @@ retries = 1
 # catches a hung case; this is only the outer wall-clock backstop.
 # Raised 1200s → 2700s on 2026-08-11, and the "check for a slow case first" instruction above
 # was followed, not skipped. The culprit is not a case, it is the ENGINE: the CI
-# `differential (tree-walker)` job runs this same wrapper under `BROOD_VM=0`, and the
+# `differential (tree-walker)` job runs this same wrapper under `BROOD_TIER=0`, and the
 # tree-walker is ~10× slower than the VM by design. Measured on one box, same commit:
 # **562s under the VM, 954s under the tree-walker** — i.e. the tree-walker was inside a 1200s
 # budget by 20% on fast hardware and had no chance on a runner the config elsewhere describes as
@@ -138,7 +138,7 @@ retries = 1
 # otherwise.
 # Raised 300s -> 900s on 2026-08-30, red for the exact reason the 2026-08-11 note
 # warned about: 300s was sized to the VM engine (66s, 5x headroom) and this wrapper
-# ALSO runs under the CI `differential (tree-walker)` job's BROOD_VM=0, where the
+# ALSO runs under the CI `differential (tree-walker)` job's BROOD_TIER=0, where the
 # same cases measure 196s on a 12-core box with exclusive use — a 2-core shared
 # runner sits right on the cap, and 29831e06's run was killed at TRY 2 (the
 # job's only failure; the code was exonerated by a local instruction-count A/B).
@@ -189,13 +189,13 @@ retries = 1
 # coming back, and the budget is not hiding it.
 #
 # 2026-09-16: red on two consecutive main runs at 360 s. The cost was never the case's — it was
-# the job's env: `BROOD_NO_STDIMAGE=1 BROOD_NO_PRELUDE_IMAGE=1 BROOD_VM=0` makes every one of
+# the job's env: `BROOD_NO_STDIMAGE=1 BROOD_NO_PRELUDE_IMAGE=1 BROOD_TIER=0` makes every one of
 # the 96 spawns a source boot (1.31 s on an idle box against 0.02 s imaged). The test now hands
 # its children the boot artifacts and builds the stdlib image once up front: 104 s -> 26 s from
 # a cold cache under that env, solo. The budget stands; it is no longer load-bearing.
 #
 # What it is: the same engine mismatch every other raise in this file has turned out to be.
-# The CI `differential (tree-walker)` job runs this case under `BROOD_VM=0` and timed out at
+# The CI `differential (tree-walker)` job runs this case under `BROOD_TIER=0` and timed out at
 # **180.005s** on five consecutive commits. Measured here, same commit, case alone on a
 # 12-core idle box: **22.4s under the VM, 46.9s under the tree-walker**. A 2-core runner
 # sharing the box with the workspace build runs this case several times slower again (the
@@ -230,7 +230,7 @@ slow-timeout = { period = "60s", terminate-after = 6 }
 # image and its contract mode; the question it asks — does every module load under contracts
 # from source? — is engine-independent, and both causes it exists for (KI-81) are `sig!`'s
 # expansion-time calls and the prelude freeze rejecting a closure over a let-bound local.
-# Inheriting the job's `BROOD_VM=0` only re-asked an engine-independent question at ~5x cost.
+# Inheriting the job's `BROOD_TIER=0` only re-asked an engine-independent question at ~5x cost.
 # Contract shims keep their tree-walker coverage in that job through `brood_suite_passes`,
 # which runs `tests/contract_test.blsp`'s 74 cases under whatever engine is ambient.
 #

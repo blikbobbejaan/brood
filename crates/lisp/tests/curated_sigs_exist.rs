@@ -4,16 +4,10 @@
 //! checker treats a curated name as KNOWN — so if a rename moves the function and the
 //! entry is left behind, the checker stops reporting that name as unbound. Not "reports
 //! the wrong type": stops reporting it at all. `(max 1 2)` then checks clean in ordinary
-//! code, is not inside a `try`, has no warning of any kind, and raises at run time.
-//!
-//! That is exactly how hive shipped a broken `clamp-limit` — `(max 1 (min 100 …))` against
-//! a brood where both had become `math/max`/`math/min`. `nest check` said nothing, the
-//! suite said nothing, and the only thing that caught it was a docstring example being
-//! executed by a test written for an unrelated reason.
+//! code, has no warning of any kind, and raises at run time.
 //!
 //! A stale entry is silent by construction, so the guard has to be mechanical: take the
-//! table's own keys and require each to resolve in a fresh image. Three of sixty-six were
-//! stale when this was written (`min`, `max`, `member?`).
+//! table's own keys and require each to resolve in a fresh image.
 
 use brood::Interp;
 
@@ -51,10 +45,13 @@ fn curated_names() -> Vec<String> {
 #[test]
 fn every_curated_signature_names_something_that_exists() {
     let names = curated_names();
+    // Anchored by name, not by count: the table shrinks as declarations replace entries,
+    // but a `put("…")` key and a `for n in [ … ]` key must both still parse.
     assert!(
-        names.len() > 40,
-        "only {} curated names parsed — the reader has drifted from sigs.rs's shape, \
-         which would make this guard silently vacuous",
+        names.iter().any(|n| n == "io/puts") && names.iter().any(|n| n == "seq/filter"),
+        "the reader did not find `io/puts` (a `for n in [ … ]` key) and `seq/filter` among \
+         {} parsed names — it has drifted from sigs.rs's shape, which would make this guard \
+         silently vacuous",
         names.len()
     );
 

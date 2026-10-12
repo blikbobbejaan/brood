@@ -82,7 +82,7 @@
                   "(io/puts (str \"sum=\" (hot-drive 0 100000 0)))\n"
                   ;; The pre-load ran when the arm was elected for compilation: the module is
                   ;; loaded although nothing ever called into it — when an election can happen
-                  ;; at all. Under `BROOD_NO_JIT=1` / `BROOD_TIER=1` no arm tiers, nothing
+                  ;; at all. Under `BROOD_TIER=1` no arm tiers, nothing
                   ;; pre-loads, and the branch below loads it on first use like any other.
                   ;; `%native-tier?` is a DEV-TOOLS primitive, and the sibling `brood` beside a
                   ;; `make release` nest is the LEAN binary — the child died `unbound symbol`
@@ -276,7 +276,7 @@
                   "(io/puts (str \"sum=\" (spin-drive 0 0)))\n"
                   "(io/puts (str \"after=\" (contains? *features* \"lazyprobe-spin\")"
                   ;; No VM arm exists under the tree-walker ceiling (the differential job's
-                  ;; `BROOD_VM=0`, inherited by the child), so the probe would answer nil there
+                  ;; `BROOD_TIER=0`, inherited by the child), so the probe would answer nil there
                   ;; for the wrong reason: say so instead.
                   " \" stale=\" (cond (not (bound? '%vm-arm-stale?)) :no-probe"
                   " (%tree-walker?) :tree-walker" " else (%vm-arm-stale? spin-drive 2))))\n")))

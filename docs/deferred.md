@@ -97,7 +97,9 @@ inside any tool-call code path (Brood-callable Rust, `eval`, `apply`,
 `defn` body) now surfaces as a structured JSON-RPC error and the server
 keeps serving. Regression test in `crates/nest/src/mcp.rs`
 (`handler_panic_is_caught_and_server_keeps_serving`) pins the behaviour.
-Entry kept here as the reference for *why* this was the shape it took.
+Entry kept here as the reference for *why* this was the shape it took. (Since 2026-10-09
+the server is Brood, `std/tool/mcp.blsp`; the Rust `call_tool` described below no longer
+exists.)
 
 **Why it was deferred (then).** The KI-1/KI-2 scheduler race that was
 triggering panics was the urgent fix; isolating panics from the server
@@ -385,7 +387,7 @@ urgency.
 ## 9. `eval` runs interpreted — a 14x cliff for every runtime-evaluated form
 
 **✅ RESOLVED 2026-08-01.** `eval_builtin` and `eval_string_inner` now route through
-`eval::compile::run` when `vm_enabled()` (tree-walker under `BROOD_VM=0`), so a
+`eval::compile::run` when `vm_enabled()` (tree-walker under `BROOD_TIER=0`), so a
 runtime-evaluated form's top-level call dispatches into the compiling VM instead of the
 ~14× tree-walker; `compile::run` falls back to the tree-walker per-form for anything
 outside the VM's vocabulary, so semantics are unchanged. Both keep the full `compile` pass, so an eval'd

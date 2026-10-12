@@ -619,7 +619,7 @@ pub(super) fn ref_deactivate(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 /// Replaces any previous holder. A pid that is no longer alive binds nothing (see
 /// `dist::Registration::DeadPid` for why that is not an error).
 pub(super) fn register_name(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let name = expect_node_name(heap, "register", arg(args, 0))?;
+    let name = expect_node_name(heap, "proc/register", arg(args, 0))?;
     match arg(args, 1) {
         Value::Pid { node, id } if crate::dist::is_local(node) => {
             match crate::dist::register(name, id) {
@@ -672,25 +672,25 @@ pub(super) fn whereis_name(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     }
 }
 
-/// `(%)` — how many green processes have been spawned since the program
+/// `(%spawn-count)` — how many green processes have been spawned since the program
 /// started. (Green processes are cheap coroutines, not OS threads — step 4b.)
 pub(super) fn spawn_count(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::process::spawn_count() as i64))
 }
 
-/// `(%)` — high-water mark of processes running *simultaneously*
+/// `(%peak-threads)` — high-water mark of processes running *simultaneously*
 /// (bounded by the worker-pool size); how much parallelism was actually reached.
 pub(super) fn peak_threads(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::process::peak_threads() as i64))
 }
 
-/// `(%)` — size of the scheduler's worker-thread pool that runs the
+/// `(%worker-threads)` — size of the scheduler's worker-thread pool that runs the
 /// green processes (≈ `nproc`, or the `-j` setting); 0 until the first spawn.
 pub(super) fn worker_threads(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::process::worker_threads() as i64))
 }
 
-/// `(%)` — one snapshot map of the scheduler's cumulative counters
+/// `(%sched-stats)` — one snapshot map of the scheduler's cumulative counters
 /// (the scheduler half of the observability timing tier): `:spawned`/`:exited`
 /// totals (their difference is the live-process figure), `:preempts` (quantum
 /// exhaustions), `:steals` + `:migrations` (work-stealing activity),
@@ -867,7 +867,7 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
     Ok(sysmon_config_map(heap, prev))
 }
 
-/// `(%)` — how many fresh processes the scheduler work-stole across
+/// `(%steal-count)` — how many fresh processes the scheduler work-stole across
 /// worker threads since program start. A diagnostic of how much the pool had to
 /// rebalance; 0 means placement-at-spawn kept it even.
 pub(super) fn steal_count(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
@@ -902,7 +902,12 @@ pub(super) fn mailbox_size(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
                 .unwrap_or(Value::nil()))
         }
         Value::Pid { .. } => Ok(Value::nil()),
-        other => Err(LispError::wrong_type(heap, "mailbox-size", "pid", other)),
+        other => Err(LispError::wrong_type(
+            heap,
+            "proc/mailbox-size",
+            "pid",
+            other,
+        )),
     }
 }
 
@@ -969,6 +974,6 @@ pub(super) fn process_info(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             Ok(heap.map_from_pairs(pairs))
         }
         Value::Pid { .. } => Ok(Value::nil()),
-        other => Err(LispError::wrong_type(heap, "process-info", "pid", other)),
+        other => Err(LispError::wrong_type(heap, "proc/info", "pid", other)),
     }
 }

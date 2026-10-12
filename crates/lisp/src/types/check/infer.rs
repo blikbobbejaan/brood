@@ -79,7 +79,7 @@ thread_local! {
     /// `seq_aware_call_ty` that answers `None` for an unknown collection, then the
     /// declared-sig path typing the same operand again — which is 2^depth on
     /// `(first (first … x))`: 40 deep hung `nest check`, and only the depth cap ended
-    /// it (2026-08-30 audit, C-class). One answer per (form, scope) per walk instead.
+    /// it. One answer per (form, scope) per walk instead.
     static EXPR_MEMO: RefCell<HashMap<(crate::core::value::PairId, u64), Option<Ty>>> =
         RefCell::new(HashMap::new());
     /// Whether some `expr_ty` frame on this thread owns [`EXPR_MEMO`] right now.
@@ -122,7 +122,7 @@ impl Drop for DepthGuard {
 /// is a FRESH question — a callee's body under `infer_sig`/`specialized_ret` — not an
 /// operand of the form that asked it: with the caller's depth inherited, the cap tripped
 /// *because of the caller*, `expr_ty` answered `None`, and `infer_sig` memoized that as
-/// the callee's signature for the rest of the file (2026-08-30 audit, D2). The native
+/// the callee's signature for the rest of the file. The native
 /// stack is safe either way — `expr_ty` grows it in segments.
 pub(super) fn with_fresh_depth<T>(f: impl FnOnce() -> T) -> T {
     let outer = EXPR_TY_DEPTH.with(|d| d.replace(0));
@@ -152,8 +152,7 @@ pub(super) fn expr_ty(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
     let owner = !EXPR_MEMO_OWNED.with(|o| o.replace(true));
     // The cap bounds the DEPTH; the frame's SIZE is the compiler's, and a debug frame of
     // this function times [`MAX_EXPR_TY_DEPTH`] outgrew the walker's 1 MB stacker segment
-    // once call-site specialization landed (2026-08-30: the deep-forms test overflowed
-    // at exactly 128 frames). Grow the stack here too, so the cap is the only limit.
+    // with call-site specialization. Grow the stack here too, so the cap is the only limit.
     let out = crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || expr_ty_inner(heap, form, ctx));
     if owner {
         EXPR_MEMO.with(|m| m.borrow_mut().clear());
@@ -176,7 +175,7 @@ thread_local! {
     static EXPR_TY_VISITS: Cell<u64> = const { Cell::new(0) };
     /// How often [`expr_ty`] answered `None` because [`MAX_EXPR_TY_DEPTH`] was reached —
     /// sound (unknown), and reported per file so a nest the checker gave up on is not read
-    /// as one it checked (B6, 2026-09-17).
+    /// as one it checked.
     static EXPR_TY_DEPTH_HITS: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -384,9 +383,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                 }
                 Some(Value::Sym(s)) => {
                     // A function LITERAL has an arrow type of its own — `(any… -> R)`, the
-                    // body typed with its parameters unknown. It used to have no type at
-                    // all (`reflect/expr-type` answered nil for every lambda), so it was
-                    // `dynamic()` everywhere. Only when `R` is known: an arrow with an
+                    // body typed with its parameters unknown. Only when `R` is known: an arrow with an
                     // unknown result would read as `any` and fail every `⊆` against a
                     // declared result — a false positive, not a finding. A call site
                     // checking a lambda AGAINST a declared arrow does better than this
@@ -436,8 +433,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         }
                     }
                     // **A call with an UNINHABITED argument never executes**, so its value is
-                    // ⊥ — not unknown. `(+ i 1)` under `i : never` used to be untypeable, and
-                    // unknown is absorbing: a least fixpoint seeded at ⊥ (Pass 2.9's
+                    // ⊥ — not unknown, because unknown is absorbing: a least fixpoint seeded at ⊥ (the caller-derived parameter pass's
                     // caller-derived parameters, `sigs::caller_derived_params`) could never
                     // rise out of it. Exact, not merely sound: the empty set of values has no
                     // result. Only for a head that EVALUATES its operands — a special form,
@@ -477,12 +473,10 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         }
                         // A sig a LOADED module (or the stdlib image) declared with type
                         // variables is read further down, beside the other heap readers —
-                        // AFTER the by-name rules, as a plain heap declaration always was.
-                        // It used to be read here, ahead of them, so a declaration with a
-                        // variable outranked a rule while one without did not: declaring
-                        // `seq/find` `((seqable ?A) (?A -> any) -> (or ?A nil))` would have
-                        // replaced the rule's `elem ∩ what the predicate tests | nil` with
-                        // the wider `elem | nil` (2026-09-20).
+                        // AFTER the by-name rules, like a plain heap declaration: read here,
+                        // `seq/find`'s `((seqable ?A) (?A -> any) -> (or ?A nil))` would
+                        // replace the rule's `elem ∩ what the predicate tests | nil` with
+                        // the wider `elem | nil`.
                         // An overloaded sig (ADR-116) — `(and (int -> int)
                         // (bool -> bool))` — resolves per matching arm instead
                         // of a single flat `ret`.
@@ -502,7 +496,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         // hi x))` in `clamp` read `max`'s inferred return: the
                         // registry-derived `ordered` cover, which grows with every loaded
                         // module that registers `compare-to` — strict-clean with the file
-                        // checked alone, red with the project loaded (2026-09-13).
+                        // checked alone, red with the project loaded.
                         if ctx.is_file_global(s) && is_qualified(s) {
                             if let Some(t) = numeric_call_ty(heap, s, &items, ctx) {
                                 return Some(t);
@@ -511,7 +505,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                                 return Some(t);
                             }
                         }
-                        // A **same-file inferred** function sig (Pass 2.8): the return the
+                        // A **same-file inferred** function sig (same-file inference): the return the
                         // checker inferred for a `(defn …)` in this file, which `sig_of`'s
                         // loaded-closure path can't see (the file isn't loaded while checked).
                         // After a declaration (authoritative), before the loaded lookup below.
@@ -521,7 +515,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                             // may close over int — the prelude's own `(defn inc (n) (+ n
                             // 1))`, a file global inside `core.blsp`, so the by-name rule
                             // stands aside there, read `(inc slash)` as `number` for an int
-                            // `slash` (2026-10-02). The meet with the flat answer keeps it
+                            // `slash`. The meet with the flat answer keeps it
                             // sound.
                             if sg.ret.is_unrefined_collection() || sg.ret == Ty::NUMBER {
                                 // The body says nothing — or only "a collection" — about its
@@ -542,8 +536,7 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         // (`branch_union` skips those): Kleene from ⊥. It contributes
                         // nothing this round and reads the round's answer next; read as
                         // the unknown instead, `regex-alt`'s `(let ([rest i3] (regex-alt
-                        // …)) [… i3])` started its index at `any` and stayed there
-                        // (2026-09-17).
+                        // …)) [… i3])` started its index at `any` and stayed there.
                         if ctx.inferring_self() == Some(s) {
                             return Some(Ty::NEVER);
                         }
@@ -705,7 +698,7 @@ fn control_flow_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
         // branch scopes are dead under it, and the union of nothing read as the UNKNOWN —
         // which is what a destructuring `let` over a `never` (the pattern lowering's
         // `(if (vector? g) … (throw …))`) yielded, and unknown is absorbing in a
-        // fixpoint (2026-09-17).
+        // fixpoint.
         if taken.is_none() && expr_ty(heap, test, ctx).is_some_and(|t| t.is_never()) {
             return Some(Ty::NEVER);
         }
@@ -982,10 +975,8 @@ fn branch_union(heap: &Heap, forms: &[Value], ctx: &Ctx) -> Option<Ty> {
         });
     }
     // Every branch a self-call: this form contributes ⊥ to whatever encloses it — exactly
-    // what the skip above means — and NOT the unknown that used to stand here. An inner
-    // `(if p (self …) (self …))` of a `cond` made the whole `cond` untypeable, and the
-    // walker's index helper (`kids-index-of-form-at`) inferred `-> any` for a body whose
-    // every other arm is an `int`. A function whose every path recurses never returns,
+    // what the skip above means — not unknown, which would make an enclosing `cond`
+    // untypeable even when every other arm is an `int`. A function whose every path recurses never returns,
     // and `never` is its return.
     if acc.is_none() && skipped_self {
         return Some(Ty::NEVER);
@@ -1047,8 +1038,7 @@ fn numeric_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
     //
     // `sqrt` is keyed `math/sqrt`: ADR-227 moved it into `std/math.blsp`, so the bare
     // spelling no longer exists (unbound without an import) and this rule was dead for the
-    // spelling that does. `sin`/`cos`/`tan` moved the same way; their bare keys outlived
-    // them here until 2026-10-02 (`rule_heads_are_bound` now guards every key).
+    // spelling that does (`rule_heads_are_bound` guards every key).
     let is_always_float = value::symbol_is(head, "math/sqrt")
         || value::symbol_is(head, "math/sin")
         || value::symbol_is(head, "math/cos")
@@ -1065,11 +1055,10 @@ fn numeric_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
     // the set of values it can return.
     //
     // And an operand the checker cannot type makes that union the UNKNOWN — `0 ∪ ?` is `?`
-    // — not the sig's `ordered`. This used to defer to the sig, which reads the same value
-    // two ways: the unknown `s` passes into an `int` parameter untouched, but `(math/max 1
-    // s)` — which IS `s` or `1` — came back positively `ordered` and warned into the same
-    // parameter. That is the rule's own semantics dropped exactly where it mattered (41 of
-    // bedit's strict findings, every one a clamp over an untyped bound). It is not the
+    // — not the sig's `ordered`. Deferring to the sig would read the same value two ways:
+    // the unknown `s` passes into an `int` parameter untouched, but `(math/max 1 s)` —
+    // which IS `s` or `1` — would come back positively `ordered` and warn into the same
+    // parameter (every clamp over an untyped bound). It is not the
     // arithmetic case: `(dec s)` computes a NEW value that is positively a `number`
     // whatever `s` was, and `number` into `int` is the merely-wider ADR-298 exists to
     // flag; an extremum computes nothing. `Some(any)` — not `None`, which would fall to
@@ -1115,7 +1104,7 @@ fn numeric_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
     // An operand that never produces a value — a call that always throws, a binder read
     // off the joint fixpoint's ⊥ seed — makes the operation one too. Deferred to the
     // operator's signature instead, `(inc never)` read `number`, and a derived index
-    // that started at ⊥ ascended through `number` and never came back (2026-09-17).
+    // that started at ⊥ ascended through `number` and never came back.
     if tys.iter().any(Ty::is_never) {
         return Some(Ty::NEVER);
     }
@@ -1156,7 +1145,7 @@ fn numeric_op_kind(head: Symbol) -> Option<(bool, bool, bool, bool)> {
     // and `-` do — over ints, over floats (contagion), over ratios.
     // …and the binary kernel primitives those are written over: the prelude's own `inc` is
     // `(%add n 1)`, so a call re-typed through its body under an int argument reads
-    // `%add` — and used to answer the primitive's flat `number` (2026-10-02).
+    // `%add`, which must not answer the primitive's flat `number`.
     let is_ring = value::symbol_is(head, "+")
         || value::symbol_is(head, "-")
         || value::symbol_is(head, "*")
@@ -1314,9 +1303,8 @@ pub(super) fn numeric_result(head: Symbol, tys: &[Ty]) -> Option<Ty> {
         }
     }
     // Ratios close over `+ - *` exactly as ints do, and `/` is exact over them too
-    // (`(/ 3/2 1/2)` → 3). This used to fall through to the declared signature — widened
-    // to `number | map` for `Num` records — which is a true type for the operator and
-    // noise as the answer for an all-numeric expression. `quot`/`rem`/`mod` are integer
+    // (`(/ 3/2 1/2)` → 3). The declared signature — widened to `number | map` for `Num`
+    // records — is a true type for the operator but noise for an all-numeric expression. `quot`/`rem`/`mod` are integer
     // operations and stay int-only.
     if (is_ring || is_division) && all_int_or_ratio {
         return Some(int_or_ratio);
@@ -1500,181 +1488,204 @@ fn literal_keyword_pairs(args: &[Value]) -> Option<Vec<(value::Symbol, Value)>> 
         })
         .collect()
 }
-/// Element-aware result type for the sequence builtins — `None` falls through to
-/// the callee's flat signature. `(list …)`/`(vector …)` build a refined
-/// sequence; `(first xs)`/`(last xs)`/`(nth xs i)` extract the element type
-/// (widened with `nil` for the empty / out-of-range case, so the result is a
-/// sound superset). Only refines when the element type is actually known.
+/// Element-aware result type for the sequence and map builtins — `None` falls through to
+/// the callee's flat signature. Each rule is sound: an element read widens with `nil`
+/// for the empty / out-of-range case, and a rule only refines what it can prove.
 fn seq_aware_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Option<Ty> {
-    // `(list a b …)` is a list of exactly those elements, each in its position — a
-    // positional SHAPE (the list sibling of a vector literal's tuple), so `(first (list m
-    // '(…)))` is the map and not `pair | map`. An unknown element is `any` in its slot:
-    // the arity is a fact whatever the elements are. `(list)` is `nil`.
-    if value::symbol_is(head, "list") {
-        if items.len() == 1 {
-            return Some(Ty::of(Tag::Nil));
+    let len = items.len();
+    match value::symbol_name_ref(head) {
+        "list" => list_literal_ty(heap, items, ctx),
+        "vector" => element_union(heap, &items[1..], ctx).map(Ty::vector_of),
+        "%vector-ref" if len == 3 => vector_ref_ty(heap, items, ctx),
+        name @ ("first" | "second" | "third" | "last" | "nth") => {
+            positional_read_ty(heap, name, items, ctx)
         }
-        let elems: Vec<Ty> = items[1..]
-            .iter()
-            .map(|&it| expr_ty(heap, it, ctx).unwrap_or(Ty::ANY))
-            .collect();
-        return Some(Ty::list_shape_of(elems));
+        "seq/filter" => filter_ty(heap, items, ctx),
+        "seq/find" if len == 3 => find_ty(heap, items, ctx),
+        "seq/reject" if len == 3 => reject_ty(heap, items, ctx),
+        "reverse" | "%map-pairs" | "sort" | "sort-by" => same_elements_ty(heap, items, ctx),
+        "seq/distinct" | "seq/dedupe" => deduplicated_ty(heap, items, ctx),
+        "seq" if len == 2 => seq_ty(heap, items, ctx),
+        name @ ("rest" | "but-last") => drop_one_ty(heap, name == "rest", items, ctx),
+        "take" | "drop" | "take-while" | "drop-while" | "seq/take-last" | "seq/drop-last" => {
+            list_result(expr_ty(heap, *items.get(1)?, ctx).and_then(|t| t.elem_ty_union()))
+        }
+        "count" | "string/length" if len == 2 => count_ty(heap, items, ctx),
+        "range" if len >= 2 => range_ty(heap, items, ctx),
+        // `(range)` with no bound still produces numbers.
+        "range" => list_result(Some(Ty::NUMBER)),
+        "vec" if len == 2 => vec_ty(heap, items, ctx),
+        "into" if len == 3 => into_ty(heap, items, ctx),
+        "conj" if len >= 3 => conj_ty(heap, items, ctx),
+        "cons" if len == 3 => cons_ty(heap, items, ctx),
+        "append" => append_ty(heap, items, ctx),
+        "merge" if len >= 2 => merge_ty(heap, items, ctx),
+        "get" if len >= 3 => get_ty(heap, items, ctx),
+        "get-in" if len == 3 || len == 4 => get_in_ty(heap, items, ctx),
+        "keys" if len == 2 => keys_ty(heap, items, ctx),
+        "vals" if len == 2 => vals_ty(heap, items, ctx),
+        "dissoc" if len >= 3 => dissoc_ty(heap, items, ctx),
+        name @ ("update" | "assoc-in" | "update-in") if len >= 3 => {
+            update_ty(heap, name == "update", items, ctx)
+        }
+        "assoc" if len >= 4 && (len - 2).is_multiple_of(2) => assoc_ty(heap, items, ctx),
+        "string/->number" if len == 2 || len == 3 => parse_number_ty(heap, items, ctx),
+        "apply" if len >= 3 => apply_ty(heap, items, ctx),
+        "map" => map_ty(heap, items, ctx),
+        "seq/keep" => keep_ty(heap, items, ctx),
+        "seq/interpose" if len == 3 => interpose_ty(heap, items, ctx),
+        name @ ("reduce" | "fold") => reduce_ty(heap, name == "reduce", items, ctx),
+        _ => None,
     }
-    if value::symbol_is(head, "vector") {
-        return element_union(heap, &items[1..], ctx).map(Ty::vector_of);
+}
+
+/// The literal index a positional read names — `first` 0, `second` 1, `third` 2,
+/// `nth` its literal non-negative index argument — or, for `last`, `Some(None)`: the
+/// final position, whatever the length. `None` when the index is not literal.
+fn positional_index(head: &str, items: &[Value]) -> Option<Option<usize>> {
+    match head {
+        "first" => Some(Some(0)),
+        "second" => Some(Some(1)),
+        "third" => Some(Some(2)),
+        "last" => Some(None),
+        _ => match items.get(2) {
+            Some(Value::Int(n)) if *n >= 0 => Some(Some(*n as usize)),
+            _ => None,
+        },
     }
-    // `%vector-ref` is what a destructuring `let`/`match` lowers a `[x y w h]` binder to,
-    // behind a length check; out of range it throws rather than yielding nil, so it is
-    // exactly the element (a tuple position when the index is literal).
-    if value::symbol_is(head, "%vector-ref") && items.len() == 3 {
-        let coll_ty = expr_ty(heap, items[1], ctx)?;
-        if let Value::Int(n) = items[2] {
-            if n >= 0 {
-                if let Some(elem) = coll_ty.tuple_elem_at(n as usize) {
-                    return Some(elem);
-                }
+}
+
+/// `(list a b …)` is a list of exactly those elements, each in its position — a
+/// positional SHAPE (the list sibling of a vector literal's tuple), so `(first (list m
+/// '(…)))` is the map and not `pair | map`. An unknown element is `any` in its slot: the
+/// arity is a fact whatever the elements are. `(list)` is `nil`.
+fn list_literal_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    if items.len() == 1 {
+        return Some(Ty::of(Tag::Nil));
+    }
+    let elems: Vec<Ty> = items[1..]
+        .iter()
+        .map(|&item| expr_ty(heap, item, ctx).unwrap_or(Ty::ANY))
+        .collect();
+    Some(Ty::list_shape_of(elems))
+}
+
+/// `%vector-ref` is what a destructuring `let`/`match` lowers a `[x y w h]` binder to,
+/// behind a length check; out of range it throws rather than yielding nil, so it is
+/// exactly the element (a tuple position when the index is literal).
+fn vector_ref_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, items[1], ctx)?;
+    if let Value::Int(n) = items[2] {
+        if n >= 0 {
+            if let Some(elem) = collection_ty.tuple_elem_at(n as usize) {
+                return Some(elem);
             }
         }
-        return coll_ty.elem_ty();
     }
-    if value::symbol_is(head, "first")
-        || value::symbol_is(head, "last")
-        || value::symbol_is(head, "nth")
-        || value::symbol_is(head, "second")
-        || value::symbol_is(head, "third")
-    {
-        let arg = *items.get(1)?;
-        let coll_ty = expr_ty(heap, arg, ctx)?;
-        // A statically-known index into a tuple-typed collection resolves to
-        // that *exact* position's type (ADR-128), not just the coarse union
-        // every other element access falls back to — `first` = 0, `second` =
-        // 1, `third` = 2, `last` = the final position, `nth` reads its own
-        // literal-int index argument (a non-literal index can't be resolved
-        // this precisely, so it falls through to the union case below).
-        if let Some(elems) = coll_ty.positional_elems() {
-            let idx = if value::symbol_is(head, "first") {
-                Some(0)
-            } else if value::symbol_is(head, "second") {
-                Some(1)
-            } else if value::symbol_is(head, "third") {
-                Some(2)
-            } else if value::symbol_is(head, "last") {
-                elems.len().checked_sub(1)
-            } else if value::symbol_is(head, "nth") {
-                match items.get(2) {
-                    Some(Value::Int(n)) if *n >= 0 => Some(*n as usize),
-                    _ => None,
-                }
-            } else {
-                None
+    collection_ty.elem_ty()
+}
+
+/// `first` / `second` / `third` / `last` / `nth`: the element type, widened with `nil`
+/// (or `nth`'s default) unless the read is provably in range.
+fn positional_read_ty(heap: &Heap, head: &str, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let arg = *items.get(1)?;
+    let collection_ty = expr_ty(heap, arg, ctx)?;
+    let is_nth = head == "nth";
+    let nth_default = || {
+        if is_nth && items.len() == 4 {
+            expr_ty(heap, items[3], ctx)
+        } else {
+            None
+        }
+    };
+    // A statically-known index into a tuple-typed collection resolves to that *exact*
+    // position's type (ADR-128), not the coarse union every other access falls back to.
+    if let Some(elems) = collection_ty.positional_elems() {
+        let index = match positional_index(head, items) {
+            Some(Some(index)) => Some(index),
+            Some(None) => elems.len().checked_sub(1),
+            None => None,
+        };
+        if let Some(index) = index {
+            // In range → exactly that position's type, no `nil` (a tuple's arity is
+            // fixed). Provably out of range → `nil`, as the runtime answers — or, for
+            // `(nth coll i default)`, the default.
+            return match elems.get(index) {
+                Some(t) => Some(t.clone()),
+                None if is_nth && items.len() == 4 => Some(nth_default().unwrap_or(Ty::ANY)),
+                None => Some(Ty::of(Tag::Nil)),
             };
-            if let Some(i) = idx {
-                // In range → exactly that position's type, no `nil` — a
-                // tuple's arity is fixed and known, so an in-range access on a
-                // well-typed value is never absent. A provably out-of-range
-                // literal index → exactly `nil` (matches the runtime, which
-                // returns nil rather than erroring) — or, for `(nth coll i default)`,
-                // the DEFAULT: `(nth ["a"] 1 "")` is `""` (2026-10-02: it read `nil`).
-                return match elems.get(i) {
-                    Some(t) => Some(t.clone()),
-                    None if value::symbol_is(head, "nth") && items.len() == 4 => {
-                        Some(expr_ty(heap, items[3], ctx).unwrap_or(Ty::ANY))
-                    }
-                    None => Some(Ty::of(Tag::Nil)),
-                };
-            }
-            // A computed `nth` index whose INTERVAL lies inside the arity reads the union
-            // of the positions it can name — `(nth [10 20] (bit/and i 1))` is `10 | 20`,
-            // present (ADR-350's interval, applied to a shape rather than a length).
-            if value::symbol_is(head, "nth") && items.len() == 3 {
-                if let Some(r) = expr_ty(heap, items[2], ctx).and_then(|t| t.int_range()) {
-                    if let (Some(lo), Some(hi)) = (r.lo, r.hi) {
-                        if lo >= 0 && (hi as usize) < elems.len() {
-                            let mut out = elems[lo as usize].clone();
-                            for t in &elems[lo as usize + 1..=hi as usize] {
-                                out = out.union(t.clone());
-                            }
-                            return Some(out);
+        }
+        // A computed `nth` index whose INTERVAL lies inside the arity reads the union of
+        // the positions it can name — `(nth [10 20] (bit/and i 1))` is `10 | 20`, present
+        // (ADR-350's interval, applied to a shape rather than a length).
+        if is_nth && items.len() == 3 {
+            if let Some(range) = expr_ty(heap, items[2], ctx).and_then(|t| t.int_range()) {
+                if let (Some(lo), Some(hi)) = (range.lo, range.hi) {
+                    if lo >= 0 && (hi as usize) < elems.len() {
+                        let mut out = elems[lo as usize].clone();
+                        for t in &elems[lo as usize + 1..=hi as usize] {
+                            out = out.union(t.clone());
                         }
+                        return Some(out);
                     }
                 }
             }
         }
-        // Over a UNION of shapes and sequences — `(tuple :error string) | (tuple :ok
-        // map)`, the tagged pair every parser returns — the read is answered term by
-        // term (a shape by its position), never by the union of every element.
-        if coll_ty.alt_terms().is_some() {
-            let index = if value::symbol_is(head, "first") {
-                Some(Some(0))
-            } else if value::symbol_is(head, "second") {
-                Some(Some(1))
-            } else if value::symbol_is(head, "third") {
-                Some(Some(2))
-            } else if value::symbol_is(head, "last") {
-                Some(None)
-            } else {
-                match items.get(2) {
-                    Some(Value::Int(n)) if *n >= 0 => Some(Some(*n as usize)),
-                    _ => None,
-                }
-            };
-            if let Some(index) = index {
-                // A guard on another position has already dropped the alternatives it
-                // rules out from `coll_ty` itself (`Ctx::narrow_path`): under
-                // `(= (nth r 0) :ok)` the `(tuple :error string)` is not `r`, so this
-                // reads the `:ok` tuple's second position alone.
-                // An `nth` default answers wherever a term runs off its end.
-                if value::symbol_is(head, "nth") && items.len() == 4 {
-                    let default = expr_ty(heap, items[3], ctx).unwrap_or(Ty::ANY);
-                    return coll_ty
-                        .element_at_over_union(index)
-                        .map(|t| t.union(default));
-                }
-                return coll_ty.element_at_over_union(index);
+    }
+    // Over a UNION of shapes and sequences — `(tuple :error string) | (tuple :ok map)`,
+    // the tagged pair every parser returns — the read is answered term by term (a shape
+    // by its position), never by the union of every element. A guard on another position
+    // has already dropped the alternatives it rules out (`Ctx::narrow_path`).
+    if collection_ty.alt_terms().is_some() {
+        if let Some(index) = positional_index(head, items) {
+            // An `nth` default answers wherever a term runs off its end.
+            if is_nth && items.len() == 4 {
+                let default = nth_default().unwrap_or(Ty::ANY);
+                return collection_ty
+                    .element_at_over_union(index)
+                    .map(|t| t.union(default));
             }
+            return collection_ty.element_at_over_union(index);
         }
-        // A read from exactly `nil` — the then-branch of `(nil? xs)` or `(empty? xs)` on a
-        // list — is `nil`, or the `nth` default (ADR-350): `nil` has no element to fall to
-        // `any` through, and the runtime answers exactly this.
-        if coll_ty == Ty::of(Tag::Nil) {
-            let absent = if value::symbol_is(head, "nth") && items.len() == 4 {
-                expr_ty(heap, items[3], ctx)
-            } else {
-                None
-            };
-            return Some(absent.unwrap_or(Ty::of(Tag::Nil)));
-        }
-        let elem = coll_ty.elem_ty()?;
-        // `first`/`last` of a provably non-empty list is an element, full stop; every
-        // other access (an index that may run off the end, a seq that may be empty)
-        // yields `nil` too — except `(nth coll i default)`, whose absent case IS the
-        // default, exactly as `get`'s (`(nth parts 1 "0")` is a string, never nil).
-        // …and by LENGTH (ADR-350): `second` of a collection of two or more, `(nth xs 3)`
-        // of one at least four long, `(nth xs i)` where a guard established `i < (count
-        // xs)` and `i`'s interval says it is not negative — each an element, never `nil`.
-        let count = coll_ty.count_range();
-        let at_least = |k: i64| count.is_some_and(|r| r.lo.is_some_and(|lo| lo >= k));
-        let always_present = (provably_non_empty(&coll_ty)
-            && (value::symbol_is(head, "first") || value::symbol_is(head, "last")))
-            || (value::symbol_is(head, "second") && at_least(2))
-            || (value::symbol_is(head, "third") && at_least(3))
-            || (value::symbol_is(head, "nth") && items.len() >= 3 && {
+    }
+    // A read from exactly `nil` — the then-branch of `(nil? xs)` — is `nil`, or the `nth`
+    // default (ADR-350), as the runtime answers.
+    if collection_ty == Ty::of(Tag::Nil) {
+        return Some(nth_default().unwrap_or(Ty::of(Tag::Nil)));
+    }
+    let elem = collection_ty.elem_ty()?;
+    // `first`/`last` of a provably non-empty list is an element, full stop; every other
+    // access yields `nil` too — except `(nth coll i default)`, whose absent case IS the
+    // default. …and by LENGTH (ADR-350): `second` of a collection of two or more,
+    // `(nth xs 3)` of one at least four long, `(nth xs i)` where a guard established
+    // `i < (count xs)` and `i`'s interval says it is not negative.
+    let count = collection_ty.count_range();
+    let at_least = |k: i64| count.is_some_and(|r| r.lo.is_some_and(|lo| lo >= k));
+    let always_present = match head {
+        "first" | "last" => provably_non_empty(&collection_ty),
+        "second" => at_least(2),
+        "third" => at_least(3),
+        _ => {
+            items.len() >= 3 && {
                 match items[2] {
                     Value::Int(k) => k >= 0 && at_least(k + 1),
-                    // A local, or any computed index with an interval — `(bit/and i 1)`
-                    // is `int[0..1]`; only a local can be bounded by a guard.
+                    // A local, or any computed index with an interval — `(bit/and i 1)` is
+                    // `int[0..1]`; only a local can be bounded by a guard.
                     index_form => {
                         let index = expr_ty(heap, index_form, ctx).and_then(|t| t.int_range());
                         let non_negative = index.is_some_and(|r| r.lo.is_some_and(|lo| lo >= 0));
-                        // A guard bounded this index: the bare local (`i < (count xs)`) or
-                        // the offset expression a scan writes (`(nth s (+ i 1))` under
-                        // `(< (+ i 1) n)`, C12). The fact is keyed on the base local and
-                        // the offset, and a larger proved offset covers a smaller one.
+                        // A guard bounded this index: the bare local (`i < (count xs)`) or the
+                        // offset expression a scan writes (`(nth s (+ i 1))` under `(< (+ i 1)
+                        // n)`). The fact is keyed on the base local and the offset, and a
+                        // larger proved offset covers a smaller one.
                         let bounded_by_guard = match arg {
-                            Value::Sym(xs) => {
-                                super::guards::local_plus_offset(heap, index_form, ctx)
-                                    .is_some_and(|(i, k)| ctx.is_index_bound_at(i, xs, k))
-                            }
+                            Value::Sym(collection) => super::guards::local_plus_offset(
+                                heap, index_form, ctx,
+                            )
+                            .is_some_and(|(local, offset)| {
+                                ctx.is_index_bound_at(local, collection, offset)
+                            }),
                             _ => false,
                         };
                         let bounded_by_interval =
@@ -1682,1188 +1693,1035 @@ fn seq_aware_call_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> O
                         non_negative && (bounded_by_guard || bounded_by_interval)
                     }
                 }
-            });
-        let absent = if value::symbol_is(head, "nth") && items.len() == 4 {
-            expr_ty(heap, items[3], ctx)
-        } else {
-            None
-        };
-        return Some(if always_present {
-            elem
-        } else {
-            elem.union(absent.unwrap_or(Ty::of(Tag::Nil)))
-        });
-    }
-    // `(seq/filter coll pred)` keeps `coll`'s element type — the result is the items
-    // that pass, so `nil | list<A>` for `A = elem(coll)` (ADR-078 parametric
-    // results). `None` element → fall through to the flat curated `list`.
-    if value::symbol_is(head, "seq/filter") {
-        // Data-first (ADR-308): the collection is argument one.
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        // …NARROWED by the predicate when it is a type predicate: `(seq/filter xs int?)` keeps
-        // only the items `int?` admits, so the result's elements are `elem ∩ int`. This is
-        // the same `Ty::tested_by` bridge occurrence typing uses for an `if` guard, applied
-        // to the elements that survive rather than to a binding.
-        //
-        // Without it the element type passed straight through, and ADR-316's failure lint
-        // fired on code that had narrowed exactly as the lint's own message advises:
-        // `(or (second (seq/filter (map parts string/->number) int?)) 1)` still carried
-        // `failure`, so the remedy the diagnostic recommends did not silence it. Found on
-        // bedit, where it reddened the downstream CI gate.
-        let a = match (a, items.get(2).and_then(|p| predicate_kept_ty(*p))) {
-            (Some(elem), Some(tested)) => Some(elem.intersect(tested)),
-            (None, tested @ Some(_)) => tested,
-            (elem, None) => elem,
-        };
-        // `filter` builds a LIST whatever it is handed (a vector in, a list out), so with
-        // the element type unknown the result is still `list`, not the curated `seqable` —
-        // `(seq/filter pred (file/ls d))` declared `(list string)` is not "seqable ⊄ list".
-        return list_result(a).or_else(|| coll_ty.map(|_| Ty::LIST));
-    }
-    // `(seq/find coll pred)` is ONE item that passes, or `nil` — the element type
-    // (narrowed by a type predicate exactly as `filter`'s is) with `nil` for "none did".
-    // It fell to the curated `any`, so `(inc (seq/find (range n) …))` behind a `(nil?
-    // line)` guard read as arithmetic on an unknown rather than on the `int` the guard
-    // had just established.
-    if value::symbol_is(head, "seq/find") && items.len() == 3 {
-        let coll_ty = expr_ty(heap, items[1], ctx)?;
-        let a = coll_ty.elem_ty();
-        let a = match (a, predicate_kept_ty(items[2])) {
-            (Some(elem), Some(tested)) => Some(elem.intersect(tested)),
-            (None, tested @ Some(_)) => tested,
-            (elem, None) => elem,
-        };
-        return a.map(|elem| elem.union(Ty::of(Tag::Nil)));
-    }
-    // Element-preserving reshapers whose sequence is the *first* argument — the
-    // same elements, fewer / reordered: `reverse`, `rest` (drop the head),
-    // `but-last`, `distinct` / `dedupe` (drop duplicates). `nil | list<A>`.
-    // `reverse`/`distinct`/`dedupe` keep a non-empty input non-empty; `rest`/`but-last`
-    // may empty it — the two groups differ in exactly the `nil`.
-    if value::symbol_is(head, "reverse")
-        // …and `(%map-pairs m)` is the kernel's spelling of `seq` over a map: its
-        // `[k v]` entries, one per key, so a `map<K, V>` walks as `(tuple K V)` here too.
-        || value::symbol_is(head, "%map-pairs")
-    {
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        return list_result_over(coll_ty.as_ref(), a);
-    }
-    // `seq/distinct` / `seq/dedupe` drop duplicates: the same elements, and a non-empty
-    // input stays non-empty, but the LENGTH only shrinks — `(seq/dedupe [1 1 2])` is
-    // `(1 2)`. The length is at most the input's and at least one when the input had one.
-    // (The rule was keyed bare `distinct` — unbound since ADR-227 — and carried the input
-    // length through `seq/dedupe` exactly, so its `count` read 3; 2026-10-02.)
-    if value::symbol_is(head, "seq/distinct") || value::symbol_is(head, "seq/dedupe") {
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        let shrunk = coll_ty.as_ref().and_then(|t| t.count_range()).map(|r| {
-            let lo = if input_non_empty(coll_ty.as_ref(), r) {
+            }
+        }
+    };
+    Some(if always_present {
+        elem
+    } else {
+        elem.union(nth_default().unwrap_or(Ty::of(Tag::Nil)))
+    })
+}
+
+/// `(seq/filter coll pred)` keeps `coll`'s element type — `nil | list<A>` (ADR-078) —
+/// NARROWED by the predicate when it is a type predicate: `(seq/filter xs int?)` keeps
+/// only the items `int?` admits, so the elements are `elem ∩ int` (the `Ty::tested_by`
+/// bridge occurrence typing uses for an `if` guard). `filter` builds a LIST whatever it
+/// is handed, so with the element type unknown the result is still `list`.
+fn filter_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, *items.get(1)?, ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    let elem = match (elem, items.get(2).and_then(|p| predicate_kept_ty(*p))) {
+        (Some(elem), Some(tested)) => Some(elem.intersect(tested)),
+        (None, tested @ Some(_)) => tested,
+        (elem, None) => elem,
+    };
+    list_result(elem).or_else(|| collection_ty.map(|_| Ty::LIST))
+}
+
+/// `(seq/find coll pred)` is ONE item that passes, or `nil` — the element type (narrowed
+/// by a type predicate exactly as `filter`'s is) with `nil` for "none did".
+fn find_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let elem = expr_ty(heap, items[1], ctx)?.elem_ty();
+    let elem = match (elem, predicate_kept_ty(items[2])) {
+        (Some(elem), Some(tested)) => Some(elem.intersect(tested)),
+        (None, tested @ Some(_)) => tested,
+        (elem, None) => elem,
+    };
+    elem.map(|elem| elem.union(Ty::of(Tag::Nil)))
+}
+
+/// `(seq/reject coll pred)` keeps what `pred` REJECTS: with a type predicate the
+/// survivors are `elem ∖ tested`, so `(seq/reject xs nil?)` answers `list<T>` from a
+/// `list<nil | T>`.
+fn reject_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, items[1], ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    let elem = match (elem, predicate_tested_ty(items[2])) {
+        (Some(elem), Some(tested)) => Some(elem.difference(tested)),
+        (elem, _) => elem,
+    };
+    list_result(elem).or_else(|| collection_ty.map(|_| Ty::LIST))
+}
+
+/// Element-preserving reshapers whose sequence is the first argument (data-first,
+/// ADR-308): `reverse`, `sort`, `sort-by`, and `%map-pairs` — the kernel's `seq` over a
+/// map, whose `[k v]` entries walk a `map<K, V>` as `(tuple K V)`. A non-empty input
+/// stays non-empty.
+fn same_elements_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, *items.get(1)?, ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    list_result_over(collection_ty.as_ref(), elem)
+}
+
+/// `seq/distinct` / `seq/dedupe` drop duplicates: the same elements, and a non-empty
+/// input stays non-empty, but the LENGTH only shrinks — at most the input's, and at
+/// least one when the input had one.
+fn deduplicated_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, *items.get(1)?, ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    let shrunk = collection_ty
+        .as_ref()
+        .and_then(|t| t.count_range())
+        .map(|range| {
+            let lo = if input_non_empty(collection_ty.as_ref(), range) {
                 1
             } else {
                 0
             };
-            Range::new(Some(lo), r.hi)
+            Range::new(Some(lo), range.hi)
         });
-        return match shrunk {
-            Some(r) => Some(list_with_len(a.unwrap_or(Ty::ANY), r)),
-            None => list_result_over(coll_ty.as_ref(), a),
-        };
+    match shrunk {
+        Some(range) => Some(list_with_len(elem.unwrap_or(Ty::ANY), range)),
+        None => list_result_over(collection_ty.as_ref(), elem),
     }
-    // `(seq x)` PASSES THROUGH a vector, string, set, list or `nil` — `(seq [1 2])` is the
-    // vector `[1 2]`, `(seq "")` the empty string — so over those it is the identity, exactly.
-    // A plain map becomes its `[k v]` entries (the `%map-pairs` rule below) and `bytes` its
-    // octets. A RECORD (a map carrying `:__id__`) walks its `Seqable` view, which an impl may
-    // redefine, and a rope or table only has one if an impl gives it: no claim. The rule
-    // used to type every input as a list of its elements, so `(seq/vector-length (seq v))`
-    // warned on the vector it is (2026-10-02).
-    if value::symbol_is(head, "seq") && items.len() == 2 {
-        // Kind by kind, and the union of the answers: `nil | vector | bytes` (what a
-        // `bytes-or-vector` parameter derives to) is itself, itself and a list of octets —
-        // declining the whole union for the one kind that converts left `std/encoding`'s
-        // octet loop reading an unknown element (2026-10-02).
-        let coll_ty = expr_ty(heap, items[1], ctx)?;
-        let passes = [Tag::Vector, Tag::Str, Tag::Set, Tag::Pair, Tag::Nil]
-            .into_iter()
-            .fold(Ty::NEVER, |acc, tag| acc.union(Ty::of(tag)));
-        let bytes = Ty::of(Tag::Bytes);
-        let map = Ty::of(Tag::Map);
-        let handled = passes.clone().union(bytes.clone()).union(map.clone());
-        if !coll_ty.clone().difference(handled).is_never() {
+}
+
+/// `(seq x)` PASSES THROUGH a vector, string, set, list or `nil` — `(seq [1 2])` is the
+/// vector `[1 2]` — so over those it is the identity, exactly. A plain map becomes its
+/// `[k v]` entries and `bytes` its octets. A RECORD walks its `Seqable` view, which an
+/// impl may redefine, and a rope or table only has one if an impl gives it: no claim.
+/// Answered kind by kind and unioned, so `nil | vector | bytes` is itself, itself and a
+/// list of octets.
+fn seq_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, items[1], ctx)?;
+    let passes = [Tag::Vector, Tag::Str, Tag::Set, Tag::Pair, Tag::Nil]
+        .into_iter()
+        .fold(Ty::NEVER, |acc, tag| acc.union(Ty::of(tag)));
+    let bytes = Ty::of(Tag::Bytes);
+    let map = Ty::of(Tag::Map);
+    let handled = passes.clone().union(bytes.clone()).union(map.clone());
+    if !collection_ty.clone().difference(handled).is_never() {
+        return None;
+    }
+    let mut out = collection_ty.clone().intersect(passes);
+    let bytes_part = collection_ty.clone().intersect(bytes);
+    if !bytes_part.is_never() {
+        let octets = Ty::int_in(Range::new(Some(0), Some(255)));
+        out = out.union(list_result_over(Some(&bytes_part), Some(octets))?);
+    }
+    let map_part = collection_ty.intersect(map);
+    if !map_part.is_never() {
+        if may_carry_identity(&map_part) {
             return None;
         }
-        let mut out = coll_ty.clone().intersect(passes);
-        let bytes_part = coll_ty.clone().intersect(bytes);
-        if !bytes_part.is_never() {
-            let octets = Ty::int_in(Range::new(Some(0), Some(255)));
-            out = out.union(list_result_over(Some(&bytes_part), Some(octets))?);
-        }
-        let map_part = coll_ty.intersect(map);
-        if !map_part.is_never() {
-            if may_carry_identity(&map_part) {
-                return None;
-            }
-            let a = map_part.elem_ty_union();
-            out = out.union(list_result_over(Some(&map_part), a)?);
-        }
-        return Some(out);
+        let elem = map_part.elem_ty_union();
+        out = out.union(list_result_over(Some(&map_part), elem)?);
     }
-    if value::symbol_is(head, "rest") || value::symbol_is(head, "but-last") {
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        // `rest` is the pair's TAIL, whatever that holds — a vector under an improper
-        // `(cons 1 [2 3])` — and a `bytes` value's rest is bytes again. Neither is the
-        // list the rule below (and the primitive's flat `list` return) claims.
-        if value::symbol_is(head, "rest") && coll_ty.as_ref().is_some_and(rest_may_not_be_a_list) {
-            return Some(Ty::ANY);
-        }
-        // Of a positional shape, the shape less its head (or its last): exact, and `nil`
-        // when there was one element.
-        if let Some(elems) = coll_ty.as_ref().and_then(|t| t.positional_elems()) {
-            // (An empty `(tuple)` has no head to drop: `nil` either way.)
-            let kept: Vec<Ty> = if elems.is_empty() {
-                Vec::new()
-            } else if value::symbol_is(head, "rest") {
-                elems[1..].to_vec()
-            } else {
-                elems[..elems.len() - 1].to_vec()
-            };
-            return Some(if kept.is_empty() {
-                Ty::of(Tag::Nil)
-            } else {
-                Ty::list_shape_of(kept)
-            });
-        }
-        // One shorter than the input: `nil` only when the input may have had one element
-        // (or none).
-        let shorter = coll_ty.as_ref().and_then(|t| t.count_range()).map(|r| {
+    Some(out)
+}
+
+/// `rest` / `but-last`: the same elements, one fewer.
+fn drop_one_ty(heap: &Heap, is_rest: bool, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let collection_ty = expr_ty(heap, *items.get(1)?, ctx);
+    // `rest` is the pair's TAIL, whatever that holds — a vector under an improper
+    // `(cons 1 [2 3])` — and a `bytes` value's rest is bytes again. Neither is the list
+    // the rule below (and the primitive's flat `list` return) claims.
+    if is_rest && collection_ty.as_ref().is_some_and(rest_may_not_be_a_list) {
+        return Some(Ty::ANY);
+    }
+    // Of a positional shape, the shape less its head (or its last): exact, and `nil` when
+    // there was one element (or none).
+    if let Some(elems) = collection_ty.as_ref().and_then(|t| t.positional_elems()) {
+        let kept: Vec<Ty> = if elems.is_empty() {
+            Vec::new()
+        } else if is_rest {
+            elems[1..].to_vec()
+        } else {
+            elems[..elems.len() - 1].to_vec()
+        };
+        return Some(if kept.is_empty() {
+            Ty::of(Tag::Nil)
+        } else {
+            Ty::list_shape_of(kept)
+        });
+    }
+    // One shorter than the input: `nil` only when the input may have had one element.
+    let shorter = collection_ty
+        .as_ref()
+        .and_then(|t| t.count_range())
+        .map(|range| {
             Range::new(
-                r.lo.map(|lo| (lo - 1).max(0)),
-                r.hi.map(|hi| (hi - 1).max(0)),
+                range.lo.map(|lo| (lo - 1).max(0)),
+                range.hi.map(|hi| (hi - 1).max(0)),
             )
         });
-        let a = coll_ty.and_then(|t| t.elem_ty_union());
-        return match (a, shorter) {
-            (Some(e), Some(r)) => Some(list_with_len(e, r)),
-            (a, _) => list_result(a),
-        };
+    let elem = collection_ty.and_then(|t| t.elem_ty_union());
+    match (elem, shorter) {
+        (Some(elem), Some(range)) => Some(list_with_len(elem, range)),
+        (elem, _) => list_result(elem),
     }
-    // `(count x)` is the LENGTH interval of `x`'s type (ADR-350): the arity of a
-    // positional shape exactly, `0` for `nil`, at least 1 for a `pair`, what a guard
-    // narrowed a collection's length to.
-    if (value::symbol_is(head, "count")
-        || value::symbol_is(head, "string/length")
-        || value::symbol_is(head, "seq/vector-length"))
-        && items.len() == 2
-    {
-        let arg_ty = expr_ty(heap, items[1], ctx)?;
-        // A CLOSED record is its field count (C16): the shape declares every key the value
-        // has, so `(count p)` over `(record :x int :y int)` is exactly 2 where the length
-        // slot says `int[0..]` — an optional field may be absent, hence `[required,
-        // declared]`. An OPEN shape declines, since a value may carry keys it does not
-        // declare. This is read here rather than from `count_range`, because a length in
-        // the type is a refinement every RELATION consults and a bare `map` must still fit
-        // a record shape under the gradual relation (`Ty::record_field_count`).
-        // A `defrecord` value (one declaring `:__id__`) counts through its `Seqable` view
-        // instead — its fields less the identity by default, anything under an impl — so
-        // its shape is not its count: `(count (pt 1 2))` is 2, where the shape has 3 keys.
-        let r = if may_carry_identity(&arg_ty) {
-            arg_ty.count_range()?
+}
+
+/// `(count x)` is the LENGTH interval of `x`'s type (ADR-350): the arity of a positional
+/// shape exactly, `0` for `nil`, at least 1 for a `pair`, what a guard narrowed a
+/// collection's length to.
+fn count_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let arg_ty = expr_ty(heap, items[1], ctx)?;
+    // A CLOSED record is its field count: `(count p)` over `(record :x int :y int)` is
+    // exactly 2 (an optional field may be absent, hence `[required, declared]`); an OPEN
+    // shape declines. Read here rather than from `count_range`, because a length in the
+    // type is a refinement every RELATION consults and a bare `map` must still fit a record
+    // shape. A `defrecord` value counts through its `Seqable` view instead, so its shape is
+    // not its count: `(count (pt 1 2))` is 2, where the shape has 3 keys.
+    let range = if may_carry_identity(&arg_ty) {
+        arg_ty.count_range()?
+    } else {
+        arg_ty
+            .record_field_count()
+            .or_else(|| arg_ty.count_range())?
+    };
+    Some(Ty::int_in(range))
+}
+
+/// `(range …)` is "a range of integers" (its own docstring): every argument an int means
+/// every element is one. Empty ranges are `nil`; a bound that is not an int answers
+/// nothing.
+fn range_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let bounds: Vec<Option<Ty>> = items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
+    let all_int = bounds
+        .iter()
+        .all(|t| t.as_ref().is_some_and(|t| t.is_subtype(&Ty::of(Tag::Int))));
+    // The elements carry the bounds' INTERVAL (ADR-350): `(range n)` counts from 0 up
+    // to `n - 1`, `(range a b)` from `a` up to `b - 1`, so an element is never below
+    // the start and never reaches the end — `(range (count xs))` hands its callback
+    // an `int[0..]`, which is the non-negative half of what `(nth xs i)` asks before it
+    // reads an element. A bound with no interval leaves that end open.
+    let int = {
+        let range_of = |t: &Option<Ty>| t.as_ref().and_then(|t| t.int_range());
+        let (start, end) = match items.len() {
+            2 => (Some(Range::point(0)), range_of(&bounds[0])),
+            _ => (range_of(&bounds[0]), range_of(&bounds[1])),
+        };
+        // An ascending range lies in `[start, end - 1]`; with a STEP (`(range a b s)`)
+        // it may descend instead — `(range 5 2 -1)` is `(5 4 3)`, in `[end + 1, start]`.
+        // A step whose sign is not known is either, so the hull of both.
+        let ascending = Range::new(
+            start.and_then(|r| r.lo),
+            // Saturating: a bound at the edge of `i64` (`arithmetic_edge_test`'s
+            // `(range math/max-int …)`) must not overflow the checker.
+            end.and_then(|r| r.hi).map(|h| h.saturating_sub(1)),
+        );
+        let descending = Range::new(
+            end.and_then(|r| r.lo).map(|l| l.saturating_add(1)),
+            start.and_then(|r| r.hi),
+        );
+        let step = bounds.get(2).and_then(range_of);
+        let interval = match step {
+            None if items.len() == 4 => {
+                if ascending.is_empty() {
+                    descending
+                } else if descending.is_empty() {
+                    ascending
+                } else {
+                    Range::hull(ascending, descending)
+                }
+            }
+            Some(s) if s.lo.is_some_and(|lo| lo > 0) => ascending,
+            Some(s) if s.hi.is_some_and(|hi| hi < 0) => descending,
+            Some(_) => {
+                if ascending.is_empty() {
+                    descending
+                } else if descending.is_empty() {
+                    ascending
+                } else {
+                    Range::hull(ascending, descending)
+                }
+            }
+            None => ascending,
+        };
+        if interval.is_empty() {
+            // `(range 0)`: no element at all — the list is `nil`
+            return Some(Ty::of(Tag::Nil));
+        }
+        if interval.is_all() {
+            Ty::of(Tag::Int)
         } else {
-            arg_ty
-                .record_field_count()
-                .or_else(|| arg_ty.count_range())?
-        };
-        return Some(Ty::int_in(r));
-    }
-    // `(range …)` is "a range of integers" (its own docstring): every argument an int
-    // means every element is one. Empty ranges are `nil`.
-    if value::symbol_is(head, "range") && items.len() >= 2 {
-        let bounds: Vec<Option<Ty>> = items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
-        let all_int = bounds
-            .iter()
-            .all(|t| t.as_ref().is_some_and(|t| t.is_subtype(&Ty::of(Tag::Int))));
-        // The elements carry the bounds' INTERVAL (ADR-350): `(range n)` counts from 0 up
-        // to `n - 1`, `(range a b)` from `a` up to `b - 1`, so an element is never below
-        // the start and never reaches the end — `(range (count xs))` hands its callback
-        // an `int[0..]`, which is the non-negative half of what `(nth xs i)` asks before it
-        // reads an element. A bound with no interval leaves that end open.
-        let int = {
-            let range_of = |t: &Option<Ty>| t.as_ref().and_then(|t| t.int_range());
-            let (start, end) = match items.len() {
-                2 => (Some(Range::point(0)), range_of(&bounds[0])),
-                _ => (range_of(&bounds[0]), range_of(&bounds[1])),
-            };
-            // An ascending range lies in `[start, end - 1]`; with a STEP (`(range a b s)`)
-            // it may descend instead — `(range 5 2 -1)` is `(5 4 3)`, in `[end + 1, start]`.
-            // A step whose sign is not known is either, so the hull of both. The step
-            // used to be ignored, and every descending range read as empty (2026-10-02).
-            let ascending = Range::new(
-                start.and_then(|r| r.lo),
-                // Saturating: a bound at the edge of `i64` (`arithmetic_edge_test`'s
-                // `(range math/max-int …)`) must not overflow the checker.
-                end.and_then(|r| r.hi).map(|h| h.saturating_sub(1)),
-            );
-            let descending = Range::new(
-                end.and_then(|r| r.lo).map(|l| l.saturating_add(1)),
-                start.and_then(|r| r.hi),
-            );
-            let step = bounds.get(2).and_then(range_of);
-            let interval = match step {
-                None if items.len() == 4 => {
-                    if ascending.is_empty() {
-                        descending
-                    } else if descending.is_empty() {
-                        ascending
-                    } else {
-                        Range::hull(ascending, descending)
-                    }
-                }
-                Some(s) if s.lo.is_some_and(|lo| lo > 0) => ascending,
-                Some(s) if s.hi.is_some_and(|hi| hi < 0) => descending,
-                Some(_) => {
-                    if ascending.is_empty() {
-                        descending
-                    } else if descending.is_empty() {
-                        ascending
-                    } else {
-                        Range::hull(ascending, descending)
-                    }
-                }
-                None => ascending,
-            };
-            if interval.is_empty() {
-                // `(range 0)`: no element at all — the list is `nil`
-                return Some(Ty::of(Tag::Nil));
-            }
-            if interval.is_all() {
-                Ty::of(Tag::Int)
-            } else {
-                Ty::int_in(interval)
-            }
-        };
-        // A literal bound proves the range non-empty: `(range 5)`, `(range 2 5)`.
-        let non_empty = match (items.get(1), items.get(2), items.len()) {
-            (Some(Value::Int(n)), None, 2) => *n > 0,
-            (Some(Value::Int(a)), Some(Value::Int(b)), 3) => a < b,
-            // …and with a literal step, in the step's direction.
-            (Some(Value::Int(a)), Some(Value::Int(b)), 4) => match items.get(3) {
-                Some(Value::Int(s)) if *s > 0 => a < b,
-                Some(Value::Int(s)) if *s < 0 => a > b,
-                _ => false,
-            },
+            Ty::int_in(interval)
+        }
+    };
+    // A literal bound proves the range non-empty: `(range 5)`, `(range 2 5)`.
+    let non_empty = match (items.get(1), items.get(2), items.len()) {
+        (Some(Value::Int(n)), None, 2) => *n > 0,
+        (Some(Value::Int(a)), Some(Value::Int(b)), 3) => a < b,
+        // …and with a literal step, in the step's direction.
+        (Some(Value::Int(a)), Some(Value::Int(b)), 4) => match items.get(3) {
+            Some(Value::Int(s)) if *s > 0 => a < b,
+            Some(Value::Int(s)) if *s < 0 => a > b,
             _ => false,
-        };
-        // `(range n)` has exactly `n` elements when `n ≥ 0` (none otherwise), so its
-        // length is `n`'s interval clipped at 0 — and non-empty when `n ≥ 1`.
-        let length = match (items.len(), expr_ty(heap, items[1], ctx)) {
-            (2, Some(n)) => n
-                .int_range()
-                .map(|r| Range::new(Some(r.lo.unwrap_or(0).max(0)), r.hi.map(|h| h.max(0)))),
-            _ => None,
-        };
-        // The length is kept EITHER way: a literal `(range 1000)` used to read as a
-        // non-empty list of unknown length, and `(nth (into [] (map (range 1000) f)) 999)`
-        // as possibly absent.
-        return if all_int && non_empty {
-            Some(match length {
-                Some(r) => Ty::list_of(int).with_len(r),
-                None => Ty::list_of(int),
-            })
-        } else if all_int {
-            match length {
-                Some(r) => Some(list_with_len(int, r)),
-                None => list_result(Some(int)),
-            }
-        } else {
-            None
-        };
+        },
+        _ => false,
+    };
+    // `(range n)` has exactly `n` elements when `n ≥ 0` (none otherwise), so its
+    // length is `n`'s interval clipped at 0 — and non-empty when `n ≥ 1`.
+    let length = match (items.len(), expr_ty(heap, items[1], ctx)) {
+        (2, Some(n)) => n
+            .int_range()
+            .map(|r| Range::new(Some(r.lo.unwrap_or(0).max(0)), r.hi.map(|h| h.max(0)))),
+        _ => None,
+    };
+    // The length is kept either way, so `(nth (into [] (map (range 1000) f)) 999)` is
+    // present.
+    if all_int && non_empty {
+        Some(match length {
+            Some(r) => Ty::list_of(int).with_len(r),
+            None => Ty::list_of(int),
+        })
+    } else if all_int {
+        match length {
+            Some(r) => Some(list_with_len(int, r)),
+            None => list_result(Some(int)),
+        }
+    } else {
+        None
     }
-    // `(vec coll)` — the same elements, as a vector. Unknown elements → a bare vector.
-    if value::symbol_is(head, "vec") && items.len() == 2 {
-        let elem = expr_ty(heap, items[1], ctx).and_then(|t| t.elem_ty_union());
-        return Some(match elem {
+}
+
+/// `(vec coll)` — the same elements, as a vector. Unknown elements → a bare vector.
+fn vec_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let elem = expr_ty(heap, items[1], ctx).and_then(|t| t.elem_ty_union());
+    Some(match elem {
+        Some(elem) => Ty::vector_of(elem),
+        None => Ty::of(Tag::Vector),
+    })
+}
+
+/// `(into target coll)` — `target`'s kind, holding `target`'s elements and `coll`'s. Only
+/// the kinds whose element story is plain: a vector, list or set target keeps its
+/// elements and gains `coll`'s; a map target is that kind, unrefined (its entries come
+/// from pairs).
+fn into_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let target = expr_ty(heap, items[1], ctx)?;
+    let added = expr_ty(heap, items[2], ctx).and_then(|t| t.elem_ty_union());
+    let own = if target.is_subtype(&Ty::of(Tag::Nil)) {
+        Some(Ty::NEVER)
+    } else {
+        target.elem_ty()
+    };
+    let joined = match (own, added) {
+        (Some(a), Some(b)) => Some(a.union(b)),
+        _ => None,
+    };
+    if target.is_subtype(&Ty::of(Tag::Vector)) {
+        let out = match joined {
             Some(e) => Ty::vector_of(e),
             None => Ty::of(Tag::Vector),
+        };
+        // The length is the target's plus the source's, when both are known — so
+        // `(nth (into [] (map (range 1000) f)) 999)` is present, as it is.
+        let grown = match (
+            target.count_range(),
+            expr_ty(heap, items[2], ctx).and_then(|t| t.count_range()),
+        ) {
+            (Some(a), Some(b)) => Some(Range::plus(a, b)),
+            _ => None,
+        };
+        return Some(match grown {
+            Some(r) => out.with_len(r),
+            None => out,
         });
     }
-    // `(into target coll)` — `target`'s kind, holding `target`'s elements and `coll`'s.
-    // Only the kinds whose element story is plain: a vector, list or set target keeps
-    // its elements and gains `coll`'s; a map target is that kind, unrefined (its
-    // entries come from pairs).
-    if value::symbol_is(head, "into") && items.len() == 3 {
-        let target = expr_ty(heap, items[1], ctx)?;
-        let added = expr_ty(heap, items[2], ctx).and_then(|t| t.elem_ty_union());
-        let own = if target.is_subtype(&Ty::of(Tag::Nil)) {
+    if target.is_subtype(&Ty::LIST) {
+        // Non-empty if either side is: the target keeps its elements, the source adds.
+        let non_empty = provably_non_empty(&target)
+            || expr_ty(heap, items[2], ctx).is_some_and(|t| provably_non_empty(&t));
+        return Some(match (joined, non_empty) {
+            (Some(e), true) => Ty::list_of(e),
+            (Some(e), false) => Ty::list_of(e).union(Ty::of(Tag::Nil)),
+            (None, _) => Ty::LIST,
+        });
+    }
+    if target.is_subtype(&Ty::of(Tag::Map)) {
+        return Some(Ty::of(Tag::Map));
+    }
+    if target.is_subtype(&Ty::of(Tag::Set)) {
+        return Some(match joined {
+            Some(e) => Ty::set_of(e),
+            None => Ty::of(Tag::Set),
+        });
+    }
+    None
+}
+
+/// `(conj coll x …)` — `coll`'s kind, its elements plus the `x`s. A vector, list or set
+/// carries the elements; a map is its kind, unrefined. The elements are read over every
+/// term of a union (`elem_ty_union`), so a fold accumulator's `(tuple) | vector<string>`
+/// — the empty seed beside the grown step — keeps its element type.
+fn conj_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let coll = expr_ty(heap, items[1], ctx)?;
+    let mut added: Option<Ty> = None;
+    for &x in &items[2..] {
+        let t = expr_ty(heap, x, ctx)?;
+        added = Some(match added {
+            Some(a) => a.union(t),
+            None => t,
+        });
+    }
+    let added = added?;
+    if coll.is_subtype(&Ty::of(Tag::Vector)) {
+        let out = match coll.elem_ty_union() {
+            Some(e) => Ty::vector_of(e.union(added)),
+            None => Ty::of(Tag::Vector),
+        };
+        let grown = coll
+            .count_range()
+            .map(|r| Range::plus(r, Range::point(items.len() as i64 - 2)));
+        return Some(match grown {
+            Some(r) => out.with_len(r),
+            None => out,
+        });
+    }
+    if coll.is_subtype(&Ty::of(Tag::Set)) {
+        return Some(match coll.elem_ty_union() {
+            Some(e) => Ty::set_of(e.union(added)),
+            None => Ty::of(Tag::Set),
+        });
+    }
+    if coll.is_subtype(&Ty::LIST) {
+        // onto nil: a list of the items; onto a list: that list plus the items
+        let own = if coll.is_subtype(&Ty::of(Tag::Nil)) {
             Some(Ty::NEVER)
         } else {
-            target.elem_ty()
+            coll.elem_ty_union()
         };
-        let joined = match (own, added) {
-            (Some(a), Some(b)) => Some(a.union(b)),
-            _ => None,
-        };
-        if target.is_subtype(&Ty::of(Tag::Vector)) {
-            let out = match joined {
-                Some(e) => Ty::vector_of(e),
-                None => Ty::of(Tag::Vector),
-            };
-            // The length is the target's plus the source's, when both are known — so
-            // `(nth (into [] (map (range 1000) f)) 999)` is present, as it is.
-            let grown = match (
-                target.count_range(),
-                expr_ty(heap, items[2], ctx).and_then(|t| t.count_range()),
-            ) {
-                (Some(a), Some(b)) => Some(Range::plus(a, b)),
-                _ => None,
-            };
-            return Some(match grown {
-                Some(r) => out.with_len(r),
-                None => out,
-            });
-        }
-        if target.is_subtype(&Ty::LIST) {
-            // Non-empty if either side is: the target keeps its elements, the source adds.
-            let non_empty = provably_non_empty(&target)
-                || expr_ty(heap, items[2], ctx).is_some_and(|t| provably_non_empty(&t));
-            return Some(match (joined, non_empty) {
-                (Some(e), true) => Ty::list_of(e),
-                (Some(e), false) => Ty::list_of(e).union(Ty::of(Tag::Nil)),
-                (None, _) => Ty::LIST,
-            });
-        }
-        if target.is_subtype(&Ty::of(Tag::Map)) {
-            return Some(Ty::of(Tag::Map));
-        }
-        if target.is_subtype(&Ty::of(Tag::Set)) {
-            return Some(match joined {
-                Some(e) => Ty::set_of(e),
-                None => Ty::of(Tag::Set),
-            });
-        }
+        return Some(match own {
+            Some(e) => Ty::list_of(e.union(added)),
+            None => Ty::of(Tag::Pair),
+        });
+    }
+    if coll.is_subtype(&Ty::of(Tag::Map)) {
+        return Some(Ty::of(Tag::Map));
+    }
+    None
+}
+
+/// `(merge m …)` — a map; over record shapes, the right-biased union of the shapes.
+fn merge_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let tys: Vec<Ty> = items[1..]
+        .iter()
+        .filter_map(|&a| expr_ty(heap, a, ctx))
+        .collect();
+    if tys.len() != items.len() - 1 || !tys.iter().all(|t| t.is_subtype(&Ty::of(Tag::Map))) {
         return None;
     }
-    // `(conj coll x …)` — `coll`'s kind, its elements plus the `x`s. A vector, list or
-    // set carries the elements; a map is its kind, unrefined. The elements are read over
-    // every term of a union (`elem_ty_union`): a fold accumulator's `(tuple) |
-    // vector<string>` — the empty seed beside the grown step — conj'd as a bare `vector`
-    // under the single-term read, dropping the element type on the second step.
-    if value::symbol_is(head, "conj") && items.len() >= 3 {
-        let coll = expr_ty(heap, items[1], ctx)?;
-        let mut added: Option<Ty> = None;
-        for &x in &items[2..] {
-            let t = expr_ty(heap, x, ctx)?;
-            added = Some(match added {
-                Some(a) => a.union(t),
-                None => t,
-            });
-        }
-        let added = added?;
-        if coll.is_subtype(&Ty::of(Tag::Vector)) {
-            let out = match coll.elem_ty_union() {
-                Some(e) => Ty::vector_of(e.union(added)),
-                None => Ty::of(Tag::Vector),
-            };
-            let grown = coll
-                .count_range()
-                .map(|r| Range::plus(r, Range::point(items.len() as i64 - 2)));
-            return Some(match grown {
-                Some(r) => out.with_len(r),
-                None => out,
-            });
-        }
-        if coll.is_subtype(&Ty::of(Tag::Set)) {
-            return Some(match coll.elem_ty_union() {
-                Some(e) => Ty::set_of(e.union(added)),
-                None => Ty::of(Tag::Set),
-            });
-        }
-        if coll.is_subtype(&Ty::LIST) {
-            // onto nil: a list of the items; onto a list: that list plus the items
-            let own = if coll.is_subtype(&Ty::of(Tag::Nil)) {
-                Some(Ty::NEVER)
-            } else {
-                coll.elem_ty_union()
-            };
-            return Some(match own {
-                Some(e) => Ty::list_of(e.union(added)),
-                None => Ty::of(Tag::Pair),
-            });
-        }
-        if coll.is_subtype(&Ty::of(Tag::Map)) {
-            return Some(Ty::of(Tag::Map));
-        }
-        if coll.is_subtype(&Ty::of(Tag::Set)) {
-            return Some(Ty::of(Tag::Set));
-        }
-        return None;
-    }
-    // `(merge m …)` — a map. (Two records merge into a record whose shape is the
-    // right-biased union of theirs, but the lattice's record merge is not written, so
-    // the honest answer is the kind — still far from the `any` this used to be.)
-    if value::symbol_is(head, "merge") && items.len() >= 2 {
-        let tys: Vec<Ty> = items[1..]
-            .iter()
-            .filter_map(|&a| expr_ty(heap, a, ctx))
-            .collect();
-        if tys.len() != items.len() - 1 || !tys.iter().all(|t| t.is_subtype(&Ty::of(Tag::Map))) {
-            return None;
-        }
-        // Every argument a record SHAPE: the result is the right-biased union of the
-        // shapes — a later field wins outright, so its type and required-ness are the
-        // last declaration's — open if any input is open (an undeclared key may then come
-        // from that input). Otherwise just a map.
-        let shapes: Option<Vec<_>> = tys
-            .iter()
-            .map(|t| {
-                t.record_fields()
-                    .map(|f| (f.clone(), t.record_is_open().unwrap_or(true)))
-            })
-            .collect();
-        return Some(match shapes {
-            Some(shapes) => {
-                let mut fields = std::collections::BTreeMap::new();
-                let mut open = false;
-                for (f, o) in shapes {
-                    open |= o;
-                    // An OPEN later argument may carry any key it does not declare, with
-                    // any value — including a key an earlier argument declared, which it
-                    // then overrides. So every earlier field it does not redeclare keeps
-                    // its presence (merge never removes a key) but not its type
-                    // (2026-10-02: `(merge {:port 80} opts)` read `:port` as `80`).
-                    if o {
-                        for (k, (ty, _)) in fields.iter_mut() {
-                            if !f.contains_key(k) {
-                                *ty = Ty::ANY;
-                            }
+    // Every argument a record SHAPE: the result is the right-biased union of the
+    // shapes — a later field wins outright, so its type and required-ness are the
+    // last declaration's — open if any input is open (an undeclared key may then come
+    // from that input). Otherwise just a map.
+    let shapes: Option<Vec<_>> = tys
+        .iter()
+        .map(|t| {
+            t.record_fields()
+                .map(|f| (f.clone(), t.record_is_open().unwrap_or(true)))
+        })
+        .collect();
+    Some(match shapes {
+        Some(shapes) => {
+            let mut fields = std::collections::BTreeMap::new();
+            let mut open = false;
+            for (f, o) in shapes {
+                open |= o;
+                // An OPEN later argument may carry any key it does not declare, with
+                // any value — including a key an earlier argument declared, which it
+                // then overrides. So every earlier field it does not redeclare keeps
+                // its presence (merge never removes a key) but not its type.
+                if o {
+                    for (k, (ty, _)) in fields.iter_mut() {
+                        if !f.contains_key(k) {
+                            *ty = Ty::ANY;
                         }
                     }
-                    for (k, (ty, required)) in f {
-                        // An OPTIONAL later field may be absent, and then the earlier
-                        // value stands: the union of both, present if either says so.
-                        let merged = match fields.get(&k) {
-                            Some((earlier, was_required)) if !required => {
-                                (earlier.clone().union(ty), *was_required)
-                            }
-                            _ => (ty, required),
-                        };
-                        fields.insert(k, merged);
-                    }
                 }
-                if open {
-                    Ty::record_of_open(fields)
-                } else {
-                    Ty::record_of(fields)
+                for (k, (ty, required)) in f {
+                    // An OPTIONAL later field may be absent, and then the earlier
+                    // value stands: the union of both, present if either says so.
+                    let merged = match fields.get(&k) {
+                        Some((earlier, was_required)) if !required => {
+                            (earlier.clone().union(ty), *was_required)
+                        }
+                        _ => (ty, required),
+                    };
+                    fields.insert(k, merged);
                 }
             }
-            None => Ty::of(Tag::Map),
-        });
-    }
-    // `(apply f a b … coll)` — `f` applied to `a`, `b`, … and one more operand of `coll`'s
-    // element type, so a callee's type variable binds through the spread as it does in the
-    // written-out call (KI-140): `(apply math/max 1 (map xs string/length))` under
-    // `(& ?A -> ?A)` is an `int`, exactly as `(math/max 1 (string/length x))` is. The
-    // spread's COUNT is unknown, so a ring operator's result is its closure, never one
-    // step's interval (`(apply + [1 2])` is an int, not `int[1..2]`); an extremum answers
-    // one of its operands, whose union does not depend on the count. A lambda literal
-    // types as its body with its inputs unknown — the flat return.
-    if value::symbol_is(head, "apply") && items.len() >= 3 {
-        return match items[1] {
-            Value::Sym(f) if !ctx.is_lexical_local(f) => {
-                let (spread, coll) = items[2..].split_at(items.len() - 3);
-                let mut inputs: Vec<Option<Ty>> =
-                    spread.iter().map(|&a| expr_ty(heap, a, ctx)).collect();
-                inputs.push(expr_ty(heap, coll[0], ctx).and_then(|t| t.elem_ty_union()));
-                let ret = callback_ret(heap, items[1], &inputs, ctx)
-                    .or_else(|| sig_of(heap, f).map(|sig| sig.ret))?;
-                Some(if numeric_op_kind(f).is_some() {
-                    ret.without_int_interval()
-                } else {
-                    ret
-                })
-            }
-            Value::Pair(_) => {
-                let n = list_items(heap, items[1])
-                    .and_then(|l| l.get(1).copied())
-                    .and_then(|ps| list_items(heap, ps))
-                    .map(|ps| ps.len())?;
-                lambda_ret(heap, items[1], &vec![None; n], ctx)
-            }
-            _ => None,
-        };
-    }
-    // `(sort-by coll key-fn)` — data-first (ADR-308), sequence FIRST.
-    if value::symbol_is(head, "sort-by") {
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        return list_result_over(coll_ty.as_ref(), a);
-    }
-    // `(sort coll)` / `(sort coll less?)` — data-first (ADR-308), sequence FIRST in
-    // both arms; element type is preserved unchanged. It read `items.last()` while the
-    // comparator came first, which was correct then and silently wrong the moment the
-    // argument order flipped: a stale position here does not error, it infers the
-    // COMPARATOR's type as the element type and degrades to `any`.
-    if value::symbol_is(head, "sort") {
-        let coll = *items.get(1)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        return list_result_over(coll_ty.as_ref(), a);
-    }
-    // Element-preserving slices/filters whose sequence is the *first* argument
-    // (data-first, ADR-308) — `take` / `drop` / `take-while` / `drop-while`,
-    // `take-last` / `drop-last`, and `remove` (the `filter` complement). Element type
-    // is preserved unchanged.
-    // `take`/`drop`/`take-while`/`drop-while` are bare (prelude); `take-last`/`drop-last`/
-    // `remove` live in `seq` (ADR-227) and are reached QUALIFIED — matching them bare
-    // meant the arm never fired for them at all, and their element type was silently
-    // lost. `seq/interpose` below was already keyed qualified for the same reason.
-    if value::symbol_is(head, "take")
-        || value::symbol_is(head, "drop")
-        || value::symbol_is(head, "take-while")
-        || value::symbol_is(head, "drop-while")
-        || value::symbol_is(head, "seq/take-last")
-        || value::symbol_is(head, "seq/drop-last")
-    {
-        let coll = *items.get(1)?;
-        let a = expr_ty(heap, coll, ctx).and_then(|t| t.elem_ty_union());
-        return list_result(a);
-    }
-    // `(seq/reject coll pred)` keeps what `pred` REJECTS — the complement of `seq/filter`: with
-    // a type predicate the survivors are `elem ∖ tested`, so `(seq/reject xs nil?)` — the
-    // idiom for "the matches, minus the misses" — answers `list<T>` from a `list<nil | T>`.
-    // Its element type used to pass through unchanged, and the `nil` the call exists to
-    // drop reached the next consumer as a finding.
-    if value::symbol_is(head, "seq/reject") && items.len() == 3 {
-        let coll_ty = expr_ty(heap, items[1], ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        let a = match (a, predicate_tested_ty(items[2])) {
-            (Some(elem), Some(tested)) => Some(elem.difference(tested)),
-            (elem, _) => elem,
-        };
-        return list_result(a).or_else(|| coll_ty.map(|_| Ty::LIST));
-    }
-    // `(cons x xs)` — prepend `x` onto `xs`; the result element type is
-    // `type(x) | elem(xs)`. Both must be known; if either is unknown the element
-    // type is unknown (the tail may hold values of any type). The result is always
-    // a `pair` (not nil), so we return `list<E>` without the `nil` variant.
-    if value::symbol_is(head, "cons") && items.len() == 3 {
-        let hd_ty = expr_ty(heap, items[1], ctx);
-        let tail_ty = expr_ty(heap, items[2], ctx);
-        // Onto anything but a list (`nil` or a pair) the result is an IMPROPER pair:
-        // `(cons 1 [2 3])` is `(1 . [2 3])`, whose `rest` is the vector itself. Its
-        // elements are not a list's, so it is a bare `pair` (2026-10-02: it read as
-        // `list<1 | 2 | 3>`, and `(seq/vector-length (rest c))` warned).
-        if !tail_ty.as_ref().is_some_and(|t| t.is_subtype(&Ty::LIST)) {
-            return Some(Ty::of(Tag::Pair));
-        }
-        // Onto `nil` or onto a positional shape, the result is a shape one longer: the
-        // head in front, exactly.
-        if let Some(tail) = &tail_ty {
-            let tail_shape: Option<Vec<Ty>> = if tail.is_subtype(&Ty::of(Tag::Nil)) {
-                Some(Vec::new())
+            if open {
+                Ty::record_of_open(fields)
             } else {
-                tail.list_shape_elems().cloned()
-            };
-            if let Some(mut elems) = tail_shape {
-                elems.insert(0, hd_ty.clone().unwrap_or(Ty::ANY));
-                return Some(Ty::list_shape_of(elems));
+                Ty::record_of(fields)
             }
         }
-        // A `nil` tail (`'()`, `nil`) contributes no elements at all, so the list's
-        // elements are exactly the head's — `(cons 1 '())` is `list<1>`, not a bare `pair`.
-        let tail_elem = tail_ty.clone().and_then(|t| {
-            if t.is_subtype(&Ty::of(Tag::Nil)) {
-                Some(Ty::NEVER)
+        None => Ty::of(Tag::Map),
+    })
+}
+
+/// `(apply f a b … coll)` — `f` applied to `a`, `b`, … and one more operand of `coll`'s
+/// element type, so a callee's type variable binds through the spread as it does in the
+/// written-out call (KI-140): `(apply math/max 1 (map xs string/length))` under `(& ?A ->
+/// ?A)` is an `int`. The spread's COUNT is unknown, so a ring operator's result is its
+/// closure, never one step's interval (`(apply + [1 2])` is an int, not `int[1..2]`). A
+/// lambda literal types as its body with its inputs unknown — the flat return.
+fn apply_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    match items[1] {
+        Value::Sym(f) if !ctx.is_lexical_local(f) => {
+            let (spread, coll) = items[2..].split_at(items.len() - 3);
+            let mut inputs: Vec<Option<Ty>> =
+                spread.iter().map(|&a| expr_ty(heap, a, ctx)).collect();
+            inputs.push(expr_ty(heap, coll[0], ctx).and_then(|t| t.elem_ty_union()));
+            let ret = callback_ret(heap, items[1], &inputs, ctx)
+                .or_else(|| sig_of(heap, f).map(|sig| sig.ret))?;
+            Some(if numeric_op_kind(f).is_some() {
+                ret.without_int_interval()
             } else {
-                t.elem_ty()
-            }
-        });
-        let longer = tail_ty
-            .as_ref()
-            .and_then(|t| t.count_range())
-            .map(|r| Range::plus(r, Range::point(1)));
-        return match (hd_ty, tail_elem) {
-            (Some(h), Some(e)) => Some(match longer {
-                Some(r) => Ty::list_of(h.union(e)).with_len(r),
-                None => Ty::list_of(h.union(e)),
-            }),
-            _ => Some(Ty::of(Tag::Pair)), // one side unknown → unrefined pair
-        };
+                ret
+            })
+        }
+        Value::Pair(_) => {
+            let n = list_items(heap, items[1])
+                .and_then(|l| l.get(1).copied())
+                .and_then(|ps| list_items(heap, ps))
+                .map(|ps| ps.len())?;
+            lambda_ret(heap, items[1], &vec![None; n], ctx)
+        }
+        _ => None,
     }
-    // `(append xs ys …)` — variadic list concatenation. (`concat` was an alias and
-    // was removed; one spelling each.)
-    // Result element type is the union of every argument's element type; any
-    // argument with an unknown element type → fall through to the flat result.
-    if value::symbol_is(head, "append") {
-        if items.len() == 1 {
-            return Some(Ty::of(Tag::Nil)); // (append) = nil
-        }
-        let mut acc: Option<Ty> = None;
-        let mut any_non_empty = false;
-        for &arg in &items[1..] {
-            let arg_ty = expr_ty(heap, arg, ctx)?;
-            any_non_empty |= provably_non_empty(&arg_ty);
-            // `nil` — the empty list — contributes no elements at all.
-            let elem = if arg_ty.is_subtype(&Ty::of(Tag::Nil)) {
-                Ty::NEVER
-            } else {
-                arg_ty.elem_ty()?
-            };
-            acc = Some(match acc {
-                Some(a) => a.union(elem),
-                None => elem,
-            });
-        }
-        // One non-empty argument makes the whole result non-empty.
-        return if any_non_empty {
-            acc.map(Ty::list_of)
+}
+
+/// `(cons x xs)` — prepend `x` onto `xs`; the element type is `type(x) | elem(xs)`, both
+/// known or the element is unknown. Always a `pair` (never nil), so `list<E>` without the
+/// `nil` variant.
+fn cons_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let head_ty = expr_ty(heap, items[1], ctx);
+    let tail_ty = expr_ty(heap, items[2], ctx);
+    // Onto anything but a list (`nil` or a pair) the result is an IMPROPER pair:
+    // `(cons 1 [2 3])` is `(1 . [2 3])`, whose `rest` is the vector itself — a bare
+    // `pair`.
+    if !tail_ty.as_ref().is_some_and(|t| t.is_subtype(&Ty::LIST)) {
+        return Some(Ty::of(Tag::Pair));
+    }
+    // Onto `nil` or onto a positional shape, the result is a shape one longer: the
+    // head in front, exactly.
+    if let Some(tail) = &tail_ty {
+        let tail_shape: Option<Vec<Ty>> = if tail.is_subtype(&Ty::of(Tag::Nil)) {
+            Some(Vec::new())
         } else {
-            list_result(acc)
+            tail.list_shape_elems().cloned()
         };
+        if let Some(mut elems) = tail_shape {
+            elems.insert(0, head_ty.clone().unwrap_or(Ty::ANY));
+            return Some(Ty::list_shape_of(elems));
+        }
     }
-    // Map K/V refinement rules — derive result types when the first argument is a
-    // `map<K, V>`.  Sound by the usual "widening is conservative" rule: these rules
-    // only fire when K/V are known; unknown → fall through to the curated flat result.
-    //
-    // `(get m k [default])` → `V | nil` (nil = key absent or default not given).
-    // On a record shape (Step 5+, ADR-115) with a *literal keyword* key, the
-    // exact declared field type wins — more specific than the flat `map_kv`
-    // fallback below. An undeclared/dynamic key (or a non-keyword key on a
-    // record) falls through: records are open, so an unknown key's type is
-    // genuinely unknown, not an error.
-    if value::symbol_is(head, "get") && items.len() >= 3 {
-        let map_arg = *items.get(1)?;
-        let map_ty = expr_ty(heap, map_arg, ctx);
-        // `(get m k default)`: an ABSENT key yields the default, so the absence case reads
-        // as the default's type rather than `nil` — `(get dt :hour 0)` is `int`. A default
-        // whose type can't be pinned falls back to the two-argument reading (which admits
-        // `nil` — a superset, since it can only over-state the absence case).
-        let default_ty = match items.get(3) {
-            Some(&d) if items.len() == 4 => expr_ty(heap, d, ctx),
-            _ => None,
+    // A `nil` tail (`'()`, `nil`) contributes no elements at all, so the list's
+    // elements are exactly the head's — `(cons 1 '())` is `list<1>`, not a bare `pair`.
+    let tail_elem = tail_ty.clone().and_then(|t| {
+        if t.is_subtype(&Ty::of(Tag::Nil)) {
+            Some(Ty::NEVER)
+        } else {
+            t.elem_ty()
+        }
+    });
+    let longer = tail_ty
+        .as_ref()
+        .and_then(|t| t.count_range())
+        .map(|r| Range::plus(r, Range::point(1)));
+    match (head_ty, tail_elem) {
+        (Some(h), Some(e)) => Some(match longer {
+            Some(r) => Ty::list_of(h.union(e)).with_len(r),
+            None => Ty::list_of(h.union(e)),
+        }),
+        _ => Some(Ty::of(Tag::Pair)), // one side unknown → unrefined pair
+    }
+}
+
+/// `(append xs ys …)` — variadic list concatenation. The element type is the union of
+/// every argument's; any argument with an unknown element type falls through to the flat
+/// result.
+fn append_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    if items.len() == 1 {
+        return Some(Ty::of(Tag::Nil)); // (append) = nil
+    }
+    let mut acc: Option<Ty> = None;
+    let mut any_non_empty = false;
+    for &arg in &items[1..] {
+        let arg_ty = expr_ty(heap, arg, ctx)?;
+        any_non_empty |= provably_non_empty(&arg_ty);
+        // `nil` — the empty list — contributes no elements at all.
+        let elem = if arg_ty.is_subtype(&Ty::of(Tag::Nil)) {
+            Ty::NEVER
+        } else {
+            arg_ty.elem_ty()?
         };
-        if let Value::Keyword(key) = items[2] {
-            if let Some(d) = default_ty.as_ref() {
-                if let Some(fty) = map_ty
-                    .as_ref()
-                    .and_then(|t| t.record_field_ty_with_default(key, d))
-                {
-                    return Some(fty);
-                }
-            }
-            if let Some(fty) = map_ty.as_ref().and_then(|t| t.record_field_ty(key)) {
+        acc = Some(match acc {
+            Some(a) => a.union(elem),
+            None => elem,
+        });
+    }
+    // One non-empty argument makes the whole result non-empty.
+    if any_non_empty {
+        acc.map(Ty::list_of)
+    } else {
+        list_result(acc)
+    }
+}
+
+/// `(get m k [default])` → `V | nil` on a `map<K, V>` (nil = key absent and no default).
+/// On a record shape with a *literal keyword* key, the declared field type wins. An
+/// undeclared or dynamic key falls through: records are open, so an unknown key's type is
+/// genuinely unknown, not an error.
+fn get_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let map_arg = *items.get(1)?;
+    let map_ty = expr_ty(heap, map_arg, ctx);
+    // `(get m k default)`: an ABSENT key yields the default, so the absence case reads
+    // as the default's type rather than `nil` — `(get dt :hour 0)` is `int`. A default
+    // whose type can't be pinned falls back to the two-argument reading (which admits
+    // `nil` — a superset, since it can only over-state the absence case).
+    let default_ty = match items.get(3) {
+        Some(&d) if items.len() == 4 => expr_ty(heap, d, ctx),
+        _ => None,
+    };
+    if let Value::Keyword(key) = items[2] {
+        if let Some(d) = default_ty.as_ref() {
+            if let Some(fty) = map_ty
+                .as_ref()
+                .and_then(|t| t.record_field_ty_with_default(key, d))
+            {
                 return Some(fty);
             }
         }
-        if let Some((_, v)) = map_ty.as_ref().and_then(Ty::map_kv) {
-            return Some(match default_ty {
-                Some(d) => v.clone().union(d),
-                None => v.clone().union(Ty::of(Tag::Nil)),
+        if let Some(fty) = map_ty.as_ref().and_then(|t| t.record_field_ty(key)) {
+            return Some(fty);
+        }
+    }
+    let (_, v) = map_ty.as_ref().and_then(Ty::map_kv)?;
+    Some(match default_ty {
+        Some(d) => v.clone().union(d),
+        None => v.clone().union(Ty::of(Tag::Nil)),
+    })
+}
+
+/// `(get-in m [k …] [default])` with a LITERAL vector path → the `get` rule applied key
+/// by key: a literal keyword reads the record field, any other key reads a `map<K, V>`'s
+/// value. The walk STOPS at a key that is absent or whose value is not a map —
+/// `%get-in-walk` answers the default there — so every step but the last strips the
+/// `nil` its read admits and remembers that the default is among the answers; the last
+/// step reads with the default in place of absence, keeping a PRESENT nil as nil. A step
+/// neither rule can type leaves the whole read unknown.
+fn get_in_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    if let Value::Vector(path_id) = items[2] {
+        let path = heap.vector(path_id).to_vec();
+        let nil = Ty::of(Tag::Nil);
+        let default = match items.get(3) {
+            Some(&d) => expr_ty(heap, d, ctx)?,
+            None => nil.clone(),
+        };
+        let mut cur = expr_ty(heap, items[1], ctx)?;
+        let mut defaulted = false;
+        for (index, key) in path.iter().enumerate() {
+            let last = index + 1 == path.len();
+            // A step reads only the maps among what reached it; anything else —
+            // nil, or a non-map value at an inner key — stops the walk at the default.
+            let readable = cur.clone().difference(nil.clone());
+            if readable.is_never() {
+                return Some(default);
+            }
+            if !readable.is_subtype(&Ty::of(Tag::Map)) {
+                return None;
+            }
+            let read = match key {
+                Value::Keyword(name) if last => {
+                    readable.record_field_ty_with_default(*name, &default)
+                }
+                Value::Keyword(name) => readable.record_field_ty(*name),
+                _ => None,
+            }
+            .or_else(|| {
+                readable
+                    .map_kv()
+                    .map(|(_, v)| v.union(if last { default.clone() } else { nil.clone() }))
+            })?;
+            if !last && read.contains_tag(Tag::Nil) {
+                defaulted = true;
+            }
+            cur = read;
+        }
+        return Some(if defaulted { cur.union(default) } else { cur });
+    }
+    None
+}
+
+/// `(keys m)` → `nil | list<K>`. On a **closed** record shape the keys are exactly the
+/// declared field names, so the element type is that literal set. An OPEN record may
+/// carry keys nothing declares, so it falls through to the `map<K, V>` rule.
+fn keys_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let map_arg = *items.get(1)?;
+    let map_ty = expr_ty(heap, map_arg, ctx);
+    // A record's keys come from its `Lookup`/`Seqable` impls (id-free by default): no
+    // claim from the raw shape.
+    if map_ty.as_ref().is_some_and(may_carry_identity) {
+        return None;
+    }
+    if let Some(shape) = closed_record_fields(map_ty.as_ref()) {
+        let names = shape
+            .keys()
+            .fold(Ty::NEVER, |acc, name| acc.union(Ty::keyword_lit(*name)));
+        // An optional field may be absent, so the union over ALL declared names is
+        // an over-approximation of the keys actually present — sound, and the only
+        // answer available without knowing the value.
+        return list_result(Some(names));
+    }
+    let (key, _) = map_ty.as_ref().and_then(Ty::map_kv)?;
+    list_result(Some(key.clone()))
+}
+
+/// `(vals m)` → `nil | list<V>`. On a closed record, every value present is one of the
+/// declared field types.
+fn vals_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let map_arg = *items.get(1)?;
+    let map_ty = expr_ty(heap, map_arg, ctx);
+    if map_ty.as_ref().is_some_and(may_carry_identity) {
+        return None;
+    }
+    if let Some(shape) = closed_record_fields(map_ty.as_ref()) {
+        let types = shape
+            .values()
+            .fold(Ty::NEVER, |acc, (ty, _required)| acc.union(ty.clone()));
+        return list_result(Some(types));
+    }
+    let (_, value_ty) = map_ty.as_ref().and_then(Ty::map_kv)?;
+    list_result(Some(value_ty.clone()))
+}
+
+/// `(dissoc m k …)` → the same record shape without those fields, with literal-keyword
+/// keys. OPEN records too: "open" means *at least* these fields, so removing a declared
+/// one drops it and removing an undeclared one leaves the shape alone — either way the
+/// remaining fields are still all present.
+fn dissoc_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let map_ty = expr_ty(heap, *items.get(1)?, ctx);
+    let shape = record_shape_of(map_ty.as_ref())?;
+    let removed = literal_keyword_args(&items[2..])?;
+    let mut fields = shape.fields;
+    for name in removed {
+        fields.remove(&name);
+    }
+    Some(if shape.open {
+        Ty::record_of_open(fields)
+    } else {
+        Ty::record_of(fields)
+    })
+}
+
+/// `(update r :k f …)`, `(assoc-in r [:k …] v)`, `(update-in r [:k …] f …)` — the
+/// record-keeping siblings of `assoc`. Each replaces ONE top-level key, named by a literal
+/// keyword (the first path element for the `-in` forms), with a value the checker does
+/// not compute: the shape survives with that field unknown, and the other fields keep
+/// their types. On a receiver with no shape and a keyword key the answer is `map`, as for
+/// `assoc`, so a model threaded through `update` keeps being a map.
+fn update_ty(heap: &Heap, is_update: bool, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let key = if is_update {
+        match items[2] {
+            Value::Keyword(name) => Some(name),
+            _ => None,
+        }
+    } else {
+        match items[2] {
+            Value::Vector(id) => match heap.vector(id).first() {
+                Some(Value::Keyword(name)) => Some(*name),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    let map_ty = expr_ty(heap, items[1], ctx);
+    if let Some(key) = key {
+        if let Some(shape) = record_shape_of(map_ty.as_ref()) {
+            let mut fields = shape.fields;
+            fields.insert(key, (Ty::ANY, true));
+            return Some(if shape.open {
+                Ty::record_of_open(fields)
+            } else {
+                Ty::record_of(fields)
             });
         }
-    }
-    // `(get-in m [k …] [default])` with a LITERAL vector path → the `get` rule applied
-    // key by key: a literal keyword reads the record field, any other key reads a
-    // `map<K, V>`'s value. The walk STOPS at a key that is absent or whose value is not a
-    // map — `%get-in-walk` answers the default there (nil without one) — so every step
-    // but the last strips the `nil` its read admits and remembers that the default is
-    // among the answers; the last step reads with the default in place of absence
-    // (`record_field_ty_with_default`), keeping a PRESENT nil as nil. A step neither rule
-    // can type leaves the whole read unknown, as before. Before this a `(get-in m
-    // [:hosted i])` on a declared `model` read `any` where `(get (:hosted m) i)` beside it
-    // read the slot type, and every arithmetic downstream of it said `number`.
-    if value::symbol_is(head, "get-in") && (items.len() == 3 || items.len() == 4) {
-        if let Value::Vector(path_id) = items[2] {
-            let path = heap.vector(path_id).to_vec();
-            let nil = Ty::of(Tag::Nil);
-            let default = match items.get(3) {
-                Some(&d) => expr_ty(heap, d, ctx)?,
-                None => nil.clone(),
-            };
-            let mut cur = expr_ty(heap, items[1], ctx)?;
-            let mut defaulted = false;
-            for (index, key) in path.iter().enumerate() {
-                let last = index + 1 == path.len();
-                // A step reads only the maps among what reached it; anything else —
-                // nil, or a non-map value at an inner key — stops the walk at the default.
-                let readable = cur.clone().difference(nil.clone());
-                if readable.is_never() {
-                    return Some(default);
-                }
-                if !readable.is_subtype(&Ty::of(Tag::Map)) {
-                    return None;
-                }
-                let read = match key {
-                    Value::Keyword(name) if last => {
-                        readable.record_field_ty_with_default(*name, &default)
-                    }
-                    Value::Keyword(name) => readable.record_field_ty(*name),
-                    _ => None,
-                }
-                .or_else(|| {
-                    readable
-                        .map_kv()
-                        .map(|(_, v)| v.union(if last { default.clone() } else { nil.clone() }))
-                })?;
-                if !last && read.contains_tag(Tag::Nil) {
-                    defaulted = true;
-                }
-                cur = read;
-            }
-            return Some(if defaulted { cur.union(default) } else { cur });
-        }
-    }
-    // `(keys m)` → `nil | list<K>`. On a **closed** record shape the keys are exactly
-    // the declared field names, so the element type is that literal set — which is what
-    // makes `(keys r)` usable as a value rather than an opaque `list<any>`. An OPEN
-    // record may carry keys nothing declares, so it falls through to the `map_kv` rule.
-    if value::symbol_is(head, "keys") && items.len() == 2 {
-        let map_arg = *items.get(1)?;
-        let map_ty = expr_ty(heap, map_arg, ctx);
-        // A record's keys come from its `Lookup`/`Seqable` impls (id-free by default): no
-        // claim from the raw shape.
-        if map_ty.as_ref().is_some_and(may_carry_identity) {
-            return None;
-        }
-        if let Some(shape) = closed_record_fields(map_ty.as_ref()) {
-            let names = shape
-                .keys()
-                .fold(Ty::NEVER, |acc, name| acc.union(Ty::keyword_lit(*name)));
-            // An optional field may be absent, so the union over ALL declared names is
-            // an over-approximation of the keys actually present — sound, and the only
-            // answer available without knowing the value.
-            return list_result(Some(names));
-        }
-        if let Some((k, _)) = map_ty.as_ref().and_then(Ty::map_kv) {
-            return list_result(Some(k.clone()));
-        }
-    }
-    // `(vals m)` → `nil | list<V>`. On a closed record, every value present is one of
-    // the declared field types.
-    if value::symbol_is(head, "vals") && items.len() == 2 {
-        let map_arg = *items.get(1)?;
-        let map_ty = expr_ty(heap, map_arg, ctx);
-        if map_ty.as_ref().is_some_and(may_carry_identity) {
-            return None;
-        }
-        if let Some(shape) = closed_record_fields(map_ty.as_ref()) {
-            let types = shape
-                .values()
-                .fold(Ty::NEVER, |acc, (ty, _required)| acc.union(ty.clone()));
-            return list_result(Some(types));
-        }
-        if let Some((_, v)) = map_ty.as_ref().and_then(Ty::map_kv) {
-            return list_result(Some(v.clone()));
-        }
-    }
-    // `(dissoc m k …)` → the same record shape without those fields. Exact with
-    // literal-keyword keys: the result definitely lacks them.
-    //
-    // OPEN records go through here too, on the same reasoning that justifies the closed
-    // case. "Open" means *at least* these fields, so removing a declared one drops it from
-    // the shape and removing an undeclared one leaves the shape alone — either way the
-    // remaining fields are still all present. Handling only closed records meant
-    // `(dissoc buf :editable)` on an open record fell through to `dissoc`'s declared
-    // return and read as a flat `map`, so `editor/buffer/widen` could not be declared to
-    // return a `buffer` even though it does — while its sibling `narrow-to`, an `assoc`,
-    // was precise. `assoc` had already learned open records; this is `dissoc` catching up.
-    if value::symbol_is(head, "dissoc") && items.len() >= 3 {
-        let map_arg = *items.get(1)?;
-        let map_ty = expr_ty(heap, map_arg, ctx);
-        if let Some(shape) = record_shape_of(map_ty.as_ref()) {
-            if let Some(removed) = literal_keyword_args(&items[2..]) {
-                let mut fields = shape.fields;
-                for name in removed {
-                    fields.remove(&name);
-                }
-                return Some(if shape.open {
-                    Ty::record_of_open(fields)
-                } else {
-                    Ty::record_of(fields)
-                });
-            }
-        }
-    }
-    // `(update r :k f …)`, `(assoc-in r [:k …] v)`, `(update-in r [:k …] f …)` — the
-    // record-keeping siblings of `assoc`. Each replaces ONE top-level key, named by a
-    // literal keyword (the first path element for the `-in` forms), with a value the
-    // checker does not compute (`f`'s result, or a nested write): the shape survives with
-    // that field unknown — exactly what `assoc` answers for an untyped value — and the
-    // other fields keep their types. An open shape stays open, a closed one closed. On a
-    // receiver with no shape and a keyword key the answer is `map`, as for `assoc`: an
-    // editor's model is threaded through `(update m :kill-ring …)` and `(assoc-in m
-    // [:timers :blink] …)` as often as through `assoc`, and falling to the declared
-    // `-> any` at each dropped a declared `model` to nothing at the first one.
-    if items.len() >= 3
-        && (value::symbol_is(head, "update")
-            || value::symbol_is(head, "assoc-in")
-            || value::symbol_is(head, "update-in"))
-    {
-        let key = if value::symbol_is(head, "update") {
-            match items[2] {
-                Value::Keyword(name) => Some(name),
-                _ => None,
-            }
-        } else {
-            match items[2] {
-                Value::Vector(id) => match heap.vector(id).first() {
-                    Some(Value::Keyword(name)) => Some(*name),
-                    _ => None,
-                },
-                _ => None,
-            }
-        };
-        let map_ty = expr_ty(heap, items[1], ctx);
-        if let Some(key) = key {
-            if let Some(shape) = record_shape_of(map_ty.as_ref()) {
-                let mut fields = shape.fields;
-                fields.insert(key, (Ty::ANY, true));
-                return Some(if shape.open {
-                    Ty::record_of_open(fields)
-                } else {
-                    Ty::record_of(fields)
-                });
-            }
-            if map_ty.as_ref().and_then(Ty::map_kv).is_none() {
-                return Some(Ty::of(Tag::Map));
-            }
-        } else if map_ty
-            .as_ref()
-            .is_some_and(|t| t.is_subtype(&Ty::of(Tag::Map)))
-        {
-            // A DYNAMIC key on a known map — `(update m (:key spec) …)`. Which field
-            // changed is unknown, so the shape cannot be kept; but the receiver is a map,
-            // so the result is a map — never the `vector | map` of `update`'s body, which
-            // read a model threaded through one dynamic-key update as possibly a vector.
+        if map_ty.as_ref().and_then(Ty::map_kv).is_none() {
             return Some(Ty::of(Tag::Map));
         }
-        // `assoc-in` / `update-in` keep a VECTOR node a vector (updated by index) and turn
-        // any other node into a map. So a receiver that cannot be a vector answers `map`,
-        // exactly. A receiver of UNKNOWN type answers unknown: the body's `vector | map`
-        // is true of it too, but it is the union of two guesses about a value nobody typed,
-        // and every model threaded through a dynamic-key `(assoc-in m [*key* :k] …)` read
-        // as "possibly a vector" in strict mode. A receiver known to include a vector keeps
-        // the body's union, which is the honest answer there.
-        if !value::symbol_is(head, "update") {
-            let vector = Ty::of(Tag::Vector);
-            match map_ty.as_ref() {
-                Some(t) if t.is_disjoint(&vector) => return Some(Ty::of(Tag::Map)),
-                None => return Some(Ty::ANY),
-                Some(t) if *t == Ty::ANY => return Some(Ty::ANY),
-                Some(_) => {}
-            }
+    } else if map_ty
+        .as_ref()
+        .is_some_and(|t| t.is_subtype(&Ty::of(Tag::Map)))
+    {
+        // A DYNAMIC key on a known map — `(update m (:key spec) …)`. Which field
+        // changed is unknown, so the shape cannot be kept; but the result is a map,
+        // never the `vector | map` of `update`'s body.
+        return Some(Ty::of(Tag::Map));
+    }
+    // `assoc-in` / `update-in` keep a VECTOR node a vector (updated by index) and turn
+    // any other node into a map. So a receiver that cannot be a vector answers `map`,
+    // exactly. A receiver of UNKNOWN type answers unknown: the body's `vector | map`
+    // would be two guesses about a value nobody typed. A receiver known to include a
+    // vector keeps the body's union, which is the honest answer there.
+    if !is_update {
+        let vector = Ty::of(Tag::Vector);
+        match map_ty.as_ref() {
+            Some(t) if t.is_disjoint(&vector) => return Some(Ty::of(Tag::Map)),
+            None => return Some(Ty::ANY),
+            Some(t) if *t == Ty::ANY => return Some(Ty::ANY),
+            Some(_) => {}
         }
     }
-    // `(assoc m k1 v1 …)` → `map<K, V>` with the assoc'd keys and values UNIONED into
-    // the refinement. Carrying `K`/`V` forward unchanged — which this did, on the stated
-    // grounds of "no false-positive risk either way" — is not sound in the direction
-    // that matters: `(assoc m :extra "text")` on a `(map keyword int)` genuinely holds a
-    // string at `:extra`, so claiming the result is still `(map keyword int)` made
-    // `(get … :extra)` read `nil | int` and flagged correct code. A key or value whose
-    // own type is unknown widens that side to `any` rather than keeping a refinement
-    // the value may contradict.
-    if value::symbol_is(head, "assoc") && items.len() >= 4 && (items.len() - 2).is_multiple_of(2) {
-        let map_arg = *items.get(1)?;
-        let map_ty = expr_ty(heap, map_arg, ctx);
-        // Over a UNION of record shapes, with literal-keyword keys: the update applied to
-        // each alternative, and the alternatives kept. A fold accumulator is exactly this
-        // after one step — `{col: int, ops: (tuple)} | {col: int, ops: vector<string>}`,
-        // the seed beside the step — and the single-shape rule below answered a flat
-        // `map` for it, so the ascent lost every field on its second step and the fold's
-        // result carried nothing a `(:col a)` could read.
-        if let Some(terms) = map_ty
-            .as_ref()
-            .filter(|t| t.alts.is_some())
-            .map(Ty::terms_vec)
-        {
-            if let Some(updates) = literal_keyword_pairs(&items[2..]) {
-                let values: Vec<(value::Symbol, Ty)> = updates
-                    .into_iter()
-                    .map(|(name, form)| (name, expr_ty(heap, form, ctx).unwrap_or(Ty::ANY)))
-                    .collect();
-                let updated = terms.iter().try_fold(Ty::NEVER, |out, term| {
-                    let shape = record_shape_of(Some(term))?;
-                    let mut fields = shape.fields;
-                    for (name, vty) in &values {
-                        fields.insert(*name, (vty.clone(), true));
-                    }
-                    Some(out.union(if shape.open {
-                        Ty::record_of_open(fields)
-                    } else {
-                        Ty::record_of(fields)
-                    }))
-                });
-                // A term that is not a record shape leaves this to the rules below.
-                if let Some(updated) = updated {
-                    return Some(updated);
-                }
-            }
-        }
-        // On a record shape with literal-keyword keys, carry the SHAPE forward with the
-        // assoc'd fields added or replaced — required, since `assoc` definitely puts them
-        // there. Without this a closed record degrades to a flat `map` on the first
-        // update, which would make closed records (ADR-264) unusable in the idiom that
-        // builds one field at a time. An unknown value type contributes `any` rather
-        // than dropping the whole shape.
-        if let Some(shape) = record_shape_of(map_ty.as_ref()) {
-            if let Some(updates) = literal_keyword_pairs(&items[2..]) {
+    None
+}
+
+/// `(assoc m k1 v1 …)` → `map<K, V>` with the assoc'd keys and values UNIONED into the
+/// refinement: `(assoc m :extra "text")` on a `(map keyword int)` holds a string at
+/// `:extra`. A key or value whose own type is unknown widens that side to `any`.
+fn assoc_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let map_arg = *items.get(1)?;
+    let map_ty = expr_ty(heap, map_arg, ctx);
+    // Over a UNION of record shapes, with literal-keyword keys: the update applied to
+    // each alternative, and the alternatives kept — a fold accumulator after one step
+    // (`{col: int, ops: (tuple)} | {col: int, ops: vector<string>}`) keeps its fields.
+    if let Some(terms) = map_ty
+        .as_ref()
+        .filter(|t| t.alts.is_some())
+        .map(Ty::terms_vec)
+    {
+        if let Some(updates) = literal_keyword_pairs(&items[2..]) {
+            let values: Vec<(value::Symbol, Ty)> = updates
+                .into_iter()
+                .map(|(name, form)| (name, expr_ty(heap, form, ctx).unwrap_or(Ty::ANY)))
+                .collect();
+            let updated = terms.iter().try_fold(Ty::NEVER, |out, term| {
+                let shape = record_shape_of(Some(term))?;
                 let mut fields = shape.fields;
-                for (name, value_form) in updates {
-                    let vty = expr_ty(heap, value_form, ctx).unwrap_or(Ty::ANY);
-                    fields.insert(name, (vty, true));
+                for (name, vty) in &values {
+                    fields.insert(*name, (vty.clone(), true));
                 }
-                return Some(if shape.open {
+                Some(out.union(if shape.open {
                     Ty::record_of_open(fields)
                 } else {
                     Ty::record_of(fields)
-                });
-            }
-            // A CLOSED shape under a computed key — `(assoc {} k v)` in a table-building
-            // fold — is a `map<K, V>`: the declared fields' keys and values, plus the
-            // assoc'd ones. Sound for what a map type claims (every key a `K`, every
-            // value a `V`); an open shape keeps the flat `map` below, since its undeclared
-            // keys could be anything. This is what lets a fold from `{}` settle on
-            // `map<int, int>` instead of a bare `map` whose every `get` is `any`.
-            if !shape.open {
-                let mut key_ty = Ty::NEVER;
-                let mut val_ty = Ty::NEVER;
-                for (name, (fty, _)) in &shape.fields {
-                    key_ty = key_ty.union(Ty::keyword_lit(*name));
-                    val_ty = val_ty.union(fty.clone());
-                }
-                for pair in items[2..].as_chunks::<2>().0 {
-                    key_ty = key_ty.union(expr_ty(heap, pair[0], ctx).unwrap_or(Ty::ANY));
-                    val_ty = val_ty.union(expr_ty(heap, pair[1], ctx).unwrap_or(Ty::ANY));
-                }
-                return Some(Ty::map_of(key_ty, val_ty));
+                }))
+            });
+            // A term that is not a record shape leaves this to the rules below.
+            if let Some(updated) = updated {
+                return Some(updated);
             }
         }
-        if let Some((k, v)) = map_ty.as_ref().and_then(Ty::map_kv) {
-            let mut key_ty = k.clone();
-            let mut val_ty = v.clone();
+    }
+    // On a record shape with literal-keyword keys, carry the SHAPE forward with the
+    // assoc'd fields added or replaced — required, since `assoc` definitely puts them
+    // there. Without this a closed record degrades to a flat `map` on the first
+    // update, which would make closed records (ADR-264) unusable in the idiom that
+    // builds one field at a time. An unknown value type contributes `any` rather
+    // than dropping the whole shape.
+    if let Some(shape) = record_shape_of(map_ty.as_ref()) {
+        if let Some(updates) = literal_keyword_pairs(&items[2..]) {
+            let mut fields = shape.fields;
+            for (name, value_form) in updates {
+                let vty = expr_ty(heap, value_form, ctx).unwrap_or(Ty::ANY);
+                fields.insert(name, (vty, true));
+            }
+            return Some(if shape.open {
+                Ty::record_of_open(fields)
+            } else {
+                Ty::record_of(fields)
+            });
+        }
+        // A CLOSED shape under a computed key — `(assoc {} k v)` in a table-building
+        // fold — is a `map<K, V>`: the declared fields' keys and values, plus the
+        // assoc'd ones. Sound for what a map type claims (every key a `K`, every
+        // value a `V`); an open shape keeps the flat `map` below, since its undeclared
+        // keys could be anything. This is what lets a fold from `{}` settle on
+        // `map<int, int>` instead of a bare `map` whose every `get` is `any`.
+        if !shape.open {
+            let mut key_ty = Ty::NEVER;
+            let mut val_ty = Ty::NEVER;
+            for (name, (fty, _)) in &shape.fields {
+                key_ty = key_ty.union(Ty::keyword_lit(*name));
+                val_ty = val_ty.union(fty.clone());
+            }
             for pair in items[2..].as_chunks::<2>().0 {
                 key_ty = key_ty.union(expr_ty(heap, pair[0], ctx).unwrap_or(Ty::ANY));
                 val_ty = val_ty.union(expr_ty(heap, pair[1], ctx).unwrap_or(Ty::ANY));
             }
             return Some(Ty::map_of(key_ty, val_ty));
         }
-        // No usable receiver type (an untyped parameter, an unsigged call) but every key a
-        // literal keyword: the result is a `map`. `assoc`'s body is `(if (vector? coll)
-        // (%vector-assoc …) (%map-assoc …))`, which inferred as `vector | map` — but
-        // `%vector-assoc` takes an int index and RAISES on a keyword, so a keyword-keyed
-        // call that returns at all returns a map. This is the shape every `model -> model`
-        // step in an editor has (`(assoc (step m) :k v)` on an unsigged `step`), and
-        // `vector | map` where `map` was declared was the strict finding at every one.
-        if literal_keyword_pairs(&items[2..]).is_some()
-            || map_ty
-                .as_ref()
-                .is_some_and(|t| t.is_subtype(&Ty::of(Tag::Map)))
-        {
-            return Some(Ty::of(Tag::Map));
-        }
     }
-    // `(string/->number "1")` is `1`, not `number | failure`. The declared signature has to
-    // admit a failure because most calls can fail — but a call whose argument is a known
-    // string cannot, and saying otherwise puts `failure` in the type of code that has no
-    // way to produce one. That is the reverse of ADR-310's intent: the failure belongs where
-    // it can actually happen.
-    //
-    // Keyed on the argument's TYPE rather than its form, so a narrowed variable is covered
-    // too — `(if (= expr "1") (string/->number expr) 0)` reads `expr` as the singleton `"1"`
-    // in the then-branch, which is exactly where a reader is most surprised to be told the
-    // result might fail. A union of literals is answered as the union of their results.
-    //
-    // Parseability is decided by `builtins::io::classify_numeric_text`, the same function
-    // the runtime calls, so the type can never contradict the value it describes.
-    if value::symbol_is(head, "string/->number") && (items.len() == 2 || items.len() == 3) {
-        if let Some(lits) = expr_ty(heap, items[1], ctx)
+    if let Some((k, v)) = map_ty.as_ref().and_then(Ty::map_kv) {
+        let mut key_ty = k.clone();
+        let mut val_ty = v.clone();
+        for pair in items[2..].as_chunks::<2>().0 {
+            key_ty = key_ty.union(expr_ty(heap, pair[0], ctx).unwrap_or(Ty::ANY));
+            val_ty = val_ty.union(expr_ty(heap, pair[1], ctx).unwrap_or(Ty::ANY));
+        }
+        return Some(Ty::map_of(key_ty, val_ty));
+    }
+    // No usable receiver type but every key a literal keyword: the result is a `map`.
+    // `assoc`'s body is `(if (vector? coll) (%vector-assoc …) (%map-assoc …))`, but
+    // `%vector-assoc` RAISES on a keyword index, so a keyword-keyed call that returns
+    // at all returns a map.
+    if literal_keyword_pairs(&items[2..]).is_some()
+        || map_ty
             .as_ref()
-            .and_then(Ty::as_lit_str)
-            .map(|set| set.iter().cloned().collect::<Vec<_>>())
-        {
-            // A radix, if present, must itself be a literal in range; otherwise decline.
-            let radix = match items.get(2) {
-                None => Some(None),
-                Some(&Value::Int(r)) if (2..=36).contains(&r) => Some(Some(r as u32)),
-                Some(_) => None,
-            };
-            if let Some(radix) = radix {
-                if !lits.is_empty() {
-                    let mut out: Option<Ty> = None;
-                    for lit in &lits {
-                        let t = match crate::builtins::classify_numeric_text(lit, radix) {
-                            crate::builtins::NumericText::Int(n) => Ty::int_lit(n),
-                            // A bignum's tag is not `int`, and a float is not either; name
-                            // the honest widening rather than guess a tag.
-                            crate::builtins::NumericText::Big => Ty::NUMBER,
-                            crate::builtins::NumericText::Float => Ty::of(Tag::Float),
-                            crate::builtins::NumericText::NotANumber => Ty::of(Tag::Failure),
-                        };
-                        out = Some(match out {
-                            None => t,
-                            Some(acc) => acc.union(t),
-                        });
-                    }
-                    return out;
-                }
-            }
-        }
-    }
-    // `(map coll f)` → `nil | list<B>`, `B` = the callback's return type applied
-    // to `coll`'s element type. Unknown callback / element → flat `list`.
-    if value::symbol_is(head, "map") {
-        let (coll, f) = super::sigs::combinator_args(items)?;
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let a = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        let b = callback_ret(heap, f, &[a], ctx);
-        return list_result_over(coll_ty.as_ref(), b);
-    }
-    // `(keep coll f)` — `map` then drop the `nil` results; `nil | list<B>` for
-    // `B` = the callback's return with `nil` REMOVED. Dropping nil is exact, not a
-    // guess: `keep`'s body is `(if (nil? y) acc (cons y acc))`, so nil is the one
-    // thing that cannot reach the result (`false` still can). Keeping it instead —
-    // which this did, as a "sound superset" — made every `keep` result `nil | T`
-    // and pushed that nil into the next combinator, which is how a `(fold (keep …)
-    // 0 (fn (a b) (> b a)))` drew "argument expects ordered, got nil | int".
-    // Unknown callback / element → flat.
-    // `keep` is `seq/keep` (ADR-227) — keyed qualified, as `seq/interpose` is.
-    if value::symbol_is(head, "seq/keep") {
-        let (coll, f) = super::sigs::combinator_args(items)?;
-        let a = expr_ty(heap, coll, ctx).and_then(|t| t.elem_ty_union());
-        let b = callback_ret(heap, f, &[a], ctx).map(|t| {
-            let non_nil = t.clone().difference(Ty::of(Tag::Nil));
-            // A callback that only ever yields nil keeps an empty list, i.e. `nil`.
-            // Reporting `list<never>` would be true but useless downstream, so keep
-            // the unstripped type in that one case.
-            if non_nil.is_never() {
-                t
-            } else {
-                non_nil
-            }
-        });
-        return list_result(b);
-    }
-    // `(seq/interpose coll sep)` — weave `sep` between `coll`'s elements; the result
-    // holds both, `nil | list<A | type(sep)>`. Both must be known, else flat.
-    // Keyed qualified: `seq/` since ADR-227.
-    if value::symbol_is(head, "seq/interpose") && items.len() == 3 {
-        let a = expr_ty(heap, items[1], ctx).and_then(|t| t.elem_ty_union());
-        let sep_ty = expr_ty(heap, items[2], ctx);
-        return match (sep_ty, a) {
-            (Some(s), Some(e)) => list_result(Some(s.union(e))),
-            _ => None,
-        };
-    }
-    // `(range …)` always produces numbers — `nil | list<number>` (empty for an
-    // empty range). A sound superset whatever the bound types (int or float).
-    if value::symbol_is(head, "range") {
-        return list_result(Some(Ty::NUMBER));
-    }
-    // `(reduce coll init f)` / `(fold coll init f)` reduce to an accumulator typed
-    // `ty(init) | B`, where `B` is the 2-arg callback's return (`(f acc x)`). The
-    // accumulator can grow across steps, so it's over-approximated as `any` for
-    // the callback inference (sound — a superset); the result joins the
-    // empty-input case (`init`) with a step result (`B`). The no-init
-    // `(reduce coll f)` form starts the accumulator at `coll`'s first element.
-    // Both `init` and `B` must be known, else flat.
-    if value::symbol_is(head, "reduce") || value::symbol_is(head, "fold") {
-        let (coll_arg, f) = super::sigs::combinator_args(items)?;
-        let (init_ty, coll) = match items.len() {
-            // (fold coll init f) / (reduce coll init f)
-            4 => (expr_ty(heap, items[2], ctx), coll_arg),
-            // (reduce coll f) — initial accumulator is the first element
-            3 if value::symbol_is(head, "reduce") => {
-                let coll = coll_arg;
-                let elem = expr_ty(heap, coll, ctx).and_then(|t| t.elem_ty_union());
-                (elem, coll)
-            }
-            _ => return None,
-        };
-        let coll_ty = expr_ty(heap, coll, ctx);
-        let elem = coll_ty.as_ref().and_then(|t| t.elem_ty_union());
-        // Over a PROVABLY non-empty sequence (`list<T>` is the `pair` tag alone — the empty
-        // list is `nil`) the step runs at least once, so the result is a STEP result and
-        // the empty-input case (`init`) does not join in. `(first (reduce (string/split s)
-        // '() …))` read `nil | string` for this reason alone: `string/split` never returns
-        // an empty list and says so, but the fold put `init`'s `nil` back.
-        // …for the WITH-init forms. A no-init `(reduce coll f)` takes its first element as
-        // the accumulator and steps over the REST, so its step runs only over a collection
-        // of two or more: `(reduce [1] +)` is `1`, the seed, and no step at all.
-        let length = coll_ty.as_ref().and_then(|t| t.count_range());
-        let first_step_at = if items.len() == 3 { 2 } else { 1 };
-        let ran_at_least_once = match items.len() {
-            3 => length
-                .and_then(|r| r.lo)
-                .is_some_and(|lo| lo >= first_step_at),
-            _ => coll_ty.as_ref().is_some_and(provably_non_empty),
-        };
-        // …and never, over a collection too short for a step: the result is the seed.
-        if length
-            .and_then(|r| r.hi)
-            .is_some_and(|hi| hi < first_step_at)
-        {
-            return init_ty;
-        }
-        // A numeric operator folded over a numeric sequence stays inside the operator's
-        // closure: by induction the accumulator is `init` at first and `(op acc x)` after,
-        // so with `init` and every element in a closed set the result is in it too —
-        // `(reduce + 0 ints)` is an `int`, not the `number | map` the accumulator-as-`any`
-        // path below produces from `+`'s declared signature.
-        if let (Value::Sym(fs), Some(i), Some(e)) = (f, &init_ty, &elem) {
-            if let Some(t) = numeric_result(fs, &[i.clone(), e.clone()]) {
-                // The closure class; one step's interval is not the fold's (ADR-350).
-                return Some(t.without_int_interval());
-            }
-        }
-        // Seed the accumulator from `init` and take one step to a fixpoint: with `acc₁ =
-        // init ∪ f(init, e)`, if `f(acc₁, e) ⊆ acc₁` then by induction every iterate is in
-        // `acc₁` — `(fold (fn (h c) (bit/xor (* h 31) …)) 5381 s)` is an int, where seeding
-        // `h` as `any` read `(* h 31)` as `number`. Not stable → the `any`-seeded reading
-        // (sound: the accumulator is over-approximated).
-        // An unknown element is `any` here — still sound, and the accumulator's own closure
-        // (`(fn (m s) (math/max m (string/length s)))` over an untyped `lines`) is what
-        // matters.
-        // A FEW steps, not one (2026-09-12): a tuple accumulator whose slots feed each
-        // other stabilises one step later than a scalar — `[0 '()]` under `[(inc j) (cons
-        // j acc)]` goes `(tuple 0 nil)` → `(tuple int list<0>)` → `(tuple int list<int>)`,
-        // and only the third iterate contains the fourth. Read after one step it fell to
-        // the `any`-seeded reading, where `j` is `number` — a strict false positive in
-        // `std/editor/markdown`. Bounded: the union can only grow, a `Ty` is bounded in
-        // size (KI-13), and four steps covers a slot feeding a slot feeding a slot.
-        if let Some(i) = &init_ty {
-            let e = elem.clone().unwrap_or(Ty::ANY);
-            let mut acc = i.clone();
-            for _ in 0..4 {
-                let Some(step) = callback_ret(heap, f, &[Some(acc.clone()), Some(e.clone())], ctx)
-                else {
-                    break;
-                };
-                if step.is_subtype(&acc) {
-                    return Some(if ran_at_least_once { step } else { acc });
-                }
-                // An interval that moved goes to its infinity (ADR-350): a counter slot
-                // `(inc j)` would otherwise climb `0`, `0 | 1`, … past the step bound.
-                acc = acc.clone().union(step).widen_intervals_against(&acc);
-            }
-        }
-        let b = callback_ret(heap, f, &[Some(Ty::ANY), elem], ctx);
-        return match (init_ty, b) {
-            (Some(_), Some(b)) if ran_at_least_once => Some(b),
-            (Some(i), Some(b)) => Some(i.union(b)),
-            _ => None,
-        };
+            .is_some_and(|t| t.is_subtype(&Ty::of(Tag::Map)))
+    {
+        return Some(Ty::of(Tag::Map));
     }
     None
 }
 
-/// The result type of a list-producing combinator (`map`/`filter`): `nil |
-/// list<elem>` — empty input maps/filters to `nil`. `None` element → `None`, so
-/// the caller falls back to the flat curated `list` (never a too-narrow result).
+/// `(string/->number "1")` is `1`, not `number | failure`: the declared signature admits
+/// a failure because most calls can fail, but a call whose argument is a known string
+/// cannot (ADR-310: the failure belongs where it can happen). Keyed on the argument's
+/// TYPE, so a narrowed variable is covered too, and a union of literals answers the union
+/// of their results. Parseability is decided by `classify_numeric_text`, the function the
+/// runtime calls, so the type cannot contradict the value.
+fn parse_number_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let literals: Vec<_> = expr_ty(heap, items[1], ctx)
+        .as_ref()
+        .and_then(Ty::as_lit_str)
+        .map(|set| set.iter().cloned().collect())?;
+    // A radix, if present, must itself be a literal in range; otherwise decline.
+    let radix = match items.get(2) {
+        None => None,
+        Some(&Value::Int(radix)) if (2..=36).contains(&radix) => Some(radix as u32),
+        Some(_) => return None,
+    };
+    literals
+        .iter()
+        .map(
+            |literal| match crate::builtins::classify_numeric_text(literal, radix) {
+                crate::builtins::NumericText::Int(n) => Ty::int_lit(n),
+                // A bignum's tag is not `int`, and a float is not either; name the honest
+                // widening rather than guess a tag.
+                crate::builtins::NumericText::Big => Ty::NUMBER,
+                crate::builtins::NumericText::Float => Ty::of(Tag::Float),
+                crate::builtins::NumericText::NotANumber => Ty::of(Tag::Failure),
+            },
+        )
+        .reduce(Ty::union)
+}
+
+/// `(map coll f)` → `nil | list<B>`, `B` = the callback's return type applied to `coll`'s
+/// element type. Unknown callback / element → flat `list`.
+fn map_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let (collection, callback) = super::sigs::combinator_args(items)?;
+    let collection_ty = expr_ty(heap, collection, ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    let mapped = callback_ret(heap, callback, &[elem], ctx);
+    list_result_over(collection_ty.as_ref(), mapped)
+}
+
+/// `(seq/keep coll f)` — `map` then drop the `nil` results: `nil | list<B>` for `B` the
+/// callback's return with `nil` REMOVED. Exact, not a guess: `keep`'s body is `(if (nil?
+/// y) acc (cons y acc))`, so nil is the one thing that cannot reach the result.
+fn keep_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let (collection, callback) = super::sigs::combinator_args(items)?;
+    let elem = expr_ty(heap, collection, ctx).and_then(|t| t.elem_ty_union());
+    let kept = callback_ret(heap, callback, &[elem], ctx).map(|t| {
+        let non_nil = t.clone().difference(Ty::of(Tag::Nil));
+        // A callback that only ever yields nil keeps an empty list, i.e. `nil`; `list<never>`
+        // would be true but useless downstream, so keep the unstripped type there.
+        if non_nil.is_never() {
+            t
+        } else {
+            non_nil
+        }
+    });
+    list_result(kept)
+}
+
+/// `(seq/interpose coll sep)` — weave `sep` between `coll`'s elements: `nil | list<A |
+/// type(sep)>`. Both must be known, else flat.
+fn interpose_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let elem = expr_ty(heap, items[1], ctx).and_then(|t| t.elem_ty_union())?;
+    let separator_ty = expr_ty(heap, items[2], ctx)?;
+    list_result(Some(separator_ty.union(elem)))
+}
+
+/// `(reduce coll init f)` / `(fold coll init f)` reduce to an accumulator typed `ty(init)
+/// | B`, where `B` is the 2-arg callback's return. The result joins the empty-input case
+/// (`init`) with a step result (`B`). The no-init `(reduce coll f)` starts the
+/// accumulator at `coll`'s first element. Both `init` and `B` must be known, else flat.
+fn reduce_ty(heap: &Heap, is_reduce: bool, items: &[Value], ctx: &Ctx) -> Option<Ty> {
+    let (collection, f) = super::sigs::combinator_args(items)?;
+    let collection_ty = expr_ty(heap, collection, ctx);
+    let elem = collection_ty.as_ref().and_then(|t| t.elem_ty_union());
+    let init_ty = match items.len() {
+        // (fold coll init f) / (reduce coll init f)
+        4 => expr_ty(heap, items[2], ctx),
+        // (reduce coll f) — the initial accumulator is the first element
+        3 if is_reduce => elem.clone(),
+        _ => return None,
+    };
+    // Over a PROVABLY non-empty sequence the step runs at least once, so the result is a
+    // STEP result and the empty-input case (`init`) does not join in. A no-init `(reduce
+    // coll f)` takes its first element as the accumulator and steps over the REST, so its
+    // step runs only over a collection of two or more: `(reduce [1] +)` is `1`, the seed.
+    let length = collection_ty.as_ref().and_then(|t| t.count_range());
+    let first_step_at = if items.len() == 3 { 2 } else { 1 };
+    let ran_at_least_once = match items.len() {
+        3 => length
+            .and_then(|r| r.lo)
+            .is_some_and(|lo| lo >= first_step_at),
+        _ => collection_ty.as_ref().is_some_and(provably_non_empty),
+    };
+    // …and never, over a collection too short for a step: the result is the seed.
+    if length
+        .and_then(|r| r.hi)
+        .is_some_and(|hi| hi < first_step_at)
+    {
+        return init_ty;
+    }
+    // A numeric operator folded over a numeric sequence stays inside the operator's
+    // closure: by induction the accumulator is `init` at first and `(op acc x)` after,
+    // so with `init` and every element in a closed set the result is in it too —
+    // `(reduce + 0 ints)` is an `int`, not the `number | map` the accumulator-as-`any`
+    // path below produces from `+`'s declared signature.
+    if let (Value::Sym(operator), Some(init), Some(element)) = (f, &init_ty, &elem) {
+        if let Some(t) = numeric_result(operator, &[init.clone(), element.clone()]) {
+            // The closure class; one step's interval is not the fold's (ADR-350).
+            return Some(t.without_int_interval());
+        }
+    }
+    // Seed the accumulator from `init` and take one step to a fixpoint: with `acc₁ =
+    // init ∪ f(init, e)`, if `f(acc₁, e) ⊆ acc₁` then by induction every iterate is in
+    // `acc₁` — `(fold (fn (h c) (bit/xor (* h 31) …)) 5381 s)` is an int, where seeding
+    // `h` as `any` read `(* h 31)` as `number`. Not stable → the `any`-seeded reading
+    // (sound: the accumulator is over-approximated).
+    // An unknown element is `any` here — still sound, and the accumulator's own closure
+    // (`(fn (m s) (math/max m (string/length s)))` over an untyped `lines`) is what
+    // matters.
+    // A FEW steps, not one: a tuple accumulator whose slots feed each other stabilises
+    // one step later than a scalar — `[0 '()]` under `[(inc j) (cons j acc)]` goes
+    // `(tuple 0 nil)` → `(tuple int list<0>)` → `(tuple int list<int>)`. Bounded: the
+    // union can only grow, a `Ty` is bounded in size (KI-13), and four steps covers a
+    // slot feeding a slot feeding a slot.
+    if let Some(init) = &init_ty {
+        let element = elem.clone().unwrap_or(Ty::ANY);
+        let mut acc = init.clone();
+        for _ in 0..4 {
+            let Some(step) =
+                callback_ret(heap, f, &[Some(acc.clone()), Some(element.clone())], ctx)
+            else {
+                break;
+            };
+            if step.is_subtype(&acc) {
+                return Some(if ran_at_least_once { step } else { acc });
+            }
+            // An interval that moved goes to its infinity (ADR-350): a counter slot
+            // `(inc j)` would otherwise climb `0`, `0 | 1`, … past the step bound.
+            acc = acc.clone().union(step).widen_intervals_against(&acc);
+        }
+    }
+    let step = callback_ret(heap, f, &[Some(Ty::ANY), elem], ctx);
+    match (init_ty, step) {
+        (Some(_), Some(step)) if ran_at_least_once => Some(step),
+        (Some(init), Some(step)) => Some(init.union(step)),
+        _ => None,
+    }
+}
+
 /// The type a bare type-predicate argument asserts of the items it keeps — `int?` → `int`.
 ///
 /// Only a bare SYMBOL naming a predicate counts. An inline `(fn (x) …)` or a composed
@@ -2887,6 +2745,9 @@ fn predicate_kept_ty(pred: Value) -> Option<Ty> {
     })
 }
 
+/// The result type of a list-producing combinator (`map`/`filter`): `nil | list<elem>` —
+/// empty input maps/filters to `nil`. `None` element → `None`, so the caller falls back
+/// to the flat declared `list` (never a too-narrow result).
 fn list_result(elem: Option<Ty>) -> Option<Ty> {
     elem.map(|e| Ty::list_of(e).union(Ty::of(Tag::Nil)))
 }
@@ -3046,7 +2907,7 @@ pub(super) fn callback_ret(heap: &Heap, f: Value, inputs: &[Option<Ty>], ctx: &C
             // carries for a module this check never loaded (ADR-370) — resolves from
             // `inputs` exactly as it does in call position: `(reduce xs math/max)` is the
             // element type, not the body re-typed (and there is no body to re-type for an
-            // unloaded module — this used to read `any` there).
+            // unloaded module).
             if let Some(sv) = super::sigs::declared_heap_sig_with_vars(heap, s)
                 .or_else(|| super::sigs::image_heap_sig_with_vars(heap, s))
             {
@@ -3067,9 +2928,7 @@ pub(super) fn callback_ret(heap: &Heap, f: Value, inputs: &[Option<Ty>], ctx: &C
             specialize(sig_of(heap, s).map(|sig| sig.ret))
         }
         // A single-clause plain-param literal types directly; a PATTERN-clause literal
-        // gets the same clause machinery a named multi-clause defn does (the inline
-        // spelling used to fall to `any` while the identical clauses under a `defn`
-        // typed precisely — found on an RPN reduce, 2026-08-31).
+        // gets the same clause machinery a named multi-clause defn does.
         Value::Pair(_) => lambda_ret(heap, f, inputs, ctx)
             .or_else(|| super::sigs::clause_lambda_ret(heap, f, inputs, ctx)),
         // A keyword as the callback — `(map ps :x)` — is the accessor `(:x p)` per element,
@@ -3153,8 +3012,8 @@ fn lambda_ret(heap: &Heap, form: Value, inputs: &[Option<Ty>], ctx: &Ctx) -> Opt
     // `(fn <param-list> body…)` — a param list and at least one body form. The RESULT is
     // the last form's type; earlier forms run for effect and contribute nothing to it, so
     // typing only the last is exactly as sound as typing a single-form body. (A docstring
-    // is just an earlier form here.) `try`'s expansion is the case that needed this:
-    // `(%try (fn () a b) …)` used to be untypeable because the thunk had two forms.
+    // is just an earlier form here.) `try`'s expansion needs this:
+    // `(%try (fn () a b) …)` has a two-form thunk.
     let parts = &items[1..];
     if parts.len() < 2 {
         return None;
@@ -3187,7 +3046,7 @@ fn lambda_ret(heap: &Heap, form: Value, inputs: &[Option<Ty>], ctx: &Ctx) -> Opt
 /// one too, and either side can be the sharper: a curated `assoc` says `vector | map`
 /// where its prelude body under `any` inputs says `any`; a recursive list builder's body
 /// under `list<int>` says `nil | list<int>` where its flat answer says `nil | list`.
-/// Taking the specialized answer alone regressed the first to `any` (2026-09-13).
+/// Taking the specialized answer alone would lose the first to `any`.
 fn meet_flat(specialized: Option<Ty>, flat: Option<Ty>) -> Option<Ty> {
     match (specialized, flat) {
         (Some(s), Some(f)) => Some(s.intersect(f)),

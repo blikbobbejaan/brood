@@ -24,6 +24,11 @@
 
 /// `(old, new, adr)` for every deliberate public rename still worth pointing at.
 pub const RENAMES: &[(&str, &str, &str)] = &[
+    // ADR-398 — `seq/vector-ref` and `seq/vector-length` were `nth` and `count` under
+    // other names, so they are deleted. One difference survives the rename: `nth` answers
+    // `nil` out of range where `seq/vector-ref` threw.
+    ("seq/vector-ref", "nth", "ADR-398"),
+    ("seq/vector-length", "count", "ADR-398"),
     // ADR-356 — the Markdown renderer is a CORE module. `docs` is developer tooling and a
     // shipped runtime does not carry it; the hosted registry rendered package READMEs with
     // `docs/markdown->html` at request time, which only worked because its runtime was not

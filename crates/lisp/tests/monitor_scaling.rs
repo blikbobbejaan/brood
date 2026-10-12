@@ -22,7 +22,7 @@ fn killing_a_monitored_process_costs_no_more_than_an_unmonitored_one() {
         (def n 20000)
         (defn parked () (receive ([:go] nil)))
         ;; NOT `(spawn-hold (+ i 1) (cons (spawn (parked)) acc))`: under the tree-walker
-        ;; (`BROOD_VM=0`, CI's differential job) a spawn copies the spawner's whole env
+        ;; (`BROOD_TIER=0`, CI's differential job) a spawn copies the spawner's whole env
         ;; frame into the child, and a frame holding the growing `acc` makes the fleet
         ;; O(n²) — 20k children asked for a 7 GiB block and a 7 GB GitHub runner was
         ;; shut down rather than failed, three pushes running (2026-09-21). A `mapv`

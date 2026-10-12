@@ -5,12 +5,14 @@
 (defmodule docs-test (:use-internals docs) (:use-internals markdown) (:use test) (:use docs))
 
 (describe "docs: leading module docstring"
-  (test "a file's leading string form is its module doc"
-    (assert= (docs/docs-leading-doc "\"Hi.\" (def x 1)") "Hi."))
-  (test "a leading non-string means no module doc"
-    (assert= (docs/docs-leading-doc "(def x 1)") nil))
-  (test "comments before the string are skipped"
-    (assert= (docs/docs-leading-doc ";; a comment\n\"Hi.\"\n(def x 1)") "Hi."))
+  (test "the defmodule's docstring is the module doc"
+    (assert= (docs/docs-leading-doc "(defmodule m \"Hi.\")\n(def x 1)") "Hi."))
+  (test "no defmodule, or one without a docstring, means no module doc"
+    (assert= (docs/docs-leading-doc "(def x 1)") nil)
+    (assert= (docs/docs-leading-doc "\"Hi.\" (def x 1)") nil)
+    (assert= (docs/docs-leading-doc "(defmodule m (:use test))") nil))
+  (test "comments before the defmodule are skipped"
+    (assert= (docs/docs-leading-doc ";; a comment\n(defmodule m \"Hi.\")\n(def x 1)") "Hi."))
   (test "the baked-in test module carries a module docstring"
     (is (string/starts-with? (or (docs/docs-leading-doc (or (%builtin-module "test") "")) "")
           "A tiny ExUnit"))))

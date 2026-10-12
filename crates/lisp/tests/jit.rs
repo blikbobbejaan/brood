@@ -23,8 +23,8 @@ fn run(src: &'static str) -> Result<String, String> {
     std::thread::Builder::new()
         .stack_size(brood::process::WORKER_STACK_BYTES)
         .spawn(move || {
-            // JIT tests exercise the VM's native tier, so pin the VM regardless of the
-            // `BROOD_VM` env: the tree-walker differential job sets `BROOD_VM=0`, under
+            // JIT tests exercise the VM's native tier, so pin the ceiling regardless of the
+            // env: the tree-walker differential job sets `BROOD_TIER=0`, under
             // which these top-level programs would run on the tree-walker — testing no
             // JIT at all, and ~10× slower (timing out). Thread-local, set in-thread.
             brood::eval::compile::set_forced_ceiling(Some(brood::eval::compile::Tier::Native));
@@ -232,12 +232,8 @@ fn deep_handle_spill_under_jit() {
     );
 }
 
-// NOTE: the self-inliner is **default-ON** (two-stage tiering, devlog 2026-06-17), so an
-// ordinary `cargo test --features jit --test jit` exercises it. The three `inlined_*` tests
-// below pass either way — the result is engine-independent — so run them with
-// `BROOD_NO_INLINE=1` too when the question is whether the inliner changed an answer.
-// (This note read the opposite until 2026-09-04: it named a `BROOD_JIT_INLINE=1` opt-in the
-// runtime stopped reading when the default flipped, i.e. it told you to arm nothing.)
+// NOTE: the self-inliner is always on, so an ordinary `cargo test --features jit --test jit`
+// exercises it. The `inlined_*` tests below assert the engine-independent result.
 #[test]
 // Skipped under the sanitizer only: ~1.1 billion calls are seconds native and hours with every
 // runtime callback instrumented (it ran past the 2h30 job limit, 2026-09-24). What this checks —
@@ -616,11 +612,9 @@ fn redefining_a_fast_linked_callee_is_honored() {
     );
 }
 
-// ===== leaf-callee inlining (default ON since 2026-07-19; BROOD_NO_LEAF_INLINE opts out) =====
+// ===== leaf-callee inlining =====
 //
-// Leaf inlining is on by default, so these tests exercise the shipping configuration
-// directly — no env flag needed. (They used to set the opt-in `BROOD_JIT_LEAF_INLINE`;
-// the lever is now the opt-out `BROOD_NO_LEAF_INLINE`, cached once per process.)
+// Leaf inlining is always on, so these tests exercise the shipping configuration directly.
 // Leaf inlining must be semantics-preserving, which is exactly what every test here
 // (and every other test in this file) asserts.
 
@@ -728,17 +722,16 @@ fn type_mixed_join_edges_stay_exact() {
            (if (>= i 60000) acc
              (work (+ i 1) (+ acc (code (if (%eq (math/rem i 2) 0) 7 (< 1 2)))))))
          (work 0 0)",
-        "180000", // 30000×1 + 30000×5 — verified against BROOD_VM=0
+        "180000", // 30000×1 + 30000×5 — verified against BROOD_TIER=0
     );
 }
 
-// ===== partial leaf splicing (ADR-210; BROOD_NO_PARTIAL_LEAF opts out) =====
+// ===== partial leaf splicing (ADR-210) =====
 //
-// A derivation may now keep a residual non-tail call beside the spliced leaves, because
-// the leaf-spliced layout carries its own deopt checkpoint and a deopt resumes in the
-// SPLICED chunk. Before this, one un-spliceable callee blocked inlining of every small
-// callee beside it. `tests/jit_effect_once_test.blsp` cases 5–6 guard exactly-once
-// effects; these guard the values.
+// A derivation may keep a residual non-tail call beside the spliced leaves, because the
+// leaf-spliced layout carries its own deopt checkpoint and a deopt resumes in the SPLICED
+// chunk. `tests/jit_effect_once_test.blsp` cases 5–6 guard exactly-once effects; these
+// guard the values.
 
 #[test]
 fn partially_spliced_arm_matches_vm() {
@@ -752,7 +745,7 @@ fn partially_spliced_arm_matches_vm() {
          (defn mix (i) (+ (add1 i) (rec 3 0)))
          (defn work (i acc) (if (>= i 200000) acc (work (+ i 1) (+ acc (mix i)))))
          (work 0 0)",
-        "20000700000", // sum(i+4, i=0..199999) — verified against BROOD_VM=0
+        "20000700000", // sum(i+4, i=0..199999) — verified against BROOD_TIER=0
     );
 }
 
@@ -789,8 +782,7 @@ fn partially_spliced_arm_deopting_every_activation_matches_vm() {
            (if (>= i 20000) acc (work (+ i 1) (+ acc (mix i big)) big)))
          (work 0 0 4000000000)",
         // sum(i+4) for i in 0..19999 = 200070000, plus 20000 * 4000000000^2 = 3.2e23.
-        // Verified identical across all five configs: tree-walker, VM-no-JIT, VM+JIT,
-        // BROOD_NO_PARTIAL_LEAF=1, and GC-stress+verify.
+        // Verified identical across the tree-walker, VM-no-JIT, VM+JIT and GC-stress+verify.
         "320000000000000200070000",
     );
 }

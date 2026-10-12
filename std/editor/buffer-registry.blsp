@@ -49,7 +49,7 @@ else its `name`. Two buffers with the same name and different files are two docu
 
 (defn- registry-entry-by-proc (entries pid)
   "The `[key entry]` whose `:proc` is `pid`, or nil."
-  (seq/find (%map-pairs entries) (fn (kv) (= (:proc (second kv)) pid))))
+  (seq/find (%map-pairs entries) (fn (entry) (= (:proc (second entry)) pid))))
 
 (defn- registry-notify (watchers msg)
   "Send `msg` to every watcher."
@@ -127,7 +127,7 @@ counts as absent, so the answer is never a dead pid."
                            (registry-notify watchers [:registry-removed key :died])
                            (registry-loop (dissoc entries key) watchers)))))
     ([:stop from r] (do
-                      (doseq (kv (%map-pairs entries)) (stop-buffer (:proc (second kv))))
+                      (doseq (entry (%map-pairs entries)) (stop-buffer (:proc (second entry))))
                       (send from [:reply r (count entries)])))
     (_ (registry-loop entries watchers))))
 

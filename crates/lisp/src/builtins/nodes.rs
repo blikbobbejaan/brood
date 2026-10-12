@@ -5,7 +5,7 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
-use super::numeric::{arg, expect_int, expect_string};
+use super::numeric::{arg, expect_string};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -44,13 +44,6 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         node_connect,
     );
-    primitives.def(
-        "%random-token",
-        Arity::exact(1),
-        Sig::new(vec![int], string),
-        &["n"],
-        "n cryptographically-strong random bytes from the OS RNG, hex-encoded as a 2n-char string. Used to mint a node cookie.",
-        random_token);
     primitives.def(
         "file/spit-private",
         Arity::exact(2),
@@ -159,27 +152,6 @@ pub(super) fn node_connect(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             .with_code(crate::error::error_codes::DISTRIBUTION)
     })?;
     Ok(Value::keyword(real))
-}
-
-/// `(random-token n)` — `n` cryptographically-strong random bytes from the OS
-/// RNG, hex-encoded into a `2n`-char string. The CSPRNG is mechanism (Rust); the
-/// node cookie's generation policy is Brood (`node-cookie`, ADR-068).
-pub(super) fn random_token(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let n = expect_int(heap, "random-token", arg(args, 0))?;
-    if !(0..=4096).contains(&n) {
-        return Err(LispError::runtime(
-            "random-token: byte count must be in 0..=4096",
-        ));
-    }
-    let mut bytes = vec![0u8; n as usize];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| LispError::runtime(format!("random-token: OS RNG unavailable: {e}")))?;
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(s, "{b:02x}");
-    }
-    Ok(heap.alloc_string(&s))
 }
 
 /// `(spit-private path s)` — write `s` to `path` with owner-only (`0600`)

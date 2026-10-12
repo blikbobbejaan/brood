@@ -3,9 +3,6 @@
 ;;; per-instance while its compiled body is reused. These cases pin exactly that split,
 ;;; because the failure mode of getting it wrong is not a crash: it is one process
 ;;; running another's captured values, or a stale body after a reload.
-;;;
-;;; Every case must also pass with `BROOD_NO_SHARED_ARMS=1` (the mechanism's off-switch),
-;;; which is how the suite proves the sharing is an optimisation and not a semantic.
 
 (defmodule shared-arm-test (:use test))
 

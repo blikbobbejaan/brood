@@ -502,74 +502,6 @@ fn record_ctor_id(heap: &Heap, form: Value) -> Option<String> {
     None
 }
 
-/// Collect this file's ability op fns (`def sym → (ability, op)`) and record ctors
-/// (`def sym → id name`). Recurses — a `def` can nest inside a macro's `do`.
-///
-/// `ambiguous` records any op-fn global symbol that two DIFFERENT abilities bind (two
-/// abilities declaring the same op name, so the later `defn` clobbers the earlier's
-/// generic function — the same collision `register-ability` warns on at load). Such a
-/// symbol is removed from `op_fns` by `build_ability_info_visible` so the static missing-impl
-/// pass neither false-warns (attributing a call to the wrong ability) nor false-passes
-/// (suppressing a real gap because the name resolves to the other ability). The runtime
-/// and `register-ability`'s warning cover that collision instead.
-fn collect_ability_defs(
-    heap: &Heap,
-    form: Value,
-    op_fns: &mut HashMap<value::Symbol, (String, String)>,
-    ctors: &mut HashMap<value::Symbol, String>,
-    ambiguous: &mut HashSet<value::Symbol>,
-    collisions: &mut Vec<(Option<Pos>, String)>,
-) {
-    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
-        let Some(items) = list_items(heap, form) else {
-            return;
-        };
-        let Some(&Value::Sym(head)) = items.first() else {
-            return;
-        };
-        if value::symbol_is(head, "quote") || value::symbol_is(head, "quasiquote") {
-            return;
-        }
-        if value::symbol_is(head, "def") {
-            if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2)) {
-                if let Some(body) = fn_last_body(heap, val) {
-                    if let Some(key) = find_op_key(heap, body) {
-                        match op_fns.get(&name) {
-                            // A second, DIFFERENT ability binds the same op-fn symbol in this
-                            // module: the later `defn` clobbers the earlier ability's generic
-                            // function. Op names must be unique within a module (a different
-                            // module's same-named op binds a distinct `<module>/op` global and
-                            // is fine). Mark ambiguous *and* record a diagnostic — the runtime
-                            // `register-ability` warns too; `nest check` makes it ship-blocking.
-                            Some(prev) if *prev != key => {
-                                ambiguous.insert(name);
-                                collisions.push((
-                                    heap.form_pos_only(form),
-                                    format!(
-                                        "ability {}: op `{}` is already declared by ability {} \
-                                         in this module — op names must be unique per module \
-                                         (rename one)",
-                                        key.0, key.1, prev.0
-                                    ),
-                                ));
-                            }
-                            _ => {
-                                op_fns.insert(name, key);
-                            }
-                        }
-                    }
-                    if let Some(id) = record_ctor_id(heap, body) {
-                        ctors.insert(name, id);
-                    }
-                }
-            }
-        }
-        for &item in items.get(1..).unwrap_or(&[]) {
-            collect_ability_defs(heap, item, op_fns, ctors, ambiguous, collisions);
-        }
-    })
-}
-
 /// Collect `(…/register-impl (quote A) (quote op) :ID …)` forms from this file.
 fn collect_register_impls(
     heap: &Heap,
@@ -905,20 +837,13 @@ pub(super) fn build_ability_info_visible(
     expanded: &[Value],
     visible: Option<&HashSet<String>>,
 ) -> AbilityInfo {
-    let mut op_fns = HashMap::new();
-    let mut ctors = HashMap::new();
-    let mut ambiguous = HashSet::new();
-    let mut collisions = Vec::new();
-    for &form in expanded {
-        collect_ability_defs(
-            heap,
-            form,
-            &mut op_fns,
-            &mut ctors,
-            &mut ambiguous,
-            &mut collisions,
-        );
-    }
+    let DispatchDefs {
+        mut op_fns,
+        ambiguous,
+        collisions,
+        ctors,
+        ..
+    } = DispatchDefs::collect(heap, expanded);
     // Drop op-fn symbols two different abilities bound (a same-name clobber): their
     // attribution is uncertain, so they're excluded from the static missing-impl pass.
     for sym in &ambiguous {
@@ -1480,54 +1405,254 @@ pub(super) fn ty_record_id(ty: &crate::types::Ty) -> Option<String> {
     }
 }
 
-/// Syntactic pass: warn on an ability op call whose FIRST argument has a statically
-/// known identity from *syntax alone* — a literal or a direct `defrecord` constructor
-/// call. The inference hook in `check_into` complements it for record-typed *variables*.
-fn walk_ability_calls(
+/// The syntactic dispatch-coverage pass: warn on a call whose dispatch identity is known
+/// from *syntax alone* — every relevant argument a literal or a direct `defrecord`
+/// constructor call — and that nothing covers: an ability op with no impl for its first
+/// argument's identity, or a multimethod generic with no method (and no `:default`) for
+/// its argument tuple (ADR-179). The inference hooks in `check_into` complement it for
+/// record-typed *variables*.
+///
+/// Scope-aware: a `let`/`fn` binder named like an op or a generic shadows it, so
+/// `(let (area …) (area (circle 1)))` calls the local. Every evaluated position is
+/// walked — vector literals and lists whose head is not a symbol included.
+pub(super) fn check_dispatch_calls(
     heap: &Heap,
-    form: Value,
-    info: &AbilityInfo,
+    expanded: &[Value],
+    abilities: &AbilityInfo,
+    multis: &MultiInfo,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
-        let Some(items) = list_items(heap, form) else {
-            return;
-        };
-        let Some(&Value::Sym(head)) = items.first() else {
-            return;
-        };
-        if value::symbol_is(head, "quote") || value::symbol_is(head, "quasiquote") {
-            return;
+    if abilities.is_empty() && multis.is_empty() {
+        return;
+    }
+    let facts = DispatchFacts { abilities, multis };
+    for &form in expanded {
+        facts.walk(heap, form, &HashSet::new(), out);
+    }
+}
+
+struct DispatchFacts<'a> {
+    abilities: &'a AbilityInfo,
+    multis: &'a MultiInfo,
+}
+
+impl DispatchFacts<'_> {
+    fn walk(
+        &self,
+        heap: &Heap,
+        form: Value,
+        locals: &HashSet<value::Symbol>,
+        out: &mut Vec<(Option<Pos>, String)>,
+    ) {
+        crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
+            if let Value::Vector(id) = form {
+                for item in heap.vector(id).to_vec() {
+                    self.walk(heap, item, locals, out);
+                }
+                return;
+            }
+            let Some(items) = list_items(heap, form) else {
+                return;
+            };
+            if let Some(&Value::Sym(head)) = items.first() {
+                if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
+                    return;
+                }
+                if super::walk::is_fn_head(head) {
+                    let mut inner = locals.clone();
+                    inner.extend(fn_binders(heap, &items));
+                    for &item in &items[1..] {
+                        self.walk(heap, item, &inner, out);
+                    }
+                    return;
+                }
+                if value::symbol_is(head, kw::LET) || value::symbol_is(head, kw::LETREC) {
+                    self.walk_let(
+                        heap,
+                        &items,
+                        value::symbol_is(head, kw::LETREC),
+                        locals,
+                        out,
+                    );
+                    return;
+                }
+                if !locals.contains(&head) {
+                    self.check_call(heap, form, head, &items, out);
+                }
+            }
+            for &item in &items {
+                self.walk(heap, item, locals, out);
+            }
+        })
+    }
+
+    /// A `let`'s binders scope over the RHSs after them and the body; a `letrec`'s over
+    /// every RHS too.
+    fn walk_let(
+        &self,
+        heap: &Heap,
+        items: &[Value],
+        recursive: bool,
+        locals: &HashSet<value::Symbol>,
+        out: &mut Vec<(Option<Pos>, String)>,
+    ) {
+        let bindings = items
+            .get(1)
+            .and_then(|&b| super::walk::bindings(heap, b))
+            .unwrap_or_default();
+        let mut inner = locals.clone();
+        if recursive {
+            for pair in bindings.chunks(2) {
+                super::properties::collect_pattern_names(heap, pair[0], &mut inner);
+            }
         }
-        if let Some((a, op)) = info.op_of(head) {
+        for pair in bindings.chunks(2) {
+            if let Some(&rhs) = pair.get(1) {
+                self.walk(heap, rhs, &inner, out);
+            }
+            super::properties::collect_pattern_names(heap, pair[0], &mut inner);
+        }
+        for &item in items.get(2..).unwrap_or(&[]) {
+            self.walk(heap, item, &inner, out);
+        }
+    }
+
+    fn check_call(
+        &self,
+        heap: &Heap,
+        form: Value,
+        head: value::Symbol,
+        items: &[Value],
+        out: &mut Vec<(Option<Pos>, String)>,
+    ) {
+        if let Some((ability, op)) = self.abilities.op_of(head) {
             if let Some(&arg) = items.get(1) {
-                if let Some(id) = arg_identity(heap, arg, &info.ctors) {
-                    if info.missing(a, op, &id) {
+                if let Some(id) = arg_identity(heap, arg, &self.abilities.ctors) {
+                    if self.abilities.missing(ability, op, &id) {
                         out.push((
                             heap.form_pos_only(form),
-                            format!("ability {}: no impl of `{}` for :{}", a, op, id),
+                            format!("ability {ability}: no impl of `{op}` for :{id}"),
                         ));
                     }
                 }
             }
         }
-        for &item in &items {
-            walk_ability_calls(heap, item, info, out);
+        if let Some(name) = self.multis.generics.get(&head) {
+            let args = items.get(1..).unwrap_or(&[]);
+            // Only a call every one of whose args has a certain identity is judged — one
+            // unknown arg (a variable, a call result) leaves the tuple unknown.
+            if args.is_empty() {
+                return;
+            }
+            let tuple: Option<Vec<String>> = args
+                .iter()
+                .map(|&arg| arg_identity(heap, arg, &self.multis.ctors))
+                .collect();
+            if let Some(tuple) = tuple {
+                if self.multis.missing(name, &tuple) {
+                    out.push((
+                        heap.form_pos_only(form),
+                        multi_missing_warning(name, &tuple),
+                    ));
+                }
+            }
         }
-    })
+    }
 }
 
-pub(super) fn check_ability_calls(
-    heap: &Heap,
-    expanded: &[Value],
-    info: &AbilityInfo,
-    out: &mut Vec<(Option<Pos>, String)>,
-) {
-    if info.is_empty() {
-        return;
+/// Every name a `(fn …)` form binds — each clause's parameters, for a multi-clause one.
+fn fn_binders(heap: &Heap, items: &[Value]) -> HashSet<value::Symbol> {
+    let mut binders = HashSet::new();
+    if crate::eval::macros::fn_is_arity_multi_clause(heap, items) {
+        for &clause in items.get(1..).unwrap_or(&[]) {
+            if let Some(&params) = list_items(heap, clause).as_deref().and_then(|c| c.first()) {
+                super::properties::collect_pattern_names(heap, params, &mut binders);
+            }
+        }
+    } else if let Some(&params) = items.get(1) {
+        super::properties::collect_pattern_names(heap, params, &mut binders);
     }
-    for &form in expanded {
-        walk_ability_calls(heap, form, info, out);
+    binders
+}
+
+/// The file's definitions dispatch coverage reads, collected in one walk: ability op
+/// functions (`def sym → (ability, op)`), multimethod generics (`def sym → name`) and
+/// record constructors (`def sym → id`). Recurses — a `def` can nest inside a macro's `do`.
+///
+/// `ambiguous` records an op-fn symbol two DIFFERENT abilities bind (two abilities in one
+/// module declaring the same op name, so the later `defn` clobbers the earlier's generic
+/// function): its attribution is uncertain, so it is dropped from the static missing-impl
+/// pass, and `collisions` carries the diagnostic.
+#[derive(Default)]
+struct DispatchDefs {
+    op_fns: HashMap<value::Symbol, (String, String)>,
+    ambiguous: HashSet<value::Symbol>,
+    collisions: Vec<(Option<Pos>, String)>,
+    generics: HashMap<value::Symbol, String>,
+    ctors: HashMap<value::Symbol, String>,
+}
+
+impl DispatchDefs {
+    fn collect(heap: &Heap, expanded: &[Value]) -> Self {
+        let mut defs = DispatchDefs::default();
+        for &form in expanded {
+            defs.collect_in(heap, form);
+        }
+        defs
+    }
+
+    fn collect_in(&mut self, heap: &Heap, form: Value) {
+        crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
+            let Some(items) = list_items(heap, form) else {
+                return;
+            };
+            if let Some(&Value::Sym(head)) = items.first() {
+                if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
+                    return;
+                }
+                if value::symbol_is(head, kw::DEF) {
+                    if let (Some(&Value::Sym(name)), Some(&rhs)) = (items.get(1), items.get(2)) {
+                        self.record_def(heap, form, name, rhs);
+                    }
+                }
+            }
+            for &item in &items {
+                self.collect_in(heap, item);
+            }
+        })
+    }
+
+    fn record_def(&mut self, heap: &Heap, form: Value, name: value::Symbol, rhs: Value) {
+        let Some(body) = fn_last_body(heap, rhs) else {
+            return;
+        };
+        if let Some(key) = find_op_key(heap, body) {
+            match self.op_fns.get(&name) {
+                // A second, DIFFERENT ability binds the same op-fn symbol in this module:
+                // op names must be unique per module (a different module's same-named op
+                // binds a distinct `<module>/op` global and is fine).
+                Some(previous) if *previous != key => {
+                    self.ambiguous.insert(name);
+                    self.collisions.push((
+                        heap.form_pos_only(form),
+                        format!(
+                            "ability {}: op `{}` is already declared by ability {} in this \
+                             module — op names must be unique per module (rename one)",
+                            key.0, key.1, previous.0
+                        ),
+                    ));
+                }
+                _ => {
+                    self.op_fns.insert(name, key);
+                }
+            }
+        }
+        if let Some(generic) = find_multi_name(heap, body) {
+            self.generics.insert(name, generic);
+        }
+        if let Some(id) = record_ctor_id(heap, body) {
+            self.ctors.insert(name, id);
+        }
     }
 }
 
@@ -1556,10 +1681,10 @@ pub(super) fn check_ability_call_inferred(
 
 // ---- multimethod missing-method at call sites (ADR-179) ------------------------------
 //
-// The `defmulti` analogue of `check_ability_calls`: warn on a direct call to a multimethod
-// generic whose FULL argument tuple has a statically-known identity — every arg a literal or
-// a direct `defrecord` constructor call — for which no exact method and no `:default` is
-// registered. Sound like the ability pass: a generic is recognised only by the exact def
+// `check_dispatch_calls` warns on a direct call to a multimethod generic whose FULL
+// argument tuple has a statically-known identity — every arg a literal or a direct
+// `defrecord` constructor call — for which no exact method and no `:default` is
+// registered. Sound like the ability check: a generic is recognised only by the exact def
 // symbol whose body fingerprints as `(multi-resolve (quote NAME) …)`, so a same-named plain
 // function is never mistaken for one, and a call whose generic is defined in another file is
 // simply not checked. Only warns when *every* argument's identity is certain — one unknown
@@ -1684,42 +1809,6 @@ fn find_multi_name(heap: &Heap, form: Value) -> Option<String> {
     })
 }
 
-/// Collect this file's multimethod generics (`def sym → name`) and record ctors
-/// (`def sym → id`). Recurses — a `def` can nest inside a macro's `do`.
-fn collect_multi_defs(
-    heap: &Heap,
-    form: Value,
-    generics: &mut HashMap<value::Symbol, String>,
-    ctors: &mut HashMap<value::Symbol, String>,
-) {
-    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
-        let Some(items) = list_items(heap, form) else {
-            return;
-        };
-        let Some(&Value::Sym(head)) = items.first() else {
-            return;
-        };
-        if value::symbol_is(head, "quote") || value::symbol_is(head, "quasiquote") {
-            return;
-        }
-        if value::symbol_is(head, "def") {
-            if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2)) {
-                if let Some(body) = fn_last_body(heap, val) {
-                    if let Some(mname) = find_multi_name(heap, body) {
-                        generics.insert(name, mname);
-                    }
-                    if let Some(id) = record_ctor_id(heap, body) {
-                        ctors.insert(name, id);
-                    }
-                }
-            }
-        }
-        for &item in items.get(1..).unwrap_or(&[]) {
-            collect_multi_defs(heap, item, generics, ctors);
-        }
-    })
-}
-
 /// Collect `(register-method (quote NAME) KEY …)` forms — KEY is `(quote [id …])` for a
 /// tuple method or a bare `:default` keyword for the catch-all.
 fn collect_register_methods(
@@ -1769,14 +1858,11 @@ fn key_tuple(heap: &Heap, key: Option<Value>) -> Option<Vec<String>> {
 }
 
 /// Union in the runtime `*methods*` registry — `NAME → {tuple|:default → fn}` — so a method
-/// reachable through a required module (not a form in this file) counts.
-/// The `*methods*` registry, restricted to what the file being checked can SEE (B8,
-/// 2026-09-17). The registry is process state: a method a module registers stays after
-/// that module's load, so the second file checked in a process sees the first file's
-/// requires. Read whole, that made the domain of `<` — `number` plus every record
-/// `compare-to` has a method for — depend on which files came earlier: the same `(defn
-/// count-up (i n) … (< i n) …)` derived `(number number)` in one order and `(ordered
-/// ordered)` in the other. `visible` is the file's require closure (its own namespaces,
+/// reachable through a required module (not a form in this file) counts — restricted to
+/// what the file being checked can SEE (B8). The registry is process state: a method a
+/// module registers stays after that module's load, so read whole, the domain of `<` —
+/// `number` plus every record `compare-to` has a method for — would depend on which files
+/// were checked earlier. `visible` is the file's require closure (its own namespaces,
 /// what it requires, transitively through std); a method registered by a namespace outside
 /// it is a value the file cannot construct, so it is not in the file's world. `None` reads
 /// everything (a bare fragment, the registry-only fallback).
@@ -1954,11 +2040,9 @@ pub(super) fn build_multi_info(
     expanded: &[Value],
     visible: Option<&HashSet<String>>,
 ) -> MultiInfo {
-    let mut generics = HashMap::new();
-    let mut ctors = HashMap::new();
-    for &form in expanded {
-        collect_multi_defs(heap, form, &mut generics, &mut ctors);
-    }
+    let DispatchDefs {
+        generics, ctors, ..
+    } = DispatchDefs::collect(heap, expanded);
     let mut methods = HashMap::new();
     let mut defaults = HashSet::new();
     for &form in expanded {
@@ -2088,63 +2172,6 @@ pub(super) fn check_operator_sugar(
     }
 }
 
-/// Walk every call site; warn when a multimethod generic is applied to a fully
-/// statically-known argument tuple with no exact method and no `:default`.
-fn walk_multi_calls(
-    heap: &Heap,
-    form: Value,
-    info: &MultiInfo,
-    out: &mut Vec<(Option<Pos>, String)>,
-) {
-    crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
-        let Some(items) = list_items(heap, form) else {
-            return;
-        };
-        let Some(&Value::Sym(head)) = items.first() else {
-            return;
-        };
-        if value::symbol_is(head, "quote") || value::symbol_is(head, "quasiquote") {
-            return;
-        }
-        if let Some(mname) = info.generics.get(&head) {
-            let args = items.get(1..).unwrap_or(&[]);
-            // Only judge a call every one of whose args has a certain identity — one unknown
-            // arg (a variable, a call result) leaves the tuple unknown, so we defer.
-            if !args.is_empty() {
-                let tuple: Option<Vec<String>> = args
-                    .iter()
-                    .map(|&a| arg_identity(heap, a, &info.ctors))
-                    .collect();
-                if let Some(tuple) = tuple {
-                    if info.missing(mname, &tuple) {
-                        out.push((
-                            heap.form_pos_only(form),
-                            multi_missing_warning(mname, &tuple),
-                        ));
-                    }
-                }
-            }
-        }
-        for &item in &items {
-            walk_multi_calls(heap, item, info, out);
-        }
-    })
-}
-
-pub(super) fn check_multi_calls(
-    heap: &Heap,
-    expanded: &[Value],
-    info: &MultiInfo,
-    out: &mut Vec<(Option<Pos>, String)>,
-) {
-    if info.is_empty() {
-        return;
-    }
-    for &form in expanded {
-        walk_multi_calls(heap, form, info, out);
-    }
-}
-
 /// An argument's dispatch identity for a multimethod call: syntactic (a literal or a direct
 /// `defrecord` ctor call) first, else the record id of its *inferred* type (a record-typed
 /// variable). `None` when neither is certain — the tuple then stays unknown and the call is
@@ -2165,7 +2192,7 @@ pub(super) fn multi_arg_identity(
 /// The inference hook: at a `defmulti` generic call at least one of whose args is a *symbol*
 /// (so the syntactic pass deferred — a symbol never resolves syntactically), resolve every
 /// arg's identity syntactically-or-by-inferred-record-type and warn when the full tuple has no
-/// method and no `:default`. Complements `walk_multi_calls`; the symbol gate prevents a
+/// method and no `:default`. Complements `check_dispatch_calls`; the symbol gate prevents a
 /// double warning (a call the syntactic pass could fully resolve has no symbol arg).
 pub(super) fn check_multi_call_inferred(
     heap: &Heap,

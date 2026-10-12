@@ -72,7 +72,6 @@ fn run(tag: &str, driver_src: &str) -> String {
         // The race is between a load and a concurrent snapshot, not between engines: pin the
         // ceiling so the tree-walker job measures the same thing this was written against.
         .env("BROOD_TIER", "2")
-        .env_remove("BROOD_VM")
         .arg(&driver_path)
         .output()
         .expect("run brood");

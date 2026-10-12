@@ -437,9 +437,9 @@ snapshotted into the startup image (ADR-218) and the env var never consulted aga
 
 (defn- ui-timed (thunk)
   "`[result elapsed-ms]` for `(thunk)` — the elapsed a float in ms, off `os/now-ns`."
-  (let (t0 (os/now-ns)
+  (let (started (os/now-ns)
         r (thunk))
-    [r (/ (- (os/now-ns) t0) 1000000.0)]))
+    [r (/ (- (os/now-ns) started) 1000000.0)]))
 
 (defn- ui-trace (phase ms detail)
   "One `ui-run: <phase>=<ms> <detail>` line to stderr when `BROOD_UI_TRACE=1`; nil
@@ -690,43 +690,39 @@ non-blocking window. The shared loop behind the observer (and the editor)."
 ;; they share — route a key to whichever overlay is open, else dispatch normally — so an
 ;; app lists its overlays as data instead of growing a bespoke `cond`. The editor and the
 ;; observer both build on it (ADR-094). An overlay is a record implementing the
-;; `Overlay` ability (ADR-183); the pre-ability map vtable
-;; `{:active? :owns? :handle :exit}` is the `:default` impl, so it keeps working.
+;; `Overlay` ability (ADR-183).
 
 (defability Overlay
   "A transient input overlay: a modal feature that sits beside an app's keymap and,
 while open, captures input. Implement it for a record per overlay — only the ops the
 overlay needs: a record that skips `overlay-owns?` captures every key, and one that
-skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both, and
-also accepts the legacy map vtable `{:active? :owns? :handle :exit}` unchanged)."
+skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both)."
   (overlay-active? [self model] :-> any) ; truthy while the overlay is open
   (overlay-owns? [self model input] :-> any) ; truthy when `input` is the overlay's to handle
   (overlay-handle [self model input] :-> any) ; fold an owned key into the model
   (overlay-exit [self model] :-> any)) ; dismiss before a non-owned key falls through
 (impl Overlay
   :default
-  ;; The legacy map vtable — and the fallback for a record implementing a subset of
-  ;; the ops: a record has no `:owns?`/`:exit` slot, so those fall back to the same
-  ;; nil policy the vtable had (capture-all / leave the model as-is).
-  (overlay-active? [o model] ((get o :active?) model))
-  (overlay-owns? [o model input] (let (owns (get o :owns?)) (or (nil? owns) (owns model input))))
-  (overlay-handle [o model input] ((get o :handle) model input))
-  (overlay-exit [o model] (let (exit (get o :exit)) (if (nil? exit) model (exit model)))))
+  ;; The fallback for a record implementing a subset of the ops: never open, capture every
+  ;; key, leave the model as-is.
+  (overlay-active? [_overlay _model] false)
+  (overlay-owns? [_overlay _model _input] true)
+  (overlay-handle [_overlay model _input] model)
+  (overlay-exit [_overlay model] model))
 
 (defn overlay-active (overlays model)
   "The first overlay in `overlays` open for `model` (`overlay-active?`; list order =
-precedence), or nil. An overlay is an `Overlay` record or the legacy map vtable."
-  (seq/find overlays (fn (o) (overlay-active? o model))))
+precedence), or nil."
+  (seq/find overlays (fn (overlay) (overlay-active? overlay model))))
 
 (defn overlay-route (overlays model input fallback)
   "Fold `input` into the first active overlay in `overlays`, or `(fallback model input)`
 when none is open. The owning overlay (`overlay-owns?`) handles the key; a key it does
 **not** own dismisses the overlay (`overlay-exit`) and is re-dispatched through
-`fallback` — Emacs' dismiss-and-process. Overlays are records implementing `Overlay`
-(or legacy map vtables — see the `:default` impl). The shared seam behind the editor's
-transient overlays and the observer's minibuffer."
-  (let (o (overlay-active overlays model))
+`fallback` — Emacs' dismiss-and-process. Overlays are records implementing `Overlay`.
+The shared seam behind the editor's transient overlays and the observer's minibuffer."
+  (let (overlay (overlay-active overlays model))
     (cond
-      (nil? o) (fallback model input)
-      (overlay-owns? o model input) (overlay-handle o model input)
-      else (fallback (overlay-exit o model) input))))
+      (nil? overlay) (fallback model input)
+      (overlay-owns? overlay model input) (overlay-handle overlay model input)
+      else (fallback (overlay-exit overlay model) input))))

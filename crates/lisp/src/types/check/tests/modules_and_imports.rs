@@ -24,7 +24,7 @@ fn an_only_import_the_module_does_not_define_is_named() {
     );
 }
 
-// ---- unused :use import lint (Pass 4.5) ----
+// ---- unused :use import lint ----
 
 #[test]
 fn unused_use_import_is_flagged() {
@@ -310,9 +310,8 @@ fn same_file_multi_arity_admits_every_arm() {
 
 #[test]
 fn the_definition_beats_a_disagreeing_sig_for_arity() {
-    // A `(sig …)` used to be the ONLY arity source for a same-file name, so a sig that
-    // disagreed with its `defn` silently made a wrong call look right — `nest check`
-    // passed a program that died on its first call.
+    // The definition, not only a `(sig …)`, is an arity source for a same-file name: a sig
+    // that disagrees with its `defn` must not make a wrong call look right.
     let ws = file_warnings("(sig f (int -> int))\n(defn f (a b) a)\n(defn g () (f 5))");
     assert!(
         ws.iter()

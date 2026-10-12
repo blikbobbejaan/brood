@@ -408,14 +408,12 @@ The session history is split so this file stays loadable:
   The digest *is* the record of the timeline; the load-bearing *why* of any change
   lives in its `## ADR-NNN` ([decisions.md](decisions.md)) or topic doc, not in a
   blow-by-blow session log.
-- **[devlog-archive.md](archive/devlog-archive.md)** = full verbatim text of the
-  **early** sessions (through 2026-05), kept for reference. Later sessions were
-  compacted into the digest above (full text recoverable via git if ever needed).
+- The full verbatim text of the **early** sessions (through 2026-05) lived in
+  `docs/archive/devlog-archive.md`, deleted 2026-10-09; git history keeps it.
 
-You rarely read either top to bottom. For the *current* state of something, prefer
+You rarely read this top to bottom. For the *current* state of something, prefer
 the topic doc (see [../README.md](../README.md) § Documentation) or the relevant `## ADR-NNN` in
-[decisions.md](decisions.md). Use the digest to place a change in time; for an early
-session's full text, find its `## YYYY-MM-DD — …` header in the archive.
+[decisions.md](decisions.md). Use the digest to place a change in time.
 
 Entries are historical and are not rewritten, so a few older ones link to design
 docs since deleted (`concurrency-v2.md`, `supervision.md`, `incremental-check.md` —
@@ -426,17 +424,10 @@ mostly trimmed in `fdce540` once their features shipped). Recover from git if ne
 entry** and drop the verbose text (don't grow the archive). Prune anything that
 won't help future work — the ADRs and topic docs carry the durable rationale.
 
-**The digest is the invariant, and it had quietly stopped being true.** On 2026-09-08 it
-was missing a line for **87 sessions across 16 dates** — every session from 2026-08-31 on,
-and gaps back to 2026-08-13 — because the "condense it once it is older than a day or two"
-half of the rule stopped being applied while the "append a full entry" half carried on.
-"Recent" had grown to 229 sessions over four weeks and *become* the log, so the file's own
-navigation advice ("use the digest to place a change in time") pointed at something
-incomplete. The lines are restored, taken from each session's own header. The verbose text
-is still there and still wants condensing; the thing to protect is the digest, because it
-is what the rest of the file promises.
+**The digest is the invariant**: every session gets its one line, even when the full entry
+stays in "Recent" — the digest is what the rest of the file promises.
 
-**Major threads** (grep these across devlog-archive.md to follow an arc end to end):
+**Major threads** (grep these to follow an arc end to end):
 - **GC / memory** — `GC`, `safepoint`, `use-after-GC`, `generational`, `promote`,
   `hibernate`, `tracing`, `copying` (ADR-016/035/043/054/055/058/061/072)
 - **Execution engine / VM** — `VM`, `bytecode`, `closure-compiling`, `dispatch`,
@@ -462,8 +453,7 @@ is what the rest of the file promises.
 
 ## Session digest (complete timeline)
 
-Every session, oldest first. Early sessions' full text is in
-[devlog-archive.md](archive/devlog-archive.md); the latest day is in "Recent" below.
+Every session, oldest first; the latest days are in "Recent" below.
 
 - **2026-05-27** — Project bootstrap and v0.1 language core
 - **2026-05-27** — Pattern matching + a macroexpand-all compile pass
@@ -2038,7 +2028,7 @@ touch — real drift, but a separate pass.
 
 
 The last day or two in full; older sessions are condensed into the digest above,
-their full text in [devlog-archive.md](archive/devlog-archive.md) (and git history).
+their full text in git history.
 Append new sessions below (newest last).
 
 ## 2026-08-13 — ADR-223 Phase 2 (MVP): cross-file require-by-name for a co-located module
@@ -2952,7 +2942,7 @@ list (`guard_effects.rs` still named `slurp`/`spit`/`spit-append` as effectful-i
 the user-facing `format!("<op>: {path}: {e}")` error prefixes in `io.rs`/`system.rs` (they name
 the primitive, so they must track the rename — e.g. a failing read now reads `file/slurp: …`).
 Living-doc references in `tooling.md`/`module-index.md`/`node-connect.md` updated too; the dated
-historical entries in `decisions.md` and `devlog-archive.md` are left as the record of what those
+historical entries in `decisions.md` and the (since-deleted) devlog archive are left as the record of what those
 primitives were called at the time. See ADR-231.
 
 ## 2026-08-19 — Bump to 0.4.0: the stdlib-namespacing renames are a compatibility boundary
@@ -16623,3 +16613,106 @@ incarnation in the handshake, wire v9). A string reader's parse error now names 
 rather than inheriting the caller's file — a lockfile's `1:1` used to read as
 `package.blsp:1:1`. Perf: ADR-397 adds a pointer to every queued envelope — `make ab` /
 `make ab-vm` before release, with the rest of this review's hot-path changes.
+
+## 2026-10-09 — the cleanup: dead flags, one tier knob, Brood-only tooling, docs archived
+
+A whole-project review (eight areas) and a cleanup of everything it found: latent bugs, dead
+switches and code, duplicated logic, giant functions, misattached docs, tooling in a language
+the project does not use, and documentation that had become a second devlog. Every bug fix
+below carries a regression test that was sabotage-verified (fix reverted → red → restored).
+
+**Bugs fixed.**
+- *Kernel:* `reset_local_to` dropped the source positions of OLD-generation pairs (the age bit
+  at bit 32 was discarded by the retain); a failed `%std-image-reinstall!` replay no longer
+  counts as a good imaged boot (falls back to source); a string blob can no longer be built
+  from raw bytes (`SharedBlob::from_text` vs `new` — the `from_utf8_unchecked` safety argument
+  was false); the image directory's capacity is capped by the bytes present.
+- *Checker:* a bare `(fn)` argument inside a `:pure` function panicked (`properties.rs`).
+  And the checker could fail to terminate (pre-existing; exposed when the sharper derivation
+  built a recursive parameter type for `mcp_test`): unrolling a `μX` type for a subtype or
+  disjointness question rebuilt its unions CANONICALLY, which asked more subtype questions of
+  the same type, each with a pair the cycle guard had not seen — exponential in the number of
+  alternatives. Relations now unroll with unions written as they stand
+  (`unroll_for_relation`), and a hard backstop (`MAX_REC_UNROLLS` per outermost question,
+  answering the sound "no") guarantees termination even if that regresses.
+- *Processes/net:* `tcp/connect` resolved and dialled (10 s per address) ON a scheduler
+  worker — now a helper thread, the Brood API still synchronous, failures still `E0050`; a node
+  listening on `:0` advertised port 0 (now the bound address; a wildcard host advertises the
+  node's own host); each exit swept NAMES twice and scanned every socket/subprocess/wasm
+  registry (now one sweep and an owner index, O(owned)); `PARKED_COUNT` was Relaxed in a
+  two-sided handshake (a lost wake on weakly-ordered CPUs).
+- *std:* `format`'s file walker followed symlinks (a cycle never terminated) — five
+  hand-rolled walkers are now `file/walk-files`; `dns/lookup` leaked its socket on every
+  failed lookup; `csv` dropped a final `""` row and every bare `\r` inside a field;
+  `gen/call-timeout` delivered a second reply after success; `string/blank?` was O(n²).
+- *Tooling:* `nest publish` shipped `tests/` and the lock file (the `./`-prefixed tar excludes
+  never matched `git ls-files` paths); `publish --bump` published after a failed git commit;
+  the version bump edited the first `:version` in the text, not the project's; `nest ws`
+  always exited 0; `nest run FILE -h` printed nest's usage instead of passing `-h` to the
+  program; `nest test` decided failure by matching message text (now a structured
+  `:suite-failed`); MCP `run-tests` and `nest test` discovered different test sets.
+- *LSP/builtins:* checker findings with no position were dropped by the LSP; ~90 error labels
+  named functions that no longer exist (now a test pins every label to a callable name);
+  `%untar-gz` refused nothing (now rejects absolute, `..`, symlink and hard-link members); a
+  corrupt release bundle silently ran as plain `brood`.
+- *Gates:* `scripts/check-examples.sh` passed "10 failed"; `perf-brood`/`perf-symbols`
+  overwrote the timing binary (now `target/release-perf/`, `target/release-symbols/`).
+
+**Follow-ups (2026-10-12).** `seq/vector-ref` / `seq/vector-length` are deleted in favour of
+`nth` / `count` (ADR-398, in the rename ledger). The LSP's "did you mean" ranking is Brood —
+`fuzzy/edit-distance` and `fuzzy/nearest` — and the Rust Levenshtein is gone. bedit's two
+leftovers (`%append-two`, `lineedit-init`'s ignored second argument) are fixed on bedit's side,
+so both are removed here: `lineedit-init` is `(prompt history &optional opts)`. **bedit must
+be pushed and `BEDIT_REF` moved with this change** (`make smoke-bedit ARGS=--bump`).
+
+**Behaviour changes to know.** A `throw` inside an MCP tool handler reports only
+`{kind, message}` in `error.data` (Brood's `catch` binds the value, not its position).
+`package/bump-version` takes `(root level)`; `project-collect-tests` is `collect-tests`.
+`%random-token`, `%print`, `%coverage-reset`, `%scope-live-pids` and `%mcp-progress`
+are gone, as is the per-process eval deadline (MCP's Brood dispatcher kills a handler process
+instead).
+
+**Structure.** `jit_lower_arm_inner` 2 077 → ~560 lines; `check_forms` is a list of named
+passes in run order; `seq_aware_call_ty` is one `match`; `check_into_inner` 882 → ~170; the
+ability/multimethod walkers are one scope-aware walker (which now also sees calls in vectors
+and under computed heads); deopt reasons are a `DeoptReason` enum with unique codes (the trace
+prints names); one integer-arithmetic emitter; the heap verifier ~440 → ~240; the test-only
+single-space collector is deleted; `handle_cmd`/`establish` are split; ~20 bespoke env
+toggles moved into `debug_flags.rs`. Not done, deliberately: the two message-copy walkers
+(they decline differently on a hot path that cannot be measured here) and `doc-catalog`
+generation (its categories are editorial).
+
+**Flags removed** (each with its read, its old code path and its catalogue entry):
+`BROOD_VM` and `BROOD_NO_JIT` (the aliases — **`BROOD_TIER=0|1|2` is now the only tier
+knob**), `BROOD_XADMIT`, `BROOD_MKCLO`, `BROOD_FLOAT_VETO`, `BROOD_XCALL`,
+`BROOD_NO_DEOPT_RESUME`, `BROOD_NO_INLINE`, `BROOD_NO_LEAF_INLINE`, `BROOD_NO_PARTIAL_LEAF`,
+`BROOD_NO_FLOAT_GLOBAL`, `BROOD_NO_SHARED_ARMS`, `BROOD_SPAWN_RR`, `BROOD_NO_MSGTAG`,
+`BROOD_NO_HANDOFF`, `BROOD_NO_STEAL_WAKE`, `BROOD_NO_IDLE_BACKOFF`, `BROOD_TEST_NO_SCOPE`,
+`BROOD_NO_SHARE_FN_MSG` (folded into `BROOD_NO_SHARE_FN`); `BROOD_COMPILE_TRACE` is renamed
+`BROOD_TRACE_LOWER`. CI's tree-walker job, `make test-both`, the fuzz runner and the docs use
+`BROOD_TIER`. Kept on purpose: `BROOD_NO_RECV_MARK` and `BROOD_NO_SHARE_FN` (their failure
+mode is a silently undelivered message, so the switch earns its place) and `BROOD_MONO`
+(opt-in; making it default is a perf decision for a machine that can measure it).
+
+**`nest mcp` moved to Brood** (`std/tool/mcp.blsp`: transport, dispatch, the tool
+catalogue); `crates/nest/src/mcp.rs` only supplies the documents the binary embeds. The Rust
+subcommands left are `stdimage` and `release`'s byte assembly.
+
+**Python removed.** The thirteen fuzz generators (`scripts/fuzz/generators/*.blsp`), the
+stress program fuzzer and reader fuzzer, the table oracle (now bash) and the bench-ratio
+parser are Brood or shell; `scripts/ki38/` (a closed investigation's tooling),
+`scripts/fuzz_unbox.py` and the unreferenced `scripts/fmt-probe.blsp` are deleted.
+
+**Gates.** Every Makefile target that runs tests puts `ulimit -v 16000000` in front of the
+run step only (`RUN_CAP`), never the build; `gui-debug` is gone. A nightly `perf-stats` job
+builds the counter-armed runtime and runs the JIT and differential binaries plus
+`tests/perf_test.blsp` on it, and requires `BROOD_PERF_STATS=1` to dump a non-zero `vm_apply`
+(checked: passes on a perf-stats build, fails on an ordinary one).
+
+**Docs.** `CLAUDE.md` went from 991 lines to ~425: the 110-row flag table is replaced by
+`brood --debug-flags` (substantive table-only facts moved into the catalogue's descriptions),
+dated incident retellings are cut to their rules, and the perf narrative moved to
+`docs/benchmarking.md` §6. Closed known-issue bodies moved to
+`docs/archive/known-issues-closed.md` (the index, filing rules and open entries stay in
+`known-issues.md`); `docs/archive/devlog-archive.md` is deleted (git keeps it);
+`docs/handoff.md` is one current-state page instead of 4.5k lines of dated sections.

@@ -75,9 +75,9 @@ suite, then reports which functions were never entered. Backs `nest test --cover
     (fn (acc sym)
       (let (location (reflect/source-location sym))
         (if (and (not (nil? location))
-              (coverage-under? (seq/vector-ref location 0) source-dirs)
+              (coverage-under? (nth location 0) source-dirs)
               (= (type-of (reflect/eval sym)) :fn))
-          (cons {:name sym :file (seq/vector-ref location 0) :line (seq/vector-ref location 1)}
+          (cons {:name sym :file (nth location 0) :line (nth location 1)}
             acc)
           acc)))))
 
@@ -240,8 +240,7 @@ suite, then reports which functions were never entered. Backs `nest test --cover
     {}
     (fn (index entry)
       (assoc index
-        (seq/vector-ref entry 0)
-          (fold (seq/vector-ref entry 1) {} (fn (lines l) (assoc lines l true)))))))
+        (nth entry 0) (fold (nth entry 1) {} (fn (lines l) (assoc lines l true)))))))
 
 ;; Which lines RAN.
 (defn- coverage-hit-index ()
@@ -252,7 +251,7 @@ suite, then reports which functions were never entered. Backs `nest test --cover
 (defn- coverage-instrumented-index ()
   (fold (or (coverage-safely (fn () (%coverage-instrumented))) nil)
     {}
-    (fn (index entry) (assoc index (seq/vector-ref entry 0) (seq/vector-ref entry 1)))))
+    (fn (index entry) (assoc index (nth entry 0) (nth entry 1)))))
 
 (defn line-begin (source-dirs)
   "Force every project function under `source-dirs` to compile, so the lines of a function the suite never calls still count as measurable. Call once, after the sources are loaded and BEFORE the suite runs. Returns how many bodies compiled."
@@ -372,22 +371,22 @@ suite, then reports which functions were never entered. Backs `nest test --cover
   (fold edges
     {}
     (fn (m edge)
-      (let (key [(seq/vector-ref edge 0) (seq/vector-ref edge 1)]
-            cur (get m key {:t false :f false}))
-        (assoc m key (if (seq/vector-ref edge 2) (assoc cur :t true) (assoc cur :f true)))))))
+      (let (key [(nth edge 0) (nth edge 1)]
+            current (get m key {:t false :f false}))
+        (assoc m key (if (nth edge 2) (assoc current :t true) (assoc current :f true)))))))
 
 (defn- coverage-branch-taken-index ()
   "`file -> {[line col] -> {:t :f}}` — which edges of each branch ran."
   (fold (or (coverage-safely (fn () (%coverage-branches))) nil)
     {}
     (fn (index entry)
-      (assoc index (seq/vector-ref entry 0) (coverage-branch-edges (seq/vector-ref entry 1))))))
+      (assoc index (nth entry 0) (coverage-branch-edges (nth entry 1))))))
 
 (defn- coverage-branch-sites-index ()
   "`file -> ([line col] …)` — every instrumented branch point (the denominator)."
   (fold (or (coverage-safely (fn () (%coverage-branch-instrumented))) nil)
     {}
-    (fn (index entry) (assoc index (seq/vector-ref entry 0) (seq/vector-ref entry 1)))))
+    (fn (index entry) (assoc index (nth entry 0) (nth entry 1)))))
 
 (defn- coverage-branch-state (taken site)
   "For branch point `site` (`[line col]`), given the file's taken-edge map, return
@@ -416,16 +415,18 @@ files under `source-dirs` are measured; files with no branches are omitted."
                     (let (sites (or (get sites-by-file path) nil)
                           taken (or (get taken-by-file path) {})
                           states (map sites (fn (s) [s (coverage-branch-state taken s)]))
-                          covered (seq/filter states (fn (st) (= (second st) :both)))
+                          covered (seq/filter states (fn (state) (= (second state) :both)))
                           partial (seq/filter states
-                                    (fn (st) (or (= (second st) :then) (= (second st) :else))))
-                          missing (seq/filter states (fn (st) (= (second st) :none))))
+                                    (fn (state)
+                                      (or (= (second state) :then) (= (second state) :else))))
+                          missing (seq/filter states (fn (state) (= (second state) :none))))
                       {:file path
                        :total (count sites)
                        :covered (count covered)
                        :partial (map partial
-                                  (fn (st) [(first (first st)) (second (first st)) (second st)]))
-                       :missing (map missing (fn (st) (first st)))})))
+                                  (fn (state)
+                                    [(first (first state)) (second (first state)) (second state)]))
+                       :missing (map missing (fn (state) (first state)))})))
       (fn (result) (> (get result :total) 0)))))
 
 (defn- coverage-branch-line (root r)

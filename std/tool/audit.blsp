@@ -189,7 +189,7 @@ A name with no recognisable pair is vacuously true.
           (= ch ")") (%audit-match-paren text (+ i 1) (- depth 1))
           else (%audit-match-paren text (+ i 1) depth)))))
 
-(defn- split-top (text depth acc cur out)
+(defn- split-top (text depth acc current out)
   ;; Split `text` on top-level commas — `(seqable, (any, any) -> any)` is TWO params,
   ;; not three. A naive `string/split` on "," reads a callback's own arity as extra
   ;; parameters, which is how a type-blind check misreads `fold`. Braces and brackets
@@ -200,16 +200,17 @@ A name with no recognisable pair is vacuously true.
   ;; whose field is such a map) was a mismatch the moment its sig said so (2026-09-17). The
   ;; `>` of an arrow `->` is not a close; only a `>` not preceded by `-` nests out.
   (if (>= acc (string/length text))
-    (reverse (cons (string/trim cur) out))
+    (reverse (cons (string/trim current) out))
     (let (ch (string/char-at text acc)
           prev (if (> acc 0) (string/char-at text (- acc 1)) ""))
       (cond
-        (includes? ["(" "[" "{" "<"] ch) (split-top text (+ depth 1) (+ acc 1) (str cur ch) out)
-        (includes? [")" "]" "}"] ch) (split-top text (- depth 1) (+ acc 1) (str cur ch) out)
-        (and (= ch ">") (not (= prev "-"))) (split-top text (- depth 1) (+ acc 1) (str cur ch) out)
+        (includes? ["(" "[" "{" "<"] ch) (split-top text (+ depth 1) (+ acc 1) (str current ch) out)
+        (includes? [")" "]" "}"] ch) (split-top text (- depth 1) (+ acc 1) (str current ch) out)
+        (and (= ch ">") (not (= prev "-")))
+          (split-top text (- depth 1) (+ acc 1) (str current ch) out)
         (and (= ch ",") (= depth 0))
-          (split-top text depth (+ acc 1) "" (cons (string/trim cur) out))
-        else (split-top text depth (+ acc 1) (str cur ch) out)))))
+          (split-top text depth (+ acc 1) "" (cons (string/trim current) out))
+        else (split-top text depth (+ acc 1) (str current ch) out)))))
 
 (defn sig-params (name)
   "The declared parameter TYPES of `name` as a list of strings, or nil when it declares

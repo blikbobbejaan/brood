@@ -5,8 +5,8 @@
 //! per-process compilation context (current file, namespace, package context, the
 //! forward-reference name set and the `(:use …)` import table), and the cross-file
 //! definition sites + name facts (`def_site`, privacy, `NameMeta`) that goto-definition, the
-//! checker and the LSP read (ADR-031, ADR-146). Split out of `heap.rs` on 2026-09-06 (handoff
-//! item 5): a `use super::*` child, so it reaches `Heap`'s private fields exactly as before.
+//! checker and the LSP read (ADR-031, ADR-146). A `use super::*` child, so it reaches
+//! `Heap`'s private fields.
 
 use super::*;
 
@@ -33,18 +33,12 @@ impl Heap {
         }
     }
 
-    /// Mark a LOCAL list form as expander-built (see [`FormPos`]). The form must already
-    /// have a position — the expander stamps one first — so the mark rides that entry and
-    /// `promote` carries both together.
     /// Set a LOCAL list form's position **with an explicit file**, bypassing
     /// `current_file_arc`. The expander's synthetic stamp needs this: it runs not only at
     /// load time but at LAZY expansion — an arm compiled at first call, a
     /// `%coverage-precompile`, a hot reload — where the file *currently being loaded* is a
-    /// different file, or none. Stamping the ambient file there produced records whose
-    /// position came from one file and whose file named another, which is how a nested
-    /// `reflect/load`'s functions were coverage-attributed to the OUTER script
-    /// (`std_attribution` + four `coverage_lines` tests red, 2026-08-29). The file must
-    /// travel WITH the position it was derived from.
+    /// different file, or none. The file must travel WITH the position it was derived
+    /// from, or coverage attributes a nested load's functions to the outer script.
     pub fn set_form_pos_in_file(
         &mut self,
         v: Value,
@@ -65,6 +59,9 @@ impl Heap {
         }
     }
 
+    /// Mark a LOCAL list form as expander-built (see [`FormPos`]). The form must already
+    /// have a position — the expander stamps one first — so the mark rides that entry and
+    /// `promote` carries both together.
     pub fn mark_synthetic(&mut self, v: Value) {
         if let Some(id) = v.as_pair() {
             if id.region() == crate::core::value::LOCAL {
@@ -202,12 +199,9 @@ impl Heap {
         modules: HashSet<Symbol>,
     ) -> (Option<Symbol>, HashSet<Symbol>) {
         // Setting the EMPTY context on a heap that has no cold state is a no-op — and
-        // `cold_mut` would allocate the whole `ColdHeap` (328 B) to record it. `spawn`
-        // propagates the spawner's context to every child, so outside a package this
-        // put a `ColdHeap` on every process ever spawned: the exact allocation M1 moved
-        // off the worker floor (`runtime-frontier.md` §B), back on it. Measured 2026-09-21
-        // by the allocation histogram of a parked process: one 328 B block from
-        // `set_package_context <- spawn_impl_timed`, on every one of 100 000 processes.
+        // `cold_mut` would allocate the whole `ColdHeap` to record it. `spawn` propagates
+        // the spawner's context to every child, so without this every spawned process
+        // outside a package would carry a `ColdHeap` (`runtime-frontier.md` §B).
         if prefix.is_none() && modules.is_empty() && self.cold().is_none() {
             return (None, HashSet::new());
         }
@@ -480,93 +474,9 @@ impl Heap {
 
     // ===== Definition sites (cross-file xref; ADR-031) =========================
 
-    /// If `form` is a top-level `def`/`defn`/`defmacro`, record its name's source
-    /// location (the [`current_file`] + `pos`). Called by the file loaders on each
-    /// *un-expanded* top-level form — before macroexpansion, so `defn`/`defmacro`
-    /// (which lower to `def`) are still recognisable by their head and their span
-    /// is intact. A no-op when no file is set (e.g. the REPL) or the form isn't a
-    /// definition.
-    ///
-    /// A `(do …)` is descended into: a definer macro like `defrecord`/`defability`
-    /// expands to a `do` wrapping several inner `def`/`defn`s (the constructor, its
-    /// accessors, the ability's op dispatchers). The loaders call this on the
-    /// *expanded* form too, so recording each inner def at the same call-site `pos`
-    /// gives those macro-synthesized globals a def-site — otherwise cross-file
-    /// goto-definition on a record constructor or ability op finds nothing (ADR-031).
-    ///
-    /// [`current_file`]: Self::current_file
-    /// Like [`note_definition`], but also returns the names it recorded — the
-    /// boot-cache writer's hook. The cache-hit boot no longer reads the raw prelude
-    /// (that positioned read cost 3.5 ms of a 26 ms boot and produced nothing but
-    /// these names), so the names the *un-expanded* form would have contributed are
-    /// captured here, once, on the cold source boot and stored in the cache file.
-    /// Returning them rather than re-deriving them on read keeps [`def_form_name`]
-    /// the single definition of "what name does this form bind".
-    ///
-    /// [`note_definition`]: Self::note_definition
-    pub fn note_definition_recording(
-        &mut self,
-        form: Value,
-        pos: crate::error::Pos,
-    ) -> Vec<Symbol> {
-        let before = self.runtime.def_sites_read().len();
-        let mut names = Vec::new();
-        let Some(file) = self.cold().and_then(|c| c.current_file.clone()) else {
-            return names;
-        };
-        self.collect_definitions(form, &file, pos, &mut names);
-        debug_assert!(self.runtime.def_sites_read().len() >= before);
-        names
-    }
-
-    /// [`note_definition_with_file`] with an out-parameter for the names recorded.
-    ///
-    /// [`note_definition_with_file`]: Self::note_definition_with_file
-    fn collect_definitions(
-        &mut self,
-        form: Value,
-        file: &str,
-        pos: crate::error::Pos,
-        names: &mut Vec<Symbol>,
-    ) {
-        if let Some(name) = self.def_form_name(form) {
-            self.runtime.def_sites_write().insert(
-                name,
-                SourceLoc {
-                    file: file.to_string(),
-                    pos,
-                },
-            );
-            names.push(name);
-            return;
-        }
-        let ValueRef::Pair(p) = form.unpack() else {
-            return;
-        };
-        let ValueRef::Sym(head) = self.car(p).unpack() else {
-            return;
-        };
-        if !crate::core::value::symbol_is(head, kw::DO) {
-            return;
-        }
-        let mut rest = self.cdr(p);
-        while let ValueRef::Pair(cell) = rest.unpack() {
-            self.collect_definitions(self.car(cell), file, pos, names);
-            rest = self.cdr(cell);
-        }
-    }
-
-    /// Record `name`'s definition site directly, without a form to read it from —
-    /// the boot-cache reader's counterpart to [`note_definition_recording`]. Uses
-    /// [`current_file`], so it is a no-op when no file is set, exactly like
-    /// [`note_definition`].
-    ///
-    /// [`current_file`]: Self::current_file
-    /// [`note_definition`]: Self::note_definition
     /// Every recorded def site, for the prelude image (ADR-314) to carry. The imaged boot
     /// evaluates no `def`, so nothing calls [`Heap::record_def_site`] there and stdlib
-    /// `M-.` would go dark — the one user-visible thing ADR-138's text cache took care to
-    /// keep working on its own fast path.
+    /// `M-.` would otherwise go dark.
     pub fn def_sites_snapshot(&self) -> Vec<(Symbol, SourceLoc)> {
         self.runtime
             .def_sites_read()
@@ -582,6 +492,12 @@ impl Heap {
         self.runtime.def_sites_write().insert(name, loc);
     }
 
+    /// Record `name`'s definition site directly, without a form to read it from. Uses
+    /// [`current_file`], so it is a no-op when no file is set, exactly like
+    /// [`note_definition`].
+    ///
+    /// [`current_file`]: Self::current_file
+    /// [`note_definition`]: Self::note_definition
     pub fn record_def_site(&mut self, name: Symbol, pos: crate::error::Pos) {
         let Some(file) = self.cold().and_then(|c| c.current_file.clone()) else {
             return;
@@ -591,6 +507,21 @@ impl Heap {
             .insert(name, SourceLoc { file, pos });
     }
 
+    /// If `form` is a top-level `def`/`defn`/`defmacro`, record its name's source
+    /// location (the [`current_file`] + `pos`). Called by the file loaders on each
+    /// *un-expanded* top-level form — before macroexpansion, so `defn`/`defmacro`
+    /// (which lower to `def`) are still recognisable by their head and their span
+    /// is intact. A no-op when no file is set (e.g. the REPL) or the form isn't a
+    /// definition.
+    ///
+    /// A `(do …)` is descended into: a definer macro like `defrecord`/`defability`
+    /// expands to a `do` wrapping several inner `def`/`defn`s (the constructor, its
+    /// accessors, the ability's op dispatchers). The loaders call this on the
+    /// *expanded* form too, so recording each inner def at the same call-site `pos`
+    /// gives those macro-synthesized globals a def-site — otherwise cross-file
+    /// goto-definition on a record constructor or ability op finds nothing (ADR-031).
+    ///
+    /// [`current_file`]: Self::current_file
     pub fn note_definition(&mut self, form: Value, pos: crate::error::Pos) {
         let Some(file) = self.cold().and_then(|c| c.current_file.clone()) else {
             return;
@@ -676,12 +607,9 @@ impl Heap {
     }
 
     /// Is the global `sym` module-private (ADR-146)? The single predicate every
-    /// semantic privacy check consults (see [`RuntimeCode::private`]). Since step 2
-    /// moved the marker off the name onto the def form, a private is spelled exactly
-    /// like a public, so there is no name-shaped fast-negative to take first: every
-    /// query is the recorded-set lookup. That is O(1) regardless of how many privates
-    /// exist, and the callers pre-filter (intra-module refs and granted modules never
-    /// reach here), which is why dropping the old `--` fast path measured within noise.
+    /// semantic privacy check consults (see [`RuntimeCode::private`]). A private is
+    /// spelled exactly like a public, so every query is the O(1) recorded-set lookup;
+    /// callers pre-filter (intra-module refs and granted modules never reach here).
     pub fn is_private(&self, sym: Symbol) -> bool {
         self.runtime.is_private_recorded(sym)
     }

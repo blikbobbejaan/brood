@@ -132,7 +132,7 @@ fn server_style_receive_loop_stays_bounded() {
 /// that churns garbage at the depth-1 eval safepoint triggers automatic Stage-B
 /// collection; afterwards the per-process counters must reflect it: at least one
 /// collection, more objects reclaimed than survive, and a positive threshold.
-/// Proves `arena_flip` bumps the counters and `(dev/gc-stats)` reads them back —
+/// Proves a collection bumps the counters and `(dev/gc-stats)` reads them back —
 /// not just that the keys exist.
 #[test]
 fn gc_stats_counts_automatic_collections() {

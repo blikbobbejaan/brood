@@ -1,0 +1,103 @@
+;; Rope property fuzzer. A rope must ALWAYS equal the plain string it represents. Apply a
+;; random sequence of insert/delete edits to both a rope (threaded via `->` in the program)
+;; and a reference character vector here; assert `(text/->string r)` equals the reference,
+;; plus `text/length` and a sample `text/slice`. Both index by code point. Includes newlines
+;; and unicode. Each program prints OK / BAD.
+;;
+;;   brood scripts/fuzz/generators/rope.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- edits over a reference vector of characters
+(def alphabet ["a" "b" "c" "d" "e" " " "\n" "\n" "X" "Y" "é" "ö" "λ" "🙂"])
+
+(defn draw-characters (low high)
+  (into [] (map (range (draw-int low high)) (fn (_) (draw-choice alphabet)))))
+
+(defn literal (characters)
+  "A Brood string literal for a vector of characters."
+  (pr-str (apply str characters)))
+
+(defn splice (reference start end inserted)
+  (into []
+    (append (seq/subvec reference 0 start) inserted (seq/subvec reference end (count reference)))))
+
+;; Returns [reference steps] after `remaining` random edits.
+(defn edit (reference steps remaining)
+  (if (<= remaining 0)
+    [reference steps]
+    (if (or (empty? reference) (< (draw-float) 0.55))
+      (let (position (draw-int 0 (count reference))
+            inserted (draw-characters 1 5))
+        (edit (splice reference position position inserted)
+          (conj steps (str "(text/insert " position " " (literal inserted) ")"))
+          (- remaining 1)))
+      ;; delete [start, end)
+      (let (start (draw-int 0 (- (count reference) 1))
+            end (draw-int (+ start 1) (count reference)))
+        (edit (splice reference start end [])
+          (conj steps (str "(text/delete " start " " end ")"))
+          (- remaining 1))))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (initial (draw-characters 0 12)
+        [reference steps] (edit initial [] (draw-int 3 25))
+        ;; a sample slice for the oracle
+        slice-start (if (empty? reference) 0 (draw-int 0 (- (count reference) 1)))
+        slice-end (if (empty? reference) 0 (draw-int slice-start (count reference)))
+        chain (str "(-> (text/from-string "
+                (literal initial)
+                ")\n      "
+                (string/join steps "\n      ")
+                ")"))
+    (str "(let (r "
+      chain
+      ")\n"
+      "  (let (s (text/->string r))\n"
+      "    (io/puts (if (and (= s "
+      (literal reference)
+      ")\n"
+      "                      (= (text/length r) "
+      (count reference)
+      ")\n"
+      "                      (= (text/slice r "
+      slice-start
+      " "
+      slice-end
+      ") "
+      (literal (seq/subvec reference slice-start slice-end))
+      "))\n"
+      "               \"OK\" (str \"BAD len=\" (text/length r) \" s=\" (pr-str s))))))\n")))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/rp_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "rope programs"))

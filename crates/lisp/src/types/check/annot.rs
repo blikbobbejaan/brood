@@ -98,9 +98,9 @@ const RECURSIVE_UNROLL: usize = 1;
 
 /// How deep a chain of DISTINCT aliases (`(deftype p1 p2)`, `(deftype p2 p3)`, …) may expand
 /// before the rest of it reads as `any` — sound, since `any` is a superset of whatever the
-/// tail denotes. Each link is a Rust frame pair ([`alias_ty`] → [`parse_type`]), and a
-/// 20 000-link chain used to overflow the stack and abort the checker (SIGABRT, outside any
-/// `catch_unwind`). No written type nests this deep; the recursion also grows its stack
+/// tail denotes. Each link is a Rust frame pair ([`alias_ty`] → [`parse_type`]), so an
+/// unbounded chain overflows the stack and aborts the checker outside any `catch_unwind`.
+/// No written type nests this deep; the recursion also grows its stack
 /// on the heap past a red zone, so a chain under the bound is never the overflow either.
 const MAX_ALIAS_CHAIN: usize = 256;
 
@@ -513,11 +513,10 @@ pub(super) fn sealed_members_ty(members: &[String]) -> Option<Ty> {
 /// not complete — the ADR-181 discipline.
 fn record_ty(heap: &Heap, name: &str) -> Option<Ty> {
     let id = record_id_for(name)?;
-    // The record's DECLARED field types travel with the name (2026-08-30). `defrecord` puts
-    // them on the constructor's sig (`(sig pt (int int -> (record :__id__ :pt :x int …)))`),
-    // and a `(sig f (pt -> …))` that resolved to the bare `:__id__` shape lost every one of
-    // them at the parameter: `(get dt :hour 0)` on a `datetime` read as `any`, and a body
-    // over its fields could not close over `int`. The shape stays OPEN for the reason given
+    // The record's DECLARED field types travel with the name. `defrecord` puts them on the
+    // constructor's sig (`(sig pt (int int -> (record :__id__ :pt :x int …)))`); resolving
+    // `(sig f (pt -> …))` to the bare `:__id__` shape would lose every one at the parameter
+    // (`(get dt :hour 0)` on a `datetime` would read `any`). The shape stays OPEN for the reason given
     // above (`(assoc (pt 1 2) :z 3)` is still a `pt`); only the declared keys are typed. An
     // undeclared field is a `?var` on the constructor, which parses as `any` — the same
     // reading the open rest gives it, so nothing is narrowed that was not declared.
@@ -586,13 +585,8 @@ pub(super) fn base_ty(name: &str) -> Option<Ty> {
         "seqable" => Ty::SEQABLE,
         "countable" => Ty::COUNTABLE,
         "numeric" | "ordered" => super::sigs::named_cover(None, name)?,
-        // `bytes` and `decimal` are runtime tags (`type-of` returns them, and
-        // `bytes?`/`decimal?` narrow to them) that had no *spelling* here — so no
-        // signature could mention a bytes value, which is most of what
-        // `std/encoding`, `std/hash`, and `std/net/tcp` take and return. Found by
-        // annotating std for real (the `sig` adoption pilot, 2026-07-26): the
-        // compatibility contract in `docs/types.md` says a Value kind needs a Tag
-        // *and* a way to name it, and these had only the Tag.
+        // Every runtime tag needs a spelling here as well as a Tag (the compatibility
+        // contract in `docs/types.md`), or no signature can mention its values.
         "bytes" => Ty::of(Tag::Bytes),
         "decimal" => Ty::of(Tag::Decimal),
         "ratio" => Ty::of(Tag::Ratio),
@@ -688,14 +682,13 @@ pub fn parse_type(heap: &Heap, form: Value) -> Option<Ty> {
             };
             // (list E) / (vector E) — element-typed sequences. A `(list E)` may be EMPTY
             // (ADR-350): it is `nil | list<E>`, which is what the runtime contract has
-            // always accepted (`list?` holds of `nil`) and what `relax_param_for_arg`
-            // used to add back for the membership test alone — so a declared `(list
+            // always accepted (`list?` holds of `nil`) — so a declared `(list
             // string)` parameter narrowed by `(empty? xs)` is not a dead clause.
             if value::symbol_is(head, "list") && items.len() == 2 {
                 return Some(Ty::list_of(parse_type(heap, items[1])?).union(Ty::of(Tag::Nil)));
             }
             // (list T U …) — two or more positions: a fixed-arity positional LIST shape,
-            // the list sibling of `(tuple …)` (2026-09-13). One type is the uniform list
+            // the list sibling of `(tuple …)`. One type is the uniform list
             // above; a shape of one position has no spelling, and needs none.
             if value::symbol_is(head, "list") && items.len() > 2 {
                 let mut elems = Vec::with_capacity(items.len() - 1);
@@ -905,9 +898,9 @@ pub(super) const TYPE_HEADS: [&str; 13] = [
 /// Why this type-expression can't be read as a type, or `None` if it can.
 ///
 /// [`parse_type`] answers "did it parse", and its `None` is silently discarded —
-/// so a misspelled type name (`strng`, `(tupel int)`) used to widen the annotated
-/// position to `any` with no diagnostic at all: an annotation that is ignored when
-/// wrong is a gate that cannot fail. This finds the *innermost* offending
+/// so on its own a misspelled type name (`strng`, `(tupel int)`) would widen the annotated
+/// position to `any` with no diagnostic: an annotation that is ignored when wrong is a
+/// gate that cannot fail. This finds the *innermost* offending
 /// sub-expression and says what is wrong with it.
 ///
 /// **The one deliberate silence:** an unknown symbol whose name starts with an
@@ -1037,10 +1030,8 @@ pub(super) fn type_expr_problem(heap: &Heap, form: Value) -> Option<String> {
                     "`list` takes one element type, or two or more position types".to_string()
                 }
                 "vector" => "`vector` takes exactly one element type".to_string(),
-                // `set` was missing from `TYPE_HEADS` until 2026-09-17, so `(set)` — a
-                // KNOWN constructor with the wrong arity — reported "unknown type
-                // constructor `set`". Only a head that fails to parse reaches here, which
-                // is why the omission never mislabelled a correct `(set int)`.
+                // `set` must also be in `TYPE_HEADS`, or `(set)` reports "unknown type
+                // constructor" instead of this arity message.
                 "set" => "`set` takes exactly one element type".to_string(),
                 "seqable" => {
                     "`seqable` takes exactly one element type, or is used bare".to_string()

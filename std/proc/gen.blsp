@@ -6,12 +6,8 @@
 ;;    fresh (ref) (the request/reply idiom in docs/language.md). A message that is
 ;;    *not* one of those envelopes (a monitor `[:down …]`, a link `[:EXIT …]`, a
 ;;    timer tick, a plain send) is an `info` message — Erlang's handle_info.
-;;  - An ORDINARY module with a bare namespace: `gen/start`, `gen/call`,
-;;    `gen/cast`, `gen/stop`, `gen/defserver`, or bare after `(:use gen)`. It was
-;;    briefly bundled into the prelude with those names *bare* (`7cb796f0`), which
-;;    seized ten very generic globals — `call`, `cast`, `stop`, … — into the
-;;    un-redefinable reserved set (ADR-166), so `(def call …)` was refused outright.
-;;    A framework, however core, does not get to own `call` (ADR-243).
+;;  - An ORDINARY module, not prelude: a framework does not get to reserve generic
+;;    globals like `call`/`cast`/`stop` (ADR-243).
 ;;
 ;; A gen_server-style process framework on the kernel's spawn / send / receive / ref /
 ;; monitor (ADR-006). A server carries one immutable state value through its receive loop
@@ -92,6 +88,10 @@ simply exit on timeout, which made a late reply moot.)"
     (send pid [:$call (self) r payload])
     (receive
       ([:reply ^r v] (demonitor m)
+        ;; a second reply to this ref (a `defer` answered twice) is dropped at delivery,
+        ;; or flushed if it was already queued behind this one
+        (%ref-deactivate r)
+        (receive ([:reply ^r _] :ok) (after 0 :ok))
         ; flush a late down, don't leak it
         (receive ([:down ^m _ _] :ok) (after 0 :ok))
         v)
@@ -152,11 +152,6 @@ usual caller, once per affected child after a reload."
   (send pid [:$code-change]))
 (sig code-change ((or map pid) -> nil))
 
-;; `start` / `start-link` / `start-named`, not `spawn-server*` (renamed 2026-08-27). Three
-;; modules spawn a supervised process and each used a different verb — `agent/start` and
-;; `agent/start-link`, `supervisor/start`, and `gen/spawn-server`. `agent` already had the
-;; pair, so that is the shape the other two follow.
-
 (defn start (f state)
   "Spawn a `defserver` server `f` with its initial `state`; return its pid."
   (spawn (f state)))
@@ -171,10 +166,6 @@ propagates either way (Erlang `start_link`). Returns the pid."
 Address it later via `(proc/whereis name)` or by sending to `{:name name}`. (Combine
 with linking by registering the result of `start-link` yourself.)"
   (let (pid (start f state)) (proc/register name pid) pid))
-
-;; (`sleep` lives in the prelude — it used to be redefined here with the
-;; unforgeable-`(ref)` trick because the prelude's version was buggy, but that fix
-;; now lives in the prelude itself, so this duplicate global redefinition is gone.)
 
 ;; ---- defserver -------------------------------------------------------------
 
@@ -212,12 +203,8 @@ and `info` can tail-recurse with it unchanged)."
         (error "defserver: a message clause must start with `cast`, `call`, `query`, `defer`, or `info`, got "
           (pr-str kind)))))
 
-;; `defserver`, not `defprocess`: it does not define a *process* — `spawn`/`send`/`receive`
-;; are core and need no import for that. It defines a **gen server**, whose clauses are
-;; `cast`/`call`/`query`/`info` and whose generated code speaks the gen envelope
-;; (`[:$call from ref …]`). The old name promised the core thing and delivered the framework
-;; one, which is why it read as a `def*` that had escaped the language core. It now sits with
-;; `start`/`start-link`/`start-named`, which start the same thing (2026-08-28).
+;; `defserver`, not `defprocess`: it defines a **gen server** — clauses `cast`/`call`/
+;; `query`/`info`, code speaking the gen envelope (`[:$call from ref …]`) — not a process.
 (defmacro defserver (name params & clauses)
   "Define a gen server `name` over a single `params` state, as a tail-recursive
 receive loop. Message clauses are `(cast PATTERN body…)` — body is the next

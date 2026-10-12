@@ -256,15 +256,6 @@ pub(crate) struct CheckDepRec {
     pub(crate) protocols: bool,
 }
 
-/// **Loader / checker / namespace state — cold for a worker process** (ADR-175 follow-up,
-/// 2026-07-29). Every field here is used by the process that *loads modules or runs the
-/// checker*; a spawned green process that only runs Brood code never touches any of them.
-/// Held behind `Option<Box<ColdHeap>>` on the `Heap` so a worker pays 8 bytes instead of
-/// ~320, which matters because `Box<Process>` sits near a mimalloc size-class boundary:
-/// measured, +320 B of `Process` costs **+640 B of RSS per process**, so the same move
-/// downward is worth a class.
-///
-/// Allocated lazily by [`Heap::cold_mut`] on first write; readers go through
 /// What a bare name in the `(:use …)` import table resolves to (ADR-235). One
 /// contributing module → `One`; two or more `(:use …)`d modules exporting the same
 /// bare name → `Ambiguous`, which is not an error until the name is actually referenced
@@ -278,10 +269,16 @@ pub enum ImportEntry {
     Ambiguous(Vec<Symbol>),
 }
 
+/// **Loader / checker / namespace state — cold for a worker process.** Every field here
+/// is used by the process that *loads modules or runs the checker*; a spawned green
+/// process that only runs Brood code never touches any of them. Held behind
+/// `Option<Box<ColdHeap>>` on the `Heap` so a worker pays 8 bytes instead of ~320, which
+/// matters because `Box<Process>` sits near a mimalloc size-class boundary.
+///
+/// Allocated lazily by [`Heap::cold_mut`] on first write; readers go through
 /// [`Heap::cold`] and treat `None` as empty, which is exactly right — an absent
 /// `ColdHeap` means "this process has loaded nothing and checked nothing".
 #[derive(Default)]
-
 pub(crate) struct ColdHeap {
     /// Nesting depth of an embedded-module load (ADR-166). See `Heap::in_module_load`.
     pub(crate) module_load_depth: u32,
@@ -300,10 +297,8 @@ pub(crate) struct ColdHeap {
     pub(crate) current_file: Option<String>,
     /// `current_file` pre-shared as an `Arc<str>`, kept in step by
     /// [`Heap::set_current_file`]. Every recorded form position stores the file it came
-    /// from, and `set_form_pos` used to build that with `Arc::from(&str)` — a fresh
-    /// allocation *and* a copy of the path, once per list form read. Loading 1000
-    /// thousand-line modules reads ~1.15M list forms, so that was ~1.15M allocations of
-    /// the same handful of strings. Cloning this instead is a refcount bump.
+    /// from; cloning this is a refcount bump, where `Arc::from(&str)` would allocate and
+    /// copy the path once per list form read.
     pub(crate) current_file_arc: Option<Arc<str>>,
     /// The namespace being compiled (`defmodule`).
     pub(crate) compile_ns: Option<Symbol>,
@@ -404,14 +399,13 @@ pub struct Heap {
     /// bit set. Grows by append on each minor collection (cheap — old objects are
     /// never recopied); reclaimed only by a *major* collection
     /// ([`major_collect`](Self::major_collect)), which compacts it. Because Brood
-    /// data is immutable, an old object can never come to point at a young one, so
-    /// the old generation is **not a root set for a minor collection** — no write
-    /// barrier, no remembered set.
-    /// The old generation, lazily boxed. Empty for almost every process — measured at
-    /// **7 of 300,000** on `spawn-live`, because a process only populates it by surviving a
-    /// minor collection, and a short-lived worker never collects at all. Inline it is 264 B
-    /// (eleven `Vec` headers) on every `Heap`, which is inline in `Box<Process>`; boxed it
-    /// is 8. Reads go through [`Heap::old`], which may only be called when an OLD handle
+    /// data is immutable, an old object can only come to point at a young one through a
+    /// binding rebound in a tenured env frame — tracked by [`remembered`](Self::remembered)
+    /// — so the old generation is otherwise **not a root set for a minor collection**.
+    ///
+    /// Lazily boxed: empty for almost every process (a process only populates it by
+    /// surviving a minor collection, and a short-lived worker never collects at all), and
+    /// inline it would be 264 B on every `Heap`. Reads go through [`Heap::old`], which may only be called when an OLD handle
     /// exists — and an OLD handle can only exist if a promotion allocated this.
     old: Option<Box<Slabs>>,
     prelude: Arc<SharedCode>,
@@ -605,31 +599,25 @@ pub struct Heap {
     ///
     /// Boxed and lazily allocated: inline it is 24+ bytes on every `Heap`, and a `Heap`
     /// is inline in `Box<Process>`, where bytes cost about 2:1 in RSS via mimalloc's size
-    /// classes — measured at `spawn` +5.9% for the inline `Vec`. `None` until this process
+    /// classes. `None` until this process
     /// is actually handed a fast-path message, which most processes never are.
     msg_roots: Option<Box<MsgRoots>>,
     /// Loader/checker/namespace state — see [`ColdHeap`]. `None` until a module load,
     /// namespace compile or checker run needs it, so a plain worker process never
     /// allocates it (worth a mimalloc size class on `Box<Process>`).
     cold: Option<Box<ColdHeap>>,
-    /// Checker caches. These stay on `Heap` rather than moving into [`ColdHeap`]
-    /// because they are filled through `&self` (the checker's read paths), which
-    /// cannot lazily allocate the boxed cold state. ~96 bytes; the six fields that
-    /// *are* in `ColdHeap` were enough to drop `Box<Process>` a size class.
     /// Checker-only state — see [`CheckHeap`]. Lazily boxed and `None` until a check
-    /// actually runs, because it is **288 bytes** inline (`check_dep_rec` alone is 208,
-    /// four `HashSet`s) on every `Heap`, and a `Heap` is inline in `Box<Process>`. A
-    /// spawned worker process never checks anything, so it never pays for this. Behind a
+    /// actually runs, because it is ~288 bytes inline on every `Heap`, and a `Heap` is
+    /// inline in `Box<Process>`; a spawned worker never checks anything. Behind a
     /// `RefCell` rather than a plain `Option<Box<_>>` (the shape [`ColdHeap`] uses)
-    /// because every one of these is filled through `&self` — which is exactly why M1
-    /// left them inline.
+    /// because it is filled through `&self` (the checker's read paths).
     check: RefCell<Option<Box<CheckHeap>>>,
     /// The GC root stack. A [`roots_buf::RootsBuf`], not a `Vec<Value>`, so its
     /// (ptr, len, cap) header sits at fixed offsets for the JIT (§7.5); same semantics.
     roots: roots_buf::RootsBuf,
     /// The env half of the operand stack (ADR-061): LOCAL [`EnvId`]s an eval
     /// frame still needs across a nested `eval` (its `scope`/`env`). Relocated in
-    /// place by [`arena_flip`](Self::arena_flip) alongside `roots`; re-read via
+    /// place by every collection alongside `roots`; re-read via
     /// [`env_root_at`](Self::env_root_at). Separate stack because an `EnvId`
     /// isn't a `Value`. Empty between top-level forms.
     env_roots: Vec<EnvId>,
@@ -678,15 +666,13 @@ pub struct Heap {
     /// `Cell` so the `&self` snapshot/restore can bump it; a counter (not a bool) so nested
     /// snapshots compose. [`rt_gc_due`]: Self::rt_gc_due
     rt_collect_block: std::cell::Cell<u32>,
-    /// The LOCAL **generation epoch** — stamped into every LOCAL handle minted
-    /// (the `local_gen` in `alloc_*`), and bumped on every arena flip
-    /// ([`arena_flip`](Self::arena_flip), shared by `flush`/`collect`) so the
-    /// survivors are re-minted with the new value and any handle held across the
-    /// flip without being re-rooted keeps the old one. A debug-only deref check
-    /// in the LOCAL accessors compares `handle.generation()` against this and
-    /// panics at the bad deref. Per-heap (not per-slot): the bump allocator never
-    /// reuses a slot, so a whole-arena flip is the only LOCAL-invalidating event.
-    /// See `docs/memory-review.md`.
+    /// The nursery **generation epoch** — stamped into every nursery handle minted
+    /// (the `local_gen` in `alloc_*`), and bumped on every minor collection so the
+    /// survivors are re-minted with the new value and any handle held across it
+    /// without being re-rooted keeps the old one. A debug-only deref check in the
+    /// LOCAL accessors compares `handle.generation()` against this and panics at
+    /// the bad deref. Per-heap (not per-slot): the bump allocator never reuses a
+    /// slot, so a collection is the only LOCAL-invalidating event.
     local_epoch: u32,
     /// **Write-barrier remembered set.** Old-generation env frames mutated by
     /// [`env_define`](Self::env_define) since the last minor collection — the only
@@ -711,12 +697,8 @@ pub struct Heap {
     /// major), so major GCs stay rare while minors keep the nursery bounded.
     major_threshold: usize,
     /// GC observability counters (Tier-1; `docs/memory-review.md` §7). Bumped by
-    /// every [`arena_flip`](Self::arena_flip) — so they count both the automatic
-    /// Stage-B safepoint collections and any bare [`flush`](Self::flush) (the
-    /// tested arena-flip helper), which share that path. Read out via `(%)`.
-    /// Per-heap (per Brood process), reset
-    /// to zero only at process start; survive arena flips (the flip writes them,
-    /// it doesn't clear them). `u64` so a long-lived server loop can't wrap them.
+    /// every minor and major collection. Per-heap (per Brood process), reset to
+    /// zero only at process start. `u64` so a long-lived server loop can't wrap them.
     /// `gc_runs` = collections performed; `gc_copied` = cumulative survivors
     /// relocated; `gc_reclaimed` = cumulative objects dropped (live-before minus
     /// survivors). These are *counts of LOCAL objects*, not bytes — the cheap,
@@ -764,7 +746,7 @@ pub struct Heap {
     /// they happen). Per-process like every other heap field: a spawned child
     /// starts from the `BROOD_GC_TRACE` default, not the parent's setting.
     gc_trace: bool,
-    /// Compiling-VM body cache (ADR-076, `BROOD_VM`). Maps a closure handle's raw
+    /// Compiling-VM body cache (ADR-076). Maps a closure handle's raw
     /// bits to its compiled single-arm body, or `None` if the closure isn't
     /// VM-eligible (so we don't re-attempt). Per-process (a `RefCell`, like
     /// `global_ic`). The key is **namespaced** (`VmCacheKey`) because two stable
@@ -775,7 +757,7 @@ pub struct Heap {
     /// it points at live in the immovable RUNTIME code region (ADR-076 §2c(a)). The
     /// two spaces share the same numeric range, so the `u8` tag keeps them apart. A
     /// `def` rebind promotes a *new* closure (new handle → new key), so a stale
-    /// entry is simply never looked up again. Empty unless `BROOD_VM` is on. `Arc`
+    /// entry is simply never looked up again. Empty under `BROOD_TIER=0`. `Arc`
     /// so the trampoline can hold the compiled body across a call without borrowing
     /// the cache.
     vm_cache: RefCell<
@@ -894,17 +876,13 @@ pub struct Heap {
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     pub(crate) jit_deopt_reason: std::cell::Cell<u32>,
     vm_call_ics: RefCell<Vec<Option<CallIcEntry>>>,
-    /// Next IC-block base to hand out for [`Self::vm_call_ics`] / [`Self::vm_global_ics`]
-    /// (M2b, 2026-08-30). `vm_arm_block` used to take `base = table.len()` and
-    /// `resize_with(base + nsites)` — materialising an `Option<CallIcEntry>` slot for
-    /// every site of every ACTIVATED arm, entered or not, which for a spawn-once
-    /// process is nearly all of them. Bases now come from these counters and the
-    /// tables grow **on publish** (`vm_call_ic_put` / `vm_global_ic_put`), the same
-    /// lazy-by-its-only-writer pattern the `vm_fast_links` mirror proved on
-    /// 2026-08-18. Every reader already tolerates a short table (`.get(abs)` — a
+    /// Next IC-block base to hand out for [`Self::vm_call_ics`] / [`Self::vm_global_ics`].
+    /// Bases come from these counters and the tables grow **on publish**
+    /// (`vm_call_ic_put` / `vm_global_ic_put`), so an activated arm whose sites never run
+    /// materialises no slots. Every reader tolerates a short table (`.get(abs)` — a
     /// missing slot reads exactly like an unpublished one). Reset to 0 in lockstep
     /// with the table clears + `arm_ic_blocks`, preserving ADR-096's site-id
-    /// recycling semantics exactly (the sym/argc guards on every probe exist for it).
+    /// recycling semantics (the sym/argc guards on every probe exist for it).
     next_ic_base: std::cell::Cell<u32>,
     next_gic_base: std::cell::Cell<u32>,
     /// Depth of live tree-walker→VM re-entries (`eval`'s closure application routing a
@@ -935,10 +913,8 @@ pub struct Heap {
     /// paths `.get_mut(abs)`, and the IR bounds-checks `site < len` against the length
     /// from `brood_rt_fastlink_base`, which it re-fetches after each Brood→Brood call
     /// because a cold nested call may grow and realloc this table. A missing slot reads
-    /// exactly like an unpublished one. Measured on `spawn-live` 2026-08-18: **99.8% of unit
-    /// processes now allocate 0 bytes here**, worth 48 B per call site entered — ~193 B while
-    /// parked in `receive` (the state that sets peak memory) and ~672 B for a process that has
-    /// run its whole body.
+    /// exactly like an unpublished one. Almost every short-lived process allocates 0 bytes
+    /// here.
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     vm_fast_links: RefCell<Vec<FastLink>>,
     /// DEBUG ONLY: per-call-site source position, recorded at compile time and indexed
@@ -1079,17 +1055,10 @@ fn form_pos_key(id: PairId) -> u64 {
     (id.index() as u64) | ((id.is_old() as u64) << 32)
 }
 
-/// The [`RuntimeCode::positions`] key for a RUNTIME pair: its slab index plus its
-/// **code generation**. The RUNTIME twin of [`form_pos_key`] (which packs the LOCAL
-/// age bit at the same offset), and for the same reason: the two RUNTIME generations
-/// share one index space, so a bare index conflates them (see `positions`). Slab
-/// indices are bounded by `GEN_SHIFT` bits, so the low 32 bits always suffice.
 /// What the two position tables hold for a list form: where it is, which file, and whether
 /// the EXPANDER built it (a macro's result, a pattern-binder desugar) rather than the reader.
 /// One record for both tables — LOCAL (`ColdHeap::form_pos`) and RUNTIME
-/// (`RuntimeCode::positions`) — so `promote` carries the whole fact across, not a subset:
-/// the synthetic mark once lived in a side set beside the LOCAL table, and a promoted form
-/// silently lost it (the checker then warned on generated `let`s it should have exempted).
+/// (`RuntimeCode::positions`) — so `promote` carries the whole fact across, not a subset.
 #[derive(Clone, Debug)]
 pub(crate) struct FormPos {
     pub(crate) pos: crate::error::Pos,
@@ -1097,6 +1066,11 @@ pub(crate) struct FormPos {
     pub(crate) synthetic: bool,
 }
 
+/// The [`RuntimeCode::positions`] key for a RUNTIME pair: its slab index plus its
+/// **code generation**. The RUNTIME twin of [`form_pos_key`] (which packs the LOCAL
+/// age bit at the same offset), and for the same reason: the two RUNTIME generations
+/// share one index space, so a bare index conflates them (see `positions`). Slab
+/// indices are bounded by `GEN_SHIFT` bits, so the low 32 bits always suffice.
 #[inline]
 pub(crate) fn rt_pos_key(idx: usize, code_gen: usize) -> u64 {
     debug_assert!(code_gen < 2, "RUNTIME code generation must be 0 or 1");
@@ -1188,8 +1162,7 @@ pub enum Root {
 /// **or** RUNTIME frame takes a slot (the latter is evacuated by the runtime
 /// compactor, so it must be rewritten there).
 ///
-/// `#[repr(C, u8)]` because the JIT's inline fast-frame path (§7.5,
-/// `BROOD_XCALL=1`) saves/restores [`Heap::jit_call_env`] as two opaque words
+/// `#[repr(C, u8)]` because the JIT's inline fast-frame path (§7.5) saves/restores [`Heap::jit_call_env`] as two opaque words
 /// and constructs `Stable(EnvId::GLOBAL)` by storing `(0, u64::MAX)` — the
 /// defined layout (tag `u8` at 0, payload at 8, 16 bytes total) is what makes
 /// those stores a valid value. Pinned by `env_root_layout_is_pinned`.
@@ -1200,8 +1173,7 @@ pub enum EnvRoot {
     Slot(usize),
 }
 
-/// Byte offsets of the `Heap` fields the JIT's inline fast-frame path (§7.5,
-/// `BROOD_XCALL=1`) reads and writes directly from emitted code — the call ceremony
+/// Byte offsets of the `Heap` fields the JIT's inline fast-frame path (§7.5) reads and writes directly from emitted code — the call ceremony
 /// `jit_run_fast_link` otherwise performs in Rust. Computed with `offset_of!` at lower
 /// time inside the same binary that runs the emitted code, so they are exact by
 /// construction; a struct reorder recomputes them on the next build.
@@ -1244,12 +1216,12 @@ mod env_root_layout_tests {
         let words = [0u64, u64::MAX];
         // SAFETY: fully-initialized bytes forming a valid repr(C, u8) value (tag 0 =
         // Stable, payload = EnvId(u64::MAX) = GLOBAL).
-        let er: EnvRoot = unsafe { std::mem::transmute::<[u64; 2], EnvRoot>(words) };
-        assert!(matches!(er, EnvRoot::Stable(e) if e.0 == u64::MAX));
+        let stable: EnvRoot = unsafe { std::mem::transmute::<[u64; 2], EnvRoot>(words) };
+        assert!(matches!(stable, EnvRoot::Stable(e) if e.0 == u64::MAX));
         let slot = [1u64, 42u64];
         // SAFETY: tag 1 = Slot, payload 42.
-        let er2: EnvRoot = unsafe { std::mem::transmute::<[u64; 2], EnvRoot>(slot) };
-        assert!(matches!(er2, EnvRoot::Slot(42)));
+        let slotted: EnvRoot = unsafe { std::mem::transmute::<[u64; 2], EnvRoot>(slot) };
+        assert!(matches!(slotted, EnvRoot::Slot(42)));
     }
 }
 
@@ -1423,8 +1395,7 @@ impl Heap {
 
     /// Entry counts of the two source-position side tables — the LOCAL
     /// [`Heap::form_pos`] map and the shared RUNTIME [`RuntimeCode::positions`] map.
-    /// Measurement surface for the position-table cost (they were 169 MB of a 933 MB
-    /// 1000-module load, and 24% of load time, on 2026-08-06); read by `(%)`.
+    /// Measurement surface for the position-table cost; read by `(%)`.
     #[cfg(feature = "dev-tools")]
     pub(crate) fn pos_table_stats(&self) -> (usize, usize, usize, usize) {
         let (local, local_cap) = self
@@ -1733,12 +1704,12 @@ impl Heap {
         }
     }
 
-    /// Reclaim everything allocated into the LOCAL heap since `cp`, by truncating
-    /// the slabs back to it.
+    /// Reclaim everything allocated into the LOCAL nursery since `checkpoint`, by
+    /// truncating the slabs back to it.
     ///
     /// **Safety contract (logical, not `unsafe`):** call this only at a top-level
     /// boundary — when the evaluator has fully returned and no value reachable
-    /// from here on holds a LOCAL handle at or past `cp`. Globals live in the
+    /// from here on holds a LOCAL handle at or past `checkpoint`. Globals live in the
     /// PRELUDE/RUNTIME regions and never point into LOCAL (a top-level `def`
     /// *promotes* its value out), so they're always safe; the only thing that can
     /// still be live is the *result* of the form just evaluated — consume or
@@ -1746,37 +1717,34 @@ impl Heap {
     /// in-flight computation's values and corrupt later reads.
     ///
     /// **Collection-safety.** If a collection fired between [`checkpoint`] and
-    /// here, it already compacted the nursery (a flip rewrote the slabs; a tenure
-    /// emptied them) and bumped [`local_epoch`](Self::local_epoch), so `cp`'s slab
-    /// lengths no longer describe the live nursery. Truncating to them would
-    /// **strand the survivors the collector just kept** (the demonstrated GC
-    /// slab-OOB crash: a wide-bignum eval forced a flip, then the stale-length
-    /// truncate cut live objects loose). On an epoch mismatch this is a no-op — the
+    /// here, it already compacted the nursery and bumped
+    /// [`local_epoch`](Self::local_epoch), so the checkpoint's slab lengths no longer
+    /// describe the live nursery and truncating to them would strand the survivors
+    /// the collector just kept. On an epoch mismatch this is a no-op — the
     /// collection has already reclaimed the dead, and the next `gc_due` reclaims
-    /// this form's now-garbage survivors. Only the no-collection fast path (epoch
-    /// unchanged: a pure bump-allocated region) actually truncates.
-    pub fn reset_local_to(&mut self, cp: LocalCheckpoint) {
-        if self.local_epoch != cp.epoch {
+    /// this form's now-garbage survivors.
+    pub fn reset_local_to(&mut self, checkpoint: LocalCheckpoint) {
+        if self.local_epoch != checkpoint.epoch {
             return;
         }
-        self.local.pairs.truncate(cp.pairs);
-        self.local.vectors.truncate(cp.vectors);
-        self.local.maps.truncate(cp.maps);
-        self.local.strings.truncate(cp.strings);
-        self.local.bigints.truncate(cp.bigints);
-        self.local.decimals.truncate(cp.decimals);
-        self.local.ratios.truncate(cp.ratios);
-        self.local.bytes.truncate(cp.bytes);
-        self.local.ropes.truncate(cp.ropes);
-        self.local.closures.truncate(cp.closures);
-        self.local.envs.truncate(cp.envs);
-        // Drop position metadata for the pairs just reclaimed (indices reused).
-        // Keys pack the age bit at bit 32; this checkpoint path is nursery-only,
-        // so compare the low-32 slab index against the checkpoint length.
+        self.local.pairs.truncate(checkpoint.pairs);
+        self.local.vectors.truncate(checkpoint.vectors);
+        self.local.maps.truncate(checkpoint.maps);
+        self.local.strings.truncate(checkpoint.strings);
+        self.local.bigints.truncate(checkpoint.bigints);
+        self.local.decimals.truncate(checkpoint.decimals);
+        self.local.ratios.truncate(checkpoint.ratios);
+        self.local.bytes.truncate(checkpoint.bytes);
+        self.local.ropes.truncate(checkpoint.ropes);
+        self.local.closures.truncate(checkpoint.closures);
+        self.local.envs.truncate(checkpoint.envs);
+        // Drop position metadata for the nursery pairs just reclaimed (their indices
+        // are reused). Keys pack the age bit at bit 32 (`form_pos_key`): only the
+        // nursery slab was truncated, so an OLD pair's entry always survives.
         if self.cold.as_ref().is_some_and(|c| !c.form_pos.is_empty()) {
             self.cold_mut()
                 .form_pos
-                .retain(|&k, _| (k as u32 as usize) < cp.pairs);
+                .retain(|&key, _| (key >> 32) != 0 || (key as u32 as usize) < checkpoint.pairs);
         }
         // The threshold is relative to live count; reclamation here is so cheap
         // that we let the next `gc_due` check recompute against the smaller heap.
@@ -2094,8 +2062,8 @@ impl Heap {
     /// RUNTIME generation `g`'s slabs, borrowed for as long as `&self` — no refcount bump.
     ///
     /// ADR-224's reasoning, extended from `with_code_gen` to every RUNTIME read: a `get` on a
-    /// `def`'d map dereferences one trie node per level, and each used to clone and drop an
-    /// `Arc` whose count every core shares — two contended atomics per level.
+    /// `def`'d map dereferences one trie node per level, and cloning the generation's `Arc`
+    /// there would cost two contended atomics per level.
     ///
     /// **Why the borrow is sound on its own terms** (not merely because ADR-091 says a
     /// generation this process references is never freed): the only thing that ever drops the

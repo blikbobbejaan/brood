@@ -35,6 +35,7 @@ use wasmtime::{Config, Engine, ResourceLimiter, Store};
 use crate::core::heap::Heap;
 use crate::core::value::{self, Value};
 use crate::error::{LispError, LispResult};
+use crate::host::owned::OwnedTable;
 
 /// Fuel budget per call — generous for real compute (hundreds of millions of
 /// abstract ops) while still bounding a runaway guest to well under a second.
@@ -167,28 +168,23 @@ fn new_store(engine: &Engine) -> Store<HostState> {
     store
 }
 
-/// One live instance in the registry: the pid that loaded it (whose retirement closes
-/// it) beside the instance itself. The owner sits outside the instance's own lock so the
-/// retirement sweep never waits on a guest call in flight.
-struct Entry {
-    owner: u64,
-    instance: Arc<Mutex<WasmInst>>,
-}
-
-static REGISTRY: LazyLock<Mutex<HashMap<u64, Entry>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The live instances, indexed by the pid that loaded each one (whose retirement closes
+/// it). The owner sits outside the instance's own lock so the retirement sweep never
+/// waits on a guest call in flight.
+static REGISTRY: LazyLock<Mutex<OwnedTable<Arc<Mutex<WasmInst>>>>> =
+    LazyLock::new(|| Mutex::new(OwnedTable::default()));
 
 /// The registry lock, poison-tolerant: a panic while another thread held it
 /// must not turn every future wasm op into a hard panic (the "must Err, never
 /// panic" bar). The map is plain data, so a poisoned guard is still usable.
-fn reg() -> std::sync::MutexGuard<'static, HashMap<u64, Entry>> {
+fn reg() -> std::sync::MutexGuard<'static, OwnedTable<Arc<Mutex<WasmInst>>>> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A fresh, unguessable instance token: 62 random bits (positive as a Brood int), never
 /// 0 and never one already live. Sequential ids let any process reach any instance by
 /// counting from 1.
-fn fresh_token(registry: &HashMap<u64, Entry>) -> Result<u64, LispError> {
+fn fresh_token(registry: &OwnedTable<Arc<Mutex<WasmInst>>>) -> Result<u64, LispError> {
     loop {
         let mut raw = [0u8; 8];
         getrandom::fill(&mut raw).map_err(|e| wasm_err("%wasm-load", e))?;
@@ -292,13 +288,7 @@ pub fn load(src: &[u8], owner: u64) -> Result<u64, LispError> {
     }
     let mut registry = reg();
     let id = fresh_token(&registry)?;
-    registry.insert(
-        id,
-        Entry {
-            owner,
-            instance: Arc::new(Mutex::new(WasmInst { store, exports })),
-        },
-    );
+    registry.insert(id, owner, Arc::new(Mutex::new(WasmInst { store, exports })));
     Ok(id)
 }
 
@@ -328,27 +318,16 @@ pub fn close(id: u64) {
 /// left 10 GB of address space mapped. A no-op for a process that closed its own.
 pub fn close_process_instances(pid: u64) {
     // Drop the entries outside the registry lock: the last `Arc` frees a whole store.
-    let closed: Vec<Entry> = {
-        let mut registry = reg();
-        let ids: Vec<u64> = registry
-            .iter()
-            .filter(|(_, entry)| entry.owner == pid)
-            .map(|(id, _)| *id)
-            .collect();
-        ids.iter().filter_map(|id| registry.remove(id)).collect()
-    };
+    let closed = reg().remove_owned_by(pid);
     drop(closed);
 }
 
 /// Look up instance `id`. `who` is the *calling* primitive, so a stale handle
 /// handed to `%wasm-exports` doesn't report itself as a `%wasm-call` failure.
 fn instance(who: &str, id: u64) -> Result<Arc<Mutex<WasmInst>>, LispError> {
-    reg()
-        .get(&id)
-        .map(|entry| entry.instance.clone())
-        .ok_or_else(|| {
-            LispError::runtime(format!("{who}: no such wasm instance (already closed?)"))
-        })
+    reg().get(&id).cloned().ok_or_else(|| {
+        LispError::runtime(format!("{who}: no such wasm instance (already closed?)"))
+    })
 }
 
 /// Call export `name` of instance `id`. Marshals `args` by the export's WIT

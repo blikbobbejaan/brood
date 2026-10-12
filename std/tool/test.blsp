@@ -134,7 +134,7 @@ docs/testing.md for the full guide."
 (defn- fail-loc (form)
   (let (p (reflect/form-pos form))
     ; [line col] vector, or nil
-    (if p (list (reflect/current-file) (seq/vector-ref p 0) (seq/vector-ref p 1)) nil)))
+    (if p (list (reflect/current-file) (nth p 0) (nth p 1)) nil)))
 
 ;; A failing assertion THROWS a tagged failure record rather than mutating shared
 ;; state — Brood data is immutable (no accumulator to push onto). The tag is a
@@ -222,11 +222,8 @@ docs/testing.md for the full guide."
 (defn register-test (name thunk isolated? meta)
   "Register one test. Inside a `describe` it is collected into that group's `*collected*` (carrying its `:isolated` flag in the meta); otherwise it is emitted immediately as its own standalone unit — `:isolated` if flagged, else `:parallel`."
   (if *collecting*
-    ;; Inside a `describe`, a test-level `:isolated` used to be DROPPED here — the group's
-    ;; mode decided and the marker did nothing, silently. That is worse than not supporting
-    ;; it: you mark a test isolated, the suite reports `0 isolated`, and you believe the test
-    ;; is protected. It rides in the meta now, and `emit-describe` gives such a test its own
-    ;; isolated unit. (Found 2026-08-05 while fixing a concurrency flake with the marker.)
+    ;; A test-level `:isolated` inside a `describe` rides in the meta; `emit-describe`
+    ;; gives such a test its own isolated unit, whatever the group's mode.
     (def *collected*
       (cons (list name thunk (assoc (or meta {}) :isolated isolated?))
         *collected*))
@@ -270,14 +267,8 @@ docs/testing.md for the full guide."
 
 ;; A modifier written BEFORE a test form in a describe body — `:isolated (test "…" …)` — is
 ;; spliced into that form, after its name, so it means what `(test "…" :isolated …)` means.
-;; Until 2026-09-06 a bare keyword in a describe body was an ordinary form: it evaluated to
-;; itself and did nothing, and the test it stood before registered as a PARALLEL test. The
-;; spelling is the natural one (109 files use it; at the head of a body it is the group-level
-;; modifier, so it reads as the same thing per test) and it was believed everywhere it was
-;; written — 31 tests in 10 files had been running concurrently under a marker saying they
-;; must not, and `eval_server_test`'s three `:trace :all` cases flaked at 5-8% for exactly
-;; that reason (KI-107, two candidate fixes refuted before the marker was checked). Any OTHER
-;; bare keyword in a body is an expansion-time error, so the mistake cannot go quiet again.
+;; Any OTHER bare keyword in a body is an expansion-time error, so a misplaced marker cannot
+;; silently do nothing (KI-107).
 (defn- test-describe-form? (f)
   (and (pair? f) (includes? (list 'test 'deftest) (first f))))
 
@@ -516,11 +507,23 @@ the test rather than hanging the run."
     (= key (first opts)) (second opts)
     else (opt-val key (rest opts) default)))
 
-;; (`pad-left` / `pad-right` are the prelude's, like `take` / `quot` — all formerly
-;; redefined here, which clobbered the shared global with a worse version (the local
-;; `spaces` helper was non-tail-recursive; `take` was non-tail), since the runtime
-;; shares one global table across all loaded modules, so `require`-ing test would
-;; re-bind them for the whole image. Use the prelude's stack-safe versions.)
+;; --- the verdict of a red run -------------------------------------------------
+;; A run that fails raises a structured verdict rather than a sentence, so a caller (`nest
+;; test`) can tell "the suite is red, already reported" from a real error by its `:kind`.
+
+(defn suite-failed (message)
+  "Raise the verdict of a red run — `{:kind :suite-failed :message message}` — after its
+failures have been reported. `brood --test` prints `message` and exits non-zero.
+
+    (get (try (test/suite-failed \"2 test(s) failed\") (catch e e)) :kind)   → :suite-failed"
+  (throw {:kind :suite-failed :message message}))
+
+(defn suite-failed? (caught)
+  "Whether `caught` is the verdict [[suite-failed]] raises.
+
+    (test/suite-failed? (try (test/suite-failed \"1 test(s) failed\") (catch e e)))   → true
+    (test/suite-failed? \"1 test(s) failed\")   → false"
+  (and (map? caught) (= (get caught :kind) :suite-failed)))
 
 ;; Insertion sort of [name ms] pairs, slowest first. O(n²), but there are only
 ;; ever a handful of tests, so simplicity wins.
@@ -604,7 +607,7 @@ the test rather than hanging the run."
    :shard (or shard 0)})
 
 (defn- test-has-tag? (tags key-string)
-  (fold (into [] tags) false (fn (found tag) (or found (= (->string tag) key-string)))))
+  (any? tags (fn (tag) (= (->string tag) key-string))))
 
 ;; Is `needle` a trailing suffix of `path` on a PATH-COMPONENT boundary? The
 ;; boundary check is what stops `a_test.blsp` from matching `extra_test.blsp` —
@@ -1004,13 +1007,7 @@ the test rather than hanging the run."
 ;; nextest wrapper (`brood_suite_passes`, tests/suite.rs) runs this entire suite as
 ;; ONE case, so its per-case cap in `.config/nextest.toml` is set *above* this (300s)
 ;; — otherwise nextest would kill the wrapper before this inner timeout could fire.
-;; The same ceiling with contracts armed — which `nest test` now is by default (ADR-381).
-;; Until 2026-09-21 the armed ceiling was FIVE TIMES this: every contract check ran on the
-;; tree-walker (the machinery sat above its own macros in the prelude), a contracted call
-;; cost ~600 µs, and `audit_test`, `doc_examples_test`, `prng_test` and `resolver_test`
-;; crossed 120 s on work that was not hung, only wrapped. With the checks compiled and the
-;; prelude's own names exempt, the slowest of those four is 8 s, so "timed out" can keep
-;; meaning "stopped making progress" in both modes.
+;; The same ceiling applies with contracts armed (`nest test`'s default, ADR-381).
 (defdyn *test-timeout-ms* 120000)
 (sig *test-timeout-ms* int)
 
@@ -1079,8 +1076,7 @@ the test rather than hanging the run."
 
 ;; The parallel/serial units run in bounded groups (see `*parallel-batch*`) — the
 ;; loop that does so is the `run-driver` below, which also folds in the isolated
-;; phase. (It used to be a plain `run-parallel`/`run-isolated` pair; they were
-;; merged into the driver so the runner collects between groups at the safepoint.)
+;; phase, so the runner collects between groups at the safepoint.
 
 ;; The unit a monitored worker `pid` was spawned for, or nil if `pid` isn't one
 ;; of ours (e.g. a stale `[:down …]` from a previous run still in the mailbox).
@@ -1164,14 +1160,8 @@ the test rather than hanging the run."
     (collect-loop (count workers) workers nil acc (+ (os/now) *test-timeout-ms*))))
 
 ;; `pending` counts workers that have not yet EXITED — a worker's `:down`, not its
-;; `:unit-result`, is what retires it. A worker's body is `(send me …)` and it exits the
-;; instant the send returns, so the `:down` follows the result within microseconds; but
-;; "within microseconds" is not "before the collector returns", and the runner used to
-;; count a unit done at the result and drop the `:down` on the floor. The file-boundary
-;; quiesce (`test-quiesce-file`) then found the runner's OWN worker still alive one run in
-;; three and reported it as a leaked process (`(nil :ki89-leaker)` where one straggler
-;; was expected). Waiting for the exit costs one more receive per worker and makes the
-;; runner's machinery quiescent by construction rather than by luck.
+;; `:unit-result`, is what retires it, so the runner's own workers are gone by
+;; construction before the file-boundary quiesce (`test-quiesce-file`) looks for leaks.
 (defn- collect-loop (pending workers reported acc deadline)
   (if (= pending 0)
     acc
@@ -1312,29 +1302,9 @@ the test rather than hanging the run."
         iso (seq/filter units (fn (u) (= (first u) :isolated))))
     (drain-runner iso par)))
 
-;; Run each `loader` (a 0-arg thunk that `reflect/load`s one test file) in its OWN global
-;; scope and return the concatenated raw results. Wrapping a file's reset+load+run in
-;; `%isolate` rolls back that file's top-level `def`s (and lets the next safepoint
-;; reclaim the promoted code) once its tests finish — so a large suite's shared
-;; RUNTIME region stays bounded instead of accumulating every file's code at once
-;; (the test-runner leak, docs/devlog.md 2026-07-03). `%isolate` is safe to nest a
-;; file's own `:isolated` units inside, and is RUNTIME-compaction-safe (the
-;; `rt_collect_block` fix). Files run sequentially (each `%isolate` blocks to
-;; completion); tests WITHIN a file still parallelise. The shared drain behind both
-;; `run-tests-scoped` (prints) and `run-tests-scoped-structured` (returns data).
-;; Load one file and run what it registered — reporting a file that FAILS TO LOAD as
-;; a failure of its own rather than letting it abort the run.
-;;
-;; A test file that doesn't compile is an everyday situation (you are editing it), and
-;; it used to take the whole suite down with a raw error structure:
-;;
-;;   1337:13: error: {:trace ({:col 58, :line 1093} …), :message unbound symbol: …,
-;;                    :file /home/…/tests/oops_test.blsp, :kind :unbound, …}
-;;
-;; — three thousand passing tests thrown away, and the one fact that mattered (which
-;; file, which line, what was wrong) buried inside a printed map. Now the file becomes
-;; one clearly-located failure, the other files still run, and the run still exits
-;; non-zero.
+;; Load one file and run what it registered — reporting a file that FAILS TO LOAD (an
+;; everyday state while editing it) as one clearly-located failure of its own, so the
+;; other files still run and the run still exits non-zero.
 (defn- drain-one-file (loader)
   (reset-units)
   ;; The file loads under the ordinary LAZY policy (ADR-335). It was loaded eagerly for a
@@ -1370,14 +1340,9 @@ the test rather than hanging the run."
       (if (and (not (= shown "")) (not (nil? line))) (str shown ":" line) ""))))
 
 ;; Process quiescence at a file boundary — the precondition `%isolate`'s restore needs
-;; and the scoped runner used to violate (KI-89's residual). `%isolate` reaps the thunk's
-;; descendants by spawn ancestry, and a grandchild whose parent already exited falls
-;; through that filter: it runs on AFTER the restore, against the globals of a file that
-;; is finished, and anything it `def`s or `require`s lands in the next file's table —
-;; a registry id whose constructor was rolled back, a `*lineedit-keymap*` pre-bound
-;; before its module loads, an ability impl map ripped out from under a running dispatch.
-;; Measured 2026-09-03: 1-18 such processes per file across this suite, on every run
-;; (`nest test --trace` prints each file's count). See KI-89 for the whole class.
+;; (KI-89). `%isolate` reaps the thunk's descendants by spawn ancestry, and a grandchild
+;; whose parent already exited falls through that filter: it would run on AFTER the
+;; restore, and anything it `def`s or `require`s would land in the next file's table.
 ;;
 ;; The runner owns the whole runtime for the duration of `nest test`, so at a file
 ;; boundary every process that was not alive when the file started is a straggler by
@@ -1443,10 +1408,8 @@ the test rather than hanging the run."
 (sig test-await-dead (seqable int -> (or list nil)))
 
 (defn- drain-files-scoped (loaders)
-  ;; Accumulate each file's result LIST with `cons` (O(1)) into a reverse-order list of
-  ;; lists, then flatten once — O(total results). (A naive `(append acc file-results)`
-  ;; per file is O(files²): it recopies the growing accumulator every file, which made a
-  ;; 100K-file suite quadratic. `cons` + one flatten keeps it linear.)
+  ;; Each file's result list is `cons`ed onto a reverse-order list of lists and flattened
+  ;; once at the end, keeping a large suite linear.
   ;;
   ;; `--max-failures` also has to be enforced HERE, across files: each file gets its
   ;; own driver (that's what per-file scoping means), so `run-driver`'s between-steps
@@ -1454,10 +1417,8 @@ the test rather than hanging the run."
   ;; — counting once per file rather than re-scanning the accumulator — and stops
   ;; loading further files once the budget is spent.
   (let (final (fold
-                ;; `--seed` randomises FILE order too, not just the units within a
-                ;; file — the scoped runner drains one file at a time, so without
-                ;; this files always ran in discovery order and a cross-file order
-                ;; dependency could never be shaken out.
+                ;; `--seed` randomises FILE order too, so a cross-file order dependency
+                ;; can be shaken out.
                 (test-order-files loaders)
                 (list nil 0)
                 (fn (state loader)
@@ -1473,11 +1434,9 @@ the test rather than hanging the run."
                         (list (cons file-results chunks)
                           (+ failed (count-failed file-results))))))))
         chunks (first final))
-    ;; `chunks` is reverse run order; fold back to run order with `%append-two`, which copies
-    ;; only its FIRST arg (the small per-file result list) and SHARES the accumulator tail —
-    ;; O(total). NB: the variadic `append` copies BOTH args, so `(append c acc)` here would be
-    ;; O(files²) (it recopies the growing accumulator every file); `%append-two` is the fix.
-    (fold chunks nil (fn (acc file-results) (%append-two file-results acc)))))
+    ;; `chunks` is in reverse run order. One variadic `append` over all of them is
+    ;; O(total); appending into a growing accumulator per file would be O(files²).
+    (apply append (reverse chunks))))
 
 ;; Run a suite file-by-file (each file in its own rolled-back scope, via
 ;; `drain-files-scoped`), aggregate, then report once — the memory-bounded analogue of
@@ -1504,40 +1463,21 @@ the test rather than hanging the run."
 (defn run-tests-scoped-structured (loaders & opts)
   "Like `run-tests-scoped`, but returns the structured result `{:total :passed :failed :failed-assertions :ms :results [...]}` instead of printing and raising — the memory-bounded counterpart of `run-tests-structured`. Backs the `nest mcp` run-tests tool."
   (test-apply-opts opts)
-  (let (start (os/now)
-        results (drain-files-scoped loaders)
-        elapsed (- (os/now) start)
-        total (count results)
-        failed (count-failed results)
-        fails (count-failures results))
-    {:total total
-     :passed (- total failed)
-     :failed failed
-     :failed-assertions fails
-     :ms elapsed
-     :results (or (map results
-                    (fn (r)
-                      {:group (r-group r)
-                       :name (r-name r)
-                       :passed (not (r-failed? r))
-                       :ms (r-ms r)
-                       :failures (or (map (r-fails r) (fn (f) {:loc (first f) :details (second f)}))
-                                   [])}))
-                [])}))
-;; ────────────────────────────────────────────────────────────────────────────
+  (let (start (os/now) results (drain-files-scoped loaders))
+    (results->structured results (- (os/now) start))))
 
 ;; --- reporting ---------------------------------------------------------------
 ;; A failure record is (loc detail-lines): loc is (file line col) or nil.
-(defn- fail-loc-of (rec) (first rec))
-(defn- fail-lines-of (rec) (second rec))
+(defn- fail-loc-of (failure-record) (first failure-record))
+(defn- fail-lines-of (failure-record) (second failure-record))
 
 ;; The anchor line for a failed assertion. With a location it's the GNU
 ;; `FILE:LINE:COL: message` form that compilation-mode / flymake parse and make
 ;; clickable; without one, just the message. The labeled fields print indented
 ;; under it. See docs/tooling.md.
-(defn fail-anchor (r rec)
+(defn fail-anchor (r failure-record)
   "The anchor line for one failure record `rec` of result `r`: the bold `file:line:col` location (from `fail-where`), then `test failed: ` and the test's full `group › name`. The clickable header a reporter prints above the failure's indented fields."
-  (let (where (fail-where r rec))
+  (let (where (fail-where r failure-record))
     (str (if (= where "") "" (str (test-bold where) ": "))
       (test-red "test failed: ")
       (full-name r))))
@@ -1552,9 +1492,9 @@ the test rather than hanging the run."
 ;; assertion carried no recorded position the location was omitted ENTIRELY, leaving
 ;; only `test failed: group › name` with nothing to jump to; it now falls back to the
 ;; test's own declaration site, which the result carries.
-(defn fail-where (r rec)
+(defn fail-where (r failure-record)
   "Where a failure occurred, as `file:line:col` relative to the working directory. Uses the failure record `rec`'s own captured position when it has one; otherwise falls back to result `r`'s declaration site (`r-where`), and \"\" only when neither is known."
-  (let (loc (fail-loc-of rec))
+  (let (loc (fail-loc-of failure-record))
     (cond
       loc (str (test-relative-path (first loc)) ":" (second loc) ":" (third loc))
       ;; No per-assertion position (a body form the reader recorded no position for) —
@@ -1568,10 +1508,12 @@ the test rather than hanging the run."
 (defn- print-failure (indent r)
   (fold (r-fails r)
     nil
-    (fn (_ rec)
+    (fn (_ failure-record)
       (io/puts "")
-      (io/puts (fail-anchor r rec))
-      (fold (fail-lines-of rec) nil (fn (_ line) (io/puts (str indent (test-dim-label line))))))))
+      (io/puts (fail-anchor r failure-record))
+      (fold (fail-lines-of failure-record)
+        nil
+        (fn (_ line) (io/puts (str indent (test-dim-label line))))))))
 
 ;; Dim the `label:` prefix of a detail line so the VALUE is what stands out —
 ;; `actual:`/`expect:`/`assert:` are scaffolding, the values are the information.
@@ -1712,32 +1654,39 @@ order (deterministic — the results are already collected)."
         (when (r-failed? r)
           (fold (r-fails r)
             nil
-            (fn (_ rec)
-              (fold (fail-lines-of rec) nil (fn (_ line) (io/puts (str "# " line)))))))
+            (fn (_ failure-record)
+              (fold (fail-lines-of failure-record) nil (fn (_ line) (io/puts (str "# " line)))))))
         (+ i 1))))
   nil)
 
-(defn- test-result->data (r)
-  "One result as a JSON-ready map (the shape `run-tests-structured` also emits)."
-  {:group (r-group r)
-   :name (r-name r)
-   :passed (not (r-failed? r))
-   :skipped (r-skipped? r)
-   :ms (r-ms r)
-   :failures (or (map (r-fails r) (fn (f) {:loc (first f) :details (second f)})) [])})
+(defn- test-result->data (result)
+  "One result as a JSON-ready map. Every list field defaults to `[]`, never nil, so it
+renders as JSON `[]` rather than `null`."
+  {:group (r-group result)
+   :name (r-name result)
+   :passed (not (r-failed? result))
+   :skipped (r-skipped? result)
+   :ms (r-ms result)
+   :failures (or (map (r-fails result)
+                   (fn (record) {:loc (fail-loc-of record) :details (fail-lines-of record)}))
+               [])})
+
+(defn- results->structured (results elapsed)
+  "A run as data — `{:total :passed :failed :failed-assertions :ms :results [...]}`, each
+result `{:group :name :passed :skipped :ms :failures [{:loc :details} …]}` (`:loc` is
+`[file line col]` or nil). What the structured runners return and `--formatter json` prints."
+  (let (total (count results) failed (count-failed results))
+    {:total total
+     :passed (- total failed)
+     :failed failed
+     :failed-assertions (count-failures results)
+     :ms elapsed
+     :results (or (map results test-result->data) [])}))
 
 (defn- test-fmt-json (results elapsed)
-  "One JSON object for the whole run: `{:total :passed :failed :failed-assertions :ms
-:results [...]}` — the same data `run-tests-structured` returns, for a tool that consumes
-the suite programmatically. Printed once, at the end, so parallel ordering is irrelevant."
-  (let (total (count results)
-        failed (count-failed results))
-    (io/puts (json/encode {:total total
-                           :passed (- total failed)
-                           :failed failed
-                           :failed-assertions (count-failures results)
-                           :ms elapsed
-                           :results (or (map results test-result->data) [])})))
+  "One JSON object for the whole run — [[results->structured]], for a tool that consumes the
+suite programmatically. Printed once, at the end, so parallel ordering is irrelevant."
+  (io/puts (json/encode (results->structured results elapsed)))
   nil)
 
 (register-test-formatter "tap" test-fmt-tap)
@@ -1758,7 +1707,7 @@ the exit code still reflects the run. An unknown formatter name is a clean error
       (do
         (formatter-fn results elapsed)
         (if (> (count-failed results) 0)
-          (error (str (count-failed results) " test(s) failed"))
+          (suite-failed (str (count-failed results) " test(s) failed"))
           :ok)))))
 
 (defn- test-report-pass (results elapsed opts extra)
@@ -1771,12 +1720,8 @@ the exit code still reflects the run. An unknown formatter name is a clean error
 
 ;; One line saying whether THIS run used the stdlib image, printed with the timing line.
 ;;
-;; It is here because the absence of it cost a full day. The image is default-on and its
-;; fallback is silent by design — with none on disk `require` just reads source, which is
-;; correct — but the source path is also a documented amplifier for the KI-89 isolate race
-;; (deleting the images takes this suite from 5514 passing to 106 failures), and it is ~5x
-;; slower. So "why is the suite red and slow today?" and "did my measurement run imaged?"
-;; both have the same answer, and until now nothing printed it.
+;; The image's fallback to source is silent by design, but the source path is much slower
+;; and changes timing-sensitive behaviour, so a run says which one it took.
 ;;
 ;; `%std-image-installed` is the honest fact — what this process materialised at boot —
 ;; not `(stdimage/status)`'s `:state`, which reads the disk NOW and says `:live` for a run
@@ -1801,21 +1746,22 @@ read the un-imaged path as evidence about the imaged one."
   (let (n (%std-image-installed))
     (if n
       (str "  (stdlib image: " n " sections)")
-      (let (st (get (stdimage/status) :state))
+      (let (image-state (get (stdimage/status) :state))
         (str "  (stdlib image: none — std/ loaded from SOURCE"
           (cond
-            (= st :stale) " — on-disk image is for a different stdlib; `nest stdimage` rebuilds it"
-            (= st :absent) " — none built yet; `nest stdimage` writes one"
-            (= st :unreadable) " — the image on disk could not be read"
-            (= st :no-cache) " — no cache directory"
-            (= st :disabled) " — this build was configured --without-stdimage"
+            (= image-state :stale)
+              " — on-disk image is for a different stdlib; `nest stdimage` rebuilds it"
+            (= image-state :absent) " — none built yet; `nest stdimage` writes one"
+            (= image-state :unreadable) " — the image on disk could not be read"
+            (= image-state :no-cache) " — no cache directory"
+            (= image-state :disabled) " — this build was configured --without-stdimage"
             ;; `:live` here means an image is on disk and current, and this process still
             ;; did not use it. Almost always because `nest` WROTE it on the way into this
             ;; very command (it is built for the next process, not this one) — the run that
             ;; pays for a stdlib edit. Otherwise BROOD_NO_STDIMAGE, or BROOD_COVERAGE, which
             ;; stands the image down so the compiler can instrument what a materialised
             ;; module never runs.
-            (= st :live)
+            (= image-state :live)
               " — one was written during this run; the next run will use it (or BROOD_NO_STDIMAGE / BROOD_COVERAGE is set)"
             else "")
           ")")))))
@@ -1862,7 +1808,7 @@ read the un-imaged path as evidence about the imaged one."
     (when seed
       (io/puts (str "  (random order, seed "
                  seed " — same order with --seed " seed "; parallel tests still interleave)")))
-    (if (> failed 0) (error (str failed " test(s) failed")) :ok)))
+    (if (> failed 0) (suite-failed (str failed " test(s) failed")) :ok)))
 
 (defn run-tests (& opts)
   "Run every registered test once (the isolated tests first, then the parallel/serial pool), print a summary, and raise if any failed. Each test has a 120s hard timeout (killed + failed if exceeded — `:timeout MS` to change). Any test over 1s is listed automatically (`:slow-over MS` to change that threshold); `:slow` also reports the slowest 5 regardless of duration."
@@ -1885,42 +1831,14 @@ read the un-imaged path as evidence about the imaged one."
     (let (results (drain-runner iso par))
       (test-report-pass results (- (os/now) start) opts (str ", " (count iso) " isolated")))))
 
-;; Structured analogue of `run-tests` — runs the same suite (isolated phase,
-;; then parallel/serial), but **returns data** instead of printing + throwing.
-;; Backs the `nest mcp` `run-tests` tool (step 1c-b). Shape:
-;;   {:total :passed :failed :failed-assertions :ms
-;;    :results [{:group :name :passed :ms :failures [{:loc :details} ...]}]}
-;; `:loc` is `[file line col]` or nil; `:details` is a list of strings.
-;; A test that uncaught-errored shows up as `:passed false` with a single
-;; failure carrying the error text (consistent with the textual runner).
+;; A test that errored uncaught shows up as `:passed false` with one failure carrying
+;; the error text, as in the printed report.
 (defn run-tests-structured (& opts)
   "Like `run-tests`, but returns the result as data — `{:total :passed :failed :failed-assertions :ms :results [...]}` — instead of printing and raising. Backs the `nest mcp` `run-tests` tool."
   (test-apply-opts opts)
   (let (units (test-select-units (reverse *units*) *test-filter*)
-        par (seq/filter units (fn (u) (not (= (first u) :isolated))))
-        iso (seq/filter units (fn (u) (= (first u) :isolated)))
-        start (os/now))
-    (let (results (drain-runner iso par)
-          elapsed (- (os/now) start)
-          total (count results)
-          failed (count-failed results)
-          fails (count-failures results))
-      {:total total
-       :passed (- total failed)
-       :failed failed
-       :failed-assertions fails
-       :ms elapsed
-       ;; `(or … [])` on every list field so empty results render as JSON
-       ;; `[]` rather than `null`. Matters when the suite has zero tests, or
-       ;; a passing test has zero failures — agents branch on `length`, not
-       ;; `(= null)`.
-       :results (or (map results
-                      (fn (r)
-                        {:group (r-group r)
-                         :name (r-name r)
-                         :passed (not (r-failed? r))
-                         :ms (r-ms r)
-                         :failures (or (map (r-fails r)
-                                         (fn (f) {:loc (first f) :details (second f)}))
-                                     [])}))
-                  [])})))
+        parallel (seq/filter units (fn (unit) (not (= (first unit) :isolated))))
+        isolated (seq/filter units (fn (unit) (= (first unit) :isolated)))
+        start (os/now)
+        results (drain-runner isolated parallel))
+    (results->structured results (- (os/now) start))))

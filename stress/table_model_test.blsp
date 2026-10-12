@@ -14,7 +14,7 @@
 
 (defmodule table-model-stress-test (:use test))
 
-;; Deterministic 31-bit LCG (identical constants in stress/table_model_oracle.py).
+;; Deterministic 31-bit LCG (the same constants as stress/table_digest.blsp).
 (defn lcg (s) (math/rem (+ (* s 1103515245) 12345) 2147483648))
 
 ;; ---- generators (each consumes one PRNG step) --------------------------------

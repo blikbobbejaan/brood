@@ -55,9 +55,7 @@ fn a_native_wrapper_tail_calling_into_a_receive_never_parks_dirty() {
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_JIT_BAIL_TRACE", "1")
         .env("BROOD_JIT_DUMP_IR", "1")
-        .env_remove("BROOD_NO_JIT")
         .env_remove("BROOD_TIER")
-        .env_remove("BROOD_VM")
         .arg(&path)
         .output()
         .expect("run brood");
@@ -69,7 +67,7 @@ fn a_native_wrapper_tail_calling_into_a_receive_never_parks_dirty() {
         "the parked receives did not all round-trip:\n{stdout}\n{stderr}"
     );
     // No `[jit-ir]` line at all means nothing lowered in this process — a no-JIT build or
-    // a ceiling below native (`BROOD_NO_JIT`/`BROOD_TIER`) — and the path under test does
+    // a ceiling below native (`BROOD_TIER`) — and the path under test does
     // not exist; say so rather than fail.
     if !stderr.lines().any(|l| l.starts_with("[jit-ir]")) {
         eprintln!("vm_direct_call: nothing lowered (no JIT, or the tier ceiling is below native) — vacuous");

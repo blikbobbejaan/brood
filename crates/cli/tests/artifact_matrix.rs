@@ -95,8 +95,6 @@ fn base_command(cache: &Path, cell: &Cell) -> Command {
         // Pin the engine for the same reason the prelude differential does: the boot path is
         // under test, not the evaluator, and CI runs a tree-walker job.
         .env("BROOD_TIER", "1")
-        .env_remove("BROOD_VM")
-        .env_remove("BROOD_NO_JIT")
         .env_remove("BROOD_COVERAGE")
         // Clear BOTH spellings of every artifact switch before setting any, so an ambient
         // value from the developer's shell cannot decide which cell this is.

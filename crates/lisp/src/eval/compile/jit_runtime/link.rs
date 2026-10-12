@@ -170,77 +170,10 @@ pub(crate) fn jit_run_fast_link(
 #[cfg(feature = "jit")]
 pub(super) const XCALL_RELOWER_MAX_NSLOTS: usize = 8;
 
-/// §7.1 hot admission (`BROOD_XADMIT=1`, experiment): admit profitability-gate-refused
-/// named defns at the HOT stage — deferred compile, inline call blob, frame-size cap.
-#[cfg(feature = "jit")]
-pub(super) fn xadmit_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_XADMIT").is_some_and(|v| v == "1"))
-}
-
-/// Name what hot admission did with this arm, under `BROOD_JIT_BAIL_TRACE=1`.
-///
-/// The complement of `trace_bail`: that says an arm was refused the general lowering, this
-/// says whether the §7.1 experiment then picked it up. Reported per refused condition rather
-/// than as one boolean, because "declined" and "admitted and still no faster" are opposite
-/// findings that an A/B cannot tell apart from the outside.
-#[cfg(feature = "jit")]
-pub(super) fn xadmit_trace(arm: &std::sync::Arc<CompiledArm>, inlined: bool) {
-    if !crate::diagnostics::debug_flags::jit_bail_trace() {
-        return;
-    }
-    let name = arm
-        .dbg_name
-        .map(crate::core::value::symbol_name_ref)
-        .unwrap_or("<closure>");
-    let why = if inlined {
-        "declined: inlined body"
-    } else if arm.inline_name.is_some() {
-        "declined: has an inline variant"
-    } else if arm.leaf.is_some() {
-        "declined: leaf-spliced"
-    } else if arm.dbg_name.is_none() {
-        "declined: closure (not a named defn)"
-    } else if arm.nslots > xadmit_max_nslots() {
-        "declined: frame over BROOD_XADMIT_MAX_NSLOTS"
-    } else {
-        "admitted"
-    };
-    eprintln!(
-        "[jit-xadmit] arm={name} nslots={} cap={} {why}",
-        arm.nslots,
-        xadmit_max_nslots()
-    );
-}
-
-/// The frame cap hot admission applies, overridable by `BROOD_XADMIT_MAX_NSLOTS`.
-///
-/// **Why this is a knob and not a constant.** `BROOD_XADMIT=1` exists to answer "is admitting
-/// a gate-refused named defn worth it?", and KI-109 records the answer for `mandelbrot`'s
-/// `row-sum` as *noise*. That measurement could not have been about `row-sum`: its frame is
-/// **nslots=14** and this cap is 8, so the arm was never admitted and both arms of the A/B ran
-/// identical code. A lever that silently declines the case under test reports "no difference"
-/// for the one reason that cannot be distinguished from "no effect" — the same shape as a gate
-/// that passes because it scanned nothing.
-///
-/// The default is unchanged, so no ordinary run is affected; raising it is how the experiment
-/// is actually run. It stays capped by the caller's other conditions, and an unparseable value
-/// keeps the default rather than uncapping (`BROOD_L1_BUDGET`'s rule, for its reason).
-#[cfg(feature = "jit")]
-pub(super) fn xadmit_max_nslots() -> usize {
-    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("BROOD_XADMIT_MAX_NSLOTS")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(XCALL_RELOWER_MAX_NSLOTS)
-    })
-}
-
 /// The suspend-host latch resolution for a fast link whose callee dirty-blocked its
 /// worker (`blocked_under_gateway` came back equal to the gateway token). Shared by
 /// [`jit_run_fast_link`] and the inline fast-frame path's `brood_rt_xcall_latch`
-/// callback (§7.5, `BROOD_XCALL=1`) — cold by construction (at most once per arm ever).
+/// callback — cold by construction (at most once per arm ever).
 #[cfg(feature = "jit")]
 #[cold]
 #[inline(never)]
@@ -270,7 +203,7 @@ pub(crate) fn jit_latch_dirty_blocked(
     }
 }
 
-/// The cold-outcome funnel for the **inline** fast-frame path (§7.5, `BROOD_XCALL=1`):
+/// The cold-outcome funnel for the **inline** fast-frame path (§7.5):
 /// emitted code has already run the ceremony restores, so this is exactly
 /// [`jit_fast_link_cold_outcome`] with the caller context read back off the heap.
 /// The callee env is `GLOBAL` by the inline path's own guard.
@@ -631,43 +564,10 @@ mod tests {
     use super::*;
     use crate::core::value;
 
-    /// Tier `caller`/`callee` up until the caller's call site has PUBLISHED a flat mirror
-    /// for `callee`, and hand that slot back with its absolute index. `None` when the pair
-    /// never tiered in the rounds given (the background compiler decides when).
-    fn published_mirror_for(
-        interp: &mut crate::Interp,
-        callee: value::Symbol,
-    ) -> Option<(usize, crate::core::heap::FastLink)> {
-        for _ in 0..60 {
-            interp.eval_str("(caller 20000 0)").expect("run the pair");
-            if let Some(hit) = interp
-                .heap
-                .vm_fast_links_published()
-                .into_iter()
-                .find(|(_, fl)| fl.sym == callee)
-            {
-                return Some(hit);
-            }
-        }
-        None
-    }
-
-    #[test]
-    fn mirror_check_tolerates_a_rebind_between_the_irs_load_and_the_callback() {
-        // The race `concurrency_race::fanout_with_concurrent_global_rebind_matches_serial`
-        // hit once on CI (2026-09-20), rebuilt deterministically: a mirror published at epoch
-        // E (the IR's raw load validated it), a `def` of the callee bumps the epoch, and THEN
-        // the callback's cross-check runs with the values the IR already holds. It must not
-        // fire — the mirror was valid when read, and the release path re-validates and
-        // falls through. Probing at the CURRENT epoch (the shape before the fix) answers
-        // `None` and fired it: sabotage by passing `heap.global_epoch()` to
-        // `vm_fast_link_authoritative` in `debug_check_fast_link_mirror` and this reds.
-        if std::env::var_os("BROOD_NO_JIT").is_some()
-            || std::env::var("BROOD_TIER").is_ok_and(|t| t != "2")
-        {
-            eprintln!("JIT off by request — nothing to gate");
-            return;
-        }
+    /// A fresh interpreter at ceiling 2 with the `caller`/`callee` pair defined. The ceiling
+    /// is forced (per thread) so the tests mean the same thing under every `BROOD_TIER`.
+    fn interp_with_the_pair() -> crate::Interp {
+        set_forced_ceiling(Some(Tier::Native));
         let mut interp = crate::Interp::new();
         interp
             .eval_str(
@@ -675,11 +575,46 @@ mod tests {
                      (defn caller (n acc) (if (= n 0) acc (caller (- n 1) (callee acc)))))",
             )
             .expect("define the pair");
+        interp
+    }
+
+    /// Tier `caller`/`callee` up until the caller's call site has PUBLISHED a flat mirror
+    /// for `callee`, and hand that slot back with its absolute index. The background compiler
+    /// decides when, so this keeps running the pair up to a generous deadline — and FAILS
+    /// past it: a setup that never publishes would otherwise pass both tests vacuously.
+    fn published_mirror_for(
+        interp: &mut crate::Interp,
+        callee: value::Symbol,
+    ) -> (usize, crate::core::heap::FastLink) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        while std::time::Instant::now() < deadline {
+            interp.eval_str("(caller 20000 0)").expect("run the pair");
+            if let Some(hit) = interp
+                .heap
+                .vm_fast_links_published()
+                .into_iter()
+                .find(|(_, fl)| fl.sym == callee)
+            {
+                return hit;
+            }
+        }
+        panic!(
+            "the pair never published a fast-link mirror — the state under test was never reached"
+        );
+    }
+
+    #[test]
+    fn mirror_check_tolerates_a_rebind_between_the_irs_load_and_the_callback() {
+        // The race `concurrency_race::fanout_with_concurrent_global_rebind_matches_serial`
+        // once hit, rebuilt deterministically: a mirror published at epoch E (the IR's raw
+        // load validated it), a `def` of the callee bumps the epoch, and THEN the callback's
+        // cross-check runs with the values the IR already holds. It must not fire — the
+        // mirror was valid when read, and the release path re-validates and falls through.
+        // Sabotage: pass `heap.global_epoch()` to `vm_fast_link_authoritative` in
+        // `debug_check_fast_link_mirror` and this reds.
+        let mut interp = interp_with_the_pair();
         let callee = value::intern("callee");
-        let Some((abs, mirror)) = published_mirror_for(&mut interp, callee) else {
-            eprintln!("the pair never fast-linked in 60 rounds — the compiler thread was slow; nothing to gate");
-            return;
-        };
+        let (abs, mirror) = published_mirror_for(&mut interp, callee);
         let epoch_before = interp.heap.global_epoch();
         assert_eq!(
             mirror.epoch, epoch_before,
@@ -721,22 +656,9 @@ mod tests {
     fn mirror_check_still_fires_on_a_real_desync() {
         // The check must remain a check: a mirror whose values disagree with the entry at the
         // SAME epoch is the silent-wrong-answer case it exists for.
-        if std::env::var_os("BROOD_NO_JIT").is_some()
-            || std::env::var("BROOD_TIER").is_ok_and(|t| t != "2")
-        {
-            return;
-        }
-        let mut interp = crate::Interp::new();
-        interp
-            .eval_str(
-                "(do (defn callee (x) (+ x 1)) \
-                     (defn caller (n acc) (if (= n 0) acc (caller (- n 1) (callee acc)))))",
-            )
-            .expect("define the pair");
+        let mut interp = interp_with_the_pair();
         let callee = value::intern("callee");
-        let Some((abs, mirror)) = published_mirror_for(&mut interp, callee) else {
-            return;
-        };
+        let (abs, mirror) = published_mirror_for(&mut interp, callee);
         let old_bases = interp
             .heap
             .set_ic_bases((abs as u32, interp.heap.ic_bases().1));

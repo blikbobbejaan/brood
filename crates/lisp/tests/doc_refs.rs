@@ -106,9 +106,7 @@ fn defined(root: &Path, files: &[&str], prefix: &str) -> BTreeSet<u32> {
 ///
 /// `defined()` collects into a set, so two entries sharing a number collapse into one and
 /// every reference to it still "resolves" — the collision is invisible to the two tests
-/// below. That is not hypothetical: on 2026-08-27 two sessions numbered different issues
-/// KI-70 within minutes of each other (the checker's literal-walk gap, and a note on
-/// reversed-args renames), and nothing caught it. A duplicate is worse than a dangling
+/// below (it happened once, KI-70). A duplicate is worse than a dangling
 /// reference, because every later citation of that number is ambiguous forever — including
 /// in commit messages and release tags, which cannot be corrected.
 ///
@@ -117,7 +115,13 @@ fn defined(root: &Path, files: &[&str], prefix: &str) -> BTreeSet<u32> {
 fn no_two_entries_claim_the_same_number() {
     let root = workspace_root();
     for (files, prefix) in [
-        (&["docs/known-issues.md"][..], "KI-"),
+        (
+            &[
+                "docs/known-issues.md",
+                "docs/archive/known-issues-closed.md",
+            ][..],
+            "KI-",
+        ),
         (
             &["docs/decisions.md", "docs/archive/decisions-superseded.md"][..],
             "ADR-",
@@ -206,7 +210,15 @@ fn every_adr_reference_resolves_to_an_adr() {
 #[test]
 fn every_ki_reference_resolves_to_a_known_issue() {
     let root = workspace_root();
-    let known = defined(&root, &["docs/known-issues.md"], "KI-");
+    // Closed issues keep their entries in the archive, and `known-issues.md` links there.
+    let known = defined(
+        &root,
+        &[
+            "docs/known-issues.md",
+            "docs/archive/known-issues-closed.md",
+        ],
+        "KI-",
+    );
     assert!(
         known.len() > 20,
         "only {} KI entries parsed — heading format changed?",
@@ -241,9 +253,7 @@ fn every_ki_reference_resolves_to_a_known_issue() {
 
 /// A KI's status lives in TWO places — the index row and the `## KI-N` heading — and the
 /// index is the one that goes stale, because it is not where you are working when you fix
-/// something. KI-79 and KI-80 were both fixed (2026-09-02, 2026-08-29) with dated resolutions
-/// in their sections while their rows still read `⚠️ WATCHING`; a work-queue item was then
-/// written on 2026-09-04 to re-run repros for two bugs that no longer existed.
+/// something (KI-79 and KI-80 once sat fixed while their rows still read `⚠️ WATCHING`).
 ///
 /// The row's status cell LEADS with the current glyph and keeps older text after it as
 /// history, so the check is on the first glyph only: a section closed (✅ / 📦 / ☑️) must not
@@ -251,7 +261,15 @@ fn every_ki_reference_resolves_to_a_known_issue() {
 #[test]
 fn ki_index_row_status_agrees_with_its_section() {
     let root = workspace_root();
-    let text = std::fs::read_to_string(root.join("docs/known-issues.md")).expect("known-issues");
+    // Index rows live in `known-issues.md`; a closed issue's section lives in the archive.
+    let text = [
+        "docs/known-issues.md",
+        "docs/archive/known-issues-closed.md",
+    ]
+    .iter()
+    .map(|relative| std::fs::read_to_string(root.join(relative)).expect("known-issues"))
+    .collect::<Vec<_>>()
+    .join("\n");
     const CLOSED: &[&str] = &["✅", "📦", "☑️"];
     const OPEN: &[&str] = &["⚠️", "👀"];
     let first_glyph = |s: &str| -> Option<&'static str> {

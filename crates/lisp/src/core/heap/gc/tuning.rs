@@ -5,9 +5,8 @@
 use super::*;
 
 // The collector's policy constants and their env overrides — floors, strides, the nursery
-// ceiling, the deep-walker stack guard, tenure and trace defaults. Moved here from `heap.rs`
-// on 2026-09-08 (handoff item 1, move f); `heap.rs` re-imports them so its own users and the
-// sibling children (`gc_runtime`, `equality`, `promote`) resolve them exactly as before.
+// ceiling, the deep-walker stack guard, tenure and trace defaults. `heap.rs` re-imports them
+// so its own users and the sibling children (`gc_runtime`, `equality`, `promote`) resolve them.
 
 /// Parse a GC threshold override (an *object count*, with an optional `K`/`M`
 /// suffix — `64K` = 65536, `1M` = 1048576) from env var `key`. `None` if unset;
@@ -173,14 +172,10 @@ pub(in crate::core::heap) const NURSERY_MAX: usize = 8 * 1024 * 1024;
 /// Deep-value guard for the recursive heap walkers (`promote_in`, the GC
 /// `flush_value`, `equal`, `hash_value_into`): each recurses per **car**-nesting
 /// level (their cdr spines are already iterative), so a deep-but-legal immutable
-/// value — a 60k-deep nested list is just data — overflowed the native stack
-/// (found 2026-07-19/20 by the iolist deep-nesting test; CI SIGABRT). Each
-/// recursion entry checks the remaining stack and, inside the red zone, grows in
+/// value — a 60k-deep nested list is just data — must not overflow the native stack.
+/// Each recursion entry checks the remaining stack and, inside the red zone, grows in
 /// a heap-backed segment (`stacker::maybe_grow`, rustc's own approach) instead
-/// of overflowing. Cost when not growing: one thread-local read + compare per
-/// level. The alternative — rewriting four bottom-up builders as explicit
-/// two-phase stack machines — was rejected as far more complexity for the same
-/// guarantee.
+/// of overflowing. Cost when not growing: one thread-local read + compare per level.
 pub(in crate::core::heap) const WALKER_RED_ZONE: usize = 64 * 1024;
 
 /// Segment size for a deep-walker stack grow — large enough that even a

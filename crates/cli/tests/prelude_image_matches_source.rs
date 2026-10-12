@@ -62,12 +62,9 @@ fn run_arm(
         // Own the cache: no stdlib image exists under a fresh dir, so BOTH arms load std
         // modules from source. That asymmetry is what we are not testing, so remove it.
         .env("XDG_CACHE_HOME", cache)
-        // Pin the engine. Without this the tree-walker CI job (`BROOD_VM=0`) ran this test
-        // against a different engine than it was written for, and it is the boot path that
-        // is under test, not the evaluator.
+        // Pin the engine: it is the boot path that is under test, not the evaluator, and CI
+        // runs a tree-walker job.
         .env("BROOD_TIER", "1")
-        .env_remove("BROOD_VM")
-        .env_remove("BROOD_NO_JIT")
         .env_remove("BROOD_NO_STDIMAGE")
         .env_remove("BROOD_COVERAGE");
     // The image is the DEFAULT (ADR-314, since 2026-09-04), so the arms are "leave it alone"

@@ -1,0 +1,158 @@
+;; Silly-syntax fuzzer: emit adversarial/malformed Brood source. The reader must NEVER
+;; panic/segfault — only return a clean parse error. Valid-but-weird forms are mixed in to
+;; stress the scanner, the number classifier and the quote-sugar paths. Programs are written
+;; as raw BYTES so invalid / partial UTF-8 sequences reach the scanner verbatim.
+;;
+;;   brood scripts/fuzz/generators/syntax.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- tokens chosen to stress delimiters, number shapes, sugar, strings, comments
+(def tokens
+  ["("
+    ")"
+    "["
+    "]"
+    "{"
+    "}"
+    "'"
+    "`"
+    "~"
+    "~@"
+    "#"
+    "##"
+    "#b"
+    "#;"
+    "#|"
+    "|#"
+    ";comment\n"
+    "."
+    ".."
+    "..."
+    ":"
+    "::"
+    ":kw"
+    "nil"
+    "true"
+    "false"
+    "inf"
+    "-inf"
+    "nan"
+    "+"
+    "-"
+    "*"
+    "/"
+    "="
+    ;; number-ish (many invalid): exponents, signs, radixes, separators, decimals
+    "1"
+    "-1"
+    "1.5"
+    "-1.5"
+    "1e"
+    "1e9"
+    "1e999999"
+    "1.2.3"
+    "1..2"
+    "--5"
+    "0x1F"
+    "0b101"
+    "0o77"
+    "1_000"
+    "1/0"
+    "1/2"
+    ".5"
+    "5."
+    "1M"
+    "1.5M"
+    "1mm"
+    "0000"
+    (string/repeat "9" 40)
+    "1e-"
+    "+."
+    "-."
+    "1ee9"
+    "0x"
+    "1.0e308"
+    "1e400"
+    ;; strings (many unterminated / bad escapes)
+    "\"hi\""
+    "\"unterminated"
+    "\"bad\\x\""
+    "\"\\u{ZZZZ}\""
+    "\"\\\""
+    "\"\\u{110000}\""
+    "\"\\e\\0\\n\\t\""
+    "\"\""
+    (str "\"" (string/repeat "a" 50) "\"")
+    ;; symbols with odd chars
+    "foo"
+    "foo-bar"
+    "a/b"
+    "/"
+    "->"
+    "<=>"
+    "...x"
+    "a b"
+    "café"
+    "λ"
+    ;; whitespace / commas
+    " "
+    ","
+    "\t"
+    "\n"])
+
+;; Raw bytes that stress UTF-8 decoding in the scanner: control bytes, stray punctuation,
+;; and invalid / partial UTF-8 sequences.
+(def junk-bytes
+  [[0] [1] [27] [127] [92] [64] [37] [38] [94] [195 40] [237 160 128]])
+
+(defn token-bytes (token)
+  "A token's bytes, one per code point (a code point past one byte becomes `?`)."
+  (map (string/->codepoints token) (fn (point) (if (< point 256) point 63))))
+
+(defn draw-part ()
+  (let (roll (draw-float))
+    (cond
+      (< roll 0.78) (token-bytes (draw-choice tokens))
+      (< roll 0.9) (draw-choice junk-bytes)
+      ;; a run of one delimiter to stress nesting / balance
+      :else
+        (token-bytes (string/repeat (draw-choice ["(" ")" "[" "]" "{" "}" "'" "~"]) (draw-int 1 40))))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (let (parts (map (range (draw-int 1 60)) (fn (_) (draw-part)))
+        separator (token-bytes (draw-choice ["" " " " " "\n"])))
+    (apply bytes (apply append (seq/interpose parts separator)))))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit-bytes (str outdir "/sx_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "syntax programs"))

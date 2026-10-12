@@ -64,10 +64,7 @@ thread_local! {
     // global tables stay the sole *minter* of new ids. This keeps the hot path —
     // re-interning an already-known name, which is the overwhelmingly common case
     // (call heads, keywords, record fields) — a thread-local lookup with no global
-    // lock. Before this, every intern (even a hit) took the `IDS` mutex, which
-    // serialized parallel workers: under allocation-heavy fan-out the interner lock
-    // was the dominant contention point (~10% in `lock_contended` plus the futex
-    // waits behind it), not the heap allocator. Bounded memory: the symbol set is
+    // lock — a global lock on every intern serializes parallel workers. Bounded memory: the symbol set is
     // finite, so each thread caches at most every name it ever interns.
     static CACHE: RefCell<HashMap<String, Symbol>> = RefCell::new(HashMap::new());
 
@@ -137,9 +134,8 @@ fn hash_name(name: &str) -> u64 {
 /// Read through a per-thread `Vec` in front of the global table, for the same reason
 /// `intern` caches name→id: **`boxcar::Vec::get` is too slow for a per-hash lookup.** It is
 /// segmented, so a read computes a bucket from the index and takes an atomic load — fine for
-/// the cold intern path it was chosen for, and measured at **+15.8M instructions on boot
-/// alone** here (63.4M against 47.6M with the lookup stubbed out, callgrind), because every
-/// map and env operation that hashes a symbol pays it. A plain `Vec` index is two
+/// the cold intern path it was chosen for, but every map and env operation that hashes a
+/// symbol would pay it. A plain `Vec` index is two
 /// instructions, and the entries are immutable once written, so a per-thread copy can never
 /// go stale.
 #[inline]
@@ -280,8 +276,8 @@ pub fn dynamic_names() -> Vec<String> {
 ///
 /// `%isolate` exists to run a thunk and then put the image back the way it was, but it
 /// swaps back only the global *binding* table. `DYNAMICS` is a process-wide static
-/// beside it, so `(%isolate (fn () (defdyn *q* 9)))` used to leave `*q*` marked dynamic
-/// while unbound — and that mark is not cosmetic: it makes the name permanently
+/// beside it, so without this `(%isolate (fn () (defdyn *q* 9)))` would leave `*q*`
+/// marked dynamic while unbound — and that mark is not cosmetic: it makes the name permanently
 /// *ambient* for later namespace resolution (`macros::is_ambient`, so a later module's
 /// `(def *q* …)` stays bare instead of being qualified) and permanently exempt from the
 /// reserved-name check (`heap::is_sealed` excludes dynamics).
@@ -314,10 +310,9 @@ pub fn restore_dynamics(syms: Vec<Symbol>) {
 ///   and the global bindings live, so an update is visible to running processes.
 ///
 /// **Generation stamp (ADR-054 / `docs/memory-review.md`).** A LOCAL handle
-/// carries the heap's *epoch* at the moment it was minted. Every per-process
-/// arena flip (the automatic copying collector [`Heap::collect`], or the
-/// [`Heap::flush`] helper) bumps that
-/// epoch and re-mints the survivors, so a handle held across a flip without
+/// carries its generation's *epoch* at the moment it was minted. Every
+/// collection that moves a generation ([`Heap::collect`]) bumps that
+/// epoch and re-mints the survivors, so a handle held across it without
 /// being re-rooted carries a *stale* epoch. The LOCAL accessors in `heap.rs`
 /// `debug_assert!` the stamp matches the current epoch, turning use-after-flip
 /// (a moved object) into a precise panic **at the bad deref** instead of a
@@ -720,13 +715,10 @@ pub enum Value {
 /// corrupt memory: a tag above it is non-`Value` bytes, which under debug-assertions
 /// aborts with the frame that carried it.
 ///
-/// **Keeping it here, beside the enum, is the whole point.** It used to be a literal
-/// `25` at the check site with the comment "Value's max discriminant is `Ratio`", and
-/// ADR-310 then appended `Failure` (26). The check did not move, so every *legitimate*
-/// failure value entering a frame tripped the corruption panic — CI went red looking
-/// exactly like a JIT frame-slot corruption (the bug #2 family) when nothing was
-/// corrupt at all. [`max_value_discriminant_is_the_last_variant`] stops that recurring:
-/// it does not compile if a variant is appended without updating this.
+/// **Keeping it here, beside the enum, is the whole point**: a literal at the check site
+/// goes stale when a variant is appended, and every legitimate value of the new kind then
+/// trips the corruption panic. [`max_value_discriminant_is_the_last_variant`] does not
+/// compile if a variant is appended without updating this.
 ///
 /// Gated to match its consumers: the only non-test reader is `dbg_check_args`, which is
 /// `#[cfg(debug_assertions)]`, so a plain `--release` build (what `make install` does)
@@ -987,9 +979,8 @@ impl Tag {
 
     /// The `type-of` keyword *id* for this tag, interned **once** and cached.
     /// `type-of` (and the seq predicates built on it — `pair?`/`empty?`/… hit it
-    /// per element) used to re-intern the tag name on every call; on map/list-heavy
-    /// code that was essentially the entire `intern` cost (~98% of all interns were
-    /// a tag name like `"pair"`). Indexed by the `#[repr(u8)]` discriminant.
+    /// per element) must not re-intern the tag name on every call, which would dominate
+    /// `intern` on map/list-heavy code. Indexed by the `#[repr(u8)]` discriminant.
     pub fn keyword(self) -> Symbol {
         static KW: LazyLock<[Symbol; 24]> = LazyLock::new(|| {
             const TAGS: [Tag; 24] = [
@@ -1028,25 +1019,10 @@ impl Tag {
     }
 }
 
-/// The CHAMP node id behind any **trie-backed** kind — [`Value::Map`],
-/// [`Value::Set`] and [`Value::Failure`] share one storage representation, so every
-/// *storage-level* walk (GC trace, promote, region forwarding, locality checks)
-/// treats them alike and only their semantics differ. `None` for every other kind.
-///
-/// This exists so adding a trie-backed kind touches the storage layer once instead
-/// of once per kind: the walks pattern-match all three together and re-wrap with
-/// [`champ_rewrap`], which replaced a pair of near-identical `Map`/`Set` arms at
-/// each forwarding site.
-#[inline]
-pub fn champ_id(v: Value) -> Option<MapId> {
-    match v {
-        Value::Map(id) | Value::Set(id) | Value::Failure(id) => Some(id),
-        _ => None,
-    }
-}
-
 /// Re-wrap a forwarded/promoted CHAMP `id` in the same kind `original` had, so a
 /// storage walk that moved the trie preserves map-vs-set-vs-failure identity.
+/// [`Value::Map`], [`Value::Set`] and [`Value::Failure`] share one storage
+/// representation, so every storage-level walk matches all three in one arm.
 #[inline]
 pub fn champ_rewrap(original: Value, id: MapId) -> Value {
     match original {

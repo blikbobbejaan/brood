@@ -136,7 +136,7 @@ pub(in crate::types::check) enum SpecialHead {
     /// every lint except `unbound` suppressed (KI-67). These forms deliberately
     /// exercise failures, so `(error-of (first 5))` must stay silent about the
     /// type misuse — that is the whole point of the form. An author's own `try`
-    /// is NOT one of them (2026-10-02): its `%try` is walked as ordinary code — the
+    /// is NOT one of them: its `%try` is walked as ordinary code — the
     /// dispatch tells the two apart by the expansion's shape
     /// (`walk::provokes_failure_on_purpose`); an unexpanded `try` head (the
     /// fragment path) keeps the suppression, since its `catch` clause is syntax
@@ -476,9 +476,8 @@ pub(in crate::types::check) fn pattern_bindings(
     let names = pattern_syms(heap, pat);
     // A `never` right-hand side — a call that always throws, or a return still at the
     // joint fixpoint's ⊥ seed — has no positions to read: every binder is `never`, which
-    // contributes nothing to a derived parameter. Bound UNKNOWN instead, `(inc i2)` read
-    // `number` in the first round and the ascent could never come back down: `regex`'s
-    // whole parser chain derived `number` for its index (2026-09-17).
+    // contributes nothing to a derived parameter. Bound UNKNOWN instead, `(inc i2)` would
+    // read `number` in the first round and the ascent could never come back down.
     if rhs_ty.is_some_and(Ty::is_never) {
         return names.into_iter().map(|s| (s, Some(Ty::NEVER))).collect();
     }
@@ -626,9 +625,6 @@ pub(in crate::types::check) fn bindings(heap: &Heap, form: Value) -> Option<Vec<
     }
 }
 
-/// The elements of a proper list, or `None` for an improper list / non-list.
-/// `pub(super)` because `sigs` (`infer_sig`) and `guards` (`guard_assertion`,
-/// `expr_ty`) all need to peel a list head off a call form.
 /// The body forms of a `(do …)`, or `None` for anything else. `defn-`/`def-` expand to
 /// one, so a walk over top-level forms that does not look inside a `do` cannot see a
 /// module-private definition at all.
@@ -641,6 +637,7 @@ pub(in crate::types::check) fn do_body(heap: &Heap, form: Value) -> Option<Vec<V
     Some(items[1..].to_vec())
 }
 
+/// The elements of a proper list, or `None` for an improper list / non-list.
 pub(in crate::types::check) fn list_items(heap: &Heap, mut v: Value) -> Option<Vec<Value>> {
     let mut out = Vec::new();
     loop {

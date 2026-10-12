@@ -1,7 +1,7 @@
 ;; Local-capturing closures — the Stage 2c VM unlock (ADR-076, docs/bytecode-vm.md).
 ;; These exercise closures *created inside* a function (so they capture a local
 ;; frame) and *called* afterwards. They must behave identically on the tree-walker
-;; and the compiling VM, so run this file under both `BROOD_VM=0` and `BROOD_VM=1`
+;; and the compiling VM, so run this file under both `BROOD_TIER=0` and `BROOD_TIER=1`
 ;; (the Stage-2 gate runs the whole suite under each). The `across processes` block
 ;; additionally proves the captured env survives a `send` deep-copy + closure
 ;; flatten/rebuild (lexical-addressing-gotchas.md #1).

@@ -23,10 +23,9 @@ use std::collections::{HashMap, HashSet};
 /// Past this, return `LispError::runtime` rather than overflowing the native
 /// Rust stack — a deeply nested template, vector, or map (from a user file or
 /// a misbehaving macro) should produce a clean error, not abort the process.
-// 1024 since 2026-09-30 (was 256): a `case`/`cond`/`match`/`receive` lowers to one nested
-// level PER ARM, so a flat 300-arm dispatch — a keyword table, an opcode switch — was
-// refused as "nested too deeply". The walkers that recurse per level grow their stack
-// (`stacker`) rather than trust the cap; the cap is a bound on runaway expansion.
+// A `case`/`cond`/`match`/`receive` lowers to one nested level PER ARM, so the cap must
+// admit a flat several-hundred-arm dispatch. The walkers that recurse per level grow their
+// stack (`stacker`) rather than trust the cap; the cap is a bound on runaway expansion.
 const MAX_DEPTH: u32 = 1024;
 
 /// Bound on `macroexpand`'s head-fixpoint *rounds* — a different quantity from

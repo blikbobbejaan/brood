@@ -3,7 +3,10 @@
 ;; with the load happening inside that first call, the helper's burst — 20 ms after the
 ;; spawn — had come and gone before the monitor existed, under the tree-walker from source
 ;; (the load is slow there), and the window collected nothing (CI's differential job).
-(defmodule mcp-test (:use test) (:load mcp))
+(defmodule mcp-test
+  (:use test)
+  (:load mcp)
+  (:use-internals mcp))
 
 ;; The `reflect/eval` MCP tool must evaluate *every* form in a multi-form `:source` and
 ;; return the last value — not silently drop everything after the first form (the
@@ -118,3 +121,247 @@
 (describe "mcp lookup carries the checker type"
   (test "lookup includes a :type signature string"
     (is (string? (get (mcp/lookup-tool {:name "count"}) :type)))))
+
+;; ---- the server: JSON-RPC dispatch (`handle`/`respond`), driven in-image ----------
+;;
+;; The transport (stdin/stdout framing) is exercised end to end against the binary by
+;; `crates/nest/tests/mcp.rs`; these cases drive the dispatcher with a catalogue and an
+;; emitter of their own.
+
+(defn mcpt-spin () (mcpt-spin))
+
+(def mcpt-catalogue
+  (list {:name "double"
+         :description "Double :n"
+         :schema {:type "object" :properties {:n {:type "integer"}}}
+         :handler (fn (args) (* (get args :n) 2))}
+    {:name "chatty" :schema {:type "object"} :handler (fn (_args) (io/write "debug line") 42)}
+    {:name "text" :schema {:type "object"} :handler (fn (_args) "plain")}
+    {:name "soft-fail" :schema {:type "object"} :handler (fn (_args) {:error "nope"})}
+    {:name "throws" :schema {:type "object"} :handler (fn (_args) (throw "throws: bad input"))}
+    {:name "divides" :schema {:type "object"} :handler (fn (_args) (/ 1 0))}
+    {:name "dies"
+     :schema {:type "object"}
+     :handler (fn (_args) (exit (self) :kill) (receive (after 5000 nil)))}
+    {:name "closure" :schema {:type "object"} :handler (fn (_args) (fn () 1))}
+    {:name "shapes" :schema {:type "object"} :handler (fn (args) (list? (get args :items)))}
+    {:name "eval" :schema {:type "object"} :handler (fn (_args) (mcpt-spin))}
+    {:name "reports"
+     :schema {:type "object"}
+     :handler (fn (_args) (mcp/progress 1 3 "step-one"))}
+    {:name "checks"
+     :schema {:type "object"}
+     :handler (fn (args) (count (project-check/check-structured (get args :root))))}
+    {:description "no name, so not listed" :schema {}}
+    {:name "no-schema"}))
+
+(defn mcpt-session ()
+  (let (me (self))
+    {:catalogue (fn () mcpt-catalogue)
+     :emit (fn (message) (send me [:mcpt-emitted message]))
+     :deadline-ms 300}))
+
+(defn mcpt-object (value)
+  "`value`, which the test expects to be a map (a reply, a JSON object); an error otherwise
+— `mcp/handle` also answers `:exit` and nil, which no test reading a reply expects."
+  (if (map? value) value (error "mcp-test: expected a map, got " (pr-str value))))
+(sig mcpt-object (any -> map))
+
+(defn mcpt-request (method params)
+  (mcpt-object (mcp/handle {:jsonrpc "2.0" :id 1 :method method :params params} (mcpt-session))))
+
+(defn mcpt-call (name arguments)
+  (mcpt-request "tools/call" {:name name :arguments arguments}))
+
+(defn mcpt-emitted (acc)
+  (receive ([:mcpt-emitted m] (mcpt-emitted (conj acc m))) (after 0 acc)))
+
+(describe "mcp server lifecycle"
+  (test "initialize names the server and its capabilities"
+    (let (result (get (mcpt-request "initialize" {}) :result))
+      (assert= (get-in result [:serverInfo :name]) "nest-mcp")
+      (assert= (get result :capabilities) {:tools {} :resources {} :prompts {}})))
+  (test "a request echoes its id under jsonrpc 2.0"
+    (let (reply (mcp/handle {:jsonrpc "2.0" :id "abc" :method "ping"} (mcpt-session)))
+      (assert= reply {:jsonrpc "2.0" :id "abc" :result {}})))
+  (test "shutdown answers null"
+    (assert= (get (mcpt-request "shutdown" {}) :result) nil)
+    (is (contains? (mcpt-request "shutdown" {}) :result)))
+  (test "an unknown method is -32601; an unknown notification gets no reply"
+    (assert= (get-in (mcpt-request "no/such/method" {}) [:error :code]) -32601)
+    (assert= (mcp/handle {:jsonrpc "2.0" :method "bogus/notification"} (mcpt-session)) nil))
+  (test "exit (a notification) ends the session"
+    (assert= (mcp/handle {:jsonrpc "2.0" :method "exit"} (mcpt-session)) :exit))
+  (test "a line that is not JSON is a -32700 with a null id, not the end of the session"
+    (let (reply (mcpt-object (mcp/respond "this is not json{{{" (mcpt-session))))
+      (assert= (get-in reply [:error :code]) -32700)
+      (is (contains? reply :id))
+      (assert= (get reply :id) nil)
+      (is (string? (get-in reply [:error :data]))))
+    (assert= (get (mcpt-object (mcp/respond "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"
+                                 (mcpt-session)))
+               :result)
+      {})))
+
+(describe "mcp tools/list and tools/call"
+  (test "tools/list projects the catalogue, skipping malformed entries"
+    (let (tools (get-in (mcpt-request "tools/list" {}) [:result :tools])
+          names (map tools (fn (t) (get t :name))))
+      (is (includes? names "double"))
+      (refute (includes? names "no-schema"))
+      (assert= (count tools) 12)
+      (assert= (first tools)
+        {:name "double"
+         :description "Double :n"
+         :inputSchema {"type" "object" "properties" {"n" {"type" "integer"}}}})))
+  (test "the std catalogue lists every tool with an object schema"
+    (let (tools (get-in (mcp/handle {:jsonrpc "2.0" :id 1 :method "tools/list"}
+                          (assoc (mcpt-session) :catalogue (fn () (mcp/tools))))
+                  [:result :tools])
+          names (map tools (fn (t) (get t :name))))
+      (doseq (expected ["eval"
+                         "load" "write" "edit" "lookup" "macroexpand" "format" "check" "run-tests"
+                         "processes" "process-info" "node" "callers"])
+        (is (includes? names expected)))
+      (is (every? tools (fn (t) (= (get-in t [:inputSchema "type"]) "object"))))))
+  (test "a handler's value comes back as indented JSON text"
+    (assert= (get-in (mcpt-call "double" {:n 21}) [:result :content])
+      [{:type "text" :text "42"}])
+    (assert= (get-in (mcpt-call "text" {}) [:result :content 0 :text]) "plain"))
+  (test "what a handler prints rides back as a second block, never on the channel"
+    (assert= (get-in (mcpt-call "chatty" {}) [:result :content])
+      [{:type "text" :text "42"} {:type "text" :text "[captured stdout]\ndebug line"}]))
+  (test "a map with a non-null error is a soft failure"
+    (let (result (get (mcpt-call "soft-fail" {}) :result))
+      (assert= (get result :isError) true)
+      (assert= (get-in result [:content 0 :text]) "{\n  \"error\": \"nope\"\n}")))
+  (test "arguments arrive keyword-keyed, with arrays as lists"
+    (assert= (get-in (mcpt-call "shapes" {:items [1 2]}) [:result :content 0 :text]) "true"))
+  (test "an unknown tool is -32602"
+    (let (error (get (mcpt-call "nope" {}) :error))
+      (assert= (get error :code) -32602)
+      (is (string/starts-with? (get error :message) "no such tool"))))
+  (test "a thrown value is a -32603 whose data is :user"
+    (let (error (get (mcpt-call "throws" {}) :error))
+      (assert= (get error :code) -32603)
+      (assert= (get error :message) "error: throws: bad input")
+      (assert= (get error :data) {"kind" "user" "message" "throws: bad input"})))
+  (test "a kernel error travels whole in the error data"
+    (let (error (get (mcpt-call "divides" {}) :error))
+      (assert= (get error :code) -32603)
+      (assert= (get-in error [:data "kind"]) "runtime")
+      (assert= (get-in error [:data "code"]) "E0040")
+      (is (includes? (get-in error [:data "message"]) "division by zero"))))
+  (test "a result with no JSON shape is a -32603"
+    (let (error (get (mcpt-call "closure" {}) :error))
+      (assert= (get error :code) -32603)
+      (is (includes? (get error :message) "no JSON representation"))))
+  (test "a handler process that dies is an error reply, and the next call is served"
+    (let (error (get (mcpt-call "dies" {}) :error))
+      (assert= (get error :code) -32603)
+      (assert= (get-in error [:data "kind"]) "panic"))
+    (assert= (get-in (mcpt-call "double" {:n 1}) [:result :content 0 :text]) "2"))
+  (test "an eval past the deadline is killed and answered, not waited on"
+    (let (result (get (mcpt-call "eval" {}) :result))
+      (assert= (get result :isError) true)
+      (is (includes? (get-in result [:content 0 :text]) "time limit"))))
+  (test "a progressToken streams the handler's reports as notifications"
+    (let (reply (mcpt-request "tools/call"
+                  {:name "reports" :arguments {} :_meta {:progressToken "tok-42"}})
+          emitted (mcpt-emitted []))
+      (assert= (get-in reply [:result :content 0 :text]) "true")
+      (assert= emitted
+        [{:jsonrpc "2.0"
+          :method "notifications/progress"
+          :params {:progressToken "tok-42" :progress 1 :total 3 :message "step-one"}}])))
+  ;; The project checker reports each file it checks — through `mcp/progress`, which it
+  ;; reaches only when `nest mcp` has loaded this module. `:isolated`: it sets the
+  ;; project root globals.
+  :isolated (test "a project check under a progressToken reports each checked file"
+    (let (root (str "/tmp/mcpt-check-" (rand/token 8)))
+      (file/mkdir root)
+      (file/mkdir (path/join root "src"))
+      (file/spit (path/join root "project.blsp")
+        "(project :name \"mcpt\" :source-paths [\"src\"])\n")
+      (file/spit (path/join root "src/lib.blsp") "(defmodule lib)\n(defn g () 1)\n")
+      (let (reply (mcpt-request "tools/call"
+                    {:name "checks" :arguments {:root root} :_meta {:progressToken "tok-7"}})
+            emitted (mcpt-emitted []))
+        (file/rmdir root)
+        (assert= (get-in reply [:result :content 0 :text]) "0")
+        (assert= emitted
+          [{:jsonrpc "2.0"
+            :method "notifications/progress"
+            :params {:progressToken "tok-7" :progress 1 :total 1 :message "checked lib.blsp"}}]))))
+  (test "without a progressToken, progress is a no-op answering false"
+    (let (reply (mcpt-call "reports" {}))
+      (assert= (get-in reply [:result :content 0 :text]) "false")
+      (assert= (mcpt-emitted []) []))))
+
+(describe "mcp resources and prompts"
+  (test "resources/list names every document"
+    (let (uris (map (get-in (mcpt-request "resources/list" {}) [:result :resources])
+                 (fn (r) (get r :uri))))
+      (doseq (uri ["brood://docs/brood-for-claude"
+                    "brood://docs/incarnations" "brood://docs/llm-native"
+                    "brood://docs/claude-demo-findings" "brood://docs/error-codes" "brood://prelude"])
+        (is (includes? uris uri)))))
+  (test "resources/read serves the bound document text"
+    (binding (*mcp-documents* {"prelude" "(def x 1)"})
+      (assert= (get-in (mcpt-request "resources/read" {:uri "brood://prelude"}) [:result :contents])
+        [{:uri "brood://prelude" :mimeType "text/markdown" :text "(def x 1)"}])
+      (assert= (get-in (mcpt-request "resources/read" {:uri "brood://nope"}) [:error :code]) -32602)))
+  (test "prompts list and serve brood-task, and refuse an unknown name"
+    (binding (*mcp-documents* {"brood-task" "orient yourself"})
+      (assert= (map (get-in (mcpt-request "prompts/list" {}) [:result :prompts])
+                 (fn (p) (get p :name)))
+        (list "brood-task"))
+      (assert= (get-in (mcpt-request "prompts/get" {:name "brood-task"})
+                 [:result :messages 0 :content :text])
+        "orient yourself")
+      (assert= (get-in (mcpt-request "prompts/get" {:name "nope"}) [:error :code]) -32602))))
+
+(describe "mcp JSON projection"
+  (test "data kinds project onto JSON"
+    (assert= (mcp/json-data {:n 42
+                             :f 1.5
+                             :s "hello"
+                             :items (list 1 2 3)
+                             :nested {:k "v"}
+                             :flag true
+                             :absent nil})
+      {"n" 42 "f" 1.5 "s" "hello" "items" [1 2 3] "nested" {"k" "v"} "flag" true "absent" nil})
+    (assert= (mcp/json-data [:kw 'sym #{1}]) ["kw" "sym" [1]])
+    (assert= (mcp/json-data 12345678901234567890123) "12345678901234567890123")
+    (assert= (mcp/json-data 1/3) "1/3"))
+  (test "a pid is a $type-tagged object"
+    (let (pid (mcpt-object (mcp/json-data (self))))
+      (assert= (get pid "$type") "pid")
+      (is (int? (get pid "id")))
+      (is (string? (get pid "node")))))
+  (test "colliding keys, functions and non-finite floats are errors, not dropped data"
+    (is (includes? (error-of (mcp/json-data {:foo 1 "foo" 2})) "colliding"))
+    (assert-error (mcp/json-data (fn (x) x)))
+    (assert-error (mcp/json-data (/ 1.0 0.0)))
+    (assert= (mcp/json-data {:foo 1 :bar 2}) {"foo" 1 "bar" 2}))
+  (test "indented JSON sorts keys and indents two spaces a level"
+    (assert= (mcp/pretty-json {"b" [1 2] "a" {} "c" []} "")
+      "{\n  \"a\": {},\n  \"b\": [\n    1,\n    2\n  ],\n  \"c\": []\n}")))
+
+(describe "mcp staleness warning"
+  (test "a binary modified after the server started is stale; a missing one never is"
+    (let (path (str "/tmp/mcpt-stale-" (rand/token 8)))
+      (file/spit path "x")
+      (is (mcp/rebuilt-since? path 0))
+      (refute (mcp/rebuilt-since? path (+ (os/now) 3600000)))
+      (file/rm path))
+    (refute (mcp/rebuilt-since? "/no/such/nest-binary-xyz" 0))
+    (refute (mcp/rebuilt-since? nil 0)))
+  (test "the warning rides on a tools/call reply and on no other"
+    (let (tool-reply {:jsonrpc "2.0" :id 1 :result {:content [{:type "text" :text "42"}]}})
+      (assert= (get-in (mcp/with-warning tool-reply "STALE") [:result :content])
+        [{:type "text" :text "42"} {:type "text" :text "STALE"}]))
+    (assert= (mcp/with-warning {:jsonrpc "2.0" :id 1 :result {:capabilities {}}} "STALE") nil)
+    (assert= (mcp/with-warning {:jsonrpc "2.0" :id 1 :error {:code -32601 :message "x"}} "STALE")
+      nil)
+    (is (includes? (mcp/staleness-warning "/x/nest") "STALE"))))

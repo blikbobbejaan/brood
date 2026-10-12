@@ -128,8 +128,7 @@ pub(super) fn callback_sig(heap: &Heap, arg: Value, ctx: &Ctx) -> Option<Sig> {
 
 /// The signature of a `(comp f … g)` form: what `g`, the first function applied, takes,
 /// and what `f`, the last, returns — so `(map xs (comp string/length inc))` over strings
-/// is checked against `inc`'s `number` like a named callback is (2026-10-03; a composed
-/// callback was never checked at all). `None` unless `comp` is the prelude's and EVERY
+/// is checked against `inc`'s `number` like a named callback is. `None` unless `comp` is the prelude's and EVERY
 /// stage has a knowable signature — one unknown stage and the composition says nothing,
 /// which is the false-positive-free answer. A stage handed a value it cannot take is
 /// [`comp_stage_mismatch`]'s finding.
@@ -157,8 +156,8 @@ fn comp_stages(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Vec<Sig>> {
         .collect()
 }
 
-/// `(apply f a … xs)` handing `f` what it cannot take (2026-10-03 — the applied function
-/// was checked against nothing, `apply`'s own signature being `(fn & any -> any)`). Each
+/// `(apply f a … xs)` handing `f` what it cannot take (`apply`'s own signature,
+/// `(fn & any -> any)`, checks nothing about the applied function). Each
 /// fixed parameter of `f` is held to what reaches it: a leading argument's type, and past
 /// those, the spread collection's element at that position (`element_at_over_union`, which
 /// over a uniform sequence is the element type or `nil`). Disjointness only, as for every
@@ -340,8 +339,6 @@ pub(super) fn callback_desc(arg: Value) -> String {
 /// (ansi-clear))` slip. Four lock-free `symbol_is` compares, only reached on
 /// the generic-call path (so no `symbol_name` allocation on the hot path).
 pub(super) fn is_output_sink(s: Symbol) -> bool {
-    // (`print`/`println`/`format` were the keys until 2026-10-02 — all three unbound
-    // since the `io/`/`string/` moves, so only `str` was ever guarded.)
     value::symbol_is(s, "io/puts")
         || value::symbol_is(s, "io/write")
         || value::symbol_is(s, "str")
@@ -386,13 +383,9 @@ pub(super) fn relax_param_for_arg(param: &Ty) -> Ty {
     if p.contains_tag(Tag::Fn) || p.contains_tag(Tag::Native) {
         p = p.union(Ty::of(Tag::Keyword));
     }
-    // (A record relaxation used to live here: an expected shape's *optional* fields
-    // were dropped before the membership test, because the old subtyping rule refused
-    // `{a: 1} <: {a: int, b?: string}` — it would not reason about a field the argument
-    // does not declare. Since ADR-264 a shape says what an undeclared key holds, so
-    // that comparison is answered directly and correctly; keeping the relaxation would
-    // now *cause* the false positive it was written to prevent, by rebuilding the
-    // expectation as a CLOSED shape with the optional fields removed.)
+    // No record relaxation here: since ADR-264 a shape says what an undeclared key holds,
+    // so `{a: 1} <: {a: int, b?: string}` is answered directly. Dropping the expected
+    // shape's optional fields would rebuild it CLOSED and cause a false positive.
     if p.contains_tag(Tag::Pair) && p.elem_ty().is_some() {
         p = p.union(Ty::of(Tag::Nil));
     }
@@ -543,8 +536,8 @@ fn fold_callback_seed(
     // The fold's RESULT is what the accumulator is after the last step — and over a
     // provably non-empty input the result rule (rightly) leaves `init` out of it. The
     // callback's accumulator is what it is handed on EVERY step, and the first step is
-    // handed `init`: `(fold [3 9 4] nil (fn (b x) (if (nil? b) x …)))` read `b` as
-    // `3 | 9 | 4` and flagged its own `nil?` as never true (2026-09-20). Seed with
+    // handed `init` — `(fold [3 9 4] nil (fn (b x) (if (nil? b) x …)))` must not read `b`
+    // as `3 | 9 | 4` and call its own `nil?` never true. Seed with
     // `init ∪ result` for the with-init forms, and with the first element — the seed of
     // a no-init `(reduce coll f)` — otherwise.
     let result = expr_ty(heap, form, ctx)?;
@@ -661,11 +654,11 @@ fn element_callback_seed(
 }
 
 /// For any call whose callee's signature declares an ARROW at position `i` and whose
-/// argument there fits that arity: `(i, arrow)`. The general case of the two seeds above (2026-09-12): those
-/// name their combinators, and every other higher-order function — a `(sig each3
-/// (… (buffer int int int -> buffer) -> …))` of the author's own — handed its lambda
-/// nothing, so the lambda's parameters inferred from their own body (`(+ start l)` →
-/// `number`) and strict reported the very arithmetic the arrow declares as `int`. The
+/// argument there fits that arity: `(i, arrow)`. The general case of the two seeds above,
+/// which name their combinators: any higher-order function — a `(sig each3
+/// (… (buffer int int int -> buffer) -> …))` of the author's own — hands its lambda the
+/// arrow's parameters, else they infer from their own body (`(+ start l)` → `number`)
+/// and strict reports the very arithmetic the arrow declares as `int`. The
 /// arrow's parameters are exactly what the callee promises to hand over (and its body is
 /// checked against that promise, ADR-273), so binding them is the same move
 /// `element_callback_seed` makes with an element type — and bound the same way, as an
@@ -906,21 +899,21 @@ pub(super) fn gradual_of_compound(heap: &Heap, expr: Value, ctx: &Ctx) -> Option
                     if let Value::Sym(target) = binds[i + 1] {
                         scope = scope.add_alias(name, target);
                     }
-                    // The COUNT alias (ADR-350), which this binder did not record — so a
-                    // length or index fact resting on `(let (n (count xs)) …)` reached the
-                    // walk's argument checks and NOT the return check, which comes through
-                    // here. See `guards::count_alias_target` (2026-09-17, C12).
+                    // The COUNT alias (ADR-350), so a length or index fact resting on
+                    // `(let (n (count xs)) …)` reaches the return check (which comes
+                    // through here) as well as the walk's argument checks. See
+                    // `guards::count_alias_target`.
                     if let Some(xs) =
                         crate::types::check::guards::count_alias_target(heap, binds[i + 1], &scope)
                     {
                         scope = scope.add_count_alias(name, xs);
                     }
                     // …and the PATH alias, for the same reason: the `match` compiler's
-                    // `(let (el (%vector-ref m 0)) (if (%eq el :ok) …))` narrowed `m` to the
-                    // clause's tuple in the walk and in `expr_ty`, but not here, so a match
-                    // over `(or (tuple :ok int) (tuple :err string))` returned `int | string`
-                    // from the `:ok` arm to the return check — a strict false positive on
-                    // every tagged-tuple dispatch with a declared result (2026-10-03).
+                    // `(let (el (%vector-ref m 0)) (if (%eq el :ok) …))` narrows `m` to the
+                    // clause's tuple in the walk and in `expr_ty`; without it here a match
+                    // over `(or (tuple :ok int) (tuple :err string))` would return
+                    // `int | string` from the `:ok` arm to the return check — a strict false
+                    // positive on every tagged-tuple dispatch with a declared result.
                     if let Some((base, keys)) =
                         crate::types::check::guards::path_of(heap, binds[i + 1])
                     {
@@ -984,7 +977,7 @@ pub(super) fn gradual_of_compound(heap: &Heap, expr: Value, ctx: &Ctx) -> Option
     // Precise only when EVERY operand is: an operand that is a call result or a
     // `let` local over one carries an over-approximated interval, and the arithmetic
     // over it is exactly as over-approximated — `(- (count (keys m)) 1)` reads
-    // `int[-1..]` without being able to be `-1` (2026-10-02: it was `stat` and warned).
+    // `int[-1..]` without being able to be `-1`.
     if let Some(t) = expr_ty(heap, expr, ctx) {
         if is_int_closed_op(head)
             && t.is_subtype(&Ty::of(value::Tag::Int))
@@ -1023,10 +1016,8 @@ pub(super) fn is_int_closed_op(head: Symbol) -> bool {
     value::symbol_is(head, "+")
         || value::symbol_is(head, "-")
         || value::symbol_is(head, "*")
-        // `math/` since ADR-227 — the bare spelling no longer exists, so keying it here
-        // left this rule dead for the spelling that does (mirrors `infer.rs`). The integer
-        // divisions are deliberately NOT here (their bare keys, unbound since ADR-227, were
-        // removed 2026-10-02): a `(math/mod x 100)` interval is read by overlap in plain
+        // `math/` since ADR-227 (mirrors `infer.rs`). The integer divisions are
+        // deliberately NOT here: a `(math/mod x 100)` interval is read by overlap in plain
         // mode and by inclusion only under strict —
         // `declarations::an_over_approximated_return_mismatch_is_strict_only` pins that.
         || value::symbol_is(head, "math/abs")

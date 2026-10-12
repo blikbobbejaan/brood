@@ -90,7 +90,7 @@ behind a long-lived loop has changed since it started."
   ;; `*module-files*` (a root registry the package manager fills).
   (fold *module-files*
     nil
-    (fn (found kv) (if found found (if (= (second kv) path) (first kv) nil)))))
+    (fn (found pair) (if found found (if (= (second pair) path) (first pair) nil)))))
 
 (defn- reload-in-package-context (path thunk)
   ;; Run `thunk` under `path`'s package context if it is a dep module, restoring the
@@ -141,19 +141,19 @@ behind a long-lived loop has changed since it started."
 ;; Recursive .blsp collector. Returns a flat list of paths (relative to the
 ;; original `dir` argument). Mirrors the walk in std/tool/project.blsp; lives here
 ;; too so std/reload stays prelude-only and require-able without project.
-(defn- reload-collect-blsp (dir)
+(defn- reload-collect-blsp (dir) (reload-collect-blsp-into dir nil))
+(defn- reload-collect-blsp-into (dir found)
+  ;; One accumulator threads the whole walk, so it stays linear in the file count.
   (if (file/dir? dir)
     (fold (file/ls dir)
-      nil
+      found
       (fn (acc entry)
-        (let (p (path/join dir entry))
+        (let (path (path/join dir entry))
           (cond
-            ;; `cons`/`%append-two` (share the accumulator tail) not `(append acc …)`
-            ;; (recopies the growing accumulator per entry → O(files²) on a large tree).
-            (file/dir? p) (%append-two (reload-collect-blsp p) acc)
-            (string/ends-with? entry ".blsp") (cons p acc)
+            (file/dir? path) (reload-collect-blsp-into path acc)
+            (string/ends-with? entry ".blsp") (cons path acc)
             else acc))))
-    nil))
+    found))
 
 ;; The directory watcher loop. Holds the set of files we've already noticed.
 ;; Each scan tick:

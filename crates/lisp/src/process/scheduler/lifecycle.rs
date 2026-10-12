@@ -41,30 +41,13 @@ fn deregister_timed(pid: u64, reason: Message, heap: Option<&Heap>) {
         // own death (never self-reported) cleanly disarms the stream.
         crate::process::sysmon::emit_exit(pid, &reason);
     }
-    // **NAMES is swept BEFORE the REGISTRY removal, and the order is load-bearing.**
-    // The invariant it buys: a pid absent from REGISTRY is already absent from NAMES.
-    // `%isolate`'s reap joins on REGISTRY-absence (`list_local_pids`), and with the old
-    // order (REGISTRY first, NAMES later in `retire_pid_tail`) that join returned while
-    // the dead pid was STILL name-registered — so the very next `(node/serve-spawns)`
-    // saw `:remote-spawn` "already registered", declined to restart it, and every
-    // subsequent `node/spawn` was sent to a corpse and silently dropped.
-    // `tests/remote_spawn_test.blsp` failed 4/4 standalone on exactly this (its first
-    // test is `:isolated`; the second ran inside the gap), and the same window under
-    // suite load is a KI-80 contributor. The reporter's `proc_descr` reads the name
-    // before `deregister` is called, so it still prints. The sweep in
-    // `retire_pid_tail` stays (idempotent) for the `retire_root_ctx` path that shares
-    // the tail.
-    //
-    // The REGISTRY removal runs INSIDE the NAMES write lock (`unregister_dead_pid_while`):
-    // `proc/register` checks liveness under that lock, so with the sweep and the removal
-    // one step to it, a register either binds before the sweep (which then drops it) or
-    // sees the pid gone — never binds in between, which left a name on a corpse forever.
-    // NAMES → REGISTRY is the nesting `spawn_or_get`/`register` already use, and
-    // `add_monitor`/`link`/`sysmon::install` nest REGISTRY inside their own tables; all
-    // are deadlock-free because nothing holds REGISTRY while reaching for any of them.
-    // Don't introduce a function that holds REGISTRY while taking NAMES, MONITORS,
-    // LINKS or the sysmon table, or this becomes a genuine ordering hazard. MONITORS is
-    // taken later, sequentially.
+    // The name sweep and the REGISTRY removal are ONE step under the NAMES lock
+    // (`unregister_dead_pid_while`), which buys two invariants: a pid absent from
+    // REGISTRY is already absent from NAMES (`%isolate`'s reap joins on REGISTRY
+    // absence, and a name left on the corpse made the next `node/serve-spawns` decline
+    // to restart — KI-80), and a concurrent `proc/register` either binds before the
+    // sweep or sees the pid gone. Lock order is NAMES → REGISTRY; never hold REGISTRY
+    // while taking NAMES, MONITORS, LINKS or the sysmon table.
     let mailbox = crate::dist::unregister_dead_pid_while(pid, || REGISTRY.remove(pid));
     // The death-disarm runs AFTER the removal, and unconditionally. After: a
     // `proc/system-monitor` install checks liveness under the sysmon lock, so either it
@@ -111,18 +94,12 @@ fn retire_pid_tail(pid: u64, reason: Message) {
     // And any wasm instances it loaded — each holds a whole store and linear memory.
     #[cfg(feature = "wasm")]
     crate::host::wasm::close_process_instances(pid);
-    // Drop any registered names that pointed at this pid — Erlang semantics
-    // (a name lives only as long as its process). Without this, named-spawn
-    // would see the stale entry as "already running" and never respawn.
-    crate::dist::unregister_dead_pid(pid);
-    // The dead process's own watches: drop entries where *it* was the watcher,
-    // or they leak until each watched target dies (kernel audit). Takes
-    // MONITORS sequentially like everything in this function — never nested.
-    // **Before the downs fire, and the order is load-bearing (KI-183):** a
-    // `[:down …]` is what makes this death observable, so everything the death
-    // releases must be released by then. With the sweep after the fan-out, a
-    // watcher woken by the down could read a target's `:monitored-by` still
-    // counting the dead process's monitors — 1–5 reads in 8000 on a loaded box.
+    // Registered names and node monitors were swept with the REGISTRY removal
+    // (`unregister_dead_pid_while`), by both callers.
+    //
+    // The dead process's own watches (it as the watcher) are dropped BEFORE the downs
+    // fire: a `[:down …]` makes this death observable, so everything it releases must
+    // be released by then (KI-183). Takes MONITORS sequentially — never nested.
     monitor::sweep_dead_watcher(pid);
     // The LOCAL downs are pushed while `MONITORS` is still held, so `take_target` and
     // the pushes are one step to a `demonitor` on another thread: with the lock released
@@ -173,7 +150,8 @@ fn retire_pid_tail(pid: u64, reason: Message) {
 /// the authoritative `gen_drained(&live_pids())` then re-checks against the *live* set,
 /// from which this pid is now gone.
 pub(super) fn retire_root_ctx(pid: u64) {
-    let Some(mailbox) = REGISTRY.remove(pid) else {
+    // Swept with the removal, under the NAMES lock — see `deregister_timed`.
+    let Some(mailbox) = crate::dist::unregister_dead_pid_while(pid, || REGISTRY.remove(pid)) else {
         return; // already retired (an explicit `deregister_root_ctx`, then thread exit)
     };
     let reason = Message::Keyword(value::intern(pk::NORMAL));
@@ -587,6 +565,57 @@ pub fn spawn_root_program(
         wake_a_parked_peer(worker_id);
     }
     Ok(exit)
+}
+
+#[cfg(test)]
+mod root_ctx_name_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    /// A retiring root context drops its registered names in the same step as its
+    /// REGISTRY entry: an observer never sees the pid dead yet still named (which is
+    /// what `%isolate`'s reap and named-spawn rely on). Probabilistic by nature — the
+    /// observer spins across 2000 retirements to land in any window that exists.
+    #[test]
+    fn a_retired_root_ctx_is_never_dead_but_still_named() {
+        let name = value::intern("root-ctx-retire-probe");
+        let current = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let observer = {
+            let (current, stop) = (current.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let mut violations = 0u64;
+                while !stop.load(Ordering::Acquire) {
+                    let pid = current.load(Ordering::Acquire);
+                    if pid != 0
+                        && !crate::process::is_alive(pid)
+                        && crate::dist::whereis(name) == Some(pid)
+                    {
+                        violations += 1;
+                    }
+                }
+                violations
+            })
+        };
+        for _ in 0..2000 {
+            let current = current.clone();
+            std::thread::spawn(move || {
+                let pid = crate::process::self_pid();
+                crate::dist::register(name, pid);
+                current.store(pid, Ordering::Release);
+                assert!(crate::process::deregister_root_ctx());
+            })
+            .join()
+            .expect("root-ctx thread panicked");
+        }
+        stop.store(true, Ordering::Release);
+        let violations = observer.join().expect("observer panicked");
+        assert_eq!(
+            violations, 0,
+            "a root ctx was observed dead in REGISTRY while still holding its name"
+        );
+    }
 }
 
 #[cfg(test)]

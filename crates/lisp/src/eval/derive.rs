@@ -475,13 +475,6 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
 // `json/prase` depends on `json` being loaded), `nest run --check-boot` promises it, and
 // `BROOD_NO_LAZY_LOAD=1` is the A/B and bisect lever.
 
-/// `BROOD_NO_LAZY_LOAD=1` — pin the eager policy for the whole process. One cached read.
-fn lazy_by_env() -> bool {
-    use std::sync::OnceLock;
-    static LAZY: OnceLock<bool> = OnceLock::new();
-    *LAZY.get_or_init(|| std::env::var_os("BROOD_NO_LAZY_LOAD").is_none())
-}
-
 /// Nesting depth of [`EagerLoadScope`]s — any open scope forces eager, process-wide. Eager
 /// is always correct, so a concurrent lazy loader going eager for the duration is harmless.
 static EAGER_DEPTH: AtomicUsize = AtomicUsize::new(0);
@@ -490,9 +483,10 @@ static EAGER_DEPTH: AtomicUsize = AtomicUsize::new(0);
 /// load eagerly (`nest run --check-boot`), where a Rust scope guard has no place to live.
 static EAGER_STICKY: AtomicBool = AtomicBool::new(false);
 
-/// Is the lazy policy in force right now?
+/// Is the lazy policy in force right now? `BROOD_NO_LAZY_LOAD=1` pins the eager policy for
+/// the whole process.
 pub fn lazy_loads() -> bool {
-    lazy_by_env()
+    crate::diagnostics::debug_flags::lazy_load()
         && EAGER_DEPTH.load(Ordering::Relaxed) == 0
         && !EAGER_STICKY.load(Ordering::Relaxed)
 }
@@ -602,7 +596,7 @@ pub(crate) fn global_miss_in_arm(
     let v = global_miss(heap, env, sym)?;
     if heap.global_epoch() != epoch {
         heap.mark_arm_stale(arm);
-        if std::env::var_os("BROOD_TRACE_COMPILE").is_some() {
+        if crate::diagnostics::debug_flags::trace_compile() {
             let name = arm
                 .dbg_name
                 .map(value::symbol_name_ref)
@@ -696,8 +690,7 @@ fn image_sigs() -> &'static std::sync::RwLock<ImageSigs> {
 /// infers loaded bodies and materialises what they name, as before. The A/B, bisect and
 /// differential lever. Cached once.
 pub fn image_sigs_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_IMAGE_SIGS").is_none())
+    crate::diagnostics::debug_flags::image_signatures()
 }
 
 /// Record the signature index an opened image holds — `(qualified name, type text, min

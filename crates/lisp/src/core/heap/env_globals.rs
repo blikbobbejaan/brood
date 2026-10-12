@@ -7,8 +7,8 @@
 //! JIT'd guard loads, the registry ops (`registry_update`/`_cas`/`_member`), dynamic-variable
 //! binding stacks, `sig` declarations, and the globals snapshot/restore that `%isolate`
 //! rolls back. It closes with the ADR-119 Phase-2 dependency recorder, which is per-process
-//! precisely because it observes globals. Split out of `heap.rs` on 2026-09-07 (handoff
-//! item 1): a `use super::*` child, so it reaches `Heap`'s private fields exactly as before.
+//! precisely because it observes globals. A `use super::*` child, so it reaches `Heap`'s
+//! private fields.
 
 use super::*;
 use crate::core::registries as reg;
@@ -584,9 +584,8 @@ impl Heap {
     /// `*record-ids*`, … — is one global holding a whole map or list, and Brood updates it
     /// as `(def *X* (assoc *X* …))`. That reads, computes and writes as three separate
     /// steps, so two processes registering at the same time each read the old value and each
-    /// write their own successor: the later write silently drops the earlier one. Measured
-    /// **218 of 500** concurrent registrations lost, after which the op dispatched to
-    /// `:default` — a wrong answer, not a crash, and `impl` is hot-reloadable by design.
+    /// write their own successor: the later write silently drops the earlier one, and the
+    /// op then dispatches to `:default` — a wrong answer, not a crash.
     ///
     /// The whole read-modify-write happens here, under `registry_lock`, so it is atomic by
     /// construction: no CAS (and so no ABA question), no retry loop, no spinning, and no
@@ -1397,21 +1396,6 @@ impl Heap {
     /// Pop the most recent dynamic binding (the matching unwind of `push_dynamic`).
     pub fn pop_dynamic(&mut self) {
         self.dynamics.pop();
-    }
-
-    /// The current (innermost) value of dynamic variable `sym`, if a `binding` for
-    /// it is active — the read side of [`push_dynamic`]. An empty stack (the common
-    /// case) costs one `is_empty` check. Used by `spawn` to inherit a propagating
-    /// causal context (`*trace-context*`) into a child without an explicit hand-off.
-    pub fn current_dynamic(&self, sym: Symbol) -> Option<Value> {
-        if self.dynamics.is_empty() {
-            return None;
-        }
-        self.dynamics
-            .iter()
-            .rev()
-            .find(|&&(s, _)| s == sym)
-            .map(|&(_, v)| v)
     }
 
     /// The debugger's durable per-process trace context (ADR-174), or `None`. A

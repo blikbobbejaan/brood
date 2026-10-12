@@ -47,9 +47,7 @@ fn an_arm_whose_callee_receives_is_refused_by_name_and_never_parks_dirty() {
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_JIT_BAIL_TRACE", "1")
-        .env_remove("BROOD_NO_JIT")
         .env_remove("BROOD_TIER")
-        .env_remove("BROOD_VM")
         .arg(&path)
         .output()
         .expect("run brood");

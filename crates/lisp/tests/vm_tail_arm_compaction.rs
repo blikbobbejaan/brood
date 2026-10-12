@@ -33,7 +33,7 @@ fn tail_call_into_optional_default_arm_survives_runtime_compaction() {
     // tree-walker path guards its twin — `record_tw_entry` reading the callee's
     // name from the pre-`bind_params` capture, not a `ClosureId` the default
     // eval's compaction may have staled. The tree-walker half regressed under
-    // `BROOD_VM=0` until that fix; keeping it un-pinned exercises both.
+    // `BROOD_TIER=0` until that fix; keeping it un-pinned exercises both.
     let mut interp = Interp::new();
     let prog = r#"
         ;; Inflate the shared RUNTIME closures slab with dead `def` versions at LOW

@@ -1780,8 +1780,8 @@ back to 105 ms. Likely fix: cap inferred-type size and widen past the cap (widen
 over-approximation is sound by construction — it can only lose precision). Repro + table
 in [`docs/known-issues.md`](docs/known-issues.md).
 
-⬜ **`BROOD_VM=0` does not give the in-language suite tree-walker coverage.**
-A test body run by `nest test` (or `brood --test`) under `BROOD_VM=0` shows no slowdown at
+⬜ **`BROOD_TIER=0` does not give the in-language suite tree-walker coverage.**
+A test body run by `nest test` (or `brood --test`) under `BROOD_TIER=0` shows no slowdown at
 all, and `BROOD_JIT_DUMP_IR=1` lists its arms reaching the JIT — the env var gates how a
 *top-level form* is run, while the framework invokes each test as an already-compiled
 closure (the same function at top level via `brood file.blsp` interprets correctly, 0 JIT

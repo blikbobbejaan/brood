@@ -10,9 +10,9 @@ module-private defns) and the two migration aids, `--fix-renames` (ADR-304) and
 ;; where a check's time went, per file, in the Rust checker): `[check] <phase> <ms> ms`.
 ;; Computed only when the flag is set; nothing here is on the path of what it measures.
 (defn- project-check-trace? () (not (nil? (os/env "BROOD_DERIVE_DBG"))))
-(defn- project-check-trace (phase t0)
+(defn- project-check-trace (phase started)
   (when (project-check-trace?)
-    (io/puts (str "[check] " phase " " (math/quot (- (os/now-ns) t0) 1000000) " ms") :to *err*)))
+    (io/puts (str "[check] " phase " " (math/quot (- (os/now-ns) started) 1000000) " ms") :to *err*)))
 
 (defn all-files (root)
   "Every `.blsp` file the project at `root` owns — its source files plus its test files.
@@ -22,8 +22,8 @@ project, and a `defn-` here is exactly the dead call site KI-67 found four of (t
 the fifth, and it hid inside a map literal until the checker learned to walk one)."
   (let (src-dirs (project/abs-paths root *project-source-paths*)
         test-dirs (project/abs-paths root *project-test-paths*))
-    (append (fold src-dirs nil (fn (a d) (append a (project/collect-sources d))))
-      (fold test-dirs nil (fn (a d) (append a (project/project-collect-tests d)))))))
+    (append (apply append (map src-dirs project/collect-sources))
+      (apply append (map test-dirs project/collect-tests)))))
 
 ;; ── KI-17 reachability: each file's transitive require-closure ────────────────
 ;; A file that names `mod/foo` must be able to REACH `mod`; otherwise the reference
@@ -70,16 +70,16 @@ module included), built from the whole `files` universe — the KI-17 reachabili
   (let (infos (project-module-infos files)
         module->deps (fold infos
                        {}
-                       (fn (m kv)
-                         (let ([_f info] kv
+                       (fn (m key-value)
+                         (let ([_f info] key-value
                                name (%map-get info :module nil))
                            (if name
                              (%map-assoc m name (%map-get info :requires nil))
                              m)))))
     (fold infos
       {}
-      (fn (acc kv)
-        (let ([f info] kv
+      (fn (acc key-value)
+        (let ([f info] key-value
               own (%map-get info :module nil)
               closed (project-close-modules (%map-get info :requires nil) module->deps)
               with-own (if own (conj closed own) closed))
@@ -478,9 +478,9 @@ module included), built from the whole `files` universe — the KI-17 reachabili
   ;; and the pre-flight cost the whole launch — 2.2 s of 2.5 s on bedit. A dependent's
   ;; verdict that shifts without its own file changing is `nest check`'s to report;
   ;; the pre-flight is advisory and scoped to what is about to run.
-  (let (t0 (os/now-ns)
+  (let (started (os/now-ns)
         cache (project-read-cache root manifest)
-        _ (project-check-trace "read-cache" t0)
+        _ (project-check-trace "read-cache" started)
         t1 (os/now-ns)
         parts (fold files
                 [{} nil]
@@ -528,7 +528,7 @@ module included), built from the whole `files` universe — the KI-17 reachabili
                                     (nth e 4 nil)])
                     (%map-assoc m p restamped))))
         _ (project-check-trace "re-check" t3)
-        entries (fold fresh reuse (fn (m kv) (let ([p e] kv) (%map-assoc m p e))))
+        entries (fold fresh reuse (fn (m key-value) (let ([p e] key-value) (%map-assoc m p e))))
         ;; print every file's warnings (reused + fresh) and tally them — in FILE order, so
         ;; a replayed run (ADR-382) prints what this one printed
         n (fold files
@@ -536,16 +536,15 @@ module included), built from the whole `files` universe — the KI-17 reachabili
             (fn (n p)
               (let (e (%map-get entries p nil))
                 (if e (fold (nth e 1) n project-tally-warning) n))))
-        lines (fold files
-                nil
-                (fn (acc p)
-                  (let (e (%map-get entries p nil))
-                    (if e (%append-two (or (nth e 1) nil) acc) acc)))))
+        lines (apply append
+                (reverse (map files
+                           (fn (path)
+                             (let (entry (%map-get entries path nil)) (and entry (nth entry 1))))))))
     (when (not (empty? recheck))
       (let (t4 (os/now-ns))
         (project-write-cache root
           manifest
-          (fold entries cache (fn (m kv) (let ([p e] kv) (%map-assoc m p e)))))
+          (fold entries cache (fn (m key-value) (let ([p e] key-value) (%map-assoc m p e)))))
         (project-check-trace "write-cache" t4)))
     ;; a vector, so "no warnings" (`[]`) stays distinct from the fresh path's "no lines" (nil)
     [n (vec lines)]))
@@ -572,7 +571,8 @@ every file against the fully-loaded state is also what a live image would see. R
   (let (infos (project-module-infos files)
         own (fold (%map-pairs infos)
               #{}
-              (fn (acc kv) (let (m (%map-get (second kv) :module nil)) (if m (conj acc m) acc))))
+              (fn (acc key-value)
+                (let (m (%map-get (second key-value) :module nil)) (if m (conj acc m) acc))))
         listed (project-require-closures files)
         named (fold files
                 #{}
@@ -588,8 +588,7 @@ every file against the fully-loaded state is also what a live image would see. R
         mods (fold files
                named
                (fn (acc f)
-                 (fold (%append-two (or (%map-get closures f nil) nil)
-                         (or (%map-get listed f nil) nil))
+                 (fold (append (%map-get closures f nil) (%map-get listed f nil))
                    acc
                    (fn (a m) (if (contains? own m) a (conj a m)))))))
     (doseq (m (sort mods))
@@ -609,9 +608,9 @@ every file against the fully-loaded state is also what a live image would see. R
     ;; resolve `FILE`'s transitive requires, else a transitively-reached module would
     ;; false-positive. Outside a project (no root) the checked files are the universe;
     ;; there the lint is inert anyway (only the file's own requires are loaded).
-    (let (t0 (os/now-ns)
+    (let (started (os/now-ns)
           closures (project-require-closures (if root (all-files root) files))
-          _ (project-check-trace "require-closures" t0))
+          _ (project-check-trace "require-closures" started))
       (cond
         ;; No cache when it's disabled, there's no project root, or the project is over
         ;; the file cap (the manifest read would rival re-checking) — parallel fresh path.
@@ -656,25 +655,27 @@ every file against the fully-loaded state is also what a live image would see. R
     (project-ensure-loaded root)
     (if (= (os/env "BROOD_NO_CHECK") "1")
       nil
-      ;; `%append-two` (copy the small per-file diagnostic list, share `acc`) not
-      ;; `(append acc …)` (recopies the growing accumulator each file → O(files²)).
-      ;; `%mcp-progress` streams per-file progress under `nest mcp` (a no-op — a
-      ;; cheap thread-local check — otherwise), so a large project's `check`
-      ;; reports live instead of one silent wait.
+      ;; Under `nest mcp` each checked file is reported as progress, so a large project's
+      ;; `check` reports live instead of one silent wait (see `project-check-fold`).
       (let (files (all-files root)
             closures (project-require-closures files)
             total (count files))
         (project-preload! files closures)
         (project-check-fold files closures total 0 nil)))))
 
-(defn- project-check-fold (files closures total done acc)
+;; `chunks` collects each file's diagnostic list, newest first; one `append` at the end
+;; keeps the walk linear in the diagnostic count.
+(defn- project-check-fold (files closures total done chunks)
   (if (nil? files)
-    acc
-    (let (f (first files)
-          diags (reflect/check-file-structured f (%map-get closures f nil))
-          done2 (inc done))
-      (%mcp-progress done2 total (str "checked " (path/basename f)))
-      (project-check-fold (rest files) closures total done2 (%append-two diags acc)))))
+    (apply append chunks)
+    (let (file (first files)
+          diagnostics (reflect/check-file-structured file (%map-get closures file nil))
+          checked (inc done))
+      ;; Only when `nest mcp` has loaded its module: a plain `nest check` must not load
+      ;; it, and `mcp/progress` is itself a no-op outside a progress-token call.
+      (when (bound? 'mcp/progress)
+        (mcp/progress checked total (str "checked " (path/basename file))))
+      (project-check-fold (rest files) closures total checked (cons diagnostics chunks)))))
 (sig project-check-fold ((or list nil) map int int any -> any))
 
 ;; --- duplicate-global detection (flat namespace, ADR-019) --------------------
@@ -688,8 +689,8 @@ every file against the fully-loaded state is also what a live image would see. R
 ;; CST node accessors (see the `parse-source` doc in builtins.rs): a node is
 ;; `[kind v]` — for a leaf `v` is the raw source text, for a container
 ;; (`[:list …]`, `[:root …]`) `v` is the vector of child nodes.
-(defn- project-node-kind (n) (seq/vector-ref n 0))
-(defn- project-node-val (n) (seq/vector-ref n 1))
+(defn- project-node-kind (n) (nth n 0))
+(defn- project-node-val (n) (nth n 1))
 
 ;; Top-level heads that bind a global (each expands to `def`). `defmodule` is
 ;; excluded — it registers a module feature, not a clashing value binding.
@@ -766,8 +767,8 @@ every file against the fully-loaded state is also what a live image would see. R
 (defn- project-duplicate-def-warnings (extracts source-set)
   (let (by-name (fold extracts
                   {}
-                  (fn (acc kv)
-                    (let ([path entry] kv)
+                  (fn (acc key-value)
+                    (let ([path entry] key-value)
                       (if (%map-get source-set path false)
                         (fold (nth entry 3)
                           acc
@@ -1036,16 +1037,18 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 (defn- project-pscan (files)
   (if (empty? files)
     nil
-    (project-pfold-files files
-      :scan-entries (fn (acc chunk-results) (%append-two chunk-results acc))
-      (fn (acc chunk reason)
-        (io/puts (str "warning: check scan worker died on "
-                   (count chunk)
-                   " file(s), re-scanning: "
-                   (pr-str reason))
-          :to *err*)
-        (%append-two (project-scan-entries-chunk chunk) acc))
-      nil)))
+    ;; Each chunk's results are consed on and flattened once, keeping the gather linear.
+    (apply append
+      (project-pfold-files files
+        :scan-entries (fn (acc chunk-results) (cons chunk-results acc))
+        (fn (acc chunk reason)
+          (io/puts (str "warning: check scan worker died on "
+                     (count chunk)
+                     " file(s), re-scanning: "
+                     (pr-str reason))
+            :to *err*)
+          (cons (project-scan-entries-chunk chunk) acc))
+        nil))))
 
 ;; Run `check-file-deps` over `files` in PARALLEL (`:check-deps`), returning a list
 ;; of `[path [mtime warnings dep-keys fp]]`. The dependency recorder is per-process
@@ -1055,16 +1058,17 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 (defn- project-pcheck-deps (files)
   (if (empty? files)
     nil
-    (project-pfold-files files
-      :check-deps (fn (acc chunk-results) (%append-two chunk-results acc))
-      (fn (acc chunk reason)
-        (io/puts (str "warning: check worker died on "
-                   (count chunk)
-                   " file(s), re-checking: "
-                   (pr-str reason))
-          :to *err*)
-        (%append-two (project-check-deps-chunk chunk) acc))
-      nil)))
+    (apply append
+      (project-pfold-files files
+        :check-deps (fn (acc chunk-results) (cons chunk-results acc))
+        (fn (acc chunk reason)
+          (io/puts (str "warning: check worker died on "
+                     (count chunk)
+                     " file(s), re-checking: "
+                     (pr-str reason))
+            :to *err*)
+          (cons (project-check-deps-chunk chunk) acc))
+        nil))))
 
 ;; Above this many files the on-disk cache is SKIPPED and the fast from-scratch
 ;; parallel path runs instead. The single manifest is a `pr-str`/`reflect/read-string`
@@ -1108,21 +1112,20 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; `project-gather-extracts`). The GLOBAL merged counts decide each private def's
 ;; fate (so cross-module references are seen), then each file's `privs` are judged.
 (defn- project-unused-private-warnings (extracts)
-  (let (counts (fold extracts {} (fn (m kv) (project-merge-counts m (nth (second kv) 1)))))
-    ;; `%append-two file-warnings acc` copies only the small per-file list and SHARES
-    ;; the accumulator tail → O(total); a plain `(append acc …)` would be O(files²).
-    (fold extracts
-      '()
-      (fn (acc kv)
-        (let ([path entry] kv)
-          (%append-two (seq/keep (nth entry 2)
-                         (fn (pd)
-                           (let ([bare qual] pd
-                                 used (or (>= (%map-get counts bare 0) 2)
-                                        (and (not (= qual bare))
-                                          (>= (%map-get counts qual 0) 1))))
-                             (when (not used)
-                               (str path ": warning: unused private function: " bare)))))
+  (let (counts (fold extracts
+                 {}
+                 (fn (m key-value) (project-merge-counts m (nth (second key-value) 1)))))
+    ;; Per-file warning lists are consed on and flattened once, keeping it linear.
+    (apply append
+      (fold extracts
+        '()
+        (fn (acc [path entry])
+          (cons (seq/keep (nth entry 2)
+                  (fn ([bare qualified])
+                    (let (used (or (>= (%map-get counts bare 0) 2)
+                                 (and (not (= qualified bare))
+                                   (>= (%map-get counts qualified 0) 1))))
+                      (when (not used) (str path ": warning: unused private function: " bare)))))
             acc))))))
 
 ;; The whole-project lints (duplicate-defs, unused-private) for a check that REPORTS on
@@ -1208,19 +1211,19 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; two passes and record what they printed. `paths` nil means the whole project.
 (defn- project-check-or-replay (root paths)
   (project/setup root)
-  (let (t0 (os/now-ns)
+  (let (started (os/now-ns)
         key (if (project-cache-off?) nil (project-verdict-key root paths))
-        rec (if key (project-verdict-record root) nil)
-        _ (project-check-trace "verdict-key" t0))
-    (if (and rec (= (%map-get rec :key nil) key))
+        verdict (if key (project-verdict-record root) nil)
+        _ (project-check-trace "verdict-key" started))
+    (if (and verdict (= (%map-get verdict :key nil) key))
       (do
-        (doseq (w (%map-get rec :lines nil)) (io/puts w :to *err*))
+        (doseq (w (%map-get verdict :lines nil)) (io/puts w :to *err*))
         (when (project-check-trace?)
           (io/puts (str "[check] replayed "
-                     (count (%map-get rec :lines nil))
+                     (count (%map-get verdict :lines nil))
                      " lines (project unchanged)")
             :to *err*))
-        (%map-get rec :gating 0))
+        (%map-get verdict :gating 0))
       (let (t1 (os/now-ns)
             _ (project-ensure-loaded root)
             _ (project-check-trace "ensure-loaded" t1)

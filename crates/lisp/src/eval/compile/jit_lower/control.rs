@@ -1,8 +1,7 @@
 //! Control-flow arm bodies for `jit_lower_arm_inner`'s emit loop — the `Jump` and
 //! `JumpIfFalse` terminators, and the **deferred edge** machinery that types a join's
 //! block parameters only once EVERY predecessor is known (`PendingEdge`,
-//! `resolve_edges`). Extracted from the emit loop as part of the `jit_lower_arm_inner`
-//! decomposition; jit-only. Each arm still `break`s the caller's inner loop (it's a
+//! `resolve_edges`). jit-only. Each arm still `break`s the caller's inner loop (it's a
 //! block terminator) — these fns emit the terminator and return `Some(())`, or `None`
 //! to bail the whole arm to the VM.
 //!
@@ -10,16 +9,12 @@
 //!
 //! A join block carries its operand stack as one `i64` block parameter per entry, and a
 //! single word cannot say whether it holds a raw int, a 0/1 bool, or a placeholder for a
-//! value living in a frame slot — that is what [`ParamRepr`] records per entry. Edges
-//! used to be emitted in ip order and the FIRST edge to reach a join fixed its typing; a
-//! later edge that disagreed was compiled as an unconditional deopt ("type-mixed join").
-//! That is sound, but it turns any `(or p 7)` / `(if c x 7)` — a boxed slot on one edge,
-//! a scalar on the other — into an arm that deopts on every activation taking the second
-//! edge, and sixteen of those latch the arm off the native tier for good: the
-//! highlighter's `hl-advance` (`(or p (and params? (= n 2)))`, `p` false on most frames)
-//! ran interpreted for every keystroke in bedit.
+//! value living in a frame slot — that is what [`ParamRepr`] records per entry. If the
+//! FIRST edge to reach a join fixed its typing, any `(or p 7)` / `(if c x 7)` — a boxed
+//! slot on one edge, a scalar on the other — would deopt on every activation taking the
+//! second edge, and sixteen of those latch the arm off the native tier for good.
 //!
-//! Now a branch targets a fresh **edge block** per successor and records the edge's
+//! So a branch targets a fresh **edge block** per successor and records the edge's
 //! operand stack (with the reprs it would cross as, snapshotted at emission time — the
 //! slot flags are a single-pass approximation and must be read when the edge's stores
 //! were emitted, not later). Edges are forward-only and emitted in ip order, so by the
@@ -34,7 +29,8 @@
 //! THAT use (where the VM raises), never on the join. ADR-353.
 #![cfg(feature = "jit")]
 use super::emit::{
-    as_block_arg_for, param_repr, read_words, store_op, store_result, Frame, ParamRepr,
+    as_block_arg_for, deopt_code, param_repr, read_words, store_op, store_result, DeoptReason,
+    Frame, ParamRepr,
 };
 use super::Op;
 use super::OrBail;
@@ -107,8 +103,8 @@ pub(super) fn resolve_edges(
                 store_result(b, e.stack[0], frame.out_ptr, frame);
                 b.ins().jump(target, &[]);
             } else {
-                let __dr = b.ins().iconst(types::I32, 1);
-                b.ins().jump(frame.deopt, &[BlockArg::Value(__dr)]);
+                let deopt_reason = deopt_code(b, DeoptReason::UnreachableDoneEdge);
+                b.ins().jump(frame.deopt, &[BlockArg::Value(deopt_reason)]);
             }
         }
         return Some(Vec::new());
@@ -224,8 +220,42 @@ pub(super) fn resolve_edges(
     Some(unified)
 }
 
+/// The operand stack a leader block starts with, rebuilt from its block params and the
+/// reprs `resolve_edges` settled for them (`None`: no recorded edges, every param an
+/// `Int`). A widened `Words` entry's two extra words sit after the depth's worth of params.
+pub(super) fn leader_entry_stack(
+    b: &mut FunctionBuilder,
+    block: Block,
+    reprs: Option<&[ParamRepr]>,
+) -> Vec<Op> {
+    let params: Vec<cranelift_codegen::ir::Value> = b.block_params(block).to_vec();
+    let depth = reprs.map_or(params.len(), |r| r.len());
+    params[..depth]
+        .iter()
+        .enumerate()
+        .map(|(i, &value)| {
+            match reprs
+                .and_then(|r| r.get(i).copied())
+                .unwrap_or(ParamRepr::Int)
+            {
+                ParamRepr::Bool => Op::Bool(value),
+                // KI-49: the value was never materialised into the arg word — it lives in
+                // frame slot `k`, which every predecessor agreed on.
+                ParamRepr::Slot(k) => Op::Slot(k),
+                ParamRepr::Int => Op::Int(value),
+                ParamRepr::Float => {
+                    Op::Float(b.ins().bitcast(types::F64, MemFlagsData::new(), value))
+                }
+                ParamRepr::Words(n) => {
+                    Op::Handle(value, params[depth + 2 * n], params[depth + 2 * n + 1])
+                }
+            }
+        })
+        .collect()
+}
+
 /// `Inst::Jump(t)` — an unconditional branch. `t == len` targets Done (return the
-/// single result via `roots[base]`); otherwise it registers a deferred edge into leader
+/// single result through the caller's `out` pointer); otherwise it registers a deferred edge into leader
 /// `t` and jumps to its edge block. A dead jump (wrong stack height at Done) routes to
 /// `deopt`. Returns `None` to bail the arm (a backward edge).
 pub(super) fn emit_jump(
@@ -253,8 +283,8 @@ pub(super) fn emit_jump(
             // never executes, and if the unreachability assumption were ever wrong it
             // safely falls back to the VM rather than mis-returning. (This dead jump is
             // why e.g. `collatz`'s `steps` arm wouldn't lower.)
-            let __dr = b.ins().iconst(types::I32, 1);
-            b.ins().jump(deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::DeadJoinBlock);
+            b.ins().jump(deopt, &[BlockArg::Value(deopt_reason)]);
         }
     } else {
         let e = defer_edge(b, stack, t, j, pending, frame).or_bail("backward-jump")?;
@@ -361,8 +391,8 @@ pub(super) fn emit_jump_if_false(
         // collapsed because its width-check `<=` 0 read as truthy). Deopt to the VM,
         // which has the real tagged value and branches correctly.
         Op::Int(_) => {
-            let __dr = b.ins().iconst(types::I32, 3);
-            b.ins().jump(deopt, &[BlockArg::Value(__dr)]);
+            let deopt_reason = deopt_code(b, DeoptReason::UntaggedIntBranch);
+            b.ins().jump(deopt, &[BlockArg::Value(deopt_reason)]);
         }
         // `Op::Float`/`Op::HoistedVec`: unambiguously truthy (a float / a vector is
         // never a boolean), so branch to the truthy edge directly.

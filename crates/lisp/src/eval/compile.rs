@@ -3,10 +3,10 @@
 //! A **closure-compiling VM over a lexically-addressed IR**: a form compiles once
 //! into a [`Node`] tree run by a trampoline ([`vm_apply`]). The crux is GC: a
 //! call's frame slots are a contiguous region of the **existing** `Heap::roots`
-//! operand stack, so the moving collector relocates them in place (`arena_flip`'s
+//! operand stack, so the moving collector relocates them in place (the collector's
 //! root walk) with **no new root set** — `Node::Local(i)` reads `root_at(base+i)`.
 //!
-//! **The VM is the default engine** (ADR-076 Stage 3); `BROOD_VM=0` forces the
+//! **The VM is the default engine** (ADR-076 Stage 3); `BROOD_TIER=0` forces the
 //! tree-walker. A closure is VM-compiled when it's built from the core vocabulary
 //! ([`Node`] below): `if`/`do`/`let`/`letrec`/`fn`/`quote` plus calls and vector/map
 //! literals, with `&optional` (nil- *or* real-default) and any capture (global *or*
@@ -101,7 +101,7 @@ impl Tier {
     pub const ALL: &'static [Tier] = &[Tier::Native, Tier::Bytecode, Tier::TreeWalk];
 
     /// Short label for benchmark rows and traces. `Vm`/`Tw` are unchanged from the two-engine
-    /// era on purpose: `scripts/bench_ratio.py` reads them out of divan's arg column and
+    /// era on purpose: `scripts/bench-ratio.awk` reads them out of divan's arg column and
     /// `docs/benchmarking.md` quotes them.
     pub const fn short(self) -> &'static str {
         match self {
@@ -130,47 +130,29 @@ pub fn set_forced_ceiling(choice: Option<Tier>) {
 /// How high this thread may climb the ladder. A per-thread [`set_forced_ceiling`] override wins;
 /// otherwise the default is [`Tier::Native`] — every build tiers to native unless told not to.
 ///
-/// One knob, `BROOD_TIER=0|1|2`, with the two flags it replaces kept as **aliases** because they
-/// are in muscle memory and quoted across the docs:
+/// One knob, `BROOD_TIER` (ADR-222):
 ///
 /// | set | ceiling |
 /// |---|---|
-/// | `BROOD_TIER=0` \| `BROOD_VM` falsy (`0`/`false`/`off`/`no`/empty) | [`Tier::TreeWalk`] |
-/// | `BROOD_TIER=1` \| `BROOD_NO_JIT` set | [`Tier::Bytecode`] |
-/// | `BROOD_TIER=2`, or nothing | [`Tier::Native`] |
+/// | `BROOD_TIER=0` | [`Tier::TreeWalk`] |
+/// | `BROOD_TIER=1` | [`Tier::Bytecode`] |
+/// | `BROOD_TIER=2`, unset, or anything else | [`Tier::Native`] |
 ///
-/// `BROOD_TIER` wins if both are set. Before ADR-222 these were two unrelated checks in two
-/// modules — this one and `jit_tier`'s own `BROOD_NO_JIT` read — which is why "the engine" and
-/// "the JIT switch" looked like different kinds of thing. The env/default choice is read once and
-/// cached; it cannot change mid-run, but the override can.
+/// An unrecognised value keeps the default rather than guessing — a typo must not silently
+/// lower the ceiling. The env/default choice is read once and cached; it cannot change mid-run,
+/// but the override can.
 pub fn tier_ceiling() -> Tier {
     if let Some(forced) = FORCED_CEILING.with(|c| c.get()) {
         return forced;
     }
-    static ON: std::sync::OnceLock<Tier> = std::sync::OnceLock::new();
-    fn truthy(v: &str) -> bool {
-        !matches!(
-            v.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "off" | "no"
-        )
-    }
-    *ON.get_or_init(|| {
-        match std::env::var("BROOD_TIER").as_deref().map(str::trim) {
-            Ok("0") => return Tier::TreeWalk,
-            Ok("1") => return Tier::Bytecode,
-            Ok("2") => return Tier::Native,
-            // Anything else (unset, or a value we do not recognise) falls through to the
-            // aliases rather than guessing — a typo must not silently lower the ceiling.
-            _ => {}
-        }
-        if std::env::var("BROOD_VM").is_ok_and(|v| !truthy(&v)) {
-            return Tier::TreeWalk;
-        }
-        if std::env::var_os("BROOD_NO_JIT").is_some() {
-            return Tier::Bytecode;
-        }
-        Tier::Native
-    })
+    static CEILING: std::sync::OnceLock<Tier> = std::sync::OnceLock::new();
+    *CEILING.get_or_init(
+        || match std::env::var("BROOD_TIER").as_deref().map(str::trim) {
+            Ok("0") => Tier::TreeWalk,
+            Ok("1") => Tier::Bytecode,
+            _ => Tier::Native,
+        },
+    )
 }
 
 /// Run one already-macro-expanded **top-level** form as high up the ladder as the ceiling allows.
@@ -301,7 +283,8 @@ fn resolve_prim3(heap: &Heap, h: Symbol) -> Option<PrimOp3> {
     // `Heap::map_get3_inline` mirrors; `assoc`'s single-pair arm is `%map-assoc` for a map
     // and `%vector-assoc` for a vector, and only the map half is inlined.
     if crate::core::value::symbol_is(h, "get") {
-        if !inline::mapget_enabled() {
+        // `BROOD_NO_MAPGET` opts out.
+        if !crate::diagnostics::debug_flags::map_get_lowering() {
             return None;
         }
         return match v.unpack() {
@@ -312,7 +295,9 @@ fn resolve_prim3(heap: &Heap, h: Symbol) -> Option<PrimOp3> {
         };
     }
     if crate::core::value::symbol_is(h, "assoc") {
-        if !inline::mapassoc_enabled() {
+        // `BROOD_NO_MAPASSOC` opts out — its own lever, apart from `BROOD_NO_MAPGET`, because
+        // this one ALLOCATES from native code where the reads do not.
+        if !crate::diagnostics::debug_flags::map_assoc_lowering() {
             return None;
         }
         return match v.unpack() {
@@ -618,12 +603,8 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
 
 /// Apply a closure *value* (not a source form) to `args` through the VM when it's
 /// VM-eligible, falling back to the tree-walker (`eval::apply`) otherwise — the
-/// entry point for callers that hold a [`Value::Fn`] and want VM execution. A
-/// spawned process's body uses this so it runs on the VM (with inlined
-/// primitives) like top-level code via [`run`], instead of the tree-walker:
-/// before this, `eval::apply` ran every green process tree-walked even under
-/// `BROOD_VM=1`, ~4–5× slower (most of `pfib`'s gap to Elixir). `genv` is the
-/// env a *native* callee runs in; a VM closure runs in its own captured env
+/// entry point for callers that hold a [`Value::Fn`] and want VM execution (a
+/// spawned process's body, for one). `genv` is the env a *native* callee runs in; a VM closure runs in its own captured env
 /// (read off the closure inside `dispatch`). `tail = false`: this is a value
 /// context, so any tail call is forced to completion by `force`.
 pub fn apply_value(heap: &mut Heap, callee: Value, args: &[Value], genv: EnvId) -> LispResult {
@@ -633,7 +614,7 @@ pub fn apply_value(heap: &mut Heap, callee: Value, args: &[Value], genv: EnvId) 
 }
 
 /// Apply `callee` through the active engine: the VM when enabled (a VM-eligible
-/// callback runs compiled), the tree-walker under `BROOD_VM=0` (keeps the
+/// callback runs compiled), the tree-walker under `BROOD_TIER=0` (keeps the
 /// differential / escape-hatch mode honest). `eval::apply` must stay pure
 /// tree-walker — it's `dispatch`'s fallback, so routing it back through
 /// `apply_value` would recurse. Use for once-per-call thunks (`try`, `binding`,
@@ -650,8 +631,7 @@ pub fn apply_engine(heap: &mut Heap, callee: Value, args: &[Value], genv: EnvId)
 // The backend-independent lowering decisions. **Not** gated on `feature = "jit"`: the frame
 // layout two of them describe (`jit_spill_reserve`, `jit_ckpt_depth`) is what the VM sizes
 // frames by, JIT or no JIT, and the rest is analysis any consumer may want to read without a
-// backend present. This is why the `#[cfg(not(feature = "jit"))]` stubs that used to live here
-// are gone rather than moved — there is one definition now, and it always compiles.
+// backend present.
 mod jit_plan;
 
 use jit_plan::{jit_ckpt_depth, jit_spill_reserve};
@@ -660,20 +640,18 @@ use jit_plan::{jit_ckpt_depth, jit_spill_reserve};
 mod jit_lower;
 
 #[cfg(feature = "jit")]
+mod deopt_reason;
+
+#[cfg(feature = "jit")]
+pub(crate) use deopt_reason::DeoptReason;
+
+#[cfg(feature = "jit")]
 pub(crate) use jit_lower::{
     jit_lower_arm, jit_lower_arm_hot, jit_lower_inlined_arm, take_mid_emit_reason,
     xcall_relower_enabled,
 };
 
 // Reached by `jit::cranelift`'s `JitBackend` tiering advisories, which is the only way the
-// tiering glue is allowed to ask "have I demoted this fn off the register worker?" — it used to
-// call straight into the Cranelift backend's i64 submodule (ADR-221's one remaining hole).
+// tiering glue is allowed to ask "have I demoted this fn off the register worker?" (ADR-221).
 #[cfg(feature = "jit")]
 pub(crate) use jit_lower::{arm_i64_eligible, arm_i64_too_deep, i64_mark_too_deep};
-
-#[test]
-fn test_inst_size() {
-    // Not an assertion — just surfaces the IR `Inst` size in test output (a
-    // regression in it shows up here). A non-zero size is guaranteed by the type.
-    eprintln!("Inst size: {}", std::mem::size_of::<Inst>());
-}

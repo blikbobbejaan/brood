@@ -345,7 +345,9 @@ pub(super) fn git_clone(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// convention is `strip = 1`, dropping the tarball's single wrapper directory so the
 /// package root lands directly in `dest`). Shells out to the system `tar` (the same
 /// dependency tradeoff as `%git-clone`'s `git`); on the offload allow-list so a large
-/// extract runs on the dirty-native pool. Returns `:ok`. The tarball source-delivery
+/// extract runs on the dirty-native pool. An archive with an absolute, `..` or link
+/// member is refused before anything is written (see [`reject_unsafe_members`]), and
+/// ownership is never restored from the archive. Returns `:ok`. The tarball source-delivery
 /// mechanism (ADR-037 tarball deps); policy — download, sha256-verify, `_deps/`
 /// bounding — lives in `std/tool/package.blsp`.
 pub(super) fn untar_gz(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -358,29 +360,91 @@ pub(super) fn untar_gz(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
                 .with_code(error_codes::FILE_IO),
         );
     }
-    std::fs::create_dir_all(&dest).map_err(|e| {
-        LispError::runtime(format!("%untar-gz: cannot create {}: {}", dest, e))
+    // A relative archive name with a `:` before any `/` is a REMOTE archive to GNU tar
+    // (`host:file`); anchoring it with `./` keeps it local without the GNU-only
+    // `--force-local`.
+    let archive_path = if archive.starts_with('/') {
+        archive.clone()
+    } else {
+        format!("./{archive}")
+    };
+    reject_unsafe_members(&archive_path)?;
+    std::fs::create_dir_all(&dest).map_err(|error| {
+        LispError::runtime(format!("%untar-gz: cannot create {dest}: {error}"))
             .with_code(error_codes::FILE_IO)
     })?;
-    let strip_arg = format!("--strip-components={}", strip);
-    let out = std::process::Command::new("tar")
-        .args(["-xzf", &archive, "-C", &dest, &strip_arg])
-        .output()
-        .map_err(|e| {
-            LispError::runtime(format!("%untar-gz: tar: {}", e))
-                .with_code(error_codes::SUBPROCESS_FAILED)
-                .with_hint("is `tar` installed and on PATH?")
-        })?;
-    if out.status.success() {
+    let strip_argument = format!("--strip-components={strip}");
+    let output = run_tar(&[
+        "-xzf",
+        &archive_path,
+        "-C",
+        &dest,
+        &strip_argument,
+        "--no-same-owner",
+    ])?;
+    if output.status.success() {
         Ok(crate::core::value::kw("ok"))
     } else {
         Err(LispError::runtime(format!(
             "%untar-gz: extracting {} failed: {}",
             archive,
-            String::from_utf8_lossy(&out.stderr).trim()
+            String::from_utf8_lossy(&output.stderr).trim()
         ))
         .with_code(error_codes::SUBPROCESS_FAILED))
     }
+}
+
+fn run_tar(arguments: &[&str]) -> Result<std::process::Output, LispError> {
+    std::process::Command::new("tar")
+        .args(arguments)
+        .output()
+        .map_err(|error| {
+            LispError::runtime(format!("%untar-gz: tar: {error}"))
+                .with_code(error_codes::SUBPROCESS_FAILED)
+                .with_hint("is `tar` installed and on PATH?")
+        })
+}
+
+/// Refuse an archive any member of which could land outside the destination: an
+/// absolute path, a `..` component, or a link (a symlink or hard link can point
+/// anywhere, and a later member written through it goes there). A package tarball
+/// needs none of them. Checked BEFORE anything is extracted.
+fn reject_unsafe_members(archive_path: &str) -> Result<(), LispError> {
+    let listing = |verbose: bool| -> Result<String, LispError> {
+        let output = run_tar(&[if verbose { "-tvzf" } else { "-tzf" }, archive_path])?;
+        if !output.status.success() {
+            return Err(LispError::runtime(format!(
+                "%untar-gz: listing {archive_path} failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))
+            .with_code(error_codes::SUBPROCESS_FAILED));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+    let refuse = |member: &str, why: &str| {
+        Err(LispError::runtime(format!(
+            "%untar-gz: refusing {archive_path}: member {member:?} {why}"
+        ))
+        .with_code(error_codes::FILE_IO))
+    };
+    for member in listing(false)?.lines() {
+        if member.starts_with('/') {
+            return refuse(member, "is an absolute path");
+        }
+        if member.split('/').any(|component| component == "..") {
+            return refuse(member, "escapes the destination with `..`");
+        }
+    }
+    // The verbose listing's first column is an `ls`-style mode, whose first character is
+    // the entry type — the same in GNU tar and bsdtar.
+    for line in listing(true)?.lines() {
+        match line.chars().next() {
+            Some('l') => return refuse(line, "is a symbolic link"),
+            Some('h') => return refuse(line, "is a hard link"),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Whether `path` names something STRICTLY inside a `_deps` directory, judged lexically:
@@ -430,5 +494,106 @@ pub(super) fn rm_rf(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             Err(LispError::runtime(format!("%rm-rf: {}: {}", path, e))
                 .with_code(error_codes::FILE_IO))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Interp;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+
+    /// A fresh scratch directory for one test, removed first if a previous run left it.
+    fn scratch(name: &str) -> PathBuf {
+        let directory =
+            std::env::temp_dir().join(format!("brood-untar-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    /// `tar -czf archive -C directory [extra…] members…`, keeping member names verbatim.
+    fn make_archive(archive: &Path, directory: &Path, members: &[&str]) {
+        let status = Command::new("tar")
+            .arg("-czPf")
+            .arg(archive)
+            .arg("-C")
+            .arg(directory)
+            .args(members)
+            .status()
+            .unwrap();
+        assert!(status.success(), "building the test archive failed");
+    }
+
+    fn untar(archive: &Path, destination: &Path) -> Result<String, String> {
+        let mut interp = Interp::new();
+        let form = format!(
+            "(%untar-gz \"{}\" \"{}\" 0)",
+            archive.display(),
+            destination.display()
+        );
+        interp
+            .eval_str(&form)
+            .map(|value| interp.print(value))
+            .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn untar_gz_extracts_a_plain_archive() {
+        let root = scratch("plain");
+        std::fs::create_dir_all(root.join("source/pkg")).unwrap();
+        std::fs::write(root.join("source/pkg/main.blsp"), "(def x 1)\n").unwrap();
+        let archive = root.join("plain.tar.gz");
+        make_archive(&archive, &root.join("source"), &["pkg"]);
+        let destination = root.join("out");
+        assert_eq!(untar(&archive, &destination).unwrap(), ":ok");
+        assert!(destination.join("pkg/main.blsp").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn untar_gz_refuses_a_member_that_climbs_out_with_dot_dot() {
+        let root = scratch("dotdot");
+        std::fs::create_dir_all(root.join("source/inner")).unwrap();
+        std::fs::write(root.join("source/escaped.txt"), "owned\n").unwrap();
+        let archive = root.join("evil.tar.gz");
+        make_archive(&archive, &root.join("source/inner"), &["../escaped.txt"]);
+        let destination = root.join("deep/out");
+        let error = untar(&archive, &destination).unwrap_err();
+        assert!(error.contains("refusing"), "{error}");
+        assert!(
+            !root.join("deep/escaped.txt").exists(),
+            "the member escaped"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn untar_gz_refuses_an_absolute_member() {
+        let root = scratch("absolute");
+        let target = root.join("absolute-target.txt");
+        std::fs::write(&target, "owned\n").unwrap();
+        let archive = root.join("evil.tar.gz");
+        make_archive(&archive, &root, &[target.to_str().unwrap()]);
+        std::fs::remove_file(&target).unwrap();
+        let error = untar(&archive, &root.join("out")).unwrap_err();
+        assert!(error.contains("absolute"), "{error}");
+        assert!(!target.exists(), "the absolute member was written");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn untar_gz_refuses_a_symlink_member() {
+        let root = scratch("symlink");
+        std::fs::create_dir_all(root.join("source")).unwrap();
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("source/link")).unwrap();
+        let archive = root.join("evil.tar.gz");
+        make_archive(&archive, &root.join("source"), &["link"]);
+        let destination = root.join("out");
+        let error = untar(&archive, &destination).unwrap_err();
+        assert!(error.contains("symbolic link"), "{error}");
+        assert!(!destination.join("link").exists(), "the link was extracted");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

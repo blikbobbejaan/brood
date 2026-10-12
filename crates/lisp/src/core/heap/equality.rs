@@ -7,9 +7,8 @@ use super::*;
 const LIST_HASH_PREFIX: usize = 256;
 
 /// Order two floats as a TOTAL order, for `value_cmp` — which is a sort key, not an
-/// IEEE predicate. `partial_cmp(...).unwrap_or(Equal)` used to stand here and it made
-/// `NaN` compare **equal to everything**, so a single `NaN` silently turned `sort` into a
-/// no-op: `(sort [3.0 nan 1.0 2.0])` returned its input unsorted, with no error (KI-75).
+/// IEEE predicate: `partial_cmp(...).unwrap_or(Equal)` would make `NaN` compare **equal to
+/// everything**, silently turning `sort` into a no-op (KI-75).
 ///
 /// NaN sorts LAST and is equal only to itself, which is Rust's `f64::total_cmp` and Java's
 /// `Double.compare`. That deliberately disagrees with `<`/`<=`/`>`, which stay IEEE (every
@@ -46,8 +45,7 @@ fn bigdecimal_cmp_float(b: &bigdecimal::BigDecimal, f: f64) -> std::cmp::Orderin
     use std::cmp::Ordering;
     if f.is_nan() {
         // NaN sorts LAST, so any real value is Less than it — the same total order
-        // `float_total_cmp` gives. This returned `Equal` until 2026-08-28, which made a
-        // NaN compare equal to every number it met (KI-75).
+        // `float_total_cmp` gives (KI-75).
         return Ordering::Less;
     }
     if f.is_infinite() {
@@ -263,10 +261,9 @@ impl Heap {
             ValueRef::Bool(b) => return Self::mix64(b as u64 ^ 0xD1B5_4A32_D192_ED03),
             ValueRef::Nil => return Self::mix64(0xA0761D6478BD642F),
             // A keyword is the most common map key in the language — every record field
-            // and every map literal — and a symbol is the next. Both took the SipHash
-            // path until 2026-09-20; `value::symbol_hash` is already a well-distributed
-            // `u64` of the SPELLING (KI-166), so one mix64 finishes the job, and
-            // `sip::Hasher::write` leaves the profile for map-keyed work.
+            // and every map literal — and a symbol is the next. `value::symbol_hash` is
+            // already a well-distributed `u64` of the SPELLING (KI-166), so one mix64
+            // finishes the job without the SipHash path.
             ValueRef::Sym(s) => {
                 return Self::mix64(crate::core::value::symbol_hash(s) ^ 0x2F72_B4C1_0E33_9A57)
             }
@@ -869,9 +866,8 @@ impl Heap {
         // the cons *spine* is walked iteratively below, but a nest built in the
         // CAR (`(fold (fn (acc x) (list acc)) nil (range 200000))`) recurses one
         // native frame per level, and the reader's 256-level cap can't see a value
-        // built at runtime. Unguarded this aborted the process on a guard page
-        // (2026-07-27); scalars never recurse, so the check stays off the hot
-        // sort/compare path.
+        // built at runtime; unguarded it would abort on a guard page. Scalars never
+        // recurse, so the check stays off the hot sort/compare path.
         match (a.unpack(), b.unpack()) {
             (ValueRef::Int(x), ValueRef::Int(y)) => return x.cmp(&y),
             (ValueRef::Nil, ValueRef::Nil) => return Ordering::Equal,
@@ -964,12 +960,9 @@ impl Heap {
                 }
                 xs.len().cmp(&ys.len())
             }
-            // Maps by CONTENT. This arm used to fall through to the tag-rank compare at the
-            // bottom, where both sides rank 8 — so every map was `Equal` to every other map:
-            // `(compare {:a 1} {:a 2})` returned 0, and `sort` over maps therefore returned
-            // its input in input order, silently and with no error. That is the same shape as
-            // the NaN sort bug (KI-75), and the `Ord` docstring already promised this order
-            // was "deterministic **and** total". It is now.
+            // Maps by CONTENT: the tag-rank compare at the bottom ranks every map alike, so
+            // falling through would make all maps `Equal` and `sort` over maps a silent
+            // no-op (the NaN-sort shape, KI-75). The order must be deterministic AND total.
             //
             // Size first — cheap, and it settles most pairs without touching entries. Then
             // the entries in KEY order: a CHAMP's iteration order is an artifact of key
@@ -1064,10 +1057,9 @@ mod bigint_cmp_float_tests {
         assert_eq!(bigint_cmp_float(&(&p70 - &one), f), Ordering::Less);
     }
 
-    /// NaN sorts LAST, so any real value is `Less` than it. This asserted `Equal` until
-    /// 2026-08-28, which is what made a NaN compare equal to every number it met and turned
-    /// `(sort [3.0 nan 1.0 2.0])` into a silent no-op (KI-75). `<`/`<=`/`>` are unaffected
-    /// and stay IEEE — they answer a different question than a sort key does.
+    /// NaN sorts LAST, so any real value is `Less` than it — an `Equal` here would turn
+    /// `(sort [3.0 nan 1.0 2.0])` into a silent no-op (KI-75). `<`/`<=`/`>` stay IEEE —
+    /// they answer a different question than a sort key does.
     #[test]
     fn nan_sorts_last_and_infinities_order_by_sign() {
         let b = BigInt::from(5);

@@ -1,4 +1,5 @@
-//! Node→Node optimizer passes: linmap rewrite + self/leaf inlining (extracted from mod.rs).
+//! Node→Node optimizer passes: ability monomorphization, the map-op lowerings, the
+//! linear-map rewrite, and self/leaf inlining.
 use super::*;
 use crate::core::registries as reg;
 
@@ -16,13 +17,9 @@ use crate::core::registries as reg;
 // the id is known at compile time, but resolution still goes through `%dispatch` — the
 // per-op inline cache, which is stamped with `global_epoch()` and therefore invalidated by
 // any `impl`/`%unimpl`. Late binding is fully preserved and there is no stale-impl window.
-//
-// This replaced baking the resolved impl fn as a `Node::Const`. That was unsound in a way
-// its own suite caught the moment the flag was turned on — and nothing ever turned it on:
-// a body is compiled before it runs, so `(do (impl Display rec …) (->string (rec 7)))`
-// captured the impl that existed *before* its own `impl` line executed and called the
-// wrong one. The documented caveat said "stale if later re-registered", which understates
-// it: the window opens before the FIRST registration, inside one compiled body.
+// (Baking the resolved impl fn as a constant is unsound: a body is compiled before it runs,
+// so `(do (impl Display rec …) (->string (rec 7)))` would capture the impl that existed
+// before its own `impl` line executed.)
 //
 // Records (a map literal carrying `:__id__`) are conservatively **excluded** — Tier 1
 // targets built-in-kind literals only; the nominal-record case is the direct-ctor path.
@@ -32,31 +29,6 @@ use crate::core::registries as reg;
 pub(crate) fn mono_enabled() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("BROOD_MONO").is_some())
-}
-
-/// Is the `(get m k)` → [`PrimOp::MapGet`] lowering enabled? **Default ON since
-/// 2026-09-17**; `BROOD_NO_MAPGET=1` opts out (the A/B and bisect lever).
-///
-/// It shipped opt-in (ADR-296) over a *tiering* worry: the native lowering deopted when the
-/// probe declined — a non-map receiver, an absent key, a stored `nil` — and sixteen deopts
-/// latch an arm `BAILED`, so a miss-heavy loop could end up interpreted. Measured, the
-/// latch never fired (a 100% miss loop stayed `:native`, 0 deopts) but the decline was real
-/// money: +200 ns per miss over the plain call, the probe wasted plus the generic fallback
-/// dispatch. `Heap::map_get_inline` now answers a plain map's miss inline (only a record's
-/// miss declines), so a miss costs one more probe, not a dispatch. Cached once, like the
-/// other levers.
-pub(crate) fn mapget_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_MAPGET").is_none())
-}
-
-/// Is the `(assoc m k v)` → [`PrimOp3::MapAssoc`] lowering enabled (ADR-368)? Default ON;
-/// `BROOD_NO_MAPASSOC=1` opts out — its own lever, apart from `BROOD_NO_MAPGET`, because
-/// this one ALLOCATES from native code (a fresh trie path per call) where the reads do not,
-/// so a suspected fault in either can be bisected without losing the other. Cached once.
-pub(crate) fn mapassoc_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_MAPASSOC").is_none())
 }
 
 /// ADR-368: the LAST Node pass — `(get m k default)` and `(assoc m k v)` calls whose head
@@ -1011,17 +983,6 @@ pub(crate) fn inline_self_calls(
     count
 }
 
-/// Is the JIT self-inliner enabled? **Default ON** (the two-stage tiering build, devlog
-/// 2026-06-17) — `BROOD_NO_INLINE=1` opts out (the A/B baseline lever). Replaces the old
-/// `BROOD_JIT_INLINE` opt-in: the dual-body + per-engine frame sizing + deferred-upgrade
-/// tiering removes the regressions that kept it shelved (the VM keeps the original small
-/// body; the inlined arm tiers only as a low-priority background upgrade).
-#[cfg(feature = "jit")]
-pub(crate) fn self_inline_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_INLINE").is_none())
-}
-
 /// How many recursion levels to splice into a self-inlined arm. Each pass inlines one more
 /// level of the recursion (removing that level's call protocol + its call-boundary boxing)
 /// at the cost of a larger arm body / frame. **Default 2** (the shipped two-stage-tiering
@@ -1105,48 +1066,14 @@ pub(crate) fn build_inlined_body(
     Some((spliced, next_block))
 }
 
-// The runtime JIT off-switch used to live here as its own `BROOD_NO_JIT` read. It is now a
-// **tier ceiling** below `Tier::Native` (ADR-222) — `tier_ceiling()` in `compile.rs` reads
-// `BROOD_TIER`, with `BROOD_NO_JIT` kept as an alias for ceiling 1. Deleted rather than left
-// delegating, so there is one source of truth for how high the ladder may go instead of two
-// unrelated env reads in two modules.
-
-/// Debug bisect: `BROOD_NO_JIT_COMPUTED=1` bails (runs on the VM) any arm whose chunk
-/// contains a **computed-head** non-tail call `(f …)` — the shape fold--loop / assoc--pairs
-/// share, suspected in the JIT+GC value→nil/stale bug. If the repro goes clean with this set,
-/// the computed-head call lowering is the culprit.
-#[cfg(feature = "jit")]
-pub(crate) fn no_jit_computed() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("BROOD_NO_JIT_COMPUTED").is_some())
-}
-
-/// Runtime JIT self-verification (`BROOD_JIT_VERIFY=1`). Runs the staged-stale-handle scan
-/// on every Brood→Brood call's staged args in **any** build (not just debug-assertions) —
-/// so a JIT+GC use-after-GC (bug #2) can be caught at the staging site (naming the callee +
-/// the stale handle kind) in a normal `--release` binary, without a debug-armed rebuild.
-/// Off by default; one cached bool check + (when on) a short scan per call.
-#[cfg(feature = "jit")]
-pub(crate) fn jit_verify_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_JIT_VERIFY").is_some())
-}
-
-/// `BROOD_JIT_VERIFY_FN=<fn>`: log every JIT'd Brood→Brood call to `<fn>` with each staged
-/// arg's *type* — the targeted, low-noise way to see a value-level corruption (e.g. a `nil`
-/// staged where a number belongs: pong's `badge-ops` getting `throb=nil`). Identifies whether
-/// a bad value is staged *from JIT'd code* and which arg position, without a debug rebuild.
-#[cfg(feature = "jit")]
-pub(crate) fn jit_verify_fn() -> Option<&'static str> {
-    static F: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    F.get_or_init(|| std::env::var("BROOD_JIT_VERIFY_FN").ok())
-        .as_deref()
-}
-
-/// Either verification mode is on (the stale-handle scan, or the targeted per-fn arg log).
+/// Either runtime JIT verification mode is on: `BROOD_JIT_VERIFY` (scan every JIT'd call's
+/// staged args for a stale LOCAL handle, in any build) or `BROOD_JIT_VERIFY_FN=<fn>` (log
+/// each staged arg's type for calls to `<fn>` — a value-level corruption the handle scan
+/// cannot see).
 #[cfg(feature = "jit")]
 pub(crate) fn jit_verify_active() -> bool {
-    jit_verify_enabled() || jit_verify_fn().is_some()
+    crate::diagnostics::debug_flags::jit_verify()
+        || crate::diagnostics::debug_flags::jit_verify_function().is_some()
 }
 
 /// A one-word type tag for a `Value`, for the `BROOD_JIT_VERIFY_FN` arg log.
@@ -1186,10 +1113,10 @@ pub(crate) fn jit_verify_staged(
     // Non-panicking: a computed-head call passes a `head` that isn't a real interned
     // symbol, so never `expect` it (that aborts the whole run from inside a diagnostic).
     let head_name = crate::core::value::symbol_name_opt(head).unwrap_or("<computed>");
-    let log_args = jit_verify_fn() == Some(head_name);
+    let log_args = crate::diagnostics::debug_flags::jit_verify_function() == Some(head_name);
     for k in lo..hi {
         let v = heap.root_at(k);
-        if jit_verify_enabled() {
+        if crate::diagnostics::debug_flags::jit_verify() {
             if let Some((kind, g, e)) = heap.dbg_value_stale(v) {
                 let raw = unsafe { std::mem::transmute::<Value, [i64; 3]>(v) };
                 eprintln!(
@@ -1211,19 +1138,6 @@ pub(crate) fn jit_verify_staged(
             );
         }
     }
-}
-
-/// Is the in-IR call-site fast-link (Track B / Technique A increment 1) enabled? **Default ON**
-/// (shipped after the gate proved it — fib ~20% faster, JIT≡VM clean). When on, a JIT'd arm's
-/// non-tail free-global call emits an epoch-guarded flat-table fast path (`brood_rt_fast_frame`)
-/// ahead of the `brood_rt_call_slow` miss path, removing the per-call IC probe + `RefCell`
-/// borrow. `BROOD_NO_JIT_ICALL=1` opts out (every call goes straight through
-/// `brood_rt_call_slow`, the A/B baseline lever). Increment 2 (full in-IR frame setup) was
-/// measured slower and reverted — see `docs/devlog.md` 2026-06-19; this is the sweet spot.
-#[cfg(feature = "jit")]
-pub(crate) fn icall_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_JIT_ICALL").is_none())
 }
 
 /// **Non-mutating** probe: does `body` qualify for depth-1 self-inlining, and if so what
@@ -1301,9 +1215,6 @@ pub(crate) fn self_inline_probe(
     nrequired: usize,
     m: usize,
 ) -> Option<usize> {
-    if !self_inline_enabled() {
-        return None;
-    }
     // Frame-reuse self-calls and nested closures are incompatible with naive slot
     // shifting; skip an oversized body to avoid blow-up.
     if node_any(body, &|n| matches!(n, Node::SelfCall { .. }))
@@ -1330,7 +1241,8 @@ pub(crate) fn self_inline_probe(
     // it doesn't lower to a chunk, the inliner can't help — bail (the small arm tiers).
     let spliced_chunk = compile_chunk(&clone)?;
     let inline_nslots = inline_max + jit_spill_reserve(&spliced_chunk.code);
-    if std::env::var("BROOD_INLINE_DBG").is_ok() {
+    // `BROOD_INLINE_DBG`: trace the self-inline probe.
+    if crate::diagnostics::debug_flags::inline_debug() {
         eprintln!(
             "[inline-dbg] probe {} nrequired={} m={} depth={} blocks={} new_max={} inline_nslots={}",
             crate::core::value::symbol_name(defn_name),
@@ -1363,7 +1275,7 @@ pub(crate) fn rederive_inlined_body(
     Some(build_inlined_body(body, defn_name, nrequired, m)?.0)
 }
 
-// ===================== leaf-callee inlining (BROOD_NO_LEAF_INLINE opts out) ==============
+// ===================== leaf-callee inlining ==============================================
 //
 // The self-inliner's sibling for *different* callees (`docs/jit-optimizing-tier.md`
 // Phase 2): a non-tail call to a statically-known, small, calls-free top-level `defn`
@@ -1375,17 +1287,6 @@ pub(crate) fn rederive_inlined_body(
 // Hot-reload safety: the stored derivation carries its epoch, and lowering refuses any
 // other epoch — a `def` between derivation and lowering (or after install, via the
 // per-entry `compile_epoch` guard) always wins.
-
-/// Is leaf-callee inlining enabled? **Default ON** since 2026-07-19 (measured: boot,
-/// `require`-heavy loads, `nest check`, the in-language suite, and every benchmark row
-/// flat; scalar-helper loops ~30%, type-predicate dispatch a further ~8% on top of
-/// `PrimOp1::TypeOf`). `BROOD_NO_LEAF_INLINE=1` opts out — the A/B / bisect lever,
-/// like `BROOD_NO_INLINE` for the self-inliner.
-#[cfg(feature = "jit")]
-pub(crate) fn leaf_inline_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_LEAF_INLINE").is_none())
-}
 
 /// Largest callee body (node count) worth splicing. Leaf helpers are tiny; a larger
 /// body's call protocol is proportionally cheaper and the splice bloats the caller.
@@ -1409,9 +1310,7 @@ pub(crate) const LEAF_INLINE_MAX_BLOCKS: usize = 8;
 /// engine outright, so a deopt from spliced code resumes from ip 0. That is only sound
 /// while the spliced body is effect-free — which the old list assumed by ruling out
 /// calls, on the premise that calls are where effects live. `table-put` is an effect
-/// that is *not* a call, so splicing one let a deopt re-run it: a 200 000-iteration
-/// driver landed its counter on 200 762 even after the caller's own journal was fixed,
-/// and `BROOD_NO_LEAF_INLINE=1` was exactly 200 000.
+/// that is *not* a call, so splicing one would let a deopt re-run it.
 #[cfg(feature = "jit")]
 pub(crate) fn leaf_body_qualifies(body: &Node) -> bool {
     fn clean(n: &Node) -> bool {
@@ -1597,21 +1496,6 @@ pub(crate) fn leaf_inline_splice(
     count
 }
 
-/// Is **partial** leaf splicing enabled — i.e. may a derivation keep a residual
-/// non-tail call (an unresolvable or oversized callee) beside the spliced ones?
-/// **Default ON**; `BROOD_NO_PARTIAL_LEAF=1` reverts to all-or-nothing splicing, where
-/// one un-spliceable callee blocks inlining of every small callee beside it.
-///
-/// The switch exists because partial splicing is what makes the inlined engine journal
-/// for deopt-resume (see [`leaf_inline_probe`]) — the one mechanism here whose failure
-/// mode is a silently *repeated effect* rather than a crash. Set it to A/B, to bisect,
-/// or as the stopgap if a duplicated effect is ever suspected.
-#[cfg(feature = "jit")]
-pub(crate) fn partial_leaf_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_NO_PARTIAL_LEAF").is_none())
-}
-
 /// A successful leaf-inline derivation: the spliced body, its compiled chunk, the frame
 /// it runs against, and that frame's own checkpoint slot. Assembled into the resume arm
 /// stored on [`ir::LeafInline`].
@@ -1654,15 +1538,12 @@ pub(crate) fn leaf_inline_probe(
     self_name: Option<Symbol>,
     self_arity: Option<usize>,
 ) -> Option<LeafDerivation> {
-    if !leaf_inline_enabled() {
-        return None;
-    }
     // Nested compile during a resolution — don't probe (see [`LEAF_RESOLVING`]).
     if LEAF_RESOLVING.with(|g| g.get()) {
         return None;
     }
     let declined = |why: &str| {
-        if std::env::var("BROOD_INLINE_DBG").is_ok() {
+        if crate::diagnostics::debug_flags::inline_debug() {
             let who = self_name
                 .map(crate::core::value::symbol_name_ref)
                 .unwrap_or("<closure>");
@@ -1722,10 +1603,6 @@ pub(crate) fn leaf_inline_probe(
         })
     };
     let needs_journal = if needs_journal(&chunk) {
-        if !partial_leaf_enabled() {
-            declined("residual-call-and-partial-splicing-off");
-            return None;
-        }
         // Re-splice clear of the small layout's own reserves (see doc above).
         let (s2, c2, nb2, _) = splice(full_nslots)?;
         spliced = s2;
@@ -1737,10 +1614,9 @@ pub(crate) fn leaf_inline_probe(
     };
     let spill = jit_spill_reserve(&chunk.code);
     let (ckpt_slot, ckpt_reserve) = if needs_journal {
-        // `None` here is either the `BROOD_NO_DEOPT_RESUME` chicken switch or a chunk
-        // whose operand depths don't reconcile — in both cases we cannot journal, and
-        // an unjournalled residual effect is exactly the bug this gate prevents. It
-        // also covers the pure-self exemption, where declining costs nothing (a
+        // `None` here is a chunk whose operand depths don't reconcile — we cannot
+        // journal, and an unjournalled residual effect is exactly the bug this gate
+        // prevents. It also covers the pure-self exemption, where declining costs nothing (a
         // self-recursive arm takes the self-inliner's path, which is tried first).
         let d = jit_ckpt_depth(&chunk.code, self_name, self_arity)?;
         ((next_base + spill) as u32, 1 + d)
@@ -1748,7 +1624,7 @@ pub(crate) fn leaf_inline_probe(
         (u32::MAX, 0)
     };
     let nslots = next_base + spill + ckpt_reserve;
-    if std::env::var("BROOD_INLINE_DBG").is_ok() {
+    if crate::diagnostics::debug_flags::inline_debug() {
         eprintln!(
             "[inline-dbg] leaf probe {} sites={} base={} leaf_nslots={} ckpt_slot={} \
              journalled={}",

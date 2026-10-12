@@ -53,9 +53,7 @@ takes; everything else is the mechanism behind it.")
 ;; stable across directory-listing order.
 (defn source-files (root)
   "Every `.blsp` file under `root`'s source paths, sorted so the fingerprint is stable across directory-listing order."
-  (sort (fold (project/abs-paths root *project-source-paths*)
-          nil
-          (fn (acc dir) (%append-two (project/collect-sources dir) acc)))))
+  (sort (apply append (map (project/abs-paths root *project-source-paths*) project/collect-sources))))
 
 (defn- project-image-fingerprint (root)
   (fingerprint-of (source-files root)))
@@ -83,7 +81,7 @@ come from `*module-files*`).
   ;; populates before any fingerprint is taken, on the cold and warm paths alike.
   (str (system/build-id)
     "\n"
-    (string/join (map (%append-two (or files nil) (project-dep-module-files))
+    (string/join (map (append files (project-dep-module-files))
                    (fn (f) (str f ":" (file/size f) ":" (file/mtime f))))
       "\n")))
 
@@ -96,7 +94,7 @@ come from `*module-files*`).
   ;; `*module-files*` entry per module, all pointing at the same path — the
   ;; fingerprint wants each file once, not once per module it declares.
   (sort (seq/distinct (map (seq/reject (seq *module-files*)
-                             (fn (kv) (not (project-image-dep-module? (first kv)))))
+                             (fn (entry) (not (project-image-dep-module? (first entry)))))
                         second))))
 
 ;; `before` as a SET. As a list, `member?` is a linear scan run once per global — ~4000 x
@@ -166,8 +164,7 @@ come from `*module-files*`).
                   (fn (m n)
                     (let (k (or (project-image-section-of n) ""))
                       (assoc m k (cons n (or (get m k) nil))))))
-        root (%append-two (project-image-registry-names seen)
-               (or (get grouped "") nil)))
+        root (append (project-image-registry-names seen) (get grouped "")))
     (cons ["" root]
       (map
         (seq/reject (keys grouped)
@@ -295,13 +292,13 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
     (and (map? image) (map? live))
       (fold (%map-pairs live)
         image
-        (fn (acc kv)
-          (let ([k v] kv
-                cur (%map-get acc k nil))
+        (fn (acc entry)
+          (let ([k v] entry
+                current (%map-get acc k nil))
             (%map-assoc acc
               k
-              (if (and (map? v) (map? cur))
-                (fold (%map-pairs v) cur (fn (a2 kv2) (%map-assoc a2 (first kv2) (second kv2))))
+              (if (and (map? v) (map? current))
+                (fold (%map-pairs v) current (fn (a2 kv2) (%map-assoc a2 (first kv2) (second kv2))))
                 v)))))
     else live))
 
@@ -309,8 +306,8 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
 ;; `%registry-cas!` — the registry write path — never `def`, which in module code would
 ;; bind `project/*impls*` and leave the real registry untouched.
 (defn- project-registry-merge-live! (live)
-  (doseq (kv live)
-    (let ([r before] kv
+  (doseq (entry live)
+    (let ([r before] entry
           after (reflect/eval r))
       (when (not (= after before))
         (%registry-cas! r after (project-registry-merge-values after before))))))
@@ -432,14 +429,14 @@ program's and the LSP's protocol channel stays clean."
               n (count files)
               _ (io/puts (str "Building " name " (" n " file" (if (= n 1) "" "s") ")")
                   :to *err*)
-              t0 (os/now-ns)
+              started (os/now-ns)
               before (reflect/global-names)
               ;; Captured HERE, beside `before`, and for the same reason: what the prune may
               ;; remove is decided by what this load introduced, so both baselines have to be
               ;; taken before a single source file is read (KI-106).
               before-regs (stdimage/registrations-by-module)
               _ (/apply project/load-sources (cons root opts))
-              t-load (math/quot (- (os/now-ns) t0) 1000000)
+              t-load (math/quot (- (os/now-ns) started) 1000000)
               ;; A project whose globals are not all portable — a `table` global is the
               ;; documented mutable-state idiom, and a table is deliberately local to its
               ;; runtime — simply cannot be imaged. That is correct (loading from source is
@@ -461,7 +458,7 @@ program's and the LSP's protocol channel stays clean."
                                 :to *err*)
                               nil)))
                       else nil)
-              t-all (math/quot (- (os/now-ns) t0) 1000000))
+              t-all (math/quot (- (os/now-ns) started) 1000000))
           (io/puts (str "Built "
                      name
                      " in "

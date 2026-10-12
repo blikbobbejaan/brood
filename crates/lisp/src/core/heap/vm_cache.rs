@@ -315,13 +315,6 @@ impl Heap {
         Some(handle)
     }
 
-    /// ADR-175 Phase B off-switch: `BROOD_NO_SHARED_ARMS=1` makes every process
-    /// compile privately, exactly as before the shared cache. The A/B / bisect lever.
-    pub fn shared_arms_disabled() -> bool {
-        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *OFF.get_or_init(|| std::env::var_os("BROOD_NO_SHARED_ARMS").is_some())
-    }
-
     /// The runtime's current free-generation epoch (ADR-091). Read *before* compiling a
     /// closure that may be published to the shared cache, and validated on lookup.
     pub fn free_epoch_now(&self) -> u64 {
@@ -668,11 +661,8 @@ impl Heap {
     /// **record** and returns its fallback for anything else. So a plain map's miss is
     /// answered here too — `nil`, exactly what `%map-get` gave — and only a map carrying
     /// a truthy `:__id__` declines, the same test [`Self::dispatch_identity`] applies. That
-    /// second probe runs on misses alone; a hit never pays it.
-    ///
-    /// The miss used to decline as well (ADR-296), which cost a miss-heavy loop ~200 ns
-    /// per read over the plain call — the probe wasted, plus the generic fallback dispatch
-    /// — and was the reason the lowering shipped opt-in.
+    /// second probe runs on misses alone; a hit never pays it, and a plain map's miss
+    /// never pays the generic fallback dispatch (ADR-296).
     pub fn map_get_inline(&self, mid: MapId, k: Value) -> Option<Value> {
         match self.map_get(mid, k) {
             Some(v) if !matches!(v, Value::Nil) => Some(v),
@@ -843,18 +833,15 @@ impl Heap {
         // Memoised hot path — read the [`FastLink`] mirror *alone*. It already carries
         // everything the guard needs (`sym`/`argc`/`epoch`) plus the validated result, so
         // a hit never touches the fat `CallIcEntry` at all: one 40-byte flat load instead
-        // of a 96-byte entry load. This used to be a `fast` memo duplicated *inside* the
-        // entry, written in lockstep with this table — two representations of one fact.
-        // Valid because within an epoch an installed arm's code pointer is stable (a `def`
+        // of a 96-byte entry load. Valid because within an epoch an installed arm's code pointer is stable (a `def`
         // or a recompile bumps the epoch).
         //
         // A NATIVE flat cell (`vm_fast_link_publish_native`: `nslots == u32::MAX`, `code` a
         // builtin's fn pointer) is NOT a Brood link and must miss here. The IR never reaches
-        // this probe for one — it branches to the native trampoline on the marker before the
-        // callback — so the two JIT callers were safe by their pre-check, not by this
-        // function; the VM's direct call (`exec_chunk`'s `Inst::Call`) has no pre-check and
-        // ran `%table-incr`'s fn pointer as an arm with a 4-billion-slot frame (the 103 GB
-        // allocation of 2026-09-13). Refused here so every caller is safe by construction.
+        // this probe for one — it branches to the native trampoline on the marker first —
+        // but the VM's direct call (`exec_chunk`'s `Inst::Call`) has no pre-check, and would
+        // run a builtin's fn pointer as an arm with a 4-billion-slot frame. Refused here so
+        // every caller is safe by construction.
         {
             let fls = self.vm_fast_links.borrow();
             if let Some(fl) = fls.get(abs) {
@@ -949,10 +936,8 @@ impl Heap {
         // Two-stage tiering: the frame the *installed* native runs against — the inlined
         // upgrade (post-swap) needs the larger `inline_nslots`.
         //
-        // ⚠ This comment used to say "the small→inlined swap bumps the epoch, so a stale memo
-        // here is invalidated". **That is false** and was corrected 2026-08-21 (KI-48 audit):
-        // `jit_tier`'s swap deliberately does NOT bump `global_epoch` — a bump cascaded under
-        // `pfib` — it stores `inline_installed`/`jit_code` and then calls
+        // ⚠ The small→inlined swap does NOT bump the epoch (KI-48): `jit_tier`'s swap
+        // deliberately leaves `global_epoch` alone — a bump cascaded under `pfib` — it stores `inline_installed`/`jit_code` and then calls
         // `invalidate_fast_links_for(arm.inline_name)`. So what protects a memo written here
         // is that TARGETED invalidation, not an epoch bump.
         //
@@ -1021,16 +1006,9 @@ impl Heap {
     /// Grow the IR-readable [`FastLink`] mirror far enough to hold absolute site `abs`,
     /// then hand back a mutable slot. **The only place that grows it.**
     ///
-    /// `vm_arm_block` used to grow this table in lockstep with `vm_call_ics`, so entering an
-    /// arm allocated 48 B of mirror per call site the arm *has*, whether or not this process
-    /// would ever link one. Measured on `spawn-live` (2026-08-18): 19,968 of 20,001 unit
-    /// processes published into **none** of their slots, never being hot enough to tier.
-    ///
-    /// The saving is **48 B per call site entered**, which is ~193 B for a unit parked in
-    /// `receive` and ~672 B for one that has run its whole body (14 sites). The first number is
-    /// the one that matters for peak memory, because being parked is the state all N processes
-    /// are in simultaneously; confirmed by adding 24 call sites to the unit body, which moved
-    /// the measured saving to 1345.6 B ≈ 193 + 24 × 48.
+    /// Grown on publish rather than on arm entry: most short-lived processes never get hot
+    /// enough to link a single slot, so sizing the mirror per call site the arm *has* would
+    /// cost 48 B per site for nothing — in exactly the parked state all N processes share.
     ///
     /// Growing here instead is safe by construction rather than by luck: every reader already
     /// tolerates a short table. The VM probe reads it with `.get(abs)`, both publish paths went
@@ -1291,11 +1269,9 @@ mod fast_link_tests {
 
     /// A NATIVE flat cell (`vm_fast_link_publish_native`) is a builtin's fn pointer with
     /// `nslots == u32::MAX` as its marker. It is not a Brood link and the Brood-link probe
-    /// must miss it. The IR never asks (it branches on the marker first), so the two JIT
-    /// callers were safe by their pre-check alone; the VM's direct call has no pre-check
-    /// and ran `%table-incr`'s pointer as an arm with a 4-billion-slot frame (the 103 GB
-    /// allocation of 2026-09-13). Sabotage: drop the `nslots != u32::MAX` clause and this
-    /// returns `Some`.
+    /// must miss it: the VM's direct call has no pre-check and would run the builtin's
+    /// pointer as an arm with a 4-billion-slot frame. Sabotage: drop the
+    /// `nslots != u32::MAX` clause and this returns `Some`.
     #[test]
     fn the_fast_link_probe_refuses_a_native_flat_cell() {
         let heap = Heap::new();

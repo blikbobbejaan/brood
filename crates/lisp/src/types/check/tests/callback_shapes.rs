@@ -1,5 +1,4 @@
-//! The callback shapes and narrowings the 2026-10-02 review left unchecked, closed on
-//! 2026-10-03: a keyword, a named function, a `(comp …)` and an `(apply f … xs)` are held to
+//! Callback shapes and narrowings: a keyword, a named function, a `(comp …)` and an `(apply f … xs)` are held to
 //! what they are handed, and a destructured `[tag v]` — or a `match` arm's binder — reads its
 //! own alternative of a tagged-tuple union. Each case pairs the finding with the correct
 //! program beside it, which must stay silent.

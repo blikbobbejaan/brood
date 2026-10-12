@@ -973,9 +973,9 @@ pub(super) fn prim_max(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
             (Value::Map(_), _) | (_, Value::Map(_))
                 if is_record(heap, best) || is_record(heap, v) =>
             {
-                compare_multi_dispatch(heap, "max", best, v)? == std::cmp::Ordering::Less
+                compare_multi_dispatch(heap, "math/max", best, v)? == std::cmp::Ordering::Less
             }
-            _ => num_to_f64(heap, "max", v)? > num_to_f64(heap, "max", best)?,
+            _ => num_to_f64(heap, "math/max", v)? > num_to_f64(heap, "math/max", best)?,
         };
         if replace {
             best = v;
@@ -994,9 +994,9 @@ pub(super) fn prim_min(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
             (Value::Map(_), _) | (_, Value::Map(_))
                 if is_record(heap, best) || is_record(heap, v) =>
             {
-                compare_multi_dispatch(heap, "min", best, v)? == std::cmp::Ordering::Greater
+                compare_multi_dispatch(heap, "math/min", best, v)? == std::cmp::Ordering::Greater
             }
-            _ => num_to_f64(heap, "min", v)? < num_to_f64(heap, "min", best)?,
+            _ => num_to_f64(heap, "math/min", v)? < num_to_f64(heap, "math/min", best)?,
         };
         if replace {
             best = v;
@@ -1052,7 +1052,7 @@ pub(super) fn bigint_pair(
 }
 
 pub(super) fn remainder(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let (a, b) = two(args, "rem")?;
+    let (a, b) = two(args, "math/rem")?;
     // i64 fast path. `checked_rem` returns None on `b == 0` (div-by-zero) and
     // on the lone `i64::MIN % -1` overflow — that overflow is mathematically 0,
     // so handle it directly rather than promoting.
@@ -1065,7 +1065,7 @@ pub(super) fn remainder(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
             None => Ok(Value::int(0)), // i64::MIN % -1
         };
     }
-    let (x, y) = bigint_pair(heap, args, "rem")?;
+    let (x, y) = bigint_pair(heap, args, "math/rem")?;
     if num_traits::Zero::is_zero(&y) {
         return Err(LispError::runtime("rem: division by zero")
             .with_code(crate::error::error_codes::DIV_BY_ZERO)
@@ -1081,7 +1081,7 @@ pub(super) fn remainder(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// `(/ (- a (math/rem a b)) b)` integer result) and guards both `b == 0` and the lone
 /// `i64::MIN / -1` overflow; that overflow promotes to BigInt.
 pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let (a, b) = two(args, "quot")?;
+    let (a, b) = two(args, "math/quot")?;
     if let (Value::Int(x), Value::Int(y)) = (a, b) {
         match x.checked_div(y) {
             Some(q) => return Ok(Value::int(q)),
@@ -1093,7 +1093,7 @@ pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
             None => {} // i64::MIN / -1 — promote and fall through
         }
     }
-    let (x, y) = bigint_pair(heap, args, "quot")?;
+    let (x, y) = bigint_pair(heap, args, "math/quot")?;
     if num_traits::Zero::is_zero(&y) {
         return Err(LispError::runtime("quot: division by zero")
             .with_code(crate::error::error_codes::DIV_BY_ZERO)
@@ -1124,7 +1124,7 @@ pub(super) fn floor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             Ok(heap.int_from_bigint(r.floor().to_integer()))
         }
         v => {
-            let f = num_to_f64(heap, "floor", v)?.floor();
+            let f = num_to_f64(heap, "math/floor", v)?.floor();
             if !f.is_finite() {
                 return Err(LispError::runtime(format!(
                     "floor: argument {} has no integer floor",
@@ -1349,7 +1349,7 @@ pub(super) fn prim_decimal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "decimal",
+                "decimal/of",
                 "string or number",
                 other,
             ))

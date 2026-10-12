@@ -73,8 +73,7 @@
     ; this torture case is actually for) that fits the stack budget. The tree-walker
     ; spends more native stack per eval frame and tips ~1.4 KB over the 12 MiB budget,
     ; so run the deep case only on the VM — same guard as observability_test's
-    ; engine-specific assertions, and it must accept `BROOD_TIER=0` as well as its
-    ; `BROOD_VM=0` alias.
+    ; engine-specific assertions.
     (when (not (%tree-walker?))
       (assert= 2045 (ut-ack 3 8))))
   ; XOR 1..1000 (1000 ≡ 0 mod 4)
@@ -89,7 +88,7 @@
 
   ;; Since ADR-196 an inexact int `/` deopts to a RATIO, not a Float — the unboxed i64
   ;; worker still has to bail out of its register, just to a different heap value.
-  ;; Verified identical under the JIT, BROOD_NO_JIT=1 and the tree-walker.
+  ;; Verified identical under the JIT, BROOD_TIER=1 and the tree-walker.
   (test "int / : exact stays in the worker, inexact deopts to a ratio, ÷0 is the VM's exact error"
     (assert= (ut-div 10) 1024)
     (assert= (ut-div-inexact 20) 212/3)

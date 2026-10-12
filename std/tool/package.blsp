@@ -1,23 +1,18 @@
 ;; std/tool/package.blsp — the package manager (ADR-037, docs/packages.md).
 ;;
 ;; Third-party Brood deps: source pinned in the manifest's :dependencies, cached
-;; per-project, locked for reproducibility. Policy is here; the kernel adds only
-;; thin mechanism (`%digest`, later `%git-clone`/`%git-resolve-ref`/`%http-get`).
-;;
-;; Slice 1 (this file): `:path` deps end-to-end — resolve a sibling-directory dep,
-;; hash its tree, write project.lock.blsp, and add its `src/` to *load-path* so
-;; a `dep/…` reference finds it. `:path` deps load IN PLACE (no _deps/ copy), so edits
-;; to a path-dep's tree are live. `:git` deps (the _deps/ cache + clone) land in
-;; Slice 2 and error cleanly here.
+;; per-project, locked for reproducibility. Policy is here; the kernel adds only thin
+;; mechanism (`%git-clone`/`%git-resolve-ref`/`%file-swap`, …). `:path` deps load IN PLACE
+;; (no _deps/ copy), so edits to a path-dep's tree are live; `:git`/`:tarball`/registry
+;; deps are fetched into `_deps/<name>/`.
 ;;
 ;; Manifest parsing (`project/parse-deps`) lives in std/tool/project.blsp — the manifest
 ;; owner — and we reuse it both for the root manifest and for each dep's own.
 
 (defmodule package
-  "The package manager behind `nest fetch` (ADR-037). Resolves the project's
-:dependencies into a flat, transitively-closed lock file and puts each dep's
-source on *load-path*. Slice 1 handles `:path` (local/sibling) deps; `:git` deps
-land in a later slice."
+  "The package manager behind `nest fetch` and friends (ADR-037). Resolves the project's
+:dependencies (`:path`, `:git`, `:tarball` and registry `:version`) into a flat,
+transitively-closed lock file and puts each dep's source on *load-path*."
   (:use format)
   (:use project)
   ;; `project-cache-dir` is module-private (ADR-146); the manifest lock lives there
@@ -39,20 +34,19 @@ land in a later slice."
 (def- *package-hash-skip* (list "_deps" ".git" ".brood-pkg.blsp"))
 
 ;; The file paths under `dir`, relative to it, sorted. Recurses into subdirs.
-(defn- package-tree-files (dir) (sort (package-tree-files-walk dir "")))
-(defn- package-tree-files-walk (dir prefix)
+(defn- package-tree-files (dir) (sort (package-tree-files-walk dir "" nil)))
+(defn- package-tree-files-walk (dir prefix found)
+  ;; Threads one accumulator through the whole walk, so it stays linear in the file count.
   (fold (file/ls dir)
-    nil
+    found
     (fn (acc entry)
       (if (includes? *package-hash-skip* entry)
         acc
         (let (full (path/join dir entry)
-              rel (if (= prefix "") entry (str prefix "/" entry)))
-          ;; `cons`/`%append-two` (share the accumulator tail) not `(append acc …)`
-          ;; (recopies the growing accumulator per entry → O(files²) on a large tree).
+              relative (if (= prefix "") entry (str prefix "/" entry)))
           (if (file/dir? full)
-            (%append-two (package-tree-files-walk full rel) acc)
-            (cons rel acc)))))))
+            (package-tree-files-walk full relative acc)
+            (cons relative acc)))))))
 
 ;; Hash the file's raw bytes, not a UTF-8 string: `file/slurp` throws on a binary
 ;; asset (image, font, …), so the old `(hash/sha256 (file/slurp path))` couldn't hash a
@@ -128,7 +122,7 @@ land in a later slice."
 (defn- package-resolve-loop
   (root queue resolved order lock-index direct direct-non-registry registry-reqs)
   (cond
-    (empty? queue) [(map (reverse order) (fn (nm) (get resolved nm))) registry-reqs]
+    (empty? queue) [(map (reverse order) (fn (name) (get resolved name))) registry-reqs]
     ;; A registry dep is collected, not resolved here — its version is a range the
     ;; solver picks over the whole registry closure (phase 2), so fetching it now
     ;; would mean fetching a version nobody has chosen yet. (The `dep-kind` ability op
@@ -168,12 +162,12 @@ land in a later slice."
           registry-reqs))
     else
       (let (dep (first queue)
-            nm (get dep :name)
+            name (get dep :name)
             entry (package-resolve-one root dep lock-index))
         (package-resolve-loop root
           (append (rest queue) (get entry :deps))
-          (assoc resolved nm entry)
-          (cons nm order)
+          (assoc resolved name entry)
+          (cons name order)
           lock-index
           direct
           direct-non-registry
@@ -222,10 +216,10 @@ land in a later slice."
 ;; on a fresh solve. The one place a chosen concrete version becomes an on-disk dependency.
 (defn- package-fetch-registry-solution (root solution lock-index base)
   (map (%map-pairs solution)
-    (fn (kv)
+    (fn ([name version])
       (package-resolve-registry root
-        (project/dep-registry (first kv) (second kv))
-        (get lock-index (first kv))
+        (project/dep-registry name version)
+        (get lock-index name)
         base))))
 
 ;; --- the registry pre-fetch (ADR-209) -------------------------------------------
@@ -247,7 +241,7 @@ land in a later slice."
           discovered (seq/distinct (apply append
                                      (map results
                                        (fn (pair) (package-release-dep-names (second pair))))))
-          next-frontier (seq/filter discovered (fn (nm) (not (contains? fetched2 nm)))))
+          next-frontier (seq/filter discovered (fn (name) (not (contains? fetched2 name)))))
       (package-prefetch-bfs base next-frontier fetched2))))
 
 ;; Fetch every package in `frontier` CONCURRENTLY — one spawned process each, results
@@ -255,12 +249,12 @@ land in a later slice."
 ;; gather; the first failure raises with the package named. Returns `[[name releases]...]`.
 (defn- package-fetch-frontier (base frontier)
   (let (me (self))
-    (dolist (nm frontier)
+    (dolist (name frontier)
       (spawn (send me
                [:fetched
-                 nm
+                 name
                  (try
-                   [:ok (registry-fetch-releases base nm)]
+                   [:ok (registry-fetch-releases base name)]
                    (catch e [:error (error-message e)]))])))
     (package-gather-frontier me (count frontier) nil)))
 
@@ -268,14 +262,14 @@ land in a later slice."
   (if (= remaining 0)
     acc
     (receive
-      ([:fetched nm result] (match result
-                              ([:ok releases] (package-gather-frontier me
-                                                (- remaining 1)
-                                                (cons [nm releases] acc)))
-                              ([:error message] (error "package: fetching "
-                                                  (->string nm)
-                                                  " from the registry failed: "
-                                                  message)))))))
+      ([:fetched name result] (match result
+                                ([:ok releases] (package-gather-frontier me
+                                                  (- remaining 1)
+                                                  (cons [name releases] acc)))
+                                ([:error message] (error "package: fetching "
+                                                    (->string name)
+                                                    " from the registry failed: "
+                                                    message)))))))
 
 ;; The distinct dep-name symbols across a package's releases — the frontier to prefetch next.
 (defn- package-release-dep-names (releases)
@@ -298,33 +292,32 @@ land in a later slice."
 ;; release is left to the solver, which (via the provider below) only ever sees the compatible
 ;; ones. This makes the resolver care about the brood version, not just the root-project setup gate.
 (defn- package-check-brood-compat (fetched)
-  (dolist (kv (%map-pairs fetched))
-    (let (nm (first kv)
-          releases (second kv))
+  (dolist (entry (%map-pairs fetched))
+    (let ([name releases] entry)
       (when (and (not (empty? releases)) (empty? (seq/filter releases package-release-brood-ok?)))
         (let (needed (seq/distinct (seq/filter (map releases (fn (r) (get r :brood)))
                                      (fn (c) (and c (not (= c "")))))))
           (error "package: no published release of "
-            (->string nm)
+            (->string name)
             " is compatible with the brood you are running ("
             (system/brood-version)
             "). "
-            (->string nm)
+            (->string name)
             "'s releases require Brood "
             (string/join needed " / ")
             " — upgrade brood, or depend on an older "
-            (->string nm)
+            (->string name)
             " that predates the requirement."))))))
 
 ;; `versions` reads the release list — filtered to the brood-compatible releases, so the
 ;; solver never selects a version the running runtime can't load; `deps` finds the matching
 ;; release's declared deps.
 (defn- package-prefetched-provider (fetched)
-  (resolver/make-provider (fn (nm)
-                            (map (seq/filter (or (get fetched nm) nil) package-release-brood-ok?)
+  (resolver/make-provider (fn (name)
+                            (map (seq/filter (or (get fetched name) nil) package-release-brood-ok?)
                               (fn (release) (get release :version))))
-    (fn (nm version)
-      (let (release (seq/find (or (get fetched nm) nil) (fn (r) (= (get r :version) version))))
+    (fn (name version)
+      (let (release (seq/find (or (get fetched name) nil) (fn (r) (= (get r :version) version))))
         (if (nil? release) nil (get release :dependencies))))))
 
 ;; {name → locked concrete version} for every `:registry` row of the prior lock — the
@@ -535,8 +528,8 @@ land in a later slice."
 ;; and re-created, so the name is re-checked at the point it becomes a path: a name that
 ;; slipped past an entry point (a lock, a registry, a caller of a public verb) must not
 ;; aim `%rm-rf` outside `_deps/`.
-(defn- package-git-target (root nm)
-  (let (name-str (->string nm))
+(defn- package-git-target (root name)
+  (let (name-str (->string name))
     (when (not (project/valid-dep-name? name-str))
       (error "package: refusing dependency name "
         (pr-str name-str)
@@ -648,10 +641,10 @@ land in a later slice."
 (defn- package-resolve-git (root raw-dep raw-locked)
   (let (locked raw-locked
         dep (package-git-concrete-ref raw-dep locked)
-        nm (get dep :name)
+        name (get dep :name)
         url (get dep :url)
         ref (get dep :ref)
-        target (package-git-target root nm)
+        target (package-git-target root name)
         commit (package-git-commit-for dep locked))
     (if (package-cache-current? target commit)
       ;; Cache hit: don't re-clone, re-hash, or rewrite meta — that would make a
@@ -735,10 +728,10 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
       "\n")))
 
 (defn- package-resolve-tarball (root dep)
-  (let (nm (get dep :name)
+  (let (name (get dep :name)
         url (get dep :url)
         sha (get dep :sha256)
-        target (package-git-target root nm))
+        target (package-git-target root name))
     (if (package-tarball-cache-current? target sha)
       (assoc dep
         :resolved-path target
@@ -749,9 +742,9 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
               got (hash/sha256-bytes bytes))
           (when (not (= got sha))
             (error "package: :tarball "
-              nm " sha256 mismatch — the manifest pins " sha " but the download hashed to " got
+              name " sha256 mismatch — the manifest pins " sha " but the download hashed to " got
               " (tampered, wrong URL, or a moved artifact — verify and re-pin)"))
-          (let (archive (path/join (package-deps-dir root) (str (->string nm) ".tar.gz")))
+          (let (archive (path/join (package-deps-dir root) (str (->string name) ".tar.gz")))
             (file/mkdir (package-deps-dir root))
             (file/spit-bytes archive bytes)
             ;; Extraction (large archives) runs on the offload pool, like the clone.
@@ -785,10 +778,10 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
   (let (env (os/env "HIVE_TOKEN"))
     (if (or (nil? env) (= env "")) *config-registry-token* env)))
 
-(defn- registry-release-url (base nm version)
-  (str base "/api/v1/packages/" (->string nm) "/releases/" version))
-(defn- registry-tarball-url (base nm version)
-  (str (registry-release-url base nm version) "/tarball"))
+(defn- registry-release-url (base name version)
+  (str base "/api/v1/packages/" (->string name) "/releases/" version))
+(defn- registry-tarball-url (base name version)
+  (str (registry-release-url base name version) "/tarball"))
 
 (defn- registry-error-text (resp)
   "The server's `:error` message from a JSON error body, or a generic HTTP line."
@@ -822,7 +815,7 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
 ;; The resolver needs, per package, its versions AND each release's deps. That is ONE
 ;; request: the `/releases` list carries each release's `:dependencies` (the registry-index
 ;; model — Cargo's index, npm's packument — so resolving N packages is N requests, not
-;; N×versions). Names cross as symbols; the URL wants the string, so `(->string nm)`.
+;; N×versions). Names cross as symbols; the URL wants the string, so `(->string name)`.
 
 ;; A dependency name the REGISTRY serves becomes `_deps/<name>/` exactly like one the user
 ;; typed, but nobody reviewed it: a compromised registry answering `"../.."` must not get
@@ -842,11 +835,11 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
 ;; point the client at a `file://` (or other) local resource to read + extract (the sha256 pin
 ;; is no defence, since the same party supplies the checksum). Every path that downloads a
 ;; release's `:source_url` goes through this check (ADR-211).
-(defn- registry-check-source-url (nm version source-url)
+(defn- registry-check-source-url (name version source-url)
   (when (and (not (string/starts-with? source-url "https://"))
           (not (string/starts-with? source-url "http://")))
     (error "package: "
-      (->string nm)
+      (->string name)
       " "
       version
       " declares a non-http(s) source URL — refusing (a registry release's external bytes must"
@@ -854,14 +847,14 @@ an http(s) URL is GET'd (following up to *package-max-redirects* redirects) and 
       source-url
       ")")))
 
-(defn- registry-releases-url (base nm)
-  (str base "/api/v1/packages/" (->string nm) "/releases"))
+(defn- registry-releases-url (base name)
+  (str base "/api/v1/packages/" (->string name) "/releases"))
 
-(defn- registry-fetch-releases (base nm)
-  "Every published release of `nm` at `base` as `[{:version V :dependencies [[dep-name
+(defn- registry-fetch-releases (base name)
+  "Every published release of `name` at `base` as `[{:version V :dependencies [[dep-name
 range]...]} ...]`, in ONE request. An unknown package (404) is nil (the resolver reports it
 as having no versions rather than raising mid-search); any other error raises."
-  (match (registry-get-json (registry-releases-url base nm))
+  (match (registry-get-json (registry-releases-url base name))
     ([:ok data]
       (map (or (get data :releases) nil)
         (fn (release)
@@ -871,21 +864,21 @@ as having no versions rather than raising mid-search); any other error raises."
            ;; unconstrained, so this stays backward-compatible with old releases.
            :brood (get release :brood)
            :dependencies (map (or (get release :dependencies) nil)
-                           (fn (d) [(registry-dep-name nm (get d :name)) (get d :version)]))})))
+                           (fn (d) [(registry-dep-name name (get d :name)) (get d :version)]))})))
     ([:error 404 _message] nil)
     ([:error _status message] (error "package: listing releases of "
-                                (->string nm)
+                                (->string name)
                                 " failed: "
                                 message))))
 
 ;; Thin views over the one-request release list, for callers that want just one slice.
-(defn- registry-list-versions (base nm)
-  "The published version strings of `nm` (any order — the resolver sorts)."
-  (map (or (registry-fetch-releases base nm) nil) (fn (release) (get release :version))))
+(defn- registry-list-versions (base name)
+  "The published version strings of `name` (any order — the resolver sorts)."
+  (map (or (registry-fetch-releases base name) nil) (fn (release) (get release :version))))
 
-(defn- registry-release-deps (base nm version)
-  "The `[dep-name constraint]` requirements of `nm`@`version`; empty when absent."
-  (let (release (seq/find (or (registry-fetch-releases base nm) nil)
+(defn- registry-release-deps (base name version)
+  "The `[dep-name constraint]` requirements of `name`@`version`; empty when absent."
+  (let (release (seq/find (or (registry-fetch-releases base name) nil)
                   (fn (r) (= (get r :version) version))))
     (if (nil? release) nil (get release :dependencies))))
 
@@ -897,9 +890,9 @@ as having no versions rather than raising mid-search); any other error raises."
 ;; extract it. The lock records the version + the checksum (the integrity pin, standing
 ;; in for git's commit).
 (defn- package-resolve-registry (root dep locked index)
-  (let (nm (get dep :name)
+  (let (name (get dep :name)
         version (get dep :version)
-        target (package-git-target root nm)
+        target (package-git-target root name)
         locked-sha (and locked
                      (= (plist-get locked :registry) version)
                      (plist-get locked :sha256))
@@ -908,7 +901,7 @@ as having no versions rather than raising mid-search); any other error raises."
     (if (and locked-sha (package-tarball-cache-current? target locked-sha))
       ;; cache hit: reuse the pinned sha + carry the pinned key forward into the lock.
       (registry-resolved dep target version locked-sha locked-pubkey)
-      (registry-fetch-release root dep (registry-base-for index) target nm version locked-pubkey))))
+      (registry-fetch-release root dep (registry-base-for index) target name version locked-pubkey))))
 
 (defn- registry-resolved (dep target version checksum pubkey)
   "A resolved registry entry: the dep with its resolution fields assoc'd on (`:pubkey` the
@@ -920,24 +913,24 @@ TOFU-pinned signing key, nil for an unsigned package)."
     :pubkey pubkey
     :deps (package-manifest-deps (path/join target "project.blsp"))))
 
-(defn- registry-fetch-release (root dep base target nm version locked-pubkey)
-  (match (registry-get-json (registry-release-url base nm version))
+(defn- registry-fetch-release (root dep base target name version locked-pubkey)
+  (match (registry-get-json (registry-release-url base name version))
     ([:error 404 _message] (error "package: no registry entry for "
-                             nm
+                             name
                              " "
                              version
                              " (run `nest search "
-                             (->string nm)
+                             (->string name)
                              "` to see what's published)"))
     ([:error _status message] (error "package: " message))
     ([:ok meta] (let (checksum (get meta :checksum))
                   (when (nil? checksum)
-                    (error "package: registry release " nm " " version " has no checksum"))
+                    (error "package: registry release " name " " version " has no checksum"))
                   (registry-download-extract root
                     dep
                     base
                     target
-                    nm
+                    name
                     version
                     checksum
                     (get meta :source_url)
@@ -946,16 +939,16 @@ TOFU-pinned signing key, nil for an unsigned package)."
                     locked-pubkey)))))
 
 ;; The hive-hosted tarball bytes for a release (root-level layout), erroring on a non-2xx.
-(defn- registry-download-hosted (base nm version)
-  (let (resp (http/fetch (registry-tarball-url base nm version))
+(defn- registry-download-hosted (base name version)
+  (let (resp (http/fetch (registry-tarball-url base name version))
         status (get resp :status))
     (when (not (and (>= status 200) (< status 300)))
-      (error "package: downloading " nm " " version " failed (HTTP " status ")"))
+      (error "package: downloading " name " " version " failed (HTTP " status ")"))
     (get resp :body)))
 
 (defn- registry-download-extract
   (root dep
-    base target nm version checksum source-url signature pubkey locked-pubkey)
+    base target name version checksum source-url signature pubkey locked-pubkey)
   (when (file/dir? target) (%rm-rf target))
   ;; A release may host its bytes EXTERNALLY — a `:source_url` (a GitHub/S3/CDN tarball),
   ;; in which case the registry holds only metadata + the checksum and the bytes are
@@ -964,25 +957,25 @@ TOFU-pinned signing key, nil for an unsigned package)."
   ;; EITHER WAY the sha256 is verified before anything is extracted — the registry is never
   ;; trusted for the bytes, so an external URL is exactly as safe as a hosted one.
   (let (external (and source-url (not (= source-url ""))))
-    (when external (registry-check-source-url nm version source-url))
+    (when external (registry-check-source-url name version source-url))
     (let (bytes (if external
                   (package-fetch-bytes source-url)
-                  (registry-download-hosted base nm version))
+                  (registry-download-hosted base name version))
           got (hash/sha256-bytes bytes))
       (when (not (= got checksum))
         (error "package: "
-          nm " " version " sha256 mismatch — the registry declares " checksum
+          name " " version " sha256 mismatch — the registry declares " checksum
           " but the download hashed to " got " (tampered or corrupted — do not trust it)"))
       ;; Signature (ADR-212): advisory TOFU check over the verified checksum. Returns the pubkey
       ;; to PIN in the lock (the pinned one wins — TOFU is sticky, first-seen).
-      (let (pinned (package-verify-signature nm version checksum signature pubkey locked-pubkey)
-            archive (path/join (package-deps-dir root) (str (->string nm) ".tar.gz")))
+      (let (pinned (package-verify-signature name version checksum signature pubkey locked-pubkey)
+            archive (path/join (package-deps-dir root) (str (->string name) ".tar.gz")))
         (file/mkdir (package-deps-dir root))
         (file/spit-bytes archive bytes)
         ;; Extraction of a large archive runs on the offload pool, like a clone.
         (offload %untar-gz archive target (if external 1 0))
         (file/rm archive)
-        (registry-write-meta target base nm version checksum)
+        (registry-write-meta target base name version checksum)
         (registry-resolved dep target version checksum pinned)))))
 
 ;; Advisory signature + TOFU check (ADR-212). NEVER errors — every problem is a warning, so a
@@ -990,7 +983,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
 ;; the lock: the already-pinned key when there is one (TOFU keeps the first-seen key and only
 ;; WARNS on a change — it does not silently adopt a new one), else the release's key IF its
 ;; signature verified (never pin a key that hasn't proven control by producing a valid signature).
-(defn- package-verify-signature (nm version checksum signature pubkey locked-pubkey)
+(defn- package-verify-signature (name version checksum signature pubkey locked-pubkey)
   ;; `signature`/`pubkey`/`locked-pubkey` are attacker-controlled (registry JSON / the lock), so
   ;; type-guard to STRINGS before touching hex-decode — a non-string (a JSON number/array) would
   ;; otherwise throw out of hex-decode and turn this advisory check into a hard install block. The
@@ -1002,7 +995,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
                    (check-allow :discarded-catch
                      (try
                        (crypto/verify (encoding/hex-decode-bytes pubkey)
-                         (package-signing-payload (->string nm) version checksum)
+                         (package-signing-payload (->string name) version checksum)
                          (encoding/hex-decode-bytes signature))
                        (catch _ false)))))
     (cond
@@ -1010,7 +1003,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
         (do
           (when (not verified)
             (io/puts "package: WARNING — "
-              (->string nm)
+              (->string name)
               " "
               version
               " carries a signature that does NOT verify against its key (possible tampering)."))
@@ -1018,7 +1011,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
           ;; otherwise the "does not verify" warning already covers it.
           (when (and verified had-pin (not (= locked-pubkey pubkey)))
             (io/puts "package: WARNING — "
-              (->string nm)
+              (->string name)
               " "
               version
               " is signed by a DIFFERENT key than the one pinned in your lock"
@@ -1034,7 +1027,7 @@ TOFU-pinned signing key, nil for an unsigned package)."
       had-pin
         (do
           (io/puts "package: WARNING — "
-            (->string nm)
+            (->string name)
             " "
             version
             " is unsigned, but a previous release was signed (a dropped signature).")
@@ -1042,11 +1035,11 @@ TOFU-pinned signing key, nil for an unsigned package)."
       ;; unsigned, never pinned — the common case in a mostly-unsigned ecosystem; stay quiet.
       else nil)))
 
-(defn- registry-write-meta (target base nm version checksum)
+(defn- registry-write-meta (target base name version checksum)
   (file/spit (package-pkg-meta-path target)
     (str ";; .brood-pkg.blsp — written by the package manager. Do not edit by hand.\n"
       (pr-str (list 'brood-pkg
-                :registry (->string nm)
+                :registry (->string name)
                 :version version
                 :sha256 checksum
                 :registry-url base
@@ -1059,11 +1052,11 @@ TOFU-pinned signing key, nil for an unsigned package)."
 ;; a running app (an editor) can let a user add/remove plugins live. The sha256 verify is
 ;; identical to the resolver's: the registry is never trusted for the bytes.
 
-(defn registry-latest-version (nm)
-  "The newest published version string of package `nm` (a symbol or string) at the configured
+(defn registry-latest-version (name)
+  "The newest published version string of package `name` (a symbol or string) at the configured
 registry, or nil if it is unpublished. Backs an app's 'is there an update?' check."
   (let (base (registry-base-for nil)
-        versions (registry-list-versions base (if (symbol? nm) nm (symbol nm))))
+        versions (registry-list-versions base (if (symbol? name) name (symbol name))))
     (if (or (nil? versions) (empty? versions))
       nil
       (fold versions nil (fn (best v) (if (or (nil? best) (version/newer? v best)) v best))))))
@@ -1077,16 +1070,16 @@ runtime side of `nest search --enhances`: an app lists its own installable plugi
       ([:ok data] (or (get data :packages) nil))
       ([:error _status _message] nil))))
 
-(defn registry-install (nm dest-dir)
-  "Download, sha-VERIFY, and extract the newest release of package `nm` into `dest-dir/<nm>/`
+(defn registry-install (name dest-dir)
+  "Download, sha-VERIFY, and extract the newest release of package `name` into `dest-dir/<name>/`
 at runtime — the user-package install path, independent of any project `_deps`/manifest. Returns
 `{:name :version :path :checksum}`. Errors on an unknown package, a download failure, or a
 checksum mismatch (the same integrity guarantee `nest add` gives — the registry is never trusted
 for the bytes). Advisory signature/TOFU checking is a lock-file concern and is skipped here; the
 sha256 pin still holds."
   (let (base (registry-base-for nil)
-        name-sym (if (symbol? nm) nm (symbol nm))
-        name-str (if (string? nm) nm (->string nm))
+        name-sym (if (symbol? name) name (symbol name))
+        name-str (if (string? name) name (->string name))
         _checked (when (not (project/valid-dep-name? name-str))
                    (error "package: "
                      (pr-str name-str)
@@ -1453,14 +1446,14 @@ temp, and the second rename would find it gone."
 ;; a name already printed is shown once more, marked, without re-descending.
 (defn- package-print-tree (deps index prefix seen)
   (dolist (d deps)
-    (let (nm (get d :name)
-          dup (includes? seen nm)
-          entry (get index nm))
+    (let (name (get d :name)
+          dup (includes? seen name)
+          entry (get index name))
       ;; a dep's tree label is its DISPLAY form (`impl Display` per kind, in
       ;; std/tool/project.blsp beside the records), so this and `(io/puts dep)` can't drift
       (io/puts (str prefix "- " (->string d) (if dup " (already shown)" "")))
       (when (and entry (not dup) (not (empty? (get entry :deps))))
-        (package-print-tree (get entry :deps) index (str prefix "  ") (cons nm seen))))))
+        (package-print-tree (get entry :deps) index (str prefix "  ") (cons name seen))))))
 
 (defn tree ()
   "Print the resolved dependency tree of the current project (root → direct → transitive). Backs `nest tree`."
@@ -1498,22 +1491,20 @@ temp, and the second rename would find it gone."
         (= (node-kind (first forms)) :symbol)
         (= (node-text (first forms)) "project")))))
 
-;; The list index of the node *following* the :dependencies keyword (its value
-;; vector), or nil if the manifest has no :dependencies clause.
-(defn- package-deps-value-index (children)
-  (package-deps-value-index-scan children 0 false))
-(defn- package-deps-value-index-scan (children i after-kw)
+;; The list index of the node *following* the top-level `keyword` (e.g. ":dependencies")
+;; among `children` — its value — or nil if the form has no such key.
+(defn- package-keyword-value-index (children keyword)
+  (package-keyword-value-index-scan children keyword 0 false))
+(defn- package-keyword-value-index-scan (children keyword index after-keyword)
   (cond
     (empty? children) nil
-    after-kw
+    after-keyword
       (if (trivia? (first children))
-        (package-deps-value-index-scan (rest children) (inc i) true)
-        i)
-    (and (= (node-kind (first children)) :keyword) (= (node-text (first children)) ":dependencies"))
-      (package-deps-value-index-scan (rest children)
-        (inc i)
-        true)
-    else (package-deps-value-index-scan (rest children) (inc i) false)))
+        (package-keyword-value-index-scan (rest children) keyword (inc index) true)
+        index)
+    (and (= (node-kind (first children)) :keyword) (= (node-text (first children)) keyword))
+      (package-keyword-value-index-scan (rest children) keyword (inc index) true)
+    else (package-keyword-value-index-scan (rest children) keyword (inc index) false)))
 
 ;; Functional list update: `lst` with element `i` replaced by `(f element)`.
 (defn- package-list-update (lst i f) (package-list-update-acc lst i f 0 nil))
@@ -1536,30 +1527,32 @@ temp, and the second rename would find it gone."
 ;; Append `entry-node` to the project node's :dependencies vector, creating the
 ;; clause if absent. `children` is the project list's child-node list.
 (defn- package-children-add-dep (children entry-node)
-  (let (didx (package-deps-value-index children))
-    (if (nil? didx)
+  (let (deps-index (package-keyword-value-index children ":dependencies"))
+    (if (nil? deps-index)
       (append children
         (list [:whitespace " "]
           [:keyword ":dependencies"]
           [:whitespace " "]
           [:vector (vector entry-node)]))
       (package-list-update children
-        didx
-        (fn (vecnode)
-          [:vector (apply vector (append (vec->list (node-children vecnode)) (list entry-node)))])))))
+        deps-index
+        (fn (vector-node)
+          [:vector
+            (apply vector (append (vec->list (node-children vector-node)) (list entry-node)))])))))
 
-;; Drop the entry named `nm` from the project node's :dependencies vector.
-(defn- package-children-remove-dep (children nm)
-  (let (didx (package-deps-value-index children))
-    (if (nil? didx)
+;; Drop the entry named `name` from the project node's :dependencies vector.
+(defn- package-children-remove-dep (children name)
+  (let (deps-index (package-keyword-value-index children ":dependencies"))
+    (if (nil? deps-index)
       children
       (package-list-update children
-        didx
-        (fn (vecnode)
+        deps-index
+        (fn (vector-node)
           [:vector
             (apply vector
-              (seq/filter (vec->list (node-children vecnode))
-                (fn (c) (not (and (= (node-kind c) :vector) (= (package-entry-name c) nm))))))])))))
+              (seq/filter (vec->list (node-children vector-node))
+                (fn (child)
+                  (not (and (= (node-kind child) :vector) (= (package-entry-name child) name))))))])))))
 
 ;; Re-render `src` after applying `f` to its (project …) node. Comments survive.
 (defn- package-manifest-transform (src f)
@@ -1572,17 +1565,17 @@ temp, and the second rename would find it gone."
     (fn (proj)
       [:list (apply vector (package-children-add-dep (vec->list (node-children proj)) entry-node))])))
 
-(defn- package-manifest-remove (src nm)
-  "Return manifest `src` with the dep named `nm` removed from :dependencies (pure)."
+(defn- package-manifest-remove (src name)
+  "Return manifest `src` with the dep named `name` removed from :dependencies (pure)."
   (package-manifest-transform src
     (fn (proj)
-      [:list (apply vector (package-children-remove-dep (vec->list (node-children proj)) nm))])))
+      [:list (apply vector (package-children-remove-dep (vec->list (node-children proj)) name))])))
 
 ;; A CLI spec token: ":path"/":git"/":ref" → keyword; anything else → the string.
 (defn- package-spec-token (tok)
   (if (string/starts-with? tok ":") (keyword (string/substring tok 1 (string/length tok))) tok))
 
-(defn- package-has-dep? (deps nm) (any? deps (fn (d) (= (get d :name) nm))))
+(defn- package-has-dep? (deps name) (any? deps (fn (d) (= (get d :name) name))))
 
 ;; A dependency name is written VERBATIM into project.blsp (unquoted, as a symbol) and
 ;; names the `_deps/<name>/` directory, so `add` refuses one `project/valid-dep-name?`
@@ -1645,19 +1638,19 @@ temp, and the second rename would find it gone."
           :to *err*)
         false))))
 
-(defn add (nm & spec)
-  "Add a dependency to project.blsp and re-lock. `nm` is the require-name; `spec` is `:path PATH`, `:git URL :ref REF`, `:git URL :version RANGE` (newest matching tag, ADR-209), or `:tarball URL :sha256 HEX` (strings). A :git/:tarball dep is fetched into _deps/ as part of the re-lock. Backs `nest add`."
+(defn add (name & spec)
+  "Add a dependency to project.blsp and re-lock. `name` is the require-name; `spec` is `:path PATH`, `:git URL :ref REF`, `:git URL :version RANGE` (newest matching tag, ADR-209), or `:tarball URL :sha256 HEX` (strings). A :git/:tarball dep is fetched into _deps/ as part of the re-lock. Backs `nest add`."
   ;; Checked BEFORE anything is written, so a bad name can't leave a half-edited
   ;; manifest behind.
-  (when (not (project/valid-dep-name? nm))
+  (when (not (project/valid-dep-name? name))
     (error "package: "
-      (pr-str nm)
+      (pr-str name)
       " is not a usable dependency name — it must be a plain symbol written verbatim into project.blsp (no spaces, quotes, brackets, parens, and not a number) and a single directory name under _deps/ (no `/` or `\\`, not starting with `.`, `-` or `~`)"))
   (package-in-project
     (fn (root)
-      (let (dep (project/parse-dep (apply vector (cons (symbol nm) (map spec package-spec-token)))))
+      (let (dep (project/parse-dep (apply vector (cons (symbol name) (map spec package-spec-token)))))
         (when (package-has-dep? *project-dependencies* (get dep :name))
-          (error "package: " nm " is already a dependency"))
+          (error "package: " name " is already a dependency"))
         ;; ATOMIC: the manifest edit has to happen before
         ;; resolution (resolution reads the loaded manifest), so a
         ;; failure afterwards is rolled back. Without this, `nest
@@ -1669,8 +1662,8 @@ temp, and the second rename would find it gone."
         (let (manifest (path/join root "project.blsp")
               edit (package-edit-manifest root
                      (fn (src) (package-manifest-add src (dep-entry-node dep))))
-              original (seq/vector-ref edit 0)
-              written (seq/vector-ref edit 1))
+              original (nth edit 0)
+              written (nth edit 1))
           (let (outcome (try
                           (do
                             (package-load-manifest manifest)
@@ -1686,15 +1679,15 @@ temp, and the second rename would find it gone."
                 (package-revert-manifest root written original)
                 (package-load-manifest manifest)
                 (throw (second outcome)))
-              (io/puts (str "package: added " nm)))))))))
+              (io/puts (str "package: added " name)))))))))
 
-(defn remove-dep (nm)
-  "Remove dependency `nm` from project.blsp and re-lock (an empty lock if no deps remain). Backs `nest remove`."
+(defn remove-dep (name)
+  "Remove dependency `name` from project.blsp and re-lock (an empty lock if no deps remain). Backs `nest remove`."
   (package-in-project
     (fn (root)
-      (let (name-sym (symbol nm))
+      (let (name-sym (symbol name))
         (when (not (package-has-dep? *project-dependencies* name-sym))
-          (error "package: " nm " is not a dependency"))
+          (error "package: " name " is not a dependency"))
         (let (manifest (path/join root "project.blsp")
               target (package-git-target root name-sym))
           ;; Same locked compare-and-swap as `add`: a concurrent edit must not be
@@ -1704,7 +1697,7 @@ temp, and the second rename would find it gone."
           ; drop its _deps/ cache, if any
           (when (file/dir? target) (%rm-rf target))
           (write-lockfile root (resolve-deps root *project-dependencies* (read-lockfile root)))
-          (io/puts (str "package: removed " nm)))))))
+          (io/puts (str "package: removed " name)))))))
 
 ;; --- `nest search` / `nest publish` (hive HTTP API) -------------------------
 
@@ -1755,10 +1748,21 @@ application (`nest search --enhances bedit zig`). Backs `nest search`."
 
 ;; --- publish: build a source tarball, then POST it (Bearer-token authed) -----
 
-(def- tarball-excludes
-  ["--exclude=./_deps"
-    "--exclude=./_build" "--exclude=./.git" "--exclude=./tests" "--exclude=./project.lock.blsp"
-    "--exclude=*.tar.gz"])
+(defn- registry-excluded? (path)
+  "Whether the root-relative `path` stays out of a published source tarball: dependency and
+build caches, VCS data, tests, the lock file, and any stray tarball."
+  (or (any? ["_deps/" "_build/" ".git/" "tests/"] (fn (dir) (string/starts-with? path dir)))
+    (= path "project.lock.blsp")
+    (string/ends-with? path ".tar.gz")))
+
+(defn- registry-source-files (root)
+  "The root-relative paths a source tarball of `root` ships: the git-TRACKED files when
+`root` is a git work tree, else every file under it — minus [[registry-excluded?]]."
+  (let (prefix (str root "/")
+        files (or (registry-tracked-files root)
+                (map (or (file/walk-files root) (list))
+                  (fn (path) (string/substring path (string/length prefix))))))
+    (sort (seq/reject files registry-excluded?))))
 
 (defn- registry-tracked-files (root)
   "The project's git-TRACKED paths relative to `root`, or nil when `root` is not a git
@@ -1776,25 +1780,19 @@ construction, which is the point — see `registry-build-tarball`."
 
 (defn- registry-build-tarball (root)
   "Create a gzip'd source tarball of the project at `root` — its files at the archive
-  root — excluding `_deps/`, `_build/`, `.git/`, `tests/`, the lock file, and any
-  stray tarball. Returns the archive path (under `_deps/`, which the excludes skip).
+  root — the files [[registry-source-files]] names, so `_deps/`, `_build/`, `.git/`,
+  `tests/`, the lock file and any stray tarball stay out. Returns the archive path (under
+  `_deps/`).
 
-  The file list comes from `git ls-files` where it can: `tar .` packs whatever happens to
-  be lying in the working directory, so a local build artifact ships to the registry as
-  part of a \"source\" release. bedit made that visible by failing with HTTP 413 — a 41 MB
-  `bedit` bundle sat in its root, git-ignored — but size is the symptom, not the problem:
-  the same path would publish any untracked file, and a tarball whose contents depend on
-  what you last built is not reproducible. Outside a git work tree there is nothing to
-  consult, so the whole-directory walk stays as the fallback."
+  The list is git's tracked files where it can be: packing the working directory ships
+  whatever untracked build artifact happens to lie there, and a tarball whose contents
+  depend on what you last built is not reproducible. The excludes are applied to that list
+  here, in Brood: tar's `--exclude` patterns do not match explicitly named members."
   (let (out (path/join (package-deps-dir root)
               (str *project-name* "-" *project-version* ".tar.gz")))
     (file/mkdir (package-deps-dir root))
     (when (file/exists? out) (file/rm out))
-    (let (tracked (registry-tracked-files root)
-          args (if tracked
-                 (into (into ["-czf" out "-C" root] tarball-excludes) tracked)
-                 (into (into ["-czf" out "-C" root] tarball-excludes) ["."]))
-          code (os/run-process "tar" args))
+    (let (code (os/run-process "tar" (into ["-czf" out "-C" root] (registry-source-files root))))
       (when (not (= code 0))
         (error "package: building the source tarball failed (tar exit " code ")"))
       out)))
@@ -1820,7 +1818,7 @@ registry indexes these names to answer \"which packages plug into X\". `{}` for 
 ordinary library, which the server stores as \"nothing\"."
   (fold (%map-pairs *project-enhances*)
     {}
-    (fn (acc kv) (let ([nm constraint] kv) (assoc acc (->string nm) constraint)))))
+    (fn (acc [name constraint]) (assoc acc (->string name) constraint))))
 
 ;; --- package signing (ADR-212): sign a release's checksum, TOFU-verify on install ------
 ;; The publisher's ed25519 key lives at `<config>/brood/signing-key.blsp` (private stored 0600).
@@ -2037,44 +2035,74 @@ published is refused. Backs `nest publish`."
         (io/puts (str "package: published " *project-name* " " *project-version* "."))
       else (error "package: publish failed (HTTP " status "): " (registry-error-text resp)))))
 
-(defn- semver-bump (cur level)
-  (let (p (map (string/split cur ".") string/->number)
-        bad (fn () (error "semver-bump: malformed version " cur " (expected MAJOR.MINOR.PATCH)"))
+(defn- semver-bump (current level)
+  (let (segments (map (string/split current ".") string/->number)
+        bad (fn ()
+              (error "semver-bump: malformed version " current " (expected MAJOR.MINOR.PATCH)"))
         ;; `number?`, not `or`: a non-numeric segment parses to a FAILURE, which is
         ;; truthy (ADR-310), so `or` would hand it on to `inc` instead of reaching
         ;; `bad`. One test covers both a missing segment (nil) and an unparseable one.
-        segment (fn (index) (let (parsed (nth p index)) (if (number? parsed) parsed (bad))))
-        ma (segment 0)
-        mi (segment 1)
-        pa (segment 2))
+        segment (fn (index) (let (parsed (nth segments index)) (if (number? parsed) parsed (bad))))
+        major (segment 0)
+        minor (segment 1)
+        patch (segment 2))
     (cond
-      (= level "major") (str (inc ma) ".0.0")
-      (= level "minor") (str ma "." (inc mi) ".0")
-      else (str ma "." mi "." (inc pa)))))
+      (= level "major") (str (inc major) ".0.0")
+      (= level "minor") (str major "." (inc minor) ".0")
+      else (str major "." minor "." (inc patch)))))
 
-(defn bump-version (level)
-  "Bump the project's OWN :version in project.blsp — the FIRST :version, which precedes the
-  :dependencies, so a dependency pin is never touched (the bug a hand-rolled sed once hit).
-  `level` is \"patch\" (default), \"minor\", or \"major\". Returns the new version string."
-  (let (text (file/slurp "project.blsp")
-        marker ":version \""
-        start (index-of text marker))
-    (when (< start 0) (error "package: no :version in project.blsp"))
-    (let (vstart (+ start (string/length marker))
-          vend (index-of text "\"" vstart)
-          cur (string/substring text vstart vend)
-          new (semver-bump cur (or level "patch")))
-      (file/spit "project.blsp"
-        (str (string/substring text 0 vstart)
-          new
-          (string/substring text vend (string/length text))))
-      new)))
+(defn- package-manifest-bump-version (src level)
+  "`[new-version new-src]`: manifest `src` with the `(project …)` form's OWN top-level
+`:version` bumped by `level` — located in the CST, so a dependency's `:version` is never
+the one touched, wherever it appears."
+  (let (new-src (package-manifest-transform src
+                  (fn (project-node)
+                    (let (children (vec->list (node-children project-node))
+                          index (package-keyword-value-index children ":version"))
+                      (when (nil? index) (error "package: no :version in project.blsp"))
+                      [:list
+                        (apply vector
+                          (package-list-update children
+                            index
+                            (fn (node)
+                              (let (version (semver-bump (reflect/read-first (node-text node))
+                                              level))
+                                [:str (package-str-lit version)]))))]))))
+    [(plist-get (rest (reflect/read-first new-src)) :version) new-src]))
+
+(defn bump-version (root level)
+  "Bump the project's OWN `:version` in `root`'s project.blsp — the `(project …)` form's
+top-level key, never a dependency's `:version`. `level` is \"patch\" (default), \"minor\", or
+\"major\". Returns the new version string."
+  (let (manifest (path/join root "project.blsp")
+        [version new-src] (package-manifest-bump-version (file/slurp manifest) (or level "patch")))
+    (file/spit manifest new-src)
+    version))
+
+(defn- package-git-or-error (root step & git-args)
+  "Run `git -C root git-args…`, raising with git's own output when it fails."
+  (let (result (os/cmd "git" (append (list "-C" root) git-args)))
+    (when (not (= (get result :exit) 0))
+      (error "package: "
+        step
+        " failed (git exit "
+        (get result :exit)
+        "): "
+        (string/trim (str (get result :stderr) (get result :stdout)))))))
 
 (defn release (level & opts)
   "`nest publish --bump LEVEL`: bump the project's own version, commit the bump, then publish.
-  The safe replacement for a hand-rolled bump-and-publish (which once bumped a dep pin)."
-  (let (new (bump-version level))
-    (os/run-process "git" (list "add" "project.blsp"))
-    (os/run-process "git" (list "commit" "-q" "-m" (str "release: v" new)))
-    (io/puts "package: bumped to v" new)
-    (apply publish opts)))
+Stops with an error — publishing nothing — when the bump cannot be committed."
+  (package-release-in (or (project/find-root (file/cwd))
+                        (error "package: not inside a Brood project (no project.blsp found)"))
+    level
+    (fn () (apply publish opts))))
+
+(defn- package-release-in (root level publish-thunk)
+  (let (version (bump-version root level))
+    (package-git-or-error root "git add" "add" "project.blsp")
+    ;; A failed commit leaves the bumped project.blsp in the tree for the user to commit
+    ;; or revert; nothing is published.
+    (package-git-or-error root "git commit" "commit" "-q" "-m" (str "release: v" version))
+    (io/puts "package: bumped to v" version)
+    (publish-thunk)))

@@ -89,7 +89,7 @@ fn inferred_params_intersect_across_positions() {
 
 #[test]
 fn same_file_caller_checked_against_inferred_return() {
-    // The file being checked isn't loaded, so this exercises Pass 2.8's form-based inference:
+    // The file being checked isn't loaded, so this exercises same-file inference's form-based inference:
     // `dbl` is inferred (same-file) to return a number, so `(string/length (dbl 5))` is caught
     // — a same-file caller now gets the checking a loaded-function caller already did.
     let w = file_warnings(
@@ -115,7 +115,7 @@ fn same_file_forward_reference_resolves_via_fixpoint() {
 fn same_file_reassigned_global_return_stays_dynamic() {
     // SOUNDNESS: a lazily-initialized global (nil default, reassigned to a table) must make
     // the returning function's return *dynamic*, not the stale `nil` — else a table use of
-    // the result would false-flag. Guards Pass 2.8 against the earmuffed / reassigned-global
+    // the result would false-flag. Guards same-file inference against the earmuffed / reassigned-global
     // imprecision.
     let w = file_warnings(
         "(defmodule t)\n(def *g* nil)\n(defn getg () (when (nil? *g*) (def *g* (%table))) *g*)\n(defn u () (%table-get (getg) :k))",
@@ -151,8 +151,7 @@ fn an_accumulator_loop_returns_what_the_accumulator_grows_into() {
     // self-call sits in the else of `(empty? xs)`, so `(first xs)` is never nil there) and
     // the accumulator's ascent `0`, `0 | 1 | 2`, … widens to its infinity (ADR-350).
     // `(sum-acc (list 1 2) 0)` IS `3`, and a string function on it is a real finding, not
-    // a false positive. (This test used to pin the opposite, when the fixpoint did not
-    // exist and declining was the sound answer.)
+    // a false positive.
     let w = check_with_defs(
         &["(defn sum-acc (xs acc) (if (empty? xs) acc (sum-acc (rest xs) (+ acc (first xs)))))"],
         "(string/length (sum-acc (list 1 2) 0))",
@@ -470,7 +469,7 @@ fn a_let_bound_lambda_domain_is_scoped_and_never_its_arrow() {
 }
 
 // ---- the self-recursive fixpoint (`sigs::specialize_recursive`) ----
-// Every case is a FILE check (Pass 2.8 + call-site specialization), which is the path a
+// Every case is a FILE check (same-file inference + call-site specialization), which is the path a
 // project's own accumulator loops take. Sabotage-verified: with the fixpoint replaced by
 // the old decline, the first three go silent.
 
@@ -534,8 +533,7 @@ fn the_recursive_fixpoint_declines_rather_than_under_approximate() {
     // A parameter that grows on every round — a list nesting one level deeper per
     // call — never converges as written; the call-site fixpoint declines to the flat
     // answer, and the caller-derived one folds the nesting into a recursive type (`μX. 1 |
-    // (list X)`, `Ty::fold_recursive`; it read `1 | pair`, the depth cut, before
-    // 2026-10-02). Both are sound — `(nest 3 1)` is `(((1)))`, inside either — and the μ
+    // (list X)`, `Ty::fold_recursive`). Both are sound — `(nest 3 1)` is `(((1)))`, inside either — and the μ
     // is exact: `string/length` on it is a true finding and `+` (which `1` satisfies) is
     // not.
     let ws = file_warnings(
@@ -584,7 +582,7 @@ fn a_self_call_argument_is_typed_in_its_enclosing_scope() {
     );
 }
 
-// ---- Pass 2.9: caller-derived parameter types (ADR-341) ----
+// ---- caller-derived parameter types (ADR-341) ----
 // The union of what a function's call sites in its file hand each parameter binds it in the
 // walk of its body and in the return its same-file callers read — the mechanism that lets a
 // leaf `sig` be enough. A fact about this file's calls, so public and private alike.
@@ -872,9 +870,8 @@ fn a_call_site_is_read_in_the_scope_the_walk_sees() {
 #[test]
 fn a_recursive_value_type_folds_into_a_rec_instead_of_nesting_forever() {
     // A JSON-shaped decoder: a value is nil, a number, or a vector of values. The
-    // return used to nest one level deeper per round until the widening cut it at a
-    // depth; it is now the recursive type, exactly, and a caller reads it through the
-    // binder — the element of the vector arm is the value type again.
+    // return is the recursive type, exactly (not a depth-cut nesting), and a caller reads
+    // it through the binder — the element of the vector arm is the value type again.
     let sigs = signatures(
         "(defmodule t)\n\
          (defn- val (s i) (if (= (nth s i) \"[\") (arr s (+ i 1) []) (if (= (nth s i) \"n\") nil 1)))\n\
@@ -1037,8 +1034,8 @@ fn a_site_inside_a_let_bound_lambda_hands_the_derived_type() {
     );
 }
 
-// Three derivation gaps bedit paid for with a `sig` on a derived function (2026-09-16),
-// each a place the site collector or the return inference read less than the walk knew.
+// Three derivation gaps that would otherwise need a `sig` on a derived function, each a
+// place the site collector or the return inference read less than the walk knew.
 
 // (1) An `&optional` function's body was walked by the collector with every parameter
 // unknown — `fixed_arms_of_form` does not count it as a fixed arm, and only a `& rest`
@@ -1150,9 +1147,8 @@ fn a_fold_accumulator_keeps_its_fields_through_the_ascent() {
 fn a_fold_callbacks_accumulator_is_handed_init_on_its_first_step() {
     // The fold's RESULT over a provably non-empty input leaves `init` out (the step ran);
     // the callback's accumulator is what every step is handed, and the first is handed
-    // `init`. Seeding the callback from the result alone read `b` as `3 | 9 | 4` and
-    // flagged the callback's own `nil?` guard as never true — a plain-mode false positive
-    // (2026-09-20, found by `fold-for`'s docstring example).
+    // `init`. Seeding the callback from the result alone would read `b` as `3 | 9 | 4`
+    // and flag the callback's own `nil?` guard as never true — a false positive.
     let quiet = file_warnings(
         "(defn best (xs) (fold [3 9 4] nil (fn (b x) (if (or (nil? b) (> x b)) x b))))",
     );

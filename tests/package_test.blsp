@@ -160,7 +160,61 @@
     (let (parent (pkg-fixture-root)
           app-dir (path/join parent "app"))
       (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
-      (assert= nil (package/registry-tracked-files app-dir)))))
+      (assert= nil (package/registry-tracked-files app-dir))))
+
+  ;; The excludes once rode to tar as `--exclude=./tests` beside the tracked paths named
+  ;; explicitly — and tar does not apply those patterns to `tests/a_test.blsp`, so tests and
+  ;; the lock file shipped in every git-tracked release.
+  (test "tracked tests/ and the lock file stay out of the built tarball"
+    (let (parent (pkg-fixture-root)
+          app-dir (path/join parent "app"))
+      (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
+      (file/mkdir (path/join app-dir "tests"))
+      (file/spit (path/join app-dir "tests" "a_test.blsp") "(defmodule a-test)\n")
+      (file/spit (path/join app-dir "project.lock.blsp") "(lock)\n")
+      (pkg-git-init app-dir)
+      (let (archive (binding (*project-name* "app" *project-version* "0.1.0")
+                      (package/registry-build-tarball app-dir))
+            members (string/split (get (os/cmd "tar" ["-tzf" archive]) :stdout) "\n"))
+        (is (includes? members "project.blsp"))
+        (is (includes? members "src/main.blsp"))
+        (refute (any? members (fn (member) (string/starts-with? member "tests"))))
+        (refute (includes? members "project.lock.blsp")))))
+
+  (test "the fallback walk applies the same excludes"
+    (let (parent (pkg-fixture-root)
+          app-dir (path/join parent "app"))
+      (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
+      (file/mkdir (path/join app-dir "tests"))
+      (file/spit (path/join app-dir "tests" "a_test.blsp") "(defmodule a-test)\n")
+      (file/spit (path/join app-dir "project.lock.blsp") "(lock)\n")
+      (assert= (package/registry-source-files app-dir) (list "project.blsp" "src/main.blsp")))))
+
+(describe "package: bump-version and release"
+  (test "bumps the project's own :version, not a dependency's that comes first"
+    (let (src "(project :dependencies [[dep :version \"1.0.0\"]]\n  :name \"app\"\n  :version \"0.4.2\")\n"
+          [version new-src] (package/package-manifest-bump-version src "minor"))
+      (assert= version "0.5.0")
+      (let (form (reflect/read-first new-src))
+        (assert= (plist-get (rest form) :version) "0.5.0")
+        (assert= (plist-get (rest form) :dependencies) [['dep :version "1.0.0"]]))))
+
+  (test "a manifest with no :version of its own is an error"
+    (assert-error (package/package-manifest-bump-version "(project :name \"app\" :dependencies [[dep :version \"1.0.0\"]])\n"
+                    "patch")))
+
+  (test "release stops before publishing when the bump cannot be committed"
+    ;; Not a git repo, so `git add` fails: the release must raise naming it, not go on to
+    ;; publish a version that was never committed.
+    (let (app-dir (path/join (pkg-fixture-root) "app"))
+      (pkg-write-project app-dir "app" "main" "(defn main () 1)" "")
+      (let (message (error-message (try
+                                     (package/package-release-in app-dir "patch" (fn () :published))
+                                     (catch e e))))
+        (is (string/starts-with? message "package: git add failed"))
+        (assert= (plist-get (rest (reflect/read-first (file/slurp (path/join app-dir "project.blsp"))))
+                   :version)
+          "0.1.1")))))
 
 (describe "package: resolving :git deps"
   (test "a :git dep clones into _deps/, pins a commit, and records a sha"
@@ -557,10 +611,10 @@
           (is (file/exists? (path/join extracted "project.blsp"))))
         ;; lock row: [greeter :registry "1.0.0" :sha256 <sha> :deps …]
         (let (row (dep-lock-vec e))
-          (assert= (seq/vector-ref row 1) :registry)
-          (assert= (seq/vector-ref row 2) "1.0.0")
-          (assert= (seq/vector-ref row 3) :sha256)
-          (assert= (seq/vector-ref row 4) checksum)))))
+          (assert= (nth row 1) :registry)
+          (assert= (nth row 2) "1.0.0")
+          (assert= (nth row 3) :sha256)
+          (assert= (nth row 4) checksum)))))
   (test "a release pointing at an external tarball URL is fetched, sha-verified, strip-1 extracted"
     ;; the registry serves ONLY metadata (with :source_url); the bytes live at an external HTTP
     ;; URL (a second path on the same loopback) — proving hive need not hold the tarball
@@ -868,8 +922,8 @@
           (is (file/dir? (path/join (path/join app-dir "_deps") "bar")))
           ;; the lock rows carry the CONCRETE resolved versions
           (let (foo-row (dep-lock-vec (get by-name 'foo)))
-            (assert= :registry (seq/vector-ref foo-row 1))
-            (assert= "1.5.0" (seq/vector-ref foo-row 2)))))))
+            (assert= :registry (nth foo-row 1))
+            (assert= "1.5.0" (nth foo-row 2)))))))
 
   (test "a fully-covering lock reuses the solution network-free (the fast path)"
     (let (parent (pkg-fixture-root)
@@ -1105,12 +1159,12 @@
         (write-lockfile app-dir entries)
         (let (locked (read-lockfile app-dir))
           (is (vector? locked))
-          (assert= (seq/vector-length locked) 1)
+          (assert= (count locked) 1)
           ;; entry vector: [greeter :path "../greeter" :sha256 H :deps []]
-          (let (row (seq/vector-ref locked 0))
-            (assert= (seq/vector-ref row 0) 'greeter)
-            (assert= (seq/vector-ref row 1) :path)
-            (assert= (seq/vector-ref row 2) "../greeter"))))))
+          (let (row (nth locked 0))
+            (assert= (nth row 0) 'greeter)
+            (assert= (nth row 1) :path)
+            (assert= (nth row 2) "../greeter"))))))
   ;; The lock is a CANONICAL artifact: resolution order isn't stable across runs, so the
   ;; serialized content must not depend on it — otherwise every `nest fetch` rewrites the
   ;; committed file with the same deps in a new order (the churn this sort fixes).
@@ -1133,8 +1187,8 @@
         ;; …and the canonical order is by name (alpha before beta)
         (write-lockfile app-dir (reverse entries))
         (let (locked (read-lockfile app-dir))
-          (assert= (seq/vector-ref (seq/vector-ref locked 0) 0) 'alpha)
-          (assert= (seq/vector-ref (seq/vector-ref locked 1) 0) 'beta)))))
+          (assert= (nth (nth locked 0) 0) 'alpha)
+          (assert= (nth (nth locked 1) 0) 'beta)))))
   (test "read-lockfile is nil when there is no lock file"
     (assert= (read-lockfile (pkg-fixture-root)) nil)))
 
@@ -1166,7 +1220,7 @@
 (defn- pkg-lock-torn-reads (root reads torn)
   (let (locked (try (read-lockfile root) (catch e (error-message e)))
         whole (and (vector? locked)
-                (includes? [2 2000] (seq/vector-length locked)))
+                (includes? [2 2000] (count locked)))
         torn-now (if whole torn (+ torn 1)))
     (receive
       (:writer-done [torn-now (+ reads 1)])
@@ -1186,12 +1240,12 @@
   (test "write-lockfile, read concurrently"
     (let (outcome (pkg-lock-torn-under write-lockfile))
       ;; the reads overlapped the writes (more reads than writes), and none was torn
-      (is (> (seq/vector-ref outcome 1) 20))
-      (assert= (seq/vector-ref outcome 0) 0)))
+      (is (> (nth outcome 1) 20))
+      (assert= (nth outcome 0) 0)))
   (test "ensure-deps' rewrite-if-changed, read concurrently"
     (let (outcome (pkg-lock-torn-under package/package-write-lockfile-if-changed))
-      (is (> (seq/vector-ref outcome 1) 20))
-      (assert= (seq/vector-ref outcome 0) 0))))
+      (is (> (nth outcome 1) 20))
+      (assert= (nth outcome 0) 0))))
 
 (describe "package: ensure-deps yields load-path entries"
   (test "returns each dep's src dir and writes the lock file"

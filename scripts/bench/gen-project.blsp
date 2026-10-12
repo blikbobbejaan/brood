@@ -41,12 +41,12 @@
 ;; argument order for a year and nothing ran it, which is the reason this file is Brood.
 (defn- module-source (i fns)
   (let (names (map (range fns) (fn (k) (str "m" i "-f" k))))
-    (string/join (%append-two (list (str "(defmodule mod"
-                                      i " \"Generated module " i " — measurement fixture.\")")
-                                ""
-                                (str "(defrecord rec" i " (a b))")
-                                "")
-                   (%append-two (mapcat (range fns) (fn (k) (fn-lines i k)))
+    (string/join (append (list (str "(defmodule mod"
+                                 i " \"Generated module " i " — measurement fixture.\")")
+                           ""
+                           (str "(defrecord rec" i " (a b))")
+                           "")
+                   (append (mapcat (range fns) (fn (k) (fn-lines i k)))
                      (list (str "(defn mod" i "-total (x)")
                        (str "  (fold (list " (string/join names " ") ")")
                        "    0 (fn (acc f) (+ acc (f x)))))"

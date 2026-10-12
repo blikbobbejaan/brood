@@ -210,7 +210,7 @@ syntactically broken save changes nothing. Suite green. → **ADR-042 (shipped
 ## Stage 3 — Editor-driven eval: the Emacs `C-M-x` path  ·  *makes it feel right*
 
 **Problem.** Polling is laggy and indirect (gap #3). The instant path exists
-(`nest mcp` `eval`/`load`, `mcp.rs`) but isn't the headline.
+(`nest mcp` `eval`/`load`, `std/tool/mcp.blsp`) but isn't the headline.
 
 **Design.** Expose eval-at-point as custom LSP commands
 (`workspace/executeCommand`, since "eval this form" isn't a standard LSP

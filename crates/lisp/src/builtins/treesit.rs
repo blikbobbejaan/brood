@@ -68,13 +68,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// positioned-CST node shape as `parse-source-positioned`. Mechanism lives in
 /// `crate::host::treesit` (feature-gated); this just unwraps the args. See §C.
 pub(super) fn tree_sitter_parse(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "tree-sitter-parse", arg(args, 0))?;
+    let src = expect_string(heap, "%tree-sitter-parse", arg(args, 0))?;
     let lang = match arg(args, 1) {
         Value::Keyword(s) => value::symbol_name(s),
         v => {
             return Err(LispError::wrong_type(
                 heap,
-                "tree-sitter-parse",
+                "%tree-sitter-parse",
                 "keyword",
                 v,
             ))
@@ -93,28 +93,28 @@ fn ts_lang(heap: &Heap, who: &'static str, v: Value) -> Result<String, LispError
 }
 
 pub(super) fn tree_sitter_chain(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "tree-sitter-chain", arg(args, 0))?;
-    let lang = ts_lang(heap, "tree-sitter-chain", arg(args, 1))?;
-    let offset = expect_int(heap, "tree-sitter-chain", arg(args, 2))?;
+    let src = expect_string(heap, "%tree-sitter-chain", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-chain", arg(args, 1))?;
+    let offset = expect_int(heap, "%tree-sitter-chain", arg(args, 2))?;
     crate::host::treesit::chain(heap, &src, &lang, offset)
 }
 
 pub(super) fn tree_sitter_kids(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "tree-sitter-kids", arg(args, 0))?;
-    let lang = ts_lang(heap, "tree-sitter-kids", arg(args, 1))?;
-    let offset = expect_int(heap, "tree-sitter-kids", arg(args, 2))?;
+    let src = expect_string(heap, "%tree-sitter-kids", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-kids", arg(args, 1))?;
+    let offset = expect_int(heap, "%tree-sitter-kids", arg(args, 2))?;
     crate::host::treesit::kids(heap, &src, &lang, offset)
 }
 
 pub(super) fn tree_sitter_errors(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "tree-sitter-errors", arg(args, 0))?;
-    let lang = ts_lang(heap, "tree-sitter-errors", arg(args, 1))?;
+    let src = expect_string(heap, "%tree-sitter-errors", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-errors", arg(args, 1))?;
     crate::host::treesit::errors(heap, &src, &lang)
 }
 
 pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "tree-sitter-spans", arg(args, 0))?;
-    let lang = ts_lang(heap, "tree-sitter-spans", arg(args, 1))?;
+    let src = expect_string(heap, "%tree-sitter-spans", arg(args, 0))?;
+    let lang = ts_lang(heap, "%tree-sitter-spans", arg(args, 1))?;
     let mut kinds: Vec<String> = Vec::new();
     for k in heap.seq_items(arg(args, 2))? {
         match k {
@@ -122,7 +122,7 @@ pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
             other => {
                 return Err(LispError::wrong_type(
                     heap,
-                    "tree-sitter-spans",
+                    "%tree-sitter-spans",
                     "keyword",
                     other,
                 ))
@@ -137,13 +137,13 @@ pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 /// runtime and register it under `lang`. Mechanism in `crate::host::treesit`
 /// (feature-gated); this just unwraps the args.
 pub(super) fn tree_sitter_load_grammar(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let path = expect_string(heap, "tree-sitter-load-grammar", arg(args, 0))?;
+    let path = expect_string(heap, "%tree-sitter-load-grammar", arg(args, 0))?;
     let lang = match arg(args, 1) {
         Value::Keyword(s) => value::symbol_name(s),
         v => {
             return Err(LispError::wrong_type(
                 heap,
-                "tree-sitter-load-grammar",
+                "%tree-sitter-load-grammar",
                 "keyword",
                 v,
             ))

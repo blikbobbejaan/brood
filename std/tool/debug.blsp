@@ -480,7 +480,7 @@ A name nobody holds is left alone — an untraced name, or one already restored 
   (let (dist (value-distribution dbg form-string))
     (if (empty? dist)
       nil
-      (first (first (sort-by dist (fn (kv) (- (second kv)))))))))
+      (first (first (sort-by dist (fn (pair) (- (second pair)))))))))
 
 (defn outliers (dbg form-string)
   "The observations of `form-string` whose value is NOT the modal one — the few rows to inspect when the population mostly agrees. Each is `{:pid :form :value}`."
@@ -543,8 +543,8 @@ cross-process causal tree, and the hottest traced forms. Rendered by both the
                     (pr-str-bounded (get (second entry) :vals))))))
       (cons "── causal tree ──" (causal-lines (causal-tree dbg) 0))
       (cons "── hot traced forms ──"
-        (map (sort-by (hits dbg) (fn (kv) (- (second kv))))
-          (fn (kv) (str "  " (second kv) "×  " (first kv))))))))
+        (map (sort-by (hits dbg) (fn (pair) (- (second pair))))
+          (fn (pair) (str "  " (second pair) "×  " (first pair))))))))
 (defn report (dbg)
   "Print a session summary: parked processes (the break queue), the cross-process
 causal tree, and the hottest traced forms by hit count. The one-call overview."

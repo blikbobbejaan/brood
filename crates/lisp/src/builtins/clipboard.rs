@@ -61,7 +61,7 @@ pub(super) fn clipboard_get(_args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 /// available or the `clipboard` feature is off, so callers needn't special-case headless
 /// builds. The editor's kill/copy commands call this so a kill is system-wide.
 pub(super) fn clipboard_set(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "clipboard-set", arg(args, 0))?;
+    let s = expect_string(heap, "os/clipboard-set", arg(args, 0))?;
     crate::host::clipboard::set_text(&s);
     Ok(arg(args, 0))
 }
@@ -132,7 +132,7 @@ pub(super) fn clipboard_image(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     let max_edge = match arg(args, 0) {
         Value::Nil => None,
         bound => {
-            let edge = expect_int(heap, "clipboard-image", bound)?;
+            let edge = expect_int(heap, "os/clipboard-image", bound)?;
             if edge <= 0 {
                 return Ok(Value::nil());
             }

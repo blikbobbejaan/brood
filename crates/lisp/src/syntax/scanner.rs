@@ -44,20 +44,11 @@ pub struct Scanner<'a> {
     ascii_only: bool,
     /// Memo for [`Scanner::pos_at`]: `(line, byte_idx, col)` of the last query.
     ///
-    /// `pos_at`'s column walk looks like the O(col) it is on ordinary source, but the
-    /// boot cache writes one whole *expanded top-level form per line*, so its lines run
-    /// to thousands of characters and every query inside a form re-walks from that
-    /// form's start. Measured on a cache-hit boot: **9781 calls walking 4.81 MB across a
-    /// 222 KB file** — 21.6x the source re-counted for column numbers, and stubbing the
-    /// column out entirely took the boot's parse phase 5.62 -> 4.96 ms. That 0.66 ms is
-    /// the whole prize, and this memo plus `ascii_only` collects it.
-    ///
-    /// A whole-file ASCII flag alone does NOT: the prelude's docstrings carry `->`, `·`
-    /// and friends, so the cache holds 1909 non-ASCII bytes spread over 270 of its 549
-    /// lines and the arithmetic path never fires on the one input it was written for.
-    /// The memo does not care — queries run forward as the parser scans, so a hit walks
-    /// only from the previous query rather than from the line start, which makes the
-    /// total work linear in the source instead of quadratic in form size.
+    /// `pos_at`'s column walk is O(col), so on very long lines (generated source, one
+    /// whole form per line) every query inside a form would re-walk from the line start
+    /// — quadratic in form size. Queries run forward as the parser scans, so a hit walks
+    /// only from the previous query, making the total work linear in the source. A
+    /// whole-file ASCII flag alone is not enough: one non-ASCII char per line defeats it.
     ///
     /// `Cell` because `pos_at` takes `&self` and a `Scanner` is never shared across
     /// threads. A non-monotonic or different-line query simply falls back to the full
@@ -171,9 +162,8 @@ impl<'a> Scanner<'a> {
         // ASCII fast-path: most source bytes are ASCII (every delimiter,
         // every whitespace, every keyword, every prelude line), so save the
         // UTF-8 decode in the common case. A naive `src[pos..].chars().next()`
-        // walks 1–4 bytes plus a branch even for `< 0x80` — measurable in a
-        // parser-heavy bench (`parse_prelude` lost ~1.7× per byte when we
-        // moved from `Vec<char>` to byte offsets without this branch).
+        // walks 1–4 bytes plus a branch even for `< 0x80`, measurably slower in a
+        // parser-heavy bench (`parse_prelude`).
         let b = *self.src.as_bytes().get(self.pos)?;
         if b < 0x80 {
             Some(b as char)

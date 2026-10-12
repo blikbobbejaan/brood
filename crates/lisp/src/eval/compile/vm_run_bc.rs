@@ -268,13 +268,11 @@ pub(crate) fn run_program_body(
         let step = (|| -> Result<VmOutcome, LispError> {
             let expanded = crate::eval::macros::compile(heap, form, root)?;
             heap.note_definition(expanded, pos);
-            // `BROOD_VM=0` — the tree-walking debug engine. ADR-135 made the top
-            // level a capture-mode process driven by the VM, which silently
-            // swallowed the flag for `brood file.blsp` (discovered 2026-07-16 while
-            // building the engine-differential fuzzer: the "tree-walker" leg was
-            // really the VM). Honor it here: run the whole form synchronously on
-            // the tree-walker — `def` is its special form, and a top-level
-            // `receive` blocks the worker (the documented tree-walker behavior;
+            // `BROOD_TIER=0` — the tree-walking debug engine. The top level is a
+            // capture-mode process driven by the VM (ADR-135), so the ceiling must be
+            // honored here or `brood file.blsp` would silently run on the VM: run the
+            // whole form synchronously on the tree-walker — `def` is its special form,
+            // and a top-level `receive` blocks the worker (the documented tree-walker behavior;
             // it's a debug engine, not the production path).
             if tier_ceiling() == Tier::TreeWalk {
                 prog.def_name = None;
@@ -460,7 +458,7 @@ fn settle_native_frame(
                 }
             }
             #[cfg(feature = "perf-stats")]
-            if std::env::var_os("BROOD_DEOPT_TRACE").is_some() {
+            if crate::diagnostics::debug_flags::deopt_trace() {
                 // The checkpoint journal (ckpt_slot) packs
                 // (resume_ip << 16 | operand-depth) — print it so a
                 // deopt-storm's SITE is identifiable, not just its arm.
@@ -472,12 +470,10 @@ fn settle_native_frame(
                 } else {
                     -1
                 };
-                // `reason#` is the lowering's deopt-site id (the `__dr` constant each
-                // guard passes to the deopt block) — grep `iconst(types::I32, N)` under
-                // `jit_lower/` for the guard. Without it a persistent deopt names its arm
-                // and nothing else (`json/emit`, 4 819 per run, was found this way).
+                // `reason=` names the lowering's guard site (`DeoptReason`) — without it a
+                // persistent deopt names its arm and nothing else.
                 eprintln!(
-                    "[deopt] arm={} watch={} resume_ip={} depth={} reason#{}",
+                    "[deopt] arm={} watch={} resume_ip={} depth={} reason={}",
                     cur_arm
                         .dbg_name
                         .map(crate::core::value::symbol_name_ref)
@@ -485,7 +481,7 @@ fn settle_native_frame(
                     cur_arm.deopt_watch,
                     ckpt >> 16,
                     ckpt & 0xffff,
-                    heap.jit_deopt_reason()
+                    crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
                 );
             }
         }
@@ -805,12 +801,6 @@ pub(crate) fn vm_run_bc(
                         deadline: None,
                     })));
                 }
-            }
-            if crate::process::deadline_exceeded() {
-                unwind(heap);
-                let mut e = crate::eval::deadline_error();
-                attach_vm_trace(&mut e, &cur_arm, &frames);
-                return Err(e);
             }
         }
 

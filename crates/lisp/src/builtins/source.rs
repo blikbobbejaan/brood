@@ -210,7 +210,7 @@ fn scan_count_syms(heap: &Heap, v: Value, counts: &mut std::collections::HashMap
 /// `def-names` every top-level def's qualified global key. Malformed input yields an
 /// empty extract (parse-tolerant — advisory).
 pub(super) fn scan_source_extract(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let src = expect_string(heap, "scan-source-extract", arg(args, 0))?;
+    let src = expect_string(heap, "reflect/scan-source-extract", arg(args, 0))?;
     let forms = reader::read_all(heap, &src).unwrap_or_default();
     // First `(defmodule NAME …)`'s NAME is the file's namespace.
     let ns: Option<String> = forms.iter().find_map(|&f| {
@@ -249,7 +249,7 @@ pub(super) fn scan_source_extract(args: &[Value], _: EnvId, heap: &mut Heap) -> 
 }
 
 pub(super) fn parse_source(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "parse-source", arg(args, 0))?;
+    let s = expect_string(heap, "reflect/parse-source", arg(args, 0))?;
     let root = cst::parse(&s);
     Ok(cst_to_value(heap, &root, &s))
 }
@@ -337,7 +337,7 @@ pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Valu
 /// exists because recovering those positions in interpreted Brood (`std/sexp`'s
 /// former `annotate` walk) was O(n) and dominated structural-navigation latency.
 pub(super) fn parse_source_positioned(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let s = expect_string(heap, "parse-source-positioned", arg(args, 0))?;
+    let s = expect_string(heap, "reflect/parse-source-positioned", arg(args, 0))?;
     let root = cst::parse(&s);
     let b2c = byte_to_char_offsets(&s);
     Ok(cst_to_positioned(heap, &root, &s, &b2c))

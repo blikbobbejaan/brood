@@ -226,17 +226,11 @@ fn every_baked_in_module_loads_under_contracts_from_source() {
         // prelude freeze rejecting a closure over a let-bound local — neither has anything to
         // do with which engine runs the code.
         //
-        // Without this the child inherits the ambient `BROOD_VM=0` from CI's
+        // Without this the child inherits the ambient `BROOD_TIER=0` from CI's
         // `differential (tree-walker)` job and re-asks the same engine-independent question at
-        // the tree-walker's ~10x: a cold source boot plus every baked-in module, measured at
-        // 15.5s under the VM and 80.7s under the tree-walker on an idle 12-core box, and
-        // TIMING OUT at 480s on the 2-core shared runner. Contract shims still get
-        // tree-walker coverage in that job through `brood_suite_passes`, which runs
-        // `tests/contract_test.blsp`'s 74 cases under whatever engine is ambient.
-        //
-        // `BROOD_TIER=2` rather than unsetting `BROOD_VM`: it is the documented ceiling knob
-        // (ADR-222) and it WINS over the `BROOD_VM` alias, so this holds whichever spelling
-        // the caller's environment happens to use.
+        // the tree-walker's ~10x, which times out on a small shared runner. Contract shims
+        // still get tree-walker coverage in that job through `brood_suite_passes`, which runs
+        // `tests/contract_test.blsp` under whatever engine is ambient.
         .env("BROOD_TIER", "2");
     support::dies_with_parent(&mut cmd);
     let out = cmd.output().expect("run brood");
@@ -380,7 +374,7 @@ fn the_contract_machinery_loads_only_when_armed() {
 /// shim holding a frame per level would hit.
 ///
 /// The engine is pinned to ceiling 2 — the configuration the depth bug lived in — whatever
-/// the ambient environment (CI's tree-walker job sets `BROOD_VM=0`, where 50 000 levels of
+/// the ambient environment (CI's tree-walker job sets `BROOD_TIER=0`, where 50 000 levels of
 /// tree-walked recursion is a different question).
 #[test]
 fn contracted_recursion_keeps_its_depth_and_its_tail_calls() {
@@ -405,8 +399,7 @@ fn contracted_recursion_keeps_its_depth_and_its_tail_calls() {
     cmd.arg("depth.blsp")
         .current_dir(&dir.path)
         .env("BROOD_CONTRACTS", "1")
-        .env("BROOD_TIER", "2")
-        .env_remove("BROOD_NO_JIT");
+        .env("BROOD_TIER", "2");
     support::dies_with_parent(&mut cmd);
     let out = cmd.output().expect("run brood");
     let text = format!(
@@ -474,8 +467,7 @@ fn return_checked_tail_calls_collapse_and_still_check() {
         cmd.arg("collapse.blsp")
             .current_dir(&dir.path)
             .env("BROOD_CONTRACTS", "1")
-            .env("BROOD_TIER", tier)
-            .env_remove("BROOD_NO_JIT");
+            .env("BROOD_TIER", tier);
         support::dies_with_parent(&mut cmd);
         let out = cmd.output().expect("run brood");
         let text = format!(

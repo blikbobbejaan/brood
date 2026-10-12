@@ -128,15 +128,15 @@ pub(super) fn bytes_make(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 /// `(byte-length b)` — the number of bytes. O(1).
 pub(super) fn byte_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(Value::int(
-        as_bytes(heap, "byte-length", arg(args, 0))?.len() as i64,
+        as_bytes(heap, "bytes/length", arg(args, 0))?.len() as i64,
     ))
 }
 
 /// `(byte-at b i)` — the byte at index `i` as an int 0–255 (out of range errors).
 pub(super) fn byte_at(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
-    let i = expect_int(heap, "byte-at", arg(args, 1))?;
-    let b = as_bytes(heap, "byte-at", v)?;
+    let i = expect_int(heap, "bytes/at", arg(args, 1))?;
+    let b = as_bytes(heap, "bytes/at", v)?;
     if i >= 0 && (i as usize) < b.len() {
         Ok(Value::int(b[i as usize] as i64))
     } else {
@@ -153,11 +153,11 @@ pub(super) fn byte_at(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// (end defaults to the length) as a fresh bytes value.
 pub(super) fn subbytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
-    let start = expect_int(heap, "subbytes", arg(args, 1))?;
-    let b = as_bytes(heap, "subbytes", v)?;
+    let start = expect_int(heap, "bytes/slice", arg(args, 1))?;
+    let b = as_bytes(heap, "bytes/slice", v)?;
     let len = b.len() as i64;
     let end = if args.len() >= 3 {
-        expect_int(heap, "subbytes", arg(args, 2))?
+        expect_int(heap, "bytes/slice", arg(args, 2))?
     } else {
         len
     };
@@ -179,7 +179,7 @@ pub(super) fn subbytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 pub(super) fn bytes_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let mut out = Vec::new();
     for &v in args {
-        flatten_iolist(heap, "bytes-concat", v, &mut out)?;
+        flatten_iolist(heap, "bytes/concat", v, &mut out)?;
     }
     Ok(heap.alloc_bytes(SharedBlob::new(&out)))
 }
@@ -190,12 +190,12 @@ pub(super) fn bytes_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 /// delimiter, …).
 pub(super) fn bytes_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let from = if args.len() >= 3 {
-        expect_int(heap, "bytes-index-of", arg(args, 2))?.max(0) as usize
+        expect_int(heap, "bytes/index-of", arg(args, 2))?.max(0) as usize
     } else {
         0
     };
-    let hay = as_bytes(heap, "bytes-index-of", arg(args, 0))?;
-    let needle = as_bytes(heap, "bytes-index-of", arg(args, 1))?;
+    let hay = as_bytes(heap, "bytes/index-of", arg(args, 0))?;
+    let needle = as_bytes(heap, "bytes/index-of", arg(args, 1))?;
     let idx = if needle.is_empty() {
         from.min(hay.len()) as i64
     } else if from >= hay.len() {
@@ -212,7 +212,7 @@ pub(super) fn bytes_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 
 /// `(bytes->list b)` — the bytes as a list of integers 0–255.
 pub(super) fn bytes_to_list(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let items: Vec<Value> = as_bytes(heap, "bytes->list", arg(args, 0))?
+    let items: Vec<Value> = as_bytes(heap, "%bytes->list", arg(args, 0))?
         .iter()
         .map(|&x| Value::int(x as i64))
         .collect();

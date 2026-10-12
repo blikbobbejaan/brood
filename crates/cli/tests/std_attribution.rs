@@ -60,20 +60,19 @@ fn instrumented_lines() -> (BTreeMap<String, Vec<u32>>, TempFile) {
            (fn (_ s)\n\
              (when (= (type-of (reflect/eval s)) :fn) (%coverage-precompile (reflect/eval s)))))\n\
          (fold (%coverage-instrumented) nil\n\
-           (fn (_ e) (io/puts (str \"ATTR \" (seq/vector-ref e 0) \" \" (seq/vector-ref e 1)))))\n",
+           (fn (_ e) (io/puts (str \"ATTR \" (nth e 0) \" \" (nth e 1)))))\n",
     )
     .unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));
     cmd.arg(&script.path)
         .env("BROOD_COVERAGE", "1")
-        .env("BROOD_NO_JIT", "1")
         // Line-coverage instrumentation is a VM-compiler pass (the `RecordLine`
-        // opcode), so pin the VM: the tree-walker differential job sets `BROOD_VM=0`
+        // opcode), so pin the VM: the tree-walker differential job sets `BROOD_TIER=0`
         // in the environment, which this subprocess would otherwise inherit — running
         // the script on the tree-walker, where no lines get instrumented and the
         // attribution this test checks never happens.
-        .env("BROOD_VM", "1")
+        .env("BROOD_TIER", "1")
         .current_dir(repo_root());
     support::dies_with_parent(&mut cmd);
     let out = cmd.output().expect("run brood");

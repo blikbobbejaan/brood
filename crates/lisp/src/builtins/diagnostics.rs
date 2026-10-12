@@ -49,13 +49,6 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["f"],
         "Compile f's body now, without calling it, so its lines count toward %coverage-instrumented. Returns true if a body was compiled.",
         coverage_precompile);
-    primitives.def(
-        "%coverage-reset",
-        Arity::exact(0),
-        Sig::new(vec![], nil_ty),
-        &[],
-        "Forget every line recorded by %coverage-lines, so a long-lived image can measure more than once without runs bleeding together.",
-        coverage_reset);
     // The debugger's durable per-process causal context (ADR-174 send-level slice) —
     // `dev-tools` only, so a lean release registers neither (the `debug` module that
     // uses them is a DEV_MODULE too).
@@ -155,7 +148,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(bool_ty),
         &[],
-        "True when this run may reach the NATIVE tier (ADR-222): the binary carries the JIT and the ceiling is not lowered by `BROOD_TIER`/`BROOD_NO_JIT`. The sibling of `%tree-walker?`, for a test whose assertion is about what happens at a tiering election — such a test has nothing to assert when no arm can tier. Asks the runtime, not the environment, for the same reason.",
+        "True when this run may reach the NATIVE tier (ADR-222): the binary carries the JIT and the ceiling is not lowered by `BROOD_TIER`. The sibling of `%tree-walker?`, for a test whose assertion is about what happens at a tiering election — such a test has nothing to assert when no arm can tier. Asks the runtime, not the environment, for the same reason.",
         native_tier_p);
     #[cfg(feature = "dev-tools")]
     primitives.def(
@@ -187,7 +180,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(bool_ty),
         &[],
-        "True when this run's tier CEILING is the tree-walker (ADR-222) — the differential reference engine. Asks the runtime rather than the environment on purpose: the ceiling is selected by `BROOD_TIER=0` and by its older `BROOD_VM=0` alias, so a test that reads one env var directly silently stops guarding when the other spelling is used. `eval::compile::tier_ceiling` is the single source of truth.",
+        "True when this run's tier CEILING is the tree-walker (ADR-222) — the differential reference engine. Asks the runtime rather than the environment on purpose: `eval::compile::tier_ceiling` is the single source of truth (a forced per-thread ceiling, then `BROOD_TIER`).",
         tree_walker_p);
     #[cfg(feature = "dev-tools")]
     primitives.def(
@@ -240,7 +233,7 @@ pub(super) fn profile_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         other => {
             return Err(LispError::wrong_type(
                 heap,
-                "profile-start",
+                "dev/profile-start",
                 "positive int (hz) or absent",
                 other,
             ))
@@ -250,7 +243,7 @@ pub(super) fn profile_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     Ok(Value::nil())
 }
 
-/// `(%)` — disarm the sampling profiler and return the histogram: a
+/// `(%profile-stop)` — disarm the sampling profiler and return the histogram: a
 /// list of `{:stack (fn-names… innermost-first) :count n}` maps, most-sampled
 /// first. A sample whose frames were all anonymous appears with `:stack
 /// ("<anonymous>")`.
@@ -387,26 +380,19 @@ pub(super) fn coverage_precompile(args: &[Value], _: EnvId, heap: &mut Heap) -> 
     )))
 }
 
-/// `(%coverage-reset)` — forget every recorded line, so a long-lived image can
-/// measure more than once without runs bleeding together.
-pub(super) fn coverage_reset(_: &[Value], _: EnvId, _heap: &mut Heap) -> LispResult {
-    crate::diagnostics::coverage::reset();
-    Ok(Value::nil())
-}
-
 // ---------- memory ----------
 
-/// `(%)` — bytes currently allocated across the whole process.
+/// `(%mem-bytes)` — bytes currently allocated across the whole process.
 pub(super) fn mem_bytes(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::core::alloc::live_bytes() as i64))
 }
 
-/// `(%)` — high-water mark of allocated bytes since the process started.
+/// `(%mem-peak)` — high-water mark of allocated bytes since the process started.
 pub(super) fn mem_peak(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::core::alloc::peak_bytes() as i64))
 }
 
-/// `(%)` — live sizes of this process's four inline-cache tables, the
+/// `(%ic-stats)` — live sizes of this process's four inline-cache tables, the
 /// largest single attributed item in the green-process floor (`FRONTIER.md` lever 1
 /// puts them at 896 B/process, bigger than the whole `Box<Process>`). Each of
 /// `:calls` (`vm_call_ics`), `:links` (`vm_fast_links`), `:globals` (`vm_global_ics`)
@@ -442,7 +428,7 @@ pub(super) fn ic_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.map_from_pairs(pairs))
 }
 
-/// `(%)` — entry counts of the two source-position side tables:
+/// `(%pos-stats)` — entry counts of the two source-position side tables:
 /// `:local-forms` (this process's LOCAL `form_pos`) and `:runtime-forms` (the
 /// runtime-shared `positions`). Measurement surface for the position-table cost,
 /// which the 2026-08-06 module-load breakdown put at 169 MB of a 933 MB load and
@@ -462,7 +448,7 @@ pub(super) fn pos_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.map_from_pairs(pairs))
 }
 
-/// `(%)` — a snapshot map of this process's garbage-collection activity
+/// `(%gc-stats)` — a snapshot map of this process's garbage-collection activity
 /// (Tier-1 observability; `docs/memory-review.md` §7). Per-process: it reports
 /// the *calling* process's own LOCAL heap, never another's. Keys:
 /// `:collections` (collections run since start — the automatic Stage-B
@@ -482,7 +468,7 @@ pub(super) fn gc_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(gc_stats_map(heap))
 }
 
-/// Build the `(%)` snapshot map of the calling process's GC activity.
+/// Build the `(%gc-stats)` snapshot map of the calling process's GC activity.
 /// Shared by `gc-stats` and `gc-collect` (which reports the same shape *after*
 /// forcing a collection, so the delta is visible).
 #[cfg(feature = "dev-tools")]
@@ -546,26 +532,11 @@ pub(super) fn gc_stats_map(heap: &mut Heap) -> Value {
     heap.map_from_pairs(pairs)
 }
 
-/// `(%)` — a snapshot map of the VM work-attribution counters (the
-/// `perf-stats` feature; see `docs/benchmarking.md`). `:enabled` is `false` when
-/// the binary was built without `--features perf-stats` (every other key absent —
-/// the counters compiled to nothing). With the feature on: `:enabled true` plus a
-/// key per counter (`:vm-apply`, `:tail-call`, `:self-tail`, `:tw-defer`,
-/// `:call-ic-hit`/`:call-ic-miss`, `:global-ic-hit`/`:global-ic-miss`,
-/// `:prim2-inline`/`:prim2-fallback`, `:prim1-inline`/`:prim1-fallback`,
-/// `:env-get`, `:env-hops`, `:alloc`) — process-global cumulative totals across
-/// every green process. The data behind the bytecode-lowering gate (ADR-096): is
-/// the VM dispatch-, env-, or alloc-bound? A *counting* tool, not a timing one.
 #[cfg(feature = "dev-tools")]
 /// `(%tree-walker?)` — is this run's tier ceiling the tree-walker (ADR-222)?
 ///
 /// Exists so a test can ask the RUNTIME which engine it is on instead of re-deriving it
-/// from an environment variable. Two spellings select tier 0 — `BROOD_TIER=0` and the
-/// older `BROOD_VM=0` alias — and a guard written against one of them silently stops
-/// guarding under the other: `tests/observability_test.blsp` asserted the sampling
-/// profiler had collected frames, which the tree-walker never produces, and failed under
-/// `BROOD_TIER=0` because it only recognised `BROOD_VM`. Same engine, unrecognised
-/// spelling. `tier_ceiling` is the one place that decides.
+/// from an environment variable. `tier_ceiling` is the one place that decides.
 pub(super) fn tree_walker_p(_: &[Value], _: EnvId, _heap: &mut Heap) -> LispResult {
     let is_tw = matches!(
         crate::eval::compile::tier_ceiling(),
@@ -704,8 +675,16 @@ pub(super) fn vm_arm_stale_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
     )
 }
 
-// Registered only under `dev-tools` (mod.rs's DEV block, whose comment says the fn defs
-// are gated to match — this one wasn't).
+/// `(%vm-stats)` — a snapshot map of the VM work-attribution counters (the
+/// `perf-stats` feature; see `docs/benchmarking.md`). `:enabled` is `false` when
+/// the binary was built without `--features perf-stats` (every other key absent —
+/// the counters compiled to nothing). With the feature on: `:enabled true` plus a
+/// key per counter (`:vm-apply`, `:tail-call`, `:self-tail`, `:tw-defer`,
+/// `:call-ic-hit`/`:call-ic-miss`, `:global-ic-hit`/`:global-ic-miss`,
+/// `:prim2-inline`/`:prim2-fallback`, `:prim1-inline`/`:prim1-fallback`,
+/// `:env-get`, `:env-hops`, `:alloc`) — process-global cumulative totals across
+/// every green process. A *counting* tool, not a timing one. Registered only under
+/// `dev-tools`.
 #[cfg(feature = "dev-tools")]
 pub(super) fn vm_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let pairs = match crate::diagnostics::perf::snapshot() {
@@ -723,7 +702,7 @@ pub(super) fn vm_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.map_from_pairs(pairs))
 }
 
-/// `(%)` — zero the work-attribution counters, returning `:enabled`.
+/// `(%vm-stats-reset)` — zero the work-attribution counters, returning `:enabled`.
 ///
 /// The counters are **process-global and cumulative from process start**, so a snapshot
 /// taken after a short program includes the runtime's own boot work — and boot is
@@ -733,7 +712,7 @@ pub(super) fn vm_stats(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// whole process must zero first; `(perf/measure thunk)` in `std/tool/perf.blsp` is that,
 /// packaged.
 ///
-/// A no-op returning `:enabled false` without `--features perf-stats`, like `(%)`.
+/// A no-op returning `:enabled false` without `--features perf-stats`, like `(%vm-stats)`.
 #[cfg(feature = "dev-tools")]
 pub(super) fn vm_stats_reset(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::diagnostics::perf::reset();
@@ -765,8 +744,8 @@ pub(super) fn runtime_collect(_: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     Ok(heap.map_from_pairs(pairs))
 }
 
-/// `(%)` — force a collection of this process's LOCAL heap *now*,
-/// returning the post-collection `(%)` map so the effect is visible.
+/// `(%gc-collect)` — force a collection of this process's LOCAL heap *now*,
+/// returning the post-collection `(%gc-stats)` map so the effect is visible.
 /// An observability/test aid, **not** a load-bearing trigger: automatic
 /// collection at the eval safepoint keeps memory bounded with no help from the
 /// program (the removed `(hibernate)` was the load-bearing manual trigger — this
@@ -780,12 +759,12 @@ pub(super) fn gc_collect(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(gc_stats_map(heap))
 }
 
-/// `(%)` / `(gc-trace on?)` — query or set per-collection GC trace
+/// `(%gc-trace)` / `(%gc-trace on?)` — query or set per-collection GC trace
 /// logging for the calling process. With no argument, returns the current state;
 /// with one, sets it (truthy = on) and returns the new state. When on, each
 /// minor/major collection prints a one-line summary to stderr. Per-process and
 /// defaulted from the `BROOD_GC_TRACE` env var (which traces the whole run,
-/// including the root process before any `(%)` call).
+/// including the root process before any `(%gc-trace)` call).
 #[cfg(feature = "dev-tools")]
 pub(super) fn gc_trace(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     if let Some(&v) = args.first() {
@@ -794,12 +773,12 @@ pub(super) fn gc_trace(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     Ok(Value::boolean(heap.gc_trace()))
 }
 
-/// `(%)` — the hard memory ceiling in bytes (0 = unlimited). ADR-043.
+/// `(%mem-limit)` — the hard memory ceiling in bytes (0 = unlimited). ADR-043.
 pub(super) fn mem_limit(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::core::alloc::hard_limit() as i64))
 }
 
-/// `(%)` — the soft memory ceiling in bytes (0 = unlimited). ADR-043.
+/// `(%mem-soft-limit)` — the soft memory ceiling in bytes (0 = unlimited). ADR-043.
 pub(super) fn mem_soft_limit(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::int(crate::core::alloc::soft_limit() as i64))
 }

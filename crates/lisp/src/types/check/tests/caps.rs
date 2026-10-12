@@ -1,4 +1,4 @@
-//! The checker's budgets DECLINE, never lie (B6, 2026-09-17): a fixpoint that does not
+//! The checker's budgets DECLINE, never lie (B6): a fixpoint that does not
 //! settle, a specialization budget that runs out, an expression past the depth cap — each
 //! reads the affected answers as unknown (sound) and says so with one `checker gave up:`
 //! note. These pin that the note appears when a cap is hit, that it is the ONLY diagnostic
@@ -18,7 +18,7 @@ fn gave_up(warnings: &[String]) -> Vec<&String> {
 fn a_same_file_macro_reports_the_opaque_derivation_once() {
     // The commonest cap: a macro defined and used in the same file is unexpanded when
     // the caller-derived parameters are collected, so every derivation in the file
-    // declines. That used to be silent — the file read as fully checked.
+    // declines, and must say so — silence reads as a fully checked file.
     let warnings = file_warnings(
         "(defmodule caps-opaque)
          (defmacro my-or (a b) `(let ((v ~a)) (if v v ~b)))
@@ -71,9 +71,9 @@ fn a_form_past_the_depth_cap_is_reported_not_silently_unknown() {
 fn a_structurally_growing_return_widens_to_a_fixpoint_without_a_note() {
     // Kleene-from-⊥ seeding: `bn`'s self-call reads `never` in round one, then `nil`,
     // then `nil | (list any)`, then a deeper list … — unbounded unless each round is
-    // widened against the last. The joint loop always widened; Pass 2.8 (the return
+    // widened against the last. The joint loop always widened; same-file inference (the return
     // fixpoint) did not, and 34 std/tests functions "were still moving" after 16
-    // rounds the day the note was added. Sabotage: drop the widening in Pass 2.8 and
+    // rounds the day the note was added. Sabotage: drop the widening in same-file inference and
     // this reports a note.
     let warnings = file_warnings(
         "(defmodule caps-widen)

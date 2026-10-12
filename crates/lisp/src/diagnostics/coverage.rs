@@ -170,16 +170,3 @@ pub fn snapshot() -> Vec<(String, Vec<u32>)> {
         Err(_) => Vec::new(),
     }
 }
-
-/// Drop the recorded HITS, so a long-lived image can measure more than once without
-/// runs bleeding together. Deliberately leaves the instrumented set alone: that is a
-/// property of the compiled code, not of a measurement, and re-deriving it would need
-/// every arm recompiled.
-pub fn reset() {
-    if let Ok(mut map) = hits().lock() {
-        map.clear();
-    }
-    if let Ok(mut map) = branch_hits().lock() {
-        map.clear();
-    }
-}

@@ -465,7 +465,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // `%contract-wrap` at its first ARMED call, so an unarmed run never carries it. CORE
     // rather than DEV because `sig!` enforces in a released bundle too.
     embedded_module!("contract", "std/contract.blsp"),
-    // RFC 4122 version-4 UUID generation via the OS CSPRNG (random-token).
+    // RFC 4122 version-4 UUID generation via the OS CSPRNG.
     // uuid-v4, uuid-nil, uuid?.
     embedded_module!("uuid", "std/uuid.blsp"),
     // {{var}} string templating: render a template string against a data map.
@@ -1282,27 +1282,12 @@ pub(super) fn register_type(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// The head that marks a declared-sig entry as a type ALIAS rather than a signature.
 pub const TYPE_ALIAS_MARKER: &str = "%type";
 
-/// `(%mark-private 'name)` — record the global `name` as module-private (ADR-146).
-/// Emitted by the `defn-`/`def-` macros alongside their `def`. `name` is qualified
-/// to the current namespace *exactly as a `def` head would be* — via
-/// [`resolve_reference`](crate::eval::macros::resolve_reference), the same entry
-/// `%register-sig` uses — so the recorded key matches the qualified global the def
-/// created (and the `def` runs first, so that global already exists). Privacy is now
-/// a fact the def form declares here, not one derived from the name's spelling.
-/// Returns the qualified name so it composes inside the macro's `do`.
 /// `(%side-facts)` — every side fact this runtime has recorded, one string per fact,
 /// sorted: `"<kind> <name> <payload>"`.
 ///
-/// Exists for the boot differential (ADR-320 step 3). The differential used to compare a
-/// hand-listed set of per-name attributes, which is the same shape of hand-maintained list
-/// the journal removed from the image writer — so a fact kind could be carried correctly by
-/// construction and still round-trip WRONG without the differential noticing. `meta`
-/// (ADR-283) was exactly that: carried since ADR-314, compared by nothing.
-///
-/// Rendering to strings rather than to structured data is deliberate. The consumer is a
-/// differential that compares two process outputs textually, and a string per fact means a
-/// **new kind shows up in the comparison automatically** — no Brood-side change, no second
-/// list to update, which is the property this whole ADR is about.
+/// Exists for the boot differential (ADR-320 step 3; `crates/cli/tests/support`). Rendering
+/// to strings is deliberate: the differential compares two process outputs textually, so a
+/// **new fact kind shows up in the comparison automatically** — no second list to update.
 pub(super) fn side_facts(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     use crate::core::heap::Fact;
     let mut lines: Vec<String> = heap
@@ -1338,6 +1323,13 @@ pub(super) fn side_facts(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(heap.list(vals))
 }
 
+/// `(%mark-private 'name)` — record the global `name` as module-private (ADR-146).
+/// Emitted by the `defn-`/`def-` macros alongside their `def`. `name` is qualified
+/// to the current namespace *exactly as a `def` head would be* — via
+/// [`resolve_reference`](crate::eval::macros::resolve_reference), the same entry
+/// `%register-sig` uses — so the recorded key matches the qualified global the def
+/// created (and the `def` runs first, so that global already exists).
+/// Returns the qualified name so it composes inside the macro's `do`.
 pub(super) fn mark_private(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     // Resolves the quoted name against the namespace being compiled now, which is what makes
     // `(defn- helper …)` inside a module mark `mod/helper`. Note the standing mismatch

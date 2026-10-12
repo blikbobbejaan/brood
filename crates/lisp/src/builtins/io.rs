@@ -1,9 +1,9 @@
 //! Console I/O: print/render/write to stdout and stderr, TTY probes, the stdout capture
-//! `nest test` and the MCP server use, MCP progress notifications, and the non-blocking
+//! `nest test` and the MCP server use, and the non-blocking
 //! stdin reader behind `read-line`. Files, sockets, tables and child processes are their
 //! own domains beside this one.
 
-use super::numeric::{arg, expect_int, expect_string};
+use super::numeric::{arg, expect_string};
 use super::sequences::realize_seqviews;
 use super::terminal::restore_terminal_on_exit;
 use crate::core::heap::Heap;
@@ -16,14 +16,6 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     use super::signature_types::*;
     use crate::core::value::Arity;
     use crate::types::Sig;
-    primitives.def(
-        "%print",
-        Arity::any(),
-        Sig::variadic(any, nil_ty),
-        &["&", "xs"],
-        "Write the display forms of the arguments to stdout; returns nil.",
-        print,
-    );
     primitives.def(
         "%eprint",
         Arity::any(),
@@ -82,8 +74,8 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "True when stdin is an interactive terminal (false when redirected from a pipe or file). The REPL gates raw-mode line editing on this.",
         stdin_tty);
     // Output-capture surface for the `with-out-str` prelude macro: push/pop a
-    // process-scoped capture buffer (the same mechanism the `nest mcp` dispatcher
-    // uses; captures nest). Rust = mechanism, the macro = policy.
+    // process-scoped capture buffer (captures nest; `nest mcp` wraps each handler in
+    // one). Rust = mechanism, the macro = policy.
     primitives.def(
         "%capture-begin",
         Arity::exact(0),
@@ -100,28 +92,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         capture_take,
     );
-    // MCP progress notifications: a `nest mcp` tool handler reports incremental
-    // progress; the dispatcher arms the sink around a progress-token call. A
-    // no-op (false) when not under such a call. `mcp-progress` in std/tool/mcp
-    // is the friendly wrapper.
-    primitives.def(
-        "%mcp-progress",
-        Arity::exact(3),
-        Sig::new(vec![int, int.union(nil_ty), string.union(nil_ty)], bool_ty),
-        &[],
-        "",
-        mcp_progress,
-    );
 }
 
 /// Start capturing the current process's output into a fresh buffer. While active,
 /// `print` / terminal output ([`write_term_bytes`]) appends there instead of real
 /// stdout — and so does output from any process this one `spawn`s (the capture is
 /// **process-scoped and inherited**, living in the process `Ctx`; see
-/// `scheduler::begin_capture`). The `nest mcp` dispatcher installs one around each
-/// `tools/call` so a handler's output — even a handler run in a spawned, killable
-/// process under a timeout — can't corrupt the JSON-RPC stdout stream; the captured
-/// text rides back in the result envelope. Pair with [`take_captured_stdout`].
+/// `scheduler::begin_capture`). The in-browser playground wraps each snippet in one.
+/// Pair with [`take_captured_stdout`].
 pub fn begin_stdout_capture() {
     crate::process::begin_capture();
 }
@@ -130,63 +108,6 @@ pub fn begin_stdout_capture() {
 /// `Some(text)` (possibly empty) if capture was active, `None` otherwise.
 pub fn take_captured_stdout() -> Option<String> {
     crate::process::take_capture()
-}
-
-// ---- MCP progress notifications (the streaming/progress tier) -------------
-//
-// A long `nest mcp` tool (run-tests, check) can report incremental progress:
-// the MCP dispatcher **arms** a sink around a `tools/call` that carried a
-// `_meta.progressToken`, and the Brood handler calls `(mcp-progress progress
-// total message)` — which lands as a `notifications/progress` JSON-RPC message
-// on the (real) stdout stream the client is already reading, *during* the
-// call. Off (a no-op) when no token was supplied or when not running under the
-// MCP server, so the same handler is safe to call anywhere. The sink writes
-// raw JSON-RPC, bypassing the Brood output-capture above (which is a
-// port-level redirect, not the OS stdout).
-
-type ProgressSink = Box<dyn Fn(i64, Option<i64>, Option<String>)>;
-
-thread_local! {
-    static MCP_PROGRESS: std::cell::RefCell<Option<ProgressSink>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-/// Arm the MCP progress sink for the duration of one `tools/call`. `f` receives
-/// `(progress, total, message)` and emits the `notifications/progress` message
-/// (the dispatcher owns the token + the write). Pair with [`disarm_mcp_progress`].
-pub fn arm_mcp_progress(f: ProgressSink) {
-    MCP_PROGRESS.with(|c| *c.borrow_mut() = Some(f));
-}
-
-/// Disarm the MCP progress sink — after this, `(mcp-progress …)` is a no-op again.
-pub fn disarm_mcp_progress() {
-    MCP_PROGRESS.with(|c| *c.borrow_mut() = None);
-}
-
-/// `(%mcp-progress progress total message)` — report progress from a `nest mcp`
-/// tool handler. `progress` is an int (units completed); `total` is an int or
-/// nil (the denominator, if known); `message` is a string or nil (a human
-/// label). Returns `true` if a progress notification was actually sent (a token
-/// was in scope), `false` if it was a no-op (not under an MCP progress request).
-pub(super) fn mcp_progress(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let progress = expect_int(heap, "%mcp-progress", arg(args, 0))?;
-    let total = match arg(args, 1) {
-        Value::Nil => None,
-        v => Some(expect_int(heap, "%mcp-progress", v)?),
-    };
-    let message = match arg(args, 2) {
-        Value::Nil => None,
-        v => Some(expect_string(heap, "%mcp-progress", v)?.to_string()),
-    };
-    let sent = MCP_PROGRESS.with(|c| {
-        if let Some(f) = c.borrow().as_ref() {
-            f(progress, total, message);
-            true
-        } else {
-            false
-        }
-    });
-    Ok(Value::boolean(sent))
 }
 
 /// If a capture is active on the current process, append `s` to it and return
@@ -212,19 +133,6 @@ pub(super) fn capture_take(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
         Some(s) => heap.alloc_string(&s),
         None => Value::nil(),
     })
-}
-
-pub(super) fn print(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let args = realize_seqviews(heap, env, args)?;
-    let parts: Vec<String> = args.iter().map(|&a| printer::display(heap, a)).collect();
-    let text = parts.join(" ");
-    // Divert to the capture buffer if one is active (the MCP channel must stay pure
-    // JSON-RPC); otherwise write real stdout.
-    let captured = capture_write(&text);
-    if !captured {
-        write_stdout(&text);
-    }
-    Ok(Value::nil())
 }
 
 /// Write `s` to real stdout the way a well-behaved Unix tool does. A **broken

@@ -4,9 +4,8 @@ use super::*;
 
 #[test]
 fn integer_division_yields_int_or_ratio() {
-    // `/` is the one contagious operator that is not int-closed, and the rule used to fall
-    // through to `None` — so the checker made NO claim about `(/ x 2)`, the most ordinary
-    // arithmetic expression there is. Brood's division is exact: an `int` when it divides
+    // `/` is the one contagious operator that is not int-closed, yet the checker must still
+    // make a claim about `(/ x 2)`. Brood's division is exact: an `int` when it divides
     // evenly, a `ratio` when it does not, never a float. Declaring `float` over it is
     // therefore provably wrong, and so is feeding it somewhere non-numeric.
     let ws = file_warnings(
@@ -146,8 +145,8 @@ fn an_open_record_yields_no_entry_type() {
 }
 
 // Ratios close over `+ - *` exactly as ints do: `(+ 1/2 1/2)` is 1 and `(* 2 1/2)` is 1.
-// The case used to defer to `+`'s declared signature, which is widened to `number | map`
-// for `Num` records — sound, and noise as the answer to an all-numeric expression.
+// `+`'s declared signature is widened to `number | map` for `Num` records — sound, but
+// noise as the answer to an all-numeric expression, so the rule answers first.
 #[test]
 fn ring_arithmetic_over_ints_and_ratios_yields_int_or_ratio() {
     let ws = file_warnings(
@@ -227,7 +226,7 @@ fn precision_rules_give_the_exact_type_where_it_is_provable() {
         ("(reduce [1 2] 0 +)", "int"),
         ("(apply + [1 2])", "int"),
         ("(reduce [1 2] 0.5 +)", "float"),
-        // reshapers with no signature at all used to be `any`
+        // reshapers with no signature at all
         ("(vec [1 2])", "vector<1 | 2>"),
         ("(into [] (list 1))", "vector<1>[1]"),
         // …and onto a vector the length is the target's plus the source's, with an
@@ -261,9 +260,9 @@ fn precision_rules_give_the_exact_type_where_it_is_provable() {
     }
 }
 
-// The two shapes the `tests/` strict sweep of 2026-09-17 closed: a vector built by `into`
-// from a counted source is exactly that long whatever its elements (an untyped callback
-// used to drop the length with the element), and a `:keys`/`:or` binder is the default
+// A vector built by `into` from a counted source is exactly that long whatever its
+// elements (an untyped callback must not drop the length with the element), and a
+// `:keys`/`:or` binder is the default
 // where the key is absent, never `nil` — the pattern lowers to `(get m k default)`, the one
 // lookup the `get` rule reads exactly (the `(if (contains? …) …)` around it read `40 | nil`).
 #[test]
@@ -293,7 +292,7 @@ fn a_counted_build_and_an_or_default_are_present() {
 }
 
 // The expanded path too: `try` becomes `(%try (fn () a b) (fn (e) h))`, and a multi-form
-// thunk used to be untypeable — so a checked file saw nothing where the unexpanded query did.
+// thunk must type, or a checked file sees nothing where the unexpanded query does.
 #[test]
 fn a_multi_form_try_types_through_its_expansion() {
     let ws = file_warnings(
@@ -320,10 +319,8 @@ fn precision_rules_defer_where_nothing_narrower_is_provable() {
     }
 }
 
-// A `defrecord` constructor's signature used to declare every undeclared field `any`, so
-// `(pt 1 2)` was the bare id type and `(:x (pt 1 2))` was `any` — a record you had just
-// built with `1` in it could not be typed at all. The signature now carries a type variable
-// per undeclared field (`?x`), bound at each call.
+// A `defrecord` constructor's signature carries a type variable per undeclared field
+// (`?x`), bound at each call, so `(:x (pt 1 2))` is `1` rather than `any`.
 #[test]
 fn a_record_constructor_call_carries_its_argument_types_in_its_fields() {
     let src = "(defrecord pt (x y))\n(list (:x (pt 1 2)) (:y (pt 1 \"s\")))";
@@ -399,7 +396,7 @@ fn a_generated_let_stays_exempt_from_the_unused_lint_inside_a_module() {
 
 // Generated code sits on the most specific honest line: a `match` clause's expansion holds
 // the clause's own body (a form the user wrote), so an unreachable-clause warning lands on
-// the CLAUSE, not on the `match`. (Item 1 of the 2026-08-29 review.)
+// the CLAUSE, not on the `match`.
 #[test]
 fn a_warning_inside_a_match_clause_points_at_the_clause() {
     let src = "(defn dead (x)\n  (match x\n    (:a (inc 1))\n    (:a (inc 2))\n    (_ 3)))";
@@ -502,8 +499,8 @@ fn division_with_a_float_operand_is_still_contagious() {
 
 // A vector literal keeps its arity whatever its elements are: `[row col]` over untyped
 // params is `(tuple any any)`, which a `(tuple int int)` parameter accepts (the unknown
-// slots read gradually) and a 3-tuple parameter rejects. It used to fall back to a bare
-// `vector` on one unknown element, which threw the arity away with it.
+// slots read gradually) and a 3-tuple parameter rejects — one unknown element must not
+// throw the arity away.
 #[test]
 fn a_vector_literal_keeps_its_arity_over_unknown_elements() {
     assert_eq!(ty_str("(fn (r c) [r c])"), "(any, any) -> (tuple any, any)");
@@ -646,7 +643,7 @@ fn assoc_in_answers_by_whether_the_receiver_can_be_a_vector() {
     assert!(ws.is_empty(), "{ws:?}");
 }
 
-// ---- list shapes (2026-09-13): `(list a b)` is a positional list, not `list<A | B>` ----
+// ---- list shapes: `(list a b)` is a positional list, not `list<A | B>` ----
 
 #[test]
 fn a_list_call_and_a_quoted_list_are_positional_shapes() {
@@ -739,7 +736,7 @@ fn an_index_bounded_by_the_count_is_in_range() {
     assert!(ws[0].contains("nil | int ((nth xs i))"), "{ws:?}");
 }
 
-/// C13 / ADR-367 (2026-09-17) — why there is no float interval, pinned so a later attempt
+/// C13 / ADR-367 — why there is no float interval, pinned so a later attempt
 /// has to face it. Floats here are NOT totally ordered: NaN is reachable (`(- inf inf)`,
 /// `(* inf 0.0)`, `(/ inf inf)`, with `inf` itself from `(* 1.0e200 1.0e200)`, which does
 /// not raise), and `(< nan 1.0)` and `(>= nan 1.0)` are BOTH false. So the else-branch rule
@@ -797,10 +794,8 @@ fn a_float_comparison_narrows_nothing_because_nan_fails_both() {
     );
 }
 
-/// C12 (2026-09-17) — the index a SCAN writes: `(nth s (+ i 1))` under `(< (+ i 1) n)`.
-/// The shape the corpora actually contain (`std/json.blsp` ×4, `std/ansi.blsp` ×2,
-/// `std/url.blsp`), and before this a guard over `(+ i 1)` produced no facts at all — the
-/// comparison was discarded whole, so it narrowed nothing and bounded nothing.
+/// C12 — the index a SCAN writes: `(nth s (+ i 1))` under `(< (+ i 1) n)`. A guard over
+/// `(+ i 1)` must produce facts, not be discarded whole.
 ///
 /// The fact is `i + k < (count xs)`, keyed on the base local and the offset, and a proved
 /// offset covers every SMALLER one (`i + b ≤ i + k < n`) — which is what reads
@@ -934,8 +929,7 @@ fn a_when_shaped_binding_guards_its_condition() {
 /// A count relation between two PARAMETERS, established by every caller (ADR-350): the
 /// loop below is handed `n = (count codes)` beside `codes` by its one external caller and
 /// passes both through in its self-call, so `(nth codes i)` under `(>= i n)`'s else is an
-/// element — the shape `std/regex`'s two DFA loops have, which used to carry a
-/// `(check-allow :type-mismatch …)` for exactly this.
+/// element — the shape `std/regex`'s two DFA loops have.
 #[test]
 fn a_count_relation_between_parameters_is_derived_from_the_callers() {
     let src = "(defmodule t)\n\
@@ -981,7 +975,7 @@ fn a_no_init_reduce_keeps_its_seed_unless_two_elements_are_proven() {
 }
 
 /// A return that is two tuple alternatives — two branches each yielding `[model idx]`,
-/// with the model reshaped in one of them — keeps BOTH shapes through Pass 2.9's
+/// with the model reshaped in one of them — keeps BOTH shapes through the caller-derived parameter pass's
 /// widening (ADR-350): a union that is not growing is not an ascent, and merging it lost
 /// the tuple, so a caller's `[m1 idx]` read `int | map` for `m1`.
 #[test]
@@ -1020,9 +1014,8 @@ fn a_growing_union_of_tuples_widens_to_one_shape_not_a_bare_vector() {
 #[test]
 fn a_moving_interval_beside_a_stable_tuple_of_the_same_tags_still_widens() {
     // Two alternatives with the SAME tags — a parser state whose counter moves, beside its
-    // seed — matched two previous terms by tag alone, so neither was widened and the
-    // derivation ran out of rounds (`tests/jit_eq_join_test.blsp`'s `drive-advance`,
-    // 2026-09-17). The previous term the current one GREW from is the one that is its
+    // seed — must not match previous terms by tag alone, or neither widens and the
+    // derivation runs out of rounds. The previous term the current one GREW from is the one that is its
     // subtype.
     let prev = ty_of_sig("(or (tuple \"(\" (int 1 4) nil bool) (tuple \"(\" 0 nil false))");
     let now = ty_of_sig("(or (tuple \"(\" (int 1 5) nil bool) (tuple \"(\" 0 nil false))");
@@ -1095,7 +1088,7 @@ fn apply_of_a_ring_operator_stays_in_its_closure_not_one_steps_interval() {
 // does — a keyword step is the record field, any other step is a `map<K, V>`'s value.
 // The offset read back from a declared `(map any int)` two levels down is `int`, so the
 // arithmetic on it is int and the `range` it feeds does not warn; with the leaf declared
-// `any` the same read says `number`, which is what every consumer of `get-in` used to see.
+// `any` the same read says `number`.
 #[test]
 fn get_in_with_a_literal_path_reads_the_declared_shape() {
     let program = |leaf: &str| {

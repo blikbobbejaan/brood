@@ -282,12 +282,6 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
     }
 }
 
-#[cfg(feature = "jit")]
-/// The deopt-site id of the register-carry ENTRY tag check (`jit_lower_arm_inner`'s carry
-/// initialisation): a param the profile typed `Int`/`Float` arrived as something else. The
-/// slot index rides in bits 8.. of the reason word.
-pub(crate) const ENTRY_DEOPT_REASON: u32 = 106;
-
 /// Entry-tag deopts an arm may take before it is re-lowered with the offending slot boxed.
 /// Sixteen, like the thrash latch: an arm whose param is polymorphic once in a while keeps
 /// its unboxed carry; one deopting per activation flips after sixteen and stops paying a
@@ -296,7 +290,8 @@ const ENTRY_DEOPT_RELOWER: u32 = 16;
 
 /// Feedback for EVERY type-deopt, watched arm or not (`jit_deopt_feedback` below is the
 /// watched arms' consecutive-count latch): count it, and if the reason was the entry tag
-/// check of a register-carried param, record the slot as polymorphic and — once
+/// check of a register-carried param ([`DeoptReason::EntryParamTag`], payload = the slot),
+/// record the slot as polymorphic and — once
 /// `ENTRY_DEOPT_RELOWER` such deopts have accrued — reset the arm to untried so its next
 /// tier-up re-profiles with that slot left on the frame (`profile_slot_tags`). The reset
 /// is the one the operator-rebind and depth-cap paths already use: drop the installed
@@ -307,19 +302,17 @@ const ENTRY_DEOPT_RELOWER: u32 = 16;
 pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
     use std::sync::atomic::Ordering::Relaxed;
     arm.jit_deopts_total.fetch_add(1, Relaxed);
-    let reason = heap.jit_deopt_reason();
-    // Reasons 20/21 ride in bits 8.. with the observed tag in the low byte (the entry
-    // reason below is the other way round: reason low, slot high).
-    if matches!(reason >> 8, SLOT_INT_DEOPT_REASON | HANDLE_INT_DEOPT_REASON)
-        && reason & 0xff == u32::from(crate::core::value::jit_layout::TAG_FLOAT)
-    {
-        float_deopt_feedback(heap, arm);
-        return;
-    }
-    if reason & 0xff != ENTRY_DEOPT_REASON {
-        return;
-    }
-    let slot = reason >> 8;
+    let slot = match DeoptReason::decode(heap.jit_deopt_reason()) {
+        // An integer-path tag guard (payload = the OBSERVED tag, KI-49) that saw a float.
+        (Some(DeoptReason::SlotIntGuard | DeoptReason::HandleIntGuard), tag)
+            if tag == u32::from(crate::core::value::jit_layout::TAG_FLOAT) =>
+        {
+            float_deopt_feedback(heap, arm);
+            return;
+        }
+        (Some(DeoptReason::EntryParamTag), slot) => slot,
+        _ => return,
+    };
     if slot < 32 {
         arm.jit_poly_slots.fetch_or(1 << slot, Relaxed);
     }
@@ -329,7 +322,7 @@ pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
     // at least one more, and a boxed slot has no entry check to deopt on.
     let n = arm.jit_entry_deopts.fetch_add(1, Relaxed) + 1;
     if n.is_multiple_of(ENTRY_DEOPT_RELOWER) {
-        if bail_trace_enabled() {
+        if crate::diagnostics::debug_flags::jit_bail_trace() {
             eprintln!(
                 "[jit-relower] arm={} reason=polymorphic-param slots={:#b}: {n} entry-tag deopts; re-tiering with those slots boxed",
                 arm_name(arm),
@@ -339,13 +332,6 @@ pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
         reset_arm_untried(heap, arm);
     }
 }
-
-/// The deopt-site ids of the integer-path arithmetic tag guards: a frame slot read as an
-/// int (`load_slot_int`) and a `Handle` read as an int (`as_int`). Both ride in bits 8..
-/// of the reason word with the OBSERVED tag in the low byte (KI-49), which is what lets a
-/// deopt on a `Float` be told apart from one on a string.
-pub(crate) const SLOT_INT_DEOPT_REASON: u32 = 20;
-pub(crate) const HANDLE_INT_DEOPT_REASON: u32 = 21;
 
 /// Integer-guard deopts on a `Float` an arm may take before it is re-lowered in float
 /// context. Fewer than the thrash latch's sixteen, so the re-tier lands first: four
@@ -367,7 +353,7 @@ fn float_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
     let n = arm.jit_float_deopts.fetch_add(1, Relaxed) + 1;
     if n == FLOAT_DEOPT_RELOWER {
         arm.jit_float_context.store(true, Relaxed);
-        if bail_trace_enabled() {
+        if crate::diagnostics::debug_flags::jit_bail_trace() {
             eprintln!(
                 "[jit-relower] arm={} reason=float-through-erased-reads: {n} integer-guard deopts on a Float; re-tiering in float context",
                 arm_name(arm)
@@ -375,10 +361,6 @@ fn float_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
         }
         reset_arm_untried(heap, arm);
     }
-}
-
-fn bail_trace_enabled() -> bool {
-    crate::diagnostics::debug_flags::jit_bail_trace()
 }
 
 fn arm_name(arm: &CompiledArm) -> &'static str {
@@ -474,9 +456,9 @@ pub(crate) fn jit_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
                 .collect();
             eprintln!(
                 "[jit-bail] arm={name} reason=deopt-thrash-latched nslots={} deopts={d} \
-                 last-deopt={:#x} inline_installed={} ops=[{}]",
+                 last-deopt={} inline_installed={} ops=[{}]",
                 arm.nslots,
-                heap.jit_deopt_reason(),
+                DeoptReason::describe(heap.jit_deopt_reason()),
                 arm.inline_installed
                     .load(std::sync::atomic::Ordering::Acquire),
                 ops.join(" ")

@@ -1,0 +1,104 @@
+;; Metamorphic fuzzer. Generate a base numeric body E(a,b), then emit several
+;; semantics-PRESERVING rewrites of the function body. Every variant must produce the
+;; identical warmed-loop checksum on every engine — any difference is a JIT/VM lowering bug
+;; for that shape (the value logic is unchanged). Each seed writes variant files
+;; mm_<seed>_v<k>.blsp; the runner asserts all variants agree.
+;;
+;;   brood scripts/fuzz/generators/metamorphic.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- the grammar
+(defn draw-leaf ()
+  (let (roll (draw-float))
+    (cond
+      (< roll 0.5) (draw-choice ["a" "b"])
+      (< roll 0.7) (str (draw-choice [0 1 2 -1 3 -2 7]))
+      (< roll 0.85) (str (draw-choice [1152921504606846976 -1152921504606846976 9007199254740993]))
+      :else (draw-choice ["0.0" "1.5" "2.0" "-2.5" "100.0"]))))
+
+(def operators ["+" "-" "*" "math/max" "math/min" "math/quot" "math/rem"])
+
+;; A depth-bounded tree walk: the recursion is at most `depth` deep by construction.
+(check-allow :non-tail-recursion
+  (defn expr (depth)
+    (if (or (<= depth 0) (< (draw-float) 0.35))
+      (draw-leaf)
+      (let (roll (draw-float) below (- depth 1))
+        (cond
+          (< roll 0.6) (str "(" (draw-choice operators) " " (expr below) " " (expr below) ")")
+          (< roll 0.8)
+            (let (test (str "("
+                         (draw-choice ["<" "<=" ">" "="])
+                         " "
+                         (expr below)
+                         " "
+                         (expr below)
+                         ")"))
+              (str "(if " test " " (expr below) " " (expr below) ")"))
+          :else (str "(let (t " (expr below) ") (" (draw-choice operators) " t " (expr below) "))"))))))
+
+(defn variants (body)
+  "Semantics-preserving rewrites of `body`, every one equal to it."
+  [body
+    (str "(do nil " body ")")
+    ;; a dead let: zz is unused
+    (str "(let (zz (+ a 1)) " body ")")
+    (str "(let (rr " body ") rr)")
+    (str "(if (= 0 0) " body " 0)")
+    ;; rebind the params (identity)
+    (str "(let (a2 a b2 b) (let (a a2 b b2) " body "))")
+    ;; an immediately-invoked thunk
+    (str "((fn () " body "))")])
+
+(defn program (body)
+  (str "(defn f (a b) "
+    body
+    ")
+(defn lp (i acc)
+  (if (= i 0) acc
+    (lp (- i 1)
+      (str acc \"|\" (try (pr-str (f (- (math/rem i 11) 5) (- (math/rem i 7) 3))) (catch e \"E\"))))))
+(io/puts (lp 200 \"\"))
+"))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-variants (seed bodies index outdir)
+  (when (not (empty? bodies))
+    (file/spit (str outdir "/mm_" seed "_v" index ".blsp") (program (first bodies)))
+    (write-variants seed (rest bodies) (+ index 1) outdir)))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (rng-reset seed)
+    (write-variants seed (variants (expr 4)) 0 outdir)
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote"
+    (* 7 program-count)
+    "variant programs"
+    (str "(" program-count " seeds x 7 variants)")))

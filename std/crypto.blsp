@@ -144,7 +144,7 @@ the `seq/zip` version it replaces."
 (defn keypair ()
   "A fresh ed25519 keypair as `{:public <bytes> :private <bytes>}` — `:public` the 32-byte
 verifying key (safe to publish), `:private` the 32-byte signing seed (keep secret)."
-  (let (kp (%ed25519-keygen)) {:public (seq/vector-ref kp 0) :private (seq/vector-ref kp 1)}))
+  (let ([public private] (%ed25519-keygen)) {:public public :private private}))
 
 (defn sign (private message)
   "The 64-byte ed25519 signature of `message` (bytes) under the 32-byte `private` seed."

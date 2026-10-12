@@ -104,12 +104,13 @@ strays=$(ps -eo pid,etimes,pcpu,args 2>/dev/null \
       # (No apostrophes in here: the awk program is inside a single-quoted shell string.)
       if ($5 ~ /^(mcp|lsp|serve|node|observe|watch)$/) next;
       if (exe == "brood-lsp") next;
-      if (exe == "brood" || exe == "nest" || exe == "sysmon.py" || exe == "harness.py")
+      if (exe == "brood" || exe == "nest" || exe == "harness.py")
         print;
       else if (exe ~ /^(python3?|sh|bash)$/ ) {
-        # An interpreter: judge it by the script it was handed ($5), same basename rule.
+        # An interpreter (the brood-benchmarks harness): judge it by the script it was
+        # handed ($5), same basename rule.
         scr = $5; sub(/.*\//, "", scr);
-        if (scr == "sysmon.py" || scr == "harness.py") print;
+        if (scr == "harness.py") print;
       }
     }')
 if [ -n "$strays" ]; then
@@ -152,7 +153,7 @@ cat >"$img_probe" <<'PROBE'
 (let (n (%std-image-installed)
       st (check-allow :discarded-catch
            (try (->string (get (stdimage/status) :state)) (catch _ "unknown"))))
-  (%print (str (if n n "none") " " st)))
+  (io/puts (if n n "none") " " st))
 PROBE
 for b in target/release-fast/brood target/release/brood; do
   [ -x "$b" ] || continue

@@ -65,14 +65,14 @@ claims it by prefix."
 (def- %std-regs-skip
   #{'*features* '*features-loading* '*require-edges* '*module-files* '*impls* '*impl-from*})
 
-(defn- %reg-owner (reg path kv)
+(defn- %reg-owner (reg path entry)
   "The module that OWNS registry `reg`'s entry at `path`: the module whose load WROTE it
 (`%registry-writer`, KI-136) — or, for `*module-docs*`, the key itself, which is the module
 name by construction (the doc is recorded before `defmodule` opens the namespace, so it has
 no writer). Nil for an entry nobody owns: a prelude or root write, which no module load ever
 replays and so stays in the registry's own value."
   (cond
-    (= reg '*module-docs*) (first kv)
+    (= reg '*module-docs*) (first entry)
     else (let (w (%registry-writer reg path)) (when w (->string w)))))
 
 (defn- %std-regs-by-module ()
@@ -95,9 +95,9 @@ attributed per inner entry when its outer key has no writer."
           acc
           (fold (%map-pairs v)
             acc
-            (fn (a kv)
-              (let ([k1 v1] kv
-                    m (%reg-owner reg [k1] kv))
+            (fn (a entry)
+              (let ([k1 v1] entry
+                    m (%reg-owner reg [k1] entry))
                 (cond
                   m (%add-reg a m [reg [k1] v1])
                   (map? v1)
@@ -116,8 +116,8 @@ writes. Each module's own entries come back when it materialises (`%replay-std-r
 when its source loads, so a value that still carried them would double the ones of the
 registry's own module and smuggle in every other module's (KI-136). Called inside an
 `%isolate` by `build`, so the running session keeps every registration it had."
-  (doseq (kv (%map-pairs (%std-regs-by-module)))
-    (doseq (t (second kv))
+  (doseq (entry (%map-pairs (%std-regs-by-module)))
+    (doseq (t (second entry))
       (%registry-update! (get t 0) :dissoc (get t 1) nil))))
 
 (defn registrations-by-module ()
@@ -162,8 +162,8 @@ owner. A registration whose `from` is nil came from the root/REPL and belongs to
 it is dropped, since nothing materialises it back."
   (fold (%map-pairs *impl-from*)
     {}
-    (fn (acc kv)
-      (let ([prov from] kv
+    (fn (acc entry)
+      (let ([prov from] entry
             [aname op key] prov
             f (get (get *impls* [aname op]) key))
         (if (or (nil? from) (nil? f))
@@ -373,26 +373,6 @@ instead of being inferred from a run that looked wrong."
           (empty? ids)
             {:state :absent :installed inst :want want :path path :sections 0 :others ids}
           else {:state :stale :installed inst :want want :path path :sections 0 :others ids})))))
-
-(defn ensure-built ()
-  "Build this binary's stdlib image if there is not already a CURRENT one on disk, and say
-which happened: `:built`, `:present`, or nil when there is no cache directory.
-
-This is the \"make it standard\" entry point, and it is deliberately not `ensure`: by the time
-any module can call this, the prelude has already installed whatever image existed at boot, so
-re-installing would register a second source for the same file. What is left worth doing is
-the half a running process cannot do for itself — writing the image the NEXT process will boot
-with.
-
-`nest` calls it, because a project tool can afford ~1 s once per stdlib change and every later
-`brood` and `nest` invocation on that machine reads the result: the image is keyed on
-`system/stdlib-id`, the same for every binary built from one tree."
-  (let (path (image-path))
-    (when path
-      ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
-      (if (check-allow :discarded-catch
-            (try (not (nil? (%image-index path (system/stdlib-id)))) (catch _ false)))
-        :present (do (build) :built)))))
 
 (defn ensure ()
   "Install the stdlib image, building it first if this binary has none yet. Returns the

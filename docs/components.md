@@ -244,7 +244,7 @@ before working in any Rust component:
   `treesit`, `audio`, `text_width`, and `gui` — `gui.rs` the `Op`/`Key`/`Mouse`
   vocabulary and the feature switch, `gui/disabled.rs` the stub, `gui/backend.rs` the
   winit event loop and window registry with `gui/backend/{input,render,paint}.rs`, and
-  `gui/gpu.rs` the experimental OpenGL path.
+  `gui/gpu.rs` the wgpu render target (the `gui-gpu` feature).
 - **Depends on:** `process` (message delivery) and `core`; nothing depends on `host`
   except the builtins that expose it.
 

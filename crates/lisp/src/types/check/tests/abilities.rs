@@ -2,7 +2,7 @@
 
 use super::*;
 
-// ---- ability impl conformance (Pass 2.6) ----
+// ---- ability impl conformance ----
 // The conformance check (missing op / arity / undeclared) reads the *un-expanded*
 // `defability`/`impl` surface forms — which are core (prelude), always available.
 // (`defprotocol`/`defimpl` were retired in favour of `ability`.)
@@ -87,6 +87,52 @@ fn ability_is_silent_when_the_call_is_covered() {
         !ws.iter().any(|w| w.contains("no impl of `size`")),
         "{ws:?}"
     );
+}
+
+#[test]
+fn a_local_named_like_an_op_shadows_it() {
+    // The local is what `(size "hi")` calls, so no ability is involved — through a `let`,
+    // a `fn` parameter, and on a variable the inference hook types.
+    let ws = file_warnings(
+        "\
+         (defability Size (size [self] :-> int))\n\
+         (impl Size :int (size [n] n))\n\
+         (defn by-let () (let (size (fn (x) 0)) (size \"hi\")))\n\
+         (defn by-param (size) (size \"hi\"))\n\
+         (defn by-inference () (let (size (fn (x) 0) s \"hi\") (size s)))",
+    );
+    assert!(!ws.iter().any(|w| w.contains("no impl of")), "{ws:?}");
+}
+
+#[test]
+fn a_local_named_like_a_generic_shadows_it() {
+    let ws = file_warnings(
+        "\
+         (defmulti mm)\n\
+         (defmethod mm [:int :int] (a b) a)\n\
+         (defn by-let () (let (mm (fn (a b) a)) (mm 1 \"x\")))",
+    );
+    assert!(!ws.iter().any(|w| w.contains("no method for")), "{ws:?}");
+}
+
+#[test]
+fn a_dispatch_call_inside_a_vector_or_under_a_computed_head_is_checked() {
+    let ws = file_warnings(
+        "\
+         (defability Size (size [self] :-> int))\n\
+         (impl Size :int (size [n] n))\n\
+         (defmulti mm)\n\
+         (defmethod mm [:int :int] (a b) a)\n\
+         (defn in-vector () [(size \"hi\") (mm 1 \"x\")])\n\
+         (defn under-computed-head () ((fn (x) x) (size :k)))",
+    );
+    for needle in [
+        "no impl of `size` for :string",
+        "no method for [:int :string]",
+        "no impl of `size` for :keyword",
+    ] {
+        assert!(ws.iter().any(|w| w.contains(needle)), "{needle}: {ws:?}");
+    }
 }
 
 #[test]

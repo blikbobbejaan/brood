@@ -115,12 +115,10 @@ fn an_ambiguous_bare_record_name_declines_rather_than_guessing() {
 #[test]
 fn sealed_over_builtin_kinds_accepts_its_own_members() {
     // `impl` dispatches on built-in kinds as well as records, so `:sealed [:int :float]` is
-    // legal — but every member used to be turned into a record shape `%{__id__: :int}`, which
-    // no int satisfies. The domain rejected its own members: `(use-it 42)` warned on a program
-    // that runs correctly, and `nest check` exits nonzero on a warning, so this was a
-    // CI-breaking false positive. Both the exhaustiveness gate and the reject-a-non-member
-    // path only need the id set, so they were unaffected — passing a real member is the only
-    // thing that exposed it.
+    // legal — and a member must not be turned into a record shape `%{__id__: :int}`, which
+    // no int satisfies, or `(use-it 42)` warns on a program that runs correctly. Only
+    // passing a real member exercises this: the exhaustiveness gate and the
+    // reject-a-non-member path need just the id set.
     let ws = file_warnings(
         "\
          (defmodule t)\n\
@@ -316,13 +314,11 @@ fn deftype_names_a_structural_type_for_sigs() {
     assert_eq!(strict.len(), 3, "{strict:?}");
 }
 
-// A SELF-REFERENTIAL alias is a μ type (C14, 2026-09-18) — typed at EVERY depth, not one.
+// A SELF-REFERENTIAL alias is a μ type (C14) — typed at EVERY depth, not one.
 //
-// It used to be unrolled `RECURSIVE_UNROLL` times and read `any` below that, which was
-// sound and incomplete: a tree walk's `(:v (:l t))` was typed and `(:v (:l (:l t)))` was
-// the unknown, so the same shape written `(rec X …)` by hand checked deeper than the same
-// shape written as a self-referential alias. `alias_ty` now binds the alias's own name the
-// way `(rec X …)` binds `X`, so the two spellings agree.
+// `alias_ty` binds the alias's own name the way `(rec X …)` binds `X`, so the alias and
+// the hand-written `(rec X …)` spellings agree at every depth (a fixed unroll would type
+// `(:v (:l t))` and leave `(:v (:l (:l t)))` unknown).
 #[test]
 fn a_self_referential_alias_is_typed_at_every_depth() {
     let src = "\
@@ -423,11 +419,10 @@ fn mutual_aliases_collapse_to_one_binder_and_nested_binders_stay_sound() {
 
 /// A μ is only a type when it is CONTRACTIVE — the recursive reference occurring guarded,
 /// under a constructor, not as a bare alternative of the body. Each shape below is
-/// writable and denotes nothing, and each used to **crash the checker**: unrolling
+/// writable and denotes nothing, and unguarded would **crash the checker**: unrolling
 /// substitutes the body for the reference and reproduces a bare reference, forever, so one
-/// call site was a stack overflow. The explicit `(rec X (or nil X))` has been reachable
-/// from any sig since ADR-349; the alias forms arrived with C14 and were found the same
-/// hour, which is how the older one surfaced.
+/// call site is a stack overflow. The explicit `(rec X (or nil X))` is reachable from any
+/// sig (ADR-349); the alias forms from C14.
 ///
 /// Each answers `any` — the type with no content — so the relation terminates and nothing
 /// is claimed. This test exists to fail by TIMING OUT or aborting if the guard goes, which

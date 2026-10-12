@@ -1,4 +1,4 @@
-//! Regressions from the 2026-10-02 type-system review: ability/protocol checks, sealed
+//! Type-system review regressions: ability/protocol checks, sealed
 //! exhaustiveness, the check cache, recursion and guard-effect lints, `try` bodies.
 
 use super::*;

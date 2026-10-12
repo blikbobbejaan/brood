@@ -1,0 +1,884 @@
+;; Random-program differential fuzzer (engine-diff flavour).
+;;
+;; Generates seeded, DETERMINISTIC, terminating Brood programs from a small expression
+;; grammar — pure arithmetic helpers (ints at the i64/bigint edges, floats, comparisons,
+;; let/if nesting), a self-tail driver loop that calls them and performs table effects
+;; (put/incr — non-idempotent on purpose: this is what caught the deopt-rerun bug), and a
+;; printed digest. Each program runs under several engine/GC/chaos configs; ANY stdout
+;; difference is a bug (Brood's engines are bit-identical by mandate).
+;;
+;; Usage: brood stress/fuzz_programs.blsp -- [--seeds N] [--start S] [--keep]
+;; Exits nonzero on any divergence; failing programs are kept in stress/fuzz_out/
+;; (or $FUZZ_OUTDIR), with an auto-shrunk `.min` beside each divergence.
+(defmodule fuzz-programs
+  "The seeded program generator and multi-config differential driver behind `make stress`.")
+
+(def- *brood* (or (os/env "BROOD") "target/release/brood"))
+
+(def- *configs*
+  [["jit" {}]
+    ["no-jit" {"BROOD_TIER" "1"}]
+    ["tree-walk" {"BROOD_TIER" "0"}]
+    ["gc-stress" {"BROOD_GC_STRESS" "1" "BROOD_TIER" "1"}]
+    ;; a tiny prime reduction budget: preempt storms through every loop
+    ["chaos-preempt" {"BROOD_REDUCTIONS" "97"}]])
+
+(def- *edge-ints*
+  [0
+    1 -1 2 7 63 4096 2147483648 1152921504606846975 -1152921504606846976 4611686018427387904
+    -4611686018427387904])
+
+;; ---- generator state ----------------------------------------------------------
+;; The PRNG seed and the fresh-name counter live in one table, so the grammar below reads
+;; like the grammar instead of threading a state value through every production.
+
+(def- generator (table/new))
+
+(defn- reset-generator (seed)
+  ;; xorshift32's first draws from small consecutive seeds are tiny and correlated, so
+  ;; scatter the seed and discard a few steps before the program draws anything.
+  (let (scattered (bit/and (+ (* seed 2654435761) 40503) 4294967295))
+    (table/put generator
+      :seed (fold (range 8) (rand/seed scattered) (fn (state _) (second (rand/rng state)))))
+    (table/put generator :fresh 0)))
+
+(defn- random-float ()
+  (let ([value next-seed] (rand/float (table/get generator :seed)))
+    (table/put generator :seed next-seed)
+    value))
+
+(defn- random-int (low high)
+  ;; inclusive at both ends, like the grammar's ranges read
+  (let ([value next-seed] (rand/int (table/get generator :seed) (+ 1 (- high low))))
+    (table/put generator :seed next-seed)
+    (+ low value)))
+
+(defn- choose (options) (nth options (random-int 0 (- (count options) 1))))
+
+(defn- chance? (probability) (< (random-float) probability))
+
+(defn- fresh-name (prefix)
+  (let (counter (+ 1 (table/get generator :fresh)))
+    (table/put generator :fresh counter)
+    (str prefix counter)))
+
+(defn- spaced (& parts) (string/join parts " "))
+
+(defn- repeat-string (text times) (string/join (map (range times) (fn (_) text)) " "))
+
+;; ---- expressions --------------------------------------------------------------
+
+;; The grammar productions recurse non-tail by nature; depth is bounded at 4.
+(check-allow :non-tail-recursion
+  (defn- expr (params depth)
+    ;; a pure int expression over `params`, depth-bounded and total
+    (if (or (= depth 0) (chance? 0.3))
+      (if (and (not (empty? params)) (chance? 0.6))
+        (choose params)
+        (str (if (chance? 0.4) (choose *edge-ints*) (random-int -999 999))))
+      (let (choice (random-float) below (- depth 1))
+        (cond
+          (< choice 0.45)
+            (let (operator (choose ["+" "-" "*" "math/max" "math/min" "bit/and" "bit/or" "bit/xor"]))
+              (str "(" (spaced operator (expr params below) (expr params below)) ")"))
+          ;; guarded integer division (nonzero literal divisor)
+          (< choice 0.6)
+            (let (operator (choose ["math/quot" "math/rem"]))
+              (str "(" (spaced operator (expr params below) (choose [2 3 7 97 -3 -8])) ")"))
+          (< choice 0.75)
+            (let (comparison (choose ["<" "<=" "=" ">" ">="]))
+              (str "(if ("
+                (spaced comparison (expr params below) (expr params below))
+                ") "
+                (spaced (expr params below) (expr params below))
+                ")"))
+          (< choice 0.88)
+            (let (binder (fresh-name "t"))
+              (str "(let ("
+                binder
+                " "
+                (expr params below)
+                ") "
+                (expr (conj params binder) below)
+                ")"))
+          ;; small vector build + constant-index read (MakeVector/VectorRef)
+          :else
+            (let (size (random-int 2 4))
+              (str "(nth ["
+                (string/join (map (range size) (fn (_) (expr params below))) " ")
+                "] "
+                (random-int 0 (- size 1))
+                ")")))))))
+
+(check-allow :non-tail-recursion
+  (defn- i64-expr (params depth)
+    ;; RESTRICTED pure-i64 expression: int arith / compares / if / let only — no vectors
+    ;; and no calls — so a fn built from it stays in the subset the SPECIALISED i64
+    ;; fast-path lowerer (`jit_lower_arm_inner`) accepts; nothing else feeds that engine.
+    (if (or (= depth 0) (chance? 0.35))
+      (if (and (not (empty? params)) (chance? 0.7))
+        (choose params)
+        (str (random-int -50 50)))
+      (let (choice (random-float) below (- depth 1))
+        (cond
+          (< choice 0.5)
+            (let (operator (choose ["+" "-" "*" "bit/and" "bit/or" "bit/xor" "math/max" "math/min"]))
+              (str "(" (spaced operator (i64-expr params below) (i64-expr params below)) ")"))
+          (< choice 0.65)
+            (let (operator (choose ["math/quot" "math/rem"]))
+              (str "(" (spaced operator (i64-expr params below) (choose [2 3 7 -3 8])) ")"))
+          (< choice 0.82)
+            (let (comparison (choose ["<" "<=" "=" ">" ">="]))
+              (str "(if ("
+                (spaced comparison (i64-expr params below) (i64-expr params below))
+                ") "
+                (spaced (i64-expr params below) (i64-expr params below))
+                ")"))
+          :else
+            (let (binder (fresh-name "q"))
+              (str "(let ("
+                binder
+                " "
+                (i64-expr params below)
+                ") "
+                (i64-expr (conj params binder) below)
+                ")")))))))
+
+;; ---- helpers ------------------------------------------------------------------
+;; Each optional helper is [probability builder]; a builder returns [name arity code].
+
+(defn- float-helper ()
+  ;; exercises the float JIT paths and boxed floats through calls
+  (let (name (fresh-name "g"))
+    [name 1 (str "(defn " name " (x) (+ (* x 1.5) (/ (+ x 1) 4)))")]))
+
+(defn- closure-hof-helper ()
+  ;; a generated closure mapped over a range and folded: hof_apply_native / capture slots
+  (let (name (fresh-name "h") size (random-int 1 9) operator (choose ["+" "*" "bit/xor"]))
+    [name
+      1
+      (str "(defn "
+        name
+        " (x) (fold (map (range "
+        size
+        ") (fn (y) ("
+        operator
+        " y (math/rem x "
+        (+ size 1)
+        ")))) 0 +))")]))
+
+(defn- match-helper ()
+  ;; builds a shape and matches it: the fail-thunk match lowering + destructures
+  (let (name (fresh-name "m"))
+    [name
+      1
+      (str "(defn "
+        name " (x) "
+        "(match (if (= (math/rem x 3) 0) [:a x] (if (= (math/rem x 3) 1) [:b x (+ x 1)] (list :c x))) "
+        "([:a v] :when (> v 100) (+ v 1)) " "([:a v] (- v 1)) " "([:b v w] (+ v w)) "
+        "((:c v) (* v 2)) " "(_ 0)))")]))
+
+(defn- string-helper ()
+  (let (name (fresh-name "s"))
+    [name
+      1
+      (str "(defn "
+        name " (x) " "(let (t (str x \"-\" (* x 3))) " "(+ (string/length t) (bit/and x 7))))")]))
+
+(defn- map-helper ()
+  ;; CHAMP construction + traversal; the digest sums over keys, so iteration order cannot
+  ;; show
+  (let (name (fresh-name "mp"))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (let (m (fold (range 8) {}\n"
+        "                (fn (mm i) (assoc mm (math/rem (+ x i) 16) (bit/and (* i x) 255)))))\n"
+        "    (let (m2 (merge (dissoc m (math/rem x 16)) {99 (bit/and x 255)}))\n"
+        "      (bit/and (+ (count m2) (get m2 (math/rem (+ x 3) 16) 0)\n"
+        "                  (fold (map (keys m2) (fn (k) (get m2 k 0))) 0 +))\n"
+        "               268435455))))")]))
+
+(defn- nested-closure-helper ()
+  ;; three closures deep, each capturing outer bindings and its own let: capture-slot and
+  ;; frame-slot allocation (the sibling-let slot-reuse miscompile's machinery)
+  (let (name (fresh-name "cl"))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (let (a (math/rem x 7) b (math/rem x 5) c (math/rem x 3))\n"
+        "    (let (f (fn (y)\n" "              (let (d (+ y a))\n" "                (fn (z)\n"
+        "                  (let (e (+ (* z b) d))\n"
+        "                    (fn (w) (bit/and (+ a b c d e w (* x 2)) 268435455)))))))\n"
+        "      (((f 1) 2) 3))))")]))
+
+(defn- try-catch-helper ()
+  ;; throw -> catch -> deopt under the JIT; both arms return an int, so it never crashes
+  ;; a worker (which would turn a seed into a hang, not a diff)
+  (let (name (fresh-name "tr"))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (try\n" "    (let (d (math/rem x 3))\n"
+        "      (if (= d 0) (throw [:zero x]) (math/quot 100 d)))\n"
+        "    (catch e (bit/and (+ 7 (math/rem x 5)) 255))))")]))
+
+(defn- slot-torture-helper ()
+  ;; sibling lets in operand positions, shadowing, let-in-if, a bool-slot let as a condition
+  (let (name (fresh-name "sq"))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (let (a (math/rem x 7))\n" "    (- (let (a (+ a 1))\n"
+        "         (+ (let (b (* a 2)) b)\n" "            (let (a (bit/xor a x)) a)))\n"
+        "       (let (c (if (< a 3) (let (d 10) d) (let (d 20) d)))\n"
+        "         (* c (if (let (e (> x 0)) e) 2 3))))))")]))
+
+(defn- float-slot-helper ()
+  ;; float-slot lets as comparison operands, with a shadowed float binding
+  (let (name (fresh-name "sf"))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n"
+        "  (+ (if (< (let (a (* (math/rem x 5) 1.5)) a) (let (b (/ (+ x 3) 2.0)) b)) 1 0)\n"
+        "     (if (< (let (a (+ x 0.5)) a) (let (a (* x 0.25)) a)) 10 0)))")]))
+
+(defn- scalar-replacement-helper ()
+  ;; a single-binder let of a small vector literal read only by constant index: escape
+  ;; analysis lifts each element into a slot (`ea_scalar_replace`), which the immediate
+  ;; `(nth [..] k)` form never reaches
+  (let (name (fresh-name "ea")
+        size (random-int 2 6)
+        elements (string/join (map (range size) (fn (_) (i64-expr ["x"] 2))) " ")
+        reads (string/join (map (range (random-int 2 5))
+                             (fn (_) (str "(nth v " (random-int 0 (- size 1)) ")")))
+                " "))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (let (v [" elements "])\n" "    (bit/and (+ " reads ") 268435455)))")]))
+
+(defn- range-reduce-helper ()
+  ;; a NON-prim closure reduced over a range: the native `%range-reduce` HOF driver and its
+  ;; JIT fast-frame, which a prim reducer skips
+  (let (name (fresh-name "rr")
+        size (random-int 6 15)
+        operator (choose ["+" "-" "bit/xor"])
+        modulus (random-int 2 9))
+    [name
+      1
+      (str "(defn "
+        name " (x)\n" "  (reduce (range " size ") 0\n" "    (fn (acc i) (bit/and (" operator
+        " acc (* i (math/rem x " modulus "))) 268435455))))")]))
+
+(def- *optional-helpers*
+  [[0.3 float-helper]
+    [0.4 closure-hof-helper]
+    [0.4 match-helper]
+    [0.3 string-helper]
+    [0.4 map-helper]
+    [0.5 nested-closure-helper]
+    [0.4 try-catch-helper]
+    [0.55 slot-torture-helper]
+    [0.45 float-slot-helper]
+    [0.5 scalar-replacement-helper]
+    [0.5 range-reduce-helper]])
+
+(defn- expression-helper ()
+  (let (name (fresh-name "f")
+        params (map (range (random-int 1 3)) (fn (_) (fresh-name "p"))))
+    [name
+      (count params)
+      (str "(defn "
+        name
+        " ("
+        (string/join params " ")
+        ") "
+        (expr (vec params) (random-int 2 4))
+        ")")]))
+
+(defn- int-helper? (helper) (not (string/starts-with? (first helper) "g")))
+
+(defn- call-args (variable arity) (repeat-string variable arity))
+
+;; ---- program sections ---------------------------------------------------------
+;; Each returns a vector of top-level lines (possibly empty).
+
+(defn- flat-fan-out (name arity)
+  (let (per (choose [500 1500 3000])
+        workers (choose [4 8 16])
+        span (choose [64 512])
+        args (call-args "j" arity))
+    ["(def me (self))"
+      (str "(defn worker (w j n s)\n"
+        "  (if (>= j n) (send me [:done s])\n" "    (do (table/incr t 999983 1)\n"
+        "      (table/put t (+ 100000 (* w " span ") (math/rem j " span ")) (bit/and (" name " "
+        args ") 268435455))\n" "      (worker w (+ j 1) n (bit/and (+ s (" name " " args
+        ")) 268435455)))))")
+      (str "(defn fan (w) (if (= w "
+        workers ") nil (do (spawn (worker w 0 " per " 0)) (fan (+ w 1)))))")
+      (str "(defn fan-in (k s) (if (= k "
+        workers
+        ") s (fan-in (+ k 1) (receive ([:done v] (bit/and (+ s v) 268435455)) (after 10000 -1)))))")
+      (str "(defn dig2 (k n s)\n"
+        "  (if (>= k n) s\n" "    (dig2 (+ k 1) n (bit/xor s (* (- k 99999) (table/get t k 0))))))")
+      "(fan 0)"
+      "(def conc (fan-in 0 0))"
+      (str "(io/puts \"conc\" conc (table/get t 999983 0) (dig2 100000 "
+        (+ 100000 (* workers span))
+        " 0))")]))
+
+(defn- process-tree (name arity)
+  ;; a parent spawns node-workers; each spawns leaf-workers, MONITORS each, and collects
+  ;; both the [:leaf s] result and the [:down] — completion keys on downs, so even a
+  ;; crashing leaf cannot hang a node. Sums are commutative, so the digest is
+  ;; schedule-free. `spawn` evaluates its whole form in the CHILD, so the node captures its
+  ;; own pid into `nd` rather than calling `(self)` inside the leaf.
+  (let (args (repeat-string "(+ w j)" arity)
+        nodes (choose [3 5 8])
+        leaves (choose [3 6])
+        per (choose [300 900]))
+    ["(def me (self))"
+      (str "(defn leaf (node w j n s)\n"
+        "  (if (>= j n) (send node [:leaf s])\n" "    (leaf node w (+ j 1) n (bit/and (+ s (" name
+        " " args ")) 268435455))))")
+      (str "(defn node-loop (w downs sum)\n"
+        "  (if (= downs " leaves ") (send me [:node (bit/and sum 268435455)])\n" "    (receive\n"
+        "      ([:leaf v] (node-loop w downs (bit/and (+ sum v) 268435455)))\n"
+        "      ([:down _ _ _] (node-loop w (+ downs 1) sum))\n"
+        "      (after 15000 (send me [:node -1])))))")
+      (str "(defn spawn-leaves (nd w k)\n"
+        "  (if (= k " leaves ") nil\n" "    (do (monitor (spawn (leaf nd w 0 " per
+        " 0))) (spawn-leaves nd w (+ k 1)))))")
+      "(defn node-worker (w) (let (nd (self)) (do (spawn-leaves nd w 0) (node-loop w 0 0))))"
+      (str "(defn spawn-nodes (w) (if (= w "
+        nodes ") nil (do (spawn (node-worker w)) (spawn-nodes (+ w 1)))))")
+      (str "(defn tree-in (k s) (if (= k "
+        nodes
+        ") s (tree-in (+ k 1) (receive ([:node v] (bit/and (+ s v) 268435455)) (after 20000 -1)))))")
+      "(spawn-nodes 0)"
+      "(io/puts \"tree\" (tree-in 0 0))"]))
+
+(defn- concurrent-phase (helpers)
+  ;; fan workers out over a pure helper and commutative shared-table ops, fan the results
+  ;; in. Any divergence is a real concurrency bug, not schedule noise. Int helpers only: a
+  ;; crashed worker never sends :done, and the fan-in timeout turns the seed into a hang.
+  (if (chance? 0.6)
+    (let ([name arity _] (choose (vec (seq/filter helpers int-helper?))))
+      (if (= (choose ["flat" "flat" "tree"]) "flat")
+        (flat-fan-out name arity)
+        (process-tree name arity)))
+    []))
+
+(defn- pure-recursion ()
+  ;; standalone self-recursive i64 fns stay in the SPECIALISED fast-path subset; a
+  ;; jit/tree divergence here is an i64-path miscompile
+  (if (chance? 0.75)
+    (let (name (fresh-name "rec") body (i64-expr ["n" "a"] (random-int 2 4)))
+      [(str "(defn "
+         name " (n a)\n" "  (if (<= n 0) a\n" "    (" name " (- n 1) (bit/and " body
+         " 268435455))))")
+        (str "(io/puts \""
+          name
+          "\" ("
+          name
+          " "
+          (choose [2000 4000 8000])
+          " "
+          (random-int 1 99)
+          "))")])
+    []))
+
+(defn- fib-recursion ()
+  ;; NON-tail double self-recursion (the `i64_too_deep` guard path)
+  (if (chance? 0.45)
+    (let (name (fresh-name "fib"))
+      [(str "(defn "
+         name " (n)\n" "  (if (< n 2) n (bit/and (+ (" name " (- n 1)) (" name
+         " (- n 2))) 268435455)))")
+        (str "(io/puts \"" name "\" (" name " " (choose [25 28 30]) "))")])
+    []))
+
+(defn- float-recursion ()
+  ;; the float variant of the fast path; a bounded predicate keeps the print IEEE-stable
+  (if (chance? 0.45)
+    (let (name (fresh-name "flt"))
+      [(str "(defn "
+         name " (n a)\n" "  (if (<= n 0) a\n" "    (" name
+         " (- n 1) (+ (* a 1.0000001) (- (* n 0.5) a)))))")
+        (str "(io/puts \"" name "\" (< (" name " " (choose [1500 3000]) " 1.0) 1.0e18))")])
+    []))
+
+(defn- overflow-recursion ()
+  ;; the i64 arm's overflow guard must deopt and promote to a bignum, never wrap
+  (if (chance? 0.4)
+    (let (name (fresh-name "ov") base (choose [2 3 5]))
+      [(str "(defn " name " (n a) (if (<= n 0) a (" name " (- n 1) (* a " base "))))")
+        (str "(io/puts \"" name "\" (" name " " (choose [40 50 80]) " " (random-int 2 9) "))")])
+    []))
+
+(defn- throw-recursion ()
+  ;; a throw from inside an i64 arm, caught deterministically
+  (if (chance? 0.4)
+    (let (name (fresh-name "thr"))
+      [(str "(defn "
+         name " (n a)\n" "  (if (<= n 0) (throw [:done a])\n" "    (" name
+         " (- n 1) (bit/and (+ (* a 2) n) 268435455))))")
+        (str "(io/puts \""
+          name
+          "\" (try ("
+          name
+          " "
+          (choose [2000 5000])
+          " 1) (catch e (nth e 1))))")])
+    []))
+
+(defn- linear-map-loop ()
+  ;; a map threaded through a self-recursive fold, updated only via the whitelist that
+  ;; lets the compiler rewrite it to a private table (linmap) — semantics-preserving, so
+  ;; any jit-vs-tree diff is a miscompile
+  (if (chance? 0.5)
+    (let (name (fresh-name "hist")
+          key-count (choose [5 7 10 16])
+          increment (choose [1 2 3])
+          add (str "(%map-int-add m (math/rem i " key-count ") " increment ")")
+          body (if (chance? 0.45)
+                 (str "(if (= (math/rem i 13) 0) (%map-dissoc m (math/rem i "
+                   key-count ")) " add ")")
+                 add)
+          digest-name (fresh-name "mdig")
+          result-name (str name "-r"))
+      [(str "(defn "
+         name " (m i n)\n" "  (if (>= i n) m\n" "    (" name " " body " (+ i 1) n)))")
+        (str "(defn "
+          digest-name " (m k acc)\n" "  (if (>= k " key-count ") acc\n" "    (" digest-name
+          " m (+ k 1) (bit/xor acc (* (+ k 1) (%map-get m k 0))))))")
+        (str "(def " result-name " (" name " {} 0 " (choose [2000 5000 9000]) "))")
+        (str "(io/puts \""
+          name "\" (" digest-name " " result-name " 0 0) (%map-count " result-name "))")])
+    []))
+
+(defn- effect-destructure-loop ()
+  ;; the deopt-rerun bug's shape: a table effect before a non-tail call whose vector
+  ;; result is destructured (which deopts); a diff is a duplicated or lost effect
+  (if (chance? 0.4)
+    (let (name (fresh-name "spin")
+          maker (fresh-name "mk")
+          key (choose [777 888 999])
+          result-name (str name "-r"))
+      [(str "(defn " maker " (s) [(math/rem (+ (* s 1103515245) 12345) 2147483648) :tag])")
+        (str "(defn "
+          name " (s i n acc)\n" "  (if (>= i n) acc\n" "    (do (table/incr t " key " 1)\n"
+          "      (let ([s2 tag] (" maker " s))\n" "        (" name
+          " s2 (+ i 1) n (bit/xor acc (bit/and s2 268435455)))))))")
+        (str "(def " result-name " (" name " 1337 0 " (choose [5000 15000]) " 0))")
+        (str "(io/puts \"" name "\" " result-name " (table/get t " key " 0))")])
+    []))
+
+(defn- driver (helpers)
+  ;; the effectful driver loop: calls one int helper, puts + incrs the table
+  (let ([name arity _] (choose (vec (seq/filter helpers int-helper?)))
+        args (call-args "i" arity)
+        key-modulus (choose [8 64 512 4095])
+        put (str "(table/put t (math/rem i " key-modulus ") (" name " " args "))")
+        incr (str "(table/incr t " (random-int 0 7) " 1)")
+        [first-effect second-effect] (if (chance? 0.5) [put incr] [incr put])
+        iterations (choose [3000 5000 9000])
+        combine (choose ["bit/xor" "+"]))
+    [key-modulus
+      [(str "(defn drive (i n acc)\n"
+         "  (if (>= i n) acc\n" "    (do " first-effect "\n" "      " second-effect "\n"
+         "      (drive (+ i 1) n (" combine " acc (bit/and (" name " " args ") 268435455))))))")
+        (str "(def acc (drive 0 " iterations " 0))")]]))
+
+(defn program (seed)
+  "The generated program for `seed`, as source text."
+  (reset-generator seed)
+  (let (base-helpers (map (range (random-int 1 3)) (fn (_) (expression-helper)))
+        helpers (fold *optional-helpers*
+                  (vec base-helpers)
+                  (fn (chosen entry)
+                    (let ([probability build] entry)
+                      (if (chance? probability) (conj chosen (build)) chosen))))
+        [key-modulus driver-lines] (driver helpers)
+        sections (append ["(def t (table/new))"]
+                   (map helpers (fn (helper) (nth helper 2)))
+                   driver-lines
+                   (concurrent-phase helpers)
+                   (pure-recursion)
+                   (fib-recursion)
+                   (float-recursion)
+                   (overflow-recursion)
+                   (throw-recursion)
+                   (linear-map-loop)
+                   (effect-destructure-loop)
+                   [(str "(defn dig (k n s)\n"
+                      "  (if (>= k n) s\n"
+                      "    (dig (+ k 1) n (bit/xor s (* (+ k 1) (table/get t k 0))))))")
+                     (str "(io/puts \"digest\" acc (dig 0 " key-modulus " 0) (table/count t))")]))
+    (str (string/join sections "\n") "\n")))
+
+;; ---- running ------------------------------------------------------------------
+
+(defn- run-full (path extra-env)
+  ;; [comparison-string stderr]; only the first is compared across configs
+  (let (result (os/cmd *brood*
+                 [path]
+                 {:env (assoc extra-env "BROOD_NO_CHECK" "1") :timeout-ms 120000}))
+    (if (:timed-out result)
+      ["TIMEOUT" ""]
+      [(str "exit=" (:exit result) "\n" (:stdout result)) (:stderr result)])))
+
+(defn- divergent? (path)
+  ;; the shrink predicate: do the configs still disagree on `path`?
+  (> (count (seq/distinct (map *configs* (fn (config) (first (run-full path (second config)))))))
+    1))
+
+(defn- confirmed-divergence? (path)
+  ;; a real divergence reproduces; a subprocess the OS killed or starved under concurrent
+  ;; build load converges on re-run, so require three more disagreeing rounds
+  (every? (range 3) (fn (_) (divergent? path))))
+
+(def- *style-lints* ["unused let binding" "non-tail position" "unused parameter"])
+
+(defn- soundness-warnings (path)
+  ;; the advisory checker must be SOUND: a cleanly-running program gets zero type
+  ;; warnings (style lints are legitimate on generated code). nil when sound.
+  (let (result (os/cmd *brood* ["--check" path] {:timeout-ms 120000}))
+    (cond
+      (:timed-out result) "CHECKER TIMEOUT"
+      ;; exit 2 is a refusal (a stale binary), which prints no warning — reading it as
+      ;; "sound" would make every soundness check hollow
+      (= (:exit result) 2)
+        (error "fuzz_programs: `brood --check` refused to run: " (string/trim (:stderr result)))
+      :else
+        (let (real (seq/filter (string/split (string/trim (str (:stdout result) (:stderr result)))
+                                 "\n")
+                     (fn (line)
+                       (and (includes? line "warning")
+                         (not (any? *style-lints* (fn (lint) (includes? line lint))))))))
+          (when (not (empty? real)) (string/join real "\n"))))))
+
+(defn- unbound-names (stderrs)
+  (sort (seq/distinct (mapcat stderrs
+                        (fn (stderr)
+                          (map (seq/filter (string/split stderr "\n")
+                                 (fn (line) (includes? line "unbound symbol:")))
+                            (fn (line) (string/trim (second (string/split line "unbound symbol:"))))))))))
+
+(def- *combinators* ["map" "fold" "reduce" "seq/filter" "seq/reject" "seq/keep" "seq/find"])
+
+(defn- stale-order-lines (warnings)
+  ;; a generated program that RUNS but trips an argument-type warning on a core
+  ;; combinator is the generator emitting a stale ARGUMENT ORDER, not a checker bug
+  (seq/filter (string/split warnings "\n")
+    (fn (line)
+      (and (includes? line "argument")
+        (includes? line "expects")
+        (any? *combinators* (fn (combinator) (includes? line (str combinator ": argument"))))))))
+
+;; ---- auto-shrink (delta debugging over s-expressions) -----------------------------
+;; A node is ["a" text] for an atom or [open-delimiter children] for a container.
+
+(def- *closers* {"(" ")" "[" "]" "{" "}"})
+(def- *delimiters* #{"(" ")" "[" "]" "{" "}" ";"})
+(def- *whitespace* #{" " "\n" "\t" "\r"})
+
+(defn- scan-string-end (chars index)
+  ;; index just past the closing quote of the string opening before `index`
+  (cond
+    (>= index (count chars)) index
+    (and (= (nth chars index) "\"") (not (= (nth chars (- index 1)) "\\"))) (+ index 1)
+    :else (scan-string-end chars (+ index 1))))
+
+(defn- scan-while (chars index keep?)
+  (if (and (< index (count chars)) (keep? (nth chars index)))
+    (scan-while chars (+ index 1) keep?)
+    index))
+
+(defn- tokenize-from (chars index tokens)
+  (if (>= index (count chars))
+    tokens
+    (let (char (nth chars index))
+      (cond
+        (contains? *closers* char) (tokenize-from chars (+ index 1) (conj tokens char))
+        (contains? #{")" "]" "}"} char) (tokenize-from chars (+ index 1) (conj tokens char))
+        (= char "\"")
+          (let (end (scan-string-end chars (+ index 1)))
+            (tokenize-from chars end (conj tokens (string/join (seq/subvec chars index end) ""))))
+        (= char ";") (tokenize-from chars (scan-while chars index (fn (c) (not (= c "\n")))) tokens)
+        (contains? *whitespace* char) (tokenize-from chars (+ index 1) tokens)
+        :else
+          (let (end (scan-while chars
+                      index
+                      (fn (c) (not (or (contains? *whitespace* c) (contains? *delimiters* c))))))
+            (tokenize-from chars end (conj tokens (string/join (seq/subvec chars index end) ""))))))))
+
+(defn- tokenize (source) (tokenize-from (vec (string/->list source)) 0 []))
+
+;; Parsing, rendering and the tree walks below recurse on nesting depth, which is small.
+(check-allow :non-tail-recursion
+  (defn- parse-node (tokens index)
+    ;; [node next-index]
+    (let (token (nth tokens index))
+      (if (contains? *closers* token)
+        (let (closer (get *closers* token)
+              [children next-index] (parse-children tokens (+ index 1) closer []))
+          [[token children] next-index])
+        [["a" token] (+ index 1)]))))
+
+(defn- parse-children (tokens index closer children)
+  (if (= (nth tokens index) closer)
+    [children (+ index 1)]
+    (let ([node next-index] (parse-node tokens index))
+      (parse-children tokens next-index closer (conj children node)))))
+
+(defn- parse-forms (tokens index forms)
+  (if (>= index (count tokens))
+    forms
+    (let ([node next-index] (parse-node tokens index))
+      (parse-forms tokens next-index (conj forms node)))))
+
+(check-allow :non-tail-recursion
+  (defn- render (node)
+    (let ([kind value] node)
+      (if (= kind "a")
+        value
+        (str kind (string/join (map value render) " ") (get *closers* kind))))))
+
+(defn- render-forms (forms) (str (string/join (map forms render) "\n") "\n"))
+
+(check-allow :non-tail-recursion
+  (defn- node-size (node)
+    (if (= (first node) "a")
+      1
+      (fold (second node) 1 (fn (total child) (+ total (node-size child)))))))
+
+(check-allow :non-tail-recursion
+  (defn- child-paths (node path)
+    ;; the path of every child below `node`, depth-first
+    (if (= (first node) "a")
+      []
+      (mapcat (range (count (second node)))
+        (fn (index)
+          (let (child-path (conj path index))
+            (cons child-path (child-paths (nth (second node) index) child-path))))))))
+
+(defn- node-at (forms path)
+  ;; nil when an earlier replacement has detached the path
+  (fold (rest path)
+    (nth forms (first path))
+    (fn (node index)
+      (when (and node (not (= (first node) "a")) (< index (count (second node))))
+        (nth (second node) index)))))
+
+(check-allow :non-tail-recursion
+  (defn- replace-in-node (node path replacement)
+    (if (empty? path)
+      replacement
+      (let ([kind children] node index (first path))
+        [kind (assoc children index (replace-in-node (nth children index) (rest path) replacement))]))))
+
+(defn- replace-at (forms path replacement)
+  (assoc forms (first path) (replace-in-node (nth forms (first path)) (rest path) replacement)))
+
+(defn- all-paths (forms)
+  ;; every replaceable child, largest subtree first
+  (sort-by (mapcat (range (count forms)) (fn (index) (child-paths (nth forms index) [index])))
+    (fn (path) (- (node-size (node-at forms path))))))
+
+(def- shrinker (table/new))
+
+(defn- still-bad? (path candidate still-bad-fn budget)
+  (if (>= (table/get shrinker :runs) budget)
+    false
+    (do
+      (table/incr shrinker :runs 1)
+      (file/spit (str path ".shrink") (render-forms candidate))
+      (still-bad-fn (str path ".shrink")))))
+
+(defn- drop-forms (forms index changed attempt)
+  ;; pass 1: drop whole top-level forms, last first
+  (if (< index 0)
+    [forms changed]
+    (let (candidate (vec (append (seq/subvec forms 0 index)
+                           (seq/subvec forms (+ index 1) (count forms)))))
+      (if (and (not (empty? candidate)) (attempt candidate))
+        (drop-forms candidate (- index 1) true attempt)
+        (drop-forms forms (- index 1) changed attempt)))))
+
+(defn- rewrite-nodes (forms paths changed rewrite attempt)
+  ;; passes 2 and 3: apply `rewrite` to each node (nil = leave it) and keep what still fails
+  (if (empty? paths)
+    [forms changed]
+    (let (path (first paths)
+          node (node-at forms path)
+          replacement (when node (rewrite node)))
+      (if (and replacement (attempt (replace-at forms path replacement)))
+        (rewrite-nodes (replace-at forms path replacement) (rest paths) true rewrite attempt)
+        (rewrite-nodes forms (rest paths) changed rewrite attempt)))))
+
+(defn- zero-node (node) (when (not (= node ["a" "0"])) ["a" "0"]))
+
+(defn- halve-int (node)
+  (let ([kind value] node number (when (= kind "a") (string/->number value)))
+    (when (and (int? number) (> (math/abs number) 8))
+      ["a" (str (math/quot number 2))])))
+
+(defn- shrink-rounds (forms attempt budget)
+  (let ([after-drop dropped] (drop-forms forms (- (count forms) 1) false attempt)
+        [after-zero zeroed] (rewrite-nodes after-drop
+                              (all-paths after-drop)
+                              false
+                              zero-node
+                              attempt)
+        [after-halve halved] (rewrite-nodes after-zero
+                               (all-paths after-zero)
+                               false
+                               halve-int
+                               attempt))
+    (if (and (or dropped zeroed halved) (< (table/get shrinker :runs) budget))
+      (shrink-rounds after-halve attempt budget)
+      after-halve)))
+
+(defn- shrink (path still-bad-fn budget)
+  ;; greedy delta debugging: drop top-level forms, replace subtrees with 0, halve int
+  ;; literals — keeping each change that preserves the failure; bounded by `budget` runs
+  (table/put shrinker :runs 0)
+  (let (forms (parse-forms (tokenize (file/slurp path)) 0 [])
+        attempt (fn (candidate) (still-bad? path candidate still-bad-fn budget))
+        minimal (shrink-rounds forms attempt budget)
+        minimal-path (str path ".min"))
+    (file/spit minimal-path (render-forms minimal))
+    (when (file/exists? (str path ".shrink")) (file/rm (str path ".shrink")))
+    [minimal-path (table/get shrinker :runs)]))
+
+;; ---- the driver ---------------------------------------------------------------
+
+(defn- count-argument (flag text)
+  (let (number (string/->number (or text "")))
+    (if (int? number) number (error "fuzz_programs: " flag " wants an integer, got: " text))))
+
+(defn- parse-options (args options)
+  (cond
+    (empty? args) options
+    (= (first args) "--keep") (parse-options (rest args) (assoc options :keep true))
+    (= (first args) "--seeds")
+      (parse-options (rest (rest args))
+        (assoc options :seeds (count-argument "--seeds" (second args))))
+    (= (first args) "--start")
+      (parse-options (rest (rest args))
+        (assoc options :start (count-argument "--start" (second args))))
+    :else (error "fuzz_programs: unknown argument: " (first args))))
+
+(defn- clip (text width) (if (> (string/length text) width) (string/substring text 0 width) text))
+
+(defn- last-line-prefix (text width) (clip (last (string/split (string/trim text) "\n")) width))
+
+(defn- report-checker (seed path warnings)
+  (let (stale (stale-order-lines warnings))
+    (if (not (empty? stale))
+      (do
+        (io/puts (str "STALE GENERATOR seed="
+                   seed " (" path
+                   " kept): the generator emits a combinator's arguments in an order this build rejects."))
+        (io/puts "  Fix the generator's emission, not the checker. Offending warnings:")
+        (map (take stale 4) (fn (line) (io/puts (str "    " (string/trim line))))))
+      (do
+        (io/puts (str "CHECKER FALSE POSITIVE seed=" seed " (" path " kept):"))
+        (io/puts (str "  " (string/replace (clip warnings 400) "\n" "\n  ")))))))
+
+(defn- run-seed (seed path keep)
+  ;; :dead, :checker, :divergent, :transient or :ok, plus whether every config ran clean
+  (file/spit path (program seed))
+  (let (ran (map *configs* (fn (config) [(first config) (run-full path (second config))]))
+        outputs (map ran (fn (entry) (first (second entry))))
+        unbound (unbound-names (map ran (fn (entry) (second (second entry)))))
+        clean (every? outputs (fn (output) (string/starts-with? output "exit=0"))))
+    (cond
+      ;; LIVENESS: agreement means nothing unless the program ran. An unbound name in a
+      ;; GENERATED program is never legitimate — the generator writes every call.
+      (not (empty? unbound))
+        (do
+          (io/puts (str "DEAD PROGRAM seed="
+                     seed
+                     " ("
+                     path
+                     " kept): the generator emits names this build does not bind: "
+                     (string/join unbound ", ")))
+          (io/puts "  Every engine fails identically on these, so the run would otherwise report agreement.")
+          [:dead false])
+      (and clean (soundness-warnings path))
+        (do (report-checker seed path (soundness-warnings path)) [:checker true])
+      (> (count (seq/distinct outputs)) 1)
+        (if (confirmed-divergence? path)
+          (let (original-size (string/length (file/slurp path)))
+            (io/puts (str "DIVERGENCE seed=" seed " (" path " kept):"))
+            (map ran
+              (fn (entry)
+                (io/puts (str "  ["
+                           (first entry)
+                           "] "
+                           (clip (string/trim (first (second entry))) 200)))))
+            (let ([minimal-path oracle-runs] (shrink path divergent? 250))
+              (io/puts (str "  shrunk -> "
+                         minimal-path
+                         " ("
+                         oracle-runs
+                         " oracle runs, "
+                         (string/length (file/slurp minimal-path))
+                         " bytes from "
+                         original-size
+                         ")")))
+            [:divergent clean])
+          (do
+            (io/puts (str "seed "
+                       seed " transient (diverged once, converged on re-check — skipped)"))
+            (when (not keep) (file/rm path))
+            [:transient clean]))
+      :else
+        (do
+          (when (not keep) (file/rm path))
+          (io/puts (str "seed " seed " ok (" (last-line-prefix (first outputs) 60) ")"))
+          [:ok clean]))))
+
+(defn- run-seeds (seed last-seed outdir keep bad live)
+  (if (> seed last-seed)
+    [bad live]
+    (let ([verdict clean] (run-seed seed (str outdir "/fuzz_" seed ".blsp") keep))
+      (run-seeds (+ seed 1)
+        last-seed
+        outdir
+        keep
+        (if (contains? #{:ok :transient} verdict) bad (+ bad 1))
+        (if clean (+ live 1) live)))))
+
+(defn main ()
+  "Run the differential over the seeds `system/script-args` names; exit nonzero on a finding."
+  (let (options (parse-options (system/script-args) {:seeds 25 :start 1 :keep false})
+        outdir (or (os/env "FUZZ_OUTDIR") "stress/fuzz_out")
+        _ (when (not (file/exists? outdir)) (file/mkdir outdir))
+        seeds (:seeds options)
+        [bad live] (run-seeds (:start options)
+                     (+ (:start options) seeds -1)
+                     outdir
+                     (:keep options)
+                     0
+                     0))
+    (cond
+      (> bad 0) (do (io/puts (str "---- fuzz: " bad "/" seeds " seeds DIVERGED")) (system/halt 1))
+      ;; agreement across configs on a corpus that never ran is not evidence of anything
+      (= live 0)
+        (do
+          (io/puts (str "---- fuzz: "
+                     seeds
+                     " seeds agreed but NOT ONE ran to a clean exit — the corpus is dead, not the engines agreeing"))
+          (system/halt 1))
+      :else
+        (do
+          (io/puts (str "---- fuzz: " seeds " seeds, all configs agree (" live " ran clean)"))
+          (when (and (not (:keep options)) (empty? (file/ls outdir))) (file/rmdir outdir))
+          (system/halt 0)))))
+
+(main)

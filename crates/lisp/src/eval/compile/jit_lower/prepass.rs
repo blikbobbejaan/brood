@@ -1,7 +1,6 @@
-//! Pre-lowering analysis for `jit_lower_arm_inner` — pure, Cranelift-free passes
-//! over the arm's bytecode that produce the data the emit loop consumes. Split out
-//! of `jit_lower.rs` (the first step of decomposing that function): data in, data
-//! out, no CLIF emitted. `#[cfg(feature = "jit")]` like the rest of the lowerer.
+//! Pre-lowering analysis for `jit_lower_arm_inner` — pure, Cranelift-free passes over
+//! the arm's bytecode that produce the data the emit loop consumes: data in, data out,
+//! no CLIF emitted.
 #![cfg(feature = "jit")]
 use super::*;
 
@@ -140,4 +139,36 @@ pub(crate) fn block_analysis_checked(
         }
     }
     (is_leader, depth, unmodelled)
+}
+
+/// The body-weight gate for a self-recursive arm that also makes a tail call. A **tail**
+/// call returns to the driver (outcome 4) to dispatch the callee — a native↔driver round
+/// trip per hop that a `SelfCall` loop avoids — so the arm must do enough work per
+/// activation to amortise it: at least `TAIL_CALL_MIN_WORK` arithmetic/list prims or
+/// non-tail calls (a 2-op ping/pong body measured slower native than interpreted). An arm
+/// with no tail call has no round trip, and a non-self-recursive one is a pure delegator
+/// whose round trip is amortised over all of its callee's work; both pass.
+pub(crate) fn tail_call_work_is_enough(code: &[Inst]) -> bool {
+    const TAIL_CALL_MIN_WORK: usize = 4;
+    let has_tail_call = code
+        .iter()
+        .any(|i| matches!(i, Inst::Call { tail: true, .. }));
+    let has_self_call = code.iter().any(|i| matches!(i, Inst::SelfCall { .. }));
+    if !(has_tail_call && has_self_call) {
+        return true;
+    }
+    let work = code
+        .iter()
+        .filter(|i| {
+            matches!(
+                i,
+                Inst::Prim1 { .. }
+                    | Inst::Prim2 { .. }
+                    | Inst::Prim2SlotSlot { .. }
+                    | Inst::Prim2SlotInt { .. }
+                    | Inst::Call { tail: false, .. }
+            )
+        })
+        .count();
+    work >= TAIL_CALL_MIN_WORK
 }

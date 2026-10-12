@@ -47,8 +47,13 @@ are Rust.")
 ;; mechanism.
 
 (defn connect (host port)
-  "Connect to host:port; inbound data is delivered to the calling process as `[:tcp sock data]` / `[:tcp-closed sock]` messages. Returns a socket. Throws on failure."
-  (%tcp-connect host port))
+  "Connect to host:port; inbound data is delivered to the calling process as `[:tcp sock data]` / `[:tcp-closed sock]` messages. Returns a socket. Throws on failure. The resolve and handshake run off the scheduler, so a slow host parks only the caller."
+  (let (sock (%tcp-connect host port))
+    (receive
+      ([:tcp-connected ^sock] sock)
+      ([:tcp-error ^sock message] (throw {:kind :runtime
+                                          :code "E0050"
+                                          :message (str "tcp-connect " host ":" port ": " message)})))))
 (sig connect (string int -> socket))
 
 (defn listen (host port)

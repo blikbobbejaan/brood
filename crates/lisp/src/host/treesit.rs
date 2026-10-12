@@ -488,11 +488,11 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
     // Language it yields is validated against the host's ABI range below before any use.
     let language = unsafe {
         let lib = libloading::Library::new(path)
-            .map_err(|e| LispError::runtime(format!("tree-sitter-load-grammar: {path}: {e}")))?;
+            .map_err(|e| LispError::runtime(format!("%tree-sitter-load-grammar:{path}: {e}")))?;
         let entry: libloading::Symbol<unsafe extern "C" fn() -> *const ()> =
             lib.get(symbol.as_bytes()).map_err(|e| {
                 LispError::runtime(format!(
-                    "tree-sitter-load-grammar: {path} exports no {symbol}: {e}"
+                    "%tree-sitter-load-grammar:{path} exports no {symbol}: {e}"
                 ))
             })?;
         let f = *entry;
@@ -505,7 +505,7 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
         .set_language(&language)
         .map_err(|e| {
             LispError::runtime(format!(
-                "tree-sitter-load-grammar: {path}: {lang} is not usable by this runtime \
+                "%tree-sitter-load-grammar:{path}: {lang} is not usable by this runtime \
                  (grammar ABI {}, this build drives {}..={}): {e}",
                 language.abi_version(),
                 tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
@@ -556,7 +556,7 @@ fn dynamic_language(lang: &str) -> Option<tree_sitter::Language> {
 #[cfg(not(feature = "treesit"))]
 pub fn load_grammar(_path: &str, lang: &str) -> LispResult {
     Err(LispError::runtime(format!(
-        "tree-sitter-load-grammar: :{lang}: this runtime was built without tree-sitter \
+        "%tree-sitter-load-grammar::{lang}: this runtime was built without tree-sitter \
          (rebuild with --features treesit)"
     )))
 }
@@ -584,8 +584,8 @@ fn language_for(lang: &str) -> Result<tree_sitter::Language, LispError> {
         #[cfg(feature = "treesit-elixir")]
         "elixir" => Ok(tree_sitter_elixir::LANGUAGE.into()),
         other => Err(LispError::runtime(format!(
-            "tree-sitter-parse: no grammar for :{other} — load one at runtime with \
-             (tree-sitter-load-grammar \"/path/to/libtree-sitter-{other}.so\" :{other}), \
+            "%tree-sitter-parse:no grammar for :{other} — load one at runtime with \
+             (%tree-sitter-load-grammar \"/path/to/libtree-sitter-{other}.so\" :{other}), \
              or build it in with --features treesit-{other}"
         ))),
     }
@@ -621,7 +621,7 @@ fn checkout_parser(
     }
     let mut p = tree_sitter::Parser::new();
     p.set_language(language)
-        .map_err(|e| LispError::runtime(format!("tree-sitter-parse: {lang}: {e}")))?;
+        .map_err(|e| LispError::runtime(format!("%tree-sitter-parse:{lang}: {e}")))?;
     Ok(p)
 }
 
@@ -716,7 +716,7 @@ fn node_to_positioned(heap: &mut Heap, node: tree_sitter::Node, src: &str, b2c: 
 pub fn parse(_heap: &mut crate::core::heap::Heap, _src: &str, lang: &str) -> LispResult {
     let _ = Value::nil();
     Err(LispError::runtime(format!(
-        "tree-sitter-parse: :{lang}: this runtime was built without tree-sitter \
+        "%tree-sitter-parse::{lang}: this runtime was built without tree-sitter \
          (rebuild with --features treesit)"
     )))
 }

@@ -53,7 +53,6 @@
 //! byte-faithful first-class `bytes` value and `proc-send` accepts `bytes` too
 //! (see `crate::host::net` and the `bytes` type).
 
-use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -63,6 +62,7 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::time::Duration;
 
 use crate::core::value;
+use crate::host::owned::OwnedTable;
 use crate::process::{
     chunk_flush, chunk_payload, deliver_credited, spawn_io_source, CreditSource, DeliveryCredit,
     Message,
@@ -107,13 +107,6 @@ struct Proc {
     /// Shared with the reader threads, which load it per chunk, so
     /// `proc-set-binary` flips an already-running child mid-stream.
     binary: Arc<AtomicBool>,
-    /// The green process this child belongs to — the `subscriber` its readers
-    /// deliver to. When that process dies, [`close_process_procs`] kills and reaps
-    /// the child (Erlang port semantics: a port dies with its owner). Without
-    /// this, an owner that crashed without `proc-close` orphaned the OS child
-    /// forever: the registry entry leaked, and both reader threads kept draining
-    /// output into a dead pid's mailbox (a no-op delivery) for the child's life.
-    owner: u64,
     /// The pty master fd, for a child spawned by [`spawn_pty`]; `None` for a plain
     /// piped child. Only `pty_resize` reads it — the reader and writer already hold
     /// their own `File` clones of it.
@@ -410,10 +403,15 @@ const REAP_POLL_MAX: Duration = Duration::from_millis(500);
 /// than buffered without bound. `dist` uses the same shape for the same reason.
 const WRITE_QUEUE_CAP: usize = 1024;
 
-static REGISTRY: LazyLock<Mutex<HashMap<u64, Proc>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The child table, indexed by owner: the green process the child belongs to (the
+/// `subscriber` its readers deliver to). When that process dies,
+/// [`close_process_procs`] kills and reaps its children — a port dies with its owner —
+/// in O(children it owns).
+static REGISTRY: LazyLock<Mutex<OwnedTable<Proc>>> =
+    LazyLock::new(|| Mutex::new(OwnedTable::default()));
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-fn reg() -> std::sync::MutexGuard<'static, HashMap<u64, Proc>> {
+fn reg() -> std::sync::MutexGuard<'static, OwnedTable<Proc>> {
     crate::core::sync::lock(&REGISTRY)
 }
 
@@ -770,12 +768,12 @@ pub fn spawn(
     let writer = start_stdin_writer(stdin);
     reg().insert(
         id,
+        subscriber,
         Proc {
             writer,
             child: child.clone(),
             lifecycle: lifecycle.clone(),
             binary: binary.clone(),
-            owner: subscriber,
             pty: None,
         },
     );
@@ -805,8 +803,8 @@ pub fn spawn(
 /// 0–255 per byte) and `proc-send` writes codepoints as raw bytes. Errors if the
 /// handle is unknown (already closed). Mirrors `net::set_binary`.
 pub fn set_binary(id: u64, on: bool) -> std::io::Result<()> {
-    let reg = reg();
-    match reg.get(&id) {
+    let registry = reg();
+    match registry.get(&id) {
         Some(p) => {
             p.binary.store(on, Ordering::Release);
             Ok(())
@@ -864,8 +862,8 @@ pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
     // Clone the sender out under a brief registry lock, then queue outside it, so a
     // full queue never stalls every other `proc-*` op.
     let writer = {
-        let reg = reg();
-        match reg.get(&id) {
+        let registry = reg();
+        match registry.get(&id) {
             Some(p) => p.writer.clone(),
             None => return Err(bad_proc()),
         }
@@ -886,36 +884,39 @@ pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
 /// emits `[:proc-exit …]` (if it had not yet) and the final `[:proc-closed …]`; this
 /// call does not wait for either.
 pub fn close(id: u64) {
-    let removed = {
-        let mut reg = reg();
-        reg.remove(&id)
-    };
-    if let Some(entry) = &removed {
-        {
-            // Brief: signalling does not block, and the waiter holds this lock only to reap.
-            let mut slot = crate::core::sync::lock(&entry.child.slot);
-            // The waiter may already have found the entry gone and reaped; after that the
-            // pid is free for reuse and must not be signalled. Before it, the zombie (or
-            // the live child) holds the pid, so it names this child's group alone.
-            if !slot.reaped {
-                // The whole group — the child leads it (`spawn` / `spawn_pty`), and a
-                // grandchild left behind keeps running and keeps the pipes open.
-                // SAFETY: an unreaped child's pid cannot have been reused.
-                #[cfg(unix)]
-                unsafe {
-                    libc::killpg(slot.child.id() as libc::pid_t, libc::SIGKILL);
-                }
-                let _ = slot.child.kill();
-            }
-        }
-        // Stop the readers where they are: a descendant that left the group escaped the
-        // kill and may hold a pipe open forever, and the handle must still finish. This
-        // also releases a reader waiting on its inbound budget for an owner that is not
-        // reading (or has died — `close_process_procs` comes here).
-        entry.lifecycle.stop_readers();
+    let removed = reg().remove(&id);
+    if let Some(entry) = removed {
+        shut_down(entry);
     }
-    // `stdin` (in `removed`) drops here, sending EOF to the child too.
-    release(removed);
+}
+
+/// Terminate a child whose entry has just left the registry (`close`, or its owner's
+/// death via `close_process_procs`).
+fn shut_down(entry: Proc) {
+    {
+        // Brief: signalling does not block, and the waiter holds this lock only to reap.
+        let mut slot = crate::core::sync::lock(&entry.child.slot);
+        // The waiter may already have found the entry gone and reaped; after that the
+        // pid is free for reuse and must not be signalled. Before it, the zombie (or
+        // the live child) holds the pid, so it names this child's group alone.
+        if !slot.reaped {
+            // The whole group — the child leads it (`spawn` / `spawn_pty`), and a
+            // grandchild left behind keeps running and keeps the pipes open.
+            // SAFETY: an unreaped child's pid cannot have been reused.
+            #[cfg(unix)]
+            unsafe {
+                libc::killpg(slot.child.id() as libc::pid_t, libc::SIGKILL);
+            }
+            let _ = slot.child.kill();
+        }
+    }
+    // Stop the readers where they are: a descendant that left the group escaped the
+    // kill and may hold a pipe open forever, and the handle must still finish. This
+    // also releases a reader waiting on its inbound budget for an owner that is not
+    // reading (or has died).
+    entry.lifecycle.stop_readers();
+    // `stdin` (in `entry`) drops here, sending EOF to the child too.
+    release(Some(entry));
 }
 
 /// `(proc-signal handle sig)` — deliver signal `sig` (`"int"`, `"term"`, `"hup"`,
@@ -940,8 +941,8 @@ pub fn signal(id: u64, sig: &str) -> std::io::Result<()> {
                 ))
             }
         };
-        let reg = reg();
-        let p = reg.get(&id).ok_or_else(|| {
+        let registry = reg();
+        let p = registry.get(&id).ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "unknown or closed subprocess")
         })?;
         let slot = crate::core::sync::lock(&p.child.slot);
@@ -988,14 +989,10 @@ fn release(entry: Option<Proc>) {
 /// model: a dead process's resources are reclaimed on exit). A process that
 /// `proc-close`d its children has none left here, so this is a no-op then.
 pub fn close_process_procs(pid: u64) {
-    // Collect under the lock, close outside it: `close` re-takes the registry lock.
-    let ids: Vec<u64> = reg()
-        .iter()
-        .filter(|(_, p)| p.owner == pid)
-        .map(|(id, _)| *id)
-        .collect();
-    for id in ids {
-        close(id);
+    // Take the entries under the lock, shut them down outside it.
+    let owned = reg().remove_owned_by(pid);
+    for (_, entry) in owned {
+        shut_down(entry);
     }
 }
 
@@ -1221,12 +1218,12 @@ pub fn spawn_pty(
     let writer = start_stdin_writer(write_file);
     reg().insert(
         id,
+        subscriber,
         Proc {
             writer,
             child: child.clone(),
             lifecycle: lifecycle.clone(),
             binary: binary.clone(),
-            owner: subscriber,
             pty: Some(master),
         },
     );
@@ -1239,8 +1236,8 @@ pub fn spawn_pty(
 /// A no-op error for a handle that is not a pty, or is already closed.
 #[cfg(unix)]
 pub fn pty_resize(id: u64, cols: u16, rows: u16) -> std::io::Result<()> {
-    let reg = reg();
-    let Some(p) = reg.get(&id) else {
+    let registry = reg();
+    let Some(p) = registry.get(&id) else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "pty-resize: unknown or closed handle",

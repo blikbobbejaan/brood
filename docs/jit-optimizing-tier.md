@@ -1,5 +1,9 @@
 # JIT optimizing tier — killing the per-call protocol (scope)
 
+> **Removed levers.** The opt-outs this file cites (`BROOD_NO_INLINE`, `BROOD_NO_LEAF_INLINE`,
+> `BROOD_NO_PARTIAL_LEAF`) were removed 2026-10-09; the inliners are unconditional.
+> `brood --debug-flags` lists what exists.
+
 > **Note on the background docs cited below.** `jit-tier2.md`, `jit-stage1.md`,
 > `value-repr.md` and `frame-representation.md` were trimmed in `fdce5400` once the work
 > they planned had shipped. Their conclusions are folded into this file, the ADR that

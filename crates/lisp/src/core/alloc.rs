@@ -46,12 +46,10 @@ use std::cell::Cell;
 /// immutable data path-copies on every update (a CHAMP `assoc` clones each node on
 /// the root→leaf path; a fresh `Value` per builtin), so allocation throughput is
 /// load-bearing. mimalloc's per-thread heaps + size-segregated free lists turn that
-/// churn into ~bump-speed alloc/free — measured ~15% on `wordcount`, ~28% on
-/// `bintree`, broadly across every allocation-heavy path (alloc-light code and boot
-/// time are unchanged). It holds freed pages for reuse rather than returning them to
+/// churn into ~bump-speed alloc/free. It holds freed pages for reuse rather than returning them to
 /// the OS — a deliberate memory-for-speed trade, the right one for a long-running
 /// app. The byte-counting in [`Counting`] (ADR-043 `BROOD_MEM_LIMIT`) is unaffected:
-/// it tallies the requested `Layout` size around this backend exactly as before.
+/// it tallies the requested `Layout` size around this backend.
 #[cfg(all(not(feature = "system-alloc"), not(target_arch = "wasm32")))]
 const BACKEND: mimalloc::MiMalloc = mimalloc::MiMalloc;
 /// Sanitizer builds (`--features system-alloc`): ThreadSanitizer can't see the
@@ -105,66 +103,22 @@ thread_local! {
     static SINCE_SAMPLE: Cell<u32> = const { Cell::new(0) };
 }
 
-/// Default ceiling the *test runners* apply when neither env var is set
-/// (`brood --test`, `nest test`, the `cargo test` Brood suite). Its job is to
-/// **GUARANTEE THE HOST SURVIVES a test run** — it is *not* a precise working-set
-/// budget. The number is chosen *below* a typical dev machine's RAM so a run whose
-/// allocation grows without bound fails with a clean, catchable `E0043` (then the
-/// hard abort) long before the OS OOM-killer or a hard freeze can fire.
+/// Default hard ceiling the *test runners* apply when neither env var is set
+/// (`brood --test`, `nest test`, the Rust-hosted Brood suite). A **host-survival
+/// backstop, not a working-set budget**: set below a typical dev machine's RAM so an
+/// allocation that grows without bound fails cleanly long before the OS OOM-killer
+/// fires, and well above the suite's legitimate peak (~2.6× at last measurement, KI-47)
+/// so parallel load never trips it. The collector is the reclamation path; opt out per
+/// run via `BROOD_MEM_LIMIT`.
 ///
-/// **2 GiB hard / 1 GiB soft.** Now that automatic collection at any eval depth
-/// (Stage B + ADR-061, `docs/memory-review.md`) reclaims LOCAL garbage, the whole
-/// project suite peaks ~240 MB *under collection* (down from ~1.1 GiB when the
-/// runner merely hibernated between steps, ~4 GiB tripping the old cap, and ~18 GiB
-/// before isolated units ran in droppable processes / OOM-froze the host). So these
-/// were sized for an era that's gone: 1 GiB soft is ~4× the live peak — high enough
-/// never to trip on legitimate parallel load, low enough to catch a genuine runaway
-/// (which heads to many GB) *cleanly* via the catchable `E0043` before the hard
-/// abort. This cap is a **host-survival backstop, not a working-set budget** — the
-/// collector is the reclamation path. Opt out per run via `BROOD_MEM_LIMIT`.
-///
-/// **Never default this to `0`/unlimited** — a pathological non-collecting path (or
-/// the prelude *builder*, where GC is off) could still eat host RAM; an unlimited
-/// default once OOM-froze the machine.
-/// **Raised 2 → 3 GiB on 2026-08-19**, with the soft cap below; see that note.
+/// **Never default this to `0`/unlimited** — a non-collecting path (or the prelude
+/// *builder*, where GC is off) could still eat host RAM; an unlimited default once
+/// OOM-froze the machine.
 pub const TEST_DEFAULT_HARD: usize = 3 * 1024 * 1024 * 1024; // 3 GiB
-/// Soft default for the test runners, so a runaway/accumulating run fails *cleanly*
-/// (catchable `E0043`) before the hard abort and far below host RAM.
-///
-/// **Raised 1 → 2 GiB on 2026-08-19.** The `differential (tree-walker)` CI job went red
-/// on every run from the ADR-230/231 stdlib-namespacing merge onward (green through run
-/// 32141480911, red from 32221892676), always as the same three `adversarial_test.blsp`
-/// heap-allocation cases dying on `E0043`. Those cases were not the cause: this is a
-/// threshold, so the cases that die are simply whichever are running when the *suite's*
-/// process-wide total crosses it.
-///
-/// Measured locally, in-language suite, debug build, `BROOD_VM=0`: **1 145 412 425 bytes
-/// against the 1 073 741 824-byte cap** — 6.7% over — with the runner reporting a
-/// 996.6 MB peak. CI measured 1 149 317 883 on the same job. The VM arm stays under and
-/// is unaffected; the tree-walker allocates far more by design, so it crosses first.
-///
-/// **This is a backstop doing what it documents it must not do** — "never trip on
-/// legitimate parallel load". 1.145 GB is not a runaway (the comment above notes a real
-/// one "heads to many GB"); it is the working set. Hence the raise rather than a hunt for
-/// 7%, which a growing suite would re-cross anyway.
-///
-/// ✅ **Answered 2026-08-20: the growth is legitimate, and the ~240 MB comparison was
-/// apples-to-oranges.** That figure dates from 2026-05-30 and was measured on a different
-/// engine and build from the 1.145 GB above — the tree-walker costs 1.38× the VM on the same
-/// suite (measured), debug costs more than release, and three months of suite growth sit in
-/// between. The mechanism KI-47 named — module count — is refuted: with total source held
-/// constant, 120× the module count costs 1.65× peak (~60 KB/module), so all 89 stdlib modules
-/// account for ~5.5 MB of the ~905 MB in question. Nor did the namespace refactor cause it:
-/// pre-merge (098a3316) vs HEAD on an identical harness is +4.4% on the VM arm and **−11% on
-/// the tree-walker**, the very arm that went red. The peak has since receded to 726.7/757.9 MB
-/// on this exact harness (two samples, vs 996.6 MB on 2026-08-19) — under the *original* 1 GiB
-/// cap. **Keep these values anyway**: ~2.6× margin at today's peak, near the 4× intended, where
-/// 1 GiB would leave ~1.2× and re-trip. The number was right; only the rationale was wrong.
-/// Full working in `docs/known-issues.md` § KI-47.
-/// Tried and rejected first: `hibernate` per isolated test in `run-unit-fresh`. It shrinks
-/// only the *calling* process's slabs (148× on a microbenchmark) while this cap counts
-/// process-wide allocation across every green process and the shared regions, so it did not
-/// move the suite total.
+/// Soft default for the test runners: a runaway fails with the catchable `E0043`
+/// before the hard abort. It is a process-wide total, so the cases that die on it are
+/// whichever happen to be running when the suite crosses it — the tree-walker arm,
+/// which allocates the most, crosses first.
 pub const TEST_DEFAULT_SOFT: usize = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 /// Allocator wrapper that tallies bytes in/out and enforces [`HARD_LIMIT`],

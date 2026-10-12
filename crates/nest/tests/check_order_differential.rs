@@ -52,7 +52,7 @@ fn check(root: &Path, files: &[PathBuf]) -> String {
         .args(files)
         .env("BROOD_NO_CHECK_CACHE", "1")
         // The question is engine-independent (a verdict, not a runtime behaviour), so the
-        // child does not inherit the tree-walker job's `BROOD_VM=0`: three whole-tree checks
+        // child does not inherit the tree-walker job's `BROOD_TIER=0`: three whole-tree checks
         // measured 42 s solo on the VM and ~1.6x that tree-walked, against a 120 s cap on a
         // 2-core runner. Same pin `contracts_mode` and `mapget_differential` take.
         //

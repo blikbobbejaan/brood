@@ -18,38 +18,24 @@
     ;; => \"https://example.com/search?q=hello+world\"")
 
 ;; ---- percent-encoding -------------------------------------------------------
-;;
-;; Unreserved chars (RFC 3986 §2.3): A-Z a-z 0-9 - _ . ~
-;; Codepoints: 65-90 (A-Z), 97-122 (a-z), 48-57 (0-9), 45 (-), 95 (_), 46 (.), 126 (~).
 
-(def- url-hex-upper "0123456789ABCDEF")
-
-(defn- url-unreserved? (cp)
-  "True if codepoint `cp` is an RFC 3986 unreserved character."
+(defn- unreserved? (cp)
+  "True if byte `cp` is an RFC 3986 unreserved character (§2.3): A-Z a-z 0-9 - _ . ~"
   (or (and (>= cp 65) (<= cp 90))
     (and (>= cp 97) (<= cp 122))
     (and (>= cp 48) (<= cp 57))
-    (= cp 45)
-    (= cp 95)
-    (= cp 46)
-    (= cp 126)))
+    (includes? [45 95 46 126] cp)))
 
-(defn- url-byte->pct (b)
-  "Encode a single byte `b` as a %XX string (uppercase hex)."
-  (str "%"
-    (string/char-at url-hex-upper (math/quot b 16))
-    (string/char-at url-hex-upper (math/rem b 16))))
-
-;; `acc` is the emitted pieces in reverse; `percent-encode` joins once. `(str acc …)`
-;; per byte rebuilt the whole accumulator each step — O(n^2) over a long input.
-(defn- url-encode-bytes (bytes acc)
-  "Encode a list of byte ints, emitting unreserved ASCII codepoints as-is and
-encoding everything else as %XX. Accumulates pieces into the reversed list `acc`."
-  (if (empty? bytes)
-    acc
-    (let (b (first bytes))
-      (url-encode-bytes (rest bytes)
-        (cons (if (url-unreserved? b) (string/int->char b) (url-byte->pct b)) acc)))))
+(defn- encode-bytes (s space)
+  "`s`'s UTF-8 bytes with unreserved ASCII as-is, a space as `space`, and every other
+byte as %XX (uppercase hex)."
+  (string/join (map (seq (string/->bytes s))
+                 (fn (b)
+                   (cond
+                     (unreserved? b) (string/int->char b)
+                     (= b 32) space
+                     else (str "%" (encoding/hex-encode-bytes-upper [b])))))
+    ""))
 
 (defn percent-encode (s)
   "Percent-encode string `s` for use in a URL path or query component. Every byte
@@ -57,59 +43,23 @@ that is not an RFC 3986 unreserved character (A-Z a-z 0-9 - _ . ~) is encoded as
 %XX (uppercase hex). Multi-byte UTF-8 sequences are encoded byte-by-byte.
 
     (url/percent-encode \"a b\")   → \"a%20b\""
-  (apply str (reverse (url-encode-bytes (seq (string/->bytes s)) nil))))
+  (encode-bytes s "%20"))
 
 ;; ---- percent-decoding -------------------------------------------------------
 
-(def- url-hex-val
-  {"0" 0
-   "1" 1
-   "2" 2
-   "3" 3
-   "4" 4
-   "5" 5
-   "6" 6
-   "7" 7
-   "8" 8
-   "9" 9
-   "a" 10
-   "b" 11
-   "c" 12
-   "d" 13
-   "e" 14
-   "f" 15
-   "A" 10
-   "B" 11
-   "C" 12
-   "D" 13
-   "E" 14
-   "F" 15})
-
 ;; `s` is a CODE-POINT VECTOR (built once in `percent-decode`), so char access is
 ;; O(1) `nth` — `char-at` on the raw UTF-8 string is O(i), making the scan O(n^2).
-(defn- url-pct-decode-loop (s i n acc)
+(defn- decode-loop (s i n acc)
   "Decode percent-encoded code-point vector `s` (count `n`), accumulating decoded bytes
-into `acc`; the decoded byte list, or `:invalid`."
-  (if (>= i n)
-    (reverse acc)
-    (let (c (nth s i))
-      (if (= c "%")
-        (if (>= (+ i 2) n)
-          ;; Incomplete %XX. This used to emit the `%` literally and carry on, which
-          ;; returned CORRUPT DATA — text that looks decoded but isn't — and is the one
-          ;; outcome worse than either failing or raising. `:invalid` unwinds to the
-          ;; public wrapper, which answers a failure naming the input.
-          :invalid (let (hi (get url-hex-val (nth s (+ i 1)))
-                lo (get url-hex-val (nth s (+ i 2))))
-            (if (and hi lo)
-              (url-pct-decode-loop s (+ i 3) n (cons (+ (* hi 16) lo) acc))
-              ;; Not a valid %XX — same reasoning as the incomplete case above.
-              :invalid)))
-        ;; Normal char: encode its UTF-8 bytes into the accumulator
-        (url-pct-decode-loop s
-          (+ i 1)
-          n
-          (%reverse-onto (string/->bytes c) acc))))))
+into `acc`; the decoded byte list, or `:invalid` for an incomplete or non-hex %XX (decoding
+it literally would hand back text that looks decoded and isn't)."
+  (cond
+    (>= i n) (reverse acc)
+    (not (= (nth s i) "%")) (decode-loop s (+ i 1) n (%reverse-onto (string/->bytes (nth s i)) acc))
+    (>= (+ i 2) n) :invalid
+    else
+      (let (byte (encoding/hex-decode-bytes (str (nth s (+ i 1)) (nth s (+ i 2)))))
+        (if (failure? byte) :invalid (decode-loop s (+ i 3) n (cons (bytes/at byte 0) acc))))))
 
 (defn percent-decode (s)
   "Decode percent-encoded sequences in `s` → the original string, or a `failure` when
@@ -120,11 +70,10 @@ UTF-8.
     (failure? (url/percent-decode \"a%ZZ\"))   → true
     (failure? (url/percent-decode \"%FF\"))    → true"
   (let (v (into [] (string/->list s))
-        r (url-pct-decode-loop v 0 (count v) nil)
+        r (decode-loop v 0 (count v) nil)
         ;; `%FF` is well-formed percent-encoding of a byte that is not UTF-8, and the
-        ;; decoder RAISES on it — which broke this function's promise of a failure value,
-        ;; and took down an http worker decoding a hostile `?token=%FF`. The byte list is
-        ;; ints 0–255, so not-UTF-8 is the only way the decode can raise.
+        ;; decoder RAISES on it. The byte list is ints 0–255, so not-UTF-8 is the only way
+        ;; the decode can raise.
         ;; check-allow :discarded-catch — the raise IS the answer: nil means "not UTF-8"
         text (if (= r :invalid)
                nil
@@ -139,31 +88,6 @@ UTF-8.
 ;; application/x-www-form-urlencoded: space → +, rest percent-encoded (same
 ;; unreserved set). Keys and values are percent-encoded individually.
 
-;; Reversed piece list, joined once by `url-query-encode-str` (see url-encode-bytes).
-(defn- url-qenc-bytes (bytes acc)
-  (if (empty? bytes)
-    acc
-    (let (b (first bytes))
-      (url-qenc-bytes (rest bytes)
-        (cons (cond (url-unreserved? b) (string/int->char b) (= b 32) "+" else (url-byte->pct b))
-          acc)))))
-
-(defn- url-query-encode-str (s)
-  "Encode a single key or value for use in a query string: unreserved chars
-pass through, space becomes +, all other bytes become %XX."
-  (apply str (reverse (url-qenc-bytes (seq (string/->bytes s)) nil))))
-
-(defn- url-pairs->query (pairs acc first?)
-  "Encode a list of `[key value]` pairs as a query string."
-  (if (empty? pairs)
-    acc
-    (let (kv (first pairs)
-          k (url-query-encode-str (first kv))
-          v (url-query-encode-str (second kv))
-          sep (if first? "" "&"))
-      (url-pairs->query (rest pairs) (cons (str sep k "=" v) acc) false))))
-(sig url-pairs->query ((or nil (list (tuple string string))) any bool -> any))
-
 (defn query-encode (params)
   "Encode a map of string→string (or keyword→string) params as a
 `key=value&key=value` query string, percent-encoding keys and values and using
@@ -173,10 +97,9 @@ defines rather than as its field map.
 
     (url/query-encode {:a 1})    → \"a=1\""
   (let (pairs (sort (map (%map-pairs params)
-                      (fn (kv)
-                        [(if (keyword? (first kv)) (->string (first kv)) (str (first kv)))
-                          (->string (second kv))]))))
-    (apply str (reverse (url-pairs->query pairs nil true)))))
+                      (fn ([k v]) [(if (keyword? k) (->string k) (str k)) (->string v)]))))
+    (string/join (map pairs (fn ([k v]) (str (encode-bytes k "+") "=" (encode-bytes v "+"))))
+      "&")))
 
 ;; ---- query string decoding --------------------------------------------------
 
@@ -231,16 +154,10 @@ invalid %XX sequence (the failure propagates rather than landing in the map).
       [(string/substring s 0 i) (string/substring s (+ i (string/length sep)) (string/length s))])))
 
 ;; An RFC-3986 authority is `[userinfo@]host[:port]`, and `host` may be a **bracketed
-;; IPv6 literal** (`[::1]`) — which itself contains colons. Splitting on the *first*
-;; colon got both wrong, and not merely cosmetically:
-;;
-;;   "user:pass@example.com"  → host "user"   (the userinfo was read as the host)
-;;   "[::1]:8080"             → host "["      (the literal's own colons won)
-;;
-;; The first is a security bug, not a parse nit: `https://evil.com@good.com/` reported
-;; host `evil.com`, so an allow-list check, a logged origin, or an SSRF guard built on
-;; `:host` sees a *different* host than the one a real client connects to. That is the
-;; classic userinfo-confusion phishing/SSRF primitive.
+;; IPv6 literal** (`[::1]`) — which itself contains colons, so neither split is on the
+;; first colon. Reading userinfo as the host is a security bug, not a parse nit:
+;; `https://evil.com@good.com/` must report host `good.com`, or an allow-list or SSRF
+;; guard built on `:host` checks a different host than the one a client connects to.
 (defn- url-authority-split (hostport)
   "Split a `host[:port]` (userinfo already removed) into `[host port-str]`, honouring
 a bracketed IPv6 literal. `port-str` is nil when no `:port` is present."
@@ -261,10 +178,9 @@ a bracketed IPv6 literal. `port-str` is nil when no `:port` is present."
           (string/substring hostport (+ colon 1) (string/length hostport))]))))
 
 (defn- url-parse-port (port-str)
-  ;; An unparseable port used to come back as nil — indistinguishable from "no port
-  ;; given", so `http://h:8o80/` silently fell back to port 80 and connected somewhere
-  ;; the URL never named. Raise instead. An EMPTY port (`host:`) stays nil: RFC 3986
-  ;; §3.2.3 defines that as "use the scheme's default".
+  ;; An unparseable port raises: nil would read as "no port given" and fall back to the
+  ;; scheme's default, somewhere the URL never named. An EMPTY port (`host:`) is nil:
+  ;; RFC 3986 §3.2.3 defines that as "use the scheme's default".
   ;; A port is DIGITs only (RFC 3986 §3.2.3): `string/->number` also reads `+80`, which
   ;; a client may resolve differently, so the digits are checked before the number.
   (cond

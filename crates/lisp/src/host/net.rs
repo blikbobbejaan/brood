@@ -62,6 +62,7 @@ use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
 
 use crate::core::value;
+use crate::host::owned::OwnedTable;
 use crate::process::{
     chunk_flush, chunk_payload, deliver_credited, sink_pair, CreditSource, DeliveryCredit,
     MailboxSink, Message,
@@ -140,9 +141,6 @@ enum Kind {
 /// carries) lives with the reactor; commands cross via [`Cmd`].
 struct Ctl {
     kind: Kind,
-    /// The green-process pid that owns this socket — the process whose death
-    /// closes it (`close_process_sockets`). Updated by `controlling_process`.
-    owner: u64,
     /// Inbound decode mode (ADR-141) — shared with the reactor, read per chunk.
     binary: Arc<AtomicBool>,
     /// Where inbound messages go — shared with the reactor's sink, retargeted
@@ -155,11 +153,14 @@ struct Ctl {
     port: Option<u16>,
 }
 
-static REGISTRY: LazyLock<Mutex<HashMap<u64, Ctl>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// The socket table, indexed by owner — the green process whose death closes the socket
+/// (`close_process_sockets`, O(sockets it owns)); `controlling_process` hands it on.
+static REGISTRY: LazyLock<Mutex<OwnedTable<Ctl>>> =
+    LazyLock::new(|| Mutex::new(OwnedTable::default()));
 /// Socket ids double as reactor poll tokens, so 0 is reserved for the waker.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
-fn reg() -> std::sync::MutexGuard<'static, HashMap<u64, Ctl>> {
+fn reg() -> std::sync::MutexGuard<'static, OwnedTable<Ctl>> {
     crate::core::sync::lock(&REGISTRY)
 }
 
@@ -210,6 +211,7 @@ fn reactor_died(panic: Option<Box<dyn std::any::Any + Send>>) {
     );
     let entries: Vec<(u64, u64)> = reg()
         .drain()
+        .into_iter()
         .map(|(id, ctl)| (id, ctl.subscriber.load(Ordering::Acquire)))
         .collect();
     for (id, pid) in entries {
@@ -734,13 +736,13 @@ fn accept_ready(
                 let port = stream.local_addr().ok().map(|a| a.port());
                 reg().insert(
                     cid,
+                    owner,
                     Ctl {
                         kind: if tls.is_some() {
                             Kind::TlsStream
                         } else {
                             Kind::Stream
                         },
-                        owner,
                         binary: binary.clone(),
                         subscriber: ccell.clone(),
                         claimed: false,
@@ -1063,6 +1065,7 @@ fn drive_tls(
     false
 }
 
+/// Apply one control-plane command on the reactor thread — one function per command.
 fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     match cmd {
         Cmd::Stream {
@@ -1071,55 +1074,32 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             sink,
             subscriber,
             binary,
-        } => {
-            let mut c = PlainConn {
-                stream,
-                sink,
-                subscriber,
-                flow: InboundFlow::new(id),
-                binary,
-                carry: Vec::new(),
-                out: OutQ::new(),
-                reading: true,
-                read_done: false,
-                accepted_at: None,
-                closing: None,
-                registered: false,
-                idle: None,
-                last_activity: Instant::now(),
-            };
-            sync_plain_registration(id, &mut c, registry);
-            conns.insert(id, Rx::Plain(c));
-        }
+        } => start_stream(id, stream, sink, subscriber, binary, conns, registry),
         Cmd::Listen {
             id,
-            mut listener,
+            listener,
             sink,
             subscriber,
         } => {
-            let ok = registry
-                .register(&mut listener, Token(id as usize), Interest::READABLE)
-                .is_ok();
+            let (listener, registered) = register_listener(id, listener, registry);
             conns.insert(
                 id,
                 Rx::Listener {
                     listener,
                     sink,
                     subscriber,
-                    registered: ok,
+                    registered,
                 },
             );
         }
         Cmd::TlsListen {
             id,
-            mut listener,
+            listener,
             sink,
             subscriber,
             config,
         } => {
-            let ok = registry
-                .register(&mut listener, Token(id as usize), Interest::READABLE)
-                .is_ok();
+            let (listener, registered) = register_listener(id, listener, registry);
             conns.insert(
                 id,
                 Rx::TlsListener {
@@ -1127,7 +1107,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
                     sink,
                     subscriber,
                     config,
-                    registered: ok,
+                    registered,
                 },
             );
         }
@@ -1140,214 +1120,288 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             server_name,
             request,
             config,
-        } => {
-            match ClientConnection::new(config, server_name) {
-                Ok(mut conn) => {
-                    // Buffer the whole request as plaintext now; rustls emits it once the
-                    // handshake completes. rustls's writer defaults to a 64 KiB buffer cap,
-                    // so without lifting it `write_all` silently buffers only the first
-                    // ~64 KiB of a larger request and drops the rest (the result is ignored)
-                    // — the peer then waits forever for a body that never fully arrives. The
-                    // request is already fully in memory, so `None` (no cap) just holds one
-                    // copy of it.
-                    conn.set_buffer_limit(None);
-                    let _ = conn.writer().write_all(&request);
-                    let mut c = TlsConn {
-                        stream,
-                        conn: rustls::Connection::Client(conn),
-                        sink,
-                        subscriber,
-                        flow: InboundFlow::new(id),
-                        binary,
-                        carry: Vec::new(),
-                        read_done: false,
-                        closing: None,
-                        registered: false,
-                        pending_out: 0,
-                        one_shot: true,
-                        handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
-                        idle: None,
-                        last_activity: Instant::now(),
-                    };
-                    sync_tls_registration(id, &mut c, registry);
-                    conns.insert(id, Rx::Tls(c));
-                }
-                Err(e) => {
-                    sink.emit(tcp_error_msg(id, &format!("tls: {e}")));
-                    reg().remove(&id);
-                }
-            }
-        }
-        Cmd::Claim { id } => {
-            match conns.remove(&id) {
-                Some(Rx::Plain(mut c)) => {
-                    c.reading = true;
-                    c.accepted_at = None;
-                    // Start the idle clock from establishment, not from accept/arm:
-                    // any wait while passive & unclaimed must not count against an
-                    // idle bound armed before the claim.
-                    c.last_activity = Instant::now();
-                    sync_plain_registration(id, &mut c, registry);
-                    conns.insert(id, Rx::Plain(c));
-                }
-                Some(Rx::TlsPending(p)) => match ServerConnection::new(p.config) {
-                    Ok(mut conn) => {
-                        // rustls caps its outbound buffer at 64 KiB by default, and
-                        // `Cmd::Send` ignores a short `write_all`, so once a slow reader
-                        // backed the socket up every byte past that cap was DROPPED,
-                        // silently, mid-stream. The bound that belongs here is ours:
-                        // `pending_out` against `OUT_CAP` drops the connection loudly
-                        // instead (the client path lifts the cap for the same reason).
-                        conn.set_buffer_limit(None);
-                        let mut c = TlsConn {
-                            stream: p.stream,
-                            conn: rustls::Connection::Server(conn),
-                            sink: p.sink,
-                            subscriber: p.subscriber,
-                            flow: InboundFlow::new(id),
-                            binary: p.binary,
-                            carry: Vec::new(),
-                            read_done: false,
-                            closing: None,
-                            registered: false,
-                            pending_out: 0,
-                            one_shot: false,
-                            handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
-                            idle: None,
-                            last_activity: Instant::now(),
-                        };
-                        sync_tls_registration(id, &mut c, registry);
-                        conns.insert(id, Rx::Tls(c));
-                    }
-                    Err(e) => {
-                        p.sink.emit(tcp_error_msg(id, &format!("tls: {e}")));
-                        reg().remove(&id);
-                    }
-                },
-                Some(other) => {
-                    conns.insert(id, other);
-                }
-                None => {}
-            };
-        }
-        Cmd::Retarget { id } => {
-            let was_paused = match conns.get_mut(&id) {
-                Some(Rx::Plain(c)) => {
-                    let was_paused = c.flow.retire();
-                    c.flow = InboundFlow::new(id);
-                    was_paused
-                }
-                Some(Rx::Tls(c)) => {
-                    let was_paused = c.flow.retire();
-                    c.flow = InboundFlow::new(id);
-                    was_paused
-                }
-                _ => false,
-            };
-            if was_paused {
-                resume_reading(id, conns, registry);
-            }
-        }
+        } => start_tls_client(
+            id,
+            TlsClientStart {
+                stream,
+                sink,
+                subscriber,
+                binary,
+                server_name,
+                request,
+                config,
+            },
+            conns,
+            registry,
+        ),
+        Cmd::Claim { id } => claim(id, conns, registry),
+        Cmd::Retarget { id } => retarget(id, conns, registry),
         Cmd::Resume { id } => resume_reading(id, conns, registry),
-        Cmd::Send { id, bytes } => {
-            let remove = match conns.get_mut(&id) {
-                Some(Rx::Plain(c)) => {
-                    if c.out.total + bytes.len() > OUT_CAP {
-                        // A stuck reader: drop the connection rather than
-                        // buffer without bound. Notify the current subscriber
-                        // regardless of whether reads were started (an unclaimed
-                        // accepted socket write-bombed here would otherwise drop
-                        // silently — Finding 5).
-                        if !c.read_done {
-                            c.sink.emit(tcp_closed_msg(id));
-                            c.read_done = true;
-                        }
-                        true
-                    } else {
-                        c.out.push(bytes);
-                        c.last_activity = Instant::now();
-                        // Try at once — the common case is a writable socket,
-                        // and edge-triggered polls only fire on transitions.
-                        drive_plain(id, c, false, true, registry)
-                    }
-                }
-                Some(Rx::Tls(c)) => {
-                    // Bound the plaintext handed to rustls (whose writer buffers
-                    // without limit): once we're backed up (`wants_write`) and
-                    // past OUT_CAP, drop rather than grow `sendable_tls` forever.
-                    if c.conn.wants_write() && c.pending_out + bytes.len() > OUT_CAP {
-                        if !c.read_done {
-                            if c.one_shot {
-                                c.sink
-                                    .emit(tcp_error_msg(id, "tls: outbound buffer overflow"));
-                            } else {
-                                c.sink.emit(tcp_closed_msg(id));
-                            }
-                            c.read_done = true;
-                        }
-                        true
-                    } else {
-                        c.pending_out += bytes.len();
-                        c.last_activity = Instant::now();
-                        let _ = c.conn.writer().write_all(&bytes);
-                        drive_tls(id, c, false, true, registry)
-                    }
-                }
-                _ => false,
-            };
-            if remove {
-                teardown(id, conns, registry);
-            }
-        }
-        Cmd::SetIdle { id, ms } => {
-            let idle = if ms == 0 {
-                None
-            } else {
-                Some(Duration::from_millis(ms))
-            };
-            match conns.get_mut(&id) {
-                Some(Rx::Plain(c)) => {
-                    c.idle = idle;
-                    c.last_activity = Instant::now();
-                }
-                Some(Rx::Tls(c)) => {
-                    c.idle = idle;
-                    c.last_activity = Instant::now();
-                }
-                // A listener or a not-yet-claimed accept: nothing to arm (an
-                // unclaimed accept is already bounded by ACCEPT_REAP_AFTER).
-                _ => {}
-            }
-        }
-        Cmd::Close { id } => {
-            let remove = match conns.get_mut(&id) {
-                Some(Rx::Plain(c)) => {
-                    if c.out.is_empty() {
-                        true
-                    } else {
-                        c.closing = Some(Instant::now() + LINGER);
-                        drive_plain(id, c, false, true, registry)
-                    }
-                }
-                Some(Rx::Tls(c)) => {
-                    c.closing = Some(Instant::now() + LINGER);
-                    if !c.conn.wants_write() {
-                        tls_finish(id, c, None)
-                    } else {
-                        drive_tls(id, c, false, true, registry)
-                    }
-                }
-                Some(Rx::TlsPending(_))
-                | Some(Rx::Listener { .. })
-                | Some(Rx::TlsListener { .. }) => true,
-                None => false,
-            };
-            if remove {
-                teardown(id, conns, registry);
-            }
-        }
+        Cmd::Send { id, bytes } => queue_send(id, bytes, conns, registry),
+        Cmd::SetIdle { id, ms } => set_idle(id, ms, conns),
+        Cmd::Close { id } => close_connection(id, conns, registry),
         #[cfg(debug_assertions)]
         Cmd::DieForTest => panic!("net reactor: test-induced death (Cmd::DieForTest)"),
+    }
+}
+
+/// An active plaintext stream from `tcp-connect`: reads start at once.
+fn start_stream(
+    id: u64,
+    stream: MioStream,
+    sink: MailboxSink,
+    subscriber: Arc<AtomicU64>,
+    binary: Arc<AtomicBool>,
+    conns: &mut HashMap<u64, Rx>,
+    registry: &mio::Registry,
+) {
+    let mut connection = PlainConn {
+        stream,
+        sink,
+        subscriber,
+        flow: InboundFlow::new(id),
+        binary,
+        carry: Vec::new(),
+        out: OutQ::new(),
+        reading: true,
+        read_done: false,
+        accepted_at: None,
+        closing: None,
+        registered: false,
+        idle: None,
+        last_activity: Instant::now(),
+    };
+    sync_plain_registration(id, &mut connection, registry);
+    conns.insert(id, Rx::Plain(connection));
+}
+
+/// Register a listener for accept readiness; returns it with whether that succeeded.
+fn register_listener(
+    id: u64,
+    mut listener: MioListener,
+    registry: &mio::Registry,
+) -> (MioListener, bool) {
+    let registered = registry
+        .register(&mut listener, Token(id as usize), Interest::READABLE)
+        .is_ok();
+    (listener, registered)
+}
+
+/// The parts of a `Cmd::TlsClient` that become the connection.
+struct TlsClientStart {
+    stream: MioStream,
+    sink: MailboxSink,
+    subscriber: Arc<AtomicU64>,
+    binary: Arc<AtomicBool>,
+    server_name: ServerName<'static>,
+    request: Vec<u8>,
+    config: Arc<ClientConfig>,
+}
+
+/// A one-shot TLS client exchange (`tls-request`): buffer the request, start the handshake.
+fn start_tls_client(
+    id: u64,
+    start: TlsClientStart,
+    conns: &mut HashMap<u64, Rx>,
+    registry: &mio::Registry,
+) {
+    match ClientConnection::new(start.config, start.server_name) {
+        Ok(mut tls) => {
+            // Buffer the whole request as plaintext now; rustls emits it once the handshake
+            // completes. Lift rustls's 64 KiB writer cap, or `write_all` silently keeps only
+            // the first 64 KiB and the peer waits forever for the rest. The request is
+            // already fully in memory, so no cap just holds one copy of it.
+            tls.set_buffer_limit(None);
+            let _ = tls.writer().write_all(&start.request);
+            let mut connection = TlsConn {
+                stream: start.stream,
+                conn: rustls::Connection::Client(tls),
+                sink: start.sink,
+                subscriber: start.subscriber,
+                flow: InboundFlow::new(id),
+                binary: start.binary,
+                carry: Vec::new(),
+                read_done: false,
+                closing: None,
+                registered: false,
+                pending_out: 0,
+                one_shot: true,
+                handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
+                idle: None,
+                last_activity: Instant::now(),
+            };
+            sync_tls_registration(id, &mut connection, registry);
+            conns.insert(id, Rx::Tls(connection));
+        }
+        Err(error) => {
+            start.sink.emit(tcp_error_msg(id, &format!("tls: {error}")));
+            reg().remove(&id);
+        }
+    }
+}
+
+/// The first `tcp-controlling-process` on an accepted socket: start reading it (and, for
+/// a TLS accept, start the server handshake).
+fn claim(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
+    match conns.remove(&id) {
+        Some(Rx::Plain(mut connection)) => {
+            connection.reading = true;
+            connection.accepted_at = None;
+            // Start the idle clock from establishment: time spent passive and unclaimed
+            // must not count against an idle bound armed before the claim.
+            connection.last_activity = Instant::now();
+            sync_plain_registration(id, &mut connection, registry);
+            conns.insert(id, Rx::Plain(connection));
+        }
+        Some(Rx::TlsPending(pending)) => match ServerConnection::new(pending.config) {
+            Ok(mut tls) => {
+                // Lift rustls's 64 KiB outbound cap: `Cmd::Send` ignores a short
+                // `write_all`, so a backed-up slow reader would silently lose bytes past it.
+                // Our bound is `pending_out` against `OUT_CAP`, which drops loudly.
+                tls.set_buffer_limit(None);
+                let mut connection = TlsConn {
+                    stream: pending.stream,
+                    conn: rustls::Connection::Server(tls),
+                    sink: pending.sink,
+                    subscriber: pending.subscriber,
+                    flow: InboundFlow::new(id),
+                    binary: pending.binary,
+                    carry: Vec::new(),
+                    read_done: false,
+                    closing: None,
+                    registered: false,
+                    pending_out: 0,
+                    one_shot: false,
+                    handshake_deadline: Some(Instant::now() + HANDSHAKE_TIMEOUT),
+                    idle: None,
+                    last_activity: Instant::now(),
+                };
+                sync_tls_registration(id, &mut connection, registry);
+                conns.insert(id, Rx::Tls(connection));
+            }
+            Err(error) => {
+                pending
+                    .sink
+                    .emit(tcp_error_msg(id, &format!("tls: {error}")));
+                reg().remove(&id);
+            }
+        },
+        Some(other) => {
+            conns.insert(id, other);
+        }
+        None => {}
+    }
+}
+
+/// A claimed stream changed owner: give it a fresh [`InboundFlow`], resuming it if the
+/// old one held it paused.
+fn retarget(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
+    let flow = match conns.get_mut(&id) {
+        Some(Rx::Plain(connection)) => Some(&mut connection.flow),
+        Some(Rx::Tls(connection)) => Some(&mut connection.flow),
+        _ => None,
+    };
+    let was_paused = match flow {
+        Some(flow) => {
+            let was_paused = flow.retire();
+            *flow = InboundFlow::new(id);
+            was_paused
+        }
+        None => false,
+    };
+    if was_paused {
+        resume_reading(id, conns, registry);
+    }
+}
+
+/// Queue outbound bytes and try to flush at once (the common case is a writable socket,
+/// and edge-triggered polls only fire on transitions). Past [`OUT_CAP`] the connection is
+/// dropped rather than buffered without bound.
+fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
+    let remove = match conns.get_mut(&id) {
+        Some(Rx::Plain(connection)) => {
+            if connection.out.total + bytes.len() > OUT_CAP {
+                // A stuck reader. Notify the current subscriber whether or not reads were
+                // started — an unclaimed accepted socket write-bombed here would otherwise
+                // drop silently.
+                if !connection.read_done {
+                    connection.sink.emit(tcp_closed_msg(id));
+                    connection.read_done = true;
+                }
+                true
+            } else {
+                connection.out.push(bytes);
+                connection.last_activity = Instant::now();
+                drive_plain(id, connection, false, true, registry)
+            }
+        }
+        Some(Rx::Tls(connection)) => {
+            // Bound the plaintext handed to rustls (whose writer buffers without limit):
+            // once backed up (`wants_write`) and past OUT_CAP, drop rather than grow.
+            if connection.conn.wants_write() && connection.pending_out + bytes.len() > OUT_CAP {
+                if !connection.read_done {
+                    if connection.one_shot {
+                        connection
+                            .sink
+                            .emit(tcp_error_msg(id, "tls: outbound buffer overflow"));
+                    } else {
+                        connection.sink.emit(tcp_closed_msg(id));
+                    }
+                    connection.read_done = true;
+                }
+                true
+            } else {
+                connection.pending_out += bytes.len();
+                connection.last_activity = Instant::now();
+                let _ = connection.conn.writer().write_all(&bytes);
+                drive_tls(id, connection, false, true, registry)
+            }
+        }
+        _ => false,
+    };
+    if remove {
+        teardown(id, conns, registry);
+    }
+}
+
+/// Arm (`ms` > 0) or disarm an established stream's idle timeout. A listener or a
+/// not-yet-claimed accept has nothing to arm (an unclaimed accept is already bounded by
+/// `ACCEPT_REAP_AFTER`).
+fn set_idle(id: u64, ms: u64, conns: &mut HashMap<u64, Rx>) {
+    let idle = (ms != 0).then(|| Duration::from_millis(ms));
+    let (idle_slot, last_activity) = match conns.get_mut(&id) {
+        Some(Rx::Plain(connection)) => (&mut connection.idle, &mut connection.last_activity),
+        Some(Rx::Tls(connection)) => (&mut connection.idle, &mut connection.last_activity),
+        _ => return,
+    };
+    *idle_slot = idle;
+    *last_activity = Instant::now();
+}
+
+/// Flush queued outbound (bounded by [`LINGER`]) and close.
+fn close_connection(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
+    let remove = match conns.get_mut(&id) {
+        Some(Rx::Plain(connection)) => {
+            if connection.out.is_empty() {
+                true
+            } else {
+                connection.closing = Some(Instant::now() + LINGER);
+                drive_plain(id, connection, false, true, registry)
+            }
+        }
+        Some(Rx::Tls(connection)) => {
+            connection.closing = Some(Instant::now() + LINGER);
+            if !connection.conn.wants_write() {
+                tls_finish(id, connection, None)
+            } else {
+                drive_tls(id, connection, false, true, registry)
+            }
+        }
+        Some(Rx::TlsPending(_)) | Some(Rx::Listener { .. }) | Some(Rx::TlsListener { .. }) => true,
+        None => false,
+    };
+    if remove {
+        teardown(id, conns, registry);
     }
 }
 
@@ -1530,67 +1584,95 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
 
 // ---- the primitive operations (control plane) ----
 
-/// How long a `tcp-connect` may stall its worker on the TCP handshake.
-///
-/// This is the one blocking hole in an otherwise mio-based socket layer, and the
-/// caller is a *green process* multiplexed onto ~nproc worker threads — so an
-/// unbounded connect does not merely stall the caller, it removes a worker from the
-/// pool and with it every other green process scheduled there. Left to the OS, a
-/// blackholed host costs ~2 minutes of that. Bounded here so the failure is a prompt,
-/// catchable error instead of a silent scheduler brownout. Name resolution below is
-/// still blocking (`ToSocketAddrs` has no timeout in std); it is bounded in practice
-/// by the resolver's own timeout, and is noted rather than hidden.
-const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Bound on one address's TCP handshake in `tcp-connect`. The dial runs on a helper
+/// thread, never a scheduler worker, so this bounds how long the caller waits for its
+/// `[:tcp-connected …]` / `[:tcp-error …]`, not a worker stall.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// `(tcp-connect host port)` — connect (name resolution + a time-bounded TCP
-/// handshake on the calling thread); reads start at once, delivering to `subscriber`.
+/// Resolve `host:port` and connect to each address in turn with a per-address
+/// `timeout`, as `TcpStream::connect` does. Blocking — call it only off the scheduler's
+/// workers (`ToSocketAddrs` has no timeout of its own).
+fn dial(host: &str, port: u16, timeout: Duration) -> std::io::Result<std::net::TcpStream> {
+    let mut last_error: Option<std::io::Error> = None;
+    for address in std::net::ToSocketAddrs::to_socket_addrs(&(host, port))? {
+        match std::net::TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("could not resolve any address for {host}:{port}"),
+        )
+    }))
+}
+
+/// Make a freshly dialled stream reactor-ready: non-blocking, Nagle off (a request
+/// body would otherwise go out one delayed-ACK per record — O(size) round trips).
+fn prepare_dialled(stream: &std::net::TcpStream) -> std::io::Result<()> {
+    stream.set_nonblocking(true)?;
+    let _ = stream.set_nodelay(true);
+    Ok(())
+}
+
+/// Hand a connected stream to the reactor only if its id is still registered, with the
+/// registry lock held across the hand-off: `close` and `close_process_sockets` remove
+/// the entry under that lock and only then queue `Cmd::Close`, so a stream handed off
+/// here is always queued ahead of any close for its id. Dropping `make_command`'s
+/// stream (the entry is gone) closes it. Returns whether the hand-off happened.
+fn hand_off_if_registered(id: u64, make_command: impl FnOnce() -> Cmd) -> bool {
+    let registry = reg();
+    if !registry.contains_key(&id) {
+        return false;
+    }
+    reactor().cmd(make_command());
+    drop(registry);
+    true
+}
+
+/// Spawn a short-lived helper thread for a blocking dial. A refused thread is an error
+/// for the caller (never a panic in its green process); the registry entry is undone.
+fn spawn_dialler(id: u64, name: &str, work: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(work)
+        .map(|_| ())
+        .map_err(|error| {
+            reg().remove(&id);
+            std::io::Error::other(format!("cannot start connect thread: {error}"))
+        })
+}
+
+fn tcp_connected_msg(id: u64) -> Message {
+    Message::Vector(vec![
+        Message::Keyword(value::intern("tcp-connected")),
+        Message::Socket(id),
+    ])
+}
+
+/// `(%tcp-connect host port)` — start a connect and return its socket id at once. Name
+/// resolution and the (time-bounded) handshake run on a helper thread, so a slow or
+/// blackholed host never holds a scheduler worker. The outcome reaches `subscriber`
+/// as `[:tcp-connected sock]` — after which reads have started — or
+/// `[:tcp-error sock msg]`. `tcp/connect` waits for it, so the Brood API stays
+/// synchronous.
 pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     reactor_up()?;
-    // Resolve first so we can use `connect_timeout`, which needs a concrete addr.
-    // Try each resolved address in turn, as `TcpStream::connect` does.
-    let mut addrs = std::net::ToSocketAddrs::to_socket_addrs(&(host, port))?.peekable();
-    let mut last_err: Option<std::io::Error> = None;
-    let std_stream = loop {
-        let Some(addr) = addrs.next() else {
-            return Err(last_err.unwrap_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("could not resolve any address for {host}:{port}"),
-                )
-            }));
-        };
-        match std::net::TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
-            Ok(s) => break s,
-            Err(e) => last_err = Some(e),
-        }
-    };
-    std_stream.set_nonblocking(true)?;
-    // Disable Nagle so a large request body isn't paced one delayed-ACK per record
-    // (see the TLS client path for the measured impact).
-    let _ = std_stream.set_nodelay(true);
-    let local = std_stream.local_addr().ok().map(|a| a.port());
-    let stream = MioStream::from_std(std_stream);
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let binary = Arc::new(AtomicBool::new(false));
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
         id,
+        subscriber,
         Ctl {
             kind: Kind::Stream,
-            owner: subscriber,
             binary: binary.clone(),
             subscriber: cell.clone(),
             claimed: true,
-            port: local,
+            port: None,
         },
     );
-    reactor().cmd(Cmd::Stream {
-        id,
-        stream,
-        sink,
-        subscriber: cell,
-        binary,
-    });
     // Closes the race with `reactor_died`'s sweep: the flag is set before the sweep
     // drains the registry, so an entry inserted after the sweep observes it here and
     // withdraws instead of hanging its owner on a socket nothing will ever drive.
@@ -1598,6 +1680,37 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
         reg().remove(&id);
         return Err(reactor_dead_err());
     }
+    let host = host.to_string();
+    spawn_dialler(id, "brood-tcp-connect", move || {
+        let connected = dial(&host, port, CONNECT_TIMEOUT).and_then(|stream| {
+            prepare_dialled(&stream)?;
+            Ok(stream)
+        });
+        match connected {
+            Ok(std_stream) => {
+                let local_port = std_stream.local_addr().ok().map(|address| address.port());
+                if let Some(ctl) = reg().get_mut(&id) {
+                    ctl.port = local_port;
+                }
+                let stream = MioStream::from_std(std_stream);
+                // Announced before the reactor can read: the same sink, in order, so the
+                // owner sees `[:tcp-connected]` ahead of any `[:tcp …]` data.
+                sink.emit(tcp_connected_msg(id));
+                hand_off_if_registered(id, || Cmd::Stream {
+                    id,
+                    stream,
+                    sink,
+                    subscriber: cell,
+                    binary,
+                });
+            }
+            Err(error) => {
+                if reg().remove(&id).is_some() {
+                    sink.emit(tcp_error_msg(id, &error.to_string()));
+                }
+            }
+        }
+    })?;
     Ok(id)
 }
 
@@ -1613,9 +1726,9 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
         id,
+        subscriber,
         Ctl {
             kind: Kind::Listener,
-            owner: subscriber,
             binary: Arc::new(AtomicBool::new(false)),
             subscriber: cell.clone(),
             claimed: true,
@@ -1641,13 +1754,13 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
 /// for an already-active socket it retargets delivery.
 pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
     let claim = {
-        let mut reg = reg();
-        match reg.get_mut(&id) {
+        let mut registry = reg();
+        match registry.get_mut(&id) {
             Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream) => {
                 ctl.subscriber.store(pid, Ordering::Release);
-                ctl.owner = pid;
                 let was_claimed = ctl.claimed;
                 ctl.claimed = true;
+                registry.set_owner(id, pid);
                 !was_claimed
             }
             Some(_) => {
@@ -1683,8 +1796,8 @@ pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
 /// the reliable way to run a binary server, and mirrors `gen_tcp:listen(Port, [binary])`.
 /// A stream may still switch mode afterwards; inheritance only decides where it starts.
 pub fn set_binary(id: u64, on: bool) -> std::io::Result<()> {
-    let reg = reg();
-    match reg.get(&id) {
+    let registry = reg();
+    match registry.get(&id) {
         // Every kind: a stream switches its own mode, a listener sets what its accepted
         // sockets start in. `TlsListener` inherits the same way `Listener` does.
         Some(ctl) => {
@@ -1705,8 +1818,8 @@ pub fn set_binary(id: u64, on: bool) -> std::io::Result<()> {
 /// gone by the time the reactor applies it; errors now if it's a listener.
 pub fn set_idle_timeout(id: u64, ms: u64) -> std::io::Result<()> {
     {
-        let reg = reg();
-        match reg.get(&id) {
+        let registry = reg();
+        match registry.get(&id) {
             Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream) => {}
             Some(_) => {
                 return Err(invalid(
@@ -1728,8 +1841,8 @@ pub fn set_idle_timeout(id: u64, ms: u64) -> std::io::Result<()> {
 pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
     reactor_up()?;
     {
-        let reg = reg();
-        match reg.get(&id) {
+        let registry = reg();
+        match registry.get(&id) {
             Some(ctl) if ctl.kind == Kind::Stream => {}
             Some(ctl) if ctl.kind == Kind::TlsStream => {
                 if !ctl.claimed {
@@ -1759,20 +1872,10 @@ pub fn close(id: u64) {
 }
 
 /// Close every socket owned by green-process `pid` (scheduler `deregister`):
-/// a dead owner never leaks fds or registry slots.
+/// a dead owner never leaks fds or registry slots. O(sockets `pid` owns).
 pub fn close_process_sockets(pid: u64) {
-    let doomed: Vec<u64> = {
-        let mut reg = reg();
-        let ids: Vec<u64> = reg
-            .iter()
-            .filter_map(|(&id, ctl)| if ctl.owner == pid { Some(id) } else { None })
-            .collect();
-        for id in &ids {
-            reg.remove(id);
-        }
-        ids
-    };
-    for id in doomed {
+    let doomed = reg().remove_owned_by(pid);
+    for (id, _) in doomed {
         reactor().cmd(Cmd::Close { id });
     }
 }
@@ -1823,6 +1926,11 @@ fn tls_config_with_ca(ca_pem: &str) -> std::io::Result<Arc<ClientConfig>> {
     ))
 }
 
+/// Bound on the TLS client's TCP connect. Matches `dist`'s dial timeout: long enough for
+/// any healthy path, short enough that a silently-dropping host does not hold the caller's
+/// registry entry and request buffer for the kernel's multi-minute SYN timeout.
+const TLS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// `(tls-request host port request [ca-pem])` — one HTTPS exchange: handshake,
 /// send `request` (already-flattened iolist bytes), stream the response as
 /// `[:tcp id data]` … `[:tcp-closed id]` (or `[:tcp-error id msg]`). Returns
@@ -1831,11 +1939,6 @@ fn tls_config_with_ca(ca_pem: &str) -> std::io::Result<Arc<ClientConfig>> {
 /// honors `tcp-set-binary` like any other (set it right after this returns —
 /// nothing can arrive before the request is sent). `ca_pem` (private CAs, dev
 /// certs) replaces the Mozilla roots as the trust anchor for this request.
-/// Bound on the TLS client's TCP connect. Matches `dist`'s dial timeout: long enough for
-/// any healthy path, short enough that a silently-dropping host does not hold the caller's
-/// registry entry and request buffer for the kernel's multi-minute SYN timeout.
-const TLS_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
 pub fn tls_request(
     host: &str,
     port: u16,
@@ -1853,94 +1956,60 @@ pub fn tls_request(
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
         id,
+        subscriber,
         Ctl {
             kind: Kind::TlsStream,
-            owner: subscriber,
             binary: binary.clone(),
             subscriber: cell.clone(),
             claimed: true,
             port: None,
         },
     );
+    // See `connect` — closes the race with `reactor_died`'s sweep.
+    if REACTOR_DOWN.load(Ordering::SeqCst) {
+        reg().remove(&id);
+        return Err(reactor_dead_err());
+    }
     let host = host.to_string();
-    std::thread::Builder::new()
-        .name("brood-tls-connect".into())
-        .spawn(move || {
-            let server_name = match ServerName::try_from(host.clone()) {
-                Ok(n) => n,
-                Err(_) => {
+    spawn_dialler(id, "brood-tls-connect", move || {
+        let server_name = match ServerName::try_from(host.clone()) {
+            Ok(name) => name,
+            Err(_) => {
+                if reg().remove(&id).is_some() {
                     sink.emit(tcp_error_msg(id, "tls: invalid server name"));
-                    reg().remove(&id);
-                    return;
                 }
-            };
-            // Bounded connect. `TcpStream::connect` waits out the kernel's SYN timeout —
-            // minutes against a host that silently drops — and although this runs on its
-            // own thread rather than a scheduler worker, that thread holds the caller's
-            // registry entry and its `request` buffer for the whole time.
-            let connected = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))
-                .and_then(|addrs| {
-                    let mut last: Option<std::io::Error> = None;
-                    for sa in addrs {
-                        match std::net::TcpStream::connect_timeout(&sa, TLS_CONNECT_TIMEOUT) {
-                            Ok(s) => return Ok(s),
-                            Err(e) => last = Some(e),
-                        }
-                    }
-                    Err(last.unwrap_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "tls: no addresses resolved",
-                        )
-                    }))
+                return;
+            }
+        };
+        let connected = dial(&host, port, TLS_CONNECT_TIMEOUT).and_then(|stream| {
+            prepare_dialled(&stream)?;
+            Ok(stream)
+        });
+        match connected {
+            Ok(std_stream) => {
+                // The owner may have closed this handle while we were connecting;
+                // installing it then would leak an fd and a TLS session under an id
+                // nothing can close (KI-97 item 4) — the hand-off checks under the
+                // registry lock.
+                let stream = MioStream::from_std(std_stream);
+                hand_off_if_registered(id, || Cmd::TlsClient {
+                    id,
+                    stream,
+                    sink,
+                    subscriber: cell,
+                    binary,
+                    server_name,
+                    request,
+                    config,
                 });
-            match connected {
-                Ok(std_stream) => {
-                    if std_stream.set_nonblocking(true).is_err() {
-                        sink.emit(tcp_error_msg(id, "tls: could not configure socket"));
-                        reg().remove(&id);
-                        return;
-                    }
-                    // Disable Nagle: this is a request/response client that writes the
-                    // whole request then reads. With Nagle on, the tail of a multi-record
-                    // upload stalls waiting on the peer's delayed ACK, so a large body's
-                    // records go out one delayed-ACK apart — O(size) round-trips, seconds
-                    // for a few hundred KB.
-                    let _ = std_stream.set_nodelay(true);
-                    // The owner may have closed this handle while we were connecting: the
-                    // registry entry was inserted BEFORE the connect, and `close` removes
-                    // it. Handing the socket to the reactor now would install a live
-                    // connection under an id nothing owns and nothing can close — an fd and
-                    // a TLS session leaked for the life of the runtime. Dropping the stream
-                    // here closes it. KI-97 item 4.
-                    if !reg().contains_key(&id) {
-                        return;
-                    }
-                    let stream = MioStream::from_std(std_stream);
-                    reactor().cmd(Cmd::TlsClient {
-                        id,
-                        stream,
-                        sink,
-                        subscriber: cell,
-                        binary,
-                        server_name,
-                        request,
-                        config,
-                    });
-                }
-                Err(e) => {
-                    sink.emit(tcp_error_msg(id, &e.to_string()));
-                    reg().remove(&id);
+            }
+            Err(error) => {
+                if reg().remove(&id).is_some() {
+                    sink.emit(tcp_error_msg(id, &error.to_string()));
                 }
             }
-        })
-        .map_err(|e| {
-            // `Builder::spawn`, and its error handled rather than `.expect`ed: a refused
-            // thread (EAGAIN) would otherwise panic in whichever green process called this
-            // (KI-97 item 3's class). Undo the registry entry so the id does not linger.
-            reg().remove(&id);
-            std::io::Error::other(format!("tls: cannot start connect thread: {e}"))
-        })?;
+        }
+    })?;
     Ok(id)
 }
 
@@ -1995,9 +2064,9 @@ pub fn tls_listen(
     let (sink, cell) = sink_pair(subscriber);
     reg().insert(
         id,
+        subscriber,
         Ctl {
             kind: Kind::TlsListener,
-            owner: subscriber,
             binary: Arc::new(AtomicBool::new(false)),
             subscriber: cell.clone(),
             claimed: true,

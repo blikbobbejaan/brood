@@ -15,7 +15,7 @@
 
 ;; Apply a sequence of keys to a state (fold the pure handler).
 (defn- le-keys (state keys) (fold keys state editor/lineedit/lineedit-handle))
-(defn- le-fresh () (editor/lineedit/lineedit-init "brood> " "" '()))
+(defn- le-fresh () (editor/lineedit/lineedit-init "brood> " '()))
 
 (describe "lineedit/lineedit-handle — typing and motion"
   (test "printable chars insert at point and advance it"
@@ -62,7 +62,7 @@
 
 (describe "lineedit/lineedit-handle — history recall"
   (test "up walks older, down walks newer, restoring the in-progress line"
-    (let (h (editor/lineedit/lineedit-init "x> " "" (list "(newer)" "(older)"))
+    (let (h (editor/lineedit/lineedit-init "x> " (list "(newer)" "(older)"))
           ; in-progress text
           d (le-keys h (list "w" "i" "p"))
           u1 (editor/lineedit/lineedit-handle d :up))
@@ -90,30 +90,27 @@
   ;; or the reverse-i-search one. Both were calling it as a private name until it was
   ;; promoted; these cases pin the contract they depend on.
   (test "an ordinary state shows its configured prompt"
-    (assert= (editor/lineedit/lineedit-display-prompt (editor/lineedit/lineedit-init "x> "
-                                                        ""
-                                                        (list)))
+    (assert= (editor/lineedit/lineedit-display-prompt (editor/lineedit/lineedit-init "x> " (list)))
       "x> "))
   (test "a searching state shows the reverse-i-search prompt with the query in it"
     (let (searching (editor/lineedit/lineedit-handle (editor/lineedit/lineedit-init "x> "
-                                                       ""
                                                        (list "(abc)"))
                       :ctrl-r))
       (is (includes? (editor/lineedit/lineedit-display-prompt searching) "reverse-i-search"))))
   (test "the query typed so far appears in the search prompt"
     (let (typed (fold (list :ctrl-r "a" "b")
-                  (editor/lineedit/lineedit-init "x> " "" (list "(abc)"))
+                  (editor/lineedit/lineedit-init "x> " (list "(abc)"))
                   (fn (st key) (editor/lineedit/lineedit-handle st key))))
       (is (includes? (editor/lineedit/lineedit-display-prompt typed) "ab"))))
   (test "leaving the search restores the configured prompt"
     (let (state (fold (list :ctrl-r :ctrl-g)
-                  (editor/lineedit/lineedit-init "x> " "" (list "(abc)"))
+                  (editor/lineedit/lineedit-init "x> " (list "(abc)"))
                   (fn (st key) (editor/lineedit/lineedit-handle st key))))
       (assert= (editor/lineedit/lineedit-display-prompt state) "x> "))))
 
 (describe "lineedit/lineedit-handle — extra emacs/readline keys"
   (test "C-p / C-n walk history like ↑ / ↓"
-    (let (h (editor/lineedit/lineedit-init "x> " "" (list "(b)" "(a)")))
+    (let (h (editor/lineedit/lineedit-init "x> " (list "(b)" "(a)")))
       (assert= (get (editor/lineedit/lineedit-handle h :ctrl-p) :text) "(b)")
       (assert= (get (editor/lineedit/lineedit-handle (editor/lineedit/lineedit-handle h :ctrl-p)
                       :ctrl-n)
@@ -168,7 +165,7 @@
       (assert= (get (editor/lineedit/lineedit-handle s :enter) :done) :submit))))
 
 (defn- rs-init ()
-  (editor/lineedit/lineedit-init "x> " "" (list "(map f xs)" "(reduce + 0 ys)" "(seq/filter p zs)")))
+  (editor/lineedit/lineedit-init "x> " (list "(map f xs)" "(reduce + 0 ys)" "(seq/filter p zs)")))
 
 (describe "reverse incremental search (C-r)"
   (test "C-r enters search and selects the newest entry (empty query)"
@@ -275,13 +272,13 @@
           [:print "max" lineedit-face-hint]))))
   (test "no listing rows without pending completions"
     (assert= (editor/lineedit/lineedit-completion-lines (assoc (editor/lineedit/lineedit-init "p> "
-                                                                 "" '())
+                                                                 '())
                                                           :width 40))
       '()))
   (test "a multi-line render prints the listing and climbs back over it to repark"
     ;; The cursor must land back on its own form line, so the [:up n] has to span the
     ;; remaining form lines PLUS the listing rows — the geometry bug this pins.
-    (let (st (assoc (editor/lineedit/lineedit-init "p> " "" '() {:cont-prompt "c> "})
+    (let (st (assoc (editor/lineedit/lineedit-init "p> " '() {:cont-prompt "c> "})
                ; point is on row 1 of 2; width 12 -> one candidate per row -> 3 rows
                :text "(a\n b)"
                :point 6
@@ -339,7 +336,7 @@
           incomplete? (fn (s) (= s "(defn f"))
           complete? (fn (s) (not (incomplete? s)))
           mk (fn (text)
-               (assoc (editor/lineedit/lineedit-init "x> " "" '() {:complete? complete?})
+               (assoc (editor/lineedit/lineedit-init "x> " '() {:complete? complete?})
                  :text text
                  :point (string/length text))))
       ;; incomplete form: Enter adds a newline INDENTED to the structural column
@@ -353,7 +350,7 @@
   (test "multi-line render lights the matching bracket pair in place across lines"
     (let (
           ; cursor after the final ) which closes (a
-          st (assoc (editor/lineedit/lineedit-init "p> " "" '() {:cont-prompt "c> "})
+          st (assoc (editor/lineedit/lineedit-init "p> " '() {:cont-prompt "c> "})
                :text "(a\n b)"
                :point 6)
           ops (editor/lineedit/lineedit-multi-ops st))
@@ -369,7 +366,7 @@
 ;; and the keymap runs identically under the scheduler.
 (describe "editor state across processes"
   :isolated (test "a state map sent to a worker edits identically"
-    (let (st (editor/lineedit/lineedit-init "x> " "" '())
+    (let (st (editor/lineedit/lineedit-init "x> " '())
           w (spawn (receive ([:edit s from] (send from (get (le-keys s (list "a" "b" "c")) :text))))))
       (send w [:edit st (self)])
       (assert= (receive (r r)) "abc"))))
@@ -380,12 +377,12 @@
   (def path "/home/wilhelm/src")
   ; start of "src"
   (test "M-b moves back one path component"
-    (let (st (assoc (editor/lineedit/lineedit-init "" "" '()) :word-mode :path :text path :point 17))
+    (let (st (assoc (editor/lineedit/lineedit-init "" '()) :word-mode :path :text path :point 17))
       (assert= (get (lineedit-backward-word st nil) :point) 14)))
   ; end of "/home"
   (test "M-f moves forward one path component"
-    (let (st (assoc (editor/lineedit/lineedit-init "" "" '()) :word-mode :path :text path :point 0))
+    (let (st (assoc (editor/lineedit/lineedit-init "" '()) :word-mode :path :text path :point 0))
       (assert= (get (lineedit-forward-word st nil) :point) 5)))
   (test "default mode treats the whole path as one word"
-    (let (st (assoc (editor/lineedit/lineedit-init "" "" '()) :text path :point 17))
+    (let (st (assoc (editor/lineedit/lineedit-init "" '()) :text path :point 17))
       (assert= (get (lineedit-backward-word st nil) :point) 0))))

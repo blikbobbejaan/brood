@@ -27,7 +27,7 @@ pub(crate) struct RootsBuf {
 // SAFETY: the buffer is uniquely owned (no aliasing handles escape long-term — `as_mut_ptr`
 // callers re-fetch after any growth, the same contract `Vec` had), and `Value` is `Send`.
 // A `Heap` moves between scheduler workers inside its `Box<Process>`, which is exactly the
-// auto-impl the `Vec<Value>` field used to provide.
+// auto-impl a `Vec<Value>` would provide.
 unsafe impl Send for RootsBuf {}
 
 impl RootsBuf {
@@ -120,7 +120,7 @@ impl RootsBuf {
         // in, so plain doubling took every parked process from 8 to 16 slots (384 B) for a
         // transient ninth; 8 → 12 keeps it at 288 B. Above sixteen the doubling is the
         // amortization deep recursion needs, and a process that gets there pays one extra
-        // realloc, ever. Measured 2026-09-21 on the parked-process floor.
+        // realloc, ever.
         let step = if self.cap < 16 {
             self.cap + 4
         } else {

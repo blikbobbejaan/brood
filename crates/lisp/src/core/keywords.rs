@@ -4,9 +4,8 @@
 //! Several layers independently recognise these heads: the evaluator's dispatch
 //! table (`eval::SPECIAL_SPELLINGS`), the checker's walk (`types::check::walk`),
 //! and the introspection list the LSP/highlighter consume
-//! (`builtins::SPECIAL_FORMS`). Before this module each re-typed the bare string
-//! `"if"`/`"quote"`/`"fn"`/…, so a rename meant hunting magic strings across the
-//! kernel. Now they all reference `kw::*` and a typo is a compile error.
+//! (`builtins::SPECIAL_FORMS`). They all reference `kw::*`, so a typo is a compile
+//! error rather than a magic string to hunt.
 //!
 //! These are *spellings only* — each consumer still owns its own enum / view
 //! (the evaluator's `SpecialForm`, the checker's `SpecialHead`); this module
@@ -115,9 +114,8 @@ pub const THREAD_FIRST: &str = "->";
 // chiefly the advisory checker's `is_syntactic_keyword` list, so they read
 // uniformly alongside the special forms above. `not` is a boolean fn (also a
 // guard head, like `%eq`); `spawn` is a primitive; `system/module-doc` is the
-// module-docstring marker form; `case` is the literal-dispatch macro (it was long
-// a deliberately-absent construct routed to a foreign-construct hint — it landed
-// 2026-07-26, and the checker already modelled its flat `test result` shape).
+// module-docstring marker form; `case` is the literal-dispatch macro (the checker
+// models its flat `test result` shape).
 pub const NOT: &str = "not";
 pub const SPAWN: &str = "spawn";
 pub const CASE: &str = "case";

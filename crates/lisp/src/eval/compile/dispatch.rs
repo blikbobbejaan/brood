@@ -533,15 +533,10 @@ pub(crate) fn dispatch(
         // state-capture that can't cross the native boundary.
         crate::perf_bump!(tw_defer);
         // Name each deferring closure under BROOD_DEFER_DBG=1. The `tw_defer` counter
-        // says how MANY calls fell to the tree-walker, never WHO — and one deferred
-        // entry tree-walks everything below it transitively (`apply_closure` never
-        // re-enters the VM), so the name is the whole diagnosis. This is what found
-        // §7.3's expansion constant: `%receive-split` deferring on a quasiquote the
-        // static rewrite could not see inside a vector literal. Cold path by
+        // says how MANY calls fell to the tree-walker, never WHO. Cold path by
         // definition; one cached bool when off.
         {
-            static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *ON.get_or_init(|| std::env::var_os("BROOD_DEFER_DBG").is_some()) {
+            if crate::diagnostics::debug_flags::defer_debug() {
                 let name = match cur_callee.unpack() {
                     crate::core::value::ValueRef::Fn(id) => heap
                         .closure(id)
@@ -562,12 +557,6 @@ pub(crate) fn dispatch(
     )?))
 }
 
-/// Push a fresh activation frame for `arm` onto `Heap::roots`: required args, then
-/// `&optional` slots (the provided arg, or nil if missing), then the `&` rest list
-/// (the trailing args conased into a fresh list), then nil for the `let`/`letrec`
-/// binders — `nslots` values total. Selection guarantees `args.len() >= nrequired`.
-/// No eval runs here (the rest is a plain `list_from_slice`), so no collection can
-/// happen between reading `args` and rooting the slots.
 /// DEBUG ONLY: assert every value in `args` has a valid `Value` discriminant. A value
 /// with an out-of-range tag byte is non-`Value` memory — a JIT frame-slot corruption
 /// (the bug #2 family). Aborting here, at the earliest frame entry that sees it, makes
@@ -601,6 +590,12 @@ pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, gen
     }
 }
 
+/// Push a fresh activation frame for `arm` onto `Heap::roots`: required args, then
+/// `&optional` slots (the provided arg, or nil if missing), then the `&` rest list
+/// (the trailing args conased into a fresh list), then nil for the `let`/`letrec`
+/// binders — `nslots` values total. Selection guarantees `args.len() >= nrequired`.
+/// No eval runs here (the rest is a plain `list_from_slice`), so no collection can
+/// happen between reading `args` and rooting the slots.
 pub(crate) fn push_frame(
     heap: &mut Heap,
     arm: &CompiledArm,
@@ -664,7 +659,7 @@ pub(crate) fn push_frame(
 /// `CompiledArm` from `compile_arm` has a chunk, so this always routes to the driver;
 /// `vm_run_bc` does the per-frame live-arm registration + the runaway frame guard.
 /// Callers: `dispatch` (non-tail VM-closure branch), `exec_call`'s IC fast path, and
-/// `force` (a tail `Step`). The tree-walker (`BROOD_VM=0`) is the remaining fallback.
+/// `force` (a tail `Step`). The tree-walker (`BROOD_TIER=0`) is the remaining fallback.
 pub(crate) fn vm_apply(
     heap: &mut Heap,
     compiled0: Arc<ArmHandle>,

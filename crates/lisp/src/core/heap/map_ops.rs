@@ -81,10 +81,8 @@ impl Heap {
     /// (`eval/compile/inline.rs`) turns this call — and the idiomatic `assoc`/`get`
     /// spelling — on a provably-linear accumulator into [`crate::core::table::add`],
     /// which is the same `+` over a table. The two paths agree on every input, so
-    /// `BROOD_LINMAP=0` cannot change a program's answer. (Until 2026-09-16 this errored
-    /// past i64 and read a non-integer as 0, to match `table-incr`, which could not
-    /// promote; the fuzzer `scripts/fuzz/generators/linmap.py` found the float case
-    /// diverging between the two arms the day `table::add` made agreement possible.)
+    /// `BROOD_LINMAP=0` cannot change a program's answer
+    /// (`scripts/fuzz/generators/linmap.py` checks the two arms agree).
     pub fn map_int_add(&mut self, id: MapId, key: Value, delta: i64) -> Result<Value, LispError> {
         let hash = self.hash_value(key);
         if let Ok(new_root) = self.champ_int_add(id, key, delta, hash, 0) {
@@ -842,7 +840,7 @@ impl Heap {
 
     pub fn alloc_string(&mut self, s: &str) -> Value {
         let entry = if s.len() >= SHARED_BLOB_THRESHOLD {
-            LocalString::shared(SharedBlob::new(s.as_bytes()))
+            LocalString::shared(SharedBlob::from_text(s))
         } else {
             LocalString::inline(s.to_string())
         };
@@ -1078,7 +1076,8 @@ impl Heap {
         }
     }
 
-    /// Install a pre-existing `Arc<SharedBlob>` as a new LOCAL string slot.
+    /// Install a pre-existing TEXT `Arc<SharedBlob>` (one [`local_shared_blob`] handed
+    /// out) as a new LOCAL string slot; a raw-bytes blob panics in `LocalString::shared`.
     /// Used by the receive path ([`crate::process::message::from_message`]):
     /// the sender already bumped the refcount via `Arc::clone` for the
     /// `Message`, so installing it here is just slot bookkeeping — no copy.

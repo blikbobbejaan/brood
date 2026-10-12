@@ -11,7 +11,6 @@
 //! [`PromoteForward`] rides along: the per-promotion forwarding tables that collapse
 //! shared structure to one copy and terminate cycles, keyed on canonical handle identity.
 //! They live here rather than with the freeze because promotion is their only user.
-//! Split out of `heap.rs` on 2026-09-07 (handoff item 1, move c).
 
 use super::*;
 
@@ -230,9 +229,8 @@ impl Heap {
         // Register the spine in `fwd.pairs` so a later walk reaching any of these
         // cells (a shared tail, the whole list re-referenced) reuses this copy
         // (KI-95). Registration is per-cell only for SMALL spines: on a bulk
-        // `def` of a long list the map insert is the dominant promote cost
-        // (~107 instructions/cell measured on a 375k-cell def, +13% on a
-        // promote-saturated program), so a long spine registers every
+        // `def` of a long list the map insert is the dominant promote cost,
+        // so a long spine registers every
         // `SPINE_REG_STRIDE`-th cell instead. A re-entering walk then re-copies
         // at most `stride − 1` cells before hitting a registered one — per
         // *referrer*, so total growth stays O(n) and the exponential class
@@ -479,8 +477,7 @@ struct PromoteForward {
 /// Multiplicative hasher for [`PromoteForward`]'s handle keys. Promote registers
 /// every node it copies, so the map hash is a per-node cost on the `def`/`spawn`
 /// path — and the key is a single canonical-handle `u64` (one `write_u64`), for
-/// which the default SipHash is pure tax (measured ~2% of the `spawn` row's
-/// instructions). A Fibonacci multiply spreads the low slab-index bits into the
+/// which the default SipHash is pure tax. A Fibonacci multiply spreads the low slab-index bits into the
 /// high bits hashbrown's control bytes read. Same pattern as `table.rs`'s
 /// `IdentityHasher`, which strips the identical round from table ops.
 #[derive(Default)]

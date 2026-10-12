@@ -5,38 +5,76 @@ use super::*;
 use crate::core::value::Value;
 
 /// The generational-handle tripwire fires at the bad deref. A LOCAL handle
-/// held across an arena flip (`flush`) without being passed through as a root
-/// carries a stale generation epoch; dereferencing it must panic *here* with
-/// a "use-after-GC" message — not a far-away out-of-bounds index. Debug-only
-/// check; `cargo test` builds with `debug_assertions` on. See
-/// `docs/memory-review.md`.
+/// held across a collection without being passed through as a root carries a
+/// stale generation epoch; dereferencing it must panic *here* with a
+/// "use-after-GC" message — not a far-away out-of-bounds index. Debug-only
+/// check; `cargo test` builds with `debug_assertions` on.
 #[test]
 #[cfg(debug_assertions)]
 #[should_panic(expected = "use-after-GC")]
-fn stale_handle_after_flip_panics() {
+fn stale_handle_after_collect_panics() {
     let mut h = Heap::new();
+    h.gc_enabled = true; // `Heap::new` is a builder heap, where `collect` is gated off
     let id = match h.alloc_pair(Value::int(1), Value::int(2)).unpack() {
         ValueRef::Pair(id) => id,
         _ => unreachable!(),
     };
-    // Flush with no roots: the pair isn't relocated, and the epoch bumps.
-    h.flush(&mut []);
+    // Collect with no roots: the pair isn't relocated, and the epoch bumps.
+    h.collect(&mut [], &mut []);
     // `id` was minted in the previous epoch → stale → tripwire.
     let _ = h.pair(id);
 }
 
-/// The mirror case: a handle passed through `flush` as a root is relocated
+/// The mirror case: a handle passed through `collect` as a root is relocated
 /// and re-stamped with the new epoch, so it stays valid (no false positive).
 #[test]
-fn flushed_root_handle_stays_valid() {
+fn collected_root_handle_stays_valid() {
     let mut h = Heap::new();
+    h.gc_enabled = true;
     let mut roots = [h.alloc_pair(Value::int(1), Value::int(2))];
-    h.flush(&mut roots);
+    let runs_before = h.gc_runs;
+    h.collect(&mut roots, &mut []);
+    assert_eq!(h.gc_runs, runs_before + 1, "the collection did not run");
     let (car, _) = match roots[0].unpack() {
         ValueRef::Pair(id) => h.pair(id),
         _ => unreachable!(),
     };
     assert!(matches!(car.unpack(), ValueRef::Int(1)));
+}
+
+/// `reset_local_to` truncates only the NURSERY, so it must drop only the nursery
+/// form positions past the checkpoint. A tenured pair's position key carries the
+/// age bit (`form_pos_key`); comparing its bare low-32 index against the
+/// checkpoint's nursery length dropped every OLD form's position at index ≥ the
+/// nursery checkpoint — every one, right after a tenure empties the nursery.
+#[test]
+fn reset_local_to_keeps_old_form_positions() {
+    use crate::error::Pos;
+    let mut h = Heap::new();
+    let old_pos = Pos { line: 4, col: 2 };
+    let young_pos = Pos { line: 8, col: 1 };
+    let old_form = h.alloc_pair(Value::int(1), Value::nil());
+    h.set_form_pos(old_form, old_pos);
+    let mut roots = vec![old_form];
+    h.minor_collect(true, &mut roots, &mut []); // tenure: the nursery is now empty
+    let old_form = roots[0];
+    assert!(matches!(old_form.unpack(), ValueRef::Pair(id) if id.is_old()));
+
+    let checkpoint = h.checkpoint();
+    let young_form = h.alloc_pair(Value::int(2), Value::nil());
+    h.set_form_pos(young_form, young_pos);
+    assert_eq!(h.form_pos_only(young_form), Some(young_pos));
+    h.reset_local_to(checkpoint);
+
+    assert_eq!(
+        h.form_pos_only(old_form),
+        Some(old_pos),
+        "reset_local_to dropped the position of a tenured form it never truncated",
+    );
+    // The reclaimed nursery pair's entry is gone: a fresh pair reusing its slot
+    // has no position.
+    let reused = h.alloc_pair(Value::int(3), Value::nil());
+    assert_eq!(h.form_pos_only(reused), None);
 }
 
 /// Regression (`docs/kernel-audit-2026-06-03.md` #1): a **major collection
@@ -834,11 +872,7 @@ fn all_nursery_types_old_refs_rewritten_together() {
 
 /// Regression: a **major collection must not discard the source positions of live
 /// NURSERY forms.** The major re-keys `form_pos` through the old-gen forwarding
-/// table, and it used to do so by taking the whole map and reinserting only the
-/// entries whose age bit was set — so every young entry was dropped on the floor.
-/// A major does not move the nursery, so those entries were still perfectly valid;
-/// losing them makes `(form-pos …)`, error messages and the test framework's line
-/// lookups return nothing for every form read since the last tenure.
+/// table; it must keep every young entry, since a major does not move the nursery.
 ///
 /// The interleave below is the reachable one: tenure an old form, read a young one
 /// (flip minor keeps it young), then major.

@@ -32,7 +32,7 @@ use super::walk::list_items;
 /// self-calls to `NAME` in non-tail position.
 pub(super) fn check_recursion(heap: &Heap, form: Value, out: &mut Vec<(Option<Pos>, String)>) {
     // Deep-form stack safety — the same stacker remedy as walk.rs's
-    // check_into/collect_def_names (host-panic hardening, 2026-07-23).
+    // check_into/collect_def_names.
     let before = out.len();
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         check_recursion_inner(heap, form, out)
@@ -102,11 +102,9 @@ fn analyze_fn(
         return;
     };
     // A docstring rides along as the element after `fn` — `(defn f "doc" ((a) …) ((a b)
-    // …))` expands to `(fn "doc" ((a) …) ((a b) …))` — and until 2026-09-20 it made every
-    // docstring'd multi-arity fn read as SINGLE-arity here: the arms became the "body", the
-    // first arm a non-tail form, and its tail self-call was flagged. `gui/texture` (a
-    // 2-arity arm delegating to its own 4-arity arm, the first such shape in `std/`) was
-    // refused by the zero-warning gate for a recursion it does not perform.
+    // …))` expands to `(fn "doc" ((a) …) ((a b) …))`. Skip it, or a docstring'd multi-arity
+    // fn reads as SINGLE-arity — its arms the "body" — and an arm delegating to another
+    // arm is flagged as non-tail recursion.
     let items: Vec<Value> = match items.get(1) {
         Some(Value::Str(_)) if items.len() > 2 => {
             let mut v = vec![items[0]];
@@ -130,8 +128,7 @@ fn analyze_fn(
     } else {
         // (fn params body…): body is everything after the param list. A bare
         // `(fn)` — mid-edit source; the advisory checker sees anything — has
-        // neither params nor body, and must not panic the checker thread
-        // (found live in bedit: three worker panics at startup, 2026-08-31).
+        // neither params nor body, and must not panic the checker thread.
         if let Some(body) = items.get(2..) {
             analyze_body(heap, name, body, enclosing, out);
         }
@@ -188,11 +185,9 @@ fn analyze_body(
 /// Walk `form`, knowing whether it is in tail position, flagging any non-tail
 /// call to `name`.
 ///
-/// Grows the stack in heap-backed segments, like every other walker here. The
-/// entry point [`check_recursion`] was hardened in 2026-07-23's host-panic pass and
-/// *this* recursion — the one that descends a function's body — was not, so a
-/// deeply-nested body inside a `(def n (fn …))` still aborted the process. Found by
-/// the domain walk's own deep-body test, which exercised the same shape.
+/// Grows the stack in heap-backed segments, like every other walker here — this is
+/// the recursion that descends a function's body, so a deeply-nested body inside a
+/// `(def n (fn …))` would otherwise abort the process.
 fn walk(
     heap: &Heap,
     form: Value,

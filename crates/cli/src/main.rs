@@ -76,8 +76,7 @@ struct Cli {
     strict: bool,
 
     /// List the `BROOD_*` diagnostic environment flags used for performance
-    /// triage and A/B, grouped, with one line each. The runtime has ~75 of them
-    /// and knowing which to reach for was only documented outside the binary.
+    /// triage and A/B, grouped, with one line each.
     #[arg(long)]
     debug_flags: bool,
 
@@ -106,7 +105,12 @@ fn main() {
     // source appended to it. Boot the app and pass argv straight through to its
     // entry fn — *before* `Cli::parse`, so the app's own arguments/flags aren't
     // intercepted by `brood`'s own clap. A plain `brood` has no bundle and falls
-    // through to normal CLI dispatch.
+    // through to normal CLI dispatch. A bundle whose payload is corrupt is refused
+    // outright: falling through would run plain `brood` in place of the app.
+    if let Some(error) = brood::bundle::mount_error() {
+        eprintln!("error: {error}");
+        std::process::exit(70);
+    }
     if brood::bundle::is_bundled() {
         // `args_os` + lossy, not `args`: this runs *before* clap, so nothing has
         // validated argv yet, and `std::env::args()` panics outright on a non-UTF-8

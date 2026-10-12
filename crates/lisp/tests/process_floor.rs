@@ -24,16 +24,10 @@ const FLOOR_BYTES: i64 = 4000;
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {
     // The floor is the VM's with shared arms, the shipped configuration. The tree-walker
-    // (`BROOD_VM=0` / `BROOD_TIER=0`, CI's differential job) has no floor to ratchet: its
-    // `spawn` copies the spawner's whole env frame into the child — here the growing `acc`
-    // list — so a process costs O(n) and the fleet O(n²) (measured 36 KB/proc at n=500,
-    // 242 KB at 4000; 20k asked for a 7 GiB block). And `BROOD_NO_SHARED_ARMS=1` makes
-    // every process compile its own body (+2 KB/proc measured), a documented lever, not a
-    // regression. Both are skipped by name rather than absorbed into the bound.
-    if std::env::var("BROOD_VM").is_ok_and(|v| v == "0")
-        || std::env::var("BROOD_TIER").is_ok_and(|t| t == "0")
-        || std::env::var_os("BROOD_NO_SHARED_ARMS").is_some()
-    {
+    // (`BROOD_TIER=0`, CI's differential job) has no floor to ratchet: its `spawn` copies the
+    // spawner's whole env frame into the child — here the growing `acc` list — so a process
+    // costs O(n) and the fleet O(n²). Skipped by ceiling rather than absorbed into the bound.
+    if brood::eval::compile::tier_ceiling() == brood::eval::compile::Tier::TreeWalk {
         eprintln!("process_floor: not the shipped engine configuration — nothing to ratchet");
         return;
     }
@@ -42,7 +36,7 @@ fn a_parked_process_costs_no_more_than_the_floor() {
         (def n 20000)
         (defn parked () (receive ([:go] nil)))
         ;; NOT `(spawn-hold (+ i 1) (cons (spawn (parked)) acc))`: under the tree-walker
-        ;; (`BROOD_VM=0`, CI's differential job) a spawn copies the spawner's whole env
+        ;; (`BROOD_TIER=0`, CI's differential job) a spawn copies the spawner's whole env
         ;; frame into the child, and a frame holding the growing `acc` makes the fleet
         ;; O(n²) — 20k children asked for a 7 GiB block and a 7 GB GitHub runner was
         ;; shut down rather than failed, three pushes running (2026-09-21). A `mapv`

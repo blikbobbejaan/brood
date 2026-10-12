@@ -1,0 +1,85 @@
+;; Bad-arithmetic fuzzer: edge-case-heavy numeric programs. Each warms `f` past the JIT
+;; tier threshold, accumulating a pr-str-or-error sentinel of every result, and prints it.
+;; All engines must agree (value, TYPE, or identical error sentinel); none may crash.
+;; Targets div/mod-by-zero, overflow, i64::MIN/-1, shifts, mixed int/float/bignum/decimal,
+;; NaN/inf propagation.
+;;
+;;   brood scripts/fuzz/generators/arithmetic.blsp -- <count> <base-seed> <outdir>
+
+;; ---- seeded draws (a table holds the stream so the recursive grammar needs no threading)
+(def rng-state (table/new))
+
+(defn rng-reset (seed)
+  (table/put rng-state :seed (rand/seed (+ (* seed 2654435761) 1013904223))))
+
+(defn draw-float ()
+  (let ([value next-seed] (rand/float (table/get rng-state :seed)))
+    (table/put rng-state :seed next-seed)
+    value))
+
+(defn draw-int (low high)
+  (let ([value next-seed] (rand/int (table/get rng-state :seed) (+ 1 (- high low))))
+    (table/put rng-state :seed next-seed)
+    (+ low value)))
+
+(defn draw-choice (items) (nth items (draw-int 0 (- (count items) 1))))
+
+;; ---- the grammar
+(def leaves
+  ["a"
+    "b" "0" "1" "-1" "2" "9223372036854775807" "-9223372036854775808" "9223372036854775808"
+    "-9223372036854775809" "0.0" "-0.0" "1.5" "1e308" "1e400" "-1e400" "nan" "inf" "-inf"
+    "100000000000000000000" "-100000000000000000000" "1M" "1.5M" "-2.5M" "0M" "0.1" "3" "64" "65"
+    "-5"])
+
+;; ops that bite: division family (zero!), shifts (huge/neg!), mixed-tower arith/compare
+(def binary-ops
+  ["+"
+    "-" "*" "/" "math/quot" "math/rem" "math/mod" "math/max" "math/min" "bit/and" "bit/or" "bit/xor"
+    "bit/shift-left" "bit/shift-right"])
+(def comparisons ["<" "<=" ">" ">=" "=" "not="])
+(def unary-ops ["math/abs" "-" "inc" "dec"])
+
+;; A depth-bounded tree walk: the recursion is at most `depth` deep by construction.
+(check-allow :non-tail-recursion
+  (defn expr (depth)
+    (if (or (<= depth 0) (< (draw-float) 0.35))
+      (draw-choice leaves)
+      (let (roll (draw-float) below (- depth 1))
+        (cond
+          (< roll 0.55) (str "(" (draw-choice binary-ops) " " (expr below) " " (expr below) ")")
+          (< roll 0.72)
+            (let (test (str "(" (draw-choice comparisons) " " (expr below) " " (expr below) ")"))
+              (str "(if " test " " (expr below) " " (expr below) ")"))
+          (< roll 0.85) (str "(" (draw-choice unary-ops) " " (expr below) ")")
+          :else (str "(let (t " (expr below) ") (" (draw-choice binary-ops) " t " (expr below) "))"))))))
+
+(defn program (seed)
+  (rng-reset seed)
+  (str "(defn f (a b) "
+    (expr 4)
+    ")
+(defn lp (i acc)
+  (if (= i 0) acc
+    (lp (- i 1)
+      (str acc \"|\"
+        (try (pr-str (f (- (math/rem i 13) 6) (* 1.0 (- (math/rem i 7) 3))))
+             (catch e \"E\"))))))
+(io/puts (lp 80 \"\"))
+"))
+
+;; ---- driver
+(defn argument-int (text)
+  (let (value (string/->number text))
+    (if (int? value) value (error "generator: expected an integer argument, got: " text))))
+
+(defn write-programs (seed last-seed outdir)
+  (when (< seed last-seed)
+    (file/spit (str outdir "/ar_" seed ".blsp") (program seed))
+    (write-programs (+ seed 1) last-seed outdir)))
+
+(let ([count-text base-text outdir] (system/script-args)
+      program-count (argument-int count-text)
+      base (argument-int base-text))
+  (write-programs base (+ base program-count) outdir)
+  (io/puts "wrote" program-count "arithmetic programs"))

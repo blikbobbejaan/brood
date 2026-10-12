@@ -1,4 +1,4 @@
-//! Regressions from the 2026-10-02 type-system review: inference rules, narrowing, the
+//! Type-system review regressions: inference rules, narrowing, the
 //! gradual relation, signature sources and the soundness oracle.
 
 use super::*;
@@ -7,8 +7,8 @@ use super::*;
 
 #[test]
 fn loaded_recursive_list_builder_is_not_typed_nil() {
-    // Single-pass inference used to type `(h (- n 1))` as ⊥ and keep the first round,
-    // so `h` was `-> nil` and `(nth (h 3) 2)` read `nil`.
+    // Single-pass inference would type `(h (- n 1))` as ⊥ and keep the first round,
+    // making `h` `-> nil` and `(nth (h 3) 2)` read `nil`.
     let w = check_with_defs(
         &["(defn rv-h (n) (if (= n 0) nil (cons n (rv-h (- n 1)))))"],
         "(+ 1 (nth (rv-h 3) 2))",
@@ -50,7 +50,7 @@ fn merge_with_an_open_later_argument_forgets_the_earlier_field_type() {
 
 #[test]
 fn cons_onto_a_vector_is_not_a_list() {
-    let w = file_warnings("(def c (cons 1 [2 3]))\n(defn f () (seq/vector-length (rest c)))");
+    let w = file_warnings("(def c (cons 1 [2 3]))\n(defn f () (%vector-length (rest c)))");
     assert!(w.is_empty(), "{w:?}");
 }
 
@@ -59,7 +59,7 @@ fn cons_onto_a_vector_is_not_a_list() {
 #[test]
 fn seq_of_a_vector_or_string_is_the_input() {
     let w = file_warnings(
-        "(defn f () (seq/vector-length (seq [1 2 3])))\n\
+        "(defn f () (%vector-length (seq [1 2 3])))\n\
          (defn g () (string/length (seq \"abc\")))",
     );
     assert!(w.is_empty(), "{w:?}");
@@ -206,9 +206,7 @@ fn trigonometry_is_always_float() {
 /// Every name a refinement rule keys on (`symbol_is(_, "name")` in the rule files) must be
 /// a name that is BOUND — a special form, a prelude global, a module function — or one of
 /// the non-callee keys listed below. A rename wave that moves a function leaves the rule
-/// keyed on the old spelling, and the rule then dies silently (2026-10-02: bare
-/// `distinct`, `sin`/`cos`/`tan`, `quot`/`rem`/`mod`, `vector-length`, `print`/`println`/
-/// `format` were all dead).
+/// keyed on the old spelling, and the rule then dies silently.
 #[test]
 fn rule_heads_are_bound() {
     const SOURCES: &[&str] = &[

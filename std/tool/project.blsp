@@ -223,10 +223,8 @@ identity and may override those paths. The rest of the tool is its siblings:
 than being fetched into `_deps/<name>/`."
   (and (record? x) (= (record-id x) :project/dep-path)))
 
-;; The elements of vector `v` from index `start` onward, as a list (tail-recursive).
-(defn- project-vec-drop (v start) (project-vec-drop-acc v start (dec (seq/vector-length v)) nil))
-(defn- project-vec-drop-acc (v start i acc)
-  (if (< i start) acc (project-vec-drop-acc v start (dec i) (cons (seq/vector-ref v i) acc))))
+;; The elements of vector `entry` from index `start` onward, as a list (a plist).
+(defn- project-vec-drop (entry start) (drop entry start))
 
 ;; The keys of a flat plist (every other element from the head).
 ;; check-allow: deliberately non-tail — depth = the manifest plist's key count.
@@ -244,7 +242,7 @@ than being fetched into `_deps/<name>/`."
           name " uses " k ", which is reserved for a future version")))))
 
 (defn- project-parse-git-dep (name entry)
-  (let (url (seq/vector-ref entry 2)
+  (let (url (nth entry 2)
         opts (project-vec-drop entry 3)
         ref (plist-get opts :ref)
         version (plist-get opts :version))
@@ -265,7 +263,7 @@ than being fetched into `_deps/<name>/`."
     (dep-git name url ref version)))
 
 (defn- project-parse-path-dep (name entry)
-  (let (path (seq/vector-ref entry 2)
+  (let (path (nth entry 2)
         opts (project-vec-drop entry 3))
     (when (not (string? path))
       (error "project: :path dependency " name " path must be a string, got " path))
@@ -273,7 +271,7 @@ than being fetched into `_deps/<name>/`."
     (dep-path name path)))
 
 (defn- project-parse-registry-dep (name entry)
-  (let (version (seq/vector-ref entry 2)
+  (let (version (nth entry 2)
         opts (project-vec-drop entry 3))
     (when (not (string? version))
       (error "project: registry dependency " name " version must be a string, got " version))
@@ -281,7 +279,7 @@ than being fetched into `_deps/<name>/`."
     (dep-registry name version)))
 
 (defn- project-parse-tarball-dep (name entry)
-  (let (url (seq/vector-ref entry 2)
+  (let (url (nth entry 2)
         opts (project-vec-drop entry 3)
         sha (plist-get opts :sha256))
     (when (not (string? url))
@@ -324,9 +322,9 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
   "Parse one `:dependencies` vector entry `[name kind & opts]` into a normalised dep record, dispatching on `kind` (`:git`/`:path`/`:tarball`/`:version`) and recording the `:optional` flag (ADR-172)."
   (when (not (vector? entry))
     (error "project: each :dependencies entry must be a vector, got " entry))
-  (when (< (seq/vector-length entry) 3) (error "project: dependency entry is too short: " entry))
-  (let (name (seq/vector-ref entry 0)
-        kind (seq/vector-ref entry 1)
+  (when (< (count entry) 3) (error "project: dependency entry is too short: " entry))
+  (let (name (nth entry 0)
+        kind (nth entry 1)
         opts (project-vec-drop entry 3))
     (when (not (symbol? name)) (error "project: dependency name must be a symbol, got " name))
     (when (not (valid-dep-name? (->string name)))
@@ -342,10 +340,7 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
                    (error "project: dependency "
                      name " must be :git, :path, :tarball, or :version, got " kind))
           ;; `:optional` (ADR-172) — a dep declared but not force-installed. Recognised on
-          ;; every dep kind; defaults false. (Resolution semantics — peer presence — are
-          ;; deferred: this normalises the manifest flag. The bridge/glue motivation was
-          ;; dropped in the 2026-07-28 amendment, so `:optional` is now the generic
-          ;; Cargo/Elixir optional dependency, decoupled from abilities.)
+          ;; every dep kind; defaults false. Only the manifest flag is normalised here.
           optional (if (plist-get opts :optional) true false))
       (assoc base :optional optional))))
 
@@ -373,11 +368,8 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
   `(apply-config (quote ~opts)))
 
 ;; `:source-paths` / `:test-paths` must be a vector (or list) of strings — they are
-;; handed straight to `map`/`path-join`. A bare string (`:source-paths "src"`, an
-;; easy mistake since one path is the common case) used to surface as
-;; a bare `type error: first: … got string ("src")` raised from
-;; inside `map`, with nothing pointing at the manifest. Name the key and show what
-;; was written instead.
+;; handed straight to `map`/`path-join`. A bare string (`:source-paths "src"`) is an easy
+;; mistake, so the error names the key and shows what was written.
 (defn- project-check-paths (key value)
   ;; `example` keeps the fix-it accurate per key — suggesting ["src"] for
   ;; :test-paths would be actively misleading.
@@ -443,8 +435,8 @@ manifest is read, naming the key, not later inside whoever consumes the map."
     else
       (fold (%map-pairs value)
         {}
-        (fn (acc kv)
-          (let ([nm constraint] kv)
+        (fn (acc pair)
+          (let ([nm constraint] pair)
             (when (not (string? constraint))
               (error "project: "
                 ":enhances constraint for "
@@ -506,47 +498,21 @@ manifest is read, naming the key, not later inside whoever consumes the map."
   (map rels (fn (r) (path/join root r))))
 (sig abs-paths (string (seqable string) -> (list string)))
 
-;; Recursively collect every <name>_test.blsp path under `dir` (skipping nothing
-;; else). Returns a list of full paths; nil if `dir` isn't a directory.
-(defn project-collect-tests (dir)
+(defn- files-ending-in (dir suffix)
+  "Every regular file under `dir` (recursively, never entering a symlinked directory) whose
+path ends in `suffix`; nil when `dir` is not a directory."
+  (seq/filter (or (file/walk-files dir) (list))
+    (fn (path) (and (string/ends-with? path suffix) (file/regular? path)))))
+
+(defn collect-tests (dir)
   "Every `<name>_test.blsp` under `dir`, recursively, as a list of full paths — nil when
 `dir` is not a directory."
-  ;; `cons` a file (O(1)); splice a subdir's list with `%append-two` (copies only the small
-  ;; subdir list, SHARES `acc`). A plain `(append acc …)` recopies the growing accumulator
-  ;; per entry — O(files²), which made discovery quadratic on a large project. Order is
-  ;; reversed (prepend), which is fine: the file list feeds order-independent per-file work.
-  (if (file/dir? dir)
-    (fold (file/ls dir)
-      nil
-      (fn (acc entry)
-        (let (p (path/join dir entry))
-          (cond
-            (file/dir? p) (%append-two (project-collect-tests p) acc)
-            (string/ends-with? entry "_test.blsp") (cons p acc)
-            else acc))))
-    nil))
+  (files-ending-in dir "_test.blsp"))
 
-;; Recursively collect every .blsp under `dir` (the project's source files).
 (defn collect-sources (dir)
-  "Recursively collect every `.blsp` file under `dir` (the project's source files); nil when `dir` is not a directory."
-  (if (file/dir? dir)
-    ;; Same O(files²)→O(files) fix as `project-collect-tests`: `cons` files, `%append-two`
-    ;; subdir lists (copies the small list, shares `acc`) instead of `(append acc …)`.
-    (fold (file/ls dir)
-      nil
-      (fn (acc entry)
-        ;; A symlink to a directory is not entered (`file/walk-files` has the same rule):
-        ;; `src/up -> ..` was walked into `src/up/src/up/…` until the path was refused,
-        ;; and `nest check` reported 202 phantom files (2026-09-30).
-        (let (p (path/join dir entry)
-              st (file/stat p))
-          (cond
-            (and st (get st :dir?) (not (get st :symlink?))) (%append-two (collect-sources p) acc)
-            (and st (get st :dir?)) acc
-            (string/ends-with? entry ".blsp") (cons p acc)
-            else acc))))
-    nil))
-(sig collect-sources (string -> (list string)))
+  "Every `.blsp` file under `dir`, recursively (the project's source files) — nil when
+`dir` is not a directory."
+  (files-ending-in dir ".blsp"))
 
 ;; A source file that carries co-located tests (ADR-225): it has a top-level
 ;; `deftest` or `describe` form. Detection is by FORM — not filename, not module
@@ -561,17 +527,11 @@ manifest is read, naming the key, not later inside whoever consumes the map."
         (let (head (first form))
           (or (= head 'describe) (= head 'deftest)))))))
 
-;; Project source files carrying co-located tests (ADR-225), added to the `nest
-;; test` corpus so a `deftest`/`describe` written beside the code runs without a
-;; `tests/` file. Scans the source paths only; `tests/` files come from
-;; `project-collect-tests`.
 (defn project-colocated-test-files (root)
   "The project's source files that carry co-located tests (ADR-225), so a `describe` written
 beside the code runs under `nest test` without a `tests/` file. Scans the source paths
-only; `tests/` files come from `project-collect-tests`."
-  (seq/filter (fold (abs-paths root *project-source-paths*)
-                nil
-                (fn (acc d) (append acc (collect-sources d))))
+only; `tests/` files come from [[collect-tests]]."
+  (seq/filter (apply append (map (abs-paths root *project-source-paths*) collect-sources))
     project-file-has-tests?))
 
 ;; The feature a source file provides — the name of its top-level `(defmodule NAME …)`
@@ -648,19 +608,11 @@ only; `tests/` files come from `project-collect-tests`."
             (note-loaded f)))))))
 
 ;; ═══ Keeping a loaded image CURRENT ════════════════════════════════════════
-;; `load-sources` gets a project into an image once. A long-lived image — an editor's
-;; warm test session, a `nest mcp` session (ADR-013), a REPL you have had open all
-;; afternoon — then holds the code it loaded while the files on disk move on, and
-;; nothing in it notices.
-;;
-;; That is not merely stale, it is WRONG in the direction that costs you most: a suite
-;; run in such an image reports green for a function you have already broken, and red
-;; for one you have already fixed. Measured in bedit's warm runner before this existed —
-;; edit the source, ask again, get the previous answer.
-;;
-;; Reloading is cheap and Brood is built for it (`reflect/load` re-`def`s a file's
-;; globals — the hot-reload contract). The only missing piece was knowing WHICH files
-;; moved, which is one mtime per source file.
+;; `load-sources` gets a project into an image once. A long-lived image — a warm test
+;; session, a `nest mcp` session (ADR-013), a REPL — then holds the code it loaded while
+;; the files on disk move on, and a suite run there would answer for the old code.
+;; Reloading is cheap (`reflect/load` re-`def`s a file's globals); knowing WHICH files
+;; moved takes one mtime per source file.
 
 (defdyn *loaded-mtimes* {})
 ;; `path -> mtime at the moment this image last loaded it`. In the image rather than in
@@ -811,16 +763,9 @@ rules merged in declaration order, then this project's own `:format-headers` on 
         own (or *project-format-headers* {}))
     (merge from-plugins own)))
 
-;; Read + apply one manifest file, with errors that point AT THE MANIFEST.
-;;
-;; Two failure modes used to be silent or cryptic:
-;;   - An unparseable manifest raised the bare reader error ("2:1: parse error:
-;;     unexpected end of input") with no indication of which file, so a stray
-;;     paren in project.blsp looked like a bug in the user's own source.
-;;   - A first form that ISN'T `(project …)` — a typo like `(porject …)`, or a
-;;     manifest someone wrapped in something — was silently skipped, so every
-;;     setting in it was quietly ignored and the project ran on defaults. That is
-;;     the worst kind of failure: it looks like it worked.
+;; Read + apply one manifest file, with errors that point AT THE MANIFEST: an unparseable
+;; one names the file, and a first form that isn't `(project …)` (a typo like `(porject …)`)
+;; is an error rather than a manifest silently ignored.
 (defn- project-apply-manifest (manifest-path)
   (let (form (try
                (reflect/read-first (file/slurp manifest-path))

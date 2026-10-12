@@ -74,7 +74,7 @@ pub enum PrimOp {
     /// branches and the `%lookup-miss` path (a record whose contents are not its fields
     /// resolves its miss through the `Lookup` ability — policy that stays in Brood).
     ///
-    /// Opt-in while it proves itself: see `mapget_enabled`.
+    /// `BROOD_NO_MAPGET=1` disables the lowering (`debug_flags::map_get_lowering`).
     MapGet,
     /// `(%contract-await ret call)` — answers `call`'s value. A contract shim wraps the
     /// call to its original in it, and its `Inst::Prim2` is the MARK a suspended frame is
@@ -833,7 +833,7 @@ pub struct CompiledArm {
     /// Does this arm's own chunk call `%receive` directly? Asked per tree-walker→VM route
     /// (`tw_vm_route`), so computed once (`arm_calls_receive`).
     pub calls_receive: std::sync::OnceLock<bool>,
-    /// Leaf-callee inlining (default ON; `BROOD_NO_LEAF_INLINE=1` opts out): the body with
+    /// Leaf-callee inlining: the body with
     /// each qualifying small non-recursive callee's body spliced in, derived ONCE at
     /// arm-compile time (the only moment a `&Heap` can resolve the callee symbols).
     /// Rides the same two-stage deferred-upgrade channel as self-inlining
@@ -1237,22 +1237,18 @@ pub(super) fn rewrite_chunk(chunk: &Chunk, f: &mut dyn FnMut(Value) -> Value) {
 
 // ===================== bytecode stepping engine (ADR-100, Stage 1) =====================
 //
-// The first slice of the stepping-VM endgame: a compiled arm's `Node` body is also
-// lowered to a flat **bytecode** `Chunk` — a linear instruction stream over the
-// **same** operand stack (`Heap::roots`) the `Node` interpreter uses, run by a
-// single non-recursive loop (`exec_chunk`). Stage 1 lowers only a **call-free,
-// handle-free** subset (leaf/control/prim/let/collection nodes); anything else
-// makes `compile_chunk` return `None` and the arm keeps running on `exec_node`.
+// A compiled arm's `Node` body is also lowered to a flat **bytecode** `Chunk` — a linear
+// instruction stream over the **same** operand stack (`Heap::roots`) the `Node`
+// interpreter uses, run by a single non-recursive loop (`exec_chunk`). Anything outside
+// the lowerable subset makes `compile_chunk` return `None` and the arm keeps running on
+// `exec_node`.
 //
-// Why this shape: the endgame (concurrency-v2.md §7) needs a process's continuation
-// to be relocatable heap data rather than a native Rust stack. Reifying the operand
-// state was already done (it lives on `Heap::roots`); this reifies the *control*
-// state (the instruction pointer) for a single arm. Later stages added `Call`/`Return`
-// as explicit frame push/pop — so the cross-arm call stack is data too, and corosensei
-// is gone (ADR-100 §8.4). The driver stays bit-identical to the `Node` interpreter,
-// guarded by the differential test.
+// Why this shape: a process's continuation must be relocatable heap data rather than a
+// native Rust stack. The operand state lives on `Heap::roots`; the chunk reifies the
+// *control* state (the instruction pointer), and `Call`/`Return` are explicit frame
+// push/pop, so the cross-arm call stack is data too (ADR-100 §8.4). The driver stays
+// bit-identical to the `Node` interpreter, guarded by the differential test.
 
-/// One bytecode instruction. A **stack machine**: each instruction pushes/pops on
 /// Non-owning raw pointer into a `Node` tree owned by a `CompiledArm`.
 /// Used by `Inst::TryCatch` to avoid double-rewriting: `rewrite_node(arm.body)`
 /// rewrites the pointed-to nodes in place; `rewrite_chunk` skips `Inst::TryCatch`.
@@ -1261,6 +1257,7 @@ pub struct NodePtr(pub(crate) NonNull<Node>);
 unsafe impl Send for NodePtr {}
 unsafe impl Sync for NodePtr {}
 
+/// One bytecode instruction. A **stack machine**: each instruction pushes/pops on
 /// the operand region of `Heap::roots` that sits just above the activation frame's
 /// slots (`base..base+nslots`). Frame slots are read/written by absolute index
 /// (`Local`/`SetLocal`); everything else is push/pop. The semantics of each arm

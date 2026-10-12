@@ -38,7 +38,14 @@
   (test "mixed line endings"
     (assert= (list ["a"] ["b"] ["c"]) (csv/decode "a\nb\r\nc")))
   (test "\\r\\n trailing newline ignored"
-    (assert= (list ["a" "b"]) (csv/decode "a,b\r\n"))))
+    (assert= (list ["a" "b"]) (csv/decode "a,b\r\n")))
+  (test "a bare \\r inside an unquoted field is data"
+    (assert= (list ["a\rb" "c"]) (csv/decode "a\rb,c"))
+    (assert= (list ["a\r"]) (csv/decode "a\r")))
+  (test "a final row holding one empty quoted field is kept"
+    (assert= (list ["a"] [""]) (csv/decode "a\n\"\""))
+    (assert= (list ["a"] [""]) (csv/decode "a\n\"\"\n"))
+    (assert= (list [""]) (csv/decode "\"\"\n"))))
 
 (describe "decode — multiline"
   (test "three rows"
@@ -169,10 +176,10 @@
     (let (cols (csv-wide-header 400 nil)
           header (string/join cols ",")
           row (string/join (map cols (fn (c) (str "v" c))) ",")
-          ms (%map-pairs (first (csv/decode-maps (str header "\n" row)))))
-      (assert= 400 (count ms))
-      (assert= "vc1" (get (first (csv/decode-maps (str header "\n" row))) "c1"))
-      (assert= "vc400" (get (first (csv/decode-maps (str header "\n" row))) "c400")))))
+          decoded (first (csv/decode-maps (str header "\n" row))))
+      (assert= 400 (count decoded))
+      (assert= "vc1" (get decoded "c1"))
+      (assert= "vc400" (get decoded "c400")))))
 
 (describe "decode — malformed quoting raises, never decodes to rows"
   (test "an unterminated quoted field raises instead of swallowing the rest"

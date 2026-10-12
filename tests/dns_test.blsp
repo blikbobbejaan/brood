@@ -4,7 +4,36 @@
 ;; records fails on their schedule, not ours.
 (defmodule dns-test
   (:use test)
+  (:use-internals dns)
   (:alias dns))
+
+;; Play a fake resolver on an OS-assigned port: answer one query with `reply` (nil answers
+;; nothing) and return `[answer client-end]` — what `ask` returned, and whether it closed its
+;; end of the connection (`:closed`/`:open`). The client stays alive until then, so a socket
+;; closed by its owner exiting cannot pass for one `ask` closed.
+(defn- ask-fake (reply)
+  (let (listener (tcp/listen "127.0.0.1" 0)
+        port (tcp/local-port listener)
+        me (self)
+        client (spawn (do
+                        (send me [:answer (dns/ask "127.0.0.1" port "example.com" dns/*a* 300)])
+                        (receive (:done nil))))
+        sock (receive ([:tcp-accept ^listener s] s))
+        _ (tcp/controlling-process sock (self))
+        _ (tcp/set-binary sock true)
+        _ (when reply (tcp/send sock reply))
+        answer (receive ([:answer a] a) (after *test-wait-ms* :timeout))
+        client-end (wait-closed sock))
+    (send client :done)
+    (tcp/close sock)
+    (tcp/close listener)
+    [answer client-end]))
+
+(defn- wait-closed (sock)
+  (receive
+    ([:tcp ^sock _] (wait-closed sock))
+    ([:tcp-closed ^sock] :closed)
+    (after 2000 :open)))
 
 (describe "dns/lookup"
   (test "a name that cannot resolve is an empty list, not an error"
@@ -23,6 +52,31 @@
       ;; a machine with no resolver at all is not a failure of this code
       (when (not (empty? addrs))
         (is (includes? addrs "127.0.0.1")))))
+
+  (test "a silent resolver is an empty list, and the socket is closed"
+    (assert= (ask-fake nil) [nil :closed]))
+
+  (test "a truncated reply is an empty list, and the socket is closed"
+    ;; claims a 12-byte header but ends after 4 — the decode reads past the end
+    (assert= (ask-fake #b"\x00\x04\x56\x78\x81\x80") [nil :closed]))
+
+  (test "a bug in the exchange propagates instead of reading as no answer"
+    (let (listener (tcp/listen "127.0.0.1" 0))
+      (is (error-of (dns/ask "127.0.0.1" (tcp/local-port listener) "example.com" :not-a-type 300)))
+      (tcp/close listener)))
+
+  (test "a well-formed reply decodes its A record"
+    (let (reply #b"\x00\x20\x56\x78\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x7f\x00\x00\x01")
+      (assert= (ask-fake reply) [(list "127.0.0.1") :closed])))
+
+  (test "a reply whose record overruns it is an empty list"
+    ;; header: 1 answer; question `.` A IN; answer `.` A IN ttl, rdlength 4, but 2 bytes
+    (let (reply #b"\x00\x1e\x56\x78\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x7f\x00")
+      (assert= (ask-fake reply) [nil :closed])))
+
+  (test "an IPv6 group drops its leading zeros"
+    (assert= (dns/ipv6 #b"\x20\x01\x0d\xb8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01" 0)
+      "2001:db8:0:0:0:0:0:1"))
 
   (test "the record types are the IANA numbers"
     (assert= 1 dns/*a*)

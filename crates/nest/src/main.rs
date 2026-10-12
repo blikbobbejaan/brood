@@ -46,7 +46,7 @@ mod release;
     // The build sha, not just the semver — see `cli_support::VERSION_LINE`.
     version = brood::cli_support::VERSION_LINE,
     about = "Brood project tooling — the daily driver above the `brood` language binary (ADR-028).",
-    after_help = "Also (implemented in Brood, std/tool/nest.blsp): new, run, test, check, format, doc, docs, doctest, grammar, rename, update-tooling, update-brood, fetch, update, tree, add, remove, publish, search, key, ws, repl, observe, attach, completions — `nest <command> --help`.",
+    after_help = "Also (implemented in Brood, std/tool/nest.blsp): new, run, test, check, format, doc, docs, doctest, grammar, rename, update-tooling, update-brood, fetch, update, tree, add, remove, publish, search, key, ws, repl, observe, attach, mcp, completions — `nest <command> --help`.",
     propagate_version = true,
     subcommand_required = true,
     arg_required_else_help = true
@@ -83,12 +83,6 @@ enum Cmd {
     /// an image with none of `project`'s root globals. This arm builds before any std module
     /// loads, and the child process `ensure_stdimage` spawns is exactly this arm.
     Stdimage,
-
-    /// Serve the project over Model Context Protocol on stdio so an agent
-    /// (Claude Code etc.) can eval / lookup / format / expand / run tests /
-    /// read docs against this project's live image (ADR-036, docs/mcp.md).
-    /// Errors if cwd is not inside a Brood project.
-    Mcp,
 
     /// Bundle the project into a single self-contained executable (ADR-038).
     ///
@@ -248,6 +242,7 @@ const BLSP_SUBCOMMANDS: &[&str] = &[
     "repl",
     "observe",
     "attach",
+    "mcp",
     "completions",
     "complete",
 ];
@@ -318,7 +313,11 @@ fn arm_test_env(argv: &[String]) {
         // SAFETY: called before any thread or interpreter is created.
         unsafe {
             std::env::set_var("BROOD_COVERAGE", "1");
-            std::env::set_var("BROOD_NO_JIT", "1");
+            // Cap the ceiling at the VM (native code would run without the recording),
+            // keeping an explicit tree-walker request.
+            if std::env::var("BROOD_TIER").as_deref() != Ok("0") {
+                std::env::set_var("BROOD_TIER", "1");
+            }
         }
     }
     if has(&[
@@ -383,7 +382,10 @@ fn run_blsp(max_parallel: Option<usize>, argv: Vec<String>) {
     if std::env::var_os("BROOD_NO_STDIMAGE").is_none() && !completing {
         ensure_stdimage_now(&mut interp);
     }
-    let code = format!("(nest/main {})", blsp_string_list(&argv));
+    let mut code = format!("(nest/main {})", blsp_string_list(&argv));
+    if argv.first().is_some_and(|c| c == "mcp") {
+        code = mcp::with_embedded_documents(&code);
+    }
     // Terminal guards for a panic unwind, scoped so they drop before the exit
     // (`process::exit` skips Drop) and no-ops for a subcommand that never touches the
     // terminal. `observe`/`attach` draw full-screen and need the full teardown
@@ -408,10 +410,7 @@ fn run_main(cli: Cli) {
     if let Some(n) = cli.max_parallel {
         brood::process::set_max_parallel(n);
     }
-    // Honour BROOD_MEM_LIMIT for every command; `nest test` (Brood-routed, see
-    // `arm_test_env`) defaults a ceiling on so a runaway test can't OOM the host. `nest run`/`mcp`
-    // stay unlimited unless the user opts in — the live image edits all day
-    // (ADR-043).
+    // Honour BROOD_MEM_LIMIT for every command (ADR-043).
     brood::core::alloc::init_limits_from_env();
     // Flag a stressed/retuned heap so a benchmark can't silently measure one.
     brood::cli_support::warn_nondefault_gc_env();
@@ -451,10 +450,6 @@ fn run_main(cli: Cli) {
                 "      \" (shared by brood, nest and brood-lsp from this tree)\")))",
             ),
         ),
-        Cmd::Mcp => {
-            require_project("mcp", None);
-            cmd_mcp(&mut interp)
-        }
         Cmd::Release {
             output,
             runtime,
@@ -520,25 +515,6 @@ fn blsp_string_list(items: &[String]) -> String {
     } else {
         let quoted: Vec<String> = items.iter().map(|s| blsp_string(s)).collect();
         format!("(list {})", quoted.join(" "))
-    }
-}
-
-/// `nest mcp` — see docs/mcp.md (ADR-036). Strictly per-project.
-fn cmd_mcp(interp: &mut Interp) {
-    // `setup-tooling-image` (std/tool/project.blsp) is the shared tooling bootstrap
-    // the LSP also uses (via `introspect::load_tooling_image`) — sources + the
-    // test/format frameworks — so the two servers can't drift on its contents.
-    let bootstrap = r#"
-        (project/load-config)
-        (let (root (project/find-root (file/cwd)))
-          (when (nil? root)
-            (error "nest mcp: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
-          (project/setup-tooling-image root))
-    "#;
-    run(interp, bootstrap);
-    if let Err(e) = mcp::run(interp) {
-        eprintln!("nest mcp: {e}");
-        std::process::exit(1);
     }
 }
 
@@ -776,40 +752,4 @@ fn run_for_value(interp: &mut Interp, code: &str) -> brood::core::value::Value {
             std::process::exit(1);
         }
     }
-}
-
-/// Guard a project-scoped subcommand at the `nest` boundary.
-///
-/// Without this, running one outside a project surfaced a raw Brood `error`: a
-/// bogus source position pointing into the bootstrap string (`1:58`), an internal
-/// function name (`project-run/run-tests`), and an internal line number — for
-/// what is only a wrong-directory mistake. Compare `cargo`: "could not find
-/// `Cargo.toml` in /x or any parent directory". `hint` names the file-scoped
-/// alternative when the command has one, so the error also teaches the way out.
-fn require_project(command: &str, hint: Option<&str>) {
-    if in_project() {
-        return;
-    }
-    let cwd = std::env::current_dir().map_or_else(|_| ".".to_string(), |p| p.display().to_string());
-    eprintln!("nest {command}: no project.blsp in {cwd} or any parent directory.");
-    eprintln!("  Create one with `nest new <name>`, or cd into an existing project.");
-    if let Some(hint) = hint {
-        eprintln!("  {hint}");
-    }
-    std::process::exit(2);
-}
-
-/// Walk up from cwd looking for a `project.blsp` marker. Used by the
-/// single-file `nest run/test/check` paths to decide whether to bootstrap
-/// the project image, and by `require_project` to reject a project-scoped
-/// command run outside one.
-fn in_project() -> bool {
-    let mut here = std::env::current_dir().ok();
-    while let Some(dir) = here {
-        if dir.join("project.blsp").exists() {
-            return true;
-        }
-        here = dir.parent().map(|p| p.to_path_buf());
-    }
-    false
 }

@@ -168,3 +168,38 @@
                       (fn (c) (let (s (base c)) (if (nil? s) nil (+ s 100)))))))
       (assert= (binding (*fuzzy-scorer* boosted) (fuzzy/top "fb" rank-corpus 5))
         (fuzzy/top "fb" rank-corpus 5)))))
+
+(describe "fuzzy/edit-distance"
+  (test "counts insertions, deletions and substitutions"
+    (assert= (fuzzy/edit-distance "abc" "abc") 0)
+    (assert= (fuzzy/edit-distance "" "abc") 3)
+    (assert= (fuzzy/edit-distance "abc" "") 3)
+    (assert= (fuzzy/edit-distance "reduc" "reduce") 1)
+    (assert= (fuzzy/edit-distance "kitten" "sitting") 3))
+  (test "is symmetric"
+    (assert= (fuzzy/edit-distance "sitting" "kitten") (fuzzy/edit-distance "kitten" "sitting")))
+  (test "counts codepoints, not bytes"
+    (assert= (fuzzy/edit-distance "héllo" "hello") 1)))
+
+(def nearest-corpus ["reduce" "reduced" "map" "cot" "bat" "cab"])
+
+(describe "fuzzy/nearest"
+  (test "the threshold is a third of the name's length"
+    ;; six characters allow two edits, not three
+    (assert= (fuzzy/nearest "abcdef" ["abcdxy" "abcxyz"]) (list "abcdxy"))
+    ;; five characters allow one: `reduced` is two away
+    (assert= (fuzzy/nearest "reduc" ["reduce" "reduced"]) (list "reduce")))
+  (test "a short name still allows one edit"
+    (assert= (fuzzy/nearest "ab" ["xb" "xy"]) (list "xb")))
+  (test "nearer first, then alphabetical, at most three"
+    (assert= (fuzzy/nearest "cat" ["cot" "bat" "cut" "cab" "cart"]) (list "bat" "cab" "cart"))
+    (assert= (fuzzy/nearest "abcdef" ["abcdxy" "zbcdef"]) (list "zbcdef" "abcdxy")))
+  (test "never offers the name itself, and offers a duplicate once"
+    (assert= (fuzzy/nearest "cat" ["cat" "bat" "bat"]) (list "bat")))
+  (test "a candidate of a different length within the threshold qualifies"
+    (assert= (fuzzy/nearest "abc" ["abcd" "ab" "abcde"]) (list "ab" "abcd")))
+  (test "nothing close is an empty answer"
+    (assert= (fuzzy/nearest "zzqqxx" ["reduce" "map"]) ()))
+  (test "answers the same in many processes at once"
+    (assert= (into #{} (concurrently 8 (fn (_) (fuzzy/nearest "reduc" nearest-corpus))))
+      #{(list "reduce")})))
