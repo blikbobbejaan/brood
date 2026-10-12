@@ -452,8 +452,10 @@ pub const STATE_DUMP: &str = r#"
 ;; list is a loud test failure, not a silent hole, which is why it is spelled out.
 ;; `regex` and `table` since 2026-09-23: `string/fill-prefix` names `regex/find` (whose
 ;; memos are tables), so a source load of `string` loads both at expansion and an imaged
-;; one defers them to the first call.
-(doseq (m ['map 'seq 'io 'string 'math 'reflect 'path 'file 'regex 'table]) (require-one m))
+;; one defers them to the first call. `encoding` since 2026-10-12, the same way: `path/temp`
+;; names `encoding/hex-encode-bytes`.
+(doseq (m ['map 'seq 'io 'string 'math 'reflect 'path 'file 'regex 'table 'encoding])
+  (require-one m))
 
 (defn- dyn? (n)
   "Is `n` a dynamic variable? Asked behaviourally, through the primitive `binding` uses,

@@ -1145,7 +1145,11 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
     }
 }
 
-/// An active plaintext stream from `tcp-connect`: reads start at once.
+/// An active plaintext stream from `tcp-connect`: announce it, then start reading.
+/// Emitting `[:tcp-connected]` here, on the reactor, is what makes the announcement
+/// mean "established": every command the owner issues after seeing it (a send, a
+/// close, an idle timeout) is queued behind this one, and it reaches the owner's
+/// mailbox ahead of any `[:tcp …]` data because the same sink carries both.
 fn start_stream(
     id: u64,
     stream: MioStream,
@@ -1155,6 +1159,7 @@ fn start_stream(
     conns: &mut HashMap<u64, Rx>,
     registry: &mio::Registry,
 ) {
+    sink.emit(tcp_connected_msg(id));
     let mut connection = PlainConn {
         stream,
         sink,
@@ -1693,9 +1698,10 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
                     ctl.port = local_port;
                 }
                 let stream = MioStream::from_std(std_stream);
-                // Announced before the reactor can read: the same sink, in order, so the
-                // owner sees `[:tcp-connected]` ahead of any `[:tcp …]` data.
-                sink.emit(tcp_connected_msg(id));
+                // `[:tcp-connected]` is NOT emitted here: the reactor emits it once it
+                // holds the stream (`start_stream`). Announced from this thread, the owner
+                // could `tcp/send` before `Cmd::Stream` reached the reactor, and the send —
+                // for an id the reactor did not know yet — was silently dropped.
                 hand_off_if_registered(id, || Cmd::Stream {
                     id,
                     stream,

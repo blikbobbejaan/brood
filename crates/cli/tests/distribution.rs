@@ -546,7 +546,8 @@ fn a_shipped_closure_requires_its_modules_on_the_receiver() {
     let port_b = free_port();
 
     // A: no `require`, no qualified reference of its own — a node that has never heard
-    // of `encoding` or `json`. It asserts that before the closure arrives.
+    // of `csv` or `json`. It asserts that before the closure arrives. (`encoding` was the
+    // probe until `path/temp` started naming it, which puts it on a source boot's chain.)
     //
     // NOT `math`, which this test used until 2026-08-27: `string` reaches `math/max` and
     // `math/->fixed`, so anything that formats a string pulls `math` onto the boot chain and
@@ -556,7 +557,7 @@ fn a_shipped_closure_requires_its_modules_on_the_receiver() {
     // have passed while proving nothing.
     let server = format!(
         r#"
-(when (bound? 'encoding/hex-encode) (throw "node A already had encoding loaded — the test proves nothing"))
+(when (bound? 'csv/encode) (throw "node A already had csv loaded — the test proves nothing"))
 (when (bound? 'json/encode) (throw "node A already had json loaded — the test proves nothing"))
 (proc/register :calc (self))
 (node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
@@ -574,7 +575,7 @@ fn a_shipped_closure_requires_its_modules_on_the_receiver() {
 (node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
 (node/connect "a@127.0.0.1:{port_a}")
 (send {{:name :calc :node :a@127.0.0.1}}
-  [:run (fn (x) (str (encoding/hex-encode (str x)) " " (json/encode {{:q (quote math/not-a-real-name)}}))) 144 (self)])
+  [:run (fn (x) (str (csv/encode [[(str x) "a,b"]]) " " (json/encode {{:q (quote math/not-a-real-name)}}))) 144 (self)])
 (receive
   ([:result r] (io/puts (str "GOT: " r)))
   (after 30000 (throw "no reply from calc")))
@@ -601,7 +602,7 @@ fn a_shipped_closure_requires_its_modules_on_the_receiver() {
         "client did not finish cleanly.\n--- client stdout ---\n{stdout}\n--- client stderr ---\n{stderr}\n--- server stderr ---\n{a_err}"
     );
     assert!(
-        stdout.contains(r#"GOT: 313434 {"q":"math/not-a-real-name"}"#),
+        stdout.contains(r#"GOT: 144,"a,b" {"q":"math/not-a-real-name"}"#),
         "expected the remote to run the closure against modules it loaded on demand, got:\n\
          --- client stdout ---\n{stdout}\n--- client stderr ---\n{stderr}\n--- server stderr ---\n{a_err}"
     );

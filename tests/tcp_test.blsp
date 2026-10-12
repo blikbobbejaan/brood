@@ -637,10 +637,41 @@
 (describe "tcp: connect failure"
   :isolated (test "a refused connect raises a structured error carrying E0050"
     ;; Bind then close a listener so the port is known and nothing is listening on it.
+    ;; `tcp/close` only queues the close on the reactor, so the fd may still accept for a
+    ;; moment; a completed connect to a second listener is a barrier — the reactor
+    ;; announces `[:tcp-connected]` only after handling every command queued before it.
     (let (ls (tcp/listen "127.0.0.1" 0)
-          port (listen-port ls))
+          port (listen-port ls)
+          barrier (tcp/listen "127.0.0.1" 0))
       (tcp/close ls)
+      (tcp/close (tcp/connect "127.0.0.1" (listen-port barrier)))
+      (tcp/close barrier)
       (let (e (check-allow :discarded-catch
                 (try (tcp/connect "127.0.0.1" port) (catch e e))))
         (assert= (get e :code) "E0050")
         (is (includes? (error-message e) (str "tcp-connect 127.0.0.1:" port)))))))
+
+(defn- first-lost-send (ls port remaining)
+  "Connect and send AT ONCE, `remaining` times; the round whose bytes never reached the
+  server, or nil. The send is the first thing the client does after `tcp/connect` returns,
+  so it races whatever installs the stream — the window `[:tcp-connected]` must close."
+  (if (= remaining 0)
+    nil
+    (let (c (tcp/connect "127.0.0.1" port)
+          _ (tcp/send c "x")
+          s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* nil)))
+      (tcp/controlling-process s (self))
+      (let (got (receive ([:tcp ^s d] d) (after *test-wait-ms* :lost)))
+        (tcp/close c)
+        (tcp/close s)
+        (if (= got :lost) remaining (first-lost-send ls port (- remaining 1)))))))
+
+(describe "tcp: a connect is established when tcp/connect returns"
+  :isolated (test "a send issued right after tcp/connect reaches the peer, every time"
+    ;; Lost 84 of 300 on one core when `[:tcp-connected]` was emitted by the dial thread
+    ;; ahead of handing the stream to the reactor: the send reached the reactor first,
+    ;; for an id it did not know, and was dropped.
+    (let (ls (tcp/listen "127.0.0.1" 0)
+          lost (first-lost-send ls (listen-port ls) 200))
+      (tcp/close ls)
+      (assert= lost nil))))
