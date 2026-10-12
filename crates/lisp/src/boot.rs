@@ -411,7 +411,18 @@ pub(crate) fn prelude_source_path() -> Option<String> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
     cache_base
         .and_then(|base| write_prelude_copy(&base.join("brood")))
-        .or_else(|| write_prelude_copy(&std::env::temp_dir().join("brood")))
+        .or_else(temp_dir_prelude_copy)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn temp_dir_prelude_copy() -> Option<String> {
+    write_prelude_copy(&std::env::temp_dir().join("brood"))
+}
+
+/// The browser playground has no filesystem, and `std::env::temp_dir` panics there.
+#[cfg(target_arch = "wasm32")]
+fn temp_dir_prelude_copy() -> Option<String> {
+    None
 }
 
 fn write_prelude_copy(dir: &std::path::Path) -> Option<String> {
