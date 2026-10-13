@@ -118,8 +118,9 @@ fn assert_clean(runs: &[Run], stdout: &str) {
 fn a_link_to_a_dead_pid_kills_a_sleeping_root() {
     let runs = run_on_every_tier(
         "sleep",
-        r#"(let (dead (spawn :done))
-  (sleep 100)
+        r#"(let (dead (spawn :done)
+      watch (monitor dead))
+  (receive ([:down ^watch _ _] nil))
   (io/puts "before")
   (link dead)
   (sleep 60000)
@@ -130,16 +131,20 @@ fn a_link_to_a_dead_pid_kills_a_sleeping_root() {
 }
 
 // The next two need the signal to land while the root is INSIDE the shape, so it comes
-// from a linked child that exits a while later — not from a link to a dead pid, whose
-// kill may already land at `link` itself.
+// from a linked child that exits a while after the root says `:go` — not from a link to a
+// dead pid, whose kill may already land at `link` itself. The child waits for `:go` rather
+// than sleeping from its start: a tree-walker booting from source can take longer than any
+// fixed sleep to reach its first `io/puts` (it loads `io` there), and a kill landing first
+// left "before" unprinted.
 
 #[test]
 fn a_linked_exit_kills_a_root_in_receive_after() {
     let runs = run_on_every_tier(
         "receive",
-        r#"(spawn-link (do (sleep 200) (exit (self) :boom)))
-(io/puts "before")
-(receive (message message) (after 60000 :timeout))
+        r#"(let (child (spawn-link (receive (:go (sleep 200) (exit (self) :boom)))))
+  (io/puts "before")
+  (send child :go)
+  (receive (:never nil) (after 60000 :timeout)))
 (io/puts "after")"#,
     );
     assert_killed(&runs, ":boom");
@@ -149,9 +154,10 @@ fn a_linked_exit_kills_a_root_in_receive_after() {
 fn a_linked_exit_kills_a_computing_root() {
     let runs = run_on_every_tier(
         "compute",
-        r#"(spawn-link (do (sleep 200) (exit (self) :boom)))
-(io/puts "before")
-(dotimes (i 1000000000) i)
+        r#"(let (child (spawn-link (receive (:go (sleep 200) (exit (self) :boom)))))
+  (io/puts "before")
+  (send child :go)
+  (dotimes (i 1000000000) i))
 (io/puts "after")"#,
     );
     assert_killed(&runs, ":boom");
@@ -175,7 +181,7 @@ fn a_linked_child_crashing_kills_the_root() {
     let runs = run_on_every_tier(
         "crash",
         r#"(io/puts "before")
-(link (spawn (do (sleep 50) (error "child crash"))))
+(spawn-link (do (sleep 50) (error "child crash")))
 (sleep 60000)
 (io/puts "after")"#,
     );
@@ -188,8 +194,9 @@ fn a_trapping_root_receives_the_exit_as_a_message() {
     let runs = run_on_every_tier(
         "trap",
         r#"(proc/trap-exit true)
-(let (dead (spawn :done))
-  (sleep 100)
+(let (dead (spawn :done)
+      watch (monitor dead))
+  (receive ([:down ^watch _ _] nil))
   (link dead)
   (receive
     ([:EXIT ^dead reason] (io/puts (str "trapped " reason)))
@@ -204,8 +211,10 @@ fn a_trapping_root_receives_the_exit_as_a_message() {
 fn a_normal_exit_of_a_linked_child_leaves_the_root_running() {
     let runs = run_on_every_tier(
         "normal-link",
-        r#"(link (spawn (sleep 50)))
-(sleep 300)
+        r#"(let (child (spawn-link (receive (:go :done)))
+      watch (monitor child))
+  (send child :go)
+  (receive ([:down ^watch _ _] nil)))
 (io/puts "end")"#,
     );
     assert_clean(&runs, "end\n");
