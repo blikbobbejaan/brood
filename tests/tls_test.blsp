@@ -44,8 +44,7 @@
     (let (pc (tls-serve-one (bytes 0 255 128 65))
           port (first (exchanged pc))
           cert (second (exchanged pc)))
-      (let (s (tls/request "localhost" port "gimme bytes" cert))
-        (tcp/set-binary s true)
+      (let (s (tls/request "localhost" port "gimme bytes" cert true))
         (assert= (drain s) (bytes 0 255 128 65)))))
   (test "an iolist request (with a bytes leaf) reaches the server byte-faithfully"
     (let (me (self))
@@ -116,8 +115,7 @@
   the ones queued at the close were taken, and how many bytes the client read."
   (let (me (self)
         port (or (tcp/local-port ls) (error "the TLS listener reported no local port"))
-        client (spawn (let (s (tls/request "localhost" port request cert))
-                        (tcp/set-binary s true)
+        client (spawn (let (s (tls/request "localhost" port request cert true))
                         (send me [:received (self) (bytes/length (drain s))])))
         s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* (error "no TLS accept"))))
     (tcp/controlling-process s (self))

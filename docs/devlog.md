@@ -16786,3 +16786,19 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
   (`any?`, `every?`, `includes?`, `vec` → collections; `contains?` → maps). The prelude's
   source copy falls back to the temp dir when the cache dir is read-only, since categories
   now depend on its definition sites.
+
+## 2026-10-13 — the v0.38.0 release run: an https response mangled into text
+
+The release commit's tree-walker job went red twice on two network tests, and the cause was
+older than the cleanup. `tls/request` sends its request from the reactor, without the
+caller, so the response can arrive before the caller's `tcp/set-binary` lands; under load
+(the whole suite on the tree-walker) the first chunk of a binary https body was decoded as
+UTF-8, every byte over 0x7F becoming U+FFFD. `http/request`'s comment claimed the mode was
+set "before the request goes out" — true for plain TCP only. `%tls-request` takes an
+optional fifth argument, `binary`, the response's starting mode, and `tls/request`,
+`http/request` and the TLS tests pass it instead of switching afterwards. Guard:
+`tests/tls_test.blsp` "a binary-mode TLS response is byte-faithful bytes" no longer calls
+`set-binary`; with the argument ignored it reads `#b"\0\xef\xbf\xbd\xef\xbf\xbdA"`, and
+`http_test`'s https binary case goes red with it. The second failure, `dns_test`'s
+well-formed reply, gave the client a 300 ms idle wait for a reply the loaded fake resolver
+had not sent yet; the tests that expect a reply now wait `*test-wait-ms*`.

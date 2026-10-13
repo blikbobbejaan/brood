@@ -29,7 +29,11 @@ with the op's own dispatch in five ways, KI-223; the new `%dispatch-proven` re-c
 and constructor on every call). `tcp/connect` resolves and dials off the scheduler. A process
 exit sweeps only what that process owned.
 
-**Fixes.** The checker could fail to terminate on recursive types, and a bare `(fn)`
+**Fixes.** An `https://` response could arrive mangled into text (every byte over 0x7F a
+U+FFFD): `tls/request` sends the request itself, so the first chunk could land before the
+caller's `tcp/set-binary`. `tls/request` takes an optional `binary` argument that sets the
+mode before anything is sent, and `http/request` uses it. The checker could fail to
+terminate on recursive types, and a bare `(fn)`
 argument in a `:pure` function panicked it. `format` followed symlinks into cycles;
 `dns/lookup` leaked its socket on every failure; `csv` dropped a final `""` row and bare
 `\r` inside fields; `gen/call-timeout` could deliver a second reply; `string/blank?` was

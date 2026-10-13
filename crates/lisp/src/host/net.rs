@@ -2016,19 +2016,21 @@ fn tls_config_with_ca(ca_pem: &str) -> std::io::Result<Arc<ClientConfig>> {
 /// registry entry and request buffer for the kernel's multi-minute SYN timeout.
 const TLS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `(tls-request host port request [ca-pem])` — one HTTPS exchange: handshake,
+/// `(tls-request host port request [ca-pem [binary]])` — one HTTPS exchange: handshake,
 /// send `request` (already-flattened iolist bytes), stream the response as
 /// `[:tcp id data]` … `[:tcp-closed id]` (or `[:tcp-error id msg]`). Returns
 /// the id immediately; the blocking name-resolution + connect happens on a
-/// short-lived helper thread, then the exchange rides the reactor. The socket
-/// honors `tcp-set-binary` like any other (set it right after this returns —
-/// nothing can arrive before the request is sent). `ca_pem` (private CAs, dev
-/// certs) replaces the Mozilla roots as the trust anchor for this request.
+/// short-lived helper thread, then the exchange rides the reactor. `binary` is the
+/// response's starting mode: the request goes out without the caller's help, so a
+/// response can arrive before a later `tcp-set-binary` lands and its first chunk
+/// would decode as text. `ca_pem` (private CAs, dev certs) replaces the Mozilla roots
+/// as the trust anchor for this request.
 pub fn tls_request(
     host: &str,
     port: u16,
     request: Vec<u8>,
     ca_pem: Option<String>,
+    binary: bool,
     subscriber: u64,
 ) -> std::io::Result<u64> {
     reactor_up()?;
@@ -2037,7 +2039,7 @@ pub fn tls_request(
         None => tls_config(),
     };
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let binary = Arc::new(AtomicBool::new(false));
+    let binary = Arc::new(AtomicBool::new(binary));
     let owner = SocketOwner::new(subscriber);
     reg().insert(
         id,
