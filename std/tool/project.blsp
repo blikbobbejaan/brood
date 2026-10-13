@@ -850,8 +850,9 @@ rules merged in declaration order, then this project's own `:format-headers` on 
   (project-root-project-rooting root)
   ;; Hand the formatter this project's (+ its plugins') macro-shape rules, so
   ;; `nest format`/LSP/MCP indent framework macros correctly. Always set (resetting
-  ;; any stale value from a prior setup in a long-lived tooling image).
-  (def *format-headers-extra* (project-effective-format-headers root))
+  ;; any stale value from a prior setup in a long-lived tooling image). Through `format`'s
+  ;; own setter: a `def` here bound `project/*format-headers-extra*`, which nothing reads.
+  (format/use-headers (project-effective-format-headers root))
   root)
 (sig setup (string -> string))
 

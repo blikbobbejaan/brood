@@ -1384,7 +1384,10 @@ fn refer_add(
         heap.mark_import_ambiguous(bare, qualified);
         return Ok(());
     }
+    // A PRIVATE root name (a prelude `def-`) is unreachable outside its module, so an import
+    // spelled the same shadows nothing a program could have referred to.
     if heap.env_get(value::EnvId::GLOBAL, bare).is_some()
+        && !heap.is_private(bare)
         && std::env::var_os("BROOD_NO_SHADOW_WARN").is_none()
     {
         let b = value::symbol_name(bare);

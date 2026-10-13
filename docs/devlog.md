@@ -16843,4 +16843,24 @@ which it did only on finishing or on a form error. Every scheduler death now goe
 by an exit signal: <reason>"), with a drop-time backstop. A related bug: a hard kill never
 stopped a JIT'd loop, because native preemption skipped the VM's kill check; preemption now
 honours it. P15 uses `spawn-link`. Guard: `crates/cli/tests/root_exit_signal.rs`, 9 shapes ×
-3 tiers, each fix sabotage-verified.
+3 tiers, each fix sabotage-verified. Its scripts first ordered steps by sleeping, and CI's
+tree-walker booting from source outslept one; they are ordered by handshakes now.
+
+**Three bugs the downstream update round found** (bringing ~25 projects to 0.38):
+- *A project's format rules never reached `nest format`.* `project/setup` ran
+  `(def *format-headers-extra* …)` inside the `project` module, and unless `format` had already
+  loaded and marked the name dynamic, that bound `project/*format-headers-extra*`, which
+  nothing reads — Hatch's `deflive`/`on`/`tick` shapes were ignored in every project, and
+  hatch-demo's `nest format --check` failed on 11 correctly formatted files. `format` owns a
+  setter now (`format/use-headers`). The unit tests asserted on the helper that computes the
+  table; `crates/nest/tests/format_project_headers.rs` asserts on the file `nest format` writes
+  (red before).
+- *`node/monitor` failed its own contract.* Both its `sig` and the primitive's declared a `ref`
+  result; it returns the node keyword, so under `nest run`/`nest test` every call raised —
+  `reconnect`, `editor/serve` and the observer all call it. Every test of it ran through
+  `brood`, which arms no contracts; `contracts_default.rs` now calls it under `nest run` (red
+  before).
+- *A private prelude name was reported as shadowed.* `(:use hatch/web/live)` warned that hatch's
+  public `*live-registries*` shadowed the prelude's — a `def-`, unreachable from user code. The
+  import check skips private names (`crates/cli/tests/import_shadow_warning.rs`, red before; a
+  public name still warns).
