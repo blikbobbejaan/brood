@@ -574,7 +574,9 @@ impl Mailbox {
     /// `1..` armed with the breaching length, `LATCHED` already raised for this arming.
     const OVERFLOW_LATCHED: usize = usize::MAX;
 
-    /// Is an overflow waiting to be raised? A peek (`take_overflow_hit` takes and latches).
+    /// Is an overflow waiting to be raised? A peek (`take_overflow_hit` takes and latches) —
+    /// for the native loop's poll, which cannot raise.
+    #[cfg(feature = "jit")]
     pub(super) fn overflow_pending(&self) -> bool {
         let v = self.overflow_hit.load(Ordering::Relaxed);
         v != 0 && v != Self::OVERFLOW_LATCHED

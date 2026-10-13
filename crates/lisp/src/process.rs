@@ -59,7 +59,7 @@ pub use mailbox::{
 };
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub use message::{from_message, to_message, ClosureArmMsg, ClosureMsg, Message};
-pub(crate) use scheduler::{current_mailbox_overflow_pending, take_current_mailbox_overflow};
+pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.
 pub(crate) use message::{grow, MAX_MESSAGE_DEPTH};
@@ -98,12 +98,14 @@ pub fn parked_process_count() -> usize {
 pub(crate) use scheduler::{
     capture_hard_kill_pending, capture_top_level, charge as charge_reductions, charge_native,
     dirty_block, driver_safepoint, in_capture_run, set_capture_top_level, stop_between_elements,
-    tick_capture, tick_reporting_hard_kill, Safepoint, TreeWalkGuard,
+    tick_reporting_hard_kill, Safepoint, TreeWalkGuard,
 };
 // A native activation's poll is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.
 #[cfg(feature = "jit")]
-pub(crate) use scheduler::{native_poll, NativePoll};
+pub(crate) use scheduler::{
+    current_mailbox_overflow_pending, native_poll, tick_capture, NativePoll,
+};
 // Test-only: the JIT preempt unit test (`compile.rs`) drives a tiered arm as if it
 // were a capture-mode green process. That test is itself `#[cfg(feature = "jit")]`,
 // so the re-export must match — gating on bare `test` leaves it unused (and warned)

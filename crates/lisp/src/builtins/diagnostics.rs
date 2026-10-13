@@ -572,9 +572,8 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         }
     };
     let state = |s: &str| value::kw(s);
-    let mut deopts: i64 = 0;
-    let mut deopts_total: i64 = 0;
-    let st = match f {
+    // The arm's state, with its consecutive and total deopt counts (0 where there is none).
+    let (st, deopts, deopts_total) = match f {
         Value::Fn(id) => {
             #[cfg(feature = "jit")]
             {
@@ -583,16 +582,14 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
                     crate::eval::compile::Tier::Native
                 );
                 if !native_tier {
-                    state("no-jit")
+                    (state("no-jit"), 0, 0)
                 } else {
                     match crate::eval::compile::probe_arm_for(heap, id, argc) {
-                        None => state("no-arm"),
+                        None => (state("no-arm"), 0, 0),
                         Some(arm) => {
                             use std::sync::atomic::Ordering::Acquire;
-                            deopts = arm.jit_deopts.load(Acquire) as i64;
-                            deopts_total = arm.jit_deopts_total.load(Acquire) as i64;
                             let p = arm.jit_code.load(Acquire);
-                            if p == crate::jit::BAILED {
+                            let st = if p == crate::jit::BAILED {
                                 state("bailed")
                             } else if p == crate::jit::QUEUED {
                                 state("queued")
@@ -600,18 +597,23 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
                                 state("untried")
                             } else {
                                 state("native")
-                            }
+                            };
+                            (
+                                st,
+                                arm.jit_deopts.load(Acquire) as i64,
+                                arm.jit_deopts_total.load(Acquire) as i64,
+                            )
                         }
                     }
                 }
             }
             #[cfg(not(feature = "jit"))]
             {
-                let _ = (id, heap as &Heap);
-                state("no-jit")
+                let _ = (id, argc, heap as &Heap);
+                (state("no-jit"), 0, 0)
             }
         }
-        _ => state("no-arm"),
+        _ => (state("no-arm"), 0, 0),
     };
     Ok(heap.map_from_pairs(vec![
         (value::kw("state"), st),

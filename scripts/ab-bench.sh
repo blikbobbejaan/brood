@@ -231,7 +231,10 @@ fi
 stdimage_state() { # $1 binary -> live|stale|absent|unreadable|unknown
   local probe out
   probe="$(mktemp --suffix=.blsp)"
-  printf '(%%print (stdimage/status))\n' >"$probe"
+  # `io/puts`, not a kernel spelling: a renamed kernel print (`%print` went in the 2026-10
+  # cleanup) made this probe error on every binary, which read as `unknown` on both arms
+  # and silently switched the guard below off for a week.
+  printf '(io/puts (stdimage/status))\n' >"$probe"
   out="$(timeout 30 "$1" "$probe" 2>/dev/null || true)"
   rm -f "$probe"
   case "$out" in
@@ -242,6 +245,21 @@ stdimage_state() { # $1 binary -> live|stale|absent|unreadable|unknown
     *)                      echo unknown ;;  # predates stdimage/status (or errored)
   esac
 }
+# Make each arm `:live` before judging: a baseline worktree never had an image written (the
+# runtime never builds one; `nest` does), so it booted from source on every run — ~70 ms a run
+# on every row, which read as a 40-50% win for the working tree on 2026-10-13. The image is
+# keyed on the tree's stdlib, so each tree's own `nest` writes its own. A tree that predates
+# the feature stays `unknown` and is handled below.
+ensure_stdimage() { # $1 tree root, $2 its brood binary
+  [ "$(stdimage_state "$2")" = live ] && return
+  grep -q '^stdimage *=' "$1/crates/lisp/Cargo.toml" 2>/dev/null || return
+  echo "ab-bench: writing the stdlib image for $1 ..." >&2
+  ( cd "$1" && cargo build -q --profile release-fast -p nest \
+      && ./target/release-fast/nest stdimage ) >/dev/null 2>&1 \
+    || echo "ab-bench: WARNING could not write the stdlib image for $1" >&2
+}
+[ -n "$prebuilt_base" ] || ensure_stdimage "$wt" "$base_bin"
+ensure_stdimage "$root" "$new_bin"
 base_img="$(stdimage_state "$base_bin")"
 new_img="$(stdimage_state "$new_bin")"
 if [ "$base_img" = "$new_img" ]; then

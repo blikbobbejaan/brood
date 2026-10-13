@@ -125,13 +125,26 @@ gate_absent_module() {
     [ -f "$ROOT/std/tool/$ns.blsp" ] || [ -f "$ROOT/std/$ns.blsp" ]
 }
 
+# gate_absent_dev_primitive <%name> — true when <%name> is a kernel primitive the TREE
+# registers only under the `dev-tools` feature and this BINARY was built without it (a lean
+# build carries none of the DEV_MODULES, `test` among them). A module that ships in a lean
+# build can still call into such a primitive — `dev/gc-stats` -> `%gc-stats` — and that is the
+# same missing feature as a missing module, not rename rot. Precise like the module rule: a
+# primitive the tree does not gate on `dev-tools` still fails.
+gate_absent_dev_primitive() {
+    local name="$1"
+    gate_absent_module test || return 1
+    grep -rn -B3 -F "\"$name\"," "$ROOT/crates/lisp/src/builtins" 2>/dev/null \
+        | grep -q 'cfg(feature = "dev-tools")'
+}
+
 # gate_classify <output> — read a program's diagnostics and set GATE_VERDICT to
 # `ok` | `skip` | `fail`, with the evidence in GATE_DETAIL.
 # `skip` is reserved for the case above: EVERY unbound name belongs to a module this lean
 # binary does not carry. One name that does not, and it is a failure.
 GATE_VERDICT=""; GATE_DETAIL=""
 gate_classify() {
-    local out="$1" bad line ns absent=""
+    local out="$1" bad line ns prim absent=""
     bad="$(printf '%s\n' "$out" | grep -E 'unbound symbol|unbound error' | head -3)"
     GATE_DETAIL="$bad"
     if [ -z "$bad" ]; then GATE_VERDICT="ok"; return; fi
@@ -140,6 +153,11 @@ gate_classify() {
         ns="$(printf '%s' "$line" | sed -nE 's/.*unbound symbol: ([a-z0-9-]+)\/.*/\1/p')"
         if [ -n "$ns" ] && gate_absent_module "$ns"; then
             case " $absent " in *" $ns "*) ;; *) absent="$absent $ns" ;; esac
+            continue
+        fi
+        prim="$(printf '%s' "$line" | sed -nE 's/.*unbound symbol: (%[a-z0-9?!-]+).*/\1/p')"
+        if [ -n "$prim" ] && gate_absent_dev_primitive "$prim"; then
+            case " $absent " in *" dev-tools "*) ;; *) absent="$absent dev-tools" ;; esac
             continue
         fi
         GATE_VERDICT="fail"; return

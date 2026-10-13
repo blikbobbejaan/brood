@@ -363,11 +363,13 @@ impl LispError {
     }
 
     /// The native preempt-unwind signal — see [`Control::PreemptUnwind`].
+    #[cfg(feature = "jit")]
     pub(crate) fn preempt_unwind() -> Self {
         LispError::control(Control::PreemptUnwind)
     }
 
     /// Is this the [`Control::PreemptUnwind`] signal?
+    #[cfg(feature = "jit")]
     pub(crate) fn is_preempt_unwind(&self) -> bool {
         matches!(self.control, Some(Control::PreemptUnwind))
     }
