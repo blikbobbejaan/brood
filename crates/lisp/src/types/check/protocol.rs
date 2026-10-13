@@ -2252,6 +2252,18 @@ pub(super) fn operator_domains(info: &MultiInfo) -> HashMap<value::Symbol, crate
 /// `*ability-owner*` entry (`defability`'s defining namespace, ADR-172); an ability with no
 /// owner was declared at the root and is visible everywhere, and `None` for `visible`
 /// reads the whole registry.
+/// Did `namespace` declare the ability `name`? Abilities are registered by their bare name,
+/// not as globals, so an `(:use m :only [Ability])` entry is found here or nowhere.
+pub(super) fn ability_declared_by(heap: &Heap, name: value::Symbol, namespace: &str) -> bool {
+    let Some(Value::Map(owners)) = obs_registry(heap, "*ability-owner*") else {
+        return false;
+    };
+    heap.map_get(owners, Value::Sym(name))
+        .and_then(sym_name)
+        .as_deref()
+        == Some(namespace)
+}
+
 fn ability_is_visible(heap: &Heap, name: Value, visible: Option<&HashSet<String>>) -> bool {
     let Some(visible) = visible else {
         return true;

@@ -16864,3 +16864,9 @@ tree-walker booting from source outslept one; they are ordered by handshakes now
   public `*live-registries*` shadowed the prelude's — a `def-`, unreachable from user code. The
   import check skips private names (`crates/cli/tests/import_shadow_warning.rs`, red before; a
   public name still warns).
+- *`(:use m :only [Ability])` was "defines no public".* The checker's unknown-`:only` lint
+  counted globals, and an ability is not one — `defability` registers its bare name in
+  `*ability-owner*`. mail-local and mail-mailjet, which import `Adapter` so `(impl Adapter …)`
+  reads bare, failed their zero-warning gate. The lint now also asks `*ability-owner*` whether
+  the module declared that name (`modules_and_imports::an_only_import_of_the_modules_ability_is_not_named`,
+  red before; another module's ability is still named).

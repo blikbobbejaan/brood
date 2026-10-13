@@ -1498,7 +1498,8 @@ fn setup_check_imports(heap: &mut Heap, header: Value) -> ImportScope {
                             }
                             let defined = exports.contains(&bare)
                                 || sigs::is_globally_bound(heap, qual)
-                                || crate::eval::derive::image_sig_arity(heap, qual).is_some();
+                                || crate::eval::derive::image_sig_arity(heap, qual).is_some()
+                                || protocol::ability_declared_by(heap, bare, &mod_name);
                             if !defined && !exports.is_empty() {
                                 scope.unknown_only.push((
                                     pos,
