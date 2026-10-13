@@ -139,10 +139,11 @@ This is the largest *core* undertaking in the project. Two consequences:
    per-worker budget (≈2000) and the process yields its worker at zero (`Suspend`
    carries `Receive` vs `Preempt`), so a CPU-bound process can't monopolise a
    core. Scheduling is now preemptively fair, not cooperative-only. Native code is
-   preempted by unwinding its activations into interpreter frames, and a resumable fold
-   by stopping between elements (ADR-400/402) — both only when another process is waiting
-   for a worker: with none queued, the costly preemption would buy no latency, so the
-   quantum goes on as a fresh one.
+   preempted by unwinding its activations into interpreter frames, and a fold walks in
+   spans that end between elements (ADR-400/402). A spent budget is paid only while
+   another process is waiting for a worker: with none queued a yield would buy no
+   latency, so the quantum goes on as a fresh one. The policy lives in one module,
+   `process/scheduler/quantum.rs`.
 4. ✅ **Selective `receive`** (ADR-027) — `receive` takes pattern clauses (the
    `match` grammar) + an optional `(after ms …)` timeout; it scans the mailbox,
    runs the first match, and leaves non-matching messages queued. A green process

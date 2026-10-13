@@ -90,7 +90,7 @@
     (assert= (reduce [1 2 3] 0 +) 6))
 
   (test "on every collection kind, not just the list path"
-    ;; `fold` dispatches a vector to `%vector-reduce` and a range to `%range-reduce`, both
+    ;; `fold` dispatches a vector to `%vector-fold-span` and a range to `%range-fold-span`, both
     ;; Rust, and only the list path carries the guard. They still answer with the failure
     ;; because `conj` is itself built on `fold` and short-circuits — they run the remaining
     ;; steps against a failed accumulator rather than stopping, which costs work but never

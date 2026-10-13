@@ -18,6 +18,7 @@ use crate::jit::{ActiveBackend, JitBackend};
 mod compiler;
 mod deopt;
 mod dispatch;
+mod entry;
 mod link;
 mod support;
 mod unwind;
@@ -25,6 +26,7 @@ mod unwind;
 pub(crate) use compiler::*;
 pub(crate) use deopt::*;
 pub(crate) use dispatch::*;
+pub(crate) use entry::*;
 pub(crate) use link::*;
 pub(crate) use support::*;
 pub(crate) use unwind::*;
@@ -127,11 +129,15 @@ pub(crate) fn vm_call_native_direct(
     // sym/argc/epoch), but `nbody` read 329k IC hits turning into 304k misses, +24.5%.
     let saved_bases = heap.set_ic_bases(callee_bases);
     let mut ret = Value::Nil;
-    // ADR-400: a top-level driver's direct call is an unwindable entry. Cleared after as
-    // well as when taken — `jit_tier_in_frame` can decline before it builds the context.
-    heap.jit_entry_unwind = unwind;
-    let outcome = jit_tier_in_frame(arm.arc(), heap, base, env_root, frame_nslots, &mut ret);
-    heap.jit_entry_unwind = false;
+    let outcome = jit_tier_in_frame(
+        arm.arc(),
+        heap,
+        base,
+        env_root,
+        frame_nslots,
+        &mut ret,
+        unwind,
+    );
     let env_now = heap.read_root_env(env_root);
     heap.set_ic_bases(saved_bases);
     if arm_slot != usize::MAX {
@@ -244,6 +250,8 @@ pub(crate) fn jit_tier_in_frame(
     env: EnvRoot,
     frame_nslots: usize,
     out: *mut Value,
+    // May the activation preempt by unwinding (ADR-400)? Only a top-level driver says yes.
+    unwind: bool,
 ) -> Option<i64> {
     use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
     // Draining an over-deep native-recursion subtree on the VM (see [`JIT_FORCE_VM`]):
@@ -704,47 +712,24 @@ pub(crate) fn jit_tier_in_frame(
     if frame_nslots < arm.inline_nslots && frame_nslots < frame_size_for_code(arm, code) {
         return None;
     }
-    // SAFETY: `code` is a finalized [`crate::jit::JitArmFn`] produced by `jit_lower_arm`,
-    // living in the process-lifetime GLOBAL_JIT module. The frame is set up at
-    // `roots[base..]`; the JIT'd arm keeps its own operands in registers (the call staging
-    // grows `roots` only transiently, popped before return), so `heap` stays valid for the
-    // call.
-    let f: crate::jit::JitArmFn = unsafe { std::mem::transmute(code) };
-    // Publish this arm's env for the call/global callbacks, save/restoring the previous
-    // value so a JIT'd callee that re-enters another JIT'd arm nests correctly.
-    let saved_env = std::mem::replace(&mut heap.jit_call_env, env);
-    // Best-effort arm name for the staged-stale diagnostic (recursive defns carry
+    // The driver installed this frame's IC cursors, so the entry keeps them (`None`). The
+    // name is best-effort for the staged-stale diagnostic (recursive defns carry
     // `inline_name`; others reset to MAX so the value is never misleadingly stale).
-    let saved_fn = std::mem::replace(&mut heap.jit_dbg_fn, arm.dbg_name.unwrap_or(u32::MAX));
-    // VM→native entry. This one does not raise `jit_native_depth` itself, so the depth read
-    // here is the caller's: `0` means this is the outermost native frame on the thread and
-    // the limit has to be derived; anything else is a native→VM→native re-entry on the same
-    // stack, where the outer entry's stamp is still the right absolute address.
-    let native_depth = heap.jit_native_depth;
-    stamp_stack_limit_if_outermost(heap, native_depth);
-    let saved_force_vm = heap.jit_force_vm;
-    heap.native_gateway_seq += 1;
-    let gw_seq = heap.native_gateway_seq;
-    let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-    let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
-    // ADR-400: a top-level driver flags the entry it is about to make; taken here, so no
-    // entry nested inside this activation can inherit it.
-    ctx.unwind = std::mem::take(&mut heap.jit_entry_unwind) as u8;
-    // This entry does not raise the depth or install IC cursors — the driver installed the
-    // cursors for this frame — but the chain below may ASSERT deeper activations' values
-    // into those fields from its callbacks (rung A1: the inline native→native call no
-    // longer restores them), so this gateway restores what it found. Without this the
-    // depth leaked upward one per chain: `bintree` reached ctx.depth 75 and every inline
-    // call fell to the callback path on the `depth < 64` guard (+30% on the row).
-    let saved_bases = heap.ic_bases();
-    let outcome = f(heap as *mut Heap, base as i64, out, &mut ctx);
-    heap.set_ic_bases(saved_bases);
-    heap.jit_native_depth = native_depth;
-    heap.cur_native_gateway = saved_gw;
-    heap.jit_force_vm = saved_force_vm;
-    heap.jit_call_env = saved_env;
-    heap.jit_dbg_fn = saved_fn;
-    jit_suspend_feedback(heap, arm, outcome, gw_seq);
+    let exit = enter_native(
+        heap,
+        NativeEntry {
+            code,
+            base,
+            env: heap.read_root_env(env),
+            dbg_fn: arm.dbg_name.unwrap_or(u32::MAX),
+            ic_bases: None,
+            from: EntryFrom::Driver,
+            unwind,
+        },
+        out,
+    );
+    native_feedback(heap, arm, base, frame_nslots, &exit);
+    let outcome = exit.outcome;
     // Outcome 5 = the unboxed-i64 worker hit its native-recursion depth cap. Register recursion
     // can't drain to the VM mid-stack, so permanently switch this fn to the boxed path (which
     // drains deep recursion gracefully via `jit_native_depth`/`jit_force_vm`): mark it too-deep,
@@ -758,19 +743,6 @@ pub(crate) fn jit_tier_in_frame(
         arm.jit_calls.store(TIER_THRESHOLD, Release);
         arm.shared_published.store(false, Relaxed);
         return None;
-    }
-    // Deopt feedback (watched arms only — a plain bool test for the rest): a
-    // type-deopt bumps the consecutive counter (bailing a persistent thrasher);
-    // any other outcome resets it.
-    if outcome == 1 {
-        jit_any_deopt_feedback(heap, arm);
-    }
-    if arm.deopt_watch {
-        if outcome == 1 {
-            jit_deopt_feedback(heap, arm);
-        } else if arm.jit_deopts.load(Relaxed) != 0 {
-            arm.jit_deopts.store(0, Relaxed);
-        }
     }
     Some(outcome)
 }

@@ -306,11 +306,13 @@ pub(crate) fn quantum_begin() {
 }
 
 /// The running quantum's budget ran out with no process waiting for a worker, so it was
-/// not preempted (nothing would have run instead) and goes on as a fresh quantum: what a
-/// subscriber hears about is code that held a worker it could not give up, not work that
-/// had the machine to itself.
+/// not preempted (nothing would have run instead) and goes on as a fresh quantum. The
+/// quantum so far is reported if it ran long — a budget's worth of work that took past the
+/// threshold is code that could not be preempted, such as one long builtin call — and the
+/// timer restarts: a process that has the worker to itself is not reported for keeping it.
 pub(crate) fn quantum_restart() {
-    if QUANTUM_T0.get().is_some() {
+    if let Some(t0) = QUANTUM_T0.get() {
+        emit_long_schedule(crate::process::self_pid(), t0.elapsed().as_micros() as u64);
         QUANTUM_T0.set(Some(web_time::Instant::now()));
     }
 }

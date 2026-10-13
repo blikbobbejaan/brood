@@ -1373,7 +1373,9 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
         let limit = heap.proc_mem_limit().unwrap_or(0);
         return Err(crate::eval::proc_memory_limit_error(live, limit));
     }
-    if crate::process::tick_capture() || (capture && crate::process::take_yield_due()) {
+    if let crate::process::Safepoint::Quantum { yield_now } =
+        crate::process::driver_safepoint(capture)
+    {
         quantum_checks(heap)?;
         if crate::process::capture_hard_kill_pending() {
             // Capture mode retires the process at the driver; a nested run cannot return an
@@ -1385,10 +1387,9 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
                 Err(crate::error::LispError::kill_signal())
             };
         }
-        if capture {
+        if yield_now {
             return Ok(Some(ChunkExit::Preempt));
         }
-        crate::process::refill_nested_quantum();
     }
     Ok(None)
 }

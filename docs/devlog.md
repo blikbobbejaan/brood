@@ -16814,3 +16814,54 @@ attributed. Gates: `make test-both` 1829/1829 on both engines, `make gcstress` c
 13 generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy
 `--all-features` clean.
 
+
+## 2026-10-13 — the preemption work, simplified: one native entry, one quantum module, folds walked in spans
+
+The brief after the preemption work (`67a540e1`): "less complexity, more cohesion and less
+coupling." That work had spread two concerns across too many places, and this pass gives each
+one home without changing behaviour.
+
+- **One native entry (ADR-400).** Five Rust paths entered native code — the driver's tier-in,
+  the slow call out of native code, the fast link, a builtin's callback (`hof_apply_native`),
+  and the inline path's cold funnel — and each carried its own ceremony (env, name, IC cursors,
+  depth, gateway, context) and its own outcome handling (unwind record, error, tail chain,
+  checkpoint resume, VM re-run). They now share `jit_runtime/entry.rs`: `enter_native`,
+  `native_feedback`, `finish_nested`. Two of the old copies ran their re-entries with the
+  native depth already lowered, the KI-11 shape; the shared finish raises it for all. The
+  unwind bit is passed as an argument from the calling context
+  (`JitCallCtx::children_may_unwind`), so `Heap::jit_entry_unwind` and `Heap::jit_child_unwind`
+  are gone. Net −460 lines in the five paths, +250 for the module.
+- **One quantum module (ADR-402).** The budget, the owed preemption and every preemption
+  decision — the driver's safepoint, the eval loop's tick, a native activation's poll, a
+  fold's stop — moved into `process/scheduler/quantum.rs`; the driver's two safepoints and the
+  native poll callback now only ask it. The driver follows the rule native code already did: a
+  spent budget yields only while a process is waiting for a worker.
+- **Folds walked in spans (ADR-402).** The resumable folds left where they stopped in a
+  thread-local that the prelude read back through `%fold-resume-at` — Rust and Brood coupled
+  through hidden state. `%vector-fold-span` / `%range-fold-span` return `[acc next]` instead,
+  and `fold`'s walk is a plain Brood loop. `%fold-resume-at`, `resumable_should_stop` and the
+  `REQUESTED` flag are gone; the owed bit has three states, which is what "stop once per debt"
+  needs.
+- Two tests assumed a lone process gets preempted: `preemption.rs`' endless hog (now finite,
+  and the responder must reply BEFORE it finishes — a finite hog alone would have passed with
+  preemption broken) and `quantum_tail_panic.rs` (four spinners on `BROOD_J=1`).
+- The `reverse` vector test used `(%eq (type-of coll) :vector)`, which the checker cannot
+  narrow on; `vector?` can.
+- **`:long-schedule` across a restart (ADR-403).** A quantum that runs on because nothing is
+  waiting restarts the timer; the first cut threw the segment away, so one long `sort` in a
+  lone process went unreported (`sysmon_test` caught it). The restart now reports the segment
+  it ends if that ran long — a budget's worth of work taking past the threshold is code that
+  could not be preempted — so the latency probe counts ~10–25 long quanta a run where it
+  counted ~5–15.
+
+**Measured** (instructions, against `67a540e1`, the run pre-flight off): fib, bintree, sort,
+collatz level; json −4%; `reduce` +4% and `nqueens` +5% — a span result allocated per fold.
+Two first attempts were worse and were measured out: a Brood loop calling a closure reducer per
+element (+24% `nqueens` — a computed-head call from native code has no inline cache, so it
+resolves the arm every call where the native loop resolves it once), and a counted loop with a
+separate element counter (+26% `reduce`).
+
+**Gates:** `make test-both` 1829/1829 on both engines, `make gcstress` clean, fuzz 13
+generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy `--all-features`
+clean, `make latency-gate` ok (worst p99 84 µs; ten interleaved runs against `67a540e1`: p99 and
+p99.9 within run-to-run noise).

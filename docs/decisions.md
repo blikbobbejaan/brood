@@ -25590,7 +25590,7 @@ runtime.
 
 ## ADR-400 — A native preempt unwinds native activations into interpreter frames
 
-**Status:** implemented (2026-10-12).
+**Status:** implemented (2026-10-12; the entries unified 2026-10-13).
 
 **Context.** The driver parks only an all-interpreter stack, so native code was preemptible
 only where the driver itself had entered it, and only at a self-tail back edge. A native loop
@@ -25602,11 +25602,22 @@ handlers read 1–2 ms each.
 
 **Decision.** Each native activation carries `JitCallCtx::unwind`: 1 only when every
 activation between it and a top-level driver can be rebuilt as an interpreter frame. The
-driver sets it on its native entries (frame path, VM→native direct call); a native→native
+driver passes it to its native entries (frame path, VM→native direct call); a native→native
 call passes on the caller's bit, unless the caller cannot be rebuilt mid-call (the
 self-inlined upgrade, whose ips match no chunk: its prologue sets `no_child_unwind`, and its
-own call sites pass 0); every other way in (a builtin calling back, a nested evaluation, the
-tree-walker) builds the context with 0. So the safe answer is the default.
+own call sites pass 0) — a runtime callback reads that pair off the calling context
+(`JitCallCtx::children_may_unwind`) and hands it down as an argument; every other way in (a
+builtin calling back, a nested evaluation, the tree-walker) builds the context with 0. So
+the safe answer is the default.
+
+- **One entry, one finish.** Every Rust caller that runs native code enters it through
+  `jit_runtime/entry.rs`: `enter_native` is the ceremony (env, name, IC cursors, depth,
+  gateway, context — installed and restored), `native_feedback` the suspend latch and deopt
+  feedback, and `finish_nested` every outcome of a call whose caller wants a value (unwind
+  record, error, tail chain, checkpoint resume, VM re-run — re-entries at a raised native
+  depth, KI-11). The driver's tier-in, the slow call out of native code, the fast link and a
+  builtin's callback each used to carry their own copy of all three; a rule added to one —
+  this ADR's unwind — had to be repeated in four.
 
 - A spent budget preempts only an activation with `unwind` set, and only when some process
   is waiting for a worker (`scheduler::work_waiting`, one relaxed load of the queued count):
@@ -25679,38 +25690,45 @@ The tree-walker keeps the native (its Rust frame restores on the way out).
 bindings in force. Guards: `preemption_shapes.rs` ("a loop inside binding",
 `a_receive_inside_binding_parks_and_keeps_its_binding`), both red with the inlining disabled.
 
-## ADR-402 — Owed preemption, and folds that stop between elements
+## ADR-402 — Owed preemption, and folds walked in spans
 
-**Status:** implemented (2026-10-12).
+**Status:** implemented (2026-10-12; simplified 2026-10-13).
 
 **Context.** Code that cannot yield — a nested evaluation behind a builtin, a native activation
 that cannot unwind (ADR-400) — refilled the budget when its quantum ran out and forgot it, so
 the process carried on for another full quantum after returning. And the vector and range
-folds (`%vector-reduce`, `%range-reduce`, behind `fold`/`reduce`/`map`/`reverse`) call the
-reducer from one native loop: a 40-element fold whose reducer ran 10 ms was one quantum.
+folds (behind `fold`/`reduce`/`map`/`reverse`) called the reducer from one native loop: a
+40-element fold whose reducer ran 10 ms was one quantum.
 
 **Decision.**
-- A quantum that runs out where nothing can yield records an **owed** preemption
-  (`scheduler::preempt`) when some process is waiting for a worker (ADR-400's
-  `work_waiting`); every point that can capture — the driver's loop top, the inline loop
-  safepoint, an unwindable native poll — preempts on it as on a spent budget. Cleared at each
-  quantum's start.
-- The two folds take an optional start argument that makes them **resumable**: between two
-  elements (a span of 4 096 for a primitive reducer, which charges one reduction per 8
-  elements) `resumable_should_stop` turns an owed preemption, or a budget its own work spent
-  while a process waits, into a **request** and the fold returns the accumulator so far,
-  leaving where to resume in a thread-local that `fold` reads at once through
-  `%fold-resume-at` (nothing between the two can yield); only then does it call the
-  resuming wrapper (`%vector-fold` / `%range-fold`), and the process parks at the wrapper's
-  back edge. Where nothing can capture, the request waits and only a fresh debt stops the
-  fold again — one stop per quantum, not per element. Three-argument calls never stop.
-- The primitive loop runs in spans whose end is the inner loop's bound, so an element costs
-  the one compare it always did: a per-element span counter cost the `reduce` row 13%, and
-  with it gone the row reads 23% fewer instructions than before ADR-402.
+- **One home for the policy.** `process/scheduler/quantum.rs` holds the budget, the debt and
+  every preemption decision; the places that run code only ask it — `driver_safepoint` (the
+  driver's loop top and an inline loop's back edge), `native_poll` (a native activation's
+  poll), `tick` (the eval loop), `stop_between_elements` (a fold's span), `charge` (work done
+  without ticking).
+- A quantum that runs out where nothing can yield records an **owed** preemption when some
+  process is waiting for a worker; every point that can capture pays it as it would a spent
+  budget. A spent budget is paid — by a yield or an unwind — only while a process is waiting:
+  with none queued, the process runs on into a fresh quantum (the `:long-schedule` timer
+  restarted), since a yield would re-queue it and pick it straight back up.
+- **Folds walk in spans.** `fold` over a vector or a range is a Brood loop over
+  `%vector-fold-span` / `%range-fold-span`, each of which folds up to `%fold-span` (4 096)
+  elements natively and returns `[acc next]` — `next` nil when the collection is done. The
+  process yields at the loop's back edge like any loop's. A span ends early, between two
+  elements, when a reducer's own run left a preemption owed (`stop_between_elements`, once per
+  debt: where nothing can capture the debt stays owed for the next point that can, and only a
+  fresh one stops a span again). A primitive reducer (`+`, `*`) runs the whole span inlined and
+  charges the quantum one reduction per 8 elements.
+- A first version made the native folds *resumable*: they stopped on their own and left where
+  in a thread-local that the prelude read back at once through `%fold-resume-at`. Rust and
+  Brood coupled through hidden state; the span result carries the same fact as a value.
 
-**Consequences.** A fold yields within one reducer call of its quantum ending (a single long
-reducer call still runs to its end; its debt is then paid at once). Guards: four fold shapes
-in `preemption_shapes.rs`, all red with resumption disabled.
+**Consequences.** A fold yields within one reducer call (or one primitive span) of its quantum
+ending. A single long reducer call still runs to its end, and its debt is paid at once. Cost
+against the resumable version, instructions: `reduce` +4% and `nqueens` +5% (a span result
+allocated per fold), `json` −4%. Guards: four fold shapes in `preemption_shapes.rs`
+(`stop_between_elements` and the span charge each sabotage-verified), and
+`preemption.rs` (a hog preempted while a responder waits, which must reply first).
 
 ## ADR-403 — `:long-schedule` in the system monitor
 
@@ -25721,7 +25739,9 @@ that held its worker at least `n` µs as `[:system :long-schedule pid {:us d}]` 
 `long_schedule`. A quantum is bounded by the reduction budget, so one this long is code that
 could not be preempted (a long native builtin, the unboxed register worker's recursion, a
 blocking call). A budget that runs out with no process waiting for a worker is not
-preempted (ADR-400) and restarts the timer: nothing was kept from running. The worker times
+preempted (ADR-400/402); the quantum so far is reported if it ran long and the timer
+restarts, so a process that has the worker to itself is reported for code that could not be
+preempted, never for keeping the worker. The worker times
 a quantum only while a subscriber selects the kind (one relaxed load otherwise). Selected by its threshold; a subscription armed with no options map
 ("every event") gets 10 ms. `telemetry/watch-runtime` re-emits it as `[:runtime
 :long-schedule]` with the `{:us}` measurement.

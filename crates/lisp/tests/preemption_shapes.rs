@@ -115,7 +115,8 @@ fn every_shape_of_running_code_is_preemptible() {
             "a loop under a function with a decimal literal",
             "(decimal-hog 200000)",
         ),
-        // ADR-402: the native folds stop between elements to pay a quantum's preemption.
+        // ADR-402: `fold` walks a vector or range in Brood — per element for a reducer it
+        // calls, per native span for a primitive one — so it yields like any loop.
         (
             "a vector fold with a slow reducer",
             "(reduce (into [] (range 20)) 0 (fn (acc x) (+ acc (spin 20000 0 0))))",

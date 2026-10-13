@@ -136,8 +136,8 @@ time whether one quantum ran 40 µs or 4 ms. `stress/latency_probe.blsp` is an o
 request stream (20k req/s, every 20th request holding its worker ~500 µs) that reports the
 start-latency percentiles and how many quanta held a worker over 1 ms (`:long-schedule`,
 ADR-403). `make latency-gate` runs it five times and fails on more than 200 such quanta in a
-run or a worst p99 over 250 µs. After ADR-399..404 it reads 2–11 long quanta a run and p99
-76–80 µs (v0.37.0: p99 85–115 µs; it predates `:long-schedule`, but `BROOD_STALL_MS=1` saw a
+run or a worst p99 over 250 µs. After ADR-399..404 it reads 2–26 long quanta a run and p99
+74–95 µs (v0.37.0: p99 85–115 µs; it predates `:long-schedule`, but `BROOD_STALL_MS=1` saw a
 quantum over 1 ms for nearly every fat request). It is a benchmark-box gate, not a CI one: p99.9 and max are reported, not
 gated, because on an open-loop row they move 3× between runs here.
 

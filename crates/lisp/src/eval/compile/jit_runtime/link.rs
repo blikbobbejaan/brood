@@ -20,19 +20,19 @@ pub(crate) enum FastLinkOutcome {
 }
 
 /// The shared body of a validated native fast-link: set up the callee frame at `stage_base`,
-/// call its installed native `code`, and handle the outcome — `Done` (result boxed in
-/// `roots[stage_base]`), the parked-error exit, or a deopt/preempt/tail that re-runs the
-/// callee on the VM via the IC. Both [`jit_dispatch_call`] (after `vm_call_ic_fast_link`)
-/// and [`jit_dispatch_fast_frame`] (the in-IR epoch-guarded path, which reads `code/nslots/
-/// env` from the flat side table instead) funnel through here, so the two can never desync.
+/// call its installed native `code` ([`enter_native`]), and finish the outcome — `Done`
+/// inline (the overwhelmingly common case), anything else through
+/// [`fast_link_cold_outcome`]. Both [`jit_dispatch_call`] (after `vm_call_ic_fast_link`) and
+/// [`jit_dispatch_fast_frame`] (the in-IR epoch-guarded path, which reads `code/nslots/env`
+/// from the flat side table instead) funnel through here, so the two can never desync.
 /// `epoch`/`stage_base` are the caller's already-computed values; `code` is a finalized
 /// [`crate::jit::JitArmFn`]. On `Fallthrough` the `argc` args are re-staged at
 /// `[stage_base, stage_base+argc)` for the caller's slow path.
 ///
 /// `out` is where the result goes on `Done` — passed straight through to the native arm, so
-/// the value is stored once by whoever produced it and never loaded back here. **Only** the
-/// `Done` outcome writes it. See [`crate::jit::JitArmFn`] for why, and for the GC rule
-/// (`out` is not a root; nothing may allocate between the store and the consumer).
+/// the value is stored once by whoever produced it and never loaded back here. See
+/// [`crate::jit::JitArmFn`] for why, and for the GC rule (`out` is not a root; nothing may
+/// allocate between the store and the consumer).
 #[cfg(feature = "jit")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn jit_run_fast_link(
@@ -47,10 +47,9 @@ pub(crate) fn jit_run_fast_link(
     callee_env: EnvId,
     callee_bases: (u32, u32),
     out: *mut Value,
+    // May the callee preempt by unwinding (ADR-400)? What the calling activation may pass on.
+    unwind: bool,
 ) -> FastLinkOutcome {
-    // ADR-400: whether this callee may preempt by unwinding, as the callback this came
-    // through asserted it for the calling activation.
-    let unwind = heap.jit_child_unwind;
     heap.truncate_roots(stage_base + argc);
     // DEBUG ONLY: the JIT fast path bypasses `push_frame`, so validate the staged args
     // here too — catch a corrupt arg at the earliest native frame entry (bug #2).
@@ -71,101 +70,52 @@ pub(crate) fn jit_run_fast_link(
         jit_verify_staged(heap, stage_base, stage_base + argc, head, site, argc);
     }
     heap.extend_roots_to_nil(stage_base + nslots);
-    let base = stage_base;
-    // SAFETY: `code` is a finalized `extern "C" fn(*mut Heap, base)` from `jit_lower_arm`,
-    // kept for the process in `GLOBAL_JIT`; the frame is at `roots[base..]`. Validated
-    // current by the caller's epoch check (the IC fast-link, or the IR's flat-table guard).
-    let f: crate::jit::JitArmFn = unsafe { std::mem::transmute(code as *mut u8) };
-    // Named `native_depth`, not `depth`: the deopt arm below binds a `depth` of its own
-    // (the checkpoint's VM stack depth) that would otherwise shadow this one.
     let native_depth = heap.jit_native_depth;
-    // Root callee_env via env_roots so GC tenure inside the callee forwards it.
-    let env_base = heap.env_roots_len();
-    let env_root = heap.root_env(callee_env);
-    let saved = std::mem::replace(&mut heap.jit_call_env, env_root);
-    let saved_fn = std::mem::replace(&mut heap.jit_dbg_fn, head);
-    heap.jit_native_depth = native_depth + 1;
-    // No stack-limit stamp here: the outermost native frame stamped it on entry
-    // (`jit_tier_in_frame` / `hof_apply_native` / the scheduler's resume), the value is an
-    // absolute address that a call from that frame cannot move, and re-deriving it through
-    // `stacker::remaining_stack` on every depth-0 call was 6% of a call loop's samples.
-    let saved_force_vm = heap.jit_force_vm;
-    // KI-20: the callee's native code reads its OWN per-arm IC block through the heap
-    // cursors (`vm_call_ic_put`/`vm_global_ic_put`/fast-link publishes). Install the callee's
-    // bases for the call and restore the caller's around it — exactly as the cloning
-    // native-link path in `jit_dispatch_call` does. Without this the callee wrote into the
-    // caller's IC slots (and vice versa); never a wrong answer (every probe re-validates
-    // `sym`/`argc`/`epoch`, so a crossed entry simply misses) but both arms ran permanently
-    // cache-cold, and `dbg_site_loc` reported the wrong site. The bases arrive as args (they
-    // rode in the `FastLink` slot), so this is two `Cell` writes, no table lookup.
-    let saved_bases = heap.set_ic_bases(callee_bases);
-    heap.native_gateway_seq += 1;
-    let gw_seq = heap.native_gateway_seq;
-    let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-    let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
-    ctx.unwind = unwind as u8;
-    let outcome = f(heap as *mut Heap, base as i64, out, &mut ctx);
-    heap.cur_native_gateway = saved_gw;
-    heap.set_ic_bases(saved_bases);
-    heap.jit_force_vm = saved_force_vm;
-    heap.jit_native_depth = native_depth;
-    heap.jit_call_env = saved;
-    heap.jit_dbg_fn = saved_fn;
-    heap.truncate_env_roots(env_base);
+    let exit = enter_native(
+        heap,
+        NativeEntry {
+            code: code as *const u8,
+            base: stage_base,
+            env: callee_env,
+            dbg_fn: head,
+            ic_bases: Some(callee_bases),
+            from: EntryFrom::Native,
+            unwind,
+        },
+        out,
+    );
     // Suspend-host latch (see `jit_latch_suspend_host`). The fast link carries no arm
     // reference, so resolve one — only on the token match, which happens at most once
-    // per arm ever (cold); the steady-state cost is this one u64 compare. Resolution is
-    // by the invoked code pointer against the keep-alive registry (every arm with
-    // installed native code is in it, immortally — bug #2's fix), NOT the call IC: the
-    // park usually spans a GC, whose epoch bump makes `vm_call_ic_probe` with the
-    // pre-call `epoch` decline, so a latch through it would mostly fail to hold. The probe stays as the fallback for the one
-    // race the scan can miss (an inlined-upgrade swap between invoke and here).
-    if heap.blocked_under_gateway == gw_seq {
+    // per arm ever (cold); the steady-state cost is this one u64 compare.
+    if heap.blocked_under_gateway == exit.gateway {
         jit_latch_dirty_blocked(heap, code, site, head, argc, epoch);
     }
-    // KI-11. Three of the outcome arms below re-enter the evaluator — the outcome-4
-    // tail-chain follow-through (`apply_value`), and the deopt/preempt re-runs
-    // (`vm_resume_deopt` / `vm_apply`). All of them run on THIS native frame, which is
-    // still on the stack, so `jit_native_depth` must stay raised across them or the cap
-    // stops bounding the native recursion: with it rolled back to `depth`, a chain of
-    // tail-calling delegators oscillates between `depth` and `depth+1` forever while the
-    // native stack grows without bound, and the process dies of a stack overflow that
-    // `try`/`catch` cannot see (the VM and tree-walker both handle the same input). Each
-    // re-entrant call below therefore re-raises the depth for its duration; see
-    // `jit_native_reenter`. Found via JSONTestSuite's 20k-deep documents; the minimal
-    // repro is a three-function cycle returning a destructured tuple.
-    // Outcome 0 — the overwhelmingly common case — is handled inline; every other outcome
-    // goes to a `#[cold] #[inline(never)]` helper.
-    //
-    // This is a code-LAYOUT change with no semantic content, and it is worth the indirection
-    // because of where this function sits: `perf` puts `jit_run_fast_link` at **24% of
-    // `bintree`** — as much as all of that row's native compute — and instruction-level
-    // annotation showed the cost spread thin across the prologue/epilogue (register saves,
-    // spills at -0x158/-0x160(%rbp)) rather than concentrated in any operation. That is the
-    // signature of a large function on a hot path: the deopt/preempt/tail arms below need
-    // several `SmallVec`s and many live values, so the compiler sized the frame and saved the
-    // registers for them on EVERY call, including the ~all of them that just return a value.
-    if outcome == 0 {
+    // Outcome 0 is handled inline; every other outcome goes to a `#[cold] #[inline(never)]`
+    // helper. A code-LAYOUT change with no semantic content: `perf` put this function at 24%
+    // of `bintree`, spread thin across register saves and spills that the non-Done arms'
+    // live values forced onto EVERY call.
+    if exit.outcome == 0 {
         crate::perf_bump!(jit_link_done);
         // The result is already at `*out` — the arm wrote it there. Nothing to load.
         heap.truncate_roots(stage_base);
         return FastLinkOutcome::Done;
     }
-    jit_fast_link_cold_outcome(
+    fast_link_cold_outcome(
         heap,
-        outcome,
-        argc,
-        site,
-        head,
-        epoch,
-        stage_base,
-        base,
-        nslots,
-        native_depth,
-        callee_env,
-        code as *const u8,
+        exit.outcome,
+        FastLinkSite {
+            argc,
+            site,
+            head,
+            epoch,
+            stage_base,
+            nslots,
+            native_depth,
+            callee_env: exit.env,
+            code: code as *const u8,
+            unwind,
+        },
         out,
-        unwind,
     )
 }
 
@@ -207,10 +157,11 @@ pub(crate) fn jit_latch_dirty_blocked(
     }
 }
 
-/// The cold-outcome funnel for the **inline** fast-frame path (§7.5):
-/// emitted code has already run the ceremony restores, so this is exactly
-/// [`jit_fast_link_cold_outcome`] with the caller context read back off the heap.
-/// The callee env is `GLOBAL` by the inline path's own guard.
+/// The cold-outcome funnel for the **inline** fast-frame path (§7.5): emitted code has
+/// already run the ceremony restores, so this is [`fast_link_cold_outcome`] with the caller
+/// context read back off the heap. The callee env is `GLOBAL` by the inline path's own
+/// guard, and the code pointer does not ride out of the IR, so the callee is resolved
+/// through the IC and then its name.
 #[cfg(feature = "jit")]
 #[allow(clippy::too_many_arguments)]
 #[cold]
@@ -225,28 +176,25 @@ pub(crate) fn jit_xcall_cold_outcome(
     stage_base: usize,
     nslots: usize,
     out: *mut Value,
+    unwind: bool,
 ) -> i64 {
     let native_depth = heap.jit_native_depth;
-    // The inline path built the callee's context in IR with the `unwind` its caller may pass
-    // on — the value the callback just asserted into the heap (ADR-400).
-    let unwind = heap.jit_child_unwind;
-    match jit_fast_link_cold_outcome(
+    match fast_link_cold_outcome(
         heap,
         outcome,
-        argc,
-        site,
-        head,
-        epoch,
-        stage_base,
-        stage_base,
-        nslots,
-        native_depth,
-        EnvId::GLOBAL,
-        // The inline path does not carry the code pointer out of the IR; resolution
-        // falls back to the IC and then the callee's name.
-        std::ptr::null(),
+        FastLinkSite {
+            argc,
+            site,
+            head,
+            epoch,
+            stage_base,
+            nslots,
+            native_depth,
+            callee_env: EnvId::GLOBAL,
+            code: std::ptr::null(),
+            unwind,
+        },
         out,
-        unwind,
     ) {
         FastLinkOutcome::Done => 0,
         FastLinkOutcome::Error => 1,
@@ -254,199 +202,80 @@ pub(crate) fn jit_xcall_cold_outcome(
     }
 }
 
-/// The deopt / preempt / tail-chain / error outcomes of a native fast link — everything
-/// except outcome 0. Split out of [`jit_run_fast_link`] and marked `#[cold]`/`#[inline(never)]`
-/// so its frame and register pressure are not charged to the hot return path; see the comment
-/// at the call site for the measurement that motivated it. Semantics are unchanged: this is the
-/// same code, in the same order, with the same comments.
-#[cfg(feature = "jit")]
-#[allow(clippy::too_many_arguments)]
-#[cold]
-#[inline(never)]
-pub(super) fn jit_fast_link_cold_outcome(
-    heap: &mut Heap,
-    outcome: i64,
+/// What a fast-linked call site knows about the call it made — enough to finish a cold
+/// outcome without an arm in hand.
+pub(crate) struct FastLinkSite {
     argc: usize,
     site: u32,
     head: Symbol,
     epoch: u64,
     stage_base: usize,
-    base: usize,
     nslots: usize,
     native_depth: u32,
     callee_env: EnvId,
+    /// The code that ran, or null when the inline path did not carry it out.
     code: *const u8,
-    out: *mut Value,
     unwind: bool,
+}
+
+/// Every outcome of a native fast link but 0, through [`finish_nested`]. Out of line and
+/// cold so its frame and register pressure are not charged to the hot return path.
+///
+/// The fast link carries no arm, so the callee is resolved here: through the call IC when it
+/// still names an arm of this frame's shape, else by the code pointer that ran (the keep-alive
+/// registry names its arm immortally), else by name. The IC answer can be a DIFFERENT arm when
+/// the epoch moved: a `def` in that window rebinds the name, and a resume would read the new
+/// arm's journal out of the old arm's frame. And it must be resolved at all — falling through
+/// to the slow path on a miss called the callee a second time after its native code had
+/// already run (KI-18: 50 016 entries instead of 50 000). Only the IC and the code pointer
+/// name the arm that RAN; a name lookup can not be told from a rebind, so an unwind never
+/// records an arm found that way.
+#[cfg(feature = "jit")]
+#[cold]
+#[inline(never)]
+fn fast_link_cold_outcome(
+    heap: &mut Heap,
+    outcome: i64,
+    call: FastLinkSite,
+    out: *mut Value,
 ) -> FastLinkOutcome {
-    // ADR-400: a preempt this callee may honour, or one unwinding through it — record the
-    // callee and leave its frame for the driver to rebuild. The arm is resolved the way the
-    // deopt path below resolves it, minus the name lookup (a rebind cannot be told from the
-    // arm that ran, and an unnamed preempt is simply taken the old way).
-    if jit_unwind_through(heap, outcome, unwind, |h| {
-        h.vm_call_ic_probe(site, head, argc as u32, epoch)
-            .and_then(|(_, a)| a)
-            .map(|(arm, cenv, _)| (arm.arc().clone(), cenv))
-            .filter(|(arm, _)| jit_frame_shape_matches(arm, nslots))
-            .or_else(|| {
-                (!code.is_null())
-                    .then(|| jit_arm_for_code(code))
-                    .flatten()
-                    .map(|a| (a, callee_env))
-            })
-            .map(|(arm, env)| UnwindFrame {
-                bases: h.vm_arm_block(&arm),
-                arm,
-                base,
-                nslots,
-                env,
-            })
-    }) {
-        return FastLinkOutcome::Error;
-    }
-    // These arms produce their value in Rust (a re-entered `apply_value` / `vm_resume_deopt`),
-    // so they write it through `out` themselves — after all of their allocation, which is what
-    // keeps the un-rooted `out` slot safe (see `crate::jit::JitArmFn`).
-    let done = |v: Value| {
-        // SAFETY: `out` is the caller's slot, valid for the whole call (its frame outlives
-        // this one), and written exactly once on the Done path.
-        unsafe { *out = v };
-        FastLinkOutcome::Done
+    let frame = NestedFrame {
+        stage_base: call.stage_base,
+        base: call.stage_base,
+        nslots: call.nslots,
+        argc: call.argc,
+        native_depth: call.native_depth,
+        unwind: call.unwind,
     };
-    match outcome {
-        3 => {
-            heap.truncate_roots(stage_base);
-            FastLinkOutcome::Error
-        }
-        // Tail call (outcome 4): the callee JIT'd a tail call — [callee, arg0..argN] are staged
-        // in roots above the callee's frame at `[base+nslots, roots_len)`. Rather than discarding
-        // the staged call and re-running the callee via `vm_apply` (which would pay both JIT and
-        // VM overhead for every tail-calling callee), follow the chain: dispatch the staged call
-        // as if the callee had returned that value. This makes JIT-compiled thin delegators
-        // (e.g. `prime?` tail-calling `divides-none?`) called in non-tail position efficient.
-        4 => {
-            let staged_start = base + nslots;
-            let staged_end = heap.roots_len();
-            if staged_end > staged_start {
-                let staged_callee = heap.root_at(staged_start);
-                let staged_argc = staged_end - staged_start - 1;
-                let staged_args: SmallVec<[Value; 4]> = (1..=staged_argc)
-                    .map(|k| heap.root_at(staged_start + k))
-                    .collect();
-                heap.truncate_roots(stage_base);
-                let g = heap.global();
-                return match jit_native_reenter(heap, native_depth, |h| {
-                    apply_value(h, staged_callee, &staged_args, g)
-                }) {
-                    Ok(v) => done(v),
-                    Err(e) => {
-                        heap.jit_pending_error = Some(e);
-                        FastLinkOutcome::Error
-                    }
-                };
-            }
-            // No staged call staged (shouldn't happen): fall back.
-            heap.truncate_roots(stage_base);
-            FastLinkOutcome::Error
-        }
-        // deopt (1) / preempt (2): re-run on the VM. The args survive in the param
-        // slots `[base, base+argc)`. Re-probe for the arm (clones — but only on this rare
-        // path) and `vm_apply`.
-        _ => {
-            crate::perf_bump!(jit_link_rerun);
-            let mut argv2: SmallVec<[Value; 4]> = SmallVec::with_capacity(argc);
-            for k in 0..argc {
-                argv2.push(heap.root_at(base + k));
-            }
-            // Resolve the callee's arm. The IC probe is only an *optimisation* for finding
-            // it, so a miss must not change behaviour — but it did: the branch below used to
-            // be skipped entirely on a miss, falling through to `brood_rt_call_slow`, which
-            // **calls the callee again**. By then its native code has already run, so any
-            // effect it performed happened twice (KI-18: both arms of a multi-arity fn were
-            // entered 50 016 times instead of 50 000, exactly 16 — the deopt-bail threshold
-            // — before the arm bailed and the duplication stopped). On a miss, resolve the
-            // arm the slow way by name and take the same checkpoint-resume path.
-            //
-            // Between the IC and the name comes the code pointer that actually ran: an IC
-            // miss means the epoch moved, and a `def` in that window rebinds the name to a
-            // DIFFERENT arm. The frame-shape check below compares sizes only, so two arms
-            // of equal `nslots` would pass it and the resume would read the new arm's
-            // journal slot out of the old arm's frame and interpret the new chunk from the
-            // old ip. The keep-alive registry names the arm the code belongs to.
-            let resolved = heap
-                .vm_call_ic_probe(site, head, argc as u32, epoch)
-                .and_then(|(_, a)| a)
-                .map(|(arm, cenv, _)| (arm, cenv))
-                .or_else(|| {
-                    (!code.is_null())
-                        .then(|| jit_arm_for_code(code))
-                        .flatten()
-                        .map(|a| (ArmHandle::new(a), callee_env))
-                })
-                .or_else(|| {
-                    let genv = heap.read_root_env(heap.jit_call_env);
-                    match heap.env_get(genv, head) {
-                        Some(Value::Fn(id)) => {
-                            super::compiled_arm_for(heap, id, argc).map(|a| (a, callee_env))
-                        }
-                        _ => None,
-                    }
-                });
-            if let Some((arm, cenv)) = resolved {
-                // Deopt feedback (see `jit_deopt_feedback`): the fast-link hot path
-                // carries no arm reference, so runs go uncounted here — only deopts.
-                // Undercounted runs only make a mixed arm bail sooner (conservative).
-                if outcome == 1 {
-                    jit_any_deopt_feedback(heap, &arm);
-                    if arm.deopt_watch {
-                        jit_deopt_feedback(heap, &arm);
-                    }
+    let resolve = |h: &Heap| -> Option<NestedCallee> {
+        h.vm_call_ic_probe(call.site, call.head, call.argc as u32, call.epoch)
+            .and_then(|(_, a)| a)
+            .filter(|(arm, _, _)| jit_frame_shape_matches(arm, call.nslots))
+            .map(|(arm, env, _)| (arm, env, true))
+            .or_else(|| {
+                (!call.code.is_null())
+                    .then(|| jit_arm_for_code(call.code))
+                    .flatten()
+                    .map(|a| (ArmHandle::new(a), call.callee_env, true))
+            })
+            .or_else(|| {
+                let genv = h.read_root_env(h.jit_call_env);
+                match h.env_get(genv, call.head) {
+                    Some(Value::Fn(id)) => super::compiled_arm_for(h, id, call.argc)
+                        .map(|a| (a, call.callee_env, false)),
+                    _ => None,
                 }
-                // Deopt-resume (see `CompiledArm::ckpt_slot`): resume AT the
-                // checkpoint, frame intact — never re-running its side effects.
-                // The shape check exists because the IC could have re-resolved to a
-                // different arm than the one whose native ran; a mismatched frame can't be
-                // resumed and takes the legacy re-run instead. It must be **flag-free** —
-                // see [`jit_frame_shape_matches`] (KI-26).
-                // `1 | 2` — deopt AND preempt — matching `vm_run_bc`'s handler (KI-18): the
-                // journal, not the outcome code, decides whether there is a checkpoint to
-                // resume from, and `jit_ckpt_resume` returns `None` on a zero journal. A
-                // preempt does observe a zero journal (`emit_self_call` resets it before the
-                // tick poll), but that invariant lives in the lowerer and its failure mode is
-                // a silently REPEATED side effect, so all four consumers gate the same way.
-                if matches!(outcome, 1 | 2) && jit_frame_shape_matches(&arm, nslots) {
-                    if let Some((resume, rip, depth)) =
-                        jit_ckpt_resume(heap, arm.arc(), base, nslots)
-                    {
-                        return match jit_native_reenter(heap, native_depth, |h| {
-                            vm_resume_deopt(h, resume, base, cenv, rip, depth)
-                        }) {
-                            Ok(v) => done(v),
-                            Err(e) => {
-                                heap.jit_pending_error = Some(e);
-                                FastLinkOutcome::Error
-                            }
-                        };
-                    }
-                }
-                heap.truncate_roots(stage_base);
-                return match jit_native_reenter(heap, native_depth, |h| {
-                    vm_apply(h, arm, &argv2, cenv)
-                }) {
-                    Ok(v) => done(v),
-                    Err(e) => {
-                        heap.jit_pending_error = Some(e);
-                        FastLinkOutcome::Error
-                    }
-                };
-            }
-            heap.truncate_roots(stage_base);
-            // IC changed under us: restage the args so the elided slow path finds them.
-            for a in &argv2 {
-                heap.push_root(*a);
-            }
-            FastLinkOutcome::Fallthrough
+            })
+    };
+    match finish_nested(heap, outcome, Value::Nil, &frame, true, resolve) {
+        Nested::Done(v) => {
+            // SAFETY: `out` is the caller's slot, valid for the whole call, written once —
+            // after all of the re-entry's allocation, which keeps the un-rooted slot safe.
+            unsafe { *out = v };
+            FastLinkOutcome::Done
         }
+        Nested::Raised => FastLinkOutcome::Error,
+        Nested::Unresolved => FastLinkOutcome::Fallthrough,
     }
 }
 
@@ -539,6 +368,7 @@ pub(crate) fn jit_dispatch_fast_frame(
     env: u64,
     callee_bases: (u32, u32),
     out: *mut Value,
+    unwind: bool,
 ) -> FastLinkOutcome {
     let n = heap.roots_len();
     let epoch = heap.global_epoch();
@@ -586,6 +416,7 @@ pub(crate) fn jit_dispatch_fast_frame(
         callee_env,
         callee_bases,
         out,
+        unwind,
     )
 }
 

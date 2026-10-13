@@ -1026,17 +1026,6 @@ pub struct Heap {
     /// handler without crossing the native frame between them. Plain indices into `roots`
     /// / `env_roots` / `live_vm_arms`, never handles, so the collector ignores it.
     pub(crate) vm_handlers: Vec<VmHandler>,
-    /// Set by a top-level bytecode driver just before it enters native code (ADR-400):
-    /// `jit_tier` copies it into the activation's `JitCallCtx::unwind` and clears it at
-    /// once, so no entry nested inside that activation can inherit it.
-    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
-    pub(crate) jit_entry_unwind: bool,
-    /// Whether the callee a runtime callback is about to run may preempt by unwinding
-    /// (ADR-400): the calling activation's `unwind`, unless its `no_child_unwind` says it
-    /// cannot be rebuilt mid-call — as asserted by that callback
-    /// (`JitCallCtx::assert_into`).
-    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
-    pub(crate) jit_child_unwind: bool,
     /// Native activations left before the entry reduction poll settles a batch with the
     /// scheduler (ADR-400): decremented by every unwindable native activation of an arm that
     /// makes calls, so a native recursion — which has no back edge to poll at — is charged
@@ -1567,8 +1556,6 @@ impl Heap {
             jit_dbg_fn: u32::MAX,
             jit_pending_error: None,
             vm_handlers: Vec::new(),
-            jit_entry_unwind: false,
-            jit_child_unwind: false,
             jit_call_budget: 0,
             native_gateway_seq: 0,
             cur_native_gateway: 0,
@@ -1662,8 +1649,6 @@ impl Heap {
             jit_dbg_fn: u32::MAX,
             jit_pending_error: None,
             vm_handlers: Vec::new(),
-            jit_entry_unwind: false,
-            jit_child_unwind: false,
             jit_call_budget: 0,
             native_gateway_seq: 0,
             cur_native_gateway: 0,

@@ -1390,6 +1390,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
             EnvRoot::Stable(EnvId::GLOBAL),
             sumto.nslots,
             &mut ret as *mut Value,
+            false,
         );
         match outcome {
             None => {
@@ -1436,6 +1437,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
                 EnvRoot::Stable(EnvId::GLOBAL),
                 bailing.nslots,
                 &mut Value::Nil as *mut Value,
+                false
             ),
             None,
             "out-of-subset arm bails"
@@ -1564,6 +1566,7 @@ fn vm_run_bc_runs_a_tiered_arm_via_the_hook() {
             EnvRoot::Stable(EnvId::GLOBAL),
             arm.nslots,
             &mut Value::Nil as *mut Value,
+            false,
         );
         interp.heap.truncate_roots(base);
         let code = arm.jit_code.load(Acquire);
@@ -1733,6 +1736,7 @@ fn jit_speedup_vs_vm() {
             EnvRoot::Stable(EnvId::GLOBAL),
             jit_arm.nslots,
             &mut Value::Nil as *mut Value,
+            false,
         );
         interp.heap.truncate_roots(b);
         let c = jit_arm.jit_code.load(Acquire);
@@ -2487,7 +2491,8 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
             base,
             env,
             arm.nslots,
-            &mut Value::Nil as *mut Value
+            &mut Value::Nil as *mut Value,
+            false
         ),
         None,
         "a frame built to `nslots` must not run an `inline_nslots` native — it raw-writes \
@@ -2510,7 +2515,8 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
                 base,
                 env,
                 arm.inline_nslots,
-                &mut Value::Nil as *mut Value
+                &mut Value::Nil as *mut Value,
+                false
             ),
             Some(0),
             "an `inline_nslots` frame is the layout the inlined native wants; it must run"

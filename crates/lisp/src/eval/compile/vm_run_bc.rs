@@ -979,9 +979,11 @@ pub(crate) fn vm_run_bc(
             // bound (ADR-307) and a pending hard kill — see `loop_safepoint` in `exec_chunk`,
             // which splits the inline loop's safepoint the same way. Per frame boundary they
             // would cost twice per non-tail call.
-            // A spent budget — or, where this driver can capture, a preemption owed or
-            // requested by code that could not yield itself (ADR-402).
-            if crate::process::tick_capture() || (capture && crate::process::take_yield_due()) {
+            // A quantum boundary: a spent budget, or — where this driver can capture — a
+            // preemption owed by code that could not yield itself (ADR-402).
+            if let crate::process::Safepoint::Quantum { yield_now } =
+                crate::process::driver_safepoint(capture)
+            {
                 if let Err(e) = super::quantum_checks(heap) {
                     raise!('drive, e);
                 }
@@ -997,9 +999,7 @@ pub(crate) fn vm_run_bc(
                     unwind(heap);
                     return Err(crate::error::LispError::kill_signal());
                 }
-                if !capture {
-                    crate::process::refill_nested_quantum();
-                } else {
+                if yield_now {
                     // State-capture preemption (ADR-100 §8.1), in place of the coroutine
                     // yield: the frame boundary is the safepoint. The spent budget captures the
                     // continuation so `run_one` re-enqueues it (on any worker — live migration).
@@ -1091,9 +1091,7 @@ pub(crate) fn vm_run_bc(
                     // owns a stack local (see `crate::jit::JitArmFn`).
                     let mut jit_ret = Value::Nil;
                     // ADR-400: the top-level driver's native entry is unwindable — its
-                    // callees' preempts can come back as frames to rebuild. Cleared after
-                    // as well as when taken: the tier can decline before building a context.
-                    heap.jit_entry_unwind = capture;
+                    // callees' preempts can come back as frames to rebuild.
                     let jit_outcome = jit_tier_in_frame(
                         cur_arm.arc(),
                         heap,
@@ -1101,8 +1099,8 @@ pub(crate) fn vm_run_bc(
                         cur_env,
                         frame_nslots,
                         &mut jit_ret as *mut Value,
+                        capture,
                     );
-                    heap.jit_entry_unwind = false;
                     let resume = settle_native_frame(
                         heap,
                         &cur_arm,
@@ -1350,7 +1348,7 @@ pub(crate) fn vm_run_bc(
                     usize::MAX
                 };
                 heap.extend_roots_to_nil(cur_base + cur_arm.nslots);
-                fill_captures(heap, &cur_arm, cur_base, cur_env);
+                fill_captures(heap, &cur_arm, cur_base, heap.read_root_env(cur_env));
                 cur_ip = 0;
                 cur_entry_epoch = SELF_UNCHECKED_EPOCH;
                 #[cfg(feature = "jit")]

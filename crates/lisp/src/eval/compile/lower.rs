@@ -738,7 +738,7 @@ pub fn prim_apply_step(op: PrimOp, x: Value, y: Value) -> Result<Option<Value>, 
     prim_apply(op, x, y)
 }
 
-/// Tighter variant of [`prim_apply_step`] for the range-reduce hot path: both
+/// Tighter variant of [`prim_apply_step`] for the range-fold hot path: both
 /// operands are already `i64` (range element + integer accumulator), no Value
 /// boxing involved. Returns the next `i64` accumulator, or `None` on overflow
 /// (caller must fall back to the full `prim_apply_step` / `eval_apply` path).

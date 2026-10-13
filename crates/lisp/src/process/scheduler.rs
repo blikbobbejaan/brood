@@ -149,151 +149,11 @@ thread_local! {
     static DISPLACED: RefCell<Vec<Option<Ctx>>> = const { RefCell::new(Vec::new()) };
 }
 
-// ----- reduction-counted preemption ------------------------------------------
+// ----- reduction-counted preemption: `quantum` ------------------------------------
 
-thread_local! {
-    /// Reductions left in the current process's scheduling quantum. The worker
-    /// resets it to `REDUCTION_BUDGET` before each `resume` (see `run_one`); `eval`
-    /// decrements it via `tick`, and the process yields when it hits zero.
-    static REDUCTIONS: Cell<u32> = const { Cell::new(0) };
-}
-
-/// How many `eval` loop iterations a process runs before it must yield its worker
-/// (cooperative fairness — the BEAM's mechanism). ~2000 ≈ the BEAM default; tunable.
-/// DEBUG (bug #2): `BROOD_REDUCTIONS=<n>` overrides it — a huge value effectively disables
-/// capture-mode preemption (processes run to completion, yielding only at `receive`), to
-/// test whether the capture/restore mechanism is the corruption source.
-fn reduction_budget() -> u32 {
-    static N: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("BROOD_REDUCTIONS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2000)
-    })
-}
-
-/// Called once per `eval` `'tail:` iteration. Cheap: a thread-local decrement; only
-/// when the budget is exhausted does it touch `CURRENT`. The top-level VM driver does
-/// its own capture-mode preemption (`tick_capture`); this `tick`/`preempt` path is the
-/// fallback for non-driver runs (nested native callbacks, the tree-walker, the root
-/// thread), which can't suspend, so it just refreshes the budget.
-#[inline]
-pub fn tick() {
-    REDUCTIONS.with(|r| {
-        let n = r.get();
-        if n == 0 {
-            preempt();
-        } else {
-            r.set(n - 1);
-        }
-    });
-}
-
-/// Dirty-CPU accounting for native builtins (BEAM's NIF-reduction model; ROADMAP
-/// "Robustness gaps" survey). A long-running native can't be preempted mid-call
-/// and holds its worker; what we CAN do is charge the time it held the worker
-/// against the process's reduction budget afterwards, so the **next** safepoint
-/// preempts promptly instead of the process keeping its quantum as if the call
-/// were one reduction. ~2 reductions per µs (a 2000-reduction quantum ≈ ~1 ms of
-/// Brood work), saturating — ≥ ~1 ms of native work drains the budget outright.
-/// Called only from a green process (`in_capture_run`, the caller's gate): a
-/// root-thread native starves no peers. Returns `Some(elapsed_ms)` when the
-/// `BROOD_STALL_MS` tracer is armed and tripped, so the caller — which knows the
-/// builtin's *name* — can log it (the missing half of the stall tracer: "which
-/// native stalled the worker").
-pub(crate) fn charge_native(t0: web_time::Instant) -> Option<u128> {
-    let elapsed = t0.elapsed();
-    let us = elapsed.as_micros().min(u32::MAX as u128) as u32;
-    // Below ~50 µs the call is quantum-noise — skip the TLS write.
-    if us >= 50 {
-        let charge = us.saturating_mul(2);
-        REDUCTIONS.with(|r| r.set(r.get().saturating_sub(charge)));
-    }
-    match crate::core::heap::stall_threshold_ms() {
-        Some(ms) if elapsed.as_millis() >= ms => Some(elapsed.as_millis()),
-        _ => None,
-    }
-}
-
-/// A NESTED (non-capture) run's reduction rollover: book the quantum and refill the budget
-/// — [`preempt`] for the VM's loop safepoints, which test the rollover with
-/// [`tick_capture`] so they can run their once-per-quantum checks first.
-pub(crate) fn refill_nested_quantum() {
-    preempt();
-}
-
-thread_local! {
-    /// Preemption the process owes the scheduler (ADR-402). `OWED`: a quantum ran out
-    /// where nothing could yield — a nested evaluation, a native activation that cannot
-    /// unwind — so the budget was refilled and the debt recorded instead of forgotten.
-    /// `REQUESTED`: a resumable builtin (the vector and range folds) stopped between two
-    /// elements to pay it. Every point that CAN capture (the driver's loop top, the inline
-    /// loop safepoint, an unwindable native poll) preempts on either; cleared at each
-    /// quantum's start. Per worker thread, like `REDUCTIONS`, and for the same reason.
-    static YIELD_FLAGS: Cell<u8> = const { Cell::new(0) };
-}
-const YIELD_OWED: u8 = 1;
-const YIELD_REQUESTED: u8 = 2;
-
-/// Take the preemption owed or requested since the quantum began — true when a capturing
-/// point should yield now even though its budget is not spent (ADR-402).
-pub(crate) fn take_yield_due() -> bool {
-    YIELD_FLAGS.with(|f| f.replace(0) != 0)
-}
-
-/// Clear the flags for a fresh quantum.
-pub(crate) fn clear_yield_flags() {
-    YIELD_FLAGS.with(|f| f.set(0));
-}
-
-/// Should a resumable builtin stop at the element it is on (ADR-402)? It charges `units`
-/// reductions for the work it did itself since it last asked (a callback charges its own),
-/// and stops when that spends the budget or when a quantum's preemption is owed — turning
-/// the debt into a request the next capturing point honours. At most once per quantum
-/// where nothing can capture (the request then waits, and only a FRESH debt stops the
-/// builtin again), so a fold running nested pays one stop per quantum, not one per element.
-/// Never on the root thread, which never preempts.
-pub(crate) fn resumable_should_stop(units: u32) -> bool {
-    // Nothing to charge — the per-element ask after a reducer call: only a debt can stop the
-    // builtin, and a debt is only ever recorded in a green process, so one thread-local read.
-    let mut spent = units > 0 && in_capture_run() && tick_capture_n_inner(units);
-    if spent && !work_waiting() {
-        // The quantum is over and nothing would run instead: go on as a fresh one.
-        refill_nested_quantum();
-        crate::process::sysmon::quantum_restart();
-        spent = false;
-    }
-    YIELD_FLAGS.with(|f| {
-        let v = f.get();
-        if spent || v & YIELD_OWED != 0 {
-            f.set((v & !YIELD_OWED) | YIELD_REQUESTED);
-            true
-        } else {
-            false
-        }
-    })
-}
-
-/// Reduction budget exhausted at a `tick()` site. Nothing to yield to here: the
-/// **top-level** VM driver does capture-mode preemption itself (`tick_capture`). This is
-/// reached only by runs that are *not* the body driver — a nested native callback, the
-/// tree-walker, the root thread, the prelude build — so it books the quantum into
-/// `process-info`'s `:reductions` and refreshes the budget (the §7.4 dirty carve-out).
-fn preempt() {
-    // A green process whose quantum ran out here owes the scheduler a preemption the next
-    // capturing point pays (ADR-402) — if anything is waiting to run; the root thread
-    // never preempts and owes nothing.
-    if in_capture_run() && work_waiting() {
-        YIELD_FLAGS.with(|f| f.set(f.get() | YIELD_OWED));
-    }
-    if let Some(c) = CURRENT.with(|c| c.borrow().clone()) {
-        c.mailbox
-            .reductions
-            .fetch_add(reduction_budget() as u64, Ordering::Relaxed);
-    }
-    REDUCTIONS.with(|r| r.set(reduction_budget()));
-}
+mod quantum;
+pub(crate) use quantum::*;
+pub use quantum::{tick, yield_now};
 
 thread_local! {
     /// True while this worker is driving a green process body (`run_one`). The
@@ -456,99 +316,6 @@ impl Drop for TreeWalkGuard {
     }
 }
 
-/// Test hook: set this thread's remaining reduction budget directly, so a unit test can
-/// drive the capture-mode VM through preemptions without a scheduler (`run_one` refills
-/// the budget on every resume; a test standing in for it must too).
-#[cfg(test)]
-pub(crate) fn set_reduction_budget_for_test(n: u32) {
-    REDUCTIONS.with(|r| r.set(n));
-}
-
-/// Reduction tick for the capture-mode VM driver: like [`tick`] but **returns**
-/// whether the budget is exhausted (so the driver captures + yields a `Preempted`).
-/// Decrements otherwise. The budget is refreshed by `run_one` at the next resume.
-pub(crate) fn tick_capture() -> bool {
-    REDUCTIONS.with(|r| {
-        let n = r.get();
-        if n == 0 {
-            true
-        } else {
-            r.set(n - 1);
-            false
-        }
-    })
-}
-
-/// Batched [`tick_capture`]: burn `n` reductions at once — the JIT's loop back-edge
-/// polls every N iterations with an in-register countdown (BEAM-style reduction
-/// batching) instead of one FFI per iteration, and settles the account here so
-/// scheduler fairness is unchanged (the budget depletes at the same reduction rate).
-/// Only the JIT runtime callback calls it, so it is compiled out with the feature.
-#[cfg(feature = "jit")]
-pub(crate) fn tick_capture_n(n: u32) -> bool {
-    tick_capture_n_inner(n)
-}
-
-fn tick_capture_n_inner(n: u32) -> bool {
-    REDUCTIONS.with(|r| {
-        let cur = r.get();
-        if cur < n {
-            r.set(0);
-            true
-        } else {
-            r.set(cur - n);
-            false
-        }
-    })
-}
-
-/// Is some process waiting for a worker? A preemption buys latency only for one that is:
-/// with none queued anywhere, a preempted process would be re-queued and picked straight
-/// back up. The callers whose preemption is costly — a native stack unwound and rebuilt
-/// as interpreter frames (ADR-400), a resumable fold stopped and re-entered (ADR-402) —
-/// ask first, and keep running when the answer is no. One relaxed load.
-pub(crate) fn work_waiting() -> bool {
-    STEALABLE.load(Ordering::Relaxed) != 0
-}
-
-/// Unit tests that stand in for a scheduler: pretend `n` more processes are queued (and
-/// undo it with the negation), so a preemption has someone to make room for.
-#[cfg(test)]
-pub(crate) fn test_pretend_queued(n: isize) {
-    if n >= 0 {
-        STEALABLE.fetch_add(n as usize, Ordering::SeqCst);
-    } else {
-        STEALABLE.fetch_sub(n.unsigned_abs(), Ordering::SeqCst);
-    }
-}
-
-/// [`tick`], additionally reporting whether an untrappable hard `:kill` is pending —
-/// the reduction tick for every eval path that **cannot capture** a continuation.
-///
-/// The top-level VM body driver honours a hard kill from its safepoint; every other
-/// path (the tree-walker, a *nested* VM run behind `eval`/`try`/an HOF native) ticks
-/// here, or a process looping under `reflect/eval-string` is unkillable. On `true` the
-/// caller raises the untrappable
-/// [`LispError::kill_signal`](crate::error::LispError::kill_signal), which the body
-/// driver turns into `VmOutcome::Killed`. Checked only on rollover (once per quantum),
-/// and always `false` on the root thread, so the REPL can never kill itself.
-pub(crate) fn tick_reporting_hard_kill() -> bool {
-    let rolled_over = REDUCTIONS.with(|r| {
-        let n = r.get();
-        if n == 0 {
-            true
-        } else {
-            r.set(n - 1);
-            false
-        }
-    });
-    if !rolled_over {
-        return false;
-    }
-    preempt();
-    capture_hard_kill_pending()
-}
-
 /// Mailbox-bound probe for the CURRENT process (ADR-307) — the safepoint twin of the
 /// `receive`-entry check, for a flooded process that computes instead of receiving.
 /// Probed beside `take_proc_limit_hit` at the same loop-top safepoints; one borrow +
@@ -581,19 +348,6 @@ pub(crate) fn capture_hard_kill_pending() -> bool {
             .as_ref()
             .is_some_and(|ctx| ctx.mailbox.pending_hard_kill())
     })
-}
-
-/// Cooperatively yield so other ready work can make progress (`(yield)` / used by
-/// `%isolate`'s reap to wait for killed orphans). A process can't free its worker
-/// mid-eval (the continuation is only captured at a `receive`), so this hints the OS
-/// scheduler (`std::thread::yield_now`) — the other worker threads run their processes,
-/// so work the caller is spinning on (e.g. orphans being reaped on other workers) makes
-/// progress — and refreshes the reduction budget so the caller isn't immediately
-/// preempted on return. Not `std::thread::sleep`: a busy spinner shouldn't add fixed
-/// latency per iteration.
-pub fn yield_now() {
-    REDUCTIONS.with(|r| r.set(reduction_budget()));
-    std::thread::yield_now();
 }
 
 // ----- the run queue + worker pool -------------------------------------------
@@ -1577,37 +1331,6 @@ mod root_ctx_tests {
 #[cfg(test)]
 mod charge_tests {
     use super::*;
-
-    /// Dirty-CPU accounting: a long native call drains the reduction budget
-    /// (proportionally, saturating), so the next tick preempts promptly; a
-    /// sub-threshold call leaves the budget untouched.
-    #[test]
-    fn charge_native_drains_reductions_proportionally() {
-        // ~1 ms of native work at 2 red/µs ≥ the whole 2000-reduction budget.
-        REDUCTIONS.with(|r| r.set(reduction_budget()));
-        let long_ago = web_time::Instant::now() - std::time::Duration::from_millis(2);
-        charge_native(long_ago);
-        assert_eq!(
-            REDUCTIONS.with(|r| r.get()),
-            0,
-            "a ≥1ms native must drain the whole budget"
-        );
-
-        // ~100 µs charges ~200 reductions — proportional, not all-or-nothing.
-        REDUCTIONS.with(|r| r.set(2000));
-        let recent = web_time::Instant::now() - std::time::Duration::from_micros(100);
-        charge_native(recent);
-        let left = REDUCTIONS.with(|r| r.get());
-        assert!(
-            (1400..=1900).contains(&left),
-            "a ~100µs native charges ~200 reductions, got {left} left"
-        );
-
-        // Below the 50 µs floor: budget untouched.
-        REDUCTIONS.with(|r| r.set(2000));
-        charge_native(web_time::Instant::now());
-        assert_eq!(REDUCTIONS.with(|r| r.get()), 2000);
-    }
 
     /// The per-process memory **floor**, structurally attributed.
     ///

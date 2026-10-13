@@ -143,7 +143,7 @@ pub(crate) struct JitCallCtx {
     /// self-spliced layout, whose ips match no chunk — so the activations it calls may not
     /// unwind through it. Callers initialise it to 0 and only that prologue writes it: a
     /// copy of `unwind` into a field of its own on every activation was two of `bintree`'s
-    /// instructions per call. The runtime reads the pair as one bit (`assert_into`); the
+    /// instructions per call. The runtime reads the pair as one bit (`children_may_unwind`); the
     /// native call site of an arm that can be rebuilt passes its `unwind` on directly, and
     /// one that cannot passes 0. The unboxed register worker reaches neither.
     pub no_child_unwind: u8,
@@ -187,7 +187,17 @@ impl JitCallCtx {
         heap.jit_native_depth = c.depth as u32;
         heap.cur_native_gateway = c.gateway;
         heap.jit_dbg_fn = c.dbg_fn;
-        heap.jit_child_unwind = c.unwind != 0 && c.no_child_unwind == 0;
+    }
+
+    /// May the activations a native arm calls through a runtime callback preempt by
+    /// unwinding (ADR-400)? Its own `unwind`, unless it cannot be rebuilt mid-call.
+    ///
+    /// # Safety
+    /// As [`JitCallCtx::assert_into`].
+    #[inline]
+    pub(crate) unsafe fn children_may_unwind(ctx: *const JitCallCtx) -> bool {
+        let c = &*ctx;
+        c.unwind != 0 && c.no_child_unwind == 0
     }
 
     /// The two fields a builtin that re-enters the evaluator or parks would read from the

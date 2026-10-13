@@ -38,26 +38,12 @@ use crate::core::heap::{FastLink, Heap};
 /// going, like the VM's `tick()` else-branch. Gating here is load-bearing: without it a
 /// JIT'd loop on the root thread would yield on its first iteration and bail to the VM,
 /// so the JIT could never actually run the loop.
-/// Batched preemption poll: burn `n` reductions in one call — the back-edge's
-/// in-register countdown calls this once per batch (see `tick_capture_n`), so a
-/// tight JIT'd loop pays ~one sub+branch per iteration instead of an FFI.
-///
-/// The batched back-edge poll. `1` = preempt (the reduction budget ran out); `2` = leave
-/// the loop for the VM: a limit is waiting to be RAISED — the soft memory ceiling (E0043),
-/// a per-process heap limit, a mailbox overflow — and native code cannot raise, so the
-/// loop deopts at its back-edge (the frame holds the next iteration's arguments, the
-/// checkpoint was just reset) and the VM's own safepoint at that iteration raises it, the
-/// way the VM's self-tail path does. Without it a native consing loop under a soft limit
-/// never sees the limit at all (KI-156).
-///
-/// A spent budget preempts only an activation entered with `JitCallCtx::unwind` (ADR-400):
-/// the driver's own native entry, or a native callee every caller of which can be rebuilt
-/// as an interpreter frame. Any other activation has a frame between it and the driver that
-/// nothing can capture — a builtin calling back, a nested evaluation — so a preempt there
-/// used to deopt into an interpreter that could not capture either, and simply ran the rest
-/// of the loop slower. It now keeps running native and starts a fresh quantum, as that
-/// interpreter did — except when a hard kill is pending, which only the interpreter's
-/// safepoint can raise: that leaves for it (`2`), so the loop stays killable.
+/// A native activation's reduction poll — a loop's batched back edge (one call per batch of
+/// iterations, an in-register countdown between) or a call's entry poll. `1` = preempt by
+/// unwinding; `2` = leave for the VM: a limit is waiting to be RAISED — the soft memory
+/// ceiling (E0043), a per-process heap limit, a mailbox overflow, a hard kill — and native
+/// code cannot raise, so it deopts and the VM's own safepoint raises it (KI-156). Whether
+/// a spent budget preempts is `quantum::native_poll`'s decision (ADR-400/402).
 ///
 /// # Safety
 /// `heap` is a live heap; the limit peeks read it only. `ctx` is the running activation's
@@ -74,35 +60,21 @@ pub unsafe extern "C" fn brood_rt_tick_n(
     {
         return 2;
     }
-    if !crate::process::in_capture_run() {
-        return 0; // root / non-capture: never preempt (matches the VM)
-    }
-    let unwind = (*ctx).unwind != 0;
-    if !crate::process::tick_capture_n(n as u32) {
-        // Budget left — but an unwindable activation also pays a preemption owed or
-        // requested by code that could not yield itself (ADR-402).
-        return u8::from(unwind && crate::process::take_yield_due());
-    }
-    // Unwinding the native stack to park is the costly preemption: pay it only when some
-    // process is waiting for a worker. With none, the quantum goes on as a fresh one —
-    // exactly what a cheap preempt and an immediate re-run would have done.
-    if unwind {
-        if crate::process::work_waiting() {
-            return 1;
+    use crate::process::NativePoll;
+    match crate::process::native_poll(n as u32, (*ctx).unwind != 0) {
+        NativePoll::Run => 0,
+        NativePoll::Preempt => 1,
+        NativePoll::Leave => 2,
+        NativePoll::RunOnFreshQuantum => {
+            // The sampling profiler records at interpreter frame boundaries, and this loop
+            // will not reach one until it finishes. Sample it here instead, once per
+            // profiler tick, by the running arm's name.
+            if crate::diagnostics::profile::armed() {
+                sample_native_activation(&*ctx);
+            }
+            0
         }
-        crate::process::sysmon::quantum_restart();
     }
-    if crate::process::capture_hard_kill_pending() {
-        return 2;
-    }
-    // The sampling profiler records at interpreter frame boundaries, and this loop will not
-    // reach one until it finishes (it used to, deopting into the nested interpreter every
-    // quantum). Sample it here instead, once per profiler tick, by the running arm's name.
-    if crate::diagnostics::profile::armed() {
-        sample_native_activation(&*ctx);
-    }
-    crate::process::refill_nested_quantum();
-    0
 }
 
 /// One profiler sample for a native activation that cannot yield to a driver: the stack is
@@ -1362,7 +1334,8 @@ pub unsafe extern "C" fn brood_rt_call_slow(
     if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!("[jit-cb] brood_rt_call_slow(argc={})", argc);
     }
-    match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head) {
+    let unwind = crate::jit::JitCallCtx::children_may_unwind(ctx);
+    match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head, unwind) {
         Some(v) => {
             *out = v;
             0
@@ -1497,6 +1470,7 @@ pub unsafe extern "C" fn brood_rt_fast_frame(
         env,
         bases,
         out,
+        crate::jit::JitCallCtx::children_may_unwind(ctx),
     ) {
         FastLinkOutcome::Done => 0,
         FastLinkOutcome::Error => 1,
@@ -1571,6 +1545,7 @@ pub unsafe extern "C" fn brood_rt_xcall_cold(
         stage_base as usize,
         nslots,
         out,
+        crate::jit::JitCallCtx::children_may_unwind(ctx),
     );
     (*heap).jit_force_vm = saved_force_vm;
     r
