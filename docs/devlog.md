@@ -16865,3 +16865,30 @@ separate element counter (+26% `reduce`).
 generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy `--all-features`
 clean, `make latency-gate` ok (worst p99 84 µs; ten interleaved runs against `67a540e1`: p99 and
 p99.9 within run-to-run noise).
+
+## 2026-10-13 (later) — a sweep of the gates that are not `make test`
+
+Everything `make test` does not cover, run on purpose after the simplification:
+
+- **`make ab`'s stdlib-image guard had been off for a week.** Its probe printed through
+  `%print`, removed in the whole-project cleanup (`25d72016`); the probe errored on every binary,
+  both arms read `unknown`, and the "image on BOTH arms" guard warned symmetrically instead of
+  stopping. Worse, the harness never wrote an image for a baseline worktree, so every baseline
+  booted from source — ~70 ms a run, which read as a 40-50% win for the working tree on every row
+  that afternoon. The probe uses `io/puts`, and the harness writes each arm's image first.
+- **`make check-stress` failed on a lean build** — `dev/gc-stats` reaches `%gc-stats`, which only
+  `dev-tools` registers, and the gate knew only absent MODULES. A primitive the tree registers
+  only under `dev-tools` is now a named skip; any other unbound name still fails (all three cases
+  checked). CI runs the gate on the full build, so this was local-only.
+- **Warnings in three feature builds**: `--no-default-features` (the preempt-unwind signal, the
+  mailbox-overflow peek and the native poll's re-exports, all `jit`-only), `gui` without
+  `gui-gpu` (the GPU target's two re-exports), and wasm32 (`OwnedTable` methods only the TCP/TLS
+  host uses). `%jit-arm-state` no longer mutates its counters under one feature.
+- Also run, all green: `check-examples`, `tier-audit` (29 rows, every hot arm native),
+  `check-imaged`, `breakagetests` (37/37), the distribution tests five times (59/59 each), and the
+  fold/preemption paths under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` at every tier with a
+  100-reduction quantum.
+- **Not brood:** bedit at CI's pin passes 2463/2464 with a grammar-enabled `nest`; the one failure
+  is its Elixir agent leaving the `dbg` header in place on this machine's Elixir 1.21-dev, which
+  wraps the header in ANSI colour. `make wasm-test` needs wasm-bindgen-cli 0.2.128 (0.2.100 is
+  installed here); the wasm32 build itself is clean.
