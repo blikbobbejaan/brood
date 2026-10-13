@@ -1398,6 +1398,18 @@ impl Heap {
         self.dynamics.pop();
     }
 
+    /// How many dynamic bindings are in force — what an inline `try` records, and a bytecode
+    /// driver at entry, so an error that skips a `binding`'s exit restores by truncation
+    /// (ADR-401).
+    pub(crate) fn dynamics_len(&self) -> usize {
+        self.dynamics.len()
+    }
+
+    /// Drop every dynamic binding pushed since the stack was `len` long.
+    pub(crate) fn truncate_dynamics(&mut self, len: usize) {
+        self.dynamics.truncate(len);
+    }
+
     /// The debugger's durable per-process trace context (ADR-174), or `None`. A
     /// settable slot (unlike a `binding`): `spawn` copies it into a child, `send`
     /// ships it, `receive` overwrites it on pop. GC-traced with [`dynamics`].

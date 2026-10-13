@@ -223,6 +223,42 @@ fn max_leader_depth(code: &[Inst]) -> usize {
         .max()
         .unwrap_or(0) as usize
 }
+/// **Pure self-recursion** (`self_name`): an arm whose every `Call` — tail or not — targets
+/// *itself*, with no mutating inline prim (`table-put`), no `try`/`catch` and no `binding`,
+/// is effect-free by induction: a deopt's from-ip-0 re-run re-executes only completed
+/// *self*-calls, which run this same pure arm (a redefinition mid-run bumps the epoch and
+/// invalidates the arm before it re-enters native code). Such arms skip checkpointing
+/// entirely ([`jit_ckpt_depth`]) — the journal writes after every non-tail call were ~5 %
+/// of bintree's *instructions*, and the journal area and its per-activation reset another
+/// 10 % (ADR-400 moved the in-call journal out of the frame so they need none). Anything
+/// else — a call to another fn or a native (where all effects live), a computed callee,
+/// `table-put`, a catch frame — keeps the exactly-once checkpoint machinery.
+fn pure_self_recursive(
+    code: &[Inst],
+    self_name: Option<Symbol>,
+    self_arity: Option<usize>,
+) -> bool {
+    let Some(me) = self_name else {
+        return false;
+    };
+    code.iter().all(|i| match i {
+        // `me` is the CLOSURE's name, shared by every arm of a multi-arity `defn` (each arm
+        // gets the same `defn_name`). So a head match alone does not mean "calls back into
+        // this same, provably effect-free arm" — a 1-arg arm calling `(f v 0)` dispatches
+        // to the 2-arg arm, which may do anything, including a `table-put`. Require the
+        // argc to select THIS arm, and `self_arity` is `None` for an arm with optionals or
+        // a rest param (where argc → arm is not 1:1), which declines the exemption rather
+        // than guessing.
+        Inst::Call { head, argc, .. } => *head == Some(me) && Some(*argc) == self_arity,
+        Inst::Prim3 {
+            op: PrimOp3::TablePut,
+            ..
+        } => false,
+        Inst::TryEnter { .. } | Inst::BindEnter { .. } => false,
+        _ => true,
+    })
+}
+
 /// Deopt-resume checkpointing (so a deopt never re-runs a side effect): the abstract operand-stack depth **after each non-tail
 /// `Call` completes**, maximised over all call sites — the number of extra frame
 /// slots the JIT'd arm needs to journal its live operands at each checkpoint.
@@ -237,41 +273,14 @@ fn max_leader_depth(code: &[Inst]) -> usize {
 /// depth instruction by instruction, following both branch edges; depths must
 /// agree wherever control merges.
 ///
-/// **Pure-self-recursion exemption** (`self_name`): an arm whose every `Call` —
-/// tail or not — targets *itself*, with no mutating inline prim (`table-put`)
-/// and no `try`/`catch`, is effect-free by induction: a deopt's from-ip-0
-/// re-run re-executes only completed *self*-calls, which run this same pure
-/// arm (a redefinition mid-run bumps the epoch and invalidates the arm before
-/// it re-enters native code). Such arms skip checkpointing entirely — the
-/// journal writes after every non-tail call were ~5 % of bintree's
-/// *instructions*. Anything else — a call to another fn or a native (where all
-/// effects live), a computed callee, `table-put`, a catch frame — keeps the
-/// exactly-once checkpoint machinery.
+/// A pure self-recursive arm ([`pure_self_recursive`]) needs no journal: `None`.
 pub(super) fn jit_ckpt_depth(
     code: &[Inst],
     self_name: Option<Symbol>,
     self_arity: Option<usize>,
 ) -> Option<usize> {
-    if let Some(me) = self_name {
-        let pure_self = code.iter().all(|i| match i {
-            // `me` is the CLOSURE's name, shared by every arm of a multi-arity `defn`
-            // (each arm gets the same `defn_name`). So a head match alone does not mean
-            // "calls back into this same, provably effect-free arm" — a 1-arg arm calling
-            // `(f v 0)` dispatches to the 2-arg arm, which may do anything, including a
-            // `table-put`. Require the argc to select THIS arm, and `self_arity` is
-            // `None` for an arm with optionals or a rest param (where argc → arm is not
-            // 1:1), which declines the exemption rather than guessing.
-            Inst::Call { head, argc, .. } => *head == Some(me) && Some(*argc) == self_arity,
-            Inst::Prim3 {
-                op: PrimOp3::TablePut,
-                ..
-            } => false,
-            Inst::TryCatch { .. } => false,
-            _ => true,
-        });
-        if pure_self {
-            return None; // effect-free re-run — no journal needed
-        }
+    if pure_self_recursive(code, self_name, self_arity) {
+        return None; // effect-free re-run — no journal needed
     }
     let len = code.len();
     let mut depth: Vec<Option<usize>> = vec![None; len + 1];
@@ -300,8 +309,16 @@ pub(super) fn jit_ckpt_depth(
             | Inst::Global(_)
             | Inst::GlobalIc { .. }
             | Inst::Prim2SlotSlot { .. }
-            | Inst::Prim2SlotInt { .. }
-            | Inst::TryCatch { .. } => merge(&mut depth, &mut work, ip + 1, d + 1),
+            | Inst::Prim2SlotInt { .. } => merge(&mut depth, &mut work, ip + 1, d + 1),
+            // The handler starts at the height `TryEnter` recorded (the driver truncates
+            // back to it before running the handler), as the body does.
+            Inst::TryEnter { handler, .. } => {
+                merge(&mut depth, &mut work, ip + 1, d) && merge(&mut depth, &mut work, *handler, d)
+            }
+            Inst::TryExit => merge(&mut depth, &mut work, ip + 1, d),
+            // Pops the vector of values; the body leaves its value, which `BindExit` keeps.
+            Inst::BindEnter { .. } => d >= 1 && merge(&mut depth, &mut work, ip + 1, d - 1),
+            Inst::BindExit(_) => merge(&mut depth, &mut work, ip + 1, d),
             // A coverage-instrumented arm must not be JIT'd: native code would run
             // without the recording, silently under-reporting exactly the hot arms.
             // Returning false here bails the whole lowering for this arm, which is the
@@ -510,7 +527,10 @@ pub(super) mod codegen {
             Inst::Call { .. } => "Call",
             Inst::SelfCall { .. } => "SelfCall",
             Inst::MakeClosure { .. } => "MakeClosure",
-            Inst::TryCatch { .. } => "TryCatch",
+            Inst::TryEnter { .. } => "TryEnter",
+            Inst::TryExit => "TryExit",
+            Inst::BindEnter { .. } => "BindEnter",
+            Inst::BindExit(_) => "BindExit",
         }
     }
 
@@ -566,6 +586,10 @@ pub(super) mod codegen {
             Node::TryCatch { body, handler, .. } => {
                 collect_self_call_args(body, out);
                 collect_self_call_args(handler, out);
+            }
+            Node::Binding { vals, body, .. } => {
+                collect_self_call_args(vals, out);
+                collect_self_call_args(body, out);
             }
             Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => {}
         }
@@ -665,6 +689,10 @@ pub(super) mod codegen {
             Node::TryCatch { body, handler, .. } => {
                 invariant_global_vecs(body, out);
                 invariant_global_vecs(handler, out);
+            }
+            Node::Binding { vals, body, .. } => {
+                invariant_global_vecs(vals, out);
+                invariant_global_vecs(body, out);
             }
             Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => {}
         }

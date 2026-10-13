@@ -557,8 +557,11 @@ impl Drop for RawTermGuard {
 // function of the program's text and the binary that checks it, so the second run of the
 // same text needs no walk: the warnings are replayed from
 // `~/.cache/brood/run-check/<key>`, keyed on a hash of the source, `system/build-id` (the
-// executable's own mtime — any rebuild), `system/stdlib-id` (every baked-in `.blsp`) and
-// the checking mode. The same shape as `nest run`'s own pre-flight manifest
+// executable's own mtime — any rebuild), `system/stdlib-id` (every baked-in `.blsp`), the
+// checking mode, and whether this process installed the stdlib image: a walk without it
+// scans module sources and loads more along the way, and a verdict recorded then replayed
+// those extra loads on every later run — after `nest` had built the image, a trivial
+// program booted in 148M instructions instead of 81M. The same shape as `nest run`'s own pre-flight manifest
 // (`project-check.blsp`, `"checks-run"`), which reuses on the file's mtime.
 //
 // A hit replays the check's LOADS as well as its warnings. The pre-flight loads the file's
@@ -585,8 +588,8 @@ pub struct RunCheckEntry {
 
 /// The cached verdict of the run pre-flight for `src` under this binary and mode, or
 /// `None` on a miss (no cache dir, the flag, an unreadable or malformed entry).
-pub fn run_check_cache_read(src: &str) -> Option<RunCheckEntry> {
-    let path = run_check_cache_path(src)?;
+pub fn run_check_cache_read(heap: &crate::core::heap::Heap, src: &str) -> Option<RunCheckEntry> {
+    let path = run_check_cache_path(heap, src)?;
     let text = std::fs::read_to_string(&path).ok()?;
     let mut lines = text.lines();
     if lines.next()? != RUN_CHECK_CACHE_MAGIC {
@@ -647,7 +650,7 @@ pub fn run_check_cache_write(
     features_before: &[String],
     warnings: &[(Option<crate::error::Pos>, String)],
 ) {
-    let Some(path) = run_check_cache_path(src) else {
+    let Some(path) = run_check_cache_path(heap, src) else {
         return;
     };
     if !crate::builtins::every_provided_feature_is_embedded(heap) {
@@ -711,7 +714,7 @@ pub const WALK_FLAGS: &[&str] = &[
 
 /// `~/.cache/brood/run-check/<hash>` for `src` under this binary and checking mode; `None`
 /// under `BROOD_NO_CHECK_CACHE`, or with no cache base to write under.
-fn run_check_cache_path(src: &str) -> Option<std::path::PathBuf> {
+fn run_check_cache_path(heap: &crate::core::heap::Heap, src: &str) -> Option<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
     use std::path::PathBuf;
     if std::env::var_os("BROOD_NO_CHECK_CACHE").is_some() {
@@ -726,6 +729,13 @@ fn run_check_cache_path(src: &str) -> Option<std::path::PathBuf> {
     crate::builtins::build_id_string().hash(&mut h);
     crate::builtins::stdlib_id_string().hash(&mut h);
     crate::types::strict_checking().hash(&mut h);
+    let image = heap
+        .env_get(
+            crate::core::value::EnvId::GLOBAL,
+            crate::core::value::intern("*std-image-installed*"),
+        )
+        .is_some_and(crate::eval::truthy);
+    image.hash(&mut h);
     // The flags that change what a walk DOES — `WALK_FLAGS`, name and value.
     // `var_os`, never `var`: that one errors on a non-UTF-8 value and a hostile environment
     // is a test (`builtin_robustness_test`) — a lossy spelling keys just as well.
@@ -788,4 +798,31 @@ fn run_check_unescape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod run_check_cache_tests {
+    use super::*;
+    use crate::core::heap::Heap;
+    use crate::core::value::{intern, EnvId, Value};
+
+    /// KI-231: a verdict recorded by a process WITHOUT the stdlib image must not be served
+    /// to one with it. The un-imaged walk scans module sources and loads more along the way,
+    /// and a hit replays those loads — every later run of a trivial program paid for seven
+    /// modules it never used.
+    #[test]
+    fn the_run_check_key_says_whether_the_stdlib_image_is_installed() {
+        let src = "(io/puts 1)";
+        let mut heap = Heap::new();
+        let flag = intern("*std-image-installed*");
+        heap.env_define(EnvId::GLOBAL, flag, Value::nil());
+        let without = run_check_cache_path(&heap, src);
+        heap.env_define(EnvId::GLOBAL, flag, Value::int(128));
+        let with = run_check_cache_path(&heap, src);
+        assert!(without.is_some(), "no cache base to key under");
+        assert_ne!(
+            without, with,
+            "an imaged run would replay an un-imaged run's loads"
+        );
+    }
 }

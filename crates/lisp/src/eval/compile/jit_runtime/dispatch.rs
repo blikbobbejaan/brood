@@ -19,6 +19,9 @@ pub(crate) fn jit_dispatch_call(
 ) -> Option<Value> {
     use std::sync::atomic::Ordering::Acquire;
     let n = heap.roots_len();
+    // ADR-400: may the callee this call runs preempt by unwinding? As the callback this
+    // came through asserted it for the calling activation.
+    let unwind = heap.jit_child_unwind;
     // KI-14: probe the stack **unconditionally** here, not `jit_native_headroom_ok(depth)`.
     // That helper skips the probe below depth 64 as a hot-path optimisation, which is sound
     // only where `jit_native_depth` actually counts the recursion. On this path it does not:
@@ -297,8 +300,14 @@ pub(crate) fn jit_dispatch_call(
                 heap.native_gateway_seq += 1;
                 let gw_seq = heap.native_gateway_seq;
                 let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-                let ctx = crate::jit::JitCallCtx::from_heap(heap);
-                let outcome = f(heap as *mut Heap, base as i64, &mut ret as *mut Value, &ctx);
+                let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
+                ctx.unwind = unwind as u8;
+                let outcome = f(
+                    heap as *mut Heap,
+                    base as i64,
+                    &mut ret as *mut Value,
+                    &mut ctx,
+                );
                 heap.cur_native_gateway = saved_gw;
                 jit_suspend_feedback(heap, &arm, outcome, gw_seq);
                 heap.set_ic_bases(saved_bases);
@@ -328,6 +337,19 @@ pub(crate) fn jit_dispatch_call(
                 // post-`f()` consumer of the locally-held handle.
                 let callee_env = heap.read_root_env(env_root);
                 heap.truncate_env_roots(env_base);
+                // ADR-400: a preempt this callee may honour, or one unwinding through it —
+                // record it and leave its frame for the driver to rebuild.
+                if jit_unwind_through(heap, outcome, unwind, |_| {
+                    Some(UnwindFrame {
+                        arm: arm.arc().clone(),
+                        base,
+                        nslots: frame_nslots,
+                        env: callee_env,
+                        bases: callee_bases,
+                    })
+                }) {
+                    return None;
+                }
                 match outcome {
                     // Done: the arm wrote the result through `ret`. Drop the frame.
                     0 => {

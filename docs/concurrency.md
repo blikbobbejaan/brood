@@ -138,7 +138,11 @@ This is the largest *core* undertaking in the project. Two consequences:
 3. ✅ **Reduction-counted preemption** (ADR-027) — `eval`'s loop decrements a
    per-worker budget (≈2000) and the process yields its worker at zero (`Suspend`
    carries `Receive` vs `Preempt`), so a CPU-bound process can't monopolise a
-   core. Scheduling is now preemptively fair, not cooperative-only.
+   core. Scheduling is now preemptively fair, not cooperative-only. Native code is
+   preempted by unwinding its activations into interpreter frames, and a resumable fold
+   by stopping between elements (ADR-400/402) — both only when another process is waiting
+   for a worker: with none queued, the costly preemption would buy no latency, so the
+   quantum goes on as a fresh one.
 4. ✅ **Selective `receive`** (ADR-027) — `receive` takes pattern clauses (the
    `match` grammar) + an optional `(after ms …)` timeout; it scans the mailbox,
    runs the first match, and leaves non-matching messages queued. A green process
@@ -202,7 +206,12 @@ genuinely still open:
 - **A long-running native builtin can't be preempted mid-call** — reductions
   tick only at evaluator/VM safepoints, so a huge regex/map-build holds its
   worker for the call's duration (the dirty carve-out; the M4 blocking-offload
-  pool is the planned home for genuinely-blocking natives).
+  pool is the planned home for genuinely-blocking natives). The process yields as
+  soon as the call returns (an overrun records an *owed* preemption, ADR-402), the
+  folds are resumable between elements, and `(proc/system-monitor pid
+  {:long-schedule-us n})` reports every quantum that ran long (ADR-403). The same
+  holds for a pure numeric recursion in the JIT's unboxed register worker, which
+  keeps its whole recursion in registers and cannot be unwound (ADR-400).
 - **No mailbox bounds/backpressure and no per-process heap cap** — a runaway
   producer or process is only caught by the global ADR-043 memory cap.
 - **Selective-receive scan cost** — testing a candidate rebuilds it into the

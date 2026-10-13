@@ -367,11 +367,32 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
 /// result from there, not from `roots[base]`. Since the ABI is reached by `transmute`, a
 /// test that called it with the old arity would be silent UB rather than a compile error —
 /// which is the reason [`crate::jit::JitArmFn`] is a named type and this is a helper.
+///
+/// It enters as a top-level driver does — `unwind` set, so a spent budget preempts
+/// (ADR-400). [`run_arm_nested`] enters as everything else does.
 #[cfg(feature = "jit")]
 fn run_arm(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize) -> (i64, Value) {
+    run_arm_with(f, heap, base, 1)
+}
+
+/// [`run_arm`] entered the way a builtin calling back or a nested evaluation enters native
+/// code: `unwind` clear, because a frame nothing can capture sits between it and the driver.
+#[cfg(feature = "jit")]
+fn run_arm_nested(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize) -> (i64, Value) {
+    run_arm_with(f, heap, base, 0)
+}
+
+#[cfg(feature = "jit")]
+fn run_arm_with(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize, unwind: u8) -> (i64, Value) {
     let mut out = Value::Nil;
-    let ctx = crate::jit::JitCallCtx::from_heap(heap);
-    let outcome = f(heap as *mut Heap, base as i64, &mut out as *mut Value, &ctx);
+    let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
+    ctx.unwind = unwind;
+    let outcome = f(
+        heap as *mut Heap,
+        base as i64,
+        &mut out as *mut Value,
+        &mut ctx,
+    );
     (outcome, out)
 }
 
@@ -728,18 +749,54 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     // Preemption: a loop longer than the reduction budget yields at a back-edge —
     // the JIT'd arm returns 2 (preempt), with the frame slots left mid-computation
     // in `roots` for the driver to resume on the VM. `brood_rt_tick` only preempts in
-    // a capture-mode green process, so simulate one (set/clear `capture_run`).
+    // a capture-mode green process, so simulate one (set/clear `capture_run`), with a
+    // process waiting for the worker — nothing else is worth unwinding for.
     crate::process::set_capture_run(true);
+    crate::process::test_pretend_queued(1);
     crate::process::yield_now(); // budget = REDUCTION_BUDGET
     let mut heap = Heap::new();
     let base = heap.roots_len();
     heap.push_root(Value::int(1_000_000)); // far more iterations than the budget
     heap.push_root(Value::int(0));
     let (outcome, _) = run_arm(f, &mut heap, base);
+    crate::process::test_pretend_queued(-1);
+    // The same unwindable loop with no process waiting: a preempt would re-queue it and pick
+    // it straight back up, so it runs on through every spent budget and finishes.
+    crate::process::yield_now();
+    let mut heap = Heap::new();
+    let base = heap.roots_len();
+    heap.push_root(Value::int(1_000_000));
+    heap.push_root(Value::int(0));
+    let (alone_outcome, alone_ret) = run_arm(f, &mut heap, base);
+    // The same loop entered where nothing can capture it (ADR-400): a preempt could only
+    // deopt into an interpreter that cannot capture either, so it keeps running native on a
+    // fresh quantum and finishes — sum 0..1_000_000.
+    crate::process::yield_now();
+    let mut heap = Heap::new();
+    let base = heap.roots_len();
+    heap.push_root(Value::int(1_000_000));
+    heap.push_root(Value::int(0));
+    let (nested_outcome, nested_ret) = run_arm_nested(f, &mut heap, base);
     crate::process::set_capture_run(false); // restore (cargo test shares threads)
     assert_eq!(
         outcome, 2,
         "a loop exceeding the budget must preempt (return 2) in a green process"
+    );
+    assert_eq!(
+        alone_outcome, 0,
+        "with no process waiting, a spent budget must not unwind (nothing would run instead)"
+    );
+    assert!(
+        matches!(alone_ret.unpack(), ValueRef::Int(500_000_500_000)),
+        "the unpreempted run's result"
+    );
+    assert_eq!(
+        nested_outcome, 0,
+        "an activation that cannot unwind must run on, not deopt into a nested interpreter"
+    );
+    assert!(
+        matches!(nested_ret.unpack(), ValueRef::Int(500_000_500_000)),
+        "the nested run's result"
     );
 }
 
@@ -2706,8 +2763,10 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
         !c.is_null() && c != crate::jit::BAILED && c != crate::jit::QUEUED
     };
     // Stand in for the scheduler: a capture-mode run with a small budget, refilled on
-    // every resume exactly as `run_one` does.
+    // every resume exactly as `run_one` does, and a process waiting for the worker (with
+    // none, a spent budget does not unwind — ADR-400).
     crate::process::set_capture_run(true);
+    crate::process::test_pretend_queued(1);
     crate::process::set_reduction_budget_for_test(300);
     let heap = &mut interp.heap;
     let mut outcome = vm_run_bc(
@@ -2753,6 +2812,7 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
             VmOutcome::Killed => panic!("pre-f was killed"),
         }
     }
+    crate::process::test_pretend_queued(-1);
     crate::process::set_capture_run(false);
     assert!(
         captures_after_native >= 10,

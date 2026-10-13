@@ -20,12 +20,14 @@ mod deopt;
 mod dispatch;
 mod link;
 mod support;
+mod unwind;
 
 pub(crate) use compiler::*;
 pub(crate) use deopt::*;
 pub(crate) use dispatch::*;
 pub(crate) use link::*;
 pub(crate) use support::*;
+pub(crate) use unwind::*;
 
 /// Activations before an arm is handed to the background compiler.
 ///
@@ -65,6 +67,9 @@ pub(crate) enum DirectNative {
     /// The activation has to continue on the VM in its in-place frame (deopt / preempt /
     /// declined / i64 depth bail): hand it to the driver as `ChunkExit::CallResume`.
     Handoff { outcome: Option<i64> },
+    /// A preempt unwound out of the callee (ADR-400) — its frames are recorded in
+    /// the thread's unwind record (`take_unwound`) and still in `roots`: hand the driver `ChunkExit::Unwound`.
+    Unwound,
 }
 
 /// Run `arm` **natively, in place**, for a non-tail `Inst::Call` whose `argc` args the caller
@@ -98,6 +103,7 @@ pub(crate) fn vm_call_native_direct(
     base: usize,
     callee_env: EnvId,
     callee_bases: (u32, u32),
+    unwind: bool,
 ) -> (DirectNative, usize) {
     debug_assert_eq!(heap.roots_len(), base + argc);
     // The frame the native runs against, sized the way the driver sizes it: `push_frame`'s
@@ -121,7 +127,12 @@ pub(crate) fn vm_call_native_direct(
     // sym/argc/epoch), but `nbody` read 329k IC hits turning into 304k misses, +24.5%.
     let saved_bases = heap.set_ic_bases(callee_bases);
     let mut ret = Value::Nil;
+    // ADR-400: a top-level driver's direct call is an unwindable entry. Cleared after as
+    // well as when taken — `jit_tier_in_frame` can decline before it builds the context.
+    heap.jit_entry_unwind = unwind;
     let outcome = jit_tier_in_frame(arm.arc(), heap, base, env_root, frame_nslots, &mut ret);
+    heap.jit_entry_unwind = false;
+    let env_now = heap.read_root_env(env_root);
     heap.set_ic_bases(saved_bases);
     if arm_slot != usize::MAX {
         heap.live_arm_truncate(arm_slot);
@@ -135,6 +146,21 @@ pub(crate) fn vm_call_native_direct(
             crate::perf_bump!(vm_native_link);
             heap.truncate_roots(base);
             DirectNative::Done(ret)
+        }
+        // A preempt unwinding out of this callee (ADR-400): record it and leave its frame
+        // for the driver to rebuild.
+        Some(3)
+            if jit_unwind_through(heap, 3, unwind, |_| {
+                Some(UnwindFrame {
+                    arm: arm.arc().clone(),
+                    base,
+                    nslots: frame_nslots,
+                    env: env_now,
+                    bases: callee_bases,
+                })
+            }) =>
+        {
+            DirectNative::Unwound
         }
         Some(3) => {
             heap.truncate_roots(base);
@@ -700,7 +726,10 @@ pub(crate) fn jit_tier_in_frame(
     heap.native_gateway_seq += 1;
     let gw_seq = heap.native_gateway_seq;
     let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-    let ctx = crate::jit::JitCallCtx::from_heap(heap);
+    let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
+    // ADR-400: a top-level driver flags the entry it is about to make; taken here, so no
+    // entry nested inside this activation can inherit it.
+    ctx.unwind = std::mem::take(&mut heap.jit_entry_unwind) as u8;
     // This entry does not raise the depth or install IC cursors — the driver installed the
     // cursors for this frame — but the chain below may ASSERT deeper activations' values
     // into those fields from its callbacks (rung A1: the inline native→native call no
@@ -708,7 +737,7 @@ pub(crate) fn jit_tier_in_frame(
     // depth leaked upward one per chain: `bintree` reached ctx.depth 75 and every inline
     // call fell to the callback path on the `depth < 64` guard (+30% on the row).
     let saved_bases = heap.ic_bases();
-    let outcome = f(heap as *mut Heap, base as i64, out, &ctx);
+    let outcome = f(heap as *mut Heap, base as i64, out, &mut ctx);
     heap.set_ic_bases(saved_bases);
     heap.jit_native_depth = native_depth;
     heap.cur_native_gateway = saved_gw;

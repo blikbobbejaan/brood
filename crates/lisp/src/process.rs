@@ -97,8 +97,8 @@ pub fn parked_process_count() -> usize {
 // `receive` gate to tell a capturable top-level receive from a native-nested one.
 pub(crate) use scheduler::{
     capture_hard_kill_pending, capture_top_level, charge_native, dirty_block, in_capture_run,
-    refill_nested_quantum, set_capture_top_level, tick_capture, tick_reporting_hard_kill,
-    TreeWalkGuard,
+    refill_nested_quantum, resumable_should_stop, set_capture_top_level, take_yield_due,
+    tick_capture, tick_reporting_hard_kill, work_waiting, TreeWalkGuard,
 };
 // The batched variant is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.
@@ -113,6 +113,8 @@ pub(crate) use scheduler::tick_capture_n;
 pub(crate) use scheduler::set_capture_run;
 #[cfg(test)]
 pub(crate) use scheduler::set_reduction_budget_for_test;
+#[cfg(test)]
+pub(crate) use scheduler::test_pretend_queued;
 
 pub(crate) use mailbox::{deliver, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is

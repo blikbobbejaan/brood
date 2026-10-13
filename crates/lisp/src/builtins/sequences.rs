@@ -105,11 +105,20 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
     primitives.def(
         "%range-reduce",
-        Arity::exact(3),
-        Sig::new(vec![callable, any, list_ty], any),
+        Arity::range(3, 4),
+        Sig::with_optional(vec![callable, any, list_ty], vec![any], any),
         &[],
         "",
         range_reduce,
+    );
+    // Where the resumable fold that just returned stopped, or nil (ADR-402).
+    primitives.def(
+        "%fold-resume-at",
+        Arity::exact(0),
+        Sig::nullary(any),
+        &[],
+        "",
+        fold_resume_at,
     );
     // The vector counterpart of `%range-reduce`, behind the prelude `fold`'s vector
     // branch. Same reason: fold the container in a native loop instead of paying a
@@ -117,8 +126,8 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     // reducer like `+` once rather than per element.
     primitives.def(
         "%vector-reduce",
-        Arity::exact(3),
-        Sig::new(vec![callable, any, any], any),
+        Arity::range(3, 4),
+        Sig::with_optional(vec![callable, any, any], vec![any], any),
         &[],
         "",
         vector_reduce,
@@ -793,10 +802,47 @@ pub(super) fn seqview_pred(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispRe
 /// the hot `first`/`rest` builtins; every other consumer realises in the prelude
 /// (via `seq`) or fuses (via `fold`).
 
-/// `(%range-reduce f acc rng)` — left-fold a range with `f` in a native counted
+// ---- Resumable folds (ADR-402) ----
+//
+// `%range-reduce` and `%vector-reduce` run the whole fold in one native loop, calling the
+// reducer per element as a nested evaluation — which nothing can preempt. Called with a
+// fourth argument (where to start), a fold is RESUMABLE: between two elements it may stop
+// (`process::resumable_should_stop` — a quantum's preemption is owed, or its own work spent
+// the budget), leave where to resume in `FOLD_RESUME`, and return the accumulator so far;
+// the prelude (`fold`, then `%vector-fold` / `%range-fold`) reads it back with
+// `%fold-resume-at` at once and calls again from there, and the process parks at the
+// wrapper's next safepoint. Called with three, a fold never stops — the old contract, for a caller that
+// does not loop.
+
+/// Elements a prim-reducer loop runs between two `resumable_should_stop` checks, and the
+/// reductions it charges for them (one per 8 elements: a prim step is a few instructions).
+const FOLD_SPAN: usize = 4096;
+const FOLD_SPAN_UNITS: u32 = (FOLD_SPAN / 8) as u32;
+
+thread_local! {
+    /// Where a resumable fold that stopped wants to be called again — an index into a
+    /// vector, the next element of a range. Read and cleared by `%fold-resume-at`, which
+    /// the wrapper calls straight after the fold: nothing between the two can yield.
+    static FOLD_RESUME: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+fn fold_stopped_at(next: i64) {
+    FOLD_RESUME.with(|r| r.set(Some(next)));
+}
+
+/// `(%fold-resume-at)` — where the resumable fold that just returned stopped, or `nil`
+/// when it finished (ADR-402).
+pub(super) fn fold_resume_at(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+    Ok(FOLD_RESUME
+        .with(|r| r.take())
+        .map_or(Value::nil(), Value::int))
+}
+
+/// `(%range-reduce f acc rng [from])` — left-fold a range with `f` in a native counted
 /// loop, **without materialising** it: the whole point of the reducible range.
 /// `acc` and `f` are rooted across the loop because each `apply` is a safepoint
-/// that can relocate them.
+/// that can relocate them. `from`, when given, is the element to start at and makes the
+/// fold resumable (see above).
 pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let f = arg(args, 0);
     let init = arg(args, 1);
@@ -805,6 +851,14 @@ pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispR
         Value::Nil => return Ok(init), // empty range — acc unchanged
         v => return Err(LispError::wrong_type(heap, "%range-reduce", "range", v)),
     };
+    let resumable = args.len() == 4;
+    let lo = match arg(args, 3) {
+        Value::Int(from) if resumable => from,
+        _ => lo,
+    };
+    if resumable {
+        FOLD_RESUME.with(|r| r.set(None));
+    }
     // Route the per-element callback through the VM when it's the active engine.
     // Hoisted out of the per-element loop deliberately: the choice is read once here and the
     // loop below branches on the resulting bool, so the ladder costs nothing per element.
@@ -821,36 +875,55 @@ pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispR
     // fall through to the general path starting from the current position.
     if let (Some(op), Some(mut int_acc)) = (prim, init.as_int()) {
         let mut i = lo;
-        while if step > 0 { i < hi } else { i > hi } {
-            match crate::eval::compile::prim_apply_int_step(op, int_acc, i) {
-                Some(v) => int_acc = v,
-                None => {
-                    // Overflow or unsupported op — hand off the remainder to the
-                    // slow path starting from the current (i, acc) state.
-                    return range_reduce_slow(
-                        f,
-                        Value::int(int_acc),
-                        i,
-                        hi,
-                        step,
-                        use_vm,
-                        env,
-                        heap,
-                    );
-                }
-            }
-            i = match i.checked_add(step) {
-                Some(v) => v,
-                None => break,
+        loop {
+            // A resumable fold runs in spans of FOLD_SPAN elements and asks between two: the
+            // inner loop's bound is the span's end, so the per-element cost is the one compare
+            // it always had (a per-element span counter cost the `reduce` row +13%).
+            let span_hi = if !resumable {
+                hi
+            } else if step > 0 {
+                hi.min(i.saturating_add(step.saturating_mul(FOLD_SPAN as i64)))
+            } else {
+                hi.max(i.saturating_add(step.saturating_mul(FOLD_SPAN as i64)))
             };
+            while if step > 0 { i < span_hi } else { i > span_hi } {
+                match crate::eval::compile::prim_apply_int_step(op, int_acc, i) {
+                    Some(v) => int_acc = v,
+                    None => {
+                        // Overflow or unsupported op — hand off the remainder to the
+                        // slow path starting from the current (i, acc) state.
+                        return range_reduce_slow(
+                            f,
+                            Value::int(int_acc),
+                            i,
+                            hi,
+                            step,
+                            use_vm,
+                            resumable,
+                            env,
+                            heap,
+                        );
+                    }
+                }
+                i = match i.checked_add(step) {
+                    Some(v) => v,
+                    None => return Ok(Value::int(int_acc)),
+                };
+            }
+            if !(if step > 0 { i < hi } else { i > hi }) {
+                return Ok(Value::int(int_acc));
+            }
+            if crate::process::resumable_should_stop(FOLD_SPAN_UNITS) {
+                fold_stopped_at(i);
+                return Ok(Value::int(int_acc));
+            }
         }
-        return Ok(Value::int(int_acc));
     }
 
-    range_reduce_slow(f, init, lo, hi, step, use_vm, env, heap)
+    range_reduce_slow(f, init, lo, hi, step, use_vm, resumable, env, heap)
 }
 
-/// `(%vector-reduce f acc v)` — left-fold a vector **by index** in a native loop.
+/// `(%vector-reduce f acc v [start])` — left-fold a vector **by index** in a native loop.
 ///
 /// The vector counterpart of [`range_reduce`], and it exists for the same reason: a
 /// Brood-level fold pays a per-element `apply` that a native loop does not. The prelude's
@@ -865,7 +938,8 @@ pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispR
 ///
 /// Ordering and semantics match `fold-vec` exactly: left-to-right, `(f acc item)`, and the
 /// element is re-read from the (rooted) vector each step because every `apply` is a GC
-/// safepoint that can relocate it.
+/// safepoint that can relocate it. `start`, when given, is the index to start at and makes
+/// the fold resumable (see above).
 pub(super) fn vector_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let f = arg(args, 0);
     let init = arg(args, 1);
@@ -875,6 +949,14 @@ pub(super) fn vector_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> Lisp
         v => return Err(LispError::wrong_type(heap, "%vector-reduce", "vector", v)),
     };
     let n = heap.vector(vid).len();
+    let resumable = args.len() == 4;
+    let start = match arg(args, 3) {
+        Value::Int(i) if resumable && i > 0 => (i as usize).min(n),
+        _ => 0,
+    };
+    if resumable {
+        FOLD_RESUME.with(|r| r.set(None));
+    }
     // Hoisted out of the per-element loop deliberately: the choice is read once here and the
     // loop below branches on the resulting bool, so the ladder costs nothing per element.
     let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
@@ -886,23 +968,64 @@ pub(super) fn vector_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> Lisp
     // Mirrors `range_reduce`'s, including handing the remainder to the general loop on
     // overflow so a BigInt promotion stays bit-identical to the Brood fold.
     if let (Some(op), Some(mut int_acc)) = (prim, init.as_int()) {
-        let mut i = 0usize;
-        while i < n {
-            let Some(x) = heap.vector(vid)[i].as_int() else {
-                break; // non-int element — finish on the general path from here
-            };
-            match crate::eval::compile::prim_apply_int_step(op, int_acc, x) {
-                Some(v) => int_acc = v,
-                None => break, // overflow → general path from the current state
+        let mut i = start;
+        // Spans of FOLD_SPAN elements when resumable, asking between two — `range_reduce`'s
+        // shape, so the inner loop carries no per-element counter.
+        'spans: loop {
+            let span_end = if resumable { n.min(i + FOLD_SPAN) } else { n };
+            while i < span_end {
+                let Some(x) = heap.vector(vid)[i].as_int() else {
+                    break 'spans; // non-int element — finish on the general path from here
+                };
+                match crate::eval::compile::prim_apply_int_step(op, int_acc, x) {
+                    Some(v) => int_acc = v,
+                    None => break 'spans, // overflow → general path from the current state
+                }
+                i += 1;
             }
-            i += 1;
+            if i == n {
+                break;
+            }
+            if crate::process::resumable_should_stop(FOLD_SPAN_UNITS) {
+                fold_stopped_at(i as i64);
+                return Ok(Value::int(int_acc));
+            }
         }
         if i == n {
             return Ok(Value::int(int_acc));
         }
-        return vector_reduce_general(f, Value::int(int_acc), vid, i, n, prim, use_vm, env, heap);
+        return vector_reduce_general(
+            f,
+            Value::int(int_acc),
+            vid,
+            i,
+            n,
+            prim,
+            use_vm,
+            resumable,
+            env,
+            heap,
+        );
     }
-    vector_reduce_general(f, init, vid, 0, n, prim, use_vm, env, heap)
+    vector_reduce_general(f, init, vid, start, n, prim, use_vm, resumable, env, heap)
+}
+
+/// May a resumable fold's general loop stop before the element at hand? A step that ran
+/// the reducer charged its own reductions (a nested evaluation ticks as it runs), so it
+/// asks with nothing to add; an inlined prim step is charged a span at a time.
+fn general_fold_should_stop(resumable: bool, prim_step: bool, span: &mut usize) -> bool {
+    if !resumable {
+        return false;
+    }
+    if !prim_step {
+        return crate::process::resumable_should_stop(0);
+    }
+    *span += 1;
+    if *span < FOLD_SPAN {
+        return false;
+    }
+    *span = 0;
+    crate::process::resumable_should_stop(FOLD_SPAN_UNITS)
 }
 
 /// The boxed/general half of [`vector_reduce`]: a non-int accumulator, a non-prim reducer,
@@ -917,6 +1040,7 @@ fn vector_reduce_general(
     n: usize,
     prim: Option<crate::eval::compile::PrimOp>,
     use_vm: bool,
+    resumable: bool,
     env: EnvId,
     heap: &mut Heap,
 ) -> LispResult {
@@ -930,6 +1054,7 @@ fn vector_reduce_general(
         let v_r = heap.root(Value::Vector(vid));
         let mut acc_r = heap.root(init);
         let mut i = start;
+        let mut span = 0usize;
         while i < n {
             let f = heap.read_root(f_r);
             let acc = heap.read_root(acc_r);
@@ -950,20 +1075,25 @@ fn vector_reduce_general(
                     apply(heap, f, &[acc, x], env)
                 }
             };
-            let next = match prim {
+            let (next, prim_step) = match prim {
                 Some(op) => match crate::eval::compile::prim_apply_step(op, acc, x)? {
-                    Some(v) => v,
-                    None => step_call(heap, acc)?,
+                    Some(v) => (v, true),
+                    None => (step_call(heap, acc)?, false),
                 },
-                None => step_call(heap, acc)?,
+                None => (step_call(heap, acc)?, false),
             };
             acc_r = heap.advance_root(acc_r, next);
             i += 1;
+            if i < n && general_fold_should_stop(resumable, prim_step, &mut span) {
+                fold_stopped_at(i as i64);
+                break;
+            }
         }
         Ok(heap.read_root(acc_r))
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn range_reduce_slow(
     f: Value,
     init: Value,
@@ -971,6 +1101,7 @@ pub(super) fn range_reduce_slow(
     hi: i64,
     step: i64,
     use_vm: bool,
+    resumable: bool,
     env: EnvId,
     heap: &mut Heap,
 ) -> LispResult {
@@ -986,6 +1117,7 @@ pub(super) fn range_reduce_slow(
         let f_r = heap.root(f);
         let mut acc_r = heap.root(init);
         let mut i = lo;
+        let mut span = 0usize;
         while if step > 0 { i < hi } else { i > hi } {
             let f = heap.read_root(f_r);
             let acc = heap.read_root(acc_r);
@@ -1005,18 +1137,24 @@ pub(super) fn range_reduce_slow(
                     apply(heap, f, &[acc, Value::int(i)], env)
                 }
             };
-            let next = match prim {
+            let (next, prim_step) = match prim {
                 Some(op) => match crate::eval::compile::prim_apply_step(op, acc, Value::int(i))? {
-                    Some(v) => v,
-                    None => step_call(heap, acc)?,
+                    Some(v) => (v, true),
+                    None => (step_call(heap, acc)?, false),
                 },
-                None => step_call(heap, acc)?,
+                None => (step_call(heap, acc)?, false),
             };
             acc_r = heap.advance_root(acc_r, next);
             i = match i.checked_add(step) {
                 Some(v) => v,
                 None => break,
             };
+            if (if step > 0 { i < hi } else { i > hi })
+                && general_fold_should_stop(resumable, prim_step, &mut span)
+            {
+                fold_stopped_at(i);
+                break;
+            }
         }
         Ok(heap.read_root(acc_r))
     })

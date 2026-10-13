@@ -43,6 +43,7 @@ pub(crate) fn node_has_rt_handles(node: &Node) -> bool {
         Node::TryCatch { body, handler, .. } => {
             node_has_rt_handles(body) || node_has_rt_handles(handler)
         }
+        Node::Binding { vals, body, .. } => node_has_rt_handles(vals) || node_has_rt_handles(body),
         Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => false,
     }
 }
@@ -73,7 +74,10 @@ pub(crate) fn is_elem_read(a: &Node, b: &Node, slot: usize, nelems: usize) -> Op
 /// the safe direction: an unrecognised node counts as "runs code".
 pub(crate) fn node_runs_user_code(n: &Node) -> bool {
     match n {
-        Node::Call { .. } | Node::SelfCall { .. } | Node::TryCatch { .. } => true,
+        Node::Call { .. }
+        | Node::SelfCall { .. }
+        | Node::TryCatch { .. }
+        | Node::Binding { .. } => true,
         Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => false,
         _ => {
             let mut found = false;
@@ -120,6 +124,10 @@ pub(crate) fn walk_children<F: FnMut(&Node)>(node: &Node, mut f: F) {
             f(body);
             f(handler);
         }
+        Node::Binding { vals, body, .. } => {
+            f(vals);
+            f(body);
+        }
         Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => {}
     }
 }
@@ -161,6 +169,10 @@ pub(crate) fn walk_children_mut<F: FnMut(&mut Node)>(node: &mut Node, mut f: F) 
         Node::TryCatch { body, handler, .. } => {
             f(body);
             f(handler);
+        }
+        Node::Binding { vals, body, .. } => {
+            f(vals);
+            f(body);
         }
         Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => {}
     }

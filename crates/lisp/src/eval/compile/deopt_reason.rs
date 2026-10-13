@@ -123,6 +123,9 @@ pub(crate) enum DeoptReason {
     HoistedScalarGlobalUnbound = 105,
     /// A register-carried parameter's entry tag check failed; payload = the slot.
     EntryParamTag = 106,
+    /// The entry reduction poll found a limit waiting to be raised, which only the VM can
+    /// do (ADR-400) — the entry twin of `BackEdgeLimitPending`.
+    EntryLimitPending = 107,
 }
 
 impl DeoptReason {
@@ -183,6 +186,7 @@ impl DeoptReason {
         DeoptReason::HoistedGlobalVectorBaseNull,
         DeoptReason::HoistedScalarGlobalUnbound,
         DeoptReason::EntryParamTag,
+        DeoptReason::EntryLimitPending,
     ];
 
     /// The reason code with no payload — what a guard passes to the deopt block.
@@ -265,6 +269,7 @@ impl DeoptReason {
             DeoptReason::HoistedGlobalVectorBaseNull => "hoisted-global-vector-base-null",
             DeoptReason::HoistedScalarGlobalUnbound => "hoisted-scalar-global-unbound",
             DeoptReason::EntryParamTag => "entry-param-tag",
+            DeoptReason::EntryLimitPending => "entry-limit-pending",
         }
     }
 
@@ -370,7 +375,8 @@ mod tests {
                 | DeoptReason::HoistedGlobalUnbound
                 | DeoptReason::HoistedGlobalVectorBaseNull
                 | DeoptReason::HoistedScalarGlobalUnbound
-                | DeoptReason::EntryParamTag => {}
+                | DeoptReason::EntryParamTag
+                | DeoptReason::EntryLimitPending => {}
             }
         }
     }

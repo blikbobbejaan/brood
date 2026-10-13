@@ -873,6 +873,11 @@ pub(crate) fn shift_slots(node: &Node, delta: usize) -> Node {
             bind_slot: bind_slot + delta,
             handler: Box::new(shift_slots(handler, delta)),
         },
+        Node::Binding { names, vals, body } => Node::Binding {
+            names: names.clone(),
+            vals: Box::new(shift_slots(vals, delta)),
+            body: Box::new(shift_slots(body, delta)),
+        },
     }
 }
 
@@ -950,6 +955,10 @@ pub(crate) fn inline_self_calls(
         Node::TryCatch { body, handler, .. } => {
             count += inline_self_calls(body, orig_body, defn_name, nrequired, m, next_block);
             count += inline_self_calls(handler, orig_body, defn_name, nrequired, m, next_block);
+        }
+        Node::Binding { vals, body, .. } => {
+            count += inline_self_calls(vals, orig_body, defn_name, nrequired, m, next_block);
+            count += inline_self_calls(body, orig_body, defn_name, nrequired, m, next_block);
         }
     }
     // Now consider *this* node (children already inlined). The args we move out keep
@@ -1190,6 +1199,8 @@ pub(crate) fn node_touches_heap(node: &Node) -> bool {
         Node::TryCatch { body, handler, .. } => {
             node_touches_heap(body) || node_touches_heap(handler)
         }
+        // The dynamic stack is process heap state.
+        Node::Binding { .. } => true,
     }
 }
 
@@ -1313,6 +1324,7 @@ pub(crate) fn leaf_body_qualifies(body: &Node) -> bool {
             | Node::SelfCall { .. }
             | Node::MakeClosure { .. }
             | Node::TryCatch { .. }
+            | Node::Binding { .. }
             | Node::Global(_)
             | Node::GlobalIc { .. }
             | Node::Prim3 {
@@ -1442,6 +1454,10 @@ pub(crate) fn leaf_inline_splice(
         Node::TryCatch { body, handler, .. } => {
             count += leaf_inline_splice(heap, body, next_base, blocks, self_name);
             count += leaf_inline_splice(heap, handler, next_base, blocks, self_name);
+        }
+        Node::Binding { vals, body, .. } => {
+            count += leaf_inline_splice(heap, vals, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, body, next_base, blocks, self_name);
         }
     }
     // Children handled; now this node. A tail call is left alone (replacing it would

@@ -81,7 +81,9 @@ worker's mailbox so it can't satisfy a later test's receive."
       (assert= false (get cfg :spawn))
       (assert= true (get cfg :exit))
       (assert= false (get cfg :deopt))
-      (assert= 250 (get cfg :gc-min-pause-us)))
+      (assert= 250 (get cfg :gc-min-pause-us))
+      ;; Not named, so not selected: `:long-schedule` is chosen by its threshold.
+      (assert= 0 (get cfg :long-schedule-us)))
     (proc/system-monitor nil))
 
   ;; The death-disarm ran only while some subscriber had a kind SELECTED, so one that
@@ -152,6 +154,22 @@ worker's mailbox so it can't satisfy a later test's receive."
           wm (monitor worker))
       (receive ([:down ^wm ^worker _] :ok) (after *test-wait-ms* :timeout))
       (assert= :quiet (sysmon-quiet-about worker 200)))
+    (sysmon-done))
+
+  (test ":long-schedule reports a quantum that held its worker past the threshold (ADR-403)"
+    ;; One `sort` of a large vector is a single native call — nothing preempts it at any
+    ;; tier — so the quantum it runs in holds its worker for its whole duration. A
+    ;; permutation, not a reversed range: the sort finds a reversed run in linear time, and
+    ;; with nothing else waiting the BUILD's quanta restart the timer (ADR-400), so the sort
+    ;; must hold the worker past the threshold on its own. Pinned to `worker` like the
+    ;; threshold test above: the subscription sees every process.
+    (proc/system-monitor (self) {:long-schedule-us 1000})
+    (let (worker (spawn (count (sort (into []
+                                       (map (range 400000) (fn (i) (math/mod (* i 7919) 400009))))))))
+      (assert= :reported
+        (receive
+          ([:system :long-schedule ^worker detail] (if (>= (get detail :us) 1000) :reported detail))
+          (after *test-wait-ms* :timeout))))
     (sysmon-done))
 
   (test "no self-reporting, and the monitor's death disarms the stream"

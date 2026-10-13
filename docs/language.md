@@ -2065,6 +2065,13 @@ with its **own data heap**), communicating only by **message passing**. They run
 on a small pool of worker threads (≈ one per core, or the CLI's `-j N`), so they
 use every core; scheduling is **preemptively fair** — a CPU-bound process yields
 its worker after a reduction budget, so one busy loop can't freeze the runtime.
+That holds wherever the code runs: inside `try` and `binding` bodies (both run in the
+bytecode driver's own loop, ADR-399/401), inside native (JIT) code at any call depth —
+a preempt unwinds native frames into interpreter frames (ADR-400) — and between the
+elements of a `reduce`/`fold`/`map` over a vector or range (ADR-402). What cannot yield
+mid-way — a single long native builtin, a pure numeric recursion running in the unboxed
+register worker — yields as soon as it returns, and the system monitor's
+`:long-schedule` event reports it.
 Code is shared, data is not: a spawned function sees every `def` (and live
 redefinitions — ADR-013), but messages cross as deep copies.
 
@@ -2088,7 +2095,7 @@ child's own pid** — to hand the parent's pid in, bind it in an enclosing `let`
 
 | Form | Meaning |
 |---|---|
-| `(spawn expr)` | Run `expr` (unevaluated) in a new green process; returns its pid. Free locals are captured; `(self)` inside is the *child's* pid. |
+| `(spawn expr)` | Run `expr` (unevaluated) in a new green process; returns its pid. Free locals are captured — copied into the child's own heap as a message would copy them, while the code itself stays shared (ADR-404) — and `(self)` inside is the *child's* pid. |
 | `(spawn-link expr)` | As `spawn`, but the child is **linked to the caller atomically** — before it can run (Erlang `spawn_link`), so even an instant exit reports its *true* reason. What supervised children use. See *Links* below. |
 | `(spawn-monitor expr)` | As `spawn`, but the caller **monitors** the child atomically — returns `[pid ref]`, and the `[:down …]` carries the *true* reason even for an instant exit (Erlang `spawn_monitor`). One-shot, never kills. See *Links* below. |
 | `(send target msg)` | Copy `msg` into `target`'s mailbox (non-blocking; a dead/unknown target is a no-op). `target` is a pid (local **or remote** — see [Distributed nodes](#distributed-nodes)) or a `{:name :node}` address. |
@@ -3287,8 +3294,10 @@ iolist in memory.
   `{:pause-us :collections :live}`, filtered by `:gc-min-pause-us`, BEAM's
   `long_gc`), `:spawn` (detail = parent pid), `:exit` (detail = the structured
   exit reason monitors see) or `:exit-abnormal` (only a reason other than
-  `:normal`, filtered before any message is built), and `:deopt` (detail = the
-  JIT arm's fn name). **One subscription per subscriber pid** (ADR-305): no args
+  `:normal`, filtered before any message is built), `:deopt` (detail = the
+  JIT arm's fn name), and `:long-schedule` (a scheduling quantum held its worker
+  at least `:long-schedule-us` µs — detail `{:us}`, BEAM's `long_schedule`, ADR-403;
+  selected by its threshold, and at 10 ms when every event is armed). **One subscription per subscriber pid** (ADR-305): no args
   reads the *caller's* subscription, `:all` lists every one, `nil` clears the
   caller's and `(proc/system-monitor nil pid)` clears `pid`'s;
   `(proc/system-monitor pid)` arms every event at `pid`,

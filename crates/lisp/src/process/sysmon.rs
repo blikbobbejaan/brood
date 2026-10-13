@@ -74,7 +74,16 @@ pub struct SysMon {
     pub exit_abnormal: bool,
     /// Report JIT deopts (native arm fell back to the VM).
     pub deopt: bool,
+    /// Report a scheduling quantum that held its worker at least this many µs (0 = not
+    /// selected) — BEAM's `long_schedule` (ADR-403). A quantum is bounded by the reduction
+    /// budget, so one this long is code that could not be preempted: a long native
+    /// builtin, an unboxed native recursion, a blocking call.
+    pub long_schedule_us: u64,
 }
+
+/// The `long_schedule_us` a subscription armed with no options map gets: "every event",
+/// without turning every busy quantum into a message.
+pub const DEFAULT_LONG_SCHEDULE_US: u64 = 10_000;
 
 /// Bits of [`ARMED`]: which kinds *some* subscriber wants. Recomputed under the
 /// lock on every install/clear, so an emit site can skip the lock (and the
@@ -84,6 +93,7 @@ const WANT_SPAWN: u8 = 2;
 const WANT_EXIT_ALL: u8 = 4;
 const WANT_EXIT_ABNORMAL: u8 = 8;
 const WANT_DEOPT: u8 = 16;
+const WANT_LONG_SCHEDULE: u8 = 32;
 
 /// Fast off-check — kept in sync with `MONITORS` by every mutation.
 static ARMED: AtomicU8 = AtomicU8::new(0);
@@ -140,6 +150,9 @@ fn refresh_bits(list: &[SysMon]) {
         }
         if m.deopt {
             bits |= WANT_DEOPT;
+        }
+        if m.long_schedule_us > 0 {
+            bits |= WANT_LONG_SCHEDULE;
         }
     }
     ARMED.store(bits, Ordering::Relaxed);
@@ -274,6 +287,57 @@ pub fn emit_gc(subject: u64, pause_ns: u64, collections: u64, live: u64) {
     fan_out(&targets, pk::SYS_GC, subject, detail);
 }
 
+/// Does some subscriber want `:long-schedule`? One relaxed load: the scheduler times a
+/// quantum only when this says so.
+pub fn wants_long_schedule() -> bool {
+    wants(WANT_LONG_SCHEDULE)
+}
+
+thread_local! {
+    /// When the quantum running on this worker started, while some subscriber wants
+    /// `:long-schedule`.
+    static QUANTUM_T0: std::cell::Cell<Option<web_time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// A quantum starts on this worker: time it if some subscriber wants `:long-schedule`.
+pub(crate) fn quantum_begin() {
+    QUANTUM_T0.set(wants_long_schedule().then(web_time::Instant::now));
+}
+
+/// The running quantum's budget ran out with no process waiting for a worker, so it was
+/// not preempted (nothing would have run instead) and goes on as a fresh quantum: what a
+/// subscriber hears about is code that held a worker it could not give up, not work that
+/// had the machine to itself.
+pub(crate) fn quantum_restart() {
+    if QUANTUM_T0.get().is_some() {
+        QUANTUM_T0.set(Some(web_time::Instant::now()));
+    }
+}
+
+/// The quantum `quantum_begin` started on this worker ended: report it if it ran long.
+pub(crate) fn quantum_end(subject: u64) {
+    if let Some(t0) = QUANTUM_T0.take() {
+        emit_long_schedule(subject, t0.elapsed().as_micros() as u64);
+    }
+}
+
+/// `subject`'s quantum held its worker `us` µs — delivered to each subscriber whose
+/// threshold it reached (never to `subject` itself).
+pub fn emit_long_schedule(subject: u64, us: u64) {
+    if !wants(WANT_LONG_SCHEDULE) {
+        return;
+    }
+    let targets = interested(subject, |m| {
+        m.long_schedule_us > 0 && us >= m.long_schedule_us
+    });
+    if targets.is_empty() {
+        return;
+    }
+    let detail = Message::Map(vec![(kw("us"), Message::Int(us as i64))]);
+    fan_out(&targets, pk::SYS_LONG_SCHEDULE, subject, detail);
+}
+
 /// A green process was spawned.
 pub fn emit_spawn(child: u64, parent: u64) {
     if !wants(WANT_SPAWN) {
@@ -368,6 +432,7 @@ mod tests {
             exit: false,
             exit_abnormal: true,
             deopt: false,
+            long_schedule_us: 0,
         };
         assert!(
             install(corpse).is_err(),
@@ -398,6 +463,7 @@ mod tests {
             exit: false,
             exit_abnormal: false,
             deopt: false,
+            long_schedule_us: 0,
         };
         install_for_synthetic_pid(quiet);
         assert!(
@@ -430,6 +496,7 @@ mod tests {
             exit: false,
             exit_abnormal: false,
             deopt: false,
+            long_schedule_us: 0,
         };
         install_for_synthetic_pid(live);
         clear_if(987_654_323); // some other process died

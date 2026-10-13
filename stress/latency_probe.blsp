@@ -1,0 +1,86 @@
+;; Open-loop request latency, and the quanta that ran long while it was measured — the probe
+;; behind `make latency-gate` (scripts/latency-gate.sh).
+;;
+;; A dispatcher schedules request `i` at `start + i * gap` whether or not the system keeps
+;; up, and each handler reports how late it STARTED against that schedule (queueing delay
+;; counts — coordinated omission is the failure this exists to expose). Every 20th request
+;; is fat: it holds its worker for ~500 µs of real work, in a native loop called from a
+;; native handler — the shape that went unpreempted before ADR-400 and stalled the requests
+;; queued behind it. A system-monitor subscription counts every quantum that held a worker
+;; over 1 ms (`:long-schedule`, ADR-403): code that could not be preempted.
+;;
+;; Prints `#metric name=value` lines; `BENCH_N` sets the request count (default 20000).
+
+(def n
+  (let (e (os/env "BENCH_N")
+        v (if e (string/->number e) 20000))
+    (if (int? v) v (throw (str "BENCH_N is not an integer: " e)))))
+(def rate 20000) ; requests per second
+(def gap-ns (math/quot 1000000000 rate))
+(def fat-ns 500000)
+
+(defn spin-until (t) (if (>= (os/now-ns) t) :ok (spin-until t)))
+
+(defn work (k j acc)
+  (if (>= j k)
+    acc
+    (let (v [j (+ j 1) (+ j 2) (+ j 3)])
+      (work k (+ j 1) (+ acc (+ (+ (nth v 0) (nth v 1)) (+ (nth v 2) (nth v 3))))))))
+
+(defn best-work-ns (reps k best)
+  (if (= reps 0)
+    best
+    (let (t (os/now-ns)
+          _ (work k 0 0)
+          dt (- (os/now-ns) t))
+      (best-work-ns (- reps 1) k (if (or (= best 0) (< dt best)) dt best)))))
+
+(defn calibrate (k)
+  (let (dt (best-work-ns 9 k 0))
+    (if (< dt 200000) (calibrate (* k 2)) (math/quot (* k fat-ns) dt))))
+
+(defn warm (reps k) (if (= reps 0) :ok (do (work k 0 0) (warm (- reps 1) k))))
+(warm 60 5000)
+(def fat-units (calibrate 1000))
+
+(defn handle (i sched to)
+  (let (late (math/quot (- (os/now-ns) sched) 1000)
+        fat? (= 0 (math/mod i 20))
+        _ (work 40 0 0)
+        _ (when fat? (work fat-units 0 0)))
+    (send to [:done (if fat? -1 late)])))
+
+(defn collector (to left lats)
+  (if (= left 0)
+    (send to [:all lats])
+    (receive ([:done lat] (collector to (- left 1) (if (< lat 0) lats (cons lat lats)))))))
+
+(defn long-counter (count)
+  (receive
+    ([:system :long-schedule _ _] (long-counter (+ count 1)))
+    ([:report to] (send to [:long count]))))
+
+(defn dispatch (i start to)
+  (if (>= i n)
+    :ok (let (sched (+ start (* i gap-ns)))
+      (spin-until sched)
+      (spawn (handle i sched to))
+      (dispatch (+ i 1) start to))))
+
+(defn pct (v p) (nth v (math/min (- (count v) 1) (math/quot (* p (count v)) 1000))))
+
+(def me (self))
+(def counter (spawn (long-counter 0)))
+(proc/system-monitor counter {:long-schedule-us 1000})
+(def coll (spawn (collector me n ())))
+(dispatch 0 (os/now-ns) coll)
+(def lats (into [] (sort (receive ([:all l] l) (after 600000 ())))))
+(proc/system-monitor nil counter)
+(send counter [:report me])
+(def longs (receive ([:long c] c) (after 5000 -1)))
+
+(io/puts (str "#metric p50_us=" (pct lats 500)))
+(io/puts (str "#metric p99_us=" (pct lats 990)))
+(io/puts (str "#metric p999_us=" (pct lats 999)))
+(io/puts (str "#metric max_us=" (nth lats (- (count lats) 1))))
+(io/puts (str "#metric long_schedules=" longs))

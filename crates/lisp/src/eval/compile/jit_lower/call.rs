@@ -66,6 +66,9 @@ pub(super) fn emit_call(
     reserve: usize,
     epoch_ptr: Option<Value>,
     tailcall: Block,
+    // This call's ip, when the activation may be rebuilt mid-call: a non-tail call's error
+    // path then records the frame as paused at this call (ADR-400) before leaving.
+    journal: Option<usize>,
     frame: Frame,
     funcs: Funcs,
 ) -> Option<Flow> {
@@ -212,6 +215,58 @@ pub(super) fn emit_call(
     }
     // Non-tail: dispatch through the interpreter inline (a safepoint): result →
     // `out_slot`, status in a register.
+    //
+    // The call's error exit (ADR-400). When this activation may be rebuilt mid-call, it is a
+    // block of its own that first records the frame as paused AT this call — the ip after
+    // it, and the operands beneath it (every handle among them was spilled to a slot above,
+    // so each is a slot or a scalar), copied to the room `brood_rt_in_call_journal` reserves
+    // at the top of `roots` — then leaves through the shared error block. A preempt
+    // unwinding through this activation needs exactly that to rebuild it as an interpreter
+    // frame; for any other error the callback returns null and nothing is stored. Taken
+    // only when the call failed: the success path pays nothing.
+    let call_error = match journal {
+        Some(_) => b.create_block(),
+        None => error,
+    };
+    let below_call: Vec<Op> = stack.clone();
+    // Filled once every branch to it is emitted, while the current block is terminated —
+    // `FunctionBuilder` cannot leave a half-built block to fill another.
+    let fill_call_error = |b: &mut FunctionBuilder| {
+        if let Some(ip) = journal {
+            b.switch_to_block(call_error);
+            b.set_cold_block(call_error);
+            // Every slot read before the callback: reserving the room may move `roots`.
+            let words: Vec<[Value; 3]> = below_call
+                .iter()
+                .map(|&op| read_words(b, op, frame))
+                .collect();
+            let packed = (((ip as i64) + 1) << 16) | below_call.len() as i64;
+            let packed = b.ins().iconst(types::I64, packed);
+            let c = b.ins().call(funcs.incall, &[heap, packed]);
+            let room = b.inst_results(c)[0];
+            let fill = b.create_block();
+            b.ins().brif(room, fill, &[], error, &[]);
+            b.switch_to_block(fill);
+            b.set_cold_block(fill);
+            for (k, w) in words.iter().enumerate() {
+                let off = k as i32 * STRIDE as i32;
+                b.ins().store(MemFlagsData::trusted(), w[0], room, off);
+                b.ins().store(
+                    MemFlagsData::trusted(),
+                    w[1],
+                    room,
+                    off + PAYLOAD_OFFSET as i32,
+                );
+                b.ins().store(
+                    MemFlagsData::trusted(),
+                    w[2],
+                    room,
+                    off + PAYLOAD_OFFSET as i32 + 8,
+                );
+            }
+            b.ins().jump(error, &[]);
+        }
+    };
     let out_addr = b.ins().stack_addr(ptr_ty, out_slot, 0);
     let argc_v = b.ins().iconst(types::I32, argc as i64);
     let site_v = b.ins().iconst(types::I32, call_site as i64);
@@ -239,7 +294,7 @@ pub(super) fn emit_call(
         let status = b.inst_results(c)[0];
         let rb = super::emit::load_roots_base(b, heap);
         b.def_var(rb_var, rb);
-        b.ins().brif(status, error, &[], cont, &[]);
+        b.ins().brif(status, call_error, &[], cont, &[]);
     };
 
     // The in-IR call-site fast link: an epoch-guarded flat-table fast path ahead of the
@@ -471,6 +526,20 @@ pub(super) fn emit_call(
                 b.ins().stack_store(pt, d1, ctx_slot, depth_o);
                 b.ins().stack_store(pt, gw, ctx_slot, gw_o);
                 b.ins().stack_store(pt, head_v, ctx_slot, dbg_o);
+                // ADR-400: the callee may preempt by unwinding iff this activation may and
+                // can be rebuilt mid-call — which is what a journal here says. Its
+                // `no_child_unwind` starts at 0; only a self-spliced prologue sets it.
+                let unw_o = std::mem::offset_of!(JitCallCtx, unwind) as i32;
+                let pin_o = std::mem::offset_of!(JitCallCtx, no_child_unwind) as i32;
+                let mine = if journal.is_some() {
+                    b.ins()
+                        .load(types::I8, MemFlagsData::trusted(), funcs.ctx, unw_o)
+                } else {
+                    b.ins().iconst(types::I8, 0)
+                };
+                b.ins().stack_store(pt, mine, ctx_slot, unw_o);
+                let z8 = b.ins().iconst(types::I8, 0);
+                b.ins().stack_store(pt, z8, ctx_slot, pin_o);
             }
             let ctx_addr = b.ins().stack_addr(funcs.ptr_ty, ctx_slot, 0);
             // The call itself — straight into the callee's native code.
@@ -543,7 +612,7 @@ pub(super) fn emit_call(
             b.def_var(rb_var, rb3);
             let cold_err = b.ins().icmp_imm_s(IntCC::Equal, cst, 1);
             let xc_ne = b.create_block();
-            b.ins().brif(cold_err, error, &[], xc_ne, &[]);
+            b.ins().brif(cold_err, call_error, &[], xc_ne, &[]);
             b.switch_to_block(xc_ne);
             let cold_slow = b.ins().icmp_imm_s(IntCC::Equal, cst, 2);
             b.ins().brif(cold_slow, miss, &[], cont, &[]);
@@ -568,7 +637,7 @@ pub(super) fn emit_call(
         // status: 1 = error → `error`; 2 = could-not-link → `miss`; 0 = `cont`.
         let is_err = b.ins().icmp_imm_s(IntCC::Equal, fst, 1);
         let not_err = b.create_block();
-        b.ins().brif(is_err, error, &[], not_err, &[]);
+        b.ins().brif(is_err, call_error, &[], not_err, &[]);
         b.switch_to_block(not_err);
         let is_slow = b.ins().icmp_imm_s(IntCC::Equal, fst, 2);
         b.ins().brif(is_slow, miss, &[], cont, &[]);
@@ -576,6 +645,7 @@ pub(super) fn emit_call(
         // miss: cold / redefined / over-cap / IC-moved → the slow dispatch.
         b.switch_to_block(miss);
         emit_call_slow(b, cont);
+        fill_call_error(b);
 
         b.switch_to_block(cont);
         let (w0, w1, w2) = read_out(b);
@@ -583,6 +653,7 @@ pub(super) fn emit_call(
     } else {
         let cont = b.create_block();
         emit_call_slow(b, cont);
+        fill_call_error(b);
         b.switch_to_block(cont);
         let (w0, w1, w2) = read_out(b);
         stack.push(Op::Handle(w0, w1, w2));
@@ -799,7 +870,7 @@ pub(super) fn emit_self_call(
         b.switch_to_block(ck);
     }
     let batch = b.ins().iconst(types::I64, TICK_BATCH);
-    let tc = b.ins().call(funcs.tickn, &[heap, batch]);
+    let tc = b.ins().call(funcs.tickn, &[heap, batch, funcs.ctx]);
     let yld = b.inst_results(tc)[0];
     // 0 → next iteration; 1 → preempt; 2 → a limit is waiting to be raised, which only
     // the VM can do: deopt at the back-edge (the frame holds the next iteration's args

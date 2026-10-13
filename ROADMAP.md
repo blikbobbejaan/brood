@@ -143,7 +143,11 @@ each list; the OTP list is first because it is what makes Brood's strongest axis
 per-process heaps + GC, links/monitors/`trap-exit`/`exit :kill`, selective receive with
 receive-marks, one-shot reply aliases, `gen` with `terminate`, supervisors with all three
 strategies + intensity window + shutdown policy + nested teardown, hot reload, encrypted
-full-mesh dist with remote spawn/monitor. ADR-039's kernel supervisor was reverted for being
+full-mesh dist with remote spawn/monitor, and — since 2026-10-12 — preemption that reaches every
+shape of running code: `try`/`binding` bodies, native (JIT) code at any call depth and native
+recursion, the vector/range folds between elements (ADR-399..402), with BEAM's
+`long_schedule` in the system monitor (ADR-403) for what still cannot yield (a single long
+native builtin, the unboxed register worker). ADR-039's kernel supervisor was reverted for being
 the scheduler-race surface and that call stands — **none of the items below touch the
 scheduler.** What is behind OTP is *around* supervision, and nearly all of it is Brood.
 

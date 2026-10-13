@@ -516,6 +516,14 @@ pub enum Node {
         bind_slot: usize,
         handler: Box<Node>,
     },
+    /// `(%binding '(n…) vals (fn () body…))` desugared inline (ADR-401): `vals` builds the
+    /// vector of new values, the names are pushed on the process's dynamic stack, and
+    /// `body` runs in this frame for the extent of the binding.
+    Binding {
+        names: Box<[Symbol]>,
+        vals: Box<Node>,
+        body: Box<Node>,
+    },
 }
 
 /// The compiled counterpart of a [`ClosureArm`](crate::core::value::ClosureArm):
@@ -1090,6 +1098,16 @@ pub(crate) enum ChunkExit {
         bases: (u32, u32),
         outcome: Option<i64>,
     },
+    /// A native preempt unwound out to the driver (ADR-400): the activations it passed
+    /// through are recorded in the thread's unwind record (`take_unwound`), their frames still in `roots`, for the
+    /// driver to rebuild as interpreter frames and park. `keep_current`: the current frame
+    /// is an interpreter frame that called the outermost of them directly (the VM→native
+    /// call) and waits for its value at the ip after that call; otherwise the current frame
+    /// IS the outermost of them (the frame path) and is rebuilt with the rest.
+    #[cfg(feature = "jit")]
+    Unwound {
+        keep_current: bool,
+    },
     /// A clean `receive` on an empty mailbox raised `Control::Suspend` through the
     /// `%receive` native (state-capture path, ADR-100 §8). `exec_chunk` rewound `ip`
     /// so re-entry re-runs the suspending `Inst::Call`, leaving the callee + args on
@@ -1192,6 +1210,10 @@ pub(super) fn rewrite_node(node: &Node, f: &mut dyn FnMut(Value) -> Value) {
             rewrite_node(body, f);
             rewrite_node(handler, f);
         }
+        Node::Binding { vals, body, .. } => {
+            rewrite_node(vals, f);
+            rewrite_node(body, f);
+        }
     }
 }
 
@@ -1236,14 +1258,6 @@ pub(super) fn rewrite_chunk(chunk: &Chunk, f: &mut dyn FnMut(Value) -> Value) {
 // *control* state (the instruction pointer), and `Call`/`Return` are explicit frame
 // push/pop, so the cross-arm call stack is data too (ADR-100 §8.4). The driver stays
 // bit-identical to the `Node` interpreter, guarded by the differential test.
-
-/// Non-owning raw pointer into a `Node` tree owned by a `CompiledArm`.
-/// Used by `Inst::TryCatch` to avoid double-rewriting: `rewrite_node(arm.body)`
-/// rewrites the pointed-to nodes in place; `rewrite_chunk` skips `Inst::TryCatch`.
-pub struct NodePtr(pub(crate) NonNull<Node>);
-// SAFETY: Node is Send+Sync (all interior mutability is through AtomicU64).
-unsafe impl Send for NodePtr {}
-unsafe impl Sync for NodePtr {}
 
 /// One bytecode instruction. A **stack machine**: each instruction pushes/pops on
 /// the operand region of `Heap::roots` that sits just above the activation frame's
@@ -1400,14 +1414,28 @@ pub enum Inst {
         /// The built closure's contract boundary — see `Node::MakeClosure::module`.
         module: Option<Symbol>,
     },
-    /// Inline try/catch: run body via exec_value; on non-control error write
-    /// the caught value to bind_slot and run handler; push result. NodePtrs
-    /// point into arm.body — rewrite_chunk skips them; rewrite_node handles them.
-    TryCatch {
-        body: NodePtr,
-        bind_slot: usize,
-        handler: NodePtr,
-    },
+    /// Open an inline `try` (ADR-399): register a handler for THIS frame on the process's
+    /// handler stack (`Heap::vm_handlers`) — the operand-stack height here, the frame's
+    /// slot `bind_slot` the caught value lands in, and `handler`, the ip of the handler
+    /// code. The body follows inline as ordinary bytecode, so it runs in the bytecode
+    /// driver's own loop: it can be preempted, park at a `receive`, and call natively —
+    /// none of which a body run as a nested evaluation could do. A non-control error
+    /// raised anywhere above this frame unwinds the driver to it, stores the caught value
+    /// and resumes at `handler` (`vm_run_bc`'s catch).
+    TryEnter { handler: usize, bind_slot: usize },
+    /// Close the innermost `try`: the body finished normally, its value is on the
+    /// operand stack, and the handler registered by the matching [`Inst::TryEnter`]
+    /// retires. Always followed by the `Jump` over the handler code.
+    TryExit,
+    /// Open an inline `binding` (ADR-401): pop the vector of new values and push each name
+    /// with its value on the process's dynamic stack (every name must be dynamic and the
+    /// counts must match, checked before anything is pushed). The body follows inline, so
+    /// it runs in the driver's loop like a `try` body. An error leaving the body is
+    /// restored by truncation — to the length a catching `try` recorded, or to the driver's
+    /// entry length when the error leaves the driver.
+    BindEnter { names: Box<[Symbol]> },
+    /// Close the innermost inline `binding`: pop its names, the body's value on the stack.
+    BindExit(usize),
 }
 
 impl Inst {
@@ -1497,7 +1525,12 @@ impl Inst {
             ),
             Inst::SelfCall { argc } => format!("SelfCall({argc})"),
             Inst::MakeClosure { names, .. } => format!("MakeClosure(captures={})", names.len()),
-            Inst::TryCatch { .. } => "TryCatch".into(),
+            Inst::TryEnter { handler, bind_slot } => {
+                format!("TryEnter(handler={handler}, bind={bind_slot})")
+            }
+            Inst::TryExit => "TryExit".into(),
+            Inst::BindEnter { names } => format!("BindEnter(names={})", names.len()),
+            Inst::BindExit(n) => format!("BindExit({n})"),
         }
     }
 }

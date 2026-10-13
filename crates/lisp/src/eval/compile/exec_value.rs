@@ -802,5 +802,16 @@ pub(crate) fn exec_value(
                 exec_value(heap, handler, frame_base, genv)
             }
         },
+        // The evaluator twin of `BindEnter … BindExit` (ADR-401): this Rust frame restores
+        // the dynamic stack on the way out, error or not.
+        Node::Binding { names, vals, body } => {
+            let v = exec_value(heap, vals, frame_base, genv)?;
+            let items = heap.seq_items(v)?;
+            let len = heap.dynamics_len();
+            crate::builtins::push_bindings(heap, names, &items)?;
+            let result = exec_value(heap, body, frame_base, genv);
+            heap.truncate_dynamics(len);
+            result
+        }
     }
 }

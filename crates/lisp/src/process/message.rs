@@ -730,6 +730,88 @@ fn closure_to_message(
     })
 }
 
+/// Copy a spawned closure into the child's heap the way `spawn` should (ADR-404): its CODE
+/// stays shared — the same arms, whose forms already live in a shared region, so the child
+/// compiles nothing and shares every compiled and JIT'd body (`cache_key` names the closure
+/// by that AST) — and only the values it CAPTURES are copied, into a fresh env frame in
+/// `child`, exactly as a message copies them.
+///
+/// `spawn` used to `promote` the closure into the shared RUNTIME region instead. For a
+/// closure that captures locals — every `(spawn (handle request))` — that appended a new
+/// closure and env per spawn to the region every process shares, which the multi-process
+/// collector then had to age and reclaim: under a stream of spawns it ran periodically, and
+/// a spawn landing in its window waited on its write lock (`promote_lock`) for 100–300 µs —
+/// the request dispatcher's latency spikes. BEAM copies a fun's free variables into the new
+/// process the same way.
+///
+/// `None` when the copy does not apply and `promote` should be used: a closure that
+/// captures nothing (already shared — `promote` is a handle copy), code that is not shared
+/// (built from forms read into a LOCAL heap), or a captured value the message copy refuses
+/// (a self-referential local closure).
+pub(crate) fn copy_closure_into(heap: &Heap, f: Value, child: &mut Heap) -> Option<Value> {
+    let Value::Fn(id) = f else {
+        return None;
+    };
+    let cl = heap.closure(id);
+    let env = cl.env?;
+    if env == EnvId::GLOBAL || env.region() != value::LOCAL {
+        return None;
+    }
+    let shared_form = |v: Value| match v.unpack() {
+        value::ValueRef::Pair(p) => p.region() != value::LOCAL,
+        value::ValueRef::Nil
+        | value::ValueRef::Bool(_)
+        | value::ValueRef::Int(_)
+        | value::ValueRef::Float(_)
+        | value::ValueRef::Sym(_)
+        | value::ValueRef::Keyword(_) => true,
+        _ => false,
+    };
+    let code_shared = cl.arms.iter().all(|arm| {
+        arm.body.iter().all(|&f| shared_form(f))
+            && arm.optionals.iter().all(|&(_, d)| shared_form(d))
+    });
+    if !code_shared {
+        return None;
+    }
+    let mut mentioned = std::collections::HashSet::new();
+    for arm in cl.arms.iter() {
+        for &form in &arm.body {
+            collect_symbols(heap, form, &mut mentioned);
+        }
+        for &(_, d) in &arm.optionals {
+            collect_symbols(heap, d, &mut mentioned);
+        }
+    }
+    let dest = Some(heap.runtime_tag());
+    let mut visited = vec![id];
+    let mut captured = Vec::new();
+    for sym in mentioned {
+        if let Some(val) = local_lookup(heap, env, sym) {
+            captured.push((sym, to_message_rec(heap, val, &mut visited, 0, dest).ok()?));
+        }
+    }
+    // Built in the child, which no one runs yet: nothing here can collect, so the frame and
+    // the values need no rooting until the child's driver roots its body's env.
+    // Parented on the global env BY NAME: `spawn` installs the child's global after this,
+    // and a parent read from `child.global()` here was an unset id — the frame itself, a
+    // self-parented env every free lookup walked forever.
+    let frame = child.new_env(Some(EnvId::GLOBAL));
+    for (sym, msg) in &captured {
+        let v = from_message(child, msg);
+        child.env_define(frame, *sym, v);
+    }
+    let copy = Closure {
+        name: cl.name,
+        arms: cl.arms.clone(),
+        doc: cl.doc.clone(),
+        env: Some(frame),
+        module: cl.module,
+        identity: cl.identity,
+    };
+    Some(Value::Fn(child.alloc_closure_pre(copy)))
+}
+
 /// Collect every symbol that appears anywhere in `form` (operator or operand
 /// position, at any depth) into `out`. Deliberately over-approximate: it doesn't
 /// track nested binders, because the [`local_lookup`] filter in `closure_to_message`

@@ -136,6 +136,13 @@ pub enum Control {
     /// the mailbox (`state.kill`), read by `handle_capture_outcome` at death, exactly
     /// as the loop-top hard-kill path does.
     Kill,
+    /// A native arm's reduction budget ran out while other native activations sat between
+    /// it and the bytecode driver (ADR-400). It rides the error channel outward through
+    /// those activations — each records itself in the thread's unwind record (`take_unwound`) and keeps its frame —
+    /// and the driver rebuilds them as interpreter frames and parks the process. Raised
+    /// only where every frame up to the driver can be rebuilt, so nothing else ever sees
+    /// it; like the other control signals, `try` never catches it.
+    PreemptUnwind,
 }
 
 /// One call-stack entry on an error's `:trace` (innermost first). `name` is the
@@ -353,6 +360,16 @@ impl LispError {
     /// rather than an error-crash.
     pub fn is_kill_signal(&self) -> bool {
         matches!(self.control, Some(Control::Kill))
+    }
+
+    /// The native preempt-unwind signal — see [`Control::PreemptUnwind`].
+    pub(crate) fn preempt_unwind() -> Self {
+        LispError::control(Control::PreemptUnwind)
+    }
+
+    /// Is this the [`Control::PreemptUnwind`] signal?
+    pub(crate) fn is_preempt_unwind(&self) -> bool {
+        matches!(self.control, Some(Control::PreemptUnwind))
     }
 
     /// Is this the [`Control::Suspend`] signal (a `receive` parking on an empty

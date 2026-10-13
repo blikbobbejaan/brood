@@ -356,6 +356,9 @@ ab-pin: ## A/B against a PINNED baseline binary that survives ab-clean: make ab-
 	# and runs base-vs-base as the floor, which is the method CLAUDE.md prescribes.
 	N=$(or $(N),15) ./scripts/ab-pin.sh $(or $(BASE),HEAD) $(or $(ROWS),pipeline nqueens)
 
+latency-gate: release-brood ## Tail latency on THIS box: an open-loop request probe, run 5x — fails on quanta >1 ms (code that stopped being preemptible) or a worst p99 over budget. Not for CI (docs/benchmarking.md)
+	./scripts/latency-gate.sh $(or $(RUNS),5)
+
 ab-vm: ## A/B the VM's own call path (tier 1) — the regressions `make ab` structurally cannot see
 	# At the DEFAULT ceiling a hot arm lowers to native, so the interpreter's call path never
 	# executes and a cost added to it reads as flat. KI-40 was a 3.19x regression on that path

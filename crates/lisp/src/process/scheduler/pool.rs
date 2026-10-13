@@ -755,6 +755,7 @@ fn run_one_timed(mut proc: Box<Process>) {
     // Fresh reduction budget for this scheduling quantum (decremented in the VM driver's
     // loop top via `tick_capture`; at zero the process captures + re-enqueues — preempt).
     REDUCTIONS.with(|r| r.set(reduction_budget()));
+    super::clear_yield_flags();
 
     // The worker drives the body's bytecode (`vm_run_bc`) directly — no coroutine — so a
     // paused process's continuation is relocatable heap data (`Suspended`) and can resume
@@ -775,7 +776,10 @@ fn run_one_timed(mut proc: Box<Process>) {
     ledger_enter(proc.pid);
     ledger_watchdog();
     let pid = proc.pid;
+    // `:long-schedule` (ADR-403): timed only while some subscriber wants it.
+    crate::process::sysmon::quantum_begin();
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proc.drive()));
+    crate::process::sysmon::quantum_end(pid);
     drop(_sg);
     // The tail is caught too, not just `drive()`. A panic in HERE — a bad handle in
     // `save_ctx`/`store_resume`, an OOB slab index, a broken invariant in the outcome

@@ -344,7 +344,7 @@ fn check_one_file_ext(
     cached: bool,
 ) -> bool {
     let warnings = match cached
-        .then(|| brood::cli_support::run_check_cache_read(src))
+        .then(|| brood::cli_support::run_check_cache_read(&interp.heap, src))
         .flatten()
     {
         Some(entry) => {

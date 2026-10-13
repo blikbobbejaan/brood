@@ -38,6 +38,7 @@ pub(super) struct CallbackIds {
     global_ic: FuncId,
     call_slow: FuncId,
     push_room: FuncId,
+    in_call_journal: FuncId,
     call_native_flat: FuncId,
     fastlink_base: FuncId,
     fast_frame: FuncId,
@@ -86,6 +87,7 @@ pub(super) struct CallbackRefs {
     pub(super) global_ic: FuncRef,
     pub(super) call_slow: FuncRef,
     pub(super) push_room: FuncRef,
+    pub(super) in_call_journal: FuncRef,
     pub(super) call_native_flat: FuncRef,
     pub(super) fastlink_base: FuncRef,
     pub(super) fast_frame: FuncRef,
@@ -146,11 +148,12 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         "brood_rt_trace_push",
         &signature(module, &[pointer, i64], &[]),
     )?;
-    // brood_rt_tick_n(heap, n) -> u8: the batched back-edge poll (burns n reductions).
+    // brood_rt_tick_n(heap, n, ctx) -> u8: the batched back-edge poll (burns n reductions);
+    // the activation context says whether a spent budget may preempt (ADR-400).
     let tick_n = import(
         module,
         "brood_rt_tick_n",
-        &signature(module, &[pointer, i64], &[i8]),
+        &signature(module, &[pointer, i64, pointer], &[i8]),
     )?;
     // brood_rt_{car,cdr}(heap, out, w0, w1, w2).
     let car_signature = signature(module, &[pointer, pointer, i64, i64, i64], &[]);
@@ -237,6 +240,14 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
     let push_room = import(
         module,
         "brood_rt_push_room",
+        &signature(module, &[pointer, i64], &[pointer]),
+    )?;
+    // brood_rt_in_call_journal(heap, packed) -> *mut Value: on an error path, record this
+    // activation as paused mid-call for the preempt unwinding through it (ADR-400) and
+    // reserve room for its operands — null when the error is a real one.
+    let in_call_journal = import(
+        module,
+        "brood_rt_in_call_journal",
         &signature(module, &[pointer, i64], &[pointer]),
     )?;
     // brood_rt_call_native_fl(heap, out, func, args, argc, ctx) -> status: direct builtin
@@ -366,6 +377,7 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         global_ic,
         call_slow,
         push_room,
+        in_call_journal,
         call_native_flat,
         fastlink_base,
         fast_frame,
@@ -419,6 +431,7 @@ pub(super) fn import_callbacks(
     let global_ic = declare(ids.global_ic, b.func);
     let call_slow = declare(ids.call_slow, b.func);
     let push_room = declare(ids.push_room, b.func);
+    let in_call_journal = declare(ids.in_call_journal, b.func);
     let call_native_flat = declare(ids.call_native_flat, b.func);
     let fastlink_base = declare(ids.fastlink_base, b.func);
     let fast_frame = declare(ids.fast_frame, b.func);
@@ -465,6 +478,7 @@ pub(super) fn import_callbacks(
         global_ic,
         call_slow,
         push_room,
+        in_call_journal,
         call_native_flat,
         fastlink_base,
         fast_frame,

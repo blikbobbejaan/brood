@@ -336,15 +336,17 @@ fn spawn_impl_timed(
             .map(|ctx| ctx.capture.clone())
             .unwrap_or_default()
     });
-    // Promote the thunk into the shared RUNTIME region so its handle (and any
-    // captured local scope) is valid in the child, which shares this runtime's
-    // code via the Arcs below. A top-level function is already shared (no-op).
-    let f = heap.promote(f);
     if !matches!(f, Value::Fn(_)) {
         return Err(LispError::type_err("spawn: argument must be a function"));
     }
     let prelude = heap.prelude_arc();
     let runtime = heap.runtime_arc();
+    let mut child = Heap::with_regions(prelude, runtime);
+    // The body, valid in the child: a closure that captures locals is copied into the
+    // child's own heap, code shared and captured values copied (ADR-404); anything else is
+    // promoted into the shared RUNTIME region — a no-op for a top-level function.
+    let f = crate::process::message::copy_closure_into(heap, f, &mut child)
+        .unwrap_or_else(|| heap.promote(f));
 
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     SPAWNED.fetch_add(1, Ordering::SeqCst);
@@ -388,7 +390,6 @@ fn spawn_impl_timed(
     // that defers to the tree-walker (vanishingly rare) runs tree-walked on the worker
     // with blocking `receive`s (`run_process_body`). `f` is a shared-runtime handle valid
     // in the child heap (same `runtime` Arc).
-    let mut child = Heap::with_regions(prelude, runtime);
     child.set_global(EnvId::GLOBAL);
 
     // Package-rooted namespaces (ADR-070): the child inherits the spawner's package

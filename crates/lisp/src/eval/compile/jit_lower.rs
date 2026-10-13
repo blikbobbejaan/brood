@@ -648,7 +648,75 @@ fn jit_lower_arm_inner(
     // native passes `u32::MAX` and re-runs from ip 0: its ips match no chunk the VM holds,
     // and its gate admits only pure-arith bodies, so re-running is effect-free.
     let ckpt_active = ckpt_slot != u32::MAX;
-    entry::emit_checkpoint_reset(&mut b, [ckpt_slot, arm.ckpt_slot], rb_var, base);
+    // The self-inlined upgrade (an inlined body with no leaf derivation — the rule
+    // `jit_frame_layout` reads back): its ips match no chunk the VM holds, so it cannot be
+    // rebuilt mid-call, and the small layout's journal index is a live slot of one of its
+    // spliced blocks, so it resets neither journal (`FrameLayout::SelfSpliced`).
+    let self_spliced = inline.is_some() && arm.leaf.is_none();
+    let resets = if self_spliced {
+        [u32::MAX, u32::MAX]
+    } else {
+        [ckpt_slot, arm.ckpt_slot]
+    };
+    entry::emit_checkpoint_reset(&mut b, resets, rb_var, base);
+    // ADR-400: an activation that makes non-tail calls (the only kind that can recurse
+    // natively) and whose layout the driver can rebuild mid-call — every one but the
+    // self-spliced upgrade. Its calls' error paths write the in-call journal, so the
+    // activations it calls may preempt by unwinding; it polls reductions at entry.
+    let unwindable = !self_spliced
+        && code
+            .iter()
+            .any(|i| matches!(i, Inst::Call { tail: false, .. }));
+    // The activations this one calls may preempt by unwinding only if this one may, and
+    // only if it can be rebuilt mid-call. Only the self-spliced layout makes calls and
+    // cannot: it says so, for the runtime's call paths (its own native call sites pass 0).
+    if self_spliced {
+        let pinned = b.ins().iconst(types::I8, 1);
+        b.ins().store(
+            cranelift_codegen::ir::MemFlagsData::trusted(),
+            pinned,
+            ctx_ptr,
+            std::mem::offset_of!(crate::jit::JitCallCtx, no_child_unwind) as i32,
+        );
+    }
+    // ADR-400: the entry reduction poll. A native recursion has no back edge, so nothing
+    // in it ever settled reductions with the scheduler: a `bintree`-style walk ran to the
+    // end in one quantum however deep it went. An `unwindable` arm now charges one
+    // reduction per activation from a countdown on the heap, settling a batch with
+    // `brood_rt_tick_n` as the back edge does — which preempts only an activation whose
+    // context says it may unwind, so the countdown needs no branch on that bit of its own
+    // (it was two of the poll's instructions on every activation of `bintree`). A preempt
+    // here leaves the frame exactly as entered (ip 0, the arguments in their slots, the
+    // journal just reset), so a resume re-runs this activation from its start, with
+    // nothing of it executed yet.
+    if unwindable {
+        use cranelift_codegen::ir::condcodes::IntCC;
+        let trusted = cranelift_codegen::ir::MemFlagsData::trusted();
+        let body = b.create_block();
+        let budget_offset = crate::core::heap::jit_ceremony_offsets().jit_call_budget as i32;
+        let left = b.ins().load(types::I32, trusted, heap, budget_offset);
+        let left = b.ins().iadd_imm_s(left, -1);
+        b.ins().store(trusted, left, heap, budget_offset);
+        let settle = b.create_block();
+        let more = b.ins().icmp_imm_s(IntCC::SignedGreaterThan, left, 0);
+        b.ins().brif(more, body, &[], settle, &[]);
+        b.switch_to_block(settle);
+        b.set_cold_block(settle);
+        let refill = b.ins().iconst(types::I32, emit::TICK_BATCH);
+        b.ins().store(trusted, refill, heap, budget_offset);
+        let batch = b.ins().iconst(types::I64, emit::TICK_BATCH);
+        let tick = b.ins().call(callbacks.tick_n, &[heap, batch, ctx_ptr]);
+        let outcome = b.inst_results(tick)[0];
+        let leave = b.create_block();
+        b.ins().brif(outcome, leave, &[], body, &[]);
+        b.switch_to_block(leave);
+        b.set_cold_block(leave);
+        let is_limit = b.ins().icmp_imm_s(IntCC::Equal, outcome, 2);
+        let reason = emit::deopt_code(&mut b, DeoptReason::EntryLimitPending);
+        b.ins()
+            .brif(is_limit, deopt, &[BlockArg::Value(reason)], preempt, &[]);
+        b.switch_to_block(body);
+    }
     b.ins().jump(leader_block[0].unwrap(), &[]);
 
     let done_block = leader_block[len].or_bail("jump-target-not-a-leader")?;
@@ -699,6 +767,7 @@ fn jit_lower_arm_inner(
         massoc: callbacks.map_assoc,
         globic: callbacks.global_ic,
         pushroom: callbacks.push_room,
+        incall: callbacks.in_call_journal,
         callslow: callbacks.call_slow,
         natfl: callbacks.call_native_flat,
         flbase: callbacks.fastlink_base,
@@ -808,6 +877,7 @@ fn jit_lower_arm_inner(
                         reserve,
                         epoch_ptr,
                         tailcall,
+                        unwindable.then_some(j),
                         frame,
                         funcs,
                     )? {

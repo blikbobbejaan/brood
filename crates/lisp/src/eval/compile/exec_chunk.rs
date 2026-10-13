@@ -1,6 +1,10 @@
 //! Bytecode interpreter inner loop (extracted from mod.rs).
 use super::*;
 
+/// Back edges between two hand-backs of a hot self-tail loop to the driver's tier check.
+#[cfg(feature = "jit")]
+pub(crate) const BACKEDGE_TIER_INTERVAL: u32 = 256;
+
 /// Tag an error with `pos` if it doesn't already carry one (innermost wins),
 /// matching the `Node` interpreter's `or_pos` discipline.
 #[inline]
@@ -718,8 +722,9 @@ pub(crate) fn exec_chunk(
                             for a in &argv {
                                 heap.push_root(*a);
                             }
-                            let (r, frame_nslots) =
-                                vm_call_native_direct(heap, &arm, argc, drop_base, cenv, bases);
+                            let (r, frame_nslots) = vm_call_native_direct(
+                                heap, &arm, argc, drop_base, cenv, bases, capture,
+                            );
                             match r {
                                 DirectNative::Done(v) => {
                                     // `roots` is back at `drop_base`; the result replaces
@@ -797,6 +802,12 @@ pub(crate) fn exec_chunk(
                                             continue;
                                         }
                                     }
+                                }
+                                DirectNative::Unwound => {
+                                    // The parked signal has done its job: the frames it
+                                    // passed are recorded (ADR-400).
+                                    let _ = jit_take_error(heap);
+                                    return Ok(ChunkExit::Unwound { keep_current: true });
                                 }
                                 DirectNative::Handoff { outcome } => {
                                     return Ok(ChunkExit::CallResume {
@@ -880,6 +891,11 @@ pub(crate) fn exec_chunk(
                             let deadline = match &e.control {
                                 Some(crate::error::Control::Suspend { deadline }) => *deadline,
                                 Some(crate::error::Control::Kill) | None => None,
+                                // Only a call whose callee was entered unwindable can see
+                                // one, and a call through `dispatch` never enters one so.
+                                Some(crate::error::Control::PreemptUnwind) => unreachable!(
+                                    "a native preempt-unwind reached a nested call (ADR-400)"
+                                ),
                             };
                             return Ok(ChunkExit::Suspend { deadline });
                         }
@@ -1048,7 +1064,6 @@ pub(crate) fn exec_chunk(
                 // no round-trips — just an atomic load every `BACKEDGE_TIER_INTERVAL`.
                 #[cfg(feature = "jit")]
                 {
-                    const BACKEDGE_TIER_INTERVAL: u32 = 256;
                     let edges = back_edges.wrapping_add(1);
                     *back_edges = edges;
                     if edges.is_multiple_of(BACKEDGE_TIER_INTERVAL) {
@@ -1115,32 +1130,41 @@ pub(crate) fn exec_chunk(
                 }
                 heap.push_root(closure);
             }
-            Inst::TryCatch {
-                body,
-                bind_slot,
-                handler,
-            } => {
-                // SAFETY: NodePtrs reference nodes owned by arm.body (same CompiledArm),
-                // which outlives exec_chunk via the Arc<CompiledArm> held by vm_run_bc.
-                let body_node = unsafe { body.0.as_ref() };
-                let handler_node = unsafe { handler.0.as_ref() };
-                // `exec_value` runs the body through the tree-walker, which can't be
-                // captured across the native frame boundary. Gate off `capture_top_level`
-                // so a `receive` inside the body or handler blocks the worker (the §7.4
-                // dirty-scheduler carve-out) rather than attempting a state-capture that
-                // can't cross native frames — the same guard `dispatch` applies when it
-                // defers a closure to the tree-walker.
-                let _guard = CaptureTopGuard(crate::process::set_capture_top_level(false));
-                match exec_value(heap, body_node, base, genv) {
-                    Ok(v) => heap.push_root(v),
-                    Err(e) if e.is_control() => return Err(e),
-                    Err(e) => {
-                        let caught = e.caught_value(heap);
-                        heap.set_root_at(base + bind_slot, caught);
-                        let hv = exec_value(heap, handler_node, base, genv)?;
-                        heap.push_root(hv);
-                    }
-                }
+            // Inline `try` (ADR-399): the body runs right here as ordinary bytecode, so
+            // the driver's preemption, `receive` capture and native calls all reach it.
+            // `TryEnter` only registers where to unwind to; the catch itself is the
+            // driver's (`vm_run_bc`), which owns the frame stack an error unwinds.
+            Inst::TryEnter { handler, bind_slot } => {
+                heap.vm_handlers.push(crate::core::heap::VmHandler {
+                    base,
+                    sp: heap.roots_len(),
+                    env_len: heap.env_roots_len(),
+                    arms_len: heap.live_arm_len(),
+                    ip: *handler,
+                    bind: base + *bind_slot,
+                    dyn_len: heap.dynamics_len(),
+                });
+            }
+            Inst::TryExit => {
+                let closed = heap.vm_handlers.pop();
+                debug_assert!(
+                    closed.is_some_and(|h| h.base == base),
+                    "TryExit closed a handler this frame did not open (ADR-399): {closed:?} at base {base}"
+                );
+            }
+            // Inline `binding` (ADR-401): push the names for the body that follows. An error
+            // that skips `BindExit` is restored by the driver, which truncates the dynamic
+            // stack to what the catching `try` (or its own entry) recorded.
+            Inst::BindEnter { names } => {
+                let n = heap.roots_len();
+                let v = heap.root_at(n - 1);
+                heap.truncate_roots(n - 1);
+                let items = heap.seq_items(v)?;
+                crate::builtins::push_bindings(heap, names, &items)?;
+            }
+            Inst::BindExit(count) => {
+                let len = heap.dynamics_len();
+                heap.truncate_dynamics(len - count);
             }
         }
     }
@@ -1280,7 +1304,7 @@ fn is_contract_arm(arm: &CompiledArm, contract_module: Symbol) -> bool {
 /// The call site a pending frame's saved `ip` returns to: `code[ip - 1]` is the
 /// `Inst::Call` that pushed its callee, and its recorded `pos` (plus the arm's `src_file`)
 /// locate the call.
-fn call_site(f: &BcFrame) -> (Option<std::sync::Arc<str>>, Option<crate::error::Pos>) {
+pub(crate) fn call_site(f: &BcFrame) -> (Option<std::sync::Arc<str>>, Option<crate::error::Pos>) {
     let pos = f
         .arm
         .chunk
@@ -1349,7 +1373,7 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
         let limit = heap.proc_mem_limit().unwrap_or(0);
         return Err(crate::eval::proc_memory_limit_error(live, limit));
     }
-    if crate::process::tick_capture() {
+    if crate::process::tick_capture() || (capture && crate::process::take_yield_due()) {
         quantum_checks(heap)?;
         if crate::process::capture_hard_kill_pending() {
             // Capture mode retires the process at the driver; a nested run cannot return an

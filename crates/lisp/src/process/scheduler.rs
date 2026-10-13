@@ -223,12 +223,70 @@ pub(crate) fn refill_nested_quantum() {
     preempt();
 }
 
+thread_local! {
+    /// Preemption the process owes the scheduler (ADR-402). `OWED`: a quantum ran out
+    /// where nothing could yield — a nested evaluation, a native activation that cannot
+    /// unwind — so the budget was refilled and the debt recorded instead of forgotten.
+    /// `REQUESTED`: a resumable builtin (the vector and range folds) stopped between two
+    /// elements to pay it. Every point that CAN capture (the driver's loop top, the inline
+    /// loop safepoint, an unwindable native poll) preempts on either; cleared at each
+    /// quantum's start. Per worker thread, like `REDUCTIONS`, and for the same reason.
+    static YIELD_FLAGS: Cell<u8> = const { Cell::new(0) };
+}
+const YIELD_OWED: u8 = 1;
+const YIELD_REQUESTED: u8 = 2;
+
+/// Take the preemption owed or requested since the quantum began — true when a capturing
+/// point should yield now even though its budget is not spent (ADR-402).
+pub(crate) fn take_yield_due() -> bool {
+    YIELD_FLAGS.with(|f| f.replace(0) != 0)
+}
+
+/// Clear the flags for a fresh quantum.
+pub(crate) fn clear_yield_flags() {
+    YIELD_FLAGS.with(|f| f.set(0));
+}
+
+/// Should a resumable builtin stop at the element it is on (ADR-402)? It charges `units`
+/// reductions for the work it did itself since it last asked (a callback charges its own),
+/// and stops when that spends the budget or when a quantum's preemption is owed — turning
+/// the debt into a request the next capturing point honours. At most once per quantum
+/// where nothing can capture (the request then waits, and only a FRESH debt stops the
+/// builtin again), so a fold running nested pays one stop per quantum, not one per element.
+/// Never on the root thread, which never preempts.
+pub(crate) fn resumable_should_stop(units: u32) -> bool {
+    // Nothing to charge — the per-element ask after a reducer call: only a debt can stop the
+    // builtin, and a debt is only ever recorded in a green process, so one thread-local read.
+    let mut spent = units > 0 && in_capture_run() && tick_capture_n_inner(units);
+    if spent && !work_waiting() {
+        // The quantum is over and nothing would run instead: go on as a fresh one.
+        refill_nested_quantum();
+        crate::process::sysmon::quantum_restart();
+        spent = false;
+    }
+    YIELD_FLAGS.with(|f| {
+        let v = f.get();
+        if spent || v & YIELD_OWED != 0 {
+            f.set((v & !YIELD_OWED) | YIELD_REQUESTED);
+            true
+        } else {
+            false
+        }
+    })
+}
+
 /// Reduction budget exhausted at a `tick()` site. Nothing to yield to here: the
 /// **top-level** VM driver does capture-mode preemption itself (`tick_capture`). This is
 /// reached only by runs that are *not* the body driver — a nested native callback, the
 /// tree-walker, the root thread, the prelude build — so it books the quantum into
 /// `process-info`'s `:reductions` and refreshes the budget (the §7.4 dirty carve-out).
 fn preempt() {
+    // A green process whose quantum ran out here owes the scheduler a preemption the next
+    // capturing point pays (ADR-402) — if anything is waiting to run; the root thread
+    // never preempts and owes nothing.
+    if in_capture_run() && work_waiting() {
+        YIELD_FLAGS.with(|f| f.set(f.get() | YIELD_OWED));
+    }
     if let Some(c) = CURRENT.with(|c| c.borrow().clone()) {
         c.mailbox
             .reductions
@@ -428,6 +486,10 @@ pub(crate) fn tick_capture() -> bool {
 /// Only the JIT runtime callback calls it, so it is compiled out with the feature.
 #[cfg(feature = "jit")]
 pub(crate) fn tick_capture_n(n: u32) -> bool {
+    tick_capture_n_inner(n)
+}
+
+fn tick_capture_n_inner(n: u32) -> bool {
     REDUCTIONS.with(|r| {
         let cur = r.get();
         if cur < n {
@@ -438,6 +500,26 @@ pub(crate) fn tick_capture_n(n: u32) -> bool {
             false
         }
     })
+}
+
+/// Is some process waiting for a worker? A preemption buys latency only for one that is:
+/// with none queued anywhere, a preempted process would be re-queued and picked straight
+/// back up. The callers whose preemption is costly — a native stack unwound and rebuilt
+/// as interpreter frames (ADR-400), a resumable fold stopped and re-entered (ADR-402) —
+/// ask first, and keep running when the answer is no. One relaxed load.
+pub(crate) fn work_waiting() -> bool {
+    STEALABLE.load(Ordering::Relaxed) != 0
+}
+
+/// Unit tests that stand in for a scheduler: pretend `n` more processes are queued (and
+/// undo it with the negation), so a preemption has someone to make room for.
+#[cfg(test)]
+pub(crate) fn test_pretend_queued(n: isize) {
+    if n >= 0 {
+        STEALABLE.fetch_add(n as usize, Ordering::SeqCst);
+    } else {
+        STEALABLE.fetch_sub(n.unsigned_abs(), Ordering::SeqCst);
+    }
 }
 
 /// [`tick`], additionally reporting whether an untrappable hard `:kill` is pending —
@@ -974,7 +1056,17 @@ impl Process {
         match self.program.as_mut() {
             // The root program process (ADR-135): drive the top-level forms.
             Some(prog) => crate::eval::compile::run_program_body(&mut self.heap, prog, resume),
-            None => crate::eval::compile::run_process_body(&mut self.heap, self.body, resume),
+            // The fresh run TAKES the body: it may be a handle into this process's own
+            // heap (a spawned closure copied in, ADR-404), which nothing roots once the
+            // driver has it — a collection would leave a copy here stale.
+            None => {
+                let body = if resume.is_none() {
+                    std::mem::replace(&mut self.body, Value::nil())
+                } else {
+                    self.body
+                };
+                crate::eval::compile::run_process_body(&mut self.heap, body, resume)
+            }
         }
     }
 

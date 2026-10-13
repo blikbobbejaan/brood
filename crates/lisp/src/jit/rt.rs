@@ -50,20 +50,75 @@ use crate::core::heap::{FastLink, Heap};
 /// way the VM's self-tail path does. Without it a native consing loop under a soft limit
 /// never sees the limit at all (KI-156).
 ///
+/// A spent budget preempts only an activation entered with `JitCallCtx::unwind` (ADR-400):
+/// the driver's own native entry, or a native callee every caller of which can be rebuilt
+/// as an interpreter frame. Any other activation has a frame between it and the driver that
+/// nothing can capture — a builtin calling back, a nested evaluation — so a preempt there
+/// used to deopt into an interpreter that could not capture either, and simply ran the rest
+/// of the loop slower. It now keeps running native and starts a fresh quantum, as that
+/// interpreter did — except when a hard kill is pending, which only the interpreter's
+/// safepoint can raise: that leaves for it (`2`), so the loop stays killable.
+///
 /// # Safety
-/// `heap` is a live heap; the limit peeks read it only.
+/// `heap` is a live heap; the limit peeks read it only. `ctx` is the running activation's
+/// context, which its caller keeps alive across the call.
 #[no_mangle]
-pub unsafe extern "C" fn brood_rt_tick_n(heap: *mut Heap, n: i64) -> u8 {
+pub unsafe extern "C" fn brood_rt_tick_n(
+    heap: *mut Heap,
+    n: i64,
+    ctx: *const crate::jit::JitCallCtx,
+) -> u8 {
     if crate::core::alloc::soft_limit_hit().is_some()
         || (*heap).proc_limit_pending()
         || crate::process::current_mailbox_overflow_pending()
     {
         return 2;
     }
-    if crate::process::in_capture_run() {
-        crate::process::tick_capture_n(n as u32) as u8
-    } else {
-        0 // root / non-capture: never preempt (matches the VM)
+    if !crate::process::in_capture_run() {
+        return 0; // root / non-capture: never preempt (matches the VM)
+    }
+    let unwind = (*ctx).unwind != 0;
+    if !crate::process::tick_capture_n(n as u32) {
+        // Budget left — but an unwindable activation also pays a preemption owed or
+        // requested by code that could not yield itself (ADR-402).
+        return u8::from(unwind && crate::process::take_yield_due());
+    }
+    // Unwinding the native stack to park is the costly preemption: pay it only when some
+    // process is waiting for a worker. With none, the quantum goes on as a fresh one —
+    // exactly what a cheap preempt and an immediate re-run would have done.
+    if unwind {
+        if crate::process::work_waiting() {
+            return 1;
+        }
+        crate::process::sysmon::quantum_restart();
+    }
+    if crate::process::capture_hard_kill_pending() {
+        return 2;
+    }
+    // The sampling profiler records at interpreter frame boundaries, and this loop will not
+    // reach one until it finishes (it used to, deopting into the nested interpreter every
+    // quantum). Sample it here instead, once per profiler tick, by the running arm's name.
+    if crate::diagnostics::profile::armed() {
+        sample_native_activation(&*ctx);
+    }
+    crate::process::refill_nested_quantum();
+    0
+}
+
+/// One profiler sample for a native activation that cannot yield to a driver: the stack is
+/// just its own name (the frames below it are a builtin's or a nested driver's), recorded at
+/// most once per profiler tick on this thread, as a driver records once per tick.
+#[cold]
+fn sample_native_activation(ctx: &crate::jit::JitCallCtx) {
+    thread_local! {
+        static LAST: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let epoch = crate::diagnostics::profile::epoch();
+    if LAST.with(|l| l.replace(epoch)) == epoch {
+        return;
+    }
+    if ctx.dbg_fn != u32::MAX {
+        crate::diagnostics::profile::record(&[ctx.dbg_fn]);
     }
 }
 
@@ -869,6 +924,26 @@ pub unsafe extern "C" fn brood_rt_push_room(
     n: i64,
 ) -> *mut crate::core::value::Value {
     (*heap).push_roots_room(n as usize)
+}
+
+/// An arm's error path, leaving while a call is in flight: `packed` is `(resume ip << 16) |
+/// operand depth`. For a preempt unwinding through (ADR-400), the room for those operands at
+/// the top of `roots`, which the caller fills at once; null for any other error. See
+/// [`crate::eval::compile::begin_in_call_journal`].
+///
+/// # Safety
+/// `heap` live. On a non-null return the caller must store `depth` valid `Value`s into the
+/// room before anything can allocate or collect — as for [`brood_rt_push_room`].
+#[no_mangle]
+pub unsafe extern "C" fn brood_rt_in_call_journal(
+    heap: *mut Heap,
+    packed: i64,
+) -> *mut crate::core::value::Value {
+    crate::eval::compile::begin_in_call_journal(
+        &mut *heap,
+        (packed >> 16) as usize,
+        (packed & 0xFFFF) as usize,
+    )
 }
 
 /// Direct builtin call from the IR fast-link path (the native flat cell): `func`

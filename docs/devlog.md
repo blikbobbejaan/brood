@@ -16747,3 +16747,70 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
   `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, a fuzz-differential pass (180 programs, six
   generators, zero divergences), the network files 90× across tiers and boot paths, both
   checker gates at zero, and bedit's three gates.
+
+## 2026-10-12 — preemption reaches every shape of running code; nine latency and stability defects closed (ADR-399..404, KI-223..231)
+
+The brief: "latency and stability is more important than pure performance — it has to be as
+stable as can be." The brood-benchmarks `latency` row (20k req/s open loop, every 20th request
+holding its worker ~500 µs) read p99 83–95 µs but p99.9 446–1 539 µs and max 2.3–4.1 ms run to
+run, against Elixir's 66 / 213 µs. `BROOD_STALL_MS=1` showed a quantum over 1 ms for nearly
+every fat request. Each finding below was reproduced, fixed and guarded in that order.
+
+- **`try` bodies ran nested (KI-223, ADR-399).** `Inst::TryCatch` evaluated the body through
+  `exec_value`, which the driver cannot capture: a loop in a `try` was one quantum at every
+  tier and a `receive` in one blocked its worker — every `http/serve` handler. `try` is now
+  bytecode in the arm's chunk (`TryEnter … TryExit`), with the catch in the driver
+  (`catch_in_driver`, out of line: inlined at the driver's ten raise sites it cost `ring` 8%
+  of its IPC).
+- **Native code was preemptible only at a back edge the driver itself entered (KI-224,
+  ADR-400).** Under a native caller a callee's preempt re-ran it on a nested interpreter: after
+  500 warm spawns a 2.5 ms loop ran as one 10 ms quantum. A preempt now unwinds the native
+  activations into interpreter frames: each caller's error path writes an in-call journal to
+  the top of `roots` (a side record — a first version used the frame's checkpoint journal and
+  gave pure self-recursive arms that area, which cost `bintree` 10%), a per-thread unwind
+  record names the activations, and the driver rebuilds them. An entry reduction poll covers
+  native recursion. Activations that cannot unwind keep running native (they used to deopt
+  into an interpreter that could not preempt either). Residual by design: the unboxed register
+  worker (demoting it costs ~45× on `fib`).
+- **Preempt only for someone.** Unwinding a native stack, or stopping and re-entering a fold,
+  is costly; with no process queued anywhere it buys no latency. Both now ask
+  `scheduler::work_waiting` (one relaxed load) and otherwise run on as a fresh quantum, the
+  `:long-schedule` timer restarted. Single-process compute rows stopped paying for preempts
+  nobody needed (`json` +5.9% → +1.5% instructions).
+- **`binding` bodies ran nested too (KI-225, ADR-401)** — inlined as `BindEnter … BindExit`,
+  restored by truncation on a catch or a driver exit.
+- **Vector/range folds were one quantum (KI-226, ADR-402)** — owed preemption, and resumable
+  `%vector-reduce` / `%range-reduce` that stop between elements. Their primitive loops run in
+  spans bounded by the inner loop's own compare: `reduce` reads 23% fewer instructions than
+  before.
+- **A process re-queued behind a long quantum waited it out (KI-227)** — at a 200-reduction
+  quantum the median request waited 2 144 µs. Bounding the quanta fixed it (15 µs). A peer
+  wake on every such enqueue was tried first and reverted: `supervisor` +12%, no latency
+  gain once quanta were bounded.
+- **A stale inlined native survived a redefinition (KI-228)** — found because `undef_test`
+  failed 10/10 on the binary from before this work: the compiler stored a lowering that
+  finished after the arm was reset, and its dedupe map stamped it with the new epoch.
+- **`spawn` promoted each closure into the shared region (KI-229, ADR-404)**: the region's
+  collector held the `promote_lock` writer for 100–300 µs; spawns now copy captured values
+  into the child and keep the code shared.
+- **A set, ratio or decimal literal put its function on the tree-walker for good (KI-230)** —
+  the crash reporter's quantum never ended because `take-over` folds into `#{}`.
+- **A run-check verdict recorded without the stdlib image replayed its loads forever
+  (KI-231)** — after a `std/` edit a trivial program booted in 148M instructions instead of
+  81M until the cache entry aged out; it read as an 8% `nqueens` regression until traced.
+- **`:long-schedule` (ADR-403)** in the system monitor, and `make latency-gate`
+  (`stress/latency_probe.blsp`, the benchmark box's tail gate).
+- The sampling profiler samples a native loop that cannot yield (it used to see it only
+  because such loops fell back to the interpreter every quantum).
+- **Base RSS +27% in the brood-benchmarks refresh was transparent huge pages**, not memory:
+  +1% with `MIMALLOC_ALLOW_THP=0` (docs/benchmarking.md §1.5).
+
+**Result** (A/B against v0.37.0, `scripts/ab-bench.sh --floor`, flagged rows re-run alone
+best-of-11): `latency` 4 789 → 2 551 ms (−47%); `make latency-gate` worst p99 115 → 80 µs;
+at a 200-reduction quantum p50 86–3 263 → 15 µs. `reduce` −10%, `loop` −6%; `fib`, `pfib`,
+`nbody`, `sort`, `supervisor` level. **Open cost:** `nqueens` +4.7%, `ring` +5.0%,
+`bintree` +3.8% — instructions +1.6%, ~+1% and +4.6%; the remainder is lower IPC, not yet
+attributed. Gates: `make test-both` 1829/1829 on both engines, `make gcstress` clean, fuzz
+13 generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy
+`--all-features` clean.
+

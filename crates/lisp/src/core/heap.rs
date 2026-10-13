@@ -387,6 +387,27 @@ impl Heap {
     }
 }
 
+/// One open inline `try` (ADR-399) — see [`Heap::vm_handlers`]. Everything the bytecode
+/// driver needs to unwind to the frame that opened it and run its handler there.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct VmHandler {
+    /// The `roots` index of the frame that executed the `TryEnter`. Frames above it in the
+    /// same driver have strictly larger bases, so this names the frame uniquely.
+    pub(crate) base: usize,
+    /// `roots` length at the `TryEnter`: the operand-stack height the handler starts at.
+    pub(crate) sp: usize,
+    /// `env_roots` / `live_vm_arms` lengths at the `TryEnter`, truncated back to on a catch.
+    pub(crate) env_len: usize,
+    pub(crate) arms_len: usize,
+    /// The handler code's ip in the frame's chunk.
+    pub(crate) ip: usize,
+    /// The absolute `roots` index of the slot the caught value is bound to.
+    pub(crate) bind: usize,
+    /// The dynamic stack's length at the `TryEnter`: a `binding` the error skipped the exit
+    /// of is undone by truncating back to it (ADR-401).
+    pub(crate) dyn_len: usize,
+}
+
 pub struct Heap {
     /// The **nursery** (young generation): every `alloc_*` bumps into here, so it
     /// holds the freshly-allocated, mostly-short-lived objects. A *minor*
@@ -998,6 +1019,30 @@ pub struct Heap {
     /// error); the arm returns the error outcome and [`vm_run_bc`] takes this to propagate.
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     pub(crate) jit_pending_error: Option<crate::error::LispError>,
+    /// The open inline `try`s of this process's bytecode drivers, innermost last (ADR-399):
+    /// pushed by `Inst::TryEnter`, popped by `Inst::TryExit` or by the driver catching an
+    /// error into one. Each driver only consults the entries above the length it found on
+    /// entry (its floor), so a nested driver's error can never land in an outer driver's
+    /// handler without crossing the native frame between them. Plain indices into `roots`
+    /// / `env_roots` / `live_vm_arms`, never handles, so the collector ignores it.
+    pub(crate) vm_handlers: Vec<VmHandler>,
+    /// Set by a top-level bytecode driver just before it enters native code (ADR-400):
+    /// `jit_tier` copies it into the activation's `JitCallCtx::unwind` and clears it at
+    /// once, so no entry nested inside that activation can inherit it.
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub(crate) jit_entry_unwind: bool,
+    /// Whether the callee a runtime callback is about to run may preempt by unwinding
+    /// (ADR-400): the calling activation's `unwind`, unless its `no_child_unwind` says it
+    /// cannot be rebuilt mid-call — as asserted by that callback
+    /// (`JitCallCtx::assert_into`).
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub(crate) jit_child_unwind: bool,
+    /// Native activations left before the entry reduction poll settles a batch with the
+    /// scheduler (ADR-400): decremented by every unwindable native activation of an arm that
+    /// makes calls, so a native recursion — which has no back edge to poll at — is charged
+    /// one reduction per call, as the interpreter charges it, and can be preempted.
+    #[cfg_attr(not(feature = "jit"), allow(dead_code))]
+    pub(crate) jit_call_budget: i32,
     /// Suspend-host attribution (see `jit_suspend_feedback`). When THIS process's
     /// `receive` dirty-blocks its worker (the §7.4 carve-out: a native frame between the
     /// body driver and the receive means no state capture, so the worker thread waits on
@@ -1189,6 +1234,8 @@ pub(crate) struct JitCeremonyOffsets {
     /// `JitCallCtx` instead, so those offsets are no longer needed here.
     pub native_gateway_seq: usize,
     pub blocked_under_gateway: usize,
+    /// `Heap::jit_call_budget` — the entry reduction poll's countdown (ADR-400).
+    pub jit_call_budget: usize,
 }
 
 #[cfg(feature = "jit")]
@@ -1200,6 +1247,7 @@ pub(crate) fn jit_ceremony_offsets() -> JitCeremonyOffsets {
         roots: std::mem::offset_of!(Heap, roots),
         native_gateway_seq: std::mem::offset_of!(Heap, native_gateway_seq),
         blocked_under_gateway: std::mem::offset_of!(Heap, blocked_under_gateway),
+        jit_call_budget: std::mem::offset_of!(Heap, jit_call_budget),
     }
 }
 
@@ -1518,6 +1566,10 @@ impl Heap {
             jit_force_vm: false,
             jit_dbg_fn: u32::MAX,
             jit_pending_error: None,
+            vm_handlers: Vec::new(),
+            jit_entry_unwind: false,
+            jit_child_unwind: false,
+            jit_call_budget: 0,
             native_gateway_seq: 0,
             cur_native_gateway: 0,
             blocked_under_gateway: 0,
@@ -1609,6 +1661,10 @@ impl Heap {
             jit_force_vm: false,
             jit_dbg_fn: u32::MAX,
             jit_pending_error: None,
+            vm_handlers: Vec::new(),
+            jit_entry_unwind: false,
+            jit_child_unwind: false,
+            jit_call_budget: 0,
             native_gateway_seq: 0,
             cur_native_gateway: 0,
             blocked_under_gateway: 0,

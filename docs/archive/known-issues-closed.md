@@ -13090,3 +13090,124 @@ profile overrides only `binary(suite)` to 25 minutes, and ci.yml's tree-walker s
 with `--profile tree-walker`; the VM jobs keep the 15-minute kill. **Guard.** The next CI
 runs' tree-walker suite line should read `PASS` on the first try — a `TRY 1 TMT` there is
 this entry again.
+
+## KI-223 — every `try` body ran as one quantum; a `receive` in one blocked its worker ✅ FIXED 2026-10-12
+
+**Symptom.** A 50 ms loop inside `(try … (catch e nil))` in a spawned process ran in 1
+quantum at every tier (`BROOD_SCHED_DBG`: one `end … outcome=done`), where the same loop
+outside `try` took ~200. **Cause.** The compiler inlined `%try` as `Inst::TryCatch`, which ran
+the body through `exec_value` — a nested evaluation the driver cannot capture, with
+`capture_top_level` switched off so a `receive` in it dirty-blocked the worker.
+`std/net/http.blsp` runs every request handler inside `try`, so every HTTP handler was
+non-preemptible. **Why it survived.** `preemption.rs` covers one shape (a bare loop at the
+bottom of a process), the latency row's handlers were not in a `try`, and nothing timed a
+quantum. **Fix.** ADR-399. **Guard.** `crates/lisp/tests/preemption_shapes.rs` — run against
+`c7e7bae3`, every try shape failed (`a loop inside try: first message was :hog-done`) and the
+receive test hung into its 120 s cap; green now.
+
+## KI-224 — warm native code called from warm native code was never preempted ✅ FIXED 2026-10-12
+
+**Symptom.** After 500 warm spawns from one site, a 2.5 ms loop in a new process ran as one
+10.3 ms quantum (196 quanta / 4.5 ms with a cold site); the latency row's fat handlers held
+their worker 1–2 ms each, ~2 500 times a run. **Cause.** Native code was preemptible only at a
+self-tail back edge of an activation the driver had entered itself. Under a native caller the
+callee's preempt (outcome 2) re-ran it on a nested interpreter, which cannot capture — so it
+ran to the end there, slower. A native recursion has no back edge and never polled.
+**Why it survived.** Every preemption test entered native code from the driver. **Fix.**
+ADR-400 (unwind into interpreter frames; entry reduction poll; pure self-recursive arms get the
+journal area; the self-inlined layout named so its frame is never read as journalled).
+**Guard.** `preemption_shapes.rs`, one native shape per test process — red with the unwind
+start disabled (all four), and the recursion test red with the entry poll disabled. A first
+version raced several shapes in one process and passed under sabotage: a hot re-lowering ran
+the next shape's callers interpreted, through the always-preemptible VM→native path.
+
+## KI-225 — a `binding` body could not be preempted ✅ FIXED 2026-10-12
+
+**Symptom/Cause.** As KI-223: `binding` expanded to a thunk the `%binding` native ran nested.
+**Fix.** ADR-401. **Guard.** `preemption_shapes.rs` ("a loop inside binding" and
+`a_receive_inside_binding_parks_and_keeps_its_binding`), red (`:hog-done` first; the receive
+test hung) with the inlining disabled.
+
+## KI-226 — vector and range folds ran as one quantum ✅ FIXED 2026-10-12
+
+**Symptom.** `(reduce (range 40) 0 slow-reducer)` and its vector twin: 1 quantum at every
+tier; a 3 M-element `(reduce (range n) 0 +)` likewise. **Cause.** `%vector-reduce` and
+`%range-reduce` call the reducer from one native loop. **Fix.** ADR-402 (owed preemption;
+resumable folds). **Guard.** Four fold shapes in `preemption_shapes.rs`, all red with
+resumption disabled.
+
+## KI-227 — a preempted process waited behind other work while idle cores slept ✅ FIXED 2026-10-12
+
+**Symptom.** At `BROOD_REDUCTIONS=200` the latency row read p50 2 144 µs, p99 40 ms (v0.37.0:
+p50 86–3 263 µs, p99 5–117 ms across two runs).
+**Cause.** A preempted process is re-queued on its own worker (`enqueue`), which elides the
+wake syscall for the current worker and wakes no peer; the parked peers only re-probe on their
+10 ms (or longer, idle-grown) backoff. So a process re-queued behind a LONG quantum waited it
+out — and quanta were long because the row's fat handlers (a native loop under a native
+caller) could not be preempted at all.
+**Why it survived.** At the default quantum the row's handlers rarely queue behind each
+other. **Fix.** Bounding the quanta (ADR-400's native unwind, ADR-402's resumable folds): a
+queue of short quanta drains fast without any peer's help. A first fix woke a parked peer on
+every enqueue that landed behind other work; it cost `supervisor` 12% and `ring` 5%, and
+once the quanta were bounded it bought nothing (p50 15 µs without it, 14 µs with), so it was
+reverted — the `wake_a_parked_peer` doc records the same lesson from the spawn path.
+**Guard.** The latency row at `BROOD_REDUCTIONS=200`: p50 15 µs, p99 35 µs.
+
+## KI-228 — a stale inlined native survived a redefinition ✅ FIXED 2026-10-12
+
+**Symptom.** `undef_test` "defining the function again is honoured by the same caller":
+`(spin 500 0)` → 500 after `step` was redefined to add 2 — 10 of 10 runs, on the binary from
+before this work too. **Cause.** Two holes in the background compiler's publish step. A
+lowering that finished after a redefinition reset the arm was stored anyway; and the
+cross-process dedupe map stamped the result with the arm's epoch read AFTER lowering — the
+new one — and served the stale body to the re-queued copy, which swapped it in. **Why it
+survived.** The test ran in CI; this is the timing in which its warm-up stops at the first
+`:native`. **Fix.** A lowering is valid only for the epoch it started under: published only
+while the arm still holds it, re-checked after the store, and stamped with it in the map.
+**Guard.** `undef_test` 10/10 (was 0/10).
+
+## KI-229 — a stream of spawns stalled the spawner on the shared region's collector ✅ FIXED 2026-10-12
+
+**Symptom.** The latency row's dispatcher saw ~25 spawns per run over 100 µs (up to
+2.3 ms); instrumented, the time was all in `promote` (100–313 µs). **Cause.** `spawn` promoted
+each body closure — with its captured locals — into the shared RUNTIME region; the region's
+multi-process collector aged and reclaimed that churn, holding the `promote_lock` writer.
+**Fix.** ADR-404. **Guard.** The latency row (slowest spawn 0.4 ms) and the whole suite — a
+first version parented the copy's env on an unset global, a self-parented frame every free
+lookup walked forever: the latency row and a 1 000-spawn test program hung on it.
+
+## KI-230 — a set, ratio or decimal literal put its function on the tree-walker for good ✅ FIXED 2026-10-12
+
+**Symptom.** `BROOD_DEFER_DBG=1` named `crash-report/take-over` as a tree-walker defer after a
+program's first crash, and `BROOD_SCHED_DBG=1` showed the reporter's quantum never ending: its
+`receive` blocked the worker thread (the scheduler's quantum ledger said `inside pid=3 for
+366s`). Any function with `#{…}`, `1/3` or `1.5M` in it behaved the same. **Cause.**
+`lower::compile_node_inner` had no arm for a set literal, a ratio or a decimal, so the arm did
+not compile and the whole function ran on the tree-walker — which cannot capture, so its calls
+run nested and its `receive`s block. `take-over` folds its first event into `#{}`.
+**Why it survived.** Every result was right; only scheduling changed, and nothing timed a
+quantum or counted defers. **Fix.** Set literals lower like vector literals (one shared
+constant when every element evaluates to itself, else `(%set e…)`, which dedups by structural
+equality exactly as the evaluator does); ratio and decimal join the self-evaluating
+constants; `value_is_immovable` checks `Decimal`/`Ratio`/`Bytes` instead of passing them as
+handle-free. **Guard.** `preemption_shapes.rs` "a loop under a function with a set/ratio/
+decimal literal" — red (`:hog-done` first, all three) with the lowering disabled; the crash
+reporter now parks after its report.
+
+## KI-231 — a run-check verdict recorded without the stdlib image replayed its loads forever ✅ FIXED 2026-10-12
+
+**Symptom.** After a `std/` edit, `brood one.blsp` (`(io/puts 1)`) cost 148M instructions
+against 81M on the previous binary, and `BROOD_IMAGE_TRACE=1` showed it materialising `map`,
+`string`, `math`, `reflect`, `regex`, `seq` and `table` before printing — with the stdlib image
+`:live`. Every benchmark row carried the same startup, which read as a +8% `nqueens` regression
+until it was traced. **Cause.** The run pre-flight's cache (`cli_support::run_check_cache_*`)
+keys a verdict on the source, the build id, the stdlib id and the checking mode. Run before
+`nest` rebuilt the image, the walk scanned module sources and loaded `os` (and its closure)
+along the way; the entry recorded `loads io os`, and a hit replays its loads — so once the image
+existed, every run still `require`d `os` and its seven modules eagerly. **Why it survived.**
+The image is rebuilt by `nest`, never by `brood`, so the window between a `std/` edit and the
+next `nest` run is exactly when a developer measures, and the stale entry outlived it.
+**Fix.** The key includes whether this process installed the stdlib image
+(`*std-image-installed*`). **Guard.** `cli_support::run_check_cache_tests` — red with the bit
+left out of the hash.
+

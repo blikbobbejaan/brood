@@ -306,16 +306,41 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
                 module: *module,
             });
         }
+        // `TryEnter · body · TryExit · Jump end · handler: … · end:` (ADR-399). Both paths
+        // leave exactly one value above the operand height `TryEnter` recorded: the body's
+        // by falling through `TryExit`, the handler's after the driver truncated the stack
+        // back to that height and stored the caught value in `bind_slot`.
         Node::TryCatch {
             body,
             bind_slot,
             handler,
         } => {
-            code.push(Inst::TryCatch {
-                body: NodePtr(NonNull::from(body.as_ref())),
+            let enter = code.len();
+            code.push(Inst::TryEnter {
+                handler: 0, // backpatched
                 bind_slot: *bind_slot,
-                handler: NodePtr(NonNull::from(handler.as_ref())),
             });
+            emit_node(body, code)?;
+            code.push(Inst::TryExit);
+            let j_end = code.len();
+            code.push(Inst::Jump(0)); // backpatched
+            let handler_ip = code.len();
+            emit_node(handler, code)?;
+            let end_ip = code.len();
+            code[enter] = Inst::TryEnter {
+                handler: handler_ip,
+                bind_slot: *bind_slot,
+            };
+            code[j_end] = Inst::Jump(end_ip);
+        }
+        // `vals · BindEnter · body · BindExit` (ADR-401).
+        Node::Binding { names, vals, body } => {
+            emit_node(vals, code)?;
+            code.push(Inst::BindEnter {
+                names: names.clone(),
+            });
+            emit_node(body, code)?;
+            code.push(Inst::BindExit(names.len()));
         }
     }
     Some(())

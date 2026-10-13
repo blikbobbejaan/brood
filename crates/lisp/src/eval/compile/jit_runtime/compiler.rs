@@ -391,6 +391,51 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                 } else {
                     &arm.jit_code
                 };
+                // The epoch this lowering starts under — the one `jit_tier` stamped on the arm
+                // when it queued the work. What comes out is valid for THAT epoch only. A
+                // `def` (or a deopt re-lowering) resets the arm meanwhile (`reset_native_state`
+                // nulls `jit_code`, then `inline_code`), and the next activation re-queues it
+                // under the new epoch; a lowering that finished after that used to be stored
+                // anyway: into `jit_code`, where the re-queued compile then found the slot
+                // filled and skipped, or into `inline_code`, swapped in on the next entry —
+                // and the dedupe map below recorded it under the NEW epoch, serving it to the
+                // re-queued copy. A leaf-spliced `step` kept running after `step` was
+                // redefined (undef_test, 10 of 10).
+                let lowered_at = arm.compile_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                let still_valid = |arm: &CompiledArm| {
+                    use std::sync::atomic::Ordering::SeqCst;
+                    if arm.compile_epoch.load(SeqCst) != lowered_at {
+                        return false;
+                    }
+                    // An inlined body is swapped in over the small native it was lowered
+                    // beside, so that native must still be the arm's.
+                    !inlined || {
+                        let code = arm.jit_code.load(SeqCst);
+                        !code.is_null() && code != crate::jit::QUEUED && code != crate::jit::BAILED
+                    }
+                };
+                // Publish `ptr` into `slot` while it is still valid, and re-check AFTER the
+                // store: a reset landing between the check and the store would otherwise be
+                // undone by it. Taken back, the slot holds what the reset left (the small slot
+                // is QUEUED again by then, its fresh compile already behind this one).
+                let install = |ptr: *mut u8| -> bool {
+                    use std::sync::atomic::Ordering::SeqCst;
+                    if !still_valid(arm) {
+                        return false;
+                    }
+                    let before = slot.load(SeqCst);
+                    slot.store(ptr, SeqCst);
+                    if still_valid(arm) {
+                        return true;
+                    }
+                    let restore = if inlined {
+                        std::ptr::null_mut()
+                    } else {
+                        before
+                    };
+                    let _ = slot.compare_exchange(ptr, restore, SeqCst, SeqCst);
+                    false
+                };
                 // Already resolved (a spinning loop sync-compiled it via
                 // `jit_compile_now`, or it was bailed) — don't compile it twice.
                 // A queued small arm holds QUEUED here; a queued inlined upgrade
@@ -438,8 +483,8 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                         &published
                     };
                     if let Some(&(ptr, epoch)) = map.get(&(rt_tag, key, poly)) {
-                        if epoch == arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire) {
-                            slot.store(ptr as *mut u8, Release);
+                        if epoch == lowered_at {
+                            install(ptr as *mut u8);
                             return;
                         }
                     }
@@ -487,21 +532,16 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                         // consts (a garbage map_get key) into still-installed native code.
                         // Pinned before the pointer is published (see `jit_keep_alive`).
                         jit_keep_alive(ptr, arm);
-                        slot.store(ptr as *mut u8, Release);
-                        // Remember it for the queued copies still behind this one.
-                        if let Some(key) = arm.share_key {
+                        // Remember it for the queued copies still behind this one — under the
+                        // epoch it was lowered at, and only if it was still valid to install.
+                        let installed = install(ptr as *mut u8);
+                        if let Some(key) = arm.share_key.filter(|_| installed) {
                             let map = if inlined {
                                 &mut published_inline
                             } else {
                                 &mut published
                             };
-                            map.insert(
-                                (rt_tag, key, poly),
-                                (
-                                    ptr as usize,
-                                    arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire),
-                                ),
-                            );
+                            map.insert((rt_tag, key, poly), (ptr as usize, lowered_at));
                         }
                     }
                     Ok(None) => {

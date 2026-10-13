@@ -25555,3 +25555,200 @@ reader has to learn and a code path a change has to keep working.
 
 **Consequences.** Fewer names and paths; a bisect into an old default now needs a build of an
 older commit rather than an env var. The removed list is in the 2026-10-09 devlog entry.
+
+## ADR-399 — `try` bodies run in the bytecode driver, not a nested evaluation
+
+**Status:** implemented (2026-10-12).
+
+**Context.** The compiler inlined `(%try (fn () body) (fn (e) handler))` as one
+`Inst::TryCatch` that ran the body and the handler through `exec_value` — a nested evaluation
+the bytecode driver cannot capture. Nothing inside it could be preempted (a 50 ms loop in a
+`try` ran as one quantum, at every tier), and a `receive` inside it blocked its worker thread
+instead of parking. `http/serve` runs every request handler inside `try`
+(`std/net/http.blsp`), as `agent` runs its function, so every HTTP handler was
+non-preemptible.
+
+**Decision.** `try` compiles to ordinary bytecode in the arm's own chunk:
+`TryEnter{handler, bind_slot} · body · TryExit · Jump end · handler: … · end:`. `TryEnter`
+pushes a record on the process's handler stack (`Heap::vm_handlers`: the frame's base, the
+operand height, the env-root/live-arm lengths, the handler ip, the bind slot); `TryExit` pops
+it. The driver (`vm_run_bc`) owns the catch: every error it would return goes through
+`raise!`, which — for a non-control error with one of THIS driver's handlers open (above the
+floor it recorded on entry, carried in `Suspended::handler_floor`) — pops the frames above
+the handler's, binds the caught value, truncates to the recorded heights and resumes at the
+handler ip. The trace names exactly the frames popped, which is what the nested evaluation
+used to collect. Control signals (suspend, kill, preempt-unwind) are never caught.
+
+The non-inlined `%try` builtin (a computed thunk, `%try-described`) is unchanged and still
+nested; only the MCP tooling uses it directly.
+
+**Consequences.** Code in a `try` body or handler is preempted and parks at `receive` like any
+other. Arms containing `try` stay off the JIT, as before. Guards:
+`crates/lisp/tests/preemption_shapes.rs` (`every_shape_of_running_code_is_preemptible`,
+`a_receive_inside_try_parks_instead_of_blocking_the_worker`), both failing on the previous
+runtime.
+
+## ADR-400 — A native preempt unwinds native activations into interpreter frames
+
+**Status:** implemented (2026-10-12).
+
+**Context.** The driver parks only an all-interpreter stack, so native code was preemptible
+only where the driver itself had entered it, and only at a self-tail back edge. A native loop
+called from another native arm took its preempt as a deopt: the caller re-ran it on a nested
+interpreter that could not capture either, so the loop finished there — slower, and still in
+one quantum. A native recursion (no back edge) never polled at all. A warm request handler
+calling a warm loop was one quantum however long the loop ran: the latency row's fat
+handlers read 1–2 ms each.
+
+**Decision.** Each native activation carries `JitCallCtx::unwind`: 1 only when every
+activation between it and a top-level driver can be rebuilt as an interpreter frame. The
+driver sets it on its native entries (frame path, VM→native direct call); a native→native
+call passes on the caller's bit, unless the caller cannot be rebuilt mid-call (the
+self-inlined upgrade, whose ips match no chunk: its prologue sets `no_child_unwind`, and its
+own call sites pass 0); every other way in (a builtin calling back, a nested evaluation, the
+tree-walker) builds the context with 0. So the safe answer is the default.
+
+- A spent budget preempts only an activation with `unwind` set, and only when some process
+  is waiting for a worker (`scheduler::work_waiting`, one relaxed load of the queued count):
+  unwinding and rebuilding is the costly preemption, and with nothing queued anywhere it buys
+  no latency — the process would be re-queued and picked straight back up. Otherwise the
+  activation keeps running native on a fresh quantum (it used to deopt into an interpreter
+  that could not preempt either), except that a pending hard kill still leaves for the
+  interpreter. The `:long-schedule` timer restarts there (ADR-403), so a lone compute process
+  is not reported as code that held a worker it could not give up.
+- The preempted activation's caller handler records it and parks `Control::PreemptUnwind`;
+  each caller up to the driver leaves through its error path, which first writes an
+  **in-call journal** — the ip after the call in flight, and the operands beneath it, copied
+  to room `brood_rt_in_call_journal` reserves at the top of `roots` (a side record: every
+  handler on the way out leaves `roots` as it lies, so the copies stay rooted until the
+  rebuild). Only on the error branch, so the success path pays nothing; for a real error the
+  callback returns null and nothing is stored. Each handler records its callee with the
+  journal it wrote (a per-thread list: an unwind never crosses a park). The driver rebuilds
+  each as an interpreter frame — callers paused just after their `Call`, the preempted one
+  settled as the frame path settles a preempt — and parks. On resume the innermost re-tiers
+  into native code and the callers finish interpreted.
+- **Entry reduction poll.** An unwindable arm — one with a non-tail call whose layout can be
+  rebuilt — charges one reduction per activation from a countdown on the heap
+  (`Heap::jit_call_budget`), settling a batch with `brood_rt_tick_n`, so a native recursion
+  is preemptible too. No branch on `unwind` of its own: the settle callback checks it.
+- **No journal area for the in-call journal.** A first version wrote it into the frame's
+  checkpoint journal and gave pure self-recursive arms that area: its zeroing and reset on
+  every activation cost `bintree` 10% of its instructions. The side record needs none, so
+  pure self-recursive arms keep the exemption they had (no area, a deopt re-runs from ip 0).
+  The self-inlined upgrade's frame is named (`FrameLayout::SelfSpliced`) so nothing reads the
+  small layout's journal index out of it — that index is a live local there.
+
+**Not covered.** The unboxed register worker (`fib`'s path) keeps its whole recursion in
+registers and cannot be rebuilt; demoting it to boxed code costs ~45× on `fib`, so a long pure
+numeric recursion there still runs as one quantum, as does a self-inlined activation. Both
+are visible through the `:long-schedule` system-monitor event.
+
+**Consequences.** Guards in `crates/lisp/tests/preemption_shapes.rs` — one native shape per
+test process (a hot re-lowering in one shape could run the next shape's callers interpreted
+and pass for the wrong reason); each sabotage-verified by disabling the unwind start or the
+entry poll. The value tests (a native chain; a pure tree walk, whose only operand record is
+the side journal) run beside a companion hog so a process is always waiting, and fail when
+the rebuild drops the journalled operands; `jit_lowers_and_runs_a_self_recursive_int_loop`
+pins both sides of `work_waiting` (each direction sabotage-verified). Cost on the A/B rows
+against v0.37.0 (best-of-11, pinned): `bintree` +3.8%, `nqueens` +4.7%, `ring` +5.0% — in
+instructions only +4.6%, +1.6% and +1% (single worker), the rest lower IPC not yet
+attributed; `fib` and `supervisor` unchanged. Bought: the `latency` row −47%. A parked process's floor is 3 997 B of the 4 000 B budget
+(`tests/process_floor.rs`): the unwind list lives on the thread, not the heap, for that
+reason.
+
+## ADR-401 — `binding` bodies run in the bytecode driver
+
+**Status:** implemented (2026-10-12).
+
+**Context.** `binding` expanded to `(%binding '(n…) [v…] (fn () body…))`, and the native ran
+the thunk as a nested evaluation — the same hole ADR-399 closed for `try`: a body that could
+not be preempted, and a `receive` in it that blocked its worker. `with-out-str`
+(`std/io.blsp`), the test runner and editor code all wrap bodies in `binding`.
+
+**Decision.** The VM compiler inlines the macro's canonical shape as `Node::Binding`, emitted
+as `vals · BindEnter{names} · body · BindExit(n)`: `BindEnter` pops the value vector and pushes
+the bindings (`builtins::push_bindings` — the one implementation the native, the instruction
+and the evaluator twin share, so the not-dynamic and count checks read the same), `BindExit`
+pops them. An error that skips `BindExit` is undone by **truncation**: an inline `try`
+records the dynamic stack's length (`VmHandler::dyn_len`) and a catch truncates to it; a
+driver records its entry length (`Suspended::dyn_floor`, a `u32` packed beside the handler
+floor so the parked-process floor holds) and truncates to it when an error leaves the driver.
+The tree-walker keeps the native (its Rust frame restores on the way out).
+
+**Consequences.** A `binding` body is preempted, parks at `receive` and resumes with its
+bindings in force. Guards: `preemption_shapes.rs` ("a loop inside binding",
+`a_receive_inside_binding_parks_and_keeps_its_binding`), both red with the inlining disabled.
+
+## ADR-402 — Owed preemption, and folds that stop between elements
+
+**Status:** implemented (2026-10-12).
+
+**Context.** Code that cannot yield — a nested evaluation behind a builtin, a native activation
+that cannot unwind (ADR-400) — refilled the budget when its quantum ran out and forgot it, so
+the process carried on for another full quantum after returning. And the vector and range
+folds (`%vector-reduce`, `%range-reduce`, behind `fold`/`reduce`/`map`/`reverse`) call the
+reducer from one native loop: a 40-element fold whose reducer ran 10 ms was one quantum.
+
+**Decision.**
+- A quantum that runs out where nothing can yield records an **owed** preemption
+  (`scheduler::preempt`) when some process is waiting for a worker (ADR-400's
+  `work_waiting`); every point that can capture — the driver's loop top, the inline loop
+  safepoint, an unwindable native poll — preempts on it as on a spent budget. Cleared at each
+  quantum's start.
+- The two folds take an optional start argument that makes them **resumable**: between two
+  elements (a span of 4 096 for a primitive reducer, which charges one reduction per 8
+  elements) `resumable_should_stop` turns an owed preemption, or a budget its own work spent
+  while a process waits, into a **request** and the fold returns the accumulator so far,
+  leaving where to resume in a thread-local that `fold` reads at once through
+  `%fold-resume-at` (nothing between the two can yield); only then does it call the
+  resuming wrapper (`%vector-fold` / `%range-fold`), and the process parks at the wrapper's
+  back edge. Where nothing can capture, the request waits and only a fresh debt stops the
+  fold again — one stop per quantum, not per element. Three-argument calls never stop.
+- The primitive loop runs in spans whose end is the inner loop's bound, so an element costs
+  the one compare it always did: a per-element span counter cost the `reduce` row 13%, and
+  with it gone the row reads 23% fewer instructions than before ADR-402.
+
+**Consequences.** A fold yields within one reducer call of its quantum ending (a single long
+reducer call still runs to its end; its debt is then paid at once). Guards: four fold shapes
+in `preemption_shapes.rs`, all red with resumption disabled.
+
+## ADR-403 — `:long-schedule` in the system monitor
+
+**Status:** implemented (2026-10-12).
+
+**Decision.** `(proc/system-monitor pid {:long-schedule-us n})` reports each scheduling quantum
+that held its worker at least `n` µs as `[:system :long-schedule pid {:us d}]` — BEAM's
+`long_schedule`. A quantum is bounded by the reduction budget, so one this long is code that
+could not be preempted (a long native builtin, the unboxed register worker's recursion, a
+blocking call). A budget that runs out with no process waiting for a worker is not
+preempted (ADR-400) and restarts the timer: nothing was kept from running. The worker times
+a quantum only while a subscriber selects the kind (one relaxed load otherwise). Selected by its threshold; a subscription armed with no options map
+("every event") gets 10 ms. `telemetry/watch-runtime` re-emits it as `[:runtime
+:long-schedule]` with the `{:us}` measurement.
+
+**Consequences.** Every preemption gap this work closed would have shown up here first.
+Guard: `tests/sysmon_test.blsp` (a large `sort`, one native call, at every tier).
+
+## ADR-404 — `spawn` copies a closure's captured values instead of promoting it
+
+**Status:** implemented (2026-10-12).
+
+**Context.** `spawn` promoted the body closure into the shared RUNTIME region so the child
+could use it. For a closure that captures locals — every `(spawn (handle request))` — that
+appended a closure and an env to the region all processes share, per spawn; the multi-process
+collector then had to age and reclaim it, and a spawn landing in its window waited on the
+`promote_lock` writer for 100–300 µs. Under a request stream that was the dispatcher's latency
+spikes, and the reclamation ran at the dispatcher's own safepoints.
+
+**Decision.** When the closure's code already lives in a shared region,
+`message::copy_closure_into` builds the child's copy with the SAME arms — so the compiled and
+JIT'd bodies, keyed by that AST (`cache_key`), are shared as before — and an env frame in the
+child's heap holding copies of the captured values, made exactly as a message copies them.
+A closure that captures nothing, code that is not shared, or a value the message copy refuses
+(a self-referential local closure) falls back to `promote`. The process's first run takes its
+body (`Process::drive`), because a handle into the child's own heap is not rooted once the
+driver has it.
+
+**Consequences.** Spawns no longer grow the shared region or contend on its collector. A
+captured local closure arrives as a copy (as in a message): `=` on it against the parent's is
+false, as for any function that crossed a process boundary.

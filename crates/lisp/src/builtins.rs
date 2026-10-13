@@ -44,6 +44,7 @@ pub(crate) mod contracts;
 mod crypto;
 mod diagnostics;
 mod dynamic;
+pub(crate) use dynamic::push_bindings;
 mod errors;
 mod evaluation;
 mod filesystem;

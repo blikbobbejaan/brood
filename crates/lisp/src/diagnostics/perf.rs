@@ -84,6 +84,7 @@ mod imp {
         jit_deopt,
         /// A tiered arm was preempted by the reduction budget — outcome 2.
         jit_preempt,
+        jit_preempt_unwind,
         /// `jit_dispatch_call` linked native→native and the callee returned **Done**
         /// (a leaf — a value in `roots[base]`, not a tail-call). The path under
         /// scrutiny for the bool-leaf miscompile.

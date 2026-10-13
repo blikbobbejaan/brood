@@ -23,8 +23,6 @@
 
 use smallvec::SmallVec;
 
-use std::ptr::NonNull;
-
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use std::sync::Arc;
@@ -196,9 +194,6 @@ use ir::{next_arm_uid, ArmSpec, ChunkExit, Step};
 // The process-local arm handle (KI-40) — named by `Heap`'s IC entry and live-arm stack,
 // so it is re-exported at the crate-visible `compile::` path rather than kept private.
 pub use ir::ArmHandle;
-
-// NodePtr is pub in ir, but not re-exported from mod.rs — import privately:
-use ir::NodePtr;
 
 mod lower;
 pub(crate) use lower::*;
@@ -433,6 +428,14 @@ pub(crate) struct Suspended {
     entry_roots: usize,
     entry_env: usize,
     entry_arms: usize,
+    /// `Heap::vm_handlers` length at the driver's entry: the open `try`s below it belong
+    /// to an outer driver and are never this one's to catch into (ADR-399).
+    handler_floor: u32,
+    /// The dynamic stack's length at the driver's entry: an error that leaves the driver
+    /// truncates back to it, undoing every inline `binding` it skipped (ADR-401). `u32`s,
+    /// both, so the two floors take the space one word did — a parked process's
+    /// continuation counts against the per-process floor (`tests/process_floor.rs`).
+    dyn_floor: u32,
     /// The `(receive … (after ms …))` absolute wake time, or `None` to wait forever —
     /// the scheduler arms a timer from this so a parked process still fires its
     /// `after` clause.

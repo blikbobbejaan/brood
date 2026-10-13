@@ -48,6 +48,9 @@ pub(crate) fn jit_run_fast_link(
     callee_bases: (u32, u32),
     out: *mut Value,
 ) -> FastLinkOutcome {
+    // ADR-400: whether this callee may preempt by unwinding, as the callback this came
+    // through asserted it for the calling activation.
+    let unwind = heap.jit_child_unwind;
     heap.truncate_roots(stage_base + argc);
     // DEBUG ONLY: the JIT fast path bypasses `push_frame`, so validate the staged args
     // here too — catch a corrupt arg at the earliest native frame entry (bug #2).
@@ -99,8 +102,9 @@ pub(crate) fn jit_run_fast_link(
     heap.native_gateway_seq += 1;
     let gw_seq = heap.native_gateway_seq;
     let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-    let ctx = crate::jit::JitCallCtx::from_heap(heap);
-    let outcome = f(heap as *mut Heap, base as i64, out, &ctx);
+    let mut ctx = crate::jit::JitCallCtx::from_heap(heap);
+    ctx.unwind = unwind as u8;
+    let outcome = f(heap as *mut Heap, base as i64, out, &mut ctx);
     heap.cur_native_gateway = saved_gw;
     heap.set_ic_bases(saved_bases);
     heap.jit_force_vm = saved_force_vm;
@@ -161,6 +165,7 @@ pub(crate) fn jit_run_fast_link(
         callee_env,
         code as *const u8,
         out,
+        unwind,
     )
 }
 
@@ -222,6 +227,9 @@ pub(crate) fn jit_xcall_cold_outcome(
     out: *mut Value,
 ) -> i64 {
     let native_depth = heap.jit_native_depth;
+    // The inline path built the callee's context in IR with the `unwind` its caller may pass
+    // on — the value the callback just asserted into the heap (ADR-400).
+    let unwind = heap.jit_child_unwind;
     match jit_fast_link_cold_outcome(
         heap,
         outcome,
@@ -238,6 +246,7 @@ pub(crate) fn jit_xcall_cold_outcome(
         // falls back to the IC and then the callee's name.
         std::ptr::null(),
         out,
+        unwind,
     ) {
         FastLinkOutcome::Done => 0,
         FastLinkOutcome::Error => 1,
@@ -268,7 +277,33 @@ pub(super) fn jit_fast_link_cold_outcome(
     callee_env: EnvId,
     code: *const u8,
     out: *mut Value,
+    unwind: bool,
 ) -> FastLinkOutcome {
+    // ADR-400: a preempt this callee may honour, or one unwinding through it — record the
+    // callee and leave its frame for the driver to rebuild. The arm is resolved the way the
+    // deopt path below resolves it, minus the name lookup (a rebind cannot be told from the
+    // arm that ran, and an unnamed preempt is simply taken the old way).
+    if jit_unwind_through(heap, outcome, unwind, |h| {
+        h.vm_call_ic_probe(site, head, argc as u32, epoch)
+            .and_then(|(_, a)| a)
+            .map(|(arm, cenv, _)| (arm.arc().clone(), cenv))
+            .filter(|(arm, _)| jit_frame_shape_matches(arm, nslots))
+            .or_else(|| {
+                (!code.is_null())
+                    .then(|| jit_arm_for_code(code))
+                    .flatten()
+                    .map(|a| (a, callee_env))
+            })
+            .map(|(arm, env)| UnwindFrame {
+                bases: h.vm_arm_block(&arm),
+                arm,
+                base,
+                nslots,
+                env,
+            })
+    }) {
+        return FastLinkOutcome::Error;
+    }
     // These arms produce their value in Rust (a re-entered `apply_value` / `vm_resume_deopt`),
     // so they write it through `out` themselves — after all of their allocation, which is what
     // keeps the un-rooted `out` slot safe (see `crate::jit::JitArmFn`).

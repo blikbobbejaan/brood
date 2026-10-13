@@ -4,7 +4,7 @@
 //! declaration, the scoped rebind, and the predicate.
 
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{self, EnvId, Symbol, Value};
 use crate::error::{LispError, LispResult};
 use crate::eval::compile::apply_engine;
 
@@ -74,37 +74,46 @@ pub(super) fn binding(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult
     let syms = heap.seq_items(arg(args, 0))?;
     let vals = heap.seq_items(arg(args, 1))?;
     let thunk = arg(args, 2);
-    // Validate every name up front, before pushing anything — so a bad `binding`
-    // leaves the dynamic stack untouched rather than half-pushed.
     let mut names = Vec::with_capacity(syms.len());
     for s in &syms {
-        let sym = expect_symbol(heap, "binding", *s)?;
+        names.push(expect_symbol(heap, "binding", *s)?);
+    }
+    let len = heap.dynamics_len();
+    push_bindings(heap, &names, &vals)?;
+    let result = apply_engine(heap, thunk, &[], env);
+    heap.truncate_dynamics(len);
+    result
+}
+
+/// Push `names` bound to `vals` on the dynamic stack — the one implementation behind the
+/// `%binding` native, the VM's inline `binding` (`Inst::BindEnter`, ADR-401) and its
+/// evaluator twin. Every name must be dynamic (else it is almost certainly a typo — a plain
+/// global won't track the rebind), and the counts must match: matched lengths are a
+/// guarantee of the `binding` MACRO, not of the primitive, and a raw
+/// `(%binding '(*x*) [] thunk)` would otherwise bind a missing value as `nil` silently.
+/// Both are checked before anything is pushed, so a bad `binding` leaves the stack as it was.
+pub(crate) fn push_bindings(
+    heap: &mut Heap,
+    names: &[Symbol],
+    vals: &[Value],
+) -> Result<(), LispError> {
+    for &sym in names {
         if !value::is_dynamic(sym) {
             return Err(LispError::runtime(format!(
                 "binding: {} is not a dynamic variable (declare it with defdyn)",
                 value::symbol_name(sym)
             )));
         }
-        names.push(sym);
     }
-    // Matched lengths are a guarantee of the `binding` MACRO, not of this primitive —
-    // a raw `(%binding '(*x*) [] thunk)` would read the missing value as `nil` via
-    // `arg`'s default and bind that silently. Reject the shape instead: like the
-    // not-dynamic check above, this raises before anything is pushed, so the dynamic
-    // stack is untouched.
-    if syms.len() != vals.len() {
+    if names.len() != vals.len() {
         return Err(LispError::type_err(format!(
             "binding: {} name(s) but {} value(s) — each name needs exactly one value",
-            syms.len(),
+            names.len(),
             vals.len()
         )));
     }
     for (&sym, &val) in names.iter().zip(vals.iter()) {
         heap.push_dynamic(sym, val);
     }
-    let result = apply_engine(heap, thunk, &[], env);
-    for _ in 0..names.len() {
-        heap.pop_dynamic();
-    }
-    result
+    Ok(())
 }
