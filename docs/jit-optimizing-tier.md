@@ -367,7 +367,7 @@ callee beside it.** `mandelbrot`'s `row-sum` calls `->float` (a three-instructio
 `Const Local Prim2`) and `esc`, which is recursive and cannot be spliced, so the conversion
 stayed a real call at ~85 ns where every other language in the suite emits a machine cast.
 
-**Now:** partial splicing, default ON (`BROOD_NO_PARTIAL_LEAF=1` opts out). The derivation may
+**Now:** partial splicing, always on (its `BROOD_NO_PARTIAL_LEAF` opt-out was removed 2026-10-09). The derivation may
 keep a residual non-tail call, because the leaf-spliced layout carries **its own checkpoint** and
 a deopt out of it resumes in the spliced chunk. Measured **2.4× on the shape it targets** — a
 lowering self-tail caller with one spliceable leaf beside one residual call

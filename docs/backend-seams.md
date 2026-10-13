@@ -82,7 +82,8 @@ tests alone. Six obligations:
 
 **And the engine selector is a `bool`, not an abstraction.** `vm_enabled()` and
 `set_forced_engine(Option<bool>)` in `eval/compile.rs`: `Some(true)` VM, `Some(false)`
-tree-walker, `None` defers to `BROOD_VM`. That is *fine* as far as it goes — and the reason
+tree-walker, `None` defers to `BROOD_VM` (as of this survey; see item 3 for what replaced
+it). That is *fine* as far as it goes — and the reason
 engine swapping is tractable here is not the selector but the **differential harness** around
 it: both engines live in every binary, `make test-both` and a dedicated CI job
 (`.github/workflows/ci.yml`) run the whole suite through each, and `tests/differential.rs`
@@ -185,7 +186,8 @@ expensive institutional memory, and each one has a measurement session behind it
 - exempting `mandelbrot`'s `row-sum` from that gate was measured 2026-08-04 and is **not** a
   win (+0.7% `mandelbrot`, +5.1% `matmul` against 0.3% floors) — a negative result a second
   backend would otherwise re-derive from scratch;
-- float-global unboxing (ADR-related, `BROOD_NO_FLOAT_GLOBAL`) exists because an arm whose
+- float-global unboxing (unconditional; its `BROOD_NO_FLOAT_GLOBAL` opt-out was removed
+  2026-10-09) exists because an arm whose
   floats arrive from a `def`'d constant silently deopted on every activation until it bailed.
 
 A second backend re-implementing `lower` while re-deriving *these* is the real hazard of a
@@ -259,8 +261,10 @@ swapped.
 ## 4. Item 3 — `enum Engine` for the selector — ✅ done
 
 - `bool` → `enum Engine { TreeWalker, Bytecode }`; `vm_enabled()` → `active_engine()`;
-  `set_forced_engine(Option<bool>)` → `set_forced_engine(Option<Engine>)`. `BROOD_VM=0` still
-  means `TreeWalker`.
+  `set_forced_engine(Option<bool>)` → `set_forced_engine(Option<Engine>)`. `BROOD_VM=0` then
+  meant `TreeWalker`. *(Since superseded: ADR-222's tier ladder replaced the selector with a
+  `Tier` ceiling — `tier_ceiling()` / `set_forced_ceiling` — and `BROOD_TIER=0|1|2` is the
+  only engine knob; `BROOD_VM` and `BROOD_NO_JIT` are gone.)*
 - **`Engine::ALL` and `Engine::short()`** are what actually generalize the harnesses.
   `benches/eval.rs` built its grid from a *local* `Eng { Vm, Tw }` enum and
   `tests/{differential,gabriel_engines}.rs` each hardcoded the pair; all three now iterate
@@ -378,7 +382,7 @@ scripts/jit-lower-witness.sh                                # the lowering witne
 **Across items 3–5:** `make test` **974/974** (item 3) and **976/976** (items 4–5; the two new
 tests are `debug_flags`'s drift guards); `make test-both` **974 + 974 = 1948/1948**;
 `cargo test --test differential --test gabriel_engines --test jit`; `tests/perf_test.blsp`
-**16/16 on both a counter-armed and an ordinary build**; the `BROOD_VM` truthiness table verified
+**16/16 on both a counter-armed and an ordinary build**; the `BROOD_VM` (since removed) truthiness table verified
 behaviourally (`0`/`false`/`off`/`no`/empty → tree-walker, everything else and unset → bytecode,
 observed via whether any arm tiers at all).
 

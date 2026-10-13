@@ -10,7 +10,7 @@
 //! benchmark runs once under the closure-compiling **VM** (the default engine)
 //! and once under the **tree-walker** (`BROOD_TIER=0`), labelled `Vm` /
 //! `Tw` in the arg column. The engine is pinned per-input via
-//! `compile::set_forced_engine` (the same override the differential test uses),
+//! `compile::set_forced_ceiling` (the same override the differential test uses),
 //! so a single `cargo bench` shows the speedup the VM buys — e.g. `fib 20` is
 //! ~7.3 ms on the VM vs ~13 ms on the tree-walker. Don't read a single number as
 //! "the" eval cost without noting which engine row it's on.

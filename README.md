@@ -359,9 +359,9 @@ as a measured property, not a claim:
 - [**docs/elixir-parity.md**](docs/elixir-parity.md) — the concurrency rows measured
   against the BEAM, which is the yardstick that matters for a process-based runtime.
 
-Engine selection is explicit, which makes A/B honest: `BROOD_VM=0` is the legacy
-tree-walker, unset is the bytecode VM, and `BROOD_NO_JIT=1` disables the JIT within
-the VM path. **Build perf binaries with `cargo build --release --bin brood`** — never
+Engine selection is explicit, which makes A/B honest: one knob, `BROOD_TIER`, caps
+the execution tier — `0` is the tree-walker, `1` the bytecode VM, and `2` (the
+default) the VM plus the native JIT. **Build perf binaries with `cargo build --release --bin brood`** — never
 `-p brood`, which builds only the library and leaves a stale binary in place (that
 mistake once produced a phantom "JIT regression"; see the devlog).
 

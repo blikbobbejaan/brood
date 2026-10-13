@@ -57,7 +57,7 @@ pub mod eval; // the tree-walking evaluator + its macro / compile pass
 pub mod syntax; // surface: reader (text to Value) + printer (Value to text)
 pub mod types; // the advisory type lattice + checker (nothing gates on it)
 
-pub mod boot; // how a runtime comes to hold the prelude: image / text cache / source (ADR-138/314)
+pub mod boot; // how a runtime comes to hold the prelude: prelude image / source (ADR-314)
 pub mod builtins; // the primitive kernel (Rust mechanism; policy lives in std/*.blsp)
 pub mod bundle; // single-binary app release: append-to-binary bundling (ADR-038)
 pub mod cli_support; // tiny mechanism the `brood` and `nest` binaries share

@@ -10,15 +10,17 @@ measure (and the traps) in [`benchmarking.md`](benchmarking.md). The dated secti
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-09)
+## State (2026-10-13)
 
-- **Released:** v0.37.0 (`CHANGELOG.md`). `known-issues.md` lists **no open or watching
-  entry** — KI-218…222 closed the last ones.
-- **The 2026-10-09 cleanup** (devlog entry of that date) removed the dead `BROOD_*` flags and
-  aliases — `BROOD_TIER=0|1|2` is the only tier knob — moved `nest mcp` into Brood, archived
-  closed known-issue bodies to [`archive/known-issues-closed.md`](archive/known-issues-closed.md),
-  deleted the devlog archive, and removed every Python script (the fuzz generators and the
-  stress program fuzzer are Brood now).
+- **Released:** v0.38.0 (`CHANGELOG.md`). `known-issues.md` lists **no open or watching
+  entry** — KI-223 (found and fixed while turning devirtualization on) is the newest.
+- **The cleanup is finished** (devlog entries 2026-10-09 and both of 2026-10-12): the dead
+  `BROOD_*` flags and aliases are gone — `BROOD_TIER=0|1|2` is the only tier knob — `nest
+  mcp` is Brood, every Python script is gone, closed known-issue bodies live in
+  [`archive/known-issues-closed.md`](archive/known-issues-closed.md). Its last four items
+  landed too: `tcp/close` silences the socket at once, the two message-copy walkers are one,
+  ability devirtualization is always on (`BROOD_MONO` deleted), and the doc catalogue
+  derives its categories. Nothing from it is deferred.
 - **Is the tree green?** Answer with `make green`, never by reading the run list. On this
   machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`); the full suite is
   CI's and the nightly's job.

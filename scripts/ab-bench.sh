@@ -231,7 +231,7 @@ fi
 stdimage_state() { # $1 binary -> live|stale|absent|unreadable|unknown
   local probe out
   probe="$(mktemp --suffix=.blsp)"
-  printf '(%%print (stdimage/status))\n' >"$probe"
+  printf '(io/inspect (stdimage/status))\n' >"$probe"
   out="$(timeout 30 "$1" "$probe" 2>/dev/null || true)"
   rm -f "$probe"
   case "$out" in

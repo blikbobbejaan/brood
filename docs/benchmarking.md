@@ -23,7 +23,7 @@ as a big win, before a load-robust measurement settled it.
 
 The load-robust signal is the **VM ÷ tree-walker ratio measured within one `divan`
 process**. Both engines live in every binary; the `eval` benches pin each row to an
-engine (`set_forced_engine`, the `engine_grid!` macro), so size `N` is measured as a
+engine (`set_forced_ceiling`, the `engine_grid!` macro), so size `N` is measured as a
 `(Vm, N)` row and a `(Tw, N)` row in the same run. Under load both slow down
 *together*, so their ratio holds where the absolutes wander. The tree-walker is a
 stable in-process reference — you don't even need a baseline binary. (Divan sorts

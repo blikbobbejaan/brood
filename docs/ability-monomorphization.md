@@ -133,7 +133,7 @@ dynamic runs (ADR-280).
 ## Anchors
 
 - Pipeline dispatch: `crates/lisp/src/lib.rs:463-483`
-- VM overview + `BROOD_VM`: `crates/lisp/src/eval/compile.rs:1-24`, `57-77`
+- VM overview + engine selection (`BROOD_TIER`): `crates/lisp/src/eval/compile.rs` module doc
 - AST→IR call lowering + call-site IC: `eval/compile.rs:736`, `984-1015`
 - Node→Node optimizer seam (rewrite home): `eval/compile/inline.rs` (`mono_devirtualize`,
   `ability_op_key`); the per-call guard: `%dispatch-proven` in `builtins/sequences.rs`
