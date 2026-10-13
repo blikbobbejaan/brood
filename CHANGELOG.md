@@ -6,6 +6,44 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.38.0 — a whole-project cleanup: one engine knob, Brood-only tooling, a silent tcp/close, devirtualization on
+
+A whole-project cleanup: latent bugs fixed, dead switches and duplicated code removed, and
+the tooling moved into Brood. Every fix carries a sabotage-verified regression test. The
+narrative is the devlog's 2026-10-09 and 2026-10-12 entries.
+
+**Breaking.** `BROOD_TIER=0|1|2` is the only engine knob: `BROOD_VM` and `BROOD_NO_JIT` are
+gone, as are eighteen other tuning and bisect flags and `BROOD_MONO` (`brood --debug-flags`
+lists what remains). `seq/vector-ref` and `seq/vector-length` are removed in favour of `nth`
+and `count` (in the rename ledger, so `nest check --fix-renames` rewrites them).
+`project-collect-tests` is `collect-tests`; `package/bump-version` takes `(root level)`;
+`lineedit-init` is `(prompt history &optional opts)`. The primitives `%append-two`,
+`%random-token`, `%print`, `%coverage-reset`, `%scope-live-pids` and `%mcp-progress` and the
+per-process eval deadline are gone. Once `tcp/close` returns, no new message for that socket
+reaches any mailbox — no late data and no `[:tcp-closed]`; queued output still flushes, so
+send-then-close never truncates. Closing a listener takes effect before `close` returns.
+
+**Faster by construction.** Ability calls on a value whose type the compiler can prove are
+devirtualized on every tier above the tree-walker (the opt-in path this replaces disagreed
+with the op's own dispatch in five ways, KI-223; the new `%dispatch-proven` re-checks the op
+and constructor on every call). `tcp/connect` resolves and dials off the scheduler. A process
+exit sweeps only what that process owned.
+
+**Fixes.** The checker could fail to terminate on recursive types, and a bare `(fn)`
+argument in a `:pure` function panicked it. `format` followed symlinks into cycles;
+`dns/lookup` leaked its socket on every failure; `csv` dropped a final `""` row and bare
+`\r` inside fields; `gen/call-timeout` could deliver a second reply; `string/blank?` was
+quadratic. `nest publish` shipped `tests/` and the lock file and published after a failed
+git commit; `nest ws` always exited 0; `nest run FILE -h` printed nest's usage; `nest test`
+and MCP `run-tests` found different tests. A node listening on `:0` advertised port 0.
+`%untar-gz` accepted absolute, `..` and link members. A corrupt release bundle ran as plain
+`brood`. The LSP dropped checker findings that had no position.
+
+**Tooling.** `nest mcp` is written in Brood, and a raise inside an MCP tool reports its file,
+line, column and trace (new primitive `%try-described`). The doc reference derives each
+name's category from where it is defined. Python is gone from the repo: the fuzz generators
+are Brood. `CLAUDE.md` is a third of its size; `brood --debug-flags` is the flag reference.
+
 ## v0.37.0 — a whole-project review: forty-six defects fixed, inbound flow control, and every known issue closed
 
 A whole-project review: every finding reproduced, fixed, and guarded by a sabotage-verified
