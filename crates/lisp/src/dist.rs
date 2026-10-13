@@ -1067,13 +1067,14 @@ pub(crate) fn node_also_listen(addr: &str) -> io::Result<()> {
             ));
         }
     }
-    start_listener(addr)
+    start_listener(addr).map(|_| ())
 }
 
-/// Bind one listener for `addr` and spawn its accept loop. Identity-agnostic — the
-/// per-connection handshake reads `NODE` at accept time — so it serves both the
-/// first listener (`node_listen`) and any added later (`node_also_listen`).
-fn start_listener(addr: &str) -> io::Result<()> {
+/// Bind one listener for `addr` and spawn its accept loop, returning the address it
+/// records for peers to dial. Identity-agnostic — the per-connection handshake reads
+/// `NODE` at accept time — so it serves both the first listener (`node_listen`) and any
+/// added later (`node_also_listen`).
+fn start_listener(addr: &str) -> io::Result<String> {
     // What peers are told to dial: the BOUND address, never the requested one — a
     // requested port 0 would otherwise be advertised as port 0.
     let advertised = if let Some(path) = addr.strip_prefix("unix:") {
@@ -1098,8 +1099,8 @@ fn start_listener(addr: &str) -> io::Result<()> {
     };
     // Record only after a successful bind, so a failed listener doesn't leave a
     // dead address we'd advertise to peers.
-    crate::core::sync::write(&LISTEN_ADDRS).push(advertised);
-    Ok(())
+    crate::core::sync::write(&LISTEN_ADDRS).push(advertised.clone());
+    Ok(advertised)
 }
 
 /// The host this node is reachable at, for advertising a wildcard listener: the host
@@ -1247,23 +1248,31 @@ fn note_shed_handshake() {
 /// RAII permit for one in-flight handshake slot (see [`MAX_IN_FLIGHT_HANDSHAKES`]).
 /// Held by the per-connection thread for the whole pre-auth window; released on
 /// drop (thread end), whether the handshake succeeded, failed, or timed out.
-struct HandshakeSlot;
+struct HandshakeSlot {
+    count: &'static AtomicUsize,
+}
 impl HandshakeSlot {
     /// Take a slot, or `None` if the cap is already reached (caller sheds the
     /// connection). The over-count from a losing `fetch_add` is immediately
     /// rolled back, so the gate can't drift above the cap under contention.
     fn try_acquire() -> Option<Self> {
-        if IN_FLIGHT_HANDSHAKES.fetch_add(1, Ordering::AcqRel) >= MAX_IN_FLIGHT_HANDSHAKES {
-            IN_FLIGHT_HANDSHAKES.fetch_sub(1, Ordering::AcqRel);
+        Self::try_acquire_on(&IN_FLIGHT_HANDSHAKES)
+    }
+
+    /// [`try_acquire`](Self::try_acquire) against `count` — the process's counter in
+    /// production, a test's own one in the test (sibling test threads hold real slots).
+    fn try_acquire_on(count: &'static AtomicUsize) -> Option<Self> {
+        if count.fetch_add(1, Ordering::AcqRel) >= MAX_IN_FLIGHT_HANDSHAKES {
+            count.fetch_sub(1, Ordering::AcqRel);
             None
         } else {
-            Some(HandshakeSlot)
+            Some(HandshakeSlot { count })
         }
     }
 }
 impl Drop for HandshakeSlot {
     fn drop(&mut self) {
-        IN_FLIGHT_HANDSHAKES.fetch_sub(1, Ordering::AcqRel);
+        self.count.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -2381,34 +2390,35 @@ mod tests {
     /// The pre-auth connection gate: slots are bounded at the cap, the
     /// over-count from a losing `try_acquire` is rolled back (so the live count
     /// never drifts above the cap), and a dropped slot frees capacity again.
-    /// Under nextest each test runs in its own process, so the global counter
-    /// starts clean at 0.
+    /// On its own counter: the process's is shared with every sibling test thread
+    /// under `cargo test`, and a listener test's connect holds a real slot.
     #[test]
     fn handshake_slot_caps_in_flight_and_releases_on_drop() {
+        static COUNT: AtomicUsize = AtomicUsize::new(0);
         // Fill every slot.
         let held: Vec<HandshakeSlot> = (0..MAX_IN_FLIGHT_HANDSHAKES)
-            .map(|_| HandshakeSlot::try_acquire().expect("under the cap"))
+            .map(|_| HandshakeSlot::try_acquire_on(&COUNT).expect("under the cap"))
             .collect();
-        assert_eq!(
-            IN_FLIGHT_HANDSHAKES.load(Ordering::Acquire),
-            MAX_IN_FLIGHT_HANDSHAKES
-        );
+        assert_eq!(COUNT.load(Ordering::Acquire), MAX_IN_FLIGHT_HANDSHAKES);
 
         // One past the cap is shed, and the failed attempt rolled its count back.
-        assert!(HandshakeSlot::try_acquire().is_none(), "cap must shed");
+        assert!(
+            HandshakeSlot::try_acquire_on(&COUNT).is_none(),
+            "cap must shed"
+        );
         assert_eq!(
-            IN_FLIGHT_HANDSHAKES.load(Ordering::Acquire),
+            COUNT.load(Ordering::Acquire),
             MAX_IN_FLIGHT_HANDSHAKES,
             "a shed attempt must not leak a slot"
         );
 
         // Dropping a held slot frees exactly one, which a fresh acquire can take.
         drop(held);
-        assert_eq!(IN_FLIGHT_HANDSHAKES.load(Ordering::Acquire), 0);
-        let s = HandshakeSlot::try_acquire().expect("capacity freed");
-        assert_eq!(IN_FLIGHT_HANDSHAKES.load(Ordering::Acquire), 1);
-        drop(s);
-        assert_eq!(IN_FLIGHT_HANDSHAKES.load(Ordering::Acquire), 0);
+        assert_eq!(COUNT.load(Ordering::Acquire), 0);
+        let slot = HandshakeSlot::try_acquire_on(&COUNT).expect("capacity freed");
+        assert_eq!(COUNT.load(Ordering::Acquire), 1);
+        drop(slot);
+        assert_eq!(COUNT.load(Ordering::Acquire), 0);
     }
 
     /// KI-97 item 2: a name resolution is bounded, and the bound is enforced off the
@@ -2585,8 +2595,10 @@ mod tests {
     /// dials — peers learn it through the handshake and gossip.
     #[test]
     fn a_port_zero_listener_advertises_its_bound_port() {
-        start_listener("tcp:127.0.0.1:0").expect("bind a port-0 listener");
-        let advertised = advertised_addr();
+        // The address list is process-wide and `cargo test` runs these tests as threads of
+        // one process, so read what THIS listener recorded, not the list's first entry.
+        let advertised = start_listener("tcp:127.0.0.1:0").expect("bind a port-0 listener");
+        assert!(crate::core::sync::read(&LISTEN_ADDRS).contains(&advertised));
         let host_and_port = advertised
             .strip_prefix("tcp:127.0.0.1:")
             .unwrap_or_else(|| panic!("unexpected advertised address {advertised}"));
@@ -2602,18 +2614,23 @@ mod tests {
     /// on another machine can dial), with the bound port.
     #[test]
     fn a_wildcard_listener_advertises_the_node_host() {
-        start_listener("tcp:0.0.0.0:0").expect("bind a wildcard listener");
-        let advertised = advertised_addr();
-        let port: u16 = advertised
-            .strip_prefix("tcp:localhost:")
-            .unwrap_or_else(|| panic!("unexpected advertised address {advertised}"))
-            .parse()
-            .expect("a numeric port");
+        let advertised = start_listener("tcp:0.0.0.0:0").expect("bind a wildcard listener");
+        assert!(crate::core::sync::read(&LISTEN_ADDRS).contains(&advertised));
+        // The host is the node's (`localhost` unless a concurrent test started a node).
+        let (host, port) = advertised
+            .strip_prefix("tcp:")
+            .and_then(|host_and_port| host_and_port.rsplit_once(':'))
+            .unwrap_or_else(|| panic!("unexpected advertised address {advertised}"));
+        assert_ne!(
+            host, "0.0.0.0",
+            "advertised the wildcard, which no peer can dial"
+        );
+        let port: u16 = port.parse().expect("a numeric port");
         assert_ne!(
             port, 0,
             "advertised the requested port 0, not the bound one"
         );
-        TcpStream::connect(("localhost", port)).expect("the advertised address dials");
+        TcpStream::connect((host, port)).expect("the advertised address dials");
     }
 }
 

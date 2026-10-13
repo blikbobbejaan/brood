@@ -50,6 +50,7 @@ pub fn tls_request(
     _port: u16,
     _request: Vec<u8>,
     _ca_pem: Option<String>,
+    _binary: bool,
     _subscriber: u64,
 ) -> std::io::Result<u64> {
     unsupported()

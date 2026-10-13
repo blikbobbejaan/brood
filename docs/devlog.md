@@ -16799,6 +16799,35 @@ optional fifth argument, `binary`, the response's starting mode, and `tls/reques
 `http/request` and the TLS tests pass it instead of switching afterwards. Guard:
 `tests/tls_test.blsp` "a binary-mode TLS response is byte-faithful bytes" no longer calls
 `set-binary`; with the argument ignored it reads `#b"\0\xef\xbf\xbd\xef\xbf\xbdA"`, and
-`http_test`'s https binary case goes red with it. The second failure, `dns_test`'s
-well-formed reply, gave the client a 300 ms idle wait for a reply the loaded fake resolver
-had not sent yet; the tests that expect a reply now wait `*test-wait-ms*`.
+`http_test`'s https binary case goes red with it.
+
+**The second failure was the suite's one recurring flake, and it was not a timeout.**
+`dns_test`'s "a well-formed reply decodes its A record" had failed the in-language suite's
+FIRST try in four of the six CI and nightly runs since the cleanup, every one green through
+nextest's retry, which only prints `FLAKY 2/2`. Its fake resolver sent the reply on accept,
+without waiting for the query; `tcp/connect` returns with reads already started, so the reply
+could land before `dns/ask` switched its socket to binary, decode as text, and fail to parse.
+A real resolver answers only after the query, which `ask` sends after the switch. The fake
+now waits for the query. Proven with a 200 ms `sleep` put between `ask`'s connect and its
+`set-binary`: the old fake fails at exactly CI's line, the new one passes. (My first fix, a
+longer client timeout, treated a symptom and is reverted.)
+
+**Flakes now fail CI.** `scripts/nextest-no-flakes.sh` runs nextest and fails the job if any
+test passed only on a retry, naming it; CI's test and tree-walker steps and the nightly suite
+use it. Retries stay — "failed once" and "always fails" are still told apart — but a flaky
+pass is no longer green.
+
+**KI-224: the nightly sanitizer job's two failures were real.** Plain `cargo test` runs the
+lib tests as threads of one process, so it is the one place two runtimes share a process, and
+three process-wide states that belong to a runtime showed it: the held image file
+(`OPEN_IMAGES`, KI-119's fix — a second runtime's index re-pointed the first's directory at a
+rebuilt file), the `defdyn` marks (`value::DYNAMICS`, which `%isolate` restores wholesale over
+the other runtime's marks; `stdimage/build` then refused on `*fuzzy-workers*`), and the image
+temp file named by pid alone. Both now live on `RuntimeCode` (`image_files`, `dynamics`), and
+temp names add a counter. The dist listener test read the process's first listener instead of
+its own. Guards: two-runtime tests for the image handle and for the marks, each red with the
+process-wide state put back; the threaded repro 0 in 15 after, 2 in 5 before.
+
+**Also:** the wasm32 build broke on `tls_request`'s new argument (its stub `net_wasm.rs` was
+not updated) — CI's wasm job caught it; two wasm-only dead-code warnings are gone, and two
+doc comments in `scheduler.rs` that had been run together are on their own functions again.

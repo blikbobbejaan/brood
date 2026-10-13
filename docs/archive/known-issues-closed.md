@@ -13110,3 +13110,30 @@ arguments can run user code, rebound or wrapped op names, rejected arities and
 contract-armed runs are not rewritten. **Guard.** `crates/cli/tests/devirt_differential.rs`:
 tiers 1 and 2 against the tree-walker on the ability suite and on one fixture per case,
 each asserting the rewrite fired (or was skipped); every guard sabotage-verified.
+
+## KI-224 — two runtimes in one OS process corrupted each other's image reads and `defdyn` marks ✅ FIXED 2026-10-13
+
+**Symptom.** The nightly AddressSanitizer job, which runs the lib tests with plain `cargo
+test` (threads of one process), failed `image_sigs::every_type_the_image_carries_…` with
+"tempo/->iso: carried a type, but the loaded module declares none" and
+`dist::tests::a_wildcard_listener_advertises_the_node_host` with another test's
+`tcp:127.0.0.1:…` address. Reproduced locally by running the `image_sigs` lib tests threaded
+with `XDG_CACHE_HOME` pointing at an empty dir: 2 failures in 5, a different module named
+each time, and a third shape — `stdimage/build` refusing with "root global(s) belong to no
+module … *fuzzy-workers*". **Cause.** Three pieces of state were process-wide but meant per
+runtime. (1) `OPEN_IMAGES`, the held image file per path (KI-119): a second runtime indexing
+a rebuilt image replaced the handle the first runtime's directory relied on, so its section
+reads decoded the new file at the old offsets. (2) `value::DYNAMICS`, the `defdyn` mark set,
+which `%isolate` snapshots and restores wholesale: one runtime's restore dropped the marks
+another runtime had just added, so its `stdimage/build` probe could not attribute those
+globals. (3) The image writer's temp file was named by pid, so two runtimes building at once
+wrote the same file. The dist test was its own bug: it read `advertised_addr()`, the
+process's FIRST listener, while a sibling test thread had started another. **Why it
+survived.** nextest gives every test its own process, and the nightly's sanitizer job was
+the only place that ran runtimes side by side. **Fix.** `RuntimeCode::image_files` and
+`RuntimeCode::dynamics` (seeded from the prelude's marks, like `private`), dropped with the
+runtime; a pid-plus-counter temp suffix; `start_listener` returns the address it recorded
+and the tests assert on that. **Guard.** `boot::image::per_runtime_handle_tests` (a rebuild
+indexed by another runtime does not move this runtime's sections) and
+`crates/lisp/tests/dynamic_marks_per_runtime.rs` (both directions across an isolate), each
+red with the process-wide state restored; the threaded repro 0 failures in 15.

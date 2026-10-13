@@ -305,8 +305,9 @@ jobs:
       # Same as `make test`: nextest process-isolates each case (a green-process
       # stack overflow can SIGSEGV, so isolation keeps one bad case from taking the
       # whole run down) and the grammar tests need the vendored tree-sitter parsers.
+      # Through `nextest-no-flakes.sh`: a test that passes only on its retry fails the job.
       - name: Test (nextest)
-        run: cargo nextest run --no-fail-fast --features brood/treesit-grammars
+        run: scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars
 
       # The `gui`/`gui-gpu` renderer tests do not run above: the nextest step builds
       # the DEFAULT surface plus grammars, and `gui` is opt-in, so every
@@ -407,8 +408,9 @@ jobs:
           # `--profile tree-walker` (.config/nextest.toml): this engine outgrew the default
           # 15-minute suite budget and passed only on its retry; that profile gives the suite
           # 25 minutes here and nowhere else.
-          cargo nextest run --profile tree-walker --no-fail-fast --failure-output immediate-final --color never 2>&1 \
-            | tee tree-walker-nextest.log
+          # Through `nextest-no-flakes.sh`: a test that passes only on its retry fails the job.
+          NEXTEST_LOG=tree-walker-nextest.log scripts/nextest-no-flakes.sh \
+            --profile tree-walker --no-fail-fast --failure-output immediate-final --color never
 
       # Name the failing cases as workflow ERROR commands, which GitHub turns into check-run
       # ANNOTATIONS. This exists because of a permissions asymmetry that cost real time on

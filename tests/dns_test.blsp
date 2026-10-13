@@ -10,21 +10,25 @@
 ;; Play a fake resolver on an OS-assigned port: answer one query with `reply` (nil answers
 ;; nothing) and return `[answer client-end]` — what `ask` returned, and whether it closed its
 ;; end of the connection (`:closed`/`:open`). The client stays alive until then, so a socket
-;; closed by its owner exiting cannot pass for one `ask` closed. `timeout-ms` is the client's
-;; idle wait: short where the test waits it out, generous where a reply is coming — a loaded
-;; tree-walker run took longer than 300 ms to send one.
-(defn- ask-fake (reply &optional (timeout-ms 300))
+;; closed by its owner exiting cannot pass for one `ask` closed.
+;;
+;; The reply waits for the query, as a real resolver's does. Sent on accept, it could reach the
+;; client before `ask` switched its socket to binary — `tcp/connect` returns with reads already
+;; started — and the reply decoded as text (every byte over 0x7F a U+FFFD) failed to parse:
+;; the suite's one recurring first-try failure.
+(defn- ask-fake (reply)
   (let (listener (tcp/listen "127.0.0.1" 0)
         port (tcp/local-port listener)
         me (self)
         client (spawn (do
-                        (send me
-                          [:answer (dns/ask "127.0.0.1" port "example.com" dns/*a* timeout-ms)])
+                        (send me [:answer (dns/ask "127.0.0.1" port "example.com" dns/*a* 300)])
                         (receive (:done nil))))
         sock (receive ([:tcp-accept ^listener s] s))
         _ (tcp/controlling-process sock (self))
         _ (tcp/set-binary sock true)
-        _ (when reply (tcp/send sock reply))
+        _ (when reply
+            (receive ([:tcp ^sock _query] nil) (after *test-wait-ms* nil))
+            (tcp/send sock reply))
         answer (receive ([:answer a] a) (after *test-wait-ms* :timeout))
         client-end (wait-closed sock))
     (send client :done)
@@ -70,12 +74,12 @@
 
   (test "a well-formed reply decodes its A record"
     (let (reply #b"\x00\x20\x56\x78\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x7f\x00\x00\x01")
-      (assert= (ask-fake reply *test-wait-ms*) [(list "127.0.0.1") :closed])))
+      (assert= (ask-fake reply) [(list "127.0.0.1") :closed])))
 
   (test "a reply whose record overruns it is an empty list"
     ;; header: 1 answer; question `.` A IN; answer `.` A IN ttl, rdlength 4, but 2 bytes
     (let (reply #b"\x00\x1e\x56\x78\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x01\x00\x01\x00\x00\x00\x3c\x00\x04\x7f\x00")
-      (assert= (ask-fake reply *test-wait-ms*) [nil :closed])))
+      (assert= (ask-fake reply) [nil :closed])))
 
   (test "an IPv6 group drops its leading zeros"
     (assert= (dns/ipv6 #b"\x20\x01\x0d\xb8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x01" 0)

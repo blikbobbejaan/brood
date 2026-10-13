@@ -139,7 +139,7 @@ pub(crate) fn jit_dispatch_call(
                         // site, cleared table, or new epoch) — republish so the next call
                         // stays entirely in IR (arity pre-validated for this argc).
                         let nat = heap.native(nid);
-                        if nat.arity.accepts(argc) && !value::is_dynamic(head) {
+                        if nat.arity.accepts(argc) && !heap.is_dynamic(head) {
                             let func = nat.func as usize as u64;
                             heap.vm_fast_link_publish_native(site, head, argc as u32, epoch, func);
                         }
@@ -156,7 +156,7 @@ pub(crate) fn jit_dispatch_call(
                             compiled_arm_for(heap, id, argc).map(|a| {
                                 let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
                                 let cb = heap.vm_arm_block(&a);
-                                if !value::is_dynamic(head) {
+                                if !heap.is_dynamic(head) {
                                     heap.vm_call_ic_put(
                                         site,
                                         crate::core::heap::CallIcEntry {
@@ -177,7 +177,7 @@ pub(crate) fn jit_dispatch_call(
                         // takes the direct path above) and call it now. Dynamic heads are
                         // never cached (they can shadow per call) but still call direct.
                         Some(ValueRef::Native(nid)) if !over_cap => {
-                            if !value::is_dynamic(head) {
+                            if !heap.is_dynamic(head) {
                                 heap.vm_call_ic_put(
                                     site,
                                     crate::core::heap::CallIcEntry {

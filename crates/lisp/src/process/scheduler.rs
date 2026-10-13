@@ -467,13 +467,9 @@ pub(crate) fn tick_reporting_hard_kill() -> bool {
     capture_hard_kill_pending()
 }
 
-/// Mailbox-bound probe for the CURRENT process (ADR-307) — the safepoint twin of the
-/// `receive`-entry check, for a flooded process that computes instead of receiving.
-/// Probed beside `take_proc_limit_hit` at the same loop-top safepoints; one borrow +
-/// one relaxed load when clean, `None` always on the root thread (CURRENT unset),
-/// matching the kill probe's root rule.
 /// Is the current process's mailbox overflow waiting to be raised? A peek for the native
 /// loop's poll; `take_current_mailbox_overflow` is what raises it.
+#[cfg(feature = "jit")]
 pub(crate) fn current_mailbox_overflow_pending() -> bool {
     CURRENT.with(|c| {
         c.borrow()
@@ -482,6 +478,11 @@ pub(crate) fn current_mailbox_overflow_pending() -> bool {
     })
 }
 
+/// Mailbox-bound probe for the CURRENT process (ADR-307) — the safepoint twin of the
+/// `receive`-entry check, for a flooded process that computes instead of receiving.
+/// Probed beside `take_proc_limit_hit` at the same loop-top safepoints; one borrow +
+/// one relaxed load when clean, `None` always on the root thread (CURRENT unset),
+/// matching the kill probe's root rule.
 pub(crate) fn take_current_mailbox_overflow() -> Option<(usize, usize)> {
     CURRENT.with(|c| {
         c.borrow()

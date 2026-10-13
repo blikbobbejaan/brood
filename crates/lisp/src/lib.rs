@@ -137,6 +137,7 @@ impl Interp {
         let runtime = Arc::new(RuntimeCode::seeded(
             &SHARED.bindings,
             &SHARED.private,
+            &SHARED.dynamics,
             &SHARED.meta,
         ));
         let mut heap = Heap::with_regions(Arc::clone(&SHARED.code), runtime);

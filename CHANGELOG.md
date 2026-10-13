@@ -32,7 +32,9 @@ exit sweeps only what that process owned.
 **Fixes.** An `https://` response could arrive mangled into text (every byte over 0x7F a
 U+FFFD): `tls/request` sends the request itself, so the first chunk could land before the
 caller's `tcp/set-binary`. `tls/request` takes an optional `binary` argument that sets the
-mode before anything is sent, and `http/request` uses it. The checker could fail to
+mode before anything is sent, and `http/request` uses it. Two runtimes in one OS process
+(an embedder with several interpreters) could read each other's stdlib image file and lose
+each other's `defdyn` declarations; both are per runtime now (KI-224). The checker could fail to
 terminate on recursive types, and a bare `(fn)`
 argument in a `:pure` function panicked it. `format` followed symlinks into cycles;
 `dns/lookup` leaked its socket on every failure; `csv` dropped a final `""` row and bare

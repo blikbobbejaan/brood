@@ -1367,7 +1367,7 @@ fn refer_add(
     // check short-circuits before it ever consults the import table — so an import for
     // one is inert, and it can neither clash nor shadow. Skip it: no entry, no error, no
     // warning (a dynamic knob like `*width*` shared by two modules must not read as one).
-    if value::is_dynamic(bare) {
+    if heap.is_dynamic(bare) {
         return Ok(());
     }
     // Clash → ambiguous, not an error (ADR-235). A `One` from a different module or an

@@ -28,6 +28,9 @@ impl<T> Default for OwnedTable<T> {
     }
 }
 
+// On wasm32 the socket and subprocess hosts are stubs, so the one remaining user (the wasm
+// host) never reaches some of these.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 impl<T> OwnedTable<T> {
     /// Insert `value` under `id`, owned by `owner`. Returns any entry it replaced.
     pub(crate) fn insert(&mut self, id: u64, owner: u64, value: T) -> Option<T> {

@@ -1813,6 +1813,12 @@ bindings (consistent with share-nothing: data isn't shared, and neither is
 dynamic scope). If a child needs a value, send it explicitly. A process that
 crashes mid-`binding` takes its binding stack down with it and disturbs no one.
 
+**The declaration is per-runtime.** Which names are dynamic is a fact of the
+runtime, shared by all of its processes — a `defdyn` in one process is visible to
+its siblings — but not by separate runtimes (nodes, or several embedded
+interpreters in one OS process), each of which starts from the prelude's marks.
+`%isolate` rolls back a mark made inside its thunk along with the binding.
+
 `defdyn`/`binding` are Brood macros over a tiny kernel (`%declare-dynamic`,
 `%binding`, `reflect/dynamic?`) — no new special form, the `try`/`catch` precedent.
 

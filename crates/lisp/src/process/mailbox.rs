@@ -575,6 +575,7 @@ impl Mailbox {
     const OVERFLOW_LATCHED: usize = usize::MAX;
 
     /// Is an overflow waiting to be raised? A peek (`take_overflow_hit` takes and latches).
+    #[cfg(feature = "jit")]
     pub(super) fn overflow_pending(&self) -> bool {
         let v = self.overflow_hit.load(Ordering::Relaxed);
         v != 0 && v != Self::OVERFLOW_LATCHED

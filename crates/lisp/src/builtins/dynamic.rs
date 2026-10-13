@@ -50,15 +50,15 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// this plus a plain `def` of the default value.
 pub(super) fn declare_dynamic(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let sym = expect_symbol(heap, "%declare-dynamic", arg(args, 0))?;
-    value::mark_dynamic(sym);
+    heap.mark_dynamic(sym);
     Ok(Value::symbol(sym))
 }
 
 /// `(reflect/dynamic? x)` — true when `x` is a symbol declared dynamic with `defdyn`.
 /// A non-symbol is simply not dynamic (no error), so it composes in predicates.
-pub(super) fn dynamic_p(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+pub(super) fn dynamic_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(Value::boolean(
-        matches!(arg(args, 0), Value::Sym(s) if value::is_dynamic(s)),
+        matches!(arg(args, 0), Value::Sym(s) if heap.is_dynamic(s)),
     ))
 }
 
@@ -79,7 +79,7 @@ pub(super) fn binding(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult
     let mut names = Vec::with_capacity(syms.len());
     for s in &syms {
         let sym = expect_symbol(heap, "binding", *s)?;
-        if !value::is_dynamic(sym) {
+        if !heap.is_dynamic(sym) {
             return Err(LispError::runtime(format!(
                 "binding: {} is not a dynamic variable (declare it with defdyn)",
                 value::symbol_name(sym)

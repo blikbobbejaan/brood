@@ -1636,6 +1636,13 @@ impl Heap {
         self.runtime.runtime_tag
     }
 
+    /// This runtime's held image files by path (see `RuntimeCode::image_files`).
+    pub(crate) fn image_files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<std::fs::File>>>> {
+        crate::core::sync::lock(&self.runtime.image_files)
+    }
+
     pub fn runtime_arc(&self) -> Arc<RuntimeCode> {
         Arc::clone(&self.runtime)
     }

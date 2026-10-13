@@ -322,6 +322,14 @@ pub struct RuntimeCode {
     /// re-`eval`ed). Shared through the runtime `Arc`, so every inner process sees one
     /// set.
     pub(super) private: RwLock<std::collections::HashSet<Symbol>>,
+    /// The `defdyn` dynamic-variable marks: which globals `binding` may rebind, which
+    /// names are ambient for namespace resolution, and which are never IC-cached. Per
+    /// RUNTIME, not per OS process (KI-224): `%isolate` snapshots and restores this set
+    /// wholesale, and a process-wide set let one runtime's restore drop the marks another
+    /// runtime in the same process had added meanwhile. Seeded from the prelude's marks
+    /// (the prelude is inserted, so its `defdyn`s never re-run), and shared through the
+    /// runtime `Arc`, so a `defdyn` in one process is visible to its siblings.
+    pub(super) dynamics: RwLock<std::collections::HashSet<Symbol>>,
     /// Names whose declared signature `sig!` FORCED (ADR-381/382): contracted whatever
     /// the mode, and at EVERY call — the module boundary does not exempt the name's own
     /// module. Runtime-level like the private set, and deliberately not a global: a
@@ -466,6 +474,12 @@ pub struct RuntimeCode {
     /// Bumped on every `declared_sigs` insert. What a per-process cache over the store
     /// (`Heap::type_alias_cache`, the contract's alias lookup) checks before trusting itself.
     pub(super) declared_sigs_version: AtomicU64,
+    /// The stdlib/project image files this runtime has indexed, by path, each held open
+    /// (KI-119, KI-224): a directory `%image-index` read and every section `%image-load-section`
+    /// later reads for it must come from the same inode, and the pairing is per RUNTIME —
+    /// another runtime in the same process may index a rebuilt file at the same path. Dropped
+    /// with the runtime, so its descriptors close with it.
+    pub(super) image_files: Mutex<HashMap<String, Arc<Mutex<std::fs::File>>>>,
     /// **RUNTIME collector — Stage 3b (cooperative drain coordination, ADR-091).**
     /// When an aged-out generation is being reclaimed, each of the runtime's
     /// processes cooperatively reports — at its safepoint / before parking —
@@ -695,6 +709,7 @@ impl Default for RuntimeCode {
             sealed: RwLock::new(std::collections::HashSet::new()),
             // Likewise no private names until the prelude has been seeded.
             private: RwLock::new(std::collections::HashSet::new()),
+            dynamics: RwLock::new(std::collections::HashSet::new()),
             contract_forced: RwLock::new(std::collections::HashSet::new()),
             version: AtomicU64::new(0),
             code_epoch: AtomicU64::new(0),
@@ -707,6 +722,7 @@ impl Default for RuntimeCode {
             jit_inline_cache: RwLock::new(HashMap::new()),
             declared_sigs: RwLock::new(SymbolMap::default()),
             declared_sigs_version: AtomicU64::new(0),
+            image_files: Mutex::new(HashMap::new()),
             drain_active: AtomicBool::new(false),
             rt_dirty: AtomicBool::new(true),
             drain_gen: AtomicUsize::new(0),
@@ -781,6 +797,7 @@ impl RuntimeCode {
     pub fn seeded(
         bindings: &[(Symbol, Value)],
         prelude_private: &[Symbol],
+        prelude_dynamics: &[Symbol],
         prelude_meta: &[(Symbol, NameMeta)],
     ) -> Self {
         let mut globals = SymbolMap::with_capacity_and_hasher(bindings.len(), Default::default());
@@ -830,6 +847,9 @@ impl RuntimeCode {
             // builder heap's runtime) and threaded in here, the same way the
             // bindings themselves are.
             private: RwLock::new(prelude_private.iter().copied().collect()),
+            // The prelude's `defdyn` marks (`*out*`, `*require-parent*`, …), threaded in
+            // for the reason privacy is: the bindings are inserted, so no `defdyn` re-runs.
+            dynamics: RwLock::new(prelude_dynamics.iter().copied().collect()),
             contract_forced: RwLock::new(std::collections::HashSet::new()),
             globals: RwLock::new(globals),
             global_generations: RwLock::new(SymbolMap::default()),
@@ -847,6 +867,7 @@ impl RuntimeCode {
             jit_inline_cache: RwLock::new(HashMap::new()),
             declared_sigs: RwLock::new(SymbolMap::default()),
             declared_sigs_version: AtomicU64::new(0),
+            image_files: Mutex::new(HashMap::new()),
             drain_active: AtomicBool::new(false),
             rt_dirty: AtomicBool::new(true),
             drain_gen: AtomicUsize::new(0),
@@ -884,7 +905,7 @@ impl RuntimeCode {
     /// covers a `defdyn` inside an embedded module, and so a name declared dynamic
     /// *after* the seed is exempt too.
     pub(super) fn is_sealed(&self, sym: Symbol) -> bool {
-        !crate::core::value::is_dynamic(sym)
+        !self.is_dynamic(sym)
             && self
                 .sealed
                 .read()
@@ -946,8 +967,42 @@ impl RuntimeCode {
     pub(super) fn restore_private(&self, names: Vec<Symbol>) {
         *self.private.write().unwrap_or_else(|e| e.into_inner()) = names.into_iter().collect();
     }
-    /// Is `sym` recorded module-private? The authoritative (and, since ADR-146 step 2,
-    /// the *only*) half of [`Heap::is_private`].
+    /// Has `sym` been declared dynamic (`defdyn`) in this runtime? See
+    /// [`RuntimeCode::dynamics`]. On the global-IC fill paths: one read lock, no allocation.
+    #[inline]
+    pub(super) fn is_dynamic(&self, sym: Symbol) -> bool {
+        self.dynamics
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&sym)
+    }
+    /// Mark `sym` dynamic (idempotent) — `%declare-dynamic`, an image restoring its marks.
+    pub(super) fn mark_dynamic(&self, sym: Symbol) {
+        self.dynamics
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(sym);
+    }
+    /// Drop `sym`'s dynamic mark — `reflect/undef` removing a `defdyn` global (ADR-391).
+    pub(super) fn unmark_dynamic(&self, sym: Symbol) {
+        self.dynamics
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&sym);
+    }
+    /// Every symbol marked dynamic, unordered.
+    pub(super) fn dynamics_snapshot(&self) -> Vec<Symbol> {
+        self.dynamics
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect()
+    }
+    /// Replace the whole dynamic set (the `%isolate` restore), as [`Self::restore_private`].
+    pub(super) fn restore_dynamics(&self, names: Vec<Symbol>) {
+        *self.dynamics.write().unwrap_or_else(|e| e.into_inner()) = names.into_iter().collect();
+    }
     /// Record `sym`'s stability metadata, replacing whatever was there. See [`NameMeta`].
     pub(super) fn set_meta(&self, sym: Symbol, meta: NameMeta) {
         self.meta
@@ -973,6 +1028,8 @@ impl RuntimeCode {
             .cloned()
     }
 
+    /// Is `sym` recorded module-private? The authoritative (and, since ADR-146 step 2,
+    /// the *only*) half of [`Heap::is_private`].
     pub(super) fn is_private_recorded(&self, sym: Symbol) -> bool {
         self.private
             .read()

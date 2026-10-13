@@ -51,7 +51,7 @@ jobs:
       # Identical to CI's `test` step on purpose. A nightly that runs a DIFFERENT command
       # from the per-push gate cannot tell a flake from a configuration difference.
       - name: Test (nextest)
-        run: cargo nextest run --no-fail-fast --features brood/treesit-grammars
+        run: scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars
 
   # `make gcstress` runs nowhere else: GC_STRESS collects at every safepoint, so a handle
   # held across a collection is caught every time rather than when a threshold collection

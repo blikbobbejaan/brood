@@ -111,7 +111,7 @@ pub(crate) fn exec_chunk(
                         crate::perf_bump!(global_ic_miss);
                         match heap.env_get(env, *sym) {
                             Some(v) => {
-                                if !value::is_dynamic(*sym) {
+                                if !heap.is_dynamic(*sym) {
                                     heap.vm_global_ic_put(*site, *sym, epoch, v);
                                 }
                                 v
@@ -612,7 +612,7 @@ pub(crate) fn exec_chunk(
                             fast = arm
                                 .as_ref()
                                 .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
-                            if !value::is_dynamic(*sym) {
+                            if !heap.is_dynamic(*sym) {
                                 heap.vm_call_ic_put(
                                     *site,
                                     crate::core::heap::CallIcEntry {

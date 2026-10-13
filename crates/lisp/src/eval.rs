@@ -980,7 +980,7 @@ fn eval_tail_loop(
                         // (callable inner only), counts the reduction, and honours the
                         // deadline.
                         let fast = match head {
-                            Value::Sym(s) if !value::is_dynamic(s) => heap.env_get(cl_env, s),
+                            Value::Sym(s) if !heap.is_dynamic(s) => heap.env_get(cl_env, s),
                             _ => None,
                         };
                         let inner = match fast {

@@ -585,9 +585,11 @@ impl Heap {
             // def-site key matches the global the resolver will actually define
             // (`foo/name`); a no-op at root or for an already-qualified name.
             ValueRef::Sym(name) => Some(match self.compile_ns() {
-                Some(ns) => {
-                    crate::eval::macros::qualify_name(&crate::core::value::symbol_name(ns), name)
-                }
+                Some(ns) => crate::eval::macros::qualify_name(
+                    self,
+                    &crate::core::value::symbol_name(ns),
+                    name,
+                ),
                 None => name,
             }),
             _ => None,

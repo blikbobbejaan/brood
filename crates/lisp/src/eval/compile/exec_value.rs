@@ -383,7 +383,7 @@ pub(crate) fn exec_value(
                         // Never cache a dynamic symbol — `binding` rebinds it
                         // without bumping the epoch (a later `defdyn` of a cached
                         // symbol bumps it, so the stale entry self-invalidates).
-                        if !value::is_dynamic(*sym) {
+                        if !heap.is_dynamic(*sym) {
                             heap.vm_global_ic_put(*site, *sym, epoch, v);
                         }
                         Ok(v)

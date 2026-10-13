@@ -56,3 +56,9 @@ A one-in-N race passes N-1 runs; repetition is the evidence. The tools:
   suite, ASAN, TSAN + loom, and a `perf-stats` build.
 - A flake hunt keeps its logs on success too: a loop that deletes them when green cannot be
   believed afterwards.
+- CI and the nightly run the suite through `scripts/nextest-no-flakes.sh`, so a test that
+  passes only on nextest's retry fails the job and is named. Before it, `FLAKY 2/2` was green
+  and unread (`dns_test` failed its first try in four of six runs before anyone looked).
+- Several runtimes in one process is a real configuration (embedders, `cargo test` threads,
+  the nightly sanitizer jobs): state that belongs to a runtime lives on `RuntimeCode`, never
+  in a `static` (KI-224).
