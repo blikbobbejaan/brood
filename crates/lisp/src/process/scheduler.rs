@@ -58,11 +58,11 @@ use guards::{gc_block_set, macro_block_set, stack_base_set};
 // scheduling state stays in the root, reached from there via `use super::*`.
 // Re-export the public surface so `scheduler::…`/`process::…` paths are unchanged.
 mod lifecycle;
-pub(crate) use lifecycle::exit_propagate;
 use lifecycle::{deregister, proc_descr, retire_root_ctx};
 pub use lifecycle::{
     exit, pending_kill_phrase, spawn, spawn_linked, spawn_monitored, spawn_root_program,
 };
+pub(crate) use lifecycle::{exit_propagate, exit_reason_phrase};
 
 // The worker pool + run-queue execution loop lives in a child module; shared
 // scheduling state stays in the root (reached via `use super::*`). Re-export the
@@ -955,6 +955,21 @@ impl Process {
         &mut self.heap
     }
 
+    /// Retire this process with `reason` — the one death path for a process the
+    /// scheduler holds. Fires its links and monitors (`deregister`), and for the root
+    /// program process also tells the thread blocked on the program's outcome, which
+    /// otherwise waits forever when an exit signal kills it mid-run (KI-225).
+    pub(super) fn retire(self: Box<Self>, reason: Message) {
+        let outcome = self
+            .program
+            .as_ref()
+            .map(|_| crate::eval::compile::ProgramState::retire_outcome(&reason));
+        deregister(self.pid, reason, Some(&self.heap));
+        if let (Some(program), Some(outcome)) = (&self.program, outcome) {
+            program.retired(outcome);
+        }
+    }
+
     /// Drive the body one quantum: run fresh, or resume the parked continuation
     /// (`resume` is taken). The `&mut self` borrow ends when this returns, so `run_one`
     /// is then free to move/park/re-queue `self` on the outcome.
@@ -1089,11 +1104,7 @@ pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) ->
             }
         };
         if let Some(p) = taken {
-            deregister(
-                pid,
-                Message::Keyword(crate::core::value::intern(pk::KILLED)),
-                Some(&p.heap),
-            );
+            p.retire(Message::Keyword(crate::core::value::intern(pk::KILLED)));
             reaped += 1;
         }
     }

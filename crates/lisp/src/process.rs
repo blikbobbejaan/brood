@@ -62,6 +62,7 @@ pub use message::{from_message, to_message, ClosureArmMsg, ClosureMsg, Message};
 // The overflow probe's only reader is the JIT runtime.
 #[cfg(feature = "jit")]
 pub(crate) use scheduler::current_mailbox_overflow_pending;
+pub(crate) use scheduler::exit_reason_phrase;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.

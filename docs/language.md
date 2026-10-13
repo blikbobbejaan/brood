@@ -2326,6 +2326,13 @@ monitors anywhere in the fallen tree report the root cause — not a blanket
 on; remote (cross-node) links deliver the same shapes, plus `:noconnection` on
 a net-split.
 
+The program a `brood file.blsp` / `nest run` runs is itself a process, and an exit
+signal kills it like any other — sleeping, receiving or computing. An abnormal
+reason ends the program at once with exit status 1 and
+`runtime error: killed by an exit signal: <reason>`; a `:normal` one (`(exit root
+:normal)`) ends it with status 0. Trapping exits turns link signals into
+`[:EXIT pid reason]` messages here too.
+
 #### `spawn-link` — spawn and link atomically
 
 `(spawn-link expr)` spawns `expr` in a new process **already linked** to the

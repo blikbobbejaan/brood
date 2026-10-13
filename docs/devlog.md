@@ -16831,3 +16831,16 @@ process-wide state put back; the threaded repro 0 in 15 after, 2 in 5 before.
 **Also:** the wasm32 build broke on `tls_request`'s new argument (its stub `net_wasm.rs` was
 not updated) — CI's wasm job caught it; two wasm-only dead-code warnings are gone, and two
 doc comments in `scheduler.rs` that had been run together are on their own functions again.
+
+**KI-225 — an exit signal killing the root program hung `brood file.blsp`.** The next CI run
+went red in the breakage suite: `chaos2_process_links.blsp`'s P15 spawned a child and linked
+it separately, and a child that had already finished made the link a `:noproc` exit signal to
+the untrapping root. Reproducing it showed something worse than a racy test: the root killed
+by an exit signal never exits — in `sleep`, `receive … after` or a compute loop, in 0.35 too.
+The program runs as one green process and the main thread waits for it to publish an outcome,
+which it did only on finishing or on a form error. Every scheduler death now goes through
+`Process::retire`, which publishes for the root (`:normal` → exit 0, otherwise exit 1 "killed
+by an exit signal: <reason>"), with a drop-time backstop. A related bug: a hard kill never
+stopped a JIT'd loop, because native preemption skipped the VM's kill check; preemption now
+honours it. P15 uses `spawn-link`. Guard: `crates/cli/tests/root_exit_signal.rs`, 9 shapes ×
+3 tiers, each fix sabotage-verified.

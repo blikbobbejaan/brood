@@ -13137,3 +13137,27 @@ and the tests assert on that. **Guard.** `boot::image::per_runtime_handle_tests`
 indexed by another runtime does not move this runtime's sections) and
 `crates/lisp/tests/dynamic_marks_per_runtime.rs` (both directions across an isolate), each
 red with the process-wide state restored; the threaded repro 0 failures in 15.
+
+## KI-225 — an exit signal killing the root program hung `brood file.blsp` ✅ FIXED 2026-10-13
+
+**Symptom.** `(let (d (spawn :done)) (sleep 100) (link d) …)` at the top level of a program
+printed what came before the kill and then never exited — in a `sleep`, a `receive … after`,
+or a pure compute loop; the released 0.35 binary did the same. The same code in a spawned
+process died correctly. Found from a red CI breakage run: `chaos2_process_links.blsp`'s P15
+spawned a child that exits `:normal` and then linked it separately, so a child that finished
+first made the link a `:noproc` exit signal to the untrapping root (that run happened to die
+with the message rather than hang). **Cause.** `brood file.blsp` runs the program as one green
+process, and the main thread waits for it to publish an outcome — which it did only on
+finishing or on a form's error. A death by exit signal retired the process without
+publishing, so the main thread waited forever. Separately, a hard kill never stopped a JIT'd
+loop at tier 2 in any process: the native loop's preemption hands straight back to the
+scheduler, skipping the VM's kill check, and the process was re-queued for ever. **Fix.**
+Every scheduler death goes through `Process::retire(reason)`, which publishes the root
+program's outcome (`:normal` exits 0; anything else exits 1 with "killed by an exit signal:
+<reason>"), with a `Drop` backstop on the program state for a scheduler panic; a preempted
+quantum with a hard kill pending retires the process. P15 uses `spawn-link`. **Guard.**
+`crates/cli/tests/root_exit_signal.rs` runs the binary at tiers 0, 1 and 2 on each shape
+(link to a dead pid while sleeping, a linked exit during `receive`/compute, `(exit root …)`,
+a linked crash, a trapping root, `:normal`, `(exit child :kill)` on a computing child), each
+with a deadline; removing the publish, the backstop, the preemption check or the tier-0 change
+each turns its tests red.

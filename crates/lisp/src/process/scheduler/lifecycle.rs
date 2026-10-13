@@ -182,14 +182,20 @@ pub(super) fn retire_root_ctx(pid: u64) {
 pub fn pending_kill_phrase(pid: u64) -> Option<String> {
     let mailbox = REGISTRY.get(pid)?;
     let reason = crate::core::sync::lock(&mailbox.state).kill.clone()?;
-    Some(match reason {
+    Some(exit_reason_phrase(&reason))
+}
+
+/// A short phrase naming an exit `reason` — `:noproc`, `[:error …]` — for the
+/// "killed by an exit signal: …" message.
+pub(crate) fn exit_reason_phrase(reason: &Message) -> String {
+    match *reason {
         Message::Keyword(k) => format!(":{}", value::symbol_name(k)),
         Message::Vector(ref items) => match items.first() {
             Some(Message::Keyword(k)) => format!("[:{} …]", value::symbol_name(*k)),
             _ => "an exit signal".to_string(),
         },
         _ => "an exit signal".to_string(),
-    })
+    }
 }
 
 /// The untrappable hard-kill reason — Erlang's `exit(pid, kill)`. A `:kill` exit

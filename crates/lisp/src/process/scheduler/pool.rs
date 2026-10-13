@@ -892,11 +892,7 @@ fn handle_capture_outcome(
             // read `:normal`. The signal outlives the body, so take it as the reason;
             // absent one, the body really did finish normally.
             let pending = crate::core::sync::lock(&mailbox.state).kill.take();
-            deregister(
-                proc.pid,
-                pending.unwrap_or_else(|| Message::Keyword(value::intern(pk::NORMAL))),
-                Some(&proc.heap),
-            );
+            proc.retire(pending.unwrap_or_else(|| Message::Keyword(value::intern(pk::NORMAL))));
         }
         Ok(Ok(VmOutcome::Suspended(s))) => {
             // Store the parked continuation in the process, then park (the
@@ -906,6 +902,18 @@ fn handle_capture_outcome(
             park_on_receive(proc, mailbox);
         }
         Ok(Ok(VmOutcome::Preempted(s))) => {
+            // A hard kill that arrived during the quantum dies here. The VM's loop-top
+            // safepoint honours one too, but a native loop's back-edge poll preempts
+            // straight to this outcome without passing it, so a JIT'd loop re-queued
+            // forever past `(exit pid :kill)` or a link cascade (KI-225). Once per quantum.
+            if mailbox.pending_hard_kill() {
+                let reason = crate::core::sync::lock(&mailbox.state)
+                    .kill
+                    .take()
+                    .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
+                proc.retire(reason);
+                return;
+            }
             // Budget hit: stash the continuation and re-queue on the **same** worker
             // (`enqueue`, not `wake_enqueue`) — a hot, actively-running process stays
             // put for cache locality; migration is for *idle* (parked) processes.
@@ -919,7 +927,7 @@ fn handle_capture_outcome(
                 .kill
                 .take()
                 .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
-            deregister(proc.pid, reason, Some(&proc.heap));
+            proc.retire(reason);
         }
         Ok(Err(e)) => {
             // An unwinding untrappable kill (`Control::Kill`) that no VM driver
@@ -931,7 +939,7 @@ fn handle_capture_outcome(
                     .kill
                     .take()
                     .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
-                deregister(proc.pid, reason, Some(&proc.heap));
+                proc.retire(reason);
                 return;
             }
             // An uncaught throw/error killed the process (Erlang let-it-crash).
@@ -951,21 +959,13 @@ fn handle_capture_outcome(
                 eprintln!("process {who} died: {why}");
             }
             crate::cli_support::dump_process_death(&who, &why.to_string());
-            deregister(
-                proc.pid,
-                crate::process::message::error_reason(&e),
-                Some(&proc.heap),
-            );
+            proc.retire(crate::process::message::error_reason(&e));
         }
         Err(_) => {
             let who = proc_descr(proc.pid);
             eprintln!("process {who} panicked");
             crate::cli_support::dump_process_death(&who, "panicked");
-            deregister(
-                proc.pid,
-                Message::Keyword(value::intern(pk::KILLED)),
-                Some(&proc.heap),
-            );
+            proc.retire(Message::Keyword(value::intern(pk::KILLED)));
         }
     }
 }
@@ -984,7 +984,7 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
             .take()
             .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
         drop(st);
-        deregister(proc.pid, reason, Some(&proc.heap));
+        proc.retire(reason);
         // `proc` dropped here → its captured continuation + LOCAL heap are freed.
     } else if st.queue.len() > st.scanned {
         // A message raced in during the park — resume instead of parking. This is a

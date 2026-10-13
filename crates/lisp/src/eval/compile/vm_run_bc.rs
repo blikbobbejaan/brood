@@ -331,8 +331,13 @@ impl ProgramState {
 
     /// A top-level form raised: publish the structured error to the root thread and
     /// retire the process `:normal` (it handled its own crash), so the scheduler prints
-    /// nothing.
+    /// nothing. An unwinding exit signal (the tree-walker's, which no VM driver turned
+    /// into `Killed`) is a death, not a crash: retire with the pending reason, so every
+    /// tier ends the program the same way (`retire_outcome`).
     fn crash(&self, e: LispError) -> VmOutcome {
+        if e.is_kill_signal() {
+            return VmOutcome::Killed;
+        }
         // Attach the file to the error's own field (innermost `load` wins, a no-op if
         // already set) so `located()` renders the canonical `file:LINE:COL: msg` — NOT
         // string-prepend `file: ` onto an already-located `LINE:COL: msg`, which emits a
@@ -348,6 +353,40 @@ impl ProgramState {
         e.payload = None;
         self.exit.publish(Err(e));
         VmOutcome::Done(Value::nil())
+    }
+
+    /// The outcome of a program process retiring with `reason` (KI-225): `:normal` ends
+    /// the program cleanly, anything else is the "killed by an exit signal" error.
+    pub(crate) fn retire_outcome(reason: &crate::process::Message) -> Result<(), LispError> {
+        match reason {
+            crate::process::Message::Keyword(k)
+                if *k == crate::core::value::intern(crate::process::keywords::NORMAL) =>
+            {
+                Ok(())
+            }
+            _ => Err(LispError::killed_by(Some(
+                crate::process::exit_reason_phrase(reason),
+            ))),
+        }
+    }
+
+    /// The program process has retired with `outcome` (from [`retire_outcome`]). A
+    /// program that finished or crashed has already published, so this only lands when
+    /// it died mid-run — an exit signal, or a scheduler fault — and the root thread
+    /// blocked in [`ProgramExit::wait`] must hear of it or it waits forever.
+    ///
+    /// [`retire_outcome`]: Self::retire_outcome
+    pub(crate) fn retired(&self, outcome: Result<(), LispError>) {
+        self.exit.publish(outcome);
+    }
+}
+
+/// Backstop for a retire path that drops the process without naming a reason (a
+/// panicking scheduler tail): the waiting root thread is still told. A no-op once an
+/// outcome was published — the slot is first-wins.
+impl Drop for ProgramState {
+    fn drop(&mut self) {
+        self.exit.publish(Err(LispError::killed_by(None)));
     }
 }
 

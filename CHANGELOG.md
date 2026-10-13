@@ -34,7 +34,10 @@ U+FFFD): `tls/request` sends the request itself, so the first chunk could land b
 caller's `tcp/set-binary`. `tls/request` takes an optional `binary` argument that sets the
 mode before anything is sent, and `http/request` uses it. Two runtimes in one OS process
 (an embedder with several interpreters) could read each other's stdlib image file and lose
-each other's `defdyn` declarations; both are per runtime now (KI-224). The checker could fail to
+each other's `defdyn` declarations; both are per runtime now (KI-224). A program whose top
+level was killed by an exit signal (a link to a dead pid, a linked crash, `(exit root …)`)
+hung instead of exiting; it now exits 1 with "killed by an exit signal: <reason>", and a hard
+kill stops a JIT-compiled loop (KI-225). The checker could fail to
 terminate on recursive types, and a bare `(fn)`
 argument in a `:pure` function panicked it. `format` followed symlinks into cycles;
 `dns/lookup` leaked its socket on every failure; `csv` dropped a final `""` row and bare
