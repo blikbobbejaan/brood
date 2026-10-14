@@ -490,6 +490,12 @@ manifest is read, naming the key, not later inside whoever consumes the map."
     else (find-root (path/dirname dir))))
 (sig find-root (string -> (or string nil)))
 
+(defn require-root (who &optional from)
+  "The project root `find-root` finds walking up from `from` (default the cwd), or raise
+`<who>: not in a Brood project …` — the guard every project command opens with."
+  (let (dir (or from (file/cwd)))
+    (or (find-root dir) (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
+
 (defn abs-paths (root rels)
   "Resolve each relative path in `rels` against `root`, returning the list of absolute paths."
   (map rels (fn (r) (path/join root r))))

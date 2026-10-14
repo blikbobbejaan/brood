@@ -1380,8 +1380,7 @@ temp, and the second rename would find it gone."
 ;; Locate the project root, load its manifest (so *project-dependencies* is set),
 ;; and hand the root to `body-fn`. Shared preamble for the verbs below.
 (defn- package-in-project (body-fn)
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root) (error "package: not inside a Brood project (no project.blsp found)"))
+  (let (root (project/require-root "package"))
     (package-load-manifest (path/join root "project.blsp"))
     (body-fn root)))
 
@@ -2084,8 +2083,7 @@ top-level key, never a dependency's `:version`. `level` is \"patch\" (default), 
 (defn release (level & opts)
   "`nest publish --bump LEVEL`: bump the project's own version, commit the bump, then publish.
 Stops with an error — publishing nothing — when the bump cannot be committed."
-  (package-release-in (or (project/find-root (file/cwd))
-                        (error "package: not inside a Brood project (no project.blsp found)"))
+  (package-release-in (project/require-root "package")
     level
     (fn () (apply publish opts))))
 

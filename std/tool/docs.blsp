@@ -45,8 +45,7 @@ module's namespace-rooted globals (ADR-070) back to it."
 
 (defn- docs-setup-root (who)
   "Find the project above the cwd (or raise naming `who`), set it up, and return its root."
-  (let (root (or (project/find-root (file/cwd))
-               (error who ": not in a Brood project (no project.blsp found from " (file/cwd) ")")))
+  (let (root (project/require-root who))
     (setup root)
     root))
 
@@ -69,27 +68,8 @@ module's namespace-rooted globals (ADR-070) back to it."
 ;; module can predict. So here the reference renders as the code span it is: `reject`. The
 ;; brackets never reach the reader in either surface.
 ;;
-;; Same two guards as the docsite's: a name has no spaces (docstrings carry literal vectors
-;; like `[[hatch :path "…"]]`), and an unclosed `[[` is prose.
-(defn- docs-link-part (part prefix)
-  (let (end (index-of part "]]"))
-    (cond
-      (< end 0) (str "[[" part)
-      else
-        (let (raw (string/substring part 0 end)
-              tail (string/substring part (inc (inc end)) (count part)))
-          (if (or (= raw "") (includes? raw " "))
-            (str "[[" part)
-            ;; QUALIFY a bare reference with the citing definition's own module. The docsite
-            ;; can leave `[[reject]]` reading as "reject" because it is a link on the page
-            ;; that defines it; here there is no link and no page, so the bare spelling is
-            ;; all the reader gets — and for a namespaced module the bare spelling is one
-            ;; they cannot type. `seq/filter`'s docstring citing [[reject]] must print
-            ;; `seq/reject`, not `reject`, which is unbound.
-            (str "`"
-              (if (or (nil? prefix) (>= (index-of raw "/") 0)) raw (str prefix raw))
-              "`"
-              tail))))))
+;; The scan and its guards (an unclosed `[[` is prose; a bracketed run with a space is a
+;; literal vector) are the docsite's `render-refs`; only the rendering differs.
 
 (defn- docs-module-prefix (sym)
   "The `mod/` a bare `[[name]]` in `sym`'s docstring should be read against, or nil for a
@@ -101,13 +81,15 @@ bare-surface (prelude) name, whose references are bare already."
 (defn- docs-links (text &optional prefix)
   "Render `[[name]]` cross-references in `text` as code spans, qualifying bare ones with
 `prefix` (a `mod/` string) when there is one."
-  (if (nil? text)
-    text
-    (let (parts (string/split text "[["))
-      (if (< (count parts) 2)
-        text
-        (str (first parts)
-          (apply str (map (rest parts) (fn (p) (docs-link-part p prefix)))))))))
+  (docsite/render-refs text
+    (fn (raw)
+      ;; QUALIFY a bare reference with the citing definition's own module. The docsite can
+      ;; leave `[[reject]]` reading as "reject" because it is a link on the page that
+      ;; defines it; here there is no link and no page, so the bare spelling is all the
+      ;; reader gets — and for a namespaced module the bare spelling is one they cannot
+      ;; type. `seq/filter`'s docstring citing [[reject]] must print `seq/reject`, not
+      ;; `reject`, which is unbound.
+      (str "`" (if (or (nil? prefix) (>= (index-of raw "/") 0)) raw (str prefix raw)) "`"))))
 
 ;; A value worth a full entry (signature + docstring): a function or a macro.
 (defn- docs-documentable? (v) (or (fn? v) (= (type-of v) :macro)))

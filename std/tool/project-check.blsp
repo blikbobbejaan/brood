@@ -619,12 +619,6 @@ against the fully-loaded state is also what a live image would see. Returns nil.
   (project/setup root)
   (project-image/load-sources-cached root :skip-loaded))
 
-(defn- check-root (who &optional from)
-  "The project root found from `from` (default the cwd), or raise naming `who`."
-  (let (dir (or from (file/cwd)))
-    (or (project/find-root dir)
-      (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
-
 ;; Structured analogue of `check` — returns a flat list of
 ;; `{:file :line :col :message}` maps instead of printing GNU lines + a
 ;; count. Backs the `nest mcp` `check` tool (`std/tool/mcp.blsp`, step 1c-a).
@@ -639,7 +633,7 @@ against the fully-loaded state is also what a live image would see. Returns nil.
   ;; were all worse — a `set_current_dir` races sibling tests in the same binary under
   ;; plain `cargo test`, and raising the budget is what hid KI-39 for weeks. A caller
   ;; that names its root needs neither.
-  (let (root (check-root "check-structured" from))
+  (let (root (project/require-root "check-structured" from))
     (project-ensure-loaded root)
     (if (= (os/env "BROOD_NO_CHECK") "1")
       nil
@@ -1142,7 +1136,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 
 (defn check ()
   "Advisory type-check the whole project (every source + test file), printing GNU-style `FILE:LINE:COL:` warnings to stderr. Errors if not in a Brood project. Backs `nest check`."
-  (project-check-or-replay (check-root "check") nil))
+  (project-check-or-replay (project/require-root "check") nil))
 
 ;; ── whole-project verdict replay (ADR-382) ───────────────────────────────────
 ;; The per-file cache (below) needs the heap: a verdict is reused only when every global
@@ -1252,7 +1246,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; `nest test` keeps using `check` (full coverage; `test` is loaded).
 (defn check-sources ()
   "Like `check`, but checks only the project's source paths (skips `tests/`, whose files reference test-framework macros). Used by `nest run`'s pre-flight."
-  (let (root (check-root "check-sources"))
+  (let (root (project/require-root "check-sources"))
     (project-ensure-loaded root)
     (let (srcs (source-files root)
           extracts (project-gather-extracts srcs)
@@ -1330,7 +1324,7 @@ about to run actually reaches, walked from module `entry` through the require gr
 Returns `[gating unbound]` — the gating warning count and, of those, how many are unbound
 symbols (the count `run`'s launch gate refuses over, ADR-304). A module the program never
 reaches is `nest check`/`nest test`'s business."
-  (let (root (check-root "check-run-closure"))
+  (let (root (project/require-root "check-run-closure"))
     (if (= (os/env "BROOD_NO_CHECK") "1")
       *project-tally-zero*
       (let ([want reach] (project-entry-closure entry
@@ -1455,7 +1449,7 @@ print the plan and change nothing. Returns the count of names left for a human.
 
 Declines — with the reason printed — a name this project itself defines, a name defined in
 more than one namespace, and a name that moved behind `%`. Backs `nest check --fix-renames`."
-  (check-root "fix-renames")
+  (project/require-root "fix-renames")
   (let (diags (check-structured)
         ledger (renames/ledger)
         ;; The ledger first (ADR-304): a deliberate rename is exact and unambiguous —
@@ -1655,7 +1649,7 @@ file before writing it, so a file is either correct or untouched.
 
 `nest check --suggest-sigs` prints the same set and changes nothing."
   (let (targets (if (empty? files)
-                  (source-files (check-root "fix-sigs"))
+                  (source-files (project/require-root "fix-sigs"))
                   files)
         totals (fold targets
                  [0 0]
@@ -1682,7 +1676,7 @@ file before writing it, so a file is either correct or untouched.
 lacks one, grouped by file. With `files` empty, the whole project. Writes nothing.
 Backs `nest check --suggest-sigs`."
   (let (targets (if (empty? files)
-                  (source-files (check-root "suggest-sigs"))
+                  (source-files (project/require-root "suggest-sigs"))
                   files)
         total (fold targets
                 0

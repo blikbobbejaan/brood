@@ -26,16 +26,6 @@ classifies a `#` comment, an optional leading `export` keyword, the `KEY` of a
 
 ;; ---- scanning helpers -------------------------------------------------------
 
-(defn- env-lead-ws (line i n)
-  "The column where `line`'s leading whitespace (spaces / tabs) ends."
-  (math/min n (string/span line i " \t")))
-(sig env-lead-ws (string int int -> int))
-
-(defn- env-find (line i n ch)
-  "The offset of the next single-char `ch` at or after `i` in `line`, or -1."
-  (if (>= i n) -1 (index-of line ch i)))
-(sig env-find (string int int string -> int))
-
 (defn- env-key-end (line i n)
   ;; a dotenv key is letters, digits, `_` and `.`
   (math/min n
@@ -49,7 +39,7 @@ classifies a `#` comment, an optional leading `export` keyword, the `KEY` of a
 quote, or end of line if unclosed); `()` for an unquoted value (the default face)."
   (if (and (< v n) (or (= (string/char-at line v) "\"") (= (string/char-at line v) "'")))
     (let (q (string/char-at line v)
-          close (env-find line (inc v) n q)
+          close (index-of line q (inc v))
           e (if (< close 0) n (inc close)))
       (list [(+ base v) (+ base e) env-face-string]))
     '()))
@@ -72,22 +62,12 @@ present, the key, and a quoted value. `()` when the line isn't an assignment."
 (defn- env-line-spans (line base)
   "The spans for one `line` starting at offset `base`: a `#` comment whole, else the
 assignment spans (key / export / quoted value), else none."
-  (let (n (string/length line) lead (env-lead-ws line 0 n))
+  (let (n (string/length line) lead (string/span line 0 " \t"))
     (cond
       (>= lead n) '()
       (= (string/char-at line lead) "#") (list [(+ base lead) (+ base n) env-face-comment])
       else (env-assign-spans line base lead n))))
 (sig env-line-spans (string int -> list))
-
-(defn- env-lex (src i n acc)
-  "Tail-recursive line walker: classify each line (`env-line-spans`), accumulating
-spans in reverse."
-  (if (>= i n)
-    (reverse acc)
-    (let (e (math/min n (string/span-until src i "\n"))
-          spans (env-line-spans (string/substring src i e) i))
-      (env-lex src (inc e) n (fold spans acc (fn (a s) (cons s a)))))))
-(sig env-lex (string int int list -> list))
 
 (defn env-spans (src)
   "Lexically tokenize dotenv `src` into a list of `[start end face]` colour spans
@@ -95,5 +75,5 @@ spans in reverse."
 editor's `:fontify` service and the shared `fontify-runs` tiler unchanged. Covers `#`
 comments, the `export` keyword, the `KEY` of an assignment, and quoted values. Spans
 are ascending and non-overlapping; unquoted values carry no span (the default face)."
-  (env-lex src 0 (string/length src) '()))
+  (editor/lexer/lexer-walk-lines src env-line-spans))
 (sig env-spans (string -> any))

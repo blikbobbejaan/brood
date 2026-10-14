@@ -1203,9 +1203,7 @@ if you are reintroducing hoisting, they are what you have to write back."
       (seq/filter files (fn (f) (not (contains? ignored f)))))))
 
 (defn- format-require-root ()
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root)
-      (error "format: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
+  (let (root (project/require-root "format"))
     (project/setup root)
     root))
 

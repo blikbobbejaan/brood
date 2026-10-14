@@ -17442,6 +17442,17 @@ a pair). And `reflect/references-in-source` — the MCP `callers` tool — had i
 the reader's `scanner::line_starts` (guard in `tests/introspection_test.blsp`, red with the
 old definition).
 
+**Follow-up: three duplicates that needed a public name.** `editor/lexer/lexer-walk-lines
+src line-spans` is the line walk `lexer`, `shell`, `dotenv` and `dockerfile` each carried
+(dotenv/dockerfile's `lead-ws`/`find` guards were redundant over `string/span`/`index-of` and
+are gone too; those two modes now load `editor/lexer`, and with it the face registry).
+`project/require-root who &optional from` is the find-the-root-or-raise opening of `check`,
+`run`, `format`, `mcp`, `package`, `docs` and `update-tooling` — one message now ("not in a
+Brood project"; `package` said "not inside", `update-tooling` said something else again).
+`docsite/render-refs text render` is the `[[name]]` scanner `docs` and `docsite` shared but
+for the rendering. The fourth candidate, a shared HTML escape for `markdown` and `docsite`,
+is two copies of three lines and stays as it is.
+
 ## 2026-10-14 (night) — a named wrapper links from native code; `reduce` takes the counted loop; `range` is multi-arity
 
 `perf_event_paranoid` is 1 on this box tonight, so the session started from `perf stat` /
