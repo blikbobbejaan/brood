@@ -90,7 +90,11 @@ finishes inline (746 → 617 instructions an element). Leads left, measured: the
 is still ~617 instructions an element against ~412 for a native→native call by name — the
 remaining Rust entry ceremony (`enter_native`, frame nil-fill, captures), whose amortisation
 would reshape ADR-403's per-element preemption; and a computed-head call from native code is
-~771 against 412 by name (A's in-IR fast link for computed heads). `nqueens`' `solve` stays
+652 against ~410 by name (771 before ADR-406's 2026-10-14 amendment). **The in-IR fast link
+for computed heads is measured low-value on the corpus:** computed-head calls from native code
+per run are `supervisor` 57k, `persistent-map` 50k, `base64` 48k, `json` 25k, `wordcount` 1k,
+every other row ~0 — at ~240 instructions saved each, ≤2% of any row. Worth it for user code
+built on higher-order loops, not for the benchmark column. `nqueens`' `solve` stays
 interpreted (it builds its loop closure; §7.1).
 
 ### Older threads
