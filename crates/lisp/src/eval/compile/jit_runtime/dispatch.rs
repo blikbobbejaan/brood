@@ -323,15 +323,34 @@ pub(crate) fn jit_dispatch_call(
     } else {
         None
     };
-    let result = match dispatch(heap, callee, argv, false, env) {
-        Ok(Step::Done(v)) => Ok(v),
-        Ok(Step::Tail {
-            compiled,
-            args,
-            genv,
-            bases: _,
-        }) => vm_apply(heap, compiled, &args, genv),
-        Err(e) => Err(e),
+    // A thin wrapper — `(fn (acc x) (+ acc x))`, the canonical reducer — is called from
+    // native code by running its compiled arm, not by the dispatcher's redirect to the inner
+    // head (ADR-069). The redirect spares the interpreters a frame; from here it is two
+    // by-name hops (`+`'s own arm is a wrapper of `%add`) at ~1 900 instructions a call, and
+    // because the wrapper's body then never runs, its arm never got hot enough to tier up
+    // and be linked natively. Run like any closure, it tiers, and the next calls take the
+    // native path above. Same answer: the compiled body resolves its inner head by the
+    // same late-bound name, and applies the contract boundary at compile time (ADR-383)
+    // where the redirect re-creates it by value.
+    let wrapper_arm = match callee.unpack() {
+        ValueRef::Fn(id) if crate::eval::passthrough_arm(heap, id, argc).is_some() => {
+            compiled_arm_for(heap, id, argc)
+                .map(|a| (a, heap.closure(id).env.unwrap_or_else(|| heap.global())))
+        }
+        _ => None,
+    };
+    let result = match wrapper_arm {
+        Some((arm, cenv)) => vm_apply(heap, arm, &argv, cenv),
+        None => match dispatch(heap, callee, argv, false, env) {
+            Ok(Step::Done(v)) => Ok(v),
+            Ok(Step::Tail {
+                compiled,
+                args,
+                genv,
+                bases: _,
+            }) => vm_apply(heap, compiled, &args, genv),
+            Err(e) => Err(e),
+        },
     };
     if let Some(prev) = saved_force {
         heap.jit_force_vm = prev;

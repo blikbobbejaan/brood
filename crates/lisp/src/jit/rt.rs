@@ -31,7 +31,7 @@ use crate::core::heap::{FastLink, Heap};
 // Debug builds trace each callback under `BROOD_JIT_CB_TRACE=1`
 // (`debug_flags::jit_callback_trace`).
 
-/// Preemption poll (ADR-27). JIT'd loop back-edges call this; returns nonzero when the
+/// Preemption poll (ADR-027). JIT'd loop back-edges call this; returns nonzero when the
 /// process should yield. Mirrors the VM's loop-top exactly: only a **capture-mode green
 /// process** is preemptible (`tick_capture` decrements the reduction budget and yields at
 /// zero); the root/eval thread (and any non-capture run) never preempts — it just keeps
@@ -123,7 +123,7 @@ pub extern "C" fn brood_rt_in_capture(_heap: *mut Heap) -> u8 {
 
 /// GC safepoint check. JIT'd code calls this where the interpreter would collect (a
 /// loop top / before an allocation burst): collect if due and not inside the compile
-/// pass (mirrors the eval safepoint, ADR-61).
+/// pass (mirrors the eval safepoint, ADR-061).
 ///
 /// # Safety
 /// `heap` must be the live, pinned context pointer for the current JIT'd call, with no

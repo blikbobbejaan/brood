@@ -1,4 +1,4 @@
-//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-18): a
+//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-018): a
 //! CPU-bound process with no `receive` must not monopolise its worker. We pin the
 //! pool to ONE worker so a CPU-bound hog and a responder must share a single
 //! core — only preemption lets the responder run at all.

@@ -80,7 +80,7 @@ use crate::eval::compile::CompiledArm;
 /// (`scripts/jit-lower-witness.sh`, `tests/jit.rs`), a conformance suite it inherits rather
 /// than reinvents.
 /// Deliberately *only* the two lowering entry points: no `name()`, no capability query, no
-/// configuration hook. Each of those is a knob with no caller today, and per ADR-11 an
+/// configuration hook. Each of those is a knob with no caller today, and per ADR-011 an
 /// additive feature costs nothing to defer — whoever adds a second backend adds the ones
 /// that turn out to be needed, with their actual uses.
 /// The ABI of a JIT-compiled arm: `(heap, base, out) -> outcome`.

@@ -178,7 +178,7 @@ Reading them:
 
 ## 3. Why this exists: the bytecode-lowering / JIT gate
 
-ADR-96 gates bytecode lowering (and any codegen) on *a profile showing
+ADR-096 gates bytecode lowering (and any codegen) on *a profile showing
 interpretive dispatch — not allocation, GC, or `env_get` — is the bottleneck*.
 `perf-stats` is how we get that profile. Concretely: if a representative workload
 shows `alloc`/collections dominating and IC hit-rates already high, lowering buys

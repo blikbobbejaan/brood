@@ -30,13 +30,13 @@ these are the ones to unlearn:
 | Clojure habit | Brood reality | What you get if you guess wrong |
 |---|---|---|
 | `(try … (catch Type e body))` | `catch` takes a **bare binding**: `(catch e body)`. There is no exception class. | A clean error naming the fix. (It used to bind the *class name* as the variable and evaluate `e` as a statement — and since the prelude defines `e`, `(catch Exception e (io/puts "caught" e))` silently printed 2.718…, a wrong program with no diagnostic.) |
-| Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-47) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (Erlang-style; see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
+| Multi-arity `(fn ((x) …) ((x y) …))` | **Supported** (ADR-047) — dispatch by argument count, like Clojure. But param lists are **lists** `(x)`, not vectors `[x]`, and a clause head may *also* be a same-arity **pattern** (Erlang-style; see [Pattern matching](#pattern-matching)). | A **clean error** with a hint: vector-headed clauses `([x] …) ([x y] …)` are rejected. (They used to read as one 2-parameter pattern clause with an empty body — a completely different function, diagnosed only later as a misleading arity error at the call site.) |
 | `{:a 1}` map literal | **Supported.** Immutable; `get`/`assoc`/`dissoc`/`keys`/`vals`/`contains?` (see [Maps](#maps)). Iteration order is **hash-derived, not insertion order** (unlike Clojure's array-map — see [Maps](#maps)). | Works as you'd expect, except don't rely on key order. |
-| `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-11). | Works as in Clojure for the `:keys`/`:or` subset. |
+| `{:keys [a b]}` / `:or` map destructuring | **Supported** — a map literal in pattern position binds each `:keys` symbol to the same-named keyword's value (nil if absent, or the `:or` default): `(let ({:keys [a b] :or {b 0}} m) …)`, works in `let`/`fn`/`match`. General `{:key subpattern}` nesting and `:as` are deferred (ADR-011). | Works as in Clojure for the `:keys`/`:or` subset. |
 | `(defn f [x y] …)`, `(let [a 1 b 2] …)` | Param lists and `let` bindings are **lists** — `(x y)` / `(a 1 b 2)`. A vector *inside* one is still destructuring: `(let ([x y] p) …)`. | A clean error with a hint (ADR-149). The vector spelling was once accepted as an alias; that is what turned every Clojure binding shape into a silent misread — `(let [[a 1] [b 2]] …)` destructured `[a 1]` against `[b 2]` and reported `unbound symbol: b`. |
 | `(let [[a 1] [b 2]] …)` / Scheme's `(let ((a 1)) …)` | Bindings are **flat**: `(let (a 1 b 2) …)`. | A clean error **with a hint** to flatten (was accepted-then-confusing). |
 | `^:kw` / `^{:doc "…"}` metadata | Brood has **no metadata**. `^` is the pattern **pin**: `^expr` matches the current value of `expr` (ADR-150). | `^:kw` reads as a pin of the keyword — a pattern where you meant an annotation. Docstrings go in the body (see [Docstrings](#docstrings)). |
-| `#{1 2 3}` set literal | A first-class set (`Value::Set`, ADR-60): `set?` true, prints `#{…}`, never `=` to a map. Evaluates its elements and dedups. | Reads as a kernel set; the `set` library (`(:use set)`) adds `union`/`intersection`/… |
+| `#{1 2 3}` set literal | A first-class set (`Value::Set`, ADR-060): `set?` true, prints `#{…}`, never `=` to a map. Evaluates its elements and dedups. | Reads as a kernel set; the `set` library (`(:use set)`) adds `union`/`intersection`/… |
 | `#(+ 1 %)` anonymous-fn reader macro | Write it out: `(fn (x) (+ 1 x))`. | A parse error **with a hint** naming `(fn …)` (was "unbound symbol: #"). |
 | `#'foo` var-quote | Symbols are values — plain `'foo`. | A parse error **with a hint** naming `'foo`. |
 | `#_form` discard reader macro | No form-level discard — wrap the form in `(comment …)`, whose body is read but never evaluated, or comment it out with `;`. | A parse error **with a hint** naming `(comment …)` and `;` (was a stray `#_` symbol). |
@@ -50,7 +50,7 @@ these are the ones to unlearn:
 Within a *single* clause, optional and rest arguments use the Common-Lisp /
 Emacs-Lisp spelling (`&optional`, `&`), described under
 [Parameter lists](#parameter-lists). Brood *also* has Clojure-style multi-arity
-(arg-count dispatch across clauses; ADR-47) — but the param lists are **lists**
+(arg-count dispatch across clauses; ADR-047) — but the param lists are **lists**
 `(x y)`, not vectors `[x y]`, and arity clauses don't mix with pattern/`&optional`
 heads (see [`fn`/`defn` clauses](#fn--defn-clauses)). The list-not-vector spelling
 is the one piece that can't be guessed from Clojure; it has to be read.
@@ -123,7 +123,7 @@ a binding is made, it never changes. Concretely:
 - **The one mutation is `def`.** `def` rebinds a name in the **global**
   environment (even when written inside a function). This is *binding* mutation,
   not data mutation, and it exists for one reason: **live redefinition / hot
-  reload** — the project's north star (ADR-13). A running process sees a `def`'d
+  reload** — the project's north star (ADR-013). A running process sees a `def`'d
   change on its next global lookup.
 - **…but not of the language's own functions.** A name that shipped inside the
   `brood` binary — a prelude function or macro, a Rust builtin, or a function from an
@@ -154,9 +154,9 @@ a binding is made, it never changes. Concretely:
 class and reinforces every other pillar of the system: the tracing GC needs no
 write barriers or mutable roots; per-process heaps are trivially `Send` with
 copy-on-send messages and no aliasing hazards; the shared `RUNTIME` code region
-can be append-only; and it keeps the safe-Rust guardrail (ADR-1) honest. It
+can be append-only; and it keeps the safe-Rust guardrail (ADR-001) honest. It
 also shrinks the core — two fewer special forms (`set!`, `while`). See
-[ADR-26](decisions.md) for the full rationale and trade-offs (e.g. repeated
+[ADR-026](decisions.md) for the full rationale and trade-offs (e.g. repeated
 immutable `assoc`/`append` is O(n²); `reduce`/`fold` and future persistent
 structures are the mitigations).
 
@@ -222,7 +222,7 @@ with `[1 2]`). Duplicate keys keep the **last** value.
 
 **Iteration order is unspecified — do not rely on it.** `keys`, `vals`, printing,
 and seqing a map yield entries in the **CHAMP trie's hash-derived order**
-(ADR-40), which is *neither* insertion order *nor* sorted, and may differ across
+(ADR-040), which is *neither* insertion order *nor* sorted, and may differ across
 runtimes or versions. (It is a function of the keys' hashes, not of how you built
 the map — so two `=` maps iterate alike — but treat the specific order as an
 implementation detail.) When you need a defined order, **sort the keys**
@@ -306,7 +306,7 @@ A map is **seqable as its `[k v]` pairs**: `seq`, `first`, `rest`, `last`, `map`
 map). Use `reduce-kv` when you want the key and value as separate arguments.
 
 These are thin Brood wrappers (`std/prelude/map.blsp`) over a small kernel of `map-*`
-primitives; the representation is a **CHAMP hash-array-mapped trie** (ADR-40),
+primitives; the representation is a **CHAMP hash-array-mapped trie** (ADR-040),
 which is why `count` is O(1) and structural key equality is O(log n).
 
 ### Records
@@ -512,7 +512,7 @@ returns that same human text.
 for a `defrecord` value and `get`/`assoc` still treat it as a map — the nominal id is
 carried in a reserved `:__id__` field (a record is *not* `=` to a bare map, though). A
 `defrecord` value dispatches on its `:module/name` id; a plain map, **even one carrying
-a `:type` field**, stays `:map` and lands on the `:map` impl. That is the ADR-11 line —
+a `:type` field**, stays `:map` and lands on the `:map` impl. That is the ADR-011 line —
 the identity is explicit and construction-time, never inferred from a field.
 
 > **On-ramp: reach for `defrecord` *before* you want polymorphism.** Because dispatch is
@@ -654,7 +654,7 @@ when it divides evenly and a `ratio` when it does not (`(/ 4 2)` → `2`, `(/ 3 
 never a float, at any arity (`(/ 2)` → `1/2`). So `(sig f (int -> float))` over `(/ x 2)` is a
 provable mismatch, as is feeding the result somewhere non-numeric. One float operand still
 makes the whole expression a float (contagion wins). Declaring `int` over it is *not* flagged:
-for an even numerator that is correct, and proving it would need range analysis (ADR-11).
+for an even numerator that is correct, and proving it would need range analysis (ADR-011).
 
 **A record name is a type.** `(sig area (circle -> float))`, `:-> circle` — a record is the
 language's nominal type, so its name resolves in type position to the open shape
@@ -874,7 +874,7 @@ a combination. `=` is deliberately *not* a multimethod — equality stays a kern
 ## Sets
 
 A **set** is a first-class kernel value written `#{1 2 3}` — an unordered
-collection of distinct elements (ADR-60). It is its own kind: `(set? s)` is true,
+collection of distinct elements (ADR-060). It is its own kind: `(set? s)` is true,
 `(map? s)` is false, `(type-of s)` is `:set`, it prints `#{…}`, and a set is
 **never** `=` to a map (even one with the same keys). Under the hood it shares the
 CHAMP trie with maps (`element → true`), so it inherits structural equality
@@ -940,19 +940,19 @@ highlighter-facing list that also names the core macros.)
 | `` (quasiquote tmpl) `` / `` `tmpl `` | Template: literal except `~x` inserts a value and `~@xs` splices a sequence. |
 
 `defmacro` is **not** among them: it is a prelude macro that lowers to
-`(def name (%make-macro (fn …)))` (ADR-98) — see [Macros](#macros).
+`(def name (%make-macro (fn …)))` (ADR-098) — see [Macros](#macros).
 `when`, `unless`, `cond`, `and`, `or`, `case`, `match`, and `comment` read like
 special forms but are **prelude macros** over `if`/`do`/`let`
-(`std/prelude/core.blsp`), expanded once by the compile pass (ADR-22) — so the
+(`std/prelude/core.blsp`), expanded once by the compile pass (ADR-022) — so the
 evaluator's core stays minimal and they cost nothing extra at runtime.
 (`(comment body…)` ignores its body and yields `nil` — the form-level "don't run
 this", since Brood has no `#_` discard reader macro. The body is still *read*, so
 it must be balanced sexps; the checker skips it, so names inside need not resolve.) `cond` is still flat test/expr pairs with **`else`** as
-the catch-all (ADR-4; `:else` was a second blessed spelling and is no longer
+the catch-all (ADR-004; `:else` was a second blessed spelling and is no longer
 special — it still catches, but only because a keyword is truthy, exactly as
 `true` or `42` would); `and`/`or` short-circuit left-to-right and return the
 deciding value, each subexpression evaluated once. There is **no iteration special
-form**: data is immutable and there is no local mutation (ADR-26), so loops are
+form**: data is immutable and there is no local mutation (ADR-026), so loops are
 expressed as recursion (proper tail calls make this O(1) stack) — or, for evolving
 state, as processes (`spawn`/`receive`).
 
@@ -1284,11 +1284,11 @@ no-op to silence it without editing code:
 > `(a (quasiquote (b 3)))` where the standard reading leaves `(+ 1 2)`
 > unevaluated. A `` ` `` inside an `~unquote` is ordinary code and stays legal, so
 > the macro-writing-a-macro spelling is `` `(a ~(inner-template x)) ``. Level
-> tracking can land later without breaking anything accepted today (ADR-11).
+> tracking can land later without breaking anything accepted today (ADR-011).
 > Macros are hygienic both ways automatically: a template's introduced `let`/`fn`
-> **binders** are alpha-renamed so they can't capture spliced caller code (ADR-66
+> **binders** are alpha-renamed so they can't capture spliced caller code (ADR-066
 > amendment; opt a binder out with `~'name`), and its *free* references
-> **auto-qualify** to the macro's defining namespace (ADR-66 α), so a macro
+> **auto-qualify** to the macro's defining namespace (ADR-066 α), so a macro
 > expands correctly when used in another namespace without hand-qualifying. See
 > the "Macro hygiene" section above and spec §7.
 
@@ -1514,7 +1514,7 @@ raises on mismatch. Bindings stay sequential, freely mixed with plain symbols:
 ### `fn` / `defn` clauses
 
 `fn` is **multi-clause** when every form after it is a clause `(param-list body…)`.
-Multi-clause dispatch has **two axes** (ADR-47):
+Multi-clause dispatch has **two axes** (ADR-047):
 
 - **By argument count** (Clojure-style multi-arity) when the heads are *arity
   clauses* — plain-symbol params, optionally with `&optional` / `&` rest. The
@@ -1555,7 +1555,7 @@ an arity arm *or* a pattern clause. An `&optional`/`&` inside a clause that's be
 matched as a pattern is treated as a literal symbol — it does *not* make that arm
 variadic. Use arity overloading or pattern dispatch, not both in the same `defn`.
 
-Parameter lists stay **lists** (ADR-10), so a single tuple parameter must be
+Parameter lists stay **lists** (ADR-010), so a single tuple parameter must be
 wrapped: `(defn g ([x y]) …)` is one 2-tuple param, while `(defn g (x y) …)` is
 two params.
 
@@ -2020,7 +2020,7 @@ Adoption is broad — **613 declarations across 79 std modules** (ADR-153 starte
 any module, and result types flow (a `bool` result handed to `string/length` is caught).
 The checker treats `sig` and `sig!` identically. Writing a *type* never changes
 behaviour; opting into *enforcement* does. Full design:
-[type-annotations.md](type-annotations.md) (ADR-82).
+[type-annotations.md](type-annotations.md) (ADR-082).
 
 ### Advisory lints (non-type warnings)
 
@@ -2079,7 +2079,7 @@ mid-way — a single long native builtin, a pure numeric recursion running in th
 register worker — yields as soon as it returns, and the system monitor's
 `:long-schedule` event reports it.
 Code is shared, data is not: a spawned function sees every `def` (and live
-redefinitions — ADR-13), but messages cross as deep copies.
+redefinitions — ADR-013), but messages cross as deep copies.
 
 ```clojure
 (defn worker (parent)
@@ -2226,7 +2226,7 @@ right tool for request/reply to a long-lived process.
 
 `std/proc/gen.blsp` packages the request/reply idiom above into a
 gen_server-style framework — ~180 lines of Brood over `spawn`/`send`/`receive`/
-`ref`/`monitor`, no kernel surface (ADR-99). A server carries one immutable
+`ref`/`monitor`, no kernel surface (ADR-099). A server carries one immutable
 state value through a tail-recursive `receive` loop; `defserver` declares how it
 handles each kind of message.
 
@@ -2377,7 +2377,7 @@ failure only appears under load — exactly where a supervisor matters.
 **Use `spawn-link` for anything supervised.** `std/proc/supervisor.blsp`'s
 `:start` thunks do (`(fn () (spawn-link (worker …)))`), and `gen`'s
 `gen/start-link` is the same guarantee for a `defserver` server. The prelude
-macro expands to the `%spawn-link` primitive (ADR-67).
+macro expands to the `%spawn-link` primitive (ADR-067).
 
 #### `spawn-monitor` — spawn and monitor atomically
 
@@ -2584,7 +2584,7 @@ transparently.
 | `(node/monitor name)` | Deliver `[:nodedown name]` when the link to `name` goes down (clean close or heartbeat timeout). |
 | `(pid? x)` | True if `x` is a process id. |
 
-The cookie is a shared secret (Erlang-style; links are encrypted — ADR-89). One
+The cookie is a shared secret (Erlang-style; links are encrypted — ADR-089). One
 node per OS process. Remote `spawn`/code-shipping, distributed monitors/links,
 heartbeat node-down detection, and mesh join have all shipped — full reference:
 [distribution.md](distribution.md).
@@ -2730,7 +2730,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 - ~~`not=`~~ is **deprecated since 0.19.1 — write `(not (= a b))`.** It never bought a
   capability, only a spelling: its definition *is* `(not (= a b))`, and no part of the
   kernel, the compiler or the checker knows the name. It is also the slower of the two,
-  structurally — `=`'s body is a direct primitive call, so the ADR-69 thin-wrapper elision
+  structurally — `=`'s body is a direct primitive call, so the ADR-069 thin-wrapper elision
   collapses it, and `not`'s body is a leaf the inliner splices, while `not=`'s nested-call
   body is reachable by neither and stays a boxed call (measured 1.65x native, 1.38x on the
   VM, on a 5M-iteration loop). And its variadic reading misleads: `(not= 1 2 1)` is `true`
@@ -3333,9 +3333,9 @@ iolist in memory.
   defaulted from `BROOD_GC_TRACE`). **Memory is reclaimed automatically:** the
   LOCAL heap is a **generational** copying collector (a nursery every `alloc`
   bumps into, plus a tenured old generation) that fires at the eval safepoint
-  (ADR-55) whenever a process's live set crosses an adaptive threshold — a minor
+  (ADR-055) whenever a process's live set crosses an adaptive threshold — a minor
   collection copies the nursery's survivors and drops the rest, an occasional
-  major compacts the old generation (ADR-72). So a long-running tail loop or
+  major compacts the old generation (ADR-072). So a long-running tail loop or
   `receive` server runs in bounded memory with nothing from the author — no
   manual GC call, no `while`, just recursion. (You never collect by hand; the old
   `(proc/hibernate)` primitive that did so was removed once automatic collection
@@ -3415,7 +3415,7 @@ file is the common case. Inside it, every `def`/`defn`/`defmacro` defines the **
 defines it (including a *forward* reference to something defined later in the
 file), otherwise it falls through to the **root** namespace — the prelude and any
 non-namespaced globals. This keeps first-party and third-party code from
-clobbering each other in the one shared global table (ADR-19/65), without a
+clobbering each other in the one shared global table (ADR-019/065), without a
 separate namespace axis in the core: `foo/name` is just one interned symbol (`/`
 is an ordinary symbol character), so the runtime, hot reload, and `send`/copy are
 unchanged.
@@ -3540,14 +3540,14 @@ defined but never called within the file — see
 [Advisory lints](#advisory-lints-non-type-warnings).
 At the REPL the namespace tracks the last `defmodule`; `(reflect/current-ns)` reports it.
 
-> Status: landed (ADR-65/66, 2026-05-30). `defmodule` is the single namespace
+> Status: landed (ADR-065/066, 2026-05-30). `defmodule` is the single namespace
 > form (`ns` removed); all of `std/` and every test file are namespaced; the
 > checker, LSP, and `nest mcp` resolve names ns-aware. Macro templates
-> **auto-qualify** their free references to the defining namespace (ADR-66 α), so
+> **auto-qualify** their free references to the defining namespace (ADR-066 α), so
 > a macro is robust across namespaces without hand-qualifying. Quoted symbols
 > (`'foo`, message tags, map keys) are **never** qualified — they are data.
 > Package-level name collisions are detected and rejected at dependency-resolution
-> time (ADR-70), enforced once the package manager lands (ADR-37).
+> time (ADR-070), enforced once the package manager lands (ADR-037).
 
 ### Introspection (editor tooling)
 `doc`  `arglist`  `reflect/global-names`  `bound?`  `apropos`  `doc-search`
@@ -3622,7 +3622,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 
 | Module | name | What it provides |
 |--------|---------------|-----------------|
-| `std/file.blsp` | `'file` | Filesystem policy over the kernel's fs primitives: `read-lines`, `write-lines`, `regular?`, `list-files`, `list-dirs`, `walk-files`. Pure path-string ops (`extension`, `stem`, …) live in `path` (ADR-234). All Brood (ADR-6), no new Rust |
+| `std/file.blsp` | `'file` | Filesystem policy over the kernel's fs primitives: `read-lines`, `write-lines`, `regular?`, `list-files`, `list-dirs`, `walk-files`. Pure path-string ops (`extension`, `stem`, …) live in `path` (ADR-234). All Brood (ADR-006), no new Rust |
 | `std/io.blsp` | `'io` | Output **ports** — the `Port` ability (`io-write`), `stdout-port`, `stderr-port`, `process-port`, `file-port`, `fn-port`, and the `with-out`/`with-err` redirections — so output has a first-class destination instead of a fixed stdout. Also the writers themselves: `io/write`, `io/puts`, `io/inspect`, each taking an optional trailing `:to <port>` (see also `std/log.blsp`) |
 | `std/text.blsp` | `'text` | Plain-text transforms with no editor/buffer/IO dependency: `fill`, greedy word-wrap to a column width. Pure Brood over the string primitives, so it is reusable anywhere (fill-paragraph, wrapping help text or REPL output) |
 | `std/seq.blsp` | `'seq` | Derived **sequence helpers** (ADR-227) layered over the bare collection protocol: `dedupe`, `distinct-by`, `group-by`, `frequencies`, `chunk-by`, `chunk-every`, `interpose`, `interleave`, `scan`, `zip-with`, `reduce-while`, `min-by`, `max-by`, `enumerate`, `index-where`. Also `filter`/`reject`/`keep`/`filterv`/`rejectv`/`distinct`/`zip`/`find`/`flatten` and the transducer + lazy stages. The core ops (`map`/`reduce`/`fold`/`take`/`drop`/`take-while`/`partition`) stay bare in the prelude; `(:use seq)` for bare access or call qualified |
@@ -3639,7 +3639,7 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/csv.blsp` | `'csv` | CSV parse and emit: `csv-parse`, `csv-parse-maps`, `csv-emit`, `csv-emit-maps` |
 | `std/uuid.blsp` | `'uuid` | UUID generation: `uuid-v4` (random), `uuid-v7` (time-ordered, RFC 9562), `uuid-nil`, `uuid?` |
 | `std/template.blsp` | `'template` | `{{var}}` string templating: `render`, `render-all` |
-| `std/wasm.blsp` | `'wasm` | WASM component interop (ADR-71/145): `wasm-load`/`wasm-instantiate` a sandboxed component, `wasm-call` its exports (marshalled by WIT types, fuel-metered), `wasm-call-blocking` (the offload pool), `use-native` (bind every export as a Brood fn), `wasm-exports`, `wasm-close` |
+| `std/wasm.blsp` | `'wasm` | WASM component interop (ADR-071/145): `wasm-load`/`wasm-instantiate` a sandboxed component, `wasm-call` its exports (marshalled by WIT types, fuel-metered), `wasm-call-blocking` (the offload pool), `use-native` (bind every export as a Brood fn), `wasm-exports`, `wasm-close` |
 | `std/queue.blsp` | `'queue` | Purely functional FIFO queue and min-priority queue |
 | `std/multimap.blsp` | `'multimap` | Multi-valued map (one key → multiple values) |
 | `std/hash.blsp` | `'hash` | `sha256`/`sha1`/`sha384`/`sha512`/`md5` (hex over strings or byte vectors), raw-byte digests (`sha256-raw` … → byte vectors, for chaining over bytes), `bytes->hex` (byte seq → lowercase hex), `hmac-sha256` (RFC 2104) and raw-byte `hmac-sha256-raw`/`-sha1-raw`/`-sha512-raw` (byte-vector key+msg → byte vector, for binary-protocol auth), `hash-string` (djb2). All Brood over two Rust prims (`%digest`/`%hmac`). |
@@ -3711,7 +3711,7 @@ listener**:
   handler doesn't even do that: the listener catches it and **detaches** it. An
   *uncatchable* fault (stack overflow, `(exit … :kill)`) kills only the listener;
   **supervise it** (it's an ordinary `:permanent` child) and it restarts with the
-  handler table intact (the table is a separate global, ADR-13).
+  handler table intact (the table is a separate global, ADR-013).
 - **The trade-off vs. Erlang.** Erlang runs handlers inline in the caller (fast, but
   a bad handler degrades the caller). Brood chooses total emitter isolation, at the
   cost of one listener as a serialization point. Keep handlers cheap, or use

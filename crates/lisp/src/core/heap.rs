@@ -20,7 +20,7 @@
 //!   calls keep running it); the global bindings are a `RwLock<HashMap>`.
 //!
 //! GC is **per-process, single-threaded, generational semi-space copying**
-//! (ADR-55/61/72, see `docs/memory-model.md` and `docs/memory-review.md`). The
+//! (ADR-055/061/072, see `docs/memory-model.md` and `docs/memory-review.md`). The
 //! LOCAL heap is a **nursery** + a tenured **old** generation; a *minor*
 //! collection ([`collect`](Self::collect) → [`minor_collect`](Self::minor_collect))
 //! copies the nursery's survivors (tenuring or flipping) and drops the rest, a
@@ -28,7 +28,7 @@
 //! collection without being re-rooted goes stale — so the evaluator keeps its
 //! in-flight LOCAL handles on an explicit operand stack ([`roots`](Self::roots) +
 //! [`env_roots`](Self::env_roots)) that the collector relocates in place, letting
-//! it collect at **any** eval depth; a generation epoch on every handle (ADR-54)
+//! it collect at **any** eval depth; a generation epoch on every handle (ADR-054)
 //! trips a precise debug tripwire on a stale deref. PRELUDE and RUNTIME are never
 //! traced (they hold no LOCAL refs, by the promotion invariant — see
 //! [`promote`](Self::promote)); the collector only touches LOCAL.
@@ -125,7 +125,7 @@ type EnvVars = SmallVec<[(Symbol, Value); 4]>;
 struct EnvFrame {
     // A small association list, not a `HashMap`: frames hold a handful of
     // bindings (function params, a `let`'s names), and they're immutable after
-    // their bind phase (ADR-26 — no `set!`), so a build-once / scan-to-read
+    // their bind phase (ADR-026 — no `set!`), so a build-once / scan-to-read
     // vector is lighter than hashing and wins at these sizes. Lookups scan from
     // the end so a later binding shadows an earlier one of the same name
     // (sequential `let`).
@@ -176,7 +176,7 @@ pub struct SharedCode {
     /// `prelude.blsp` copy; see `lib.rs`). Immutable like the rest of this
     /// region, and consulted by [`Heap::def_site`] *after* the runtime table so
     /// a user redefinition of a prelude name still wins. Powers cross-file
-    /// goto-definition into the standard library (ADR-31, docs/lsp.md).
+    /// goto-definition into the standard library (ADR-031, docs/lsp.md).
     def_sites: HashMap<Symbol, SourceLoc>,
     /// The prelude's own `(sig …)` declarations (`%register-sig` during the build), keyed
     /// like [`RuntimeCode::declared_sigs`] and holding the type-expression as a PRELUDE
@@ -321,7 +321,7 @@ pub(crate) struct ColdHeap {
     /// time (ADR-235), only if the bare name is actually *used*, at which point the
     /// resolver names the candidates. Rides the same per-file save/restore as the rest.
     pub(crate) imports: HashMap<Symbol, ImportEntry>,
-    /// Package-rooted namespaces (ADR-70): while loading a *dependency* `foo`, its
+    /// Package-rooted namespaces (ADR-070): while loading a *dependency* `foo`, its
     /// local name is the active prefix, so a module the file declares `(defmodule b)`
     /// roots to `foo/b` and its intra-package `(:use b)`/`(:alias b …)` targets root
     /// too. `None` outside a dep load (the root project / std stay unrooted, short).
@@ -504,7 +504,7 @@ pub struct Heap {
     /// The file currently being `load`ed, exposed via `(current-file)`. Saved and
     /// restored around each load so nested loads don't clobber the outer file.
 
-    /// The namespace currently being compiled into (ADR-65). `None` = root (the
+    /// The namespace currently being compiled into (ADR-065). `None` = root (the
     /// prelude, plain code, and the REPL until an `(ns …)` form runs). Set by the
     /// `(ns foo)` form via the `%in-ns` primitive; read by the resolver pass
     /// (`eval::macros::resolve`) to qualify definition heads and free references to
@@ -524,7 +524,7 @@ pub struct Heap {
     /// (`describe` → `test/describe`). Populated by `%refer` when the `(ns …)`
     /// header runs; consulted by the resolver after the current namespace and
     /// before root fall-through. Per-file like `ns_known_names` — reset/restored
-    /// by the loaders so imports never leak across files (ADR-65 inc-2).
+    /// by the loaders so imports never leak across files (ADR-065 inc-2).
 
     /// This process's dynamic-variable binding stack (the `binding` form). Each
     /// `binding` pushes its `(symbol, value)` pairs and pops them when its body
@@ -563,7 +563,7 @@ pub struct Heap {
         SmallMap<Symbol, (u64, Value), std::hash::BuildHasherDefault<runtime_code::SymbolHasher>>,
     >,
     /// Memoized `mod/name` → `prefix/mod/name` rooting for intra-package *qualified
-    /// references* (ADR-70). A miss in the global table falls back to the rooted name
+    /// references* (ADR-070). A miss in the global table falls back to the rooted name
     /// (see [`root_qualified_ref`](Self::root_qualified_ref)); this caches the symbol→symbol answer —
     /// including the negative one (`None` = not intra-package, don't retry) — so the
     /// fallback costs one hash lookup rather than a `format!` + intern per reference.
@@ -597,7 +597,7 @@ pub struct Heap {
     /// clobbering each other's record. Off (`None`) for all normal eval; the record
     /// borrow on the hot per-symbol observation path is a single `RefCell` check.
 
-    /// Explicit GC root stack — the evaluator's **operand stack** (ADR-61).
+    /// Explicit GC root stack — the evaluator's **operand stack** (ADR-061).
     /// Every LOCAL [`Value`] an eval frame still needs *after* a nested `eval`
     /// (its accumulated `argv`, literal accumulators, `callee`, the `call_form`,
     /// the cons-spine cursor) is pushed here for the duration of that call, then
@@ -636,7 +636,7 @@ pub struct Heap {
     /// The GC root stack. A [`roots_buf::RootsBuf`], not a `Vec<Value>`, so its
     /// (ptr, len, cap) header sits at fixed offsets for the JIT (§7.5); same semantics.
     roots: roots_buf::RootsBuf,
-    /// The env half of the operand stack (ADR-61): LOCAL [`EnvId`]s an eval
+    /// The env half of the operand stack (ADR-061): LOCAL [`EnvId`]s an eval
     /// frame still needs across a nested `eval` (its `scope`/`env`). Relocated in
     /// place by every collection alongside `roots`; re-read via
     /// [`env_root_at`](Self::env_root_at). Separate stack because an `EnvId`
@@ -702,7 +702,7 @@ pub struct Heap {
     /// further). A minor collection scans these as extra roots and rewrites their
     /// bindings to the promoted handles, then clears the set. Empty on the common
     /// path (binds finish in the nursery). Env-frame binding (late binding / `def`
-    /// rebinding, ADR-13) is the **only** data mutation the collector must track;
+    /// rebinding, ADR-013) is the **only** data mutation the collector must track;
     /// every Lisp value is immutable, so the minor flip can safely rely on the
     /// invariant that old never points to young everywhere else.
     remembered: Vec<EnvId>,
@@ -741,7 +741,7 @@ pub struct Heap {
     gc_ns_last: u64,
     /// Per-process heap limit (bytes), the BEAM `max_heap_size` analogue — set by
     /// this process on itself via `(proc/flag :max-heap n)`, `None` = unlimited
-    /// (the default; the ADR-43 global soft/hard cap is separate). Checked
+    /// (the default; the ADR-043 global soft/hard cap is separate). Checked
     /// **after** each collection against the *surviving* footprint (nursery +
     /// old gen), so transient garbage a collection reclaims never trips it.
     proc_mem_limit: Option<usize>,
@@ -767,7 +767,7 @@ pub struct Heap {
     /// they happen). Per-process like every other heap field: a spawned child
     /// starts from the `BROOD_GC_TRACE` default, not the parent's setting.
     gc_trace: bool,
-    /// Compiling-VM body cache (ADR-76). Maps a closure handle's raw
+    /// Compiling-VM body cache (ADR-076). Maps a closure handle's raw
     /// bits to its compiled single-arm body, or `None` if the closure isn't
     /// VM-eligible (so we don't re-attempt). Per-process (a `RefCell`, like
     /// `global_ic`). The key is **namespaced** (`VmCacheKey`) because two stable
@@ -775,7 +775,7 @@ pub struct Heap {
     /// closure-handle `.0`, while a local-capturing closure (Stage 2c) is keyed by
     /// its **body-code handle** — the closure's `ClosureId` is a LOCAL handle whose
     /// index is recycled after GC, so it can't be a stable key, but the body forms
-    /// it points at live in the immovable RUNTIME code region (ADR-76 §2c(a)). The
+    /// it points at live in the immovable RUNTIME code region (ADR-076 §2c(a)). The
     /// two spaces share the same numeric range, so the `u8` tag keeps them apart. A
     /// `def` rebind promotes a *new* closure (new handle → new key), so a stale
     /// entry is simply never looked up again. Empty under `BROOD_TIER=0`. `Arc`
@@ -783,7 +783,7 @@ pub struct Heap {
     /// the cache.
     vm_cache: vm_cache::VmCacheCell,
     /// The [`RuntimeCode::free_epoch`] this process last synced its [`Self::vm_cache`]
-    /// to (ADR-91 Stage 4). When the shared free-epoch advances (a generation was
+    /// to (ADR-091 Stage 4). When the shared free-epoch advances (a generation was
     /// freed and its slot may be reused with bit-identical handles), the `vm_cache`
     /// read path clears the cache once and updates this — so a stale compiled body
     /// can't alias a reused handle. Cheap: one relaxed atomic load + compare per
@@ -797,7 +797,7 @@ pub struct Heap {
     /// in the same process overwrites it and simply recompiles at its next lookup instead.
     /// Read at every frame entry — a hot per-process cell, not the arm's cold flag.
     stale_arm_uid: Cell<u64>,
-    /// **RUNTIME collector — Stage 4 (drain free-attempt throttle, ADR-91).** A
+    /// **RUNTIME collector — Stage 4 (drain free-attempt throttle, ADR-091).** A
     /// per-process tick rate-limiting how often this process runs the multigen drain
     /// **free-attempt** ([`crate::process::free_drained_gen`] → the O·live-process
     /// `report_parked_liveness` whole-registry scan) at its safepoint. While a drain is
@@ -811,7 +811,7 @@ pub struct Heap {
     /// self-report still runs every frame so acks stay current. A plain `Cell` (the
     /// `Heap` is single-threaded), so the throttle adds no atomic or cross-core traffic.
     rt_drain_tick: Cell<u32>,
-    /// **RUNTIME collector — Stage 3c (local clean-ack cache, ADR-91).** The drain
+    /// **RUNTIME collector — Stage 3c (local clean-ack cache, ADR-091).** The drain
     /// epoch this process last reported *clean* for (0 = none). While a drain stays
     /// armed — which it does for the whole run whenever a long-lived process pins the
     /// draining generation (a top-level test-runner loop still executing old-gen code;
@@ -870,9 +870,9 @@ pub struct Heap {
     /// off the GC root graph, and `exec_node` holds it by `&Node`, so the `Arc` can't
     /// be swapped for a relocated copy. (The non-live arms in `vm_cache` are just
     /// cleared and rebuilt lazily; only the live ones need fixup.) Empty unless the VM
-    /// is running a body. See ADR-76 / `docs/known-issues.md`.
+    /// is running a body. See ADR-076 / `docs/known-issues.md`.
     live_vm_arms: Vec<Arc<crate::eval::compile::ArmHandle>>,
-    /// Call-site inline caches (ADR-96). Indexed by the `site` id a compiled
+    /// Call-site inline caches (ADR-096). Indexed by the `site` id a compiled
     /// `Node::Call` with a global-symbol callee carries; each entry caches that
     /// site's most recent resolution — the callee value, and (for a VM-eligible
     /// non-passthrough closure callee) its compiled arm + captured env — stamped
@@ -895,7 +895,7 @@ pub struct Heap {
     /// (`vm_call_ic_put` / `vm_global_ic_put`), so an activated arm whose sites never run
     /// materialises no slots. Every reader tolerates a short table (`.get(abs)` — a
     /// missing slot reads exactly like an unpublished one). Reset to 0 in lockstep
-    /// with the table clears + `arm_ic_blocks`, preserving ADR-96's site-id
+    /// with the table clears + `arm_ic_blocks`, preserving ADR-096's site-id
     /// recycling semantics (the sym/argc guards on every probe exist for it).
     next_ic_base: std::cell::Cell<u32>,
     next_gic_base: std::cell::Cell<u32>,
@@ -938,7 +938,7 @@ pub struct Heap {
     /// stale-operand bug — see `dbg_site_pos` / `dbg_set_site_pos`.
     #[cfg(debug_assertions)]
     dbg_site_pos: RefCell<Vec<Option<(crate::error::Pos, Option<Arc<str>>)>>>,
-    /// Global-read inline caches (ADR-96) — the value-position counterpart of
+    /// Global-read inline caches (ADR-096) — the value-position counterpart of
     /// [`Self::vm_call_ics`], indexed by a compiled `Node::GlobalIc`'s site id.
     /// Same lifecycle: allocated at compile time, validated by (sym, epoch),
     /// cleared wholesale on a RUNTIME compaction.
@@ -1137,7 +1137,7 @@ pub fn is_movable(v: Value) -> bool {
 /// operand-stack slot to be rewritten — because **some** collector relocates it:
 /// a LOCAL object (the copying collector moves it) **or** a RUNTIME object (the
 /// runtime compactor [`Heap::runtime_collect`] evacuates the shared code region,
-/// ADR-76). Only atoms and the immutable PRELUDE region are truly fixed and may
+/// ADR-076). Only atoms and the immutable PRELUDE region are truly fixed and may
 /// stay inline as a [`Root::Stable`].
 ///
 /// This is the superset [`Heap::root`] gates on; [`is_movable`] is the narrower
@@ -2149,7 +2149,7 @@ impl Heap {
     /// `def`'d map dereferences one trie node per level, and cloning the generation's `Arc`
     /// there would cost two contended atomics per level.
     ///
-    /// **Why the borrow is sound on its own terms** (not merely because ADR-91 says a
+    /// **Why the borrow is sound on its own terms** (not merely because ADR-091 says a
     /// generation this process references is never freed): the only thing that ever drops the
     /// cached `Arc` is this function's refresh, and it does not drop it — it moves the
     /// replaced `Arc` to `gen_cache_retired`, which is emptied only by
@@ -2286,7 +2286,7 @@ impl Heap {
     /// generation's [`CodeSlabs`] to the `&T` a hand-written accessor wants. The
     /// [`Guard`] is moved into the `SlabRef`, keeping the generation's slab alive for
     /// the borrow's lifetime — so a concurrent Stage-4 free can't drop it mid-read
-    /// (ADR-91). Mirrors the `RUNTIME` arm of [`region_ref!`] for the accessors that
+    /// (ADR-091). Mirrors the `RUNTIME` arm of [`region_ref!`] for the accessors that
     /// can't use the macro (`OnceLock`/`LocalString`/`Arc` projections).
     #[inline]
     fn rt_slab_ref<T: ?Sized>(
@@ -2295,7 +2295,7 @@ impl Heap {
         project: impl FnOnce(&CodeSlabs) -> &T,
     ) -> SlabRef<'_, T> {
         // A generation can be **freed concurrently** by the multi-process collector while
-        // other processes run (ADR-91); the per-process cache keeps the slabs this borrow
+        // other processes run (ADR-091); the per-process cache keeps the slabs this borrow
         // points into alive until `&mut self` — see `code_gen_ref`. No refcount bump.
         SlabRef::direct(project(self.code_gen_ref(g)))
     }

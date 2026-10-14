@@ -7,7 +7,7 @@
 //! `Message` into a destination heap. Symbols travel by their interned id
 //! locally and by name across nodes (the `dist` codec re-interns on arrival).
 //!
-//! Closures travel as data via [`ClosureMsg`] (ADR-33 closure-as-data),
+//! Closures travel as data via [`ClosureMsg`] (ADR-033 closure-as-data),
 //! capturing only the free *local* bindings the body actually references —
 //! free globals re-resolve on the receiver.
 //!
@@ -146,7 +146,7 @@ pub enum Message {
 /// re-resolved on the receiver rather than copied.
 ///
 /// `pub(crate)` fields rather than accessors: the wire codec in
-/// `crate::dist` needs every field (closure-as-data shipping; ADR-33) and
+/// `crate::dist` needs every field (closure-as-data shipping; ADR-033) and
 /// they're inert plain data once built — no invariant to defend at the
 /// boundary.
 /// Run `f` on a stack that has room for it. Every walker over a `Message` recurses once
@@ -647,7 +647,7 @@ fn copy_value_inner<T: CopyTarget>(
         Value::Native(id) => target.native(src, id)?,
         Value::Rope(_) => {
             // A rope is process-local: it lives in exactly one process's heap
-            // (the buffer-as-process model, ADR-45). Move its *content* across
+            // (the buffer-as-process model, ADR-045). Move its *content* across
             // as a string instead — the receiver rebuilds a rope if it needs one.
             return Err(target.refuse(|| {
                 LispError::type_err(

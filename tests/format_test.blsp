@@ -442,6 +442,37 @@
             "/a/target/t.blsp " dir "/a/.git/g.blsp " dir "/a/project.lock.blsp " dir "/a/notes.txt")])
       (assert= (format/format-collect-blsp dir) (list (path/join dir "a/f.blsp")))
       (file/rmdir dir)))
+  ;; The entry `nest format --check` reaches, in a child whose cwd is a throwaway git project:
+  ;; `src/gen/` is generated output the project's `.gitignore` disowns, holding a badly laid
+  ;; out file. With the rule the check passes; the same tree without it fails on that file —
+  ;; so the pass is the ignore rule's doing, not a walk that never saw `gen/`.
+  (test "a file git ignores is not judged by the project check"
+    (let (bin (path/dirname (or (os/exe-path) ""))
+          exe (first (seq/filter [(path/join bin "brood") (path/join bin ".." "brood")]
+                       file/exists?))
+          dir (temp-dir "brood-fmt-ignored-")
+          prog (path/temp "brood-fmt-ignored-run-")
+          check (fn (ignore)
+                  (file/spit (path/join dir ".gitignore") ignore)
+                  (os/cmd exe [prog] {:cwd dir :env {"BROOD_NO_CHECK" "1"}}))
+          ugly "(defn g (y)\n        (* y 2))\n")
+      (file/mkdir dir)
+      (file/mkdir (path/join dir "src"))
+      (file/mkdir (path/join dir "src/gen"))
+      (file/spit (path/join dir "project.blsp")
+        "(project :name \"fmtignored\" :source-paths [\"src\"])\n")
+      (file/spit (path/join dir "src/a.blsp") "(defn f (x) (+ x 1))\n")
+      (file/spit (path/join dir "src/gen/b.blsp") ugly)
+      (file/spit prog "(format/project-check)\n")
+      (when (and exe (os/cmd-ok? (os/cmd "git" ["init" "-q" dir])))
+        (let (ignored (check "src/gen/\n") owned (check ""))
+          (assert= 0 (get ignored :exit))
+          (is (includes? (get ignored :stdout) "all clean"))
+          (refute (= 0 (get owned :exit)))
+          (is (includes? (str (get owned :stdout) (get owned :stderr)) "gen/b.blsp"))))
+      ;; never formatted, either way
+      (assert= ugly (file/slurp (path/join dir "src/gen/b.blsp")))
+      (file/rmdir dir)))
   (test "an already-formatted file is left unchanged"
     (let (dir (temp-dir "brood-fmt-safe-")
           path (path/join dir "clean.blsp"))

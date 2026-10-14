@@ -26,11 +26,11 @@ current state (the table below is a navigation aid, not a status report).
 
 **Four superseded/reverted/rejected ADRs have been moved out** to keep this log
 focused on current design — their full text (with retrospectives) lives in
-[archive/decisions-superseded.md](archive/decisions-superseded.md): ADR-2
-*(superseded by the tracing/copying GC)*, ADR-35 *(superseded/disabled)*,
-ADR-39 *(reverted → ADR-44)*, ADR-57 *(rejected as scoped)*. They're still
+[archive/decisions-superseded.md](archive/decisions-superseded.md): ADR-002
+*(superseded by the tracing/copying GC)*, ADR-035 *(superseded/disabled)*,
+ADR-039 *(reverted → ADR-044)*, ADR-057 *(rejected as scoped)*. They're still
 listed (italicised) in the index below so the numbering stays complete.
-**Still proposed, not built:** ADR-71 *(WASM extensions)*. ADR-119
+**Still proposed, not built:** ADR-071 *(WASM extensions)*. ADR-119
 *(incremental `nest check` cache)* has since shipped in full (Phase 1 + Phase
 2) — stale entry, corrected here rather than left to relitigate. ADR-123
 *(whole-program soundness under hot reload)* has shipped in full (ADR-124 +
@@ -43,7 +43,7 @@ out to already exist (`nest check` has always exited 1 on any warning).
 | 002 | `Rc`/`RefCell` now, tracing GC later *(superseded — archived)* |
 | 003 | Lists are cons cells; `[ ]` vectors are separate |
 | 004 | Clojure-style truthiness and flat `cond` |
-| 005 | v0.1 has zero external dependencies *(relaxed by ADR-14)* |
+| 005 | v0.1 has zero external dependencies *(relaxed by ADR-014)* |
 | 006 | As much of the language as possible lives in Brood |
 | 007 | Brood is a Lisp-1 |
 | 008 | Rust is a primitive kernel; the language is written in Brood |
@@ -77,7 +77,7 @@ out to already exist (`nest check` has always exited 1 on any warning).
 | 036 | `nest mcp`: a per-project Model Context Protocol server |
 | 037 | Packages: git deps + project-local cache + lock file |
 | 038 | Single-binary bundling (`nest release`) |
-| 039 | Supervised processes with mode-gated resume checkpoints *(reverted → ADR-44 — archived)* |
+| 039 | Supervised processes with mode-gated resume checkpoints *(reverted → ADR-044 — archived)* |
 | 040 | Maps: CHAMP (16-way) instead of an entries-vec + index |
 | 041 | Shared, refcounted blobs for large immutable byte data |
 | 042 | Live-editing hardening: `defonce`, reload-defs detection, dedup, macro-staleness |
@@ -157,7 +157,7 @@ out to already exist (`nest check` has always exited 1 on any warning).
 | 116 | Intersection of arrows: overloaded functions via `(and A B …)` |
 | 117 | Int-literal types: `5` as a type, the first slice of ADR-105's deferral |
 | 118 | Match exhaustiveness checking over literal-enum types |
-| 119 | Incremental `nest check` cache: designed, not built (defer per ADR-11) |
+| 119 | Incremental `nest check` cache: designed, not built (defer per ADR-011) |
 | 120 | Bool and string literal types |
 | 121 | Match exhaustiveness generalized to mixed-kind literal enums |
 | 122 | Match redundancy / unreachable-clause detection |
@@ -306,7 +306,7 @@ positionless warning at its top-level form) is gone: one mechanism, in the expan
 the information is created. A position on quoted data inside an expansion is harmless and
 unused.
 
-## ADR-1 — Implement the runtime in Rust (not C or Zig)
+## ADR-001 — Implement the runtime in Rust (not C or Zig)
 
 **Status:** accepted.
 
@@ -332,7 +332,7 @@ this codebase will be written with heavy AI assistance ("vibe-coded").
 
 **Trade-off accepted.** The borrow checker is awkward for graph-shaped data
 (environments, closures). We mitigate with the standard `Rc`/`RefCell`-now,
-tracing-GC-later pattern (see ADR-2), which is well-represented in training
+tracing-GC-later pattern (see ADR-002), which is well-represented in training
 data (Piccolo, other Rust Lisps).
 
 **Considered & rejected.** Elixir/BEAM is philosophically great for hot-reload
@@ -341,7 +341,7 @@ re-evaluating definitions already gives hot-reload, regardless of host language.
 
 ---
 
-## ADR-3 — Lists are cons cells; `[ ]` vectors are separate
+## ADR-003 — Lists are cons cells; `[ ]` vectors are separate
 
 **Status:** accepted.
 
@@ -356,7 +356,7 @@ data, matching the Clojure-ish aesthetic.
 
 ---
 
-## ADR-4 — Clojure-style truthiness and flat `cond`
+## ADR-004 — Clojure-style truthiness and flat `cond`
 
 **Status:** accepted.
 
@@ -369,7 +369,7 @@ branches can use `do`.
 
 ---
 
-## ADR-5 — v0.1 has zero external dependencies
+## ADR-005 — v0.1 has zero external dependencies
 
 **Status:** accepted.
 
@@ -383,7 +383,7 @@ to read end-to-end. Dependencies arrive with the features that justify them
 
 ---
 
-## ADR-6 — As much of the language as possible lives in Brood
+## ADR-006 — As much of the language as possible lives in Brood
 
 **Status:** accepted.
 
@@ -396,7 +396,7 @@ policy lives in the language.
 
 ---
 
-## ADR-7 — Brood is a Lisp-1
+## ADR-007 — Brood is a Lisp-1
 
 **Status:** accepted.
 
@@ -407,7 +407,7 @@ Emacs Lisp.
 **Why.** The operator position of a combination is resolved with the same lookup
 as any variable, so functions are ordinary first-class values. This is what lets
 higher-order code read naturally (`(map f xs)`, `(reduce %add 0 xs)`) and is a
-prerequisite for ADR-8 — defining `+` and friends as plain `def`s only works
+prerequisite for ADR-008 — defining `+` and friends as plain `def`s only works
 because a function is just a value in the one namespace.
 
 **Trade-off accepted.** A local binding can shadow a global function of the same
@@ -416,11 +416,11 @@ aesthetic already chosen.
 
 ---
 
-## ADR-8 — Rust is a primitive kernel; the language is written in Brood
+## ADR-008 — Rust is a primitive kernel; the language is written in Brood
 
 **Status:** accepted. Supersedes the original "builtins live in Rust" approach.
 
-**Context.** The core principle (ADR-6) is to write as much of the system in
+**Context.** The core principle (ADR-006) is to write as much of the system in
 Brood as possible. Initially the math/list functions (`+`, `-`, `map`, `reduce`,
 …) were Rust loops.
 
@@ -443,7 +443,7 @@ Rust, can recover the speed without changing the surface language.
 
 ---
 
-## ADR-9 — Clojure-style quasiquote; commas are whitespace
+## ADR-009 — Clojure-style quasiquote; commas are whitespace
 
 **Status:** accepted. Resolves the previously-deferred quasiquote question.
 
@@ -458,12 +458,12 @@ macros remain possible future work.
 
 ---
 
-## ADR-10 — Code is cons-lists; vectors are a data type
+## ADR-010 — Code is cons-lists; vectors are a data type
 
-**Status:** accepted. Refines ADR-3 (reverses its "vectors as the parameter-list
+**Status:** accepted. Refines ADR-003 (reverses its "vectors as the parameter-list
 surface" stance).
 
-**Context.** ADR-3 introduced `[ ]` vectors and used them, Clojure-style, for
+**Context.** ADR-003 introduced `[ ]` vectors and used them, Clojure-style, for
 parameter lists and `let` bindings. Revisiting this against the project's north
 star — a *self-editing editor* that constantly rewrites Brood source — the
 homoiconic argument won: if code is uniformly cons-lists, macros and the editor's
@@ -489,7 +489,7 @@ call form. Worth it for homoiconic code.
 
 ---
 
-## ADR-11 — Favor the simplest user-facing design; defer power features
+## ADR-011 — Favor the simplest user-facing design; defer power features
 
 **Status:** accepted.
 
@@ -505,12 +505,12 @@ cost to add later) and not yet needed. See spec §7.4.
 
 **Why.** Every knob is a tax on everyone who reads or writes the language, paid
 forever; a deferred feature costs nothing until added. This keeps the surface
-learnable and the implementation small. It complements ADR-6/8 (a small
+learnable and the implementation small. It complements ADR-006/008 (a small
 kernel) on the *ergonomics* side: small kernel, small surface.
 
 ---
 
-## ADR-12 — A process-wide byte-counting allocator for memory introspection
+## ADR-012 — A process-wide byte-counting allocator for memory introspection
 
 **Status:** accepted.
 
@@ -522,29 +522,29 @@ CLI and every integration-test binary share one allocator.
 
 **Why.** Reading the process's memory use genuinely needs Rust (you can't
 bootstrap it on top of cons/`+`), so it belongs in the kernel — like `now`
-(ADR-8). A wrapping allocator is the simplest accurate option: it counts
+(ADR-008). A wrapping allocator is the simplest accurate option: it counts
 *every* Rust allocation, which is exactly the "how much memory did this use"
 number, and needs no `/proc` parsing or extra crate (stays dependency-free,
-ADR-5). The alternative — instrumenting `Heap`'s `alloc_*` — would miss
+ADR-005). The alternative — instrumenting `Heap`'s `alloc_*` — would miss
 allocations behind std collections and only counts objects, not bytes; revisit
-it when the tracing GC lands (ADR-2), where an arena reports live bytes for
+it when the tracing GC lands (ADR-002), where an arena reports live bytes for
 free.
 
 **Trade-offs.** The allocator is *always on*: two atomic ops per (de)allocation
 process-wide (negligible, but real), and declaring it in the library forces it
 on all downstream binaries (fine for this workspace; could be feature-gated if
 that ever bites). The counters surfaced their value immediately — the test
-suite peaks at ~300 MB because there is no reclamation yet (ADR-2), making
+suite peaks at ~300 MB because there is no reclamation yet (ADR-002), making
 `mem-bytes` ≈ `mem-peak`; the two will diverge once the GC exists.
 
 **Deferred — CPU time.** Wall-clock (`now`) covers the common case. True
-user+sys CPU time would need `getrusage`/`libc` (against ADR-5) or
+user+sys CPU time would need `getrusage`/`libc` (against ADR-005) or
 Linux-specific `/proc` parsing; deferred until a concrete need (e.g. attributing
 cost across the thread-backed processes).
 
 ---
 
-## ADR-13 — A runtime's inner processes share live code; separate runtimes don't
+## ADR-013 — A runtime's inner processes share live code; separate runtimes don't
 
 **Status:** accepted. Supersedes the earlier "instances are independent / no
 shared mutable global" decision (commit 081fda9, which dropped shared-code steps
@@ -582,26 +582,26 @@ for safe deployment. Late binding + append-only code gives the Erlang semantics
 
 **Trade-offs accepted.** Global reads take a brief `RwLock` read; `def` deep-copies
 code into the shared region (append-only, never reclaimed yet — same GC debt as
-ADR-2). A closure that captured a *local* scope and is then shared has that
+ADR-002). A closure that captured a *local* scope and is then shared has that
 scope promoted too; `set!` on such a promoted (now shared) frame is a no-op — a
 rare, documented limitation. Cross-runtime/node code distribution is deliberately
 out of scope (a future, explicit deploy step, not silent propagation).
 
 ---
 
-## ADR-14 — Runtime crates are allowed when they remove real complexity
+## ADR-014 — Runtime crates are allowed when they remove real complexity
 
-**Status:** accepted. Relaxes ADR-5 (which had already been superseded on the
+**Status:** accepted. Relaxes ADR-005 (which had already been superseded on the
 CLI side by `rustyline`).
 
 **Decision.** The `brood` library may depend on a well-scoped crate when it
 genuinely cuts complexity or unsafe code, rather than hand-rolling substrate. The
 bar is **infrastructure that helps build the runtime**, not Lisp-callable
 behaviour: functions the *language* exposes are still written in Brood (`std/`),
-per ADR-6/8 — we don't pull a crate to provide a builtin users could write in
+per ADR-006/008 — we don't pull a crate to provide a builtin users could write in
 Brood.
 
-**First application.** `boxcar` backs the shared `RUNTIME` code region (ADR-13):
+**First application.** `boxcar` backs the shared `RUNTIME` code region (ADR-013):
 a lock-free, append-only vector whose references stay valid across concurrent
 pushes. It removes a hand-rolled `unsafe` lifetime-extension *and* gives lock-free
 reads on the hottest path (every process thread reading closure bodies while a
@@ -618,12 +618,12 @@ Brood.
 
 ---
 
-## ADR-15 — Share-safe, parallel-by-default test framework
+## ADR-015 — Share-safe, parallel-by-default test framework
 
 **Status:** accepted.
 
 **Context.** The test framework (`std/tool/test.blsp`) is written in Brood and runs
-tests as processes. Under ADR-13 those processes **share** the global table, so
+tests as processes. Under ADR-013 those processes **share** the global table, so
 the original design — workers tallying into shared mutable globals (`*passed*`,
 `*failed*`) — raced and miscounted (failures attributed to the wrong test, double
 counts).
@@ -651,10 +651,10 @@ and the normal way tests are written.
 
 ---
 
-## ADR-16 — Arena-reset reclamation at top-level boundaries (first GC step)
+## ADR-016 — Arena-reset reclamation at top-level boundaries (first GC step)
 
 **Status:** accepted. First concrete step of memory reclamation; revises (does not
-yet fulfil) ADR-2's "tracing GC later."
+yet fulfil) ADR-002's "tracing GC later."
 
 **Context.** The heap arenas only grew — a long REPL session or a long-running
 process leaked every cons/env it ever allocated. Spawned processes already free
@@ -670,7 +670,7 @@ can't find them as roots. Worse, a mark-sweep rooted only from the current env i
 truncates them back. `eval_str` resets between top-level forms (keeping the
 final result); the REPL resets to a baseline after each command. This is safe
 precisely because **globals live in the PRELUDE/RUNTIME regions and never point
-into a process's LOCAL heap** (a top-level `def` *promotes* its value out, ADR-13)
+into a process's LOCAL heap** (a top-level `def` *promotes* its value out, ADR-013)
 — so at a quiescent boundary the only live LOCAL value is the form's result, which
 is consumed/printed before the reset. O(1), no tracing, no mark bits.
 
@@ -684,19 +684,19 @@ needs no eval rewrite and touches nothing shared or concurrent.
 - Safe mid-eval GC needs the evaluator's roots to be scannable, i.e. an explicit
   value-stack VM — which is also what **4b** (green-process coroutine suspension)
   needs. So general GC and 4b share that prerequisite and should likely be done
-  together; `gc-arena` (ADR-2's original target) fits our native recursive eval
+  together; `gc-arena` (ADR-002's original target) fits our native recursive eval
   and shared multi-thread RUNTIME region poorly and is no longer the presumed path.
 - `truncate` retains Vec capacity (bounded by the largest single form), so steady
   state is the peak form's footprint, not zero — fine, and avoids realloc churn.
 
 ---
 
-## ADR-17 — Isolated tests roll back the globals via a private copy (`%isolate`)
+## ADR-017 — Isolated tests roll back the globals via a private copy (`%isolate`)
 
 **Status:** accepted. Strengthens the `:isolated` mode of the test framework
-(ADR-15) from *scheduled-alone* to *state-isolated*.
+(ADR-015) from *scheduled-alone* to *state-isolated*.
 
-**Context.** A runtime's processes share one mutable global table (ADR-13), so
+**Context.** A runtime's processes share one mutable global table (ADR-013), so
 the test framework offered `:serial`/`:isolated` to avoid *races* on it. But
 `:isolated` only meant "no other test runs concurrently" — every test, isolated
 or not, still `def`s into the *same* live table, so a test's definitions
@@ -705,7 +705,7 @@ persisted and were visible to later tests. That's not true per-test independence
 True isolation wants a fresh runtime per test, but the model rules that out
 cheaply: a test thunk is a closure whose handle is region-tagged to *its* runtime
 (it indexes that runtime's append-only code slabs), so it cannot be executed in a
-different runtime — cross-runtime code sharing is deliberately unsupported (ADR-13).
+different runtime — cross-runtime code sharing is deliberately unsupported (ADR-013).
 Re-evaluating each test's *source* in a fresh `Interp` would work but moves test
 execution out of the in-language framework and reloads the framework per test.
 
@@ -716,15 +716,15 @@ primitive wraps a thunk: snapshot → run → restore (even on error). The frame
 runs the `:isolated` phase **first** and calls each isolated test through
 `%isolate`, so every isolated test sees the clean post-load baseline and nothing
 it defines survives. Policy stays in Brood (`std/tool/test.blsp`); Rust supplies only
-the snapshot/restore mechanism (ADR-6/8).
+the snapshot/restore mechanism (ADR-006/008).
 
-**Why.** Proportionate (ADR-11): it delivers the property that matters — a test's
+**Why.** Proportionate (ADR-011): it delivers the property that matters — a test's
 defs can't leak to another test — with one primitive and no eval changes, instead
 of a fresh-runtime machinery the architecture doesn't cheaply allow.
 
 **Limits / what's deferred.**
 - Rolls back **bindings** only. The append-only code slabs and the global symbol
-  interner still grow (memory, not behaviour; there's no GC yet — ADR-16).
+  interner still grow (memory, not behaviour; there's no GC yet — ADR-016).
 - The LOCAL data heap isn't reset by `%isolate` (it carries no cross-test state).
 - Sound only because the isolated phase runs alone: `restore_globals` is a
   wholesale swap, unsafe if another process were writing globals concurrently.
@@ -733,7 +733,7 @@ of a fresh-runtime machinery the architecture doesn't cheaply allow.
 
 ---
 
-## ADR-18 — Green M:N scheduler via stackful coroutines (step 4b)
+## ADR-018 — Green M:N scheduler via stackful coroutines (step 4b)
 
 **Status:** accepted. Implementation plan in `docs/scheduler.md`.
 
@@ -755,7 +755,7 @@ already `Send`, so processes migrate between workers freely.
   preemption (the BEAM's fairness mechanism — decrement a counter in `eval`'s
   loop, yield at zero) and work-stealing are **additive later**, not a redesign.
 - `corosensei` does the stack-switching `unsafe` we'd otherwise hand-roll
-  (ADR-14). Swappable if we later want to slim dependencies.
+  (ADR-014). Swappable if we later want to slim dependencies.
 
 **Why.** It delivers cheap green processes + bounded OS threads + suspending
 `receive` with no evaluator rewrite — the lowest-risk path to finishing 4b. It's
@@ -764,11 +764,11 @@ already `Send`, so processes migrate between workers freely.
 **Trade-offs accepted.** Per-coroutine stacks cost memory (tunable). Cooperative
 scheduling lets a CPU-bound process with no `receive` hold its worker until done
 (bounded by pool size; preemption is the deferred fix). A dependency in the
-runtime crate (justified per ADR-14).
+runtime crate (justified per ADR-014).
 
 ---
 
-## ADR-19 — Emacs-flat modules: `provide` / `require` / `load-path`, not namespaces
+## ADR-019 — Emacs-flat modules: `provide` / `require` / `load-path`, not namespaces
 
 **Status:** accepted; not yet implemented.
 
@@ -789,7 +789,7 @@ fork: a flat, Emacs-style namespace, or first-class namespaced modules
   feature was actually provided.
 - Embedded std modules (prelude, `test`, …) stay baked into the binary so it runs
   from any directory; `require` consults the embedded table before the load-path.
-- **Mechanism vs policy (ADR-6/8):** the only new Rust is filesystem
+- **Mechanism vs policy (ADR-006/008):** the only new Rust is filesystem
   reflection — `file-exists?`, `list-dir`, `cwd` — plus one primitive that hands a
   baked-in module's source to Brood. `provide` / `require` / `load-path` themselves
   are Brood, in `std/prelude.blsp`.
@@ -798,16 +798,16 @@ fork: a flat, Emacs-style namespace, or first-class namespaced modules
 
 **Why.**
 - *Matches the architecture as built.* One shared mutable global table per runtime
-  (ADR-13); `load` already evals into root. Flat modules add ~no core machinery —
+  (ADR-013); `load` already evals into root. Flat modules add ~no core machinery —
   Brood functions + 3 fs primitives. Namespaces would touch the symbol model
   (`value.rs`: interned `u32`, no namespace axis), the reader (`foo/bar`),
   env/eval (per-namespace resolution), the `RuntimeCode` global table (re-keying),
   and the hot-reload path — the single largest expansion of the core, against
-  "keep the language as small as possible" and ADR-11.
+  "keep the language as small as possible" and ADR-011.
 - *Right semantics for the goal.* Brood exists to be the language of a
   self-editing, Emacs-like editor, and such an editor is *defined* by a flat,
   openly-redefinable global namespace (advice, monkey-patching, redefining
-  anyone's function live). ADR-13's cross-process hot reload is the Brood-native
+  anyone's function live). ADR-013's cross-process hot reload is the Brood-native
   form of exactly that. Namespaces would fight the "any code can redefine any
   behaviour at runtime" property the project exists for.
 - *Forecloses nothing.* Namespaces can arrive later, additively, along a spectrum
@@ -815,7 +815,7 @@ fork: a flat, Emacs-style namespace, or first-class namespaced modules
   `defmodule` / `import` macro layer that prefixes names (`text/insert`) in the flat
   table — **zero core change**, since symbols already carry `/` / `-` and lookup
   stays "find the symbol"; (3) first-class per-file resolution [costly core change]
-  only if a package ecosystem ever demands it. ADR-11: ship the simple form,
+  only if a package ecosystem ever demands it. ADR-011: ship the simple form,
   defer the powerful one.
 
 **Trade-offs accepted.** No isolation — two modules can clobber each other's
@@ -823,18 +823,18 @@ names; the only guard is naming convention (prefixes, `--` privates), exactly as
 in Emacs Lisp. No machine-checked exports. Fine now (you run only your own code;
 no package ecosystem), recoverable later via the macro layer above. A concurrent
 re-`require` of the same absent feature can double-load; idempotent like Emacs,
-and not worth guarding now (ADR-11).
+and not worth guarding now (ADR-011).
 
 ---
 
-## ADR-20 — Project model: `project.blsp` + a discovery-based test runner
+## ADR-020 — Project model: `project.blsp` + a discovery-based test runner
 
 **Status:** accepted; not yet implemented.
 
 **Context.** We want (a) a notion of "a Brood project" — a root, source/test
 directories, a name/version — and (b) a tool that *finds and runs* all of a
 project's tests, instead of hand-listing cases and calling `(run-tests)` at the
-foot of one file. The test framework (ADR-15) already separates **registration**
+foot of one file. The test framework (ADR-015) already separates **registration**
 (`describe` / `test` → `*units*`) from **execution** (`run-tests`) — exactly what
 discovery needs. Fork: a project file as Brood *source* (`project.blsp`) or as
 inert *data* (`Brood.proj`).
@@ -859,7 +859,7 @@ manifest for identity.
   `describe` / `test`); `nest test` loads them all, then calls `(run-tests)`
   **once**. Test files no longer call `run-tests` themselves.
 - Surfaced as a CLI path — `nest test` (and an in-language `(run-project-tests)`)
-  — with the discovery/load/run logic written in Brood on the ADR-19 fs
+  — with the discovery/load/run logic written in Brood on the ADR-019 fs
   primitives. Rust stays the thin substrate (CLAUDE.md core principle).
 
 **Why.**
@@ -871,13 +871,13 @@ manifest for identity.
 - `project.blsp`-as-code is the most Brood-native choice (dogfooding), needs zero
   new core (`load` already evals a file), reads as data yet keeps the
   computed-config escape hatch — the Leiningen model, consistent with Emacs's own
-  config-is-code (and with flat modules, ADR-19). Pure-data (`Brood.proj`) buys
+  config-is-code (and with flat modules, ADR-019). Pure-data (`Brood.proj`) buys
   safety (don't eval an untrusted manifest) and external-tool friendliness, but
-  both matter only with a package ecosystem (premature — ADR-11), and "data"
+  both matter only with a package ecosystem (premature — ADR-011), and "data"
   today is a clunky alist because map literals (`{}`) aren't in the language yet.
 - Discovery by `*_test.blsp` (Go / ExUnit's `*_test.exs`) lets test files coexist
   with helper files in `tests/`; aggregating into one `run-tests` preserves the
-  framework's parallel-by-default scheduling across the *whole* suite (ADR-15)
+  framework's parallel-by-default scheduling across the *whole* suite (ADR-015)
   rather than per file.
 
 **Trade-offs accepted.** Eval'ing `project.blsp` runs arbitrary code on project
@@ -889,20 +889,20 @@ with `cargo test`'s `suite.rs` invoking the discovery runner.
 
 ---
 
-## ADR-21 — Pattern matching: one Brood compiler, reused at every binding site
+## ADR-021 — Pattern matching: one Brood compiler, reused at every binding site
 
 **Status:** accepted; implemented. Design in `docs/pattern-matching.md`.
 
 **Context.** Erlang/Elixir-style pattern matching subsumes two Tier-2 roadmap
 items (destructuring in `let`/`fn`, and `case`) and sets up `receive` clauses. A
 Lisp can't copy Elixir's `=`-is-match operator: code is data, so `(:ok x)` is
-indistinguishable from a call and `=` is a plain function (ADR-8) that
+indistinguishable from a call and `=` is a plain function (ADR-008) that
 evaluates both operands. The Lisp-faithful translation is to put **one pattern
 grammar at every binding form** and let those binds be refutable.
 
 **Decision.** A single pattern→code compiler, **written in Brood** (`std/prelude.blsp`),
 emitting nested `if`/`let` over existing primitives — no Rust matcher, no new
-special form (the `try`/`catch` precedent: a macro over primitives, ADR-6/8).
+special form (the `try`/`catch` precedent: a macro over primitives, ADR-006/008).
 
 - **Surfaces.** `match` (value dispatch; `case` is just `match` with literal
   patterns); refutable/destructuring `let`; `fn`/`defn` clauses (multi-clause
@@ -920,7 +920,7 @@ special form (the `try`/`catch` precedent: a macro over primitives, ADR-6/8).
   `[:match-error <context> <value> <patterns>]` (Erlang "let it crash"); add a
   `_` clause to total a match. The macro also raises **compile-time** errors for
   malformed `&`, unreachable clauses after a catch-all, and bad `:when`.
-- **`let`/`fn` are lowered in the compile pass** (ADR-22), not the evaluator:
+- **`let`/`fn` are lowered in the compile pass** (ADR-022), not the evaluator:
   a non-symbol target / a multi-clause or pattern-param `fn` is desugared to
   `match*` once at definition, so the common case is fast. The evaluator *also*
   keeps the design's Option-A delegation as a **fallback** — if such a binder
@@ -940,14 +940,14 @@ not the function's name (the name is attached after closure creation) — a legi
 nicety deferred. Pattern destructuring of `&optional` slots is deferred (ambiguous
 defaults; rare; additive). The textbook fail-continuation duplication is left as-is
 (patterns are shallow; thunk it if measured — see the design doc's code-size note).
-The generated code is **unhygienic** (ADR-9): it references the primitives it
+The generated code is **unhygienic** (ADR-009): it references the primitives it
 emits by bare name, so a local binding could shadow them. Equality uses the kernel
 `%eq` (not `=`) by convention to remove the most likely collision; `first`/`rest`/…
 remain shadowable until macro hygiene lands.
 
 ---
 
-## ADR-22 — A macroexpand-all compile pass (expand once at definition)
+## ADR-022 — A macroexpand-all compile pass (expand once at definition)
 
 **Status:** accepted; implemented.
 
@@ -958,32 +958,32 @@ cost ~25× a plain `if` (re-running the whole Brood compiler every iteration).
 Correct and TCO-safe, but too slow for the receive loops `match` is meant for.
 
 **Decision.** A **compile pass** — `macros::macroexpand_all`, a code walk that
-fully expands every macro call (and lowers the pattern binders of ADR-21) —
+fully expands every macro call (and lowers the pattern binders of ADR-021) —
 run **once at each top-level / definition boundary**: `eval_str`, `load`,
 `require`, `eval`, and the prelude loader, form-by-form (so a macro a form
 defines is visible to the next). The evaluator **still** expands lazily as a
 fallback, which covers a macro defined and used within the same top-level form
 (not yet defined when the walk ran). `quote`/`quasiquote` are left opaque (their
 contents are data; code inside `~unquote` still expands when it runs). For the
-same reason, eval's `let`/`fn` keep an on-the-fly lowering fallback (ADR-21) for
+same reason, eval's `let`/`fn` keep an on-the-fly lowering fallback (ADR-021) for
 a pattern binder that reaches them unlowered (built in a quasiquote unquote, or
 from such a lazily-expanded macro).
 
 **Why.** A `match` (or any macro) in a function body now expands once, so the
 body runs at plain-`if` speed; it benefits *every* macro, not just `match`. It is
-also the natural home for desugaring the `let`/`fn` pattern binders (ADR-21),
+also the natural home for desugaring the `let`/`fn` pattern binders (ADR-021),
 keeping the evaluator's core forms small.
 
 **Trade-offs accepted.** Macros are now effectively *early-bound*: a closure
 created before a macro is redefined keeps the old expansion (standard Lisp
 compile-time-macro semantics; functions still late-bind, so live function
-redefinition and cross-process hot reload are unaffected — ADR-13). Further
+redefinition and cross-process hot reload are unaffected — ADR-013). Further
 optimisation (caching, a fuller compile/closure-creation pass) is additive and
 deferred.
 
 ---
 
-## ADR-23 — First-class type tags; types stay runtime, checking stays advisory
+## ADR-023 — First-class type tags; types stay runtime, checking stays advisory
 
 **Status:** accepted; step 1 (reflection + diagnostics) implemented.
 
@@ -993,7 +993,7 @@ The discriminant wasn't nameable from the language (no `type-of`), and error
 messages dropped the offending value (`first: not a list` — but *what* was it?).
 We want better diagnostics now and a path to *limited* compile-time checking
 later — without inhibiting the language. The hard constraint is hot reload
-(ADR-13): a `def` can rebind any global, including `+`, visible to running
+(ADR-013): a `def` can rebind any global, including `+`, visible to running
 processes. Only **special forms** are immutable (name-dispatched in `eval`
 before any binding lookup).
 
@@ -1008,7 +1008,7 @@ before any binding lookup).
    so wrong-count calls are clean arity errors instead of silently-tolerated
    missing/extra args. Both are runtime metadata a later compile pass can read.
 3. Types stay **runtime-only**. No annotations, no static gating. Any future
-   compile-time analysis (a pass over the ADR-22 expanded forms) is **advisory**
+   compile-time analysis (a pass over the ADR-022 expanded forms) is **advisory**
    and **local**: special-form *structure* may be a hard error (special forms
    can't be redefined, so it's always sound); literal misuse is a warning; free
    and global references are treated as `Any` (top of the lattice), which is what
@@ -1029,12 +1029,12 @@ deferred — additive, and gated on a real need.
 
 ---
 
-## ADR-24 — Set-theoretic, gradual types: the model and the compatibility contract
+## ADR-024 — Set-theoretic, gradual types: the model and the compatibility contract
 
 **Status:** accepted; step 1 (the `Ty` lattice) implemented. Full plan in
-[`types.md`](types.md). Refines ADR-23.
+[`types.md`](types.md). Refines ADR-023.
 
-**Context.** ADR-23 made tags first-class and committed to *advisory,
+**Context.** ADR-023 made tags first-class and committed to *advisory,
 runtime-only* checking, with free/global references treated as `Any`. The open
 question was *which* type system. Surveying the field, **Elixir's set-theoretic +
 gradual** system is the closest fit: it retrofits types onto a dynamic,
@@ -1046,7 +1046,7 @@ TypeScript-style "pragmatic but unsound" route.
 - A **type is a set of values**; the atoms are the runtime `Tag`s. Type
   operations are set operations; **subtyping is set inclusion** (semantic
   subtyping), never syntactic rules.
-- **Gradual via `dynamic()`** — the principled replacement for ADR-23's
+- **Gradual via `dynamic()`** — the principled replacement for ADR-023's
   "globals are `Any`." `dynamic()` is **integrated into the set-theoretic
   algebra**, not a bolt-on: a bounded type `dynamic(bound)` (pure `dynamic()` =
   `dynamic(ANY)`) whose **consistent subtyping is *derived from* ordinary set
@@ -1054,8 +1054,8 @@ TypeScript-style "pragmatic but unsound" route.
   reconciliation Elixir uses), *not* the classic Siek–Taha consistency relation
   grafted alongside subtyping. A redefinable global (hot reload) is `dynamic()`,
   so typed/untyped code mixes without spurious errors, and it still composes with
-  `∪`/`∩`/`¬`. **This supersedes ADR-23's "globals are `Any`" wording.**
-- Checking stays **advisory** (ADR-23): warns and optimises, never rejects a
+  `∪`/`∩`/`¬`. **This supersedes ADR-023's "globals are `Any`" wording.**
+- Checking stays **advisory** (ADR-023): warns and optimises, never rejects a
   runnable program (bar provably-sound special-form structure errors).
 - Built in **small, independent steps** (the staircase in `types.md`), each
   shippable on its own; and governed by a **compatibility contract** (also in
@@ -1075,7 +1075,7 @@ borrow the model, not the proof obligation.
 
 ---
 
-## ADR-25 — A lossless, span-carrying CST for tooling, separate from the eval `Value`
+## ADR-025 — A lossless, span-carrying CST for tooling, separate from the eval `Value`
 
 **Status:** accepted; foundations implemented + the `brood-lsp` crate is live
 (Tier 0 landed in commit b724f3f, 2026-05-27). Full plan in [`lsp.md`](lsp.md).
@@ -1114,7 +1114,7 @@ table) so they can't drift on what a token is. The server is a separate binary,
 single-threaded `Interp` is not `Sync`, so a sync request loop owning the
 document store avoids `tokio` and `Send`/`Sync` friction). It **never evaluates
 user buffers**: syntactic diagnostics come from CST `Error` nodes; semantic ones
-from the advisory checker (ADR-24), which is designed to analyse without
+from the advisory checker (ADR-024), which is designed to analyse without
 running. A small introspection surface (`arglist`, `global-names`, `bound?`)
 feeds completion/hover.
 
@@ -1132,14 +1132,14 @@ means not seeing *into* macro-generated code at first (the same macro caveat
 `tooling.md` already accepts for runtime-error positions). LSP `Position` is
 UTF-16 code units, which neither byte spans nor the char-counting `Pos` match, so
 the server owns a UTF-16-aware `LineIndex`. Docstrings (for `doc`/hover) need a
-small additive language decision (ADR-11 shape: an optional leading string in a
+small additive language decision (ADR-011 shape: an optional leading string in a
 `def`/`defn` body) and are deliberately deferred — the LSP design does not block
 on them. Long-term the CST could subsume the `form-pos` side-table; not required
 now.
 
 ---
 
-## ADR-26 — Immutability: data is immutable; `def` is the only mutation (no `set!`, no `while`)
+## ADR-026 — Immutability: data is immutable; `def` is the only mutation (no `set!`, no `while`)
 
 **Status:** accepted; implemented.
 
@@ -1159,7 +1159,7 @@ local mutation to make progress, and had no Brood users.
 
 - **Lisp data is immutable.** No primitive mutates a `Value`; this stays true.
 - **`def` (rebinding a global) is the only mutation in the language** — that is
-  exactly what live redefinition / hot reload needs (ADR-13), and it is
+  exactly what live redefinition / hot reload needs (ADR-013), and it is
   *binding* mutation, not data mutation. `def` inside a function still targets the
   global scope.
 - **`set!` is removed** (special form deleted; the now-dead `Heap::env_set` with
@@ -1169,7 +1169,7 @@ local mutation to make progress, and had no Brood users.
 - **`while` is removed.** With no local mutation it can't make progress; loops are
   **recursion** (proper tail calls give O(1) stack) or, for evolving state,
   **processes** (`spawn`/`receive`). Reintroduce a named-`loop`/`recur` macro later
-  if ergonomics demand it (ADR-11).
+  if ergonomics demand it (ADR-011).
 - **Mutable state, when genuinely needed, is expressed two ways — never a mutable
   `Value`:** a **process** holding evolving state in its loop (the Erlang model),
   or a **Rust-backed resource handle** (the coming M2 rope/buffer — an opaque
@@ -1184,12 +1184,12 @@ folding the caught failures into a list. So failures across a test's forms are a
 collected (a throw ends only its own form), with no mutable accumulator. The one
 limit: multiple assertions nested inside a *single* form stop at the first (the
 throw unwinds that whole form) — a process-backed cell could close that later if a
-real need appears (ADR-11). A non-assertion error is recorded and stops the test.
+real need appears (ADR-011). A non-assertion error is recorded and stops the test.
 
 **Why.** Immutability reinforces every existing pillar: the planned tracing GC
 (no write barriers, no mutable roots), `Send` per-process heaps + copy-on-send
 messages (no aliasing hazards), the append-only shared `RUNTIME` code region, and
-the safe-Rust guardrail (ADR-1) — it removes the whole shared-mutable-aliasing
+the safe-Rust guardrail (ADR-001) — it removes the whole shared-mutable-aliasing
 bug class. It also shrinks the core: two fewer special forms and a dead heap
 method.
 
@@ -1197,14 +1197,14 @@ method.
 assertion (above). No imperative loop — fine given TCO recursion and processes,
 revisit with `loop`/`recur` only on real need. Repeated immutable `assoc`/`append`
 is O(n²) accumulation; mitigations (`reduce`/`fold`, transients, persistent
-structures) are deferred per ADR-11.
+structures) are deferred per ADR-011.
 
 ---
 
-## ADR-27 — Reduction-counted preemption + selective `receive` with timeouts
+## ADR-027 — Reduction-counted preemption + selective `receive` with timeouts
 
 **Status:** accepted; implemented. Realises `scheduler.md` stage 4 (the fairness
-step ADR-18 deferred) and the `receive`-clause surface reserved in
+step ADR-018 deferred) and the `receive`-clause surface reserved in
 `docs/pattern-matching.md`.
 
 **Context.** The green-process scheduler was **cooperative**: a process yielded
@@ -1256,19 +1256,19 @@ compiler; no new special form.
 freeze the runtime; request/reply and stateful server processes become writable)
 by **composing existing machinery** — the yielder and the `match` compiler —
 rather than adding language surface. Keeping `receive` a macro over one primitive
-honours "as much in Brood as possible" (ADR-6/8) and "keep the core small"
+honours "as much in Brood as possible" (ADR-006/008) and "keep the core small"
 (no new special form). Catchability falls out of the existing error model rather
-than a new mechanism (ADR-11).
+than a new mechanism (ADR-011).
 
 **Trade-offs accepted.** The per-iteration `tick` is a cost on the hottest path
 (a thread-local decrement; benchmark, and if it ever bites, move the tick to the
 tail-continue/apply points only — same correctness). Testing a `receive` candidate
 rebuilds it into the LOCAL heap, so skipped messages leave short-lived garbage
-(reclaimed at the next top-level arena reset, ADR-16) — negligible when the first
+(reclaimed at the next top-level arena reset, ADR-016) — negligible when the first
 message matches. The timer thread is one extra OS thread, started only when a
 timed `receive` is first used. `after` is reserved as a final-clause head.
 
-## ADR-28 — Split the CLI: `brood` is the language, `nest` is the project tool
+## ADR-028 — Split the CLI: `brood` is the language, `nest` is the project tool
 
 **Status:** accepted (2026-05-27).
 
@@ -1299,7 +1299,7 @@ to rustc because rustc is not a library; our runtime *is* one, so embedding is
 simpler and keeps a single process for the eventual hot-reload/editor story.)
 `nest` stays a *thin Rust shell*: it evaluates bootstrap snippets
 (`(require 'project) (load-config) (run-project-tests)`) and the policy —
-templates, name checks, discovery — lives in `std/tool/project.blsp` (ADR-6). The
+templates, name checks, discovery — lives in `std/tool/project.blsp` (ADR-006). The
 small `report_error`/`parse_args` helpers are duplicated across the two bins
 rather than coupled through a shared crate; they're tiny and stable.
 
@@ -1309,28 +1309,28 @@ now cover both binaries. The user config dir stays `~/.config/brood/` — it's t
 ecosystem's config, read by `nest`. Self-hosting the tool in Brood remains the
 roadmap goal; this split just gives it its own front door first.
 
-## ADR-29 — Module docstrings + `nest doc` (extract by load-and-introspect)
+## ADR-029 — Module docstrings + `nest doc` (extract by load-and-introspect)
 
 **Status:** accepted (2026-05-27).
 
-**Context.** Function/macro docstrings already exist (ADR-25: a leading string
+**Context.** Function/macro docstrings already exist (ADR-025: a leading string
 in a `fn`/`defn` body, stored on the closure, read via `(doc f)`). Two pieces
 were missing: a way for a **module** to document itself, and a tool to **extract**
-docs into readable output. The flat `provide`/`require` module model (ADR-19)
+docs into readable output. The flat `provide`/`require` module model (ADR-019)
 has no namespace, so nothing records which definitions belong to which module.
 
 **Decision.**
 
 - **Module doc = the file's first top-level form, when it is a bare string** —
   the file-level analogue of the function-docstring rule, no new special form
-  (keeps the core small, ADR-11). It's a harmless no-op when the file is loaded;
+  (keeps the core small, ADR-011). It's a harmless no-op when the file is loaded;
   the tooling reads it from source.
 - **`nest doc [module]` extracts by loading + introspecting**, not by parsing
   source. It snapshots `(global-names)`, loads the module, and the new names are
   what it defined — read back through the existing `(doc f)`/`(arglist f)`. The
   module docstring is read from source (`slurp` + `read-string`), since a leading
   string is discarded on load. Output is Markdown to stdout. Policy lives in
-  `std/tool/docs.blsp` (ADR-6); Rust adds only `slurp` (the read counterpart of
+  `std/tool/docs.blsp` (ADR-006); Rust adds only `slurp` (the read counterpart of
   `spit`) and sorts `(global-names)` for deterministic output.
 - Documenting one module **loads its code**. That's acceptable for a one-shot CLI
   (as `nest test` already loads files), and is explicitly *not* what the
@@ -1344,14 +1344,14 @@ The accurate, order-independent fix is the static CST walk planned in
 `docs/lsp.md`; the runtime path ships first because it reuses the canonical doc
 machinery and needs almost no new Rust.
 
-## ADR-30 — Maps are immutable values (insertion-ordered assoc vector)
+## ADR-030 — Maps are immutable values (insertion-ordered assoc vector)
 
 **Context.** A general Lisp needs key→value data; `{ }` was reserved in the
 reader but unimplemented. An earlier attempt stalled on the obvious tension:
 a *mutable* hash map fights everything the runtime depends on — `Send`
 per-process heaps, copy-on-send messages, the append-only shared `RUNTIME` code
 region, the (coming) tracing GC that wants no write barriers — and it would
-violate the language's core immutability rule (ADR-26). Hashing was the other
+violate the language's core immutability rule (ADR-026). Hashing was the other
 snag: keys live in the heap (string contents, list/vector structure), so a
 `Hash` over a `Value` needs `&Heap`, which the standard-library `HashMap` API
 won't give it.
@@ -1367,7 +1367,7 @@ message path — no special-casing, no write barriers. Every operation
   are compared by the existing structural `heap.equal`, which *sidesteps the
   hashing problem entirely* — any value is a valid key, and we never need a
   `Hash` over heap-resident data. O(n) lookup, but maps here are small
-  (structured data, error values) and ADR-11 says ship the simple form first.
+  (structured data, error values) and ADR-011 says ship the simple form first.
   It is swappable for a hash-array-mapped trie later **with no surface change**.
 - **Semantics:** literals `{k v …}` evaluate their keys and values (like vector
   literals), last-wins on duplicate keys; insertion order is preserved for
@@ -1377,37 +1377,37 @@ message path — no special-casing, no write barriers. Every operation
   (`hash-map`, `map-get`, `map-assoc`, `map-dissoc`, `map-keys`, `map-vals`,
   `map-contains?`); the ergonomic surface — `get` (with default), variadic
   `assoc`/`dissoc`, `keys`/`vals`/`contains?`/`map?` — is Brood in
-  `std/prelude.blsp` (ADR-6). `count`/`empty?` gained a map case.
+  `std/prelude.blsp` (ADR-006). `count`/`empty?` gained a map case.
 
 **Consequences.** Immutability makes maps "free" to thread through the
 concurrency/GC machinery (they're just another `Send` slab of `Copy` handles),
 which is the opposite of the mutable-map dead end. The cost is O(n) per
-operation and O(n²) for repeated `assoc` in a loop — the same trade-off ADR-26
+operation and O(n²) for repeated `assoc` in a loop — the same trade-off ADR-026
 already accepts for `cons`/`append`, with the same mitigation (a persistent
 HAMT) available later behind the unchanged surface. Maps also unblock a
 structured error value (a later refactor of `error.rs`).
 
 ---
 
-## ADR-31 — Cross-file xref is an image query, not a static index: record def sites at load time
+## ADR-031 — Cross-file xref is an image query, not a static index: record def sites at load time
 
 **Status:** accepted (direction); not yet implemented. Foundation primitive
 (`source-location`) is the first step. Extends [`lsp.md`](lsp.md) §Cross-file;
-builds on the CST decision (ADR-25) and the shared-code / hot-reload model
-(ADR-13, [`shared-code.md`](shared-code.md)).
+builds on the CST decision (ADR-025) and the shared-code / hot-reload model
+(ADR-013, [`shared-code.md`](shared-code.md)).
 
-**Context.** Tier-1 `brood-lsp` (ADR-25) is **single-file**: it knows names from
+**Context.** Tier-1 `brood-lsp` (ADR-025) is **single-file**: it knows names from
 the open buffer's CST and from the interpreter's globals — which are the *prelude
 + Rust builtins only*, because the server **never evaluates the buffer** (a
 half-typed file can't be run: side effects, non-termination). So a name another
 module `provide`s resolves as `Free` — no goto, no hover. The obvious next step
 looked like the **rust-analyzer model**: statically walk the `require` graph off
-`*load-path*` (ADR-19/20) and index every file's `def`s. But that makes the
+`*load-path*` (ADR-019/020) and index every file's `def`s. But that makes the
 tool an outside observer forever *re-deriving* what the program means, and it
 can't see through macros.
 
 Brood is the wrong shape for that model. It is an **image-based, self-editing,
-hot-reloadable** Lisp (ADR-13): the running runtime already holds every loaded
+hot-reloadable** Lisp (ADR-013): the running runtime already holds every loaded
 module's globals in one shared, mutable code region (`global-names` enumerates
 them today). The endgame (M2–M4) is *an editor that is a running Brood image
 editing Brood source* — at which point the editor literally is the image and
@@ -1424,17 +1424,17 @@ not by a parallel static indexer.
 1. **Record def sites at load/`def` time.** When a global is defined, store
    `name → (file, span)` into the **runtime's** code region (`RuntimeCode`, the
    shared, mutable, hot-reloadable one — so a redefinition updates it and spawned
-   processes see it, consistent with ADR-13). `file` comes from the existing
+   processes see it, consistent with ADR-013). `file` comes from the existing
    `current-file`; `span` from the form's recorded position. This is span-accurate
    for definitions *through macros*, because the site is captured at read/`def`
-   time, before macroexpansion (ADR-22) discards spans.
+   time, before macroexpansion (ADR-022) discards spans.
 2. **Expose one primitive:** `(source-location 'foo) → (file . span)` (or `nil`).
-   Mechanism in Rust; any policy on top is Brood (ADR-6). Useful standalone —
+   Mechanism in Rust; any policy on top is Brood (ADR-006). Useful standalone —
    better runtime-error provenance, `nest`, a self-hosted REPL `M-.` — independent
    of the LSP.
 3. **The server stays a hybrid, not a replacement:**
    - the **live buffer** (half-typed, what you're editing) → CST + scope walker
-     (ADR-25), span-accurate for the file in front of you;
+     (ADR-025), span-accurate for the file in front of you;
    - **everything loaded** (other modules, prelude) → image lookup. A name that
      resolves `Free` locally falls back to `source-location`, yielding a
      cross-file goto/hover (LSP `Location` already carries a target `Uri`).
@@ -1452,7 +1452,7 @@ earns its keep before any LSP wiring consumes it.
 
 **Trade-offs accepted.**
 - **Needs a loaded image.** Cross-file answers require the project to have been
-  *run* (top-level side effects on load) — the very line ADR-25 drew at Tier
+  *run* (top-level side effects on load) — the very line ADR-025 drew at Tier
   0–1. SLIME accepts this (you start a Lisp and load your system); Brood's nature
   leans the same way. The LSP will either own a project image it loads explicitly,
   or talk to a running one — a deliberate, opt-in step, gated so the safe
@@ -1460,7 +1460,7 @@ earns its keep before any LSP wiring consumes it.
 - **Staleness.** After editing a file you haven't reloaded, the image is stale
   until that `def` is re-evaluated (SLIME's `C-c C-c` workflow). The CST always
   covers the *current* buffer, so staleness mostly bites cross-file lookups.
-- **References don't see into macros** — the same caveat ADR-25/`tooling.md`
+- **References don't see into macros** — the same caveat ADR-025/`tooling.md`
   already accept.
 
 **Considered & rejected.** A purely static workspace-indexer (walk `require`,
@@ -1470,17 +1470,17 @@ computed/conditional `require`s, and is discarded once the self-hosted editor
 makes the image authoritative. Kept only as the *fallback* shape if an image is
 unavailable (e.g. a project that won't load) — not the primary path.
 
-## ADR-32 — Dynamic variables: a per-process binding stack, declared with `defdyn`
+## ADR-032 — Dynamic variables: a per-process binding stack, declared with `defdyn`
 
 **Status:** accepted.
 
 **Context.** Brood needs Lisp "special variables" — globals temporarily
 overridable for a dynamic extent (a print depth, a current sink) that deep
 callees read without threading the value through every call. The constraints are
-sharp: the language is immutable (ADR-26, so no mutable cell holds the current
+sharp: the language is immutable (ADR-026, so no mutable cell holds the current
 value) and concurrent (green processes that migrate between worker threads, so a
 Rust thread-local can't hold the binding), and the core should stay small
-(ADR-11 — prefer a macro over a primitive over a new special form).
+(ADR-011 — prefer a macro over a primitive over a new special form).
 
 **Decision.**
 - **A per-process binding stack lives in the `Heap`.** Each `binding` pushes its
@@ -1502,7 +1502,7 @@ Rust thread-local can't hold the binding), and the core should stay small
 - **Macros over a tiny kernel, no new special form.** Kernel: `%declare-dynamic`,
   `%binding` (push → `apply` thunk → pop, restoring on `Err` too — the `%isolate`
   shape), `dynamic?`. Surface: the `defdyn`/`binding` macros in the prelude. This
-  follows the `try`/`catch` precedent (ADR-11) and keeps the evaluator's special
+  follows the `try`/`catch` precedent (ADR-011) and keeps the evaluator's special
   forms untouched.
 
 **Why.** Restoration-on-unwind and per-process isolation fall out of the design
@@ -1526,19 +1526,19 @@ documented convention: don't — see `docs/language.md`).
   becomes a pointless alias for `def` and a typo'd `binding` silently "works".
   Declaration is cheap and catches the bug.
 - *Temporarily rebinding the shared global table.* Globals are shared across a
-  runtime's processes (ADR-13/14), so this would make one process's `binding`
+  runtime's processes (ADR-013/014), so this would make one process's `binding`
   clobber another's — wrong for concurrency, and it fights hot-reload.
 - *A Rust thread-local stack.* Breaks the moment a coroutine migrates workers or
   suspends at `receive`; the binding must travel with the process, i.e. its heap.
 
-## ADR-33 — `spawn` takes an expression; closures are sendable as data
+## ADR-033 — `spawn` takes an expression; closures are sendable as data
 
 **Decision.** Two coupled changes that together let a *computation* be spawned and
 shipped to another node:
 
 1. **`spawn` takes one unevaluated expression**, not a function + args. `(spawn e)`
    is a prelude macro expanding to `(%spawn (fn () e))` — the `try`/`%try` pattern
-   (ADR-11: a macro over a primitive, no new special form). The Rust kernel keeps
+   (ADR-011: a macro over a primitive, no new special form). The Rust kernel keeps
    only `%spawn`, which runs a 0-arg thunk. `(spawn (* (+ 1 1)))` and
    `(spawn (worker me))` both read naturally, and the thunk **captures free locals
    lexically** instead of taking them as positional args.
@@ -1567,7 +1567,7 @@ was a strictly weaker special case.
   Capture the parent's first: `(let (me (self)) (spawn (worker me)))`. Every callsite
   updated to match.
 - **A sent closure is a frozen copy.** Redefining *that* function later doesn't reach
-  an already-sent copy; globals it *references* still hot-reload (ADR-13). Correct
+  an already-sent copy; globals it *references* still hot-reload (ADR-013). Correct
   for cross-node, where there's no shared code region to track.
 - **Builtins still can't be sent** (a Rust fn pointer has no portable form); reference
   one by the symbol naming it. **Macros aren't sendable** either (deferred; no need yet).
@@ -1589,9 +1589,9 @@ across a link — live in `crate::dist` and are decided separately.
 
 ---
 
-## ADR-34 — Distributed nodes (slice 1): node-tagged pids + a TCP link
+## ADR-034 — Distributed nodes (slice 1): node-tagged pids + a TCP link
 
-**Status:** accepted. Realises the node identity + wire transport that ADR-33
+**Status:** accepted. Realises the node identity + wire transport that ADR-033
 deferred; implements the §Distribution sketch in `concurrency.md`. See
 `docs/distribution.md` for the full design.
 
@@ -1601,7 +1601,7 @@ Erlang showed the shape: share-nothing + copy-on-send means *the network is just
 longer copy*. The question was how much to build now and how pids should carry
 location.
 
-**Decision.** The smallest useful slice (ADR-11):
+**Decision.** The smallest useful slice (ADR-011):
 
 1. **Pids are a first-class value carrying node identity** — `Value::Pid { node,
    id }` (a `Tag::Pid`), replacing bare-`Int` pids everywhere. `self`/`spawn`
@@ -1625,7 +1625,7 @@ location.
 4. **Hand-rolled, length-prefixed wire codec** reusing `Message`'s deep-copy, with
    one cross-process detail: **symbols (incl. a pid's node, keywords) travel by
    name and re-intern on arrival**, because separate runtimes have independent
-   interners. No new dependency (std `net` + threads; ADR-14).
+   interners. No new dependency (std `net` + threads; ADR-014).
 
 **Why a value, not an int.** Routing off-node needs location *on the handle*, and
 making local and remote pids the same kind of value keeps `send` uniform — you
@@ -1638,7 +1638,7 @@ landed, in increments tracked in `docs/distribution.md`:
 
 - **Node-down detection** (slice 2) — heartbeat ping/pong + generation-checked
   teardown; `[:nodedown name]` to `monitor-node` watchers.
-- **Closure-as-data path from ADR-33** — `M_CLOSURE` wire codec ships every
+- **Closure-as-data path from ADR-033** — `M_CLOSURE` wire codec ships every
   `ClosureMsg` field; source positions ride along via `Message::List`'s
   optional `Pos` trailer; `(remote-spawn node expr)` (Brood macro) is the
   surface convenience over the `[:run f x reply]` pattern.
@@ -1660,7 +1660,7 @@ landed, in increments tracked in `docs/distribution.md`:
   the wire** — it's an HMAC key, so an eavesdropper can't replay either it
   or a captured handshake. A non-brood peer / wrong cookie aborts before the
   link enters `NODES`. Uses the RustCrypto `hmac` + `sha2` crates (the
-  "don't roll your own crypto" exception to ADR-5); nonces come from
+  "don't roll your own crypto" exception to ADR-005); nonces come from
   `getrandom` (OS RNG). Wire format break from v1, deliberate (greenfield).
 
 **Still deferred.** Erlang OTP-style **supervision trees** with `link` +
@@ -1669,18 +1669,18 @@ but not the full OTP guarantee). Optional **TLS** as a transport substrate
 *under* the HMAC layer, for over-the-internet links (HMAC alone proves
 shared-cookie possession but doesn't encrypt traffic).
 
-## ADR-36 — `nest mcp`: a per-project Model Context Protocol server, tools surface in Brood
+## ADR-036 — `nest mcp`: a per-project Model Context Protocol server, tools surface in Brood
 
 **Status:** proposed (2026-05-28). Design recorded in [`mcp.md`](mcp.md).
 
-**Context.** Brood has a Tier-1 language server (`brood-lsp`, ADR-25) that
+**Context.** Brood has a Tier-1 language server (`brood-lsp`, ADR-025) that
 gives editors hover/completion/diagnostics/goto-def/signature-help on the
 buffer under a cursor. But an *AI agent* doing development against the project
 asks different questions than an editor: not "what is at this offset?", but
 "eval this", "run that test", "expand this macro", "what is `map`'s arglist".
 Routing those through the LSP requires a buffer and a cursor; through the
 shell, parsing GNU-line output per request. Both miss the thing this Lisp
-already does well — hot reload (ADR-13, `docs/shared-code.md`): the running
+already does well — hot reload (ADR-013, `docs/shared-code.md`): the running
 runtime is the project, `def` mutates it in place, and running processes see
 the new binding on the next lookup. That makes a *long-lived per-session image*
 the natural shape for agent-driven work, the same way SLIME/CIDER are for
@@ -1689,7 +1689,7 @@ as LSP) is the standard agent surface — Claude Code attaches MCP servers per
 workspace via `.mcp.json` — so the question is just what to expose and where it
 lives in the tree.
 
-**Decision.** Add **`nest mcp`** — a subcommand on the project tool (ADR-28)
+**Decision.** Add **`nest mcp`** — a subcommand on the project tool (ADR-028)
 that speaks MCP over stdio, scoped strictly to the project rooted at cwd.
 Outside a project root it errors loudly; there is no "language-only" MCP
 flavour, matching the `nest test` / `nest doc` shape rather than `brood
@@ -1707,11 +1707,11 @@ file.blsp`. Concretely:
   `check_project`, `run_tests`, `format_source`, `eval_in_session`). LSP and
   MCP each become genuinely thin shells over it, so hover and `lookup` cannot
   drift on what `map`'s signature is.
-- **The tool *surface* is declared in Brood**, not Rust (ADR-6). The Rust
+- **The tool *surface* is declared in Brood**, not Rust (ADR-006). The Rust
   side is a JSON-RPC dispatcher; `std/tool/mcp.blsp` lists the tools (name, JSON
   schema, handler fn) and each handler is Brood. A project's own `mcp.blsp`
   can extend the catalogue — registering a project-specific verb is a `defn`,
-  not a new Rust release. The initial set (ADR-11, ship the simple shape) is
+  not a new Rust release. The initial set (ADR-011, ship the simple shape) is
   eight tools — `eval`, `load`, `lookup`, `macroexpand`, `run-tests`, `check`,
   `format`, `processes` — plus resources for the docs (`brood-for-claude`,
   `language`, `decisions`, `types`), the prelude, and the project manifest.
@@ -1720,7 +1720,7 @@ file.blsp`. Concretely:
   resources/{list,read}, prompts/{list,get}); a direct implementation stays
   under a few hundred lines, avoids an async runtime, and matches the `!Sync`
   `Heap` constraint (one `Interp`, one request at a time, no `tokio`). Same
-  calculus as ADR-25 picking `lsp-server` over `tower-lsp`.
+  calculus as ADR-025 picking `lsp-server` over `tower-lsp`.
 - **Scaffold the attach config.** `nest new foo` drops `foo/.mcp.json` pointing
   at `nest mcp`, so `cd foo && claude` auto-attaches. Combined with the
   `%builtin-doc`-baked `brood-for-claude.md` (commit `d650bcb`, also exposed as
@@ -1729,11 +1729,11 @@ file.blsp`. Concretely:
 
 **Why.** Three forces line up:
 
-1. **ADR-6 — write the language in the language.** Rust supplies transport
+1. **ADR-006 — write the language in the language.** Rust supplies transport
    and dispatch; *what tools exist and what they do* is Brood. This is the only
    architecture that lets a project extend its own agent surface without
    forking the binary.
-2. **ADR-28 — nest is the project tool.** MCP is project-shaped: per-project
+2. **ADR-028 — nest is the project tool.** MCP is project-shaped: per-project
    image, per-project tests, per-project extensions. It belongs in `nest`. A
    "raw language" MCP would just be a REPL behind JSON-RPC — that's what
    `brood` is.
@@ -1768,14 +1768,14 @@ is itself a Brood image, `nest mcp` becomes a long-running thread inside it,
 no protocol change.
 
 
-## ADR-37 — Packages: git deps + project-local cache + lock file
+## ADR-037 — Packages: git deps + project-local cache + lock file
 
 **Status:** **accepted / implemented** (v1 scope complete 2026-05-30; proposed
 2026-05-28). Design recorded in [`packages.md`](packages.md).
 
-**Context.** The module system (ADR-19) resolves `(require 'foo)` by walking
+**Context.** The module system (ADR-019) resolves `(require 'foo)` by walking
 `*load-path*`, with embedded std modules baked into the binary. That's enough
-for a single project (`src/` is on `*load-path*` automatically — ADR-20) and
+for a single project (`src/` is on `*load-path*` automatically — ADR-020) and
 for the stdlib (embedded via `%builtin-module`). It is **not** enough for
 third-party Brood code: there's no way to declare "this project depends on
 `parser` version *X*", no place for that code to live, no way to reproduce a
@@ -1791,8 +1791,8 @@ project's grain, and grow from real pressure rather than speculation.
 
 **Decision.** A **git-deps + project-local cache + lock file** package manager,
 designed around the project's existing constraints — language-as-policy
-(ADR-6), `nest` as the project tool (ADR-28), `project.blsp` as the
-manifest (ADR-20), Brood's module system (ADR-19). The decisions, in
+(ADR-006), `nest` as the project tool (ADR-028), `project.blsp` as the
+manifest (ADR-020), Brood's module system (ADR-019). The decisions, in
 order from most to least committed:
 
 - **Manifest extension.** `project.blsp` gains an optional `:dependencies`
@@ -1836,11 +1836,11 @@ order from most to least committed:
   `%sha256-file path`, `%http-get url` (for future tarball deps —
   primitive added now, used later). Manifest parsing, lock-file format,
   cache layout, conflict detection, transitive resolution — all Brood.
-  Standard pattern (ADR-6/8).
+  Standard pattern (ADR-006/008).
 - **Subcommand surface on `nest`.** `nest fetch` / `nest update [<name>]` /
   `nest add <name> <source> [opts]` / `nest remove <name>` / `nest tree`.
   All Brood entry points dispatched from the existing `nest` Rust shell
-  (ADR-28). Existing subcommands (`test`, `run`, `check`, `format`, `doc`,
+  (ADR-028). Existing subcommands (`test`, `run`, `check`, `format`, `doc`,
   `mcp`) auto-fetch missing deps on first run.
 
 **Why.** Five forces line up:
@@ -1850,11 +1850,11 @@ order from most to least committed:
    but borderline-impossible to fit in scope; Hex/Mix needs a registry; npm
    needs a registry *and* unsolvable security work. Git deps + lock file
    gets 90% of the value for 5% of the engineering.
-2. **ADR-6 — write the language in the language.** The package manager is
+2. **ADR-006 — write the language in the language.** The package manager is
    exactly the kind of policy that should be Brood. The only Rust the design
    adds is "shell out to git" + "compute a SHA-256" — primitives the editor
    will want for unrelated reasons anyway.
-3. **ADR-11 — ship the simple form, defer the powerful one.** No constraint
+3. **ADR-011 — ship the simple form, defer the powerful one.** No constraint
    solver, no registry, no signing — each adds knobs forever. Add when a
    concrete pain shows up.
 4. **The editor wants this.** M2+ introduces user-extensible pieces (modes,
@@ -1915,7 +1915,7 @@ build started, refining the original sketch (full rationale in
    directory.** One irreducible primitive (hash a byte string → hex); the
    canonical tree walk + per-file `(%sha256 (slurp p))` + combine is Brood
    (`std/tool/package.blsp`), over the existing `list-dir`/`dir?`/`slurp`. Smaller
-   kernel, more in-language (ADR-6), and the same primitive hashes the lock
+   kernel, more in-language (ADR-006), and the same primitive hashes the lock
    manifest. Replaces `%sha256-file` in the original kernel list.
 2. **`:path` deps load *in place*.** A path dep's `src/` goes straight onto
    `*load-path*`; it is **not** copied into `_deps/`. So `_deps/` only appears
@@ -1949,7 +1949,7 @@ subcommand.
 5. **`%http-get` deferred, not added-unused.** The original plan added it early
    "for future tarball deps." With no caller until the `:tarball` source kind
    (itself deferred), adding it now would be unused kernel surface — so per
-   ADR-11 it's deferred *with* tarball deps. The git path needs only
+   ADR-011 it's deferred *with* tarball deps. The git path needs only
    `%git-resolve-ref`/`%git-clone`/`%rm-rf`.
 6. **Clone folded into resolution, not a separate `ensure_cache` pass.** The
    resolution sketch returned `deps: TBD` and filled it in a later `ensure_cache`.
@@ -1966,7 +1966,7 @@ subcommand.
    out (those re-resolve; the rest keep their pins). Moving refs advance; the
    "network-free on a cache hit" property is just "the lock still matches."
 
-## ADR-38 — Single-binary bundling (`nest release`)
+## ADR-038 — Single-binary bundling (`nest release`)
 
 **Status:** **implemented** (2026-05-31; proposed/deferred 2026-05-28). Built as
 designed — append-to-binary. See [`release.md`](release.md) for the as-built
@@ -2024,7 +2024,7 @@ as designed, with two refinements from building it:
   so `require`/`:use` resolve an app's own modules (and bundled deps) transparently.
   Thin new primitives `%bundled?` / `%bundle-manifest` / `%bundle-module-names`
   expose the rest; boot policy is Brood (`project/run-bundle` + `bundle-collect`
-  in `std/tool/project.blsp`), per ADR-6.
+  in `std/tool/project.blsp`), per ADR-006.
 - **Code-only + deps bundled.** v1 embeds `project.blsp` + `src/**/*.blsp` +
   resolved `_deps/` (so a `:path`/`:git`-dep app is self-contained); it does *not*
   virtualize the filesystem, so runtime asset reads (`(slurp "data.txt")`) still
@@ -2079,14 +2079,14 @@ as designed, with two refinements from building it:
   SDK; still out of scope). `--runtime PATH` stays as the explicit one-off
   escape hatch, valid with at most one `--target`.
 
-## ADR-40 — Maps: CHAMP (16-way) instead of an entries-vec + index
+## ADR-040 — Maps: CHAMP (16-way) instead of an entries-vec + index
 
 **Status:** accepted, implemented 2026-05-29 (see devlog).
 
-**Context.** ADR-30 shipped maps as insertion-ordered association vectors,
+**Context.** ADR-030 shipped maps as insertion-ordered association vectors,
 explicitly flagged "swappable for a hash-array-mapped trie later **with no
 surface change**." That has now started to hurt: `assoc`/`dissoc` are O(n)
-each because every op copies the whole entries vector (immutability — ADR-26
+each because every op copies the whole entries vector (immutability — ADR-026
 — forbids the in-place update Clojure's `transient!` uses), so `(fold assoc
 {} (range N))` is O(n²). `get` is also O(n) on a linear `equal` scan. An
 intermediate attempt — keep the vector, add a hash-keyed bucket index
@@ -2101,7 +2101,7 @@ structural sharing.
 Surface (`assoc`, `dissoc`, `get`, `contains?`, `keys`, `vals`, `map-pairs`,
 order-independent `=`) is unchanged — the kernel API in `builtins.rs` and
 every `std/prelude.blsp` wrapper stay byte-for-byte the same. **No new
-ADR-30 contract is broken.**
+ADR-030 contract is broken.**
 
 **Why CHAMP, not vanilla Clojure HAMT.** Same big-O (O(log₁₆ N) ≈ effectively
 O(1) up to billions of entries), but:
@@ -2112,7 +2112,7 @@ O(1) up to billions of entries), but:
 - **Canonical form** under structural equality (no equivalent map has two
   representations), so `equal?` is a recursive walk that bails on the first
   shape mismatch — no need to fall back to "iterate one map, look every key
-  up in the other" like ADR-30 does today.
+  up in the other" like ADR-030 does today.
 - **Faster iteration** (entries first, then children, then collision nodes —
   CHAMP authors measured ~2× over Clojure's HAMT). Matters for `keys`/`vals`
   in long-running editor processes that fold over thousands of entries.
@@ -2134,7 +2134,7 @@ that the next hash level continues. Bitmaps are `u16` (one bit per child
 slot — 4-bit slice → 16 children → fits exactly).
 
 **Hashing.** Adopts the structural `hash_value` introduced by the abandoned
-ADR-30-index attempt — consistent with `heap.equal` (0.0/-0.0 identical,
+ADR-030-index attempt — consistent with `heap.equal` (0.0/-0.0 identical,
 NaN canonical, recursive Pair/Vector/Map walks, region bits ignored). The
 function stays in `heap.rs` (it needs `&Heap`); no `Hash`-trait impl on
 `Value` (CHAMP nodes call `heap.hash_value(k)` directly).
@@ -2142,7 +2142,7 @@ function stays in `heap.rs` (it needs `&Heap`); no `Hash`-trait impl on
 **Immutability discipline (no regression).** Every `assoc`/`dissoc`
 returns a fresh root via **path copying**: only the O(log N) nodes on the
 path from root to the touched leaf are cloned; the rest is structurally
-shared. Path-copy is the entire point of the ADR-30 trade-off finally
+shared. Path-copy is the entire point of the ADR-030 trade-off finally
 paying out. Frozen PRELUDE / shared RUNTIME maps stay safe because every
 op allocates new LOCAL nodes — the shared regions are never mutated, just
 referenced.
@@ -2166,9 +2166,9 @@ strings and vectors today.
   even at N=5.
 - `equal?` between two maps drops from O(n²) to O(n) thanks to CHAMP's
   canonical form (compare bitmaps then walk in lock-step).
-- One new ADR-30 contract clause: **iteration order is no longer
+- One new ADR-030 contract clause: **iteration order is no longer
   insertion order.** `keys`/`vals`/`map-pairs` give a deterministic order
-  per map shape, but it's hash-driven. ADR-30 promised insertion order;
+  per map shape, but it's hash-driven. ADR-030 promised insertion order;
   this ADR walks that back. (The current users — `pr-str`, `=`, tests —
   don't depend on it; the only test that asserts insertion-order
   iteration is `tests/maps_test.blsp:215` and would be rewritten as a set
@@ -2179,16 +2179,16 @@ strings and vectors today.
   wrappers over the trie ops.
 
 **Pre-requisites.** Needs `hash_value(&Heap, Value) -> u64` in `heap.rs`
-(the function the ADR-30-index attempt built, salvageable). Needs one
+(the function the ADR-030-index attempt built, salvageable). Needs one
 new `Tag` reservation (`MapNode`) and one bit in `types.rs`. Needs the
 maps test suite to be updated to use set comparisons for iteration
 (`tests/maps_test.blsp` lines that fix order).
 
-## ADR-41 — Shared, refcounted blobs for large immutable byte data
+## ADR-041 — Shared, refcounted blobs for large immutable byte data
 
 **Status:** accepted, implemented 2026-05-29 (see devlog).
 
-**Context.** ADR-26 made data immutable. ADR-33 proved that closure
+**Context.** ADR-026 made data immutable. ADR-033 proved that closure
 *handles* can cross processes without copying — `(spawn …)` ships a closure
 via tag-retag for PRELUDE/RUNTIME pointers, only deep-copying the captured
 local frame. The bump-only LOCAL allocator (commit `f90f0de`, 2026-05-29)
@@ -2198,7 +2198,7 @@ without a tracing GC. What remained as the next throughput cliff was
 **`to_message` deep-copying every string**: a 10 KB error string sent
 from one worker to another paid 10 KB of memcpy on `send` *and* another
 10 KB on `from_message` (alloc + copy). Closures already escape this via
-ADR-33's closure-as-data path; strings should too.
+ADR-033's closure-as-data path; strings should too.
 
 **Decision.** Add a **per-runtime, refcounted blob heap** (`Arc<BlobHeap>`)
 sibling to `Arc<RuntimeCode>` and `Arc<SharedCode>`. The LOCAL string slab
@@ -2233,7 +2233,7 @@ runtime, every spawned green process shares the same `Arc<BlobHeap>` (via
 `Arc::clone` on construction), so a blob's identity is preserved across
 every cross-process send.
 
-**Why plain `Arc<T>`, not a hand-rolled raw-ptr + atomic.** ADR-26's
+**Why plain `Arc<T>`, not a hand-rolled raw-ptr + atomic.** ADR-026's
 immutability guarantee means data can't form cycles — a `cons` can only
 point at things allocated *before* it, so an `Arc<SharedBlob>` is sound
 without `Weak`/cycle-collector machinery. The standard library does the
@@ -2299,7 +2299,7 @@ dominates. One `const SHARED_BLOB_THRESHOLD: usize = 256` in
   `concurrency::big_string_fanout` comparing 128 B vs 10 000 B payload
   fan-out.
 
-**References.** ADR-26 (immutability → no cycles → safe rc), ADR-33
+**References.** ADR-026 (immutability → no cycles → safe rc), ADR-033
 (closure-as-data established cross-process handle retag), commit
 `f90f0de` (Phase 1 bump-only LOCAL allocator — this design preserves
 "no slot reuse"; a Shared slot's handle still grows monotonically, only
@@ -2307,7 +2307,7 @@ the *bytes* are shared), commit `dee0814` (Phase 2 hibernate — flush
 must Arc::clone survivors to maintain blob identity).
 
 
-## ADR-42 — Live-editing hardening: `defonce`, reload-defs detection, dedup, macro-staleness warning
+## ADR-042 — Live-editing hardening: `defonce`, reload-defs detection, dedup, macro-staleness warning
 
 **Status:** accepted, implemented 2026-05-29 (see devlog).
 
@@ -2318,9 +2318,9 @@ the handful of things still missing before you can edit the running editor all
 day the way you edit a running Emacs. This ADR lands the cheap, high-value
 subset of that plan (its Stages 1, 2, 5-dedup, 7); the rest stays planned.
 
-It also **reverses a planned removal.** ADR-39 (supervised-by-default
+It also **reverses a planned removal.** ADR-039 (supervised-by-default
 processes) was *tried and reverted* on 2026-05-29 (roadmap M-process; the
-kernel-side supervisor was the bulk of the scheduler-race surface). ADR-39 had
+kernel-side supervisor was the bulk of the scheduler-race surface). ADR-039 had
 scheduled `defonce`'s deletion "in the same change that adds named-spawn" —
 but named-spawn never shipped, and even if it had, it only covers the
 *process-singleton* case. The *global state cell* case it does not. So the
@@ -2382,13 +2382,13 @@ typed immutable maps, so there's no nominal type whose field set can drift out
 of sync with live instances.
 
 **References.** [`shared-code.md`](shared-code.md) and
-[`live-editing.md`](live-editing.md) (the mechanism and the plan), ADR-13
-(redefinable globals / hot reload), ADR-26 (immutability — state lives in
-processes, so reload doesn't touch process-threaded state), ADR-39 (reverted;
+[`live-editing.md`](live-editing.md) (the mechanism and the plan), ADR-013
+(redefinable globals / hot reload), ADR-026 (immutability — state lives in
+processes, so reload doesn't touch process-threaded state), ADR-039 (reverted;
 its scheduled `defonce` removal is void).
 
 
-## ADR-43 — Runaway-resource backstops: memory limits (E0043) + eval-depth ceiling (E0044)
+## ADR-043 — Runaway-resource backstops: memory limits (E0043) + eval-depth ceiling (E0044)
 
 **Status:** accepted, implemented 2026-05-29 (see devlog).
 
@@ -2406,10 +2406,10 @@ patterns take down the *host* rather than failing cleanly:
 Both should become clean, catchable Lisp errors.
 
 **Decision.** Two backstops, both **off by default**, both **process-wide**
-(per-process accounting is deferred — ADR-11):
+(per-process accounting is deferred — ADR-011):
 
 **Memory (`E0043`).** A counting `#[global_allocator]` (`core/alloc.rs`,
-std-only per ADR-5) tallies live + peak bytes for the *whole* process, with
+std-only per ADR-005) tallies live + peak bytes for the *whole* process, with
 two tiers:
 
 - **Hard limit** — enforced in `alloc`/`realloc`: an allocation that would cross
@@ -2418,7 +2418,7 @@ two tiers:
   any pattern, including a single huge allocation *between* eval safepoints.
 - **Soft limit** — *not* enforced in the allocator; polled at the eval safepoint
   (`eval/mod.rs`, gated on `gc_block_depth() == 1`, the same outermost-eval gate
-  as the GC safepoint, ADR-35) and raised as a catchable `E0043`. Set below the
+  as the GC safepoint, ADR-035) and raised as a catchable `E0043`. Set below the
   hard limit so a runaway *loop* fails gracefully (only the offending process
   dies; `try`/`catch` can recover) long before the hard abort.
 
@@ -2455,7 +2455,7 @@ MiB covers with headroom while making a genuine runaway trip in a fraction of a
 second instead of chewing through gigabytes first.
 
 **Known gaps / deferred.**
-- **Per-process limits** — only process-wide accounting today (ADR-11: ship the
+- **Per-process limits** — only process-wide accounting today (ADR-011: ship the
   simple form, defer the powerful one).
 - **Soft check only at `gc_block_depth() == 1`** — a runaway happening entirely
   inside one builtin reaches only the hard limit (abort), not the catchable soft
@@ -2469,19 +2469,19 @@ second instead of chewing through gigabytes first.
   run unattended in a routine `cargo test`; run it with `--ignored` when you can
   watch it.
 
-**References.** ADR-35 (per-process tracing GC — same `gc_block_depth() == 1`
-outermost-eval safepoint the soft-memory check rides on), ADR-18 (green
-processes and their coroutine stacks), ADR-11 (favour the simple design; defer
-per-process limits), ADR-5 (dependency-free, std-only allocator).
+**References.** ADR-035 (per-process tracing GC — same `gc_block_depth() == 1`
+outermost-eval safepoint the soft-memory check rides on), ADR-018 (green
+processes and their coroutine stacks), ADR-011 (favour the simple design; defer
+per-process limits), ADR-005 (dependency-free, std-only allocator).
 
 ---
 
-## ADR-44 — Supervision is a userland Brood library, not a kernel feature
+## ADR-044 — Supervision is a userland Brood library, not a kernel feature
 
 **Status:** accepted (2026-05-29). Supersedes the kernel-supervisor direction of
-ADR-39 (tried and reverted; see [`supervision.md`](supervision.md)).
+ADR-039 (tried and reverted; see [`supervision.md`](supervision.md)).
 
-**Context.** ADR-39's kernel supervisor was reverted because its RESUME_SLOT +
+**Context.** ADR-039's kernel supervisor was reverted because its RESUME_SLOT +
 safepoint-rooting machinery was the bulk of the multi-thread scheduler race
 (KI-1). The building blocks it was built over — `spawn` / `monitor` / `receive`
 — were never the problem and remain. The roadmap calls for supervisor trees;
@@ -2492,12 +2492,12 @@ the question was *where* they live.
 supervisor is an ordinary green process carrying immutable state through a
 receive loop (the `hatch.blsp` idiom); it `monitor`s each child and reacts to the
 kernel's `[:down ref pid reason]`. **No new kernel surface** — this is the
-mechanism-in-Rust / policy-in-Brood rule (ADR-6) applied to fault tolerance,
+mechanism-in-Rust / policy-in-Brood rule (ADR-006) applied to fault tolerance,
 and it adds *zero* scheduler-race surface, the decisive property after KI-1.
 
 **Scope.**
 - **All three strategies ship** (update 2026-05-30, once `exit/2` landed —
-  ADR-63): `:one-for-one`, `:one-for-all`, `:rest-for-one`. The group strategies
+  ADR-063): `:one-for-one`, `:one-for-all`, `:rest-for-one`. The group strategies
   must *terminate healthy siblings* on a sibling's death; the `(exit pid :kill)`
   primitive (untrappable hard kill, fires the target's `[:down]`) supplies exactly
   that, and `receive` being selective lets the supervisor drain just the killed
@@ -2505,7 +2505,7 @@ and it adds *zero* scheduler-race surface, the decisive property after KI-1.
   child's `:restart` type gates whether the procedure runs; within a group restart
   each member is restarted only if its own type permits (`:temporary` → terminated
   and dropped). *Originally `:one-for-one`-only* — the group strategies were
-  deferred for want of a kill primitive (ADR-11); that deferral is now closed.
+  deferred for want of a kill primitive (ADR-011); that deferral is now closed.
 - **Restart types:** `:permanent` (always), `:transient` (only on abnormal exit,
   reason ≠ `:normal`), `:temporary` (never).
 - **Restart intensity:** `:max-restarts` within `:max-seconds` (defaults 3/5);
@@ -2525,7 +2525,7 @@ and it adds *zero* scheduler-race surface, the decisive property after KI-1.
   worker is unsafe (it could match and consume it as data). A child whose `:start`
   spawns a supervisor composes as a sub-tree; crash *escalation* through it already
   worked, this closes deliberate *teardown*.
-- **Still deferred (ADR-11):** `link`/bidirectional exit propagation — termination
+- **Still deferred (ADR-011):** `link`/bidirectional exit propagation — termination
   is one-directional and supervisor-driven; the `:shutdown` cascade covers the
   shutdown direction, not automatic *upward* propagation from a linked peer's crash.
 
@@ -2534,17 +2534,17 @@ and it adds *zero* scheduler-race surface, the decisive property after KI-1.
   children** now (no orphans) — the same `(exit … :kill)`. (Pre-`exit/2` they left
   children running; that limitation is gone.)
 - A child spec carries a `:start` *closure* (`(fn () (spawn …))`), shipped across
-  the spawn boundary by the closure-as-data path (ADR-33); restart re-invokes it
+  the spawn boundary by the closure-as-data path (ADR-033); restart re-invokes it
   for a from-scratch incarnation.
 - Tests: `tests/supervisor_test.blsp` (restart, all three restart types,
   intensity give-up via a monitor on the supervisor, introspection, strategy
   rejection), `:isolated` per the process-test convention.
 
-**References.** ADR-39 (reverted kernel supervisor), ADR-6 (policy in Brood),
-ADR-11 (defer power features), ADR-33 (closures as data),
+**References.** ADR-039 (reverted kernel supervisor), ADR-006 (policy in Brood),
+ADR-011 (defer power features), ADR-033 (closures as data),
 [`supervision.md`](supervision.md), [`concurrency-v2.md`](concurrency-v2.md) §4.
 
-## ADR-45 — Text ropes as an opaque, immutable heap value (`Value::Rope`)
+## ADR-045 — Text ropes as an opaque, immutable heap value (`Value::Rope`)
 
 **Status:** accepted (2026-05-29). The first M2 (editor data model) substrate —
 the one new `Value` kind the editor's buffer text needs.
@@ -2553,9 +2553,9 @@ the one new `Value` kind the editor's buffer text needs.
 can't index lines cheaply; the editor needs O(log n) insert/delete and char↔line
 mapping over files. That's a B-tree rope — a structure Brood can't bootstrap over
 its existing primitives, so it's the one irreducible piece of *text mechanism*
-that belongs in Rust (the "Rust is mechanism, Brood is policy" rule, ADR-6).
+that belongs in Rust (the "Rust is mechanism, Brood is policy" rule, ADR-006).
 The open question was how to expose it without breaking the immutability
-invariant (ADR-26: no data mutation; every op returns a fresh value), the
+invariant (ADR-026: no data mutation; every op returns a fresh value), the
 tracing-GC assumptions (no write barriers), or the share-nothing process model.
 
 **Decision.** Add a single new heap value, `Value::Rope(RopeId)` / `Tag::Rope`,
@@ -2568,7 +2568,7 @@ the buffer itself — is Brood.
 - **Immutable, for free.** `ropey::Rope` is an `Arc`-shared B-tree: `clone()` is
   O(1) (bump refcounts) and edits are copy-on-write on touched nodes only. So
   `rope-insert`/`rope-delete` *clone-then-edit* and return a **fresh** rope; the
-  input is untouched and shares all unchanged structure. The ADR-26 contract
+  input is untouched and shares all unchanged structure. The ADR-026 contract
   holds with no special-casing — a rope behaves like every other immutable value.
 - **Process-local.** A rope lives in exactly one process's LOCAL heap and **never
   crosses in a message** (`to_message` errors with a hint to send `rope->string`
@@ -2594,14 +2594,14 @@ a prelude predicate over `type-of`, and `Ty::tested_by` narrows on it.
 - This is the *only* new `Value` kind M2 needs; buffers, cursors, and keymaps are
   all Brood values built from existing kinds. It's also the template for any
   future opaque resource (a GPU texture, an OS handle), should one ever be
-  justified (deferred per ADR-11 — a concrete rope beats a general FFI-resource
+  justified (deferred per ADR-011 — a concrete rope beats a general FFI-resource
   system until a second resource type exists).
 
-**References.** ADR-6 (mechanism/policy split), ADR-26 (immutability), ADR-5
-relaxation (runtime-substrate crates), ADR-11 (ship the simple form),
+**References.** ADR-006 (mechanism/policy split), ADR-026 (immutability), ADR-005
+relaxation (runtime-substrate crates), ADR-011 (ship the simple form),
 [`ROADMAP.md`](../ROADMAP.md) M2, [`types.md`](types.md) compatibility contract.
 
-## ADR-46 — The display/input seam: a frontend is a protocol of render-op data
+## ADR-046 — The display/input seam: a frontend is a protocol of render-op data
 
 **Status:** accepted (2026-05-29). The first M3 substrate — the seam between the
 runtime and any frontend (local terminal today, a socket peer later).
@@ -2627,7 +2627,7 @@ lives behind the scheduler registry).
   is a ~40-line interpreter of that vector. So the op set is redefinable Lisp data
   and a remote frontend re-implements the same ops elsewhere — exactly the seam
   architecture.md promised. This is the "drawing, I/O" Rust-primitive category the
-  architecture already anticipated (ADR-6).
+  architecture already anticipated (ADR-006).
 - **Observer-as-proof, not editor-first.** `std/tool/observer.blsp` + `nest observe` is
   a tiny Erlang-observer-style process viewer — the *smallest real app* on the
   seam. It needs no rope/buffer, so it validates the render protocol + key loop
@@ -2646,7 +2646,7 @@ lives behind the scheduler registry).
   observes. Poll timeouts are always finite: preemption can't interrupt a process
   parked in a native crossterm call, so an infinite poll on a *green* process
   would pin a worker. (Future async input — a reader thread feeding a mailbox —
-  would lift even the root-thread block; deferred per ADR-11.)
+  would lift even the root-thread block; deferred per ADR-011.)
 - **Terminal-restore is belt-and-suspenders.** The normal teardown is the Brood
   `term-leave` (on quit); a Rust RAII guard in `nest observe` (`brood::builtins::
   restore_terminal`) is the abnormal-path backstop, firing on a panic unwind and
@@ -2660,22 +2660,22 @@ lives behind the scheduler registry).
 - The op vocabulary is intentionally minimal (text + cursor + clear + a small face
   map of fg/bg/bold/reverse). Faces beyond that, mouse/resize events, scroll, and
   attaching the observer to a *remote* live image are additive and deferred
-  (ADR-11). The same `term-draw`/`term-poll` shape is what the M3 editor frontend
+  (ADR-011). The same `term-draw`/`term-poll` shape is what the M3 editor frontend
   and the M4 socket frontends will speak.
 
-**References.** ADR-6 (mechanism/policy), ADR-45 (the rope, the other editor
-substrate), ADR-5 relaxation (runtime-substrate crates), ADR-11 (ship the
-simple form), ADR-43 (the root-vs-worker thread + stack model),
+**References.** ADR-006 (mechanism/policy), ADR-045 (the rope, the other editor
+substrate), ADR-005 relaxation (runtime-substrate crates), ADR-011 (ship the
+simple form), ADR-043 (the root-vs-worker thread + stack model),
 [`architecture.md`](architecture.md) (the seam), [`ROADMAP.md`](../ROADMAP.md) M3.
 
-## ADR-47 — Native multi-arity closure dispatch
+## ADR-047 — Native multi-arity closure dispatch
 
 **Status:** accepted (2026-05-29). Closes the variadic-arithmetic performance gap
 without moving `+`/`-`/`=` out of Brood.
 
 **Context.** The prelude's variadic arithmetic and comparison operators (`+`, `*`,
 `-`, `/`, `<`, `=`, …) are written *in Brood*, as `defn`s over `fold` and a
-rest-list. That is the project's core principle in action (ADR-6: write the
+rest-list. That is the project's core principle in action (ADR-006: write the
 language in the language) — but it was costing **~40× a direct primitive call**.
 Each `(+ a b)` allocated a `& xs` rest-list, then a `fold`, then a
 `fold--loop`/`empty?`/`first`/`rest` chain ≈ 15 env frames — none of which the
@@ -2700,7 +2700,7 @@ common small call. `+` stays Brood; `(+ a b)` is now ~one env frame instead of
   rest) becomes a `ClosureArm` and dispatches natively by count. A clause whose
   head contains *patterns* (literals/destructuring, e.g. `((0) 1)`, `((3 _) …)`)
   still lowers to the existing `match*` engine (`eval::macros::lower_fn`). So the
-  pre-existing Erlang-style **same-arity pattern dispatch** (ADR-10) is untouched;
+  pre-existing Erlang-style **same-arity pattern dispatch** (ADR-010) is untouched;
   multi-arity is a second, orthogonal dispatch axis layered cleanly in front of it.
   `fn_is_arity_multi_clause` decides which a given `defn` is.
 - **`select_arm(argc)` semantics.** Among arms that `accept(argc)`, prefer an
@@ -2730,14 +2730,14 @@ common small call. `+` stays Brood; `(+ a b)` is now ~one env frame instead of
   (it doesn't make that arm variadic). This matches the pre-existing rule that
   `&optional`/patterns/multi-clause don't nest (see `docs/language.md`).
 
-**References.** ADR-6 (write the language in the language), ADR-10 (parameter
-lists are lists; Erlang-style same-arity pattern dispatch), ADR-2 (`Rc`→`gc-arena`,
+**References.** ADR-006 (write the language in the language), ADR-010 (parameter
+lists are lists; Erlang-style same-arity pattern dispatch), ADR-002 (`Rc`→`gc-arena`,
 why heap construction stays funnelled), CLAUDE.md "Dogfood first; optimize only by
 building the language up", [`language.md`](language.md) (`fn`/`defn` clauses),
 [`ROADMAP.md`](../ROADMAP.md) M1 ("Memory reclamation" — the cumulative-memory story
 multi-arity helps but doesn't fully solve).
 
-## ADR-48 — Self-hosted REPL (the read-eval-print loop in Brood)
+## ADR-048 — Self-hosted REPL (the read-eval-print loop in Brood)
 
 **Status:** accepted (2026-05-29). Moves the REPL out of Rust (`crates/repl`) and
 into Brood (`std/tool/repl.blsp`); the `rustyline` dependency leaves the tree with it.
@@ -2745,14 +2745,14 @@ into Brood (`std/tool/repl.blsp`); the `rustyline` dependency leaves the tree wi
 **Context.** The REPL was Rust from day one — a bootstrap (`crates/repl`, shared
 by `brood` and `nest repl`) doing `rustyline` line editing, multi-line balance
 detection, per-command heap reset, and error printing. The roadmap always carried
-"self-host the CLI/REPL in Brood" as M1 work (the core principle, ADR-6: Rust is
+"self-host the CLI/REPL in Brood" as M1 work (the core principle, ADR-006: Rust is
 mechanism, Brood is policy — and a read-eval-print loop is pure policy). Three
 prerequisites had to land first, and now all have:
 - **`eval-string`** is the whole evaluator, callable from Brood (read-all →
   macroexpand-all → eval).
 - a never-returning Brood loop can be **memory-bounded** — the design target the
-  per-process tracing GC (ADR-35) was meant to hit. ⚠️ That mark-sweep is
-  currently **disabled** (`Heap::collect` is a no-op — see ADR-35), so the
+  per-process tracing GC (ADR-035) was meant to hit. ⚠️ That mark-sweep is
+  currently **disabled** (`Heap::collect` is a no-op — see ADR-035), so the
   reclamation that actually works today is `(hibernate fn & args)` (arena flip),
   plus the wholesale free of a process's LOCAL heap when it *exits*. `repl--loop`
   therefore recurs via `(hibernate repl--loop tty)`: each command flips the arena,
@@ -2773,7 +2773,7 @@ add **one** irreducible Rust primitive, and shrink the binaries to a bootstrap.
   I/O is genuine mechanism the language can't bootstrap; everything else is Brood.
 - **Multi-line input rides the reader, not a hand-rolled scanner.** An unclosed
   form or string makes `eval-string` raise the reader's `INCOMPLETE_INPUT` error
-  (code `E0002`, ADR-49) — the signal to read another line; any *other* error is
+  (code `E0002`, ADR-049) — the signal to read another line; any *other* error is
   a real error to report. Because `eval-string` reads *all* forms before evaluating
   any, an incomplete buffer throws at read time with nothing evaluated, so retrying
   the growing buffer as lines arrive has no partial/double side effects. (An earlier
@@ -2805,17 +2805,17 @@ add **one** irreducible Rust primitive, and shrink the binaries to a bootstrap.
   detection, error rendering) incl. a cross-process error-map round-trip; the IO
   loop is exercised manually via `brood` / piped input.
 
-**References.** ADR-6 (write the language in the language), ADR-35 (the
+**References.** ADR-006 (write the language in the language), ADR-035 (the
 per-process tracing GC meant to bound a never-returning Brood loop — currently
-disabled; reclamation today is `(hibernate)` + process-exit), ADR-49 (the reader
-`INCOMPLETE_INPUT` signal that drives multi-line reads), ADR-28 (`brood`/`nest`
-split — both bootstrap the same Brood REPL), ADR-46 (the `term-*` seam a future
+disabled; reclamation today is `(hibernate)` + process-exit), ADR-049 (the reader
+`INCOMPLETE_INPUT` signal that drives multi-line reads), ADR-028 (`brood`/`nest`
+split — both bootstrap the same Brood REPL), ADR-046 (the `term-*` seam a future
 raw-mode line editor rides on), CLAUDE.md "Dogfood first" and "Greenfield".
 
-## ADR-49 — Reader `INCOMPLETE_INPUT` as the multi-line continuation signal
+## ADR-049 — Reader `INCOMPLETE_INPUT` as the multi-line continuation signal
 
 **Status:** accepted (2026-05-29). Formalises a use for an error code the reader
-already carried; first consumer is the self-hosted REPL (ADR-48).
+already carried; first consumer is the self-hosted REPL (ADR-048).
 
 **Context.** A REPL — or an editor's interactive evaluator — reading a line at a
 time must tell two failures apart: **"input ended mid-form"** (an unclosed `(`,
@@ -2850,19 +2850,19 @@ delimiter counting) is what makes those reuses correct for free.
   already there "so a REPL / editor can distinguish"; this records the decision and
   its first real consumer.)
 
-**References.** ADR-48 (the self-hosted REPL, first consumer), `docs/error-codes.md`
+**References.** ADR-048 (the self-hosted REPL, first consumer), `docs/error-codes.md`
 (the stable code registry), `docs/llm-native.md` §4 (structured caught errors as
 maps), CLAUDE.md "Keep the language as small as possible" (a reader fact reused, not
 a scanner re-implemented).
 
-## ADR-50 — Randomness is a pure, threaded PRNG (bitwise ops are the only new primitives)
+## ADR-050 — Randomness is a pure, threaded PRNG (bitwise ops are the only new primitives)
 
 **Status:** accepted (2026-05-29). Prompted by `docs/feedback-retro-game-of-life.md`
 §1/§4 — "no randomness anywhere in the language" was the single biggest ergonomic
 gap an AI assistant hit building a simulation.
 
 **Context.** Almost every language ships a global, stateful RNG: `rand()` mutates a
-hidden seed. Brood is immutable (ADR-26) — there is no global mutable cell to hold a
+hidden seed. Brood is immutable (ADR-026) — there is no global mutable cell to hold a
 PRNG state, and adding one would be a mutation primitive we've sworn off. The
 feedback author hand-rolled a glibc LCG and *threaded the seed through the game
 state* — and noted that's "the idiomatically-correct immutable answer." So the
@@ -2881,16 +2881,16 @@ language already pointed at the right shape; it was just missing the batteries.
 - The **only** new Rust primitives are the **bitwise ops** (`bit-and`/`-or`/`-xor`/
   `-not`/`-shift-left`/`-shift-right`). These are genuinely irreducible (can't be
   bootstrapped from the numeric ops) and are independently table-stakes (hashing,
-  flags). Everything stochastic is then Brood on top — exactly the ADR-6 split.
+  flags). Everything stochastic is then Brood on top — exactly the ADR-006 split.
 
 **Rejected alternatives.**
 - *A Rust `rand` builtin / global PRNG.* Fast, familiar, but reintroduces hidden
-  mutable state (violates ADR-26) and moves behaviour into Rust that the language
-  can express itself (violates ADR-6). A non-starter on both counts.
+  mutable state (violates ADR-026) and moves behaviour into Rust that the language
+  can express itself (violates ADR-006). A non-starter on both counts.
 - *A process-backed `*rng*`* (a green process holding the seed, queried by `send`).
   This *is* the immutable way to get an ambient generator, and may come later for
   scripts that don't want to thread — but it's the powerful-but-complex form;
-  ADR-11 says ship the simple threaded form first and defer the rest until a
+  ADR-011 says ship the simple threaded form first and defer the rest until a
   concrete need justifies it.
 - *A cryptographic generator.* Out of scope — xorshift32 is for simulations,
   sampling, shuffling, jitter, and ids; the docstrings say so explicitly.
@@ -2905,12 +2905,12 @@ language already pointed at the right shape; it was just missing the batteries.
 - If a future need for an ambient generator appears, the process-backed `*rng*` is
   additive over this — it would *use* these same pure steppers internally.
 
-**References.** ADR-6 (write the language in the language — bitwise primitive,
-stochastic policy in Brood), ADR-26 (immutability — no global mutable PRNG),
-ADR-11 (ship the simple form, defer the process-backed one),
+**References.** ADR-006 (write the language in the language — bitwise primitive,
+stochastic policy in Brood), ADR-026 (immutability — no global mutable PRNG),
+ADR-011 (ship the simple form, defer the process-backed one),
 `docs/feedback-retro-game-of-life.md` §1/§4, `docs/language.md` (Bitwise, Randomness).
 
-## ADR-51 — `(process-info pid)` as the kernel introspection snapshot
+## ADR-051 — `(process-info pid)` as the kernel introspection snapshot
 
 **Status:** accepted (2026-05-29). The introspection surface a process observer /
 debugger / supervisor reads; first consumer is `nest observe`.
@@ -2920,7 +2920,7 @@ state — status, registered name, mailbox depth, memory, parent, who's monitori
 it. None of it is reachable from Brood: a `Process` lives inside its coroutine (or
 the mailbox `waiter` slot when parked), not in any Lisp value; the registry,
 name, and monitor tables are all Rust internals. So this is irreducibly kernel
-*mechanism* (the ADR-6 split puts it in Rust), but the *shape* exposed to Brood
+*mechanism* (the ADR-006 split puts it in Rust), but the *shape* exposed to Brood
 is a plain immutable map the language manipulates freely.
 
 **Decision.** One primitive, `(process-info pid)`, returns a snapshot **map** for a
@@ -2958,7 +2958,7 @@ pid (a non-pid is a type error — same contract as `mailbox-size`):
     estimate from slab `len × size_of`), republished to an `AtomicUsize` each time
     the process enters `receive`. Bump-allocated, so it shows allocation since the
     last reset / `hibernate` (an *accumulation* signal, not a GC live set — there
-    is no tracing GC; ADR-16/48). A process that never `receive`s reports `0`.
+    is no tracing GC; ADR-016/048). A process that never `receive`s reports `0`.
 
 **Consequences.**
 - The numeric `:id` is monotonic (it's the spawn counter), so it doubles as a
@@ -2971,27 +2971,27 @@ pid (a non-pid is a type error — same contract as `mailbox-size`):
   `send`-able, comparable, and testable like any value; the `:isolated` tests
   assert it across spawned processes.
 
-**References.** ADR-6 (mechanism in Rust, the map is policy-shaped data), ADR-46
-(the observer, first consumer), ADR-26 (the snapshot is an immutable value),
+**References.** ADR-006 (mechanism in Rust, the map is policy-shaped data), ADR-046
+(the observer, first consumer), ADR-026 (the snapshot is an immutable value),
 `std/tool/observer.blsp`, `docs/primitives.md` (the `process-info` entry).
 
-## ADR-52 — Interactive REPL line editor in Brood (inline `term-*` seam)
+## ADR-052 — Interactive REPL line editor in Brood (inline `term-*` seam)
 
 **Status:** accepted (2026-05-29). The syntax-highlighting, bracket-matching,
 signature-hinting, completing, emacs-keyed REPL editor — `std/editor/lineedit.blsp` +
 `std/editor/highlight.blsp` over a thin new inline `term-*` seam.
 
-**Context.** ADR-48 made the REPL a Brood loop over `read-line`, with line editing
+**Context.** ADR-048 made the REPL a Brood loop over `read-line`, with line editing
 left to the terminal's cooked mode and an explicit note that richer editing was "now
 a Brood function to add, not Rust," over the `term-*` raw-key seam. This ADR adds it:
 tree-sitter-style lexical highlighting, matching-bracket emphasis, function signature
 hints, Tab completion, and the core emacs/readline keys + ↑/↓ history. The existing
-`term-*` primitives (ADR-46) were built for a *full-screen* TUI (`nest observe`):
+`term-*` primitives (ADR-046) were built for a *full-screen* TUI (`nest observe`):
 `term-enter` takes the **alternate screen** and `term-draw` paints **absolute** cells
 — both wrong for a REPL, which must render **inline** and keep scrollback.
 
 **Decision.**
-- **A thin inline seam in Rust, the editor in Brood** (the ADR-6 split). Three new
+- **A thin inline seam in Rust, the editor in Brood** (the ADR-006 split). Three new
   primitives: `term-raw-enter` / `term-raw-leave` (raw mode *only* — no alternate
   screen, cursor stays visible, scrollback preserved; `restore_raw` is the
   panic-path backstop, and unlike `restore_terminal` it emits no escape sequences so
@@ -3011,7 +3011,7 @@ hints, Tab completion, and the core emacs/readline keys + ↑/↓ history. The e
   and the LSP share one list and can't drift.
 - **Single-line editing, whole-form analysis.** The editor edits one physical line
   and returns it — a `read-line` drop-in — so multi-line forms keep coming from the
-  REPL's existing reader-driven accumulation (ADR-49), with no second incomplete-
+  REPL's existing reader-driven accumulation (ADR-049), with no second incomplete-
   detector in Brood. The already-typed accumulator threads in as read-only `:prefix`
   context, so highlighting, bracket matching, and signature hints analyse the *whole*
   form (`prefix + line`) even on a continuation line, while cursor math stays
@@ -3041,7 +3041,7 @@ hints, Tab completion, and the core emacs/readline keys + ↑/↓ history. The e
 
 **Where the editor runs (and why the worker cost is a non-issue).** The editor polls
 keys with `term-poll` from inside the *spawned* `repl--loop` process — the process that
-`hibernate`s between forms to bound memory (ADR-48). `term-poll` natively blocks its
+`hibernate`s between forms to bound memory (ADR-048). `term-poll` natively blocks its
 worker thread for the poll timeout, so the REPL's one worker is unavailable while it
 idles at the prompt. Given the scheduler (`scheduler.rs`: ≈`nproc` workers, processes
 pinned to a worker for life, per-worker queues, **no work stealing**), this is benign:
@@ -3094,14 +3094,14 @@ is ready, like `receive`) would make the block truly zero-cost — a nicety, not
   completion from globals only (no locals-in-scope); display width approximated as one
   column per char (wide CJK/emoji may misposition the cursor).
 
-**References.** ADR-48 (the self-hosted REPL this extends), ADR-49 (the reader's
-INCOMPLETE_INPUT multi-line signal the single-line model relies on), ADR-46 (the
-full-screen `term-*` seam this adds an inline counterpart to), ADR-6 (mechanism in
-Rust, policy in Brood), ADR-25 (`arglist`/`global-names` introspection the hints +
+**References.** ADR-048 (the self-hosted REPL this extends), ADR-049 (the reader's
+INCOMPLETE_INPUT multi-line signal the single-line model relies on), ADR-046 (the
+full-screen `term-*` seam this adds an inline counterpart to), ADR-006 (mechanism in
+Rust, policy in Brood), ADR-025 (`arglist`/`global-names` introspection the hints +
 completion read; `semantic_tokens.rs` SPECIAL_FORMS the highlighter mirrors),
 `std/editor/lineedit.blsp`, `std/editor/highlight.blsp`, `std/tool/repl.blsp`, `docs/primitives.md`.
 
-## ADR-53 — Remote attach: observe a running runtime over the node link
+## ADR-053 — Remote attach: observe a running runtime over the node link
 
 **Status:** accepted (2026-05-29). The way to watch *existing executing code* — the
 real use for the process observer, since one terminal can't show app + observer.
@@ -3145,7 +3145,7 @@ re-doing the node wire codec for nothing.
 - Watching a running CLI/server is now "open a second terminal and
   `nest observe --connect`," the Erlang-observer model. Same `observe-frame`, same
   `process-info` — the observer renders identically whether the data is local or a
-  peer's, which is the protocol-not-library property the display seam (ADR-46) set up.
+  peer's, which is the protocol-not-library property the display seam (ADR-046) set up.
 - **Trust model is dev-grade** (inherited from `dist.rs`): shared cookie, **no
   encryption**, no per-message auth — LAN/trusted networks only; an internet-facing
   attach needs TLS on top. Read-only: the observer reads snapshots, it can't control
@@ -3153,19 +3153,19 @@ re-doing the node wire codec for nothing.
 - Cross-node coverage in `crates/cli/tests/observe_attach.rs` (two real runtimes:
   attach → snapshot of the peer's processes → kill target → `:down`).
 
-**References.** ADR-46 (the display seam / observer this extends), ADR-51
-(`process-info`, the send-able snapshot maps), ADR-34 (the node handshake/cookie),
-ADR-6 (mechanism in Rust, the agent + loop are Brood), `std/tool/observer.blsp`,
+**References.** ADR-046 (the display seam / observer this extends), ADR-051
+(`process-info`, the send-able snapshot maps), ADR-034 (the node handshake/cookie),
+ADR-006 (mechanism in Rust, the agent + loop are Brood), `std/tool/observer.blsp`,
 `ROADMAP.md` M3.
 
-## ADR-54 — Generational handles: a debug tripwire for use-after-GC
+## ADR-054 — Generational handles: a debug tripwire for use-after-GC
 
 **Status:** accepted (2026-05-29). The debugging/safety foundation for re-enabling
 automatic collection (Stage B, `docs/memory-review.md`). Representation +
 per-process epoch wiring landed; the deref check is debug-only.
 
 **Context.** A Brood handle is an index into a per-process typed slab `Vec`, not a
-raw pointer (for `Send` + the planned arena migration, ADR-2). That makes a
+raw pointer (for `Send` + the planned arena migration, ADR-002). That makes a
 *stale* handle — one held across an arena flip (`(hibernate)` → `Heap::flush`
 today; the future safepoint `collect`) without being re-rooted — pathological to
 debug: the slab memory is still valid, so the bad access is either an
@@ -3211,17 +3211,17 @@ LOCAL deref.
   (it would false-positive below-checkpoint survivors), so the rare reset-regrow
   ABA stays a documented gap until per-slot generations land.
 
-**References.** ADR-2 (`Rc`→arena migration, why handles are indices),
-ADR-35 (the disabled mark-sweep this helps revive), ADR-26 (immutability — but
+**References.** ADR-002 (`Rc`→arena migration, why handles are indices),
+ADR-035 (the disabled mark-sweep this helps revive), ADR-026 (immutability — but
 `letrec` cycles mean we still need tracing, not pure refcounting),
 [`docs/memory-review.md`](memory-review.md) (the full memory model review + the
 staged GC plan), [`ROADMAP.md`](../ROADMAP.md) M1.
 
-## ADR-55 — Stage B: automatic copying collection at the eval safepoint
+## ADR-055 — Stage B: automatic copying collection at the eval safepoint
 
 **Status:** accepted (2026-05-29). Re-enables automatic per-process GC, on the
-generational-handle foundation (ADR-54). The "slow-and-stable" memory the brief
-asked for; supersedes the disabled mark-sweep (ADR-35) and the manual-only
+generational-handle foundation (ADR-054). The "slow-and-stable" memory the brief
+asked for; supersedes the disabled mark-sweep (ADR-035) and the manual-only
 `(hibernate)` reclamation.
 
 **Context.** `docs/memory-review.md` mapped the fork: **copying** at the safepoint
@@ -3229,7 +3229,7 @@ asked for; supersedes the disabled mark-sweep (ADR-35) and the manual-only
 collector; but *moves* every object, so any Rust frame holding a handle across a
 collection goes stale) vs. **non-moving mark-sweep** (live handles don't move, but
 needs new per-slot generation tables and a two-collector design). With the
-generational tripwire (ADR-54) now making a stale handle a *precise, located*
+generational tripwire (ADR-054) now making a stale handle a *precise, located*
 panic, copying's footgun became a bounded, test-caught fix list rather than a
 silent landmine — so copying won.
 
@@ -3259,33 +3259,33 @@ The "everything moves" footgun was closed at its (few, enumerable) sites:
   before `promote` copies it to RUNTIME). Node connections are unaffected — messages
   cross as serialized deep copies, reconstructed via `alloc_*` (correctly stamped).
 - **Immutability shortcut already banked:** no write barriers (data never mutates).
-  The generational nursery (Stage C, **now landed** — ADR-72) builds on this: a
+  The generational nursery (Stage C, **now landed** — ADR-072) builds on this: a
   minor GC copies just the nursery survivors and never traces the old generation,
   because immutability ⇒ no old→young pointers. *Almost* no barrier — the one
   exception is a frame tenured **mid-bind** (a collection during a `let`'s rhs,
   then bound further), which `env_define` records in a one-entry remembered set; the
   next minor scans it. (Cycles still exist via `letrec`, so tracing — not pure
-  refcounting — remains required; ADR-26/54.)
+  refcounting — remains required; ADR-026/054.)
 - A debug-only diagnostic (`debug_walk_env_chain`, the poison-era env walk
   superseded by the tripwire) was found mis-walking RUNTIME indices into the LOCAL
   slab and made debug builds pathologically slow; gated behind `BROOD_ENV_DEBUG=1`.
 - Validated: suite 765/765 + `gc.rs` (collector active); `basic.rs` 75/75 under
   `BROOD_GC_STRESS=1`; release bounded + fast.
 
-**References.** ADR-54 (generational handles — the tripwire this relies on),
-ADR-35 (the disabled mark-sweep this replaces), ADR-16 (the arena reset it
-supersedes under GC), ADR-26 (immutability — no write barriers; but `letrec`
+**References.** ADR-054 (generational handles — the tripwire this relies on),
+ADR-035 (the disabled mark-sweep this replaces), ADR-016 (the arena reset it
+supersedes under GC), ADR-026 (immutability — no write barriers; but `letrec`
 cycles), [`docs/memory-review.md`](memory-review.md) (the full plan + the fork),
 [`ROADMAP.md`](../ROADMAP.md) M1. Stage C (generational nursery) deferred.
 
-## ADR-56 — A windowed (GUI) frontend + mouse input, on the same display seam
+## ADR-056 — A windowed (GUI) frontend + mouse input, on the same display seam
 
-**Status:** accepted (2026-05-29). The second frontend for the ADR-46 seam, and
+**Status:** accepted (2026-05-29). The second frontend for the ADR-046 seam, and
 the realisation of its deferred mouse/scroll input. (The window itself first
-landed in the same commit as ADR-55 without its own ADR; this records both the
+landed in the same commit as ADR-055 without its own ADR; this records both the
 GUI decision and the input completion.)
 
-**Context.** ADR-46 made the display layer a *protocol of render-op data*, not a
+**Context.** ADR-046 made the display layer a *protocol of render-op data*, not a
 library, and deferred "mouse/resize events" and additional frontends as additive.
 The claim that a frontend is "just another implementer of the protocol" was only
 ever exercised by one frontend (the `crossterm` terminal), so it was unproven. And
@@ -3326,7 +3326,7 @@ and a new render-op-protocol input shape, with zero change to the frame protocol
   wakes for an event it would ignore. This avoids a real footgun: winit's
   `CursorMoved` fires per pixel, and since the observer refetches+redraws on every
   poll result, *emitting* motion would turn a mouse wiggle into a redraw storm.
-  Release/drag are additive when a consumer (drag-select) needs them (ADR-11).
+  Release/drag are additive when a consumer (drag-select) needs them (ADR-011).
 - **The observer acts on two.** `std/tool/observer.blsp` reacts to left-press (select the
   clicked process row) and the wheel (scroll the selection); a right/middle click,
   a click off the list, or any future action is a no-op. The mapping is **pure**
@@ -3335,13 +3335,13 @@ and a new render-op-protocol input shape, with zero change to the frame protocol
 - **`(observe)` is non-blocking; one process per window.** To open several windows
   by calling `(observe)` repeatedly it can't be modal, so it `spawn`s a process that
   opens a window and runs the loop, returning that pid. Each window is independent
-  state in its own process. The trade-off vs ADR-46's root-process observer: a
+  state in its own process. The trade-off vs ADR-046's root-process observer: a
   spawned observer blocks on `gui-poll` in a *green* process, pinning a scheduler
   worker for the poll interval (native blocking can't be preempted). Fine for a
   handful of windows (≈`nproc` workers); opening as many observers as workers would
-  starve other processes for up to a poll interval. Acceptable now (ADR-11);
+  starve other processes for up to a poll interval. Acceptable now (ADR-011);
   `(observe-attach …)` stays modal for the single-window/terminal case.
-- **Same GUI-thread bridge as ADR-46.** Only `Send` plain data (`Op`/`Input`)
+- **Same GUI-thread bridge as ADR-046.** Only `Send` plain data (`Op`/`Input`)
   crosses the channels; the windows/surfaces/glyph caches never leave the GUI
   thread. Clicking a window's close button surfaces as a dedicated `:close`
   message to that window's input — distinct from the Escape *key* (`:escape`) so
@@ -3354,29 +3354,29 @@ and a new render-op-protocol input shape, with zero change to the frame protocol
 **Consequences.**
 - Three optional deps (`winit`/`softbuffer`/`fontdue`), all gated behind `gui`; a
   default build links none. They're runtime-substrate (the "drawing, I/O" Rust
-  category ADR-6/46 anticipated) — the Lisp-callable surface stays Brood.
+  category ADR-006/046 anticipated) — the Lisp-callable surface stays Brood.
 - `back-tab` (Shift+Tab) is now translated by the GUI too, matching the terminal,
   so the key vocabularies are aligned across frontends.
 - The `gui-*` primitives gained a window-id argument (a breaking change from the
   initial 0-arg shape — fine pre-1.0); `*gui-display*` became the `(gui-display)`
   constructor. `(observe)` now returns a pid instead of blocking.
-- Still deferred (ADR-11): a `gui-raw-*` inline seam (so the self-hosted REPL can
+- Still deferred (ADR-011): a `gui-raw-*` inline seam (so the self-hosted REPL can
   run in a window, not just the observer), runtime font sizing, and attaching a
   frontend to a *remote* live image. A spawned observer pins a worker while polling
   (above). No automated GUI test (it needs a live display); the pure input mapping
   is tested, the backend is smoke-tested by hand (two windows at once).
 
-**References.** ADR-46 (the display/input seam this extends — and whose mouse
-deferral this closes), ADR-11 (ship the simple form), ADR-6 (drawing/I-O as a
-Rust-primitive category), ADR-43 (root-vs-worker thread + finite-poll model),
+**References.** ADR-046 (the display/input seam this extends — and whose mouse
+deferral this closes), ADR-011 (ship the simple form), ADR-006 (drawing/I-O as a
+Rust-primitive category), ADR-043 (root-vs-worker thread + finite-poll model),
 [`ROADMAP.md`](../ROADMAP.md) M3.
 
-## ADR-58 — Automatic GC reaches every entry path; `(hibernate)` removed
+## ADR-058 — Automatic GC reaches every entry path; `(hibernate)` removed
 
-**Status.** Accepted (2026-05-29). Completes ADR-55 (Stage B) and supersedes the
+**Status.** Accepted (2026-05-29). Completes ADR-055 (Stage B) and supersedes the
 Stage-A `(hibernate)` expedient from `docs/memory-review.md`.
 
-**Context.** Stage B (ADR-55) made copying collection automatic at the
+**Context.** Stage B (ADR-055) made copying collection automatic at the
 `gc_block_depth() == 1` eval safepoint. But "done" hid a trap: the safepoint only
 fires at depth 1, and how a program is *entered* decides its depth. `nest run
 <file>` launched the program via the `(load "path")` builtin, which re-enters
@@ -3424,13 +3424,13 @@ depth-1 safepoint can't reach it. The general fix is the deferred operand-stack 
 (collect at any depth, `memory-review.md` §6); it is not reachable by any normal
 program structure, so no escape hatch is retained.
 
-**References.** ADR-55 (Stage B), ADR-54 (generational handles — the tripwire
-this leans on), ADR-35 (the per-process GC model), ADR-48 (the REPL loop that
+**References.** ADR-055 (Stage B), ADR-054 (generational handles — the tripwire
+this leans on), ADR-035 (the per-process GC model), ADR-048 (the REPL loop that
 dropped its `(hibernate)`), [`memory-review.md`](memory-review.md) §6,
 [`memory-model.md`](memory-model.md), and the §8 resolution in
 [`feedback-retro-game-of-life.md`](feedback-retro-game-of-life.md).
 
-## ADR-59 — Blocking work delivers to a mailbox; it never pins a worker
+## ADR-059 — Blocking work delivers to a mailbox; it never pins a worker
 
 **Status:** accepted (2026-05-29). Phase 1 (GUI observer input) implemented 2026-05-29;
 sockets ride the net reactor (ADR-143); the offload pool shipped 2026-07-22 (ADR-144);
@@ -3443,7 +3443,7 @@ call on a scheduler worker (KI-97 item 2). Guard: `crates/cli/tests/read_line_pa
 processes are cheap but workers are scarce. A process that makes a **native
 blocking call** — `recv_timeout`, a blocking `read`, a synchronous FFI call —
 holds its worker for the whole call, since the scheduler can't preempt a thread
-parked in a syscall. With multiple windows (ADR-56), each observer blocked in
+parked in a syscall. With multiple windows (ADR-056), each observer blocked in
 `gui-poll` pinned a worker; enough of them would block the whole pool while
 thousands of other processes starve. The same hazard applies to any future
 network or interop call.
@@ -3473,13 +3473,13 @@ We extend it to GUI input, and adopt it as the rule for blocking work generally.
   the right shape — a BEAM-style migrate-to-dirty-scheduler design would be far
   more invasive, while this needs no migration.
 - **Phases 2–3 (planned).** Terminal input via a reader thread (lifting even the
-  root-thread block ADR-46 predicted); sockets via a `mio` reactor; and a blocking
+  root-thread block ADR-046 predicted); sockets via a `mio` reactor; and a blocking
   *offload pool* (`(blocking (fn () …))`) for unavoidable synchronous calls — all
   the same deliver-to-mailbox shape. See the handoff doc.
 
 **Consequences.**
 - The observer's input path is uniform with the rest of the system (it's just
-  `receive`), and `(observe)`'s multi-window cost (ADR-56's worker-pinning
+  `receive`), and `(observe)`'s multi-window cost (ADR-056's worker-pinning
   trade-off) is **removed** — idle observers cost nothing.
 - `gui-*` no longer has a `poll`; input is a mailbox message. A non-process script
   that wants raw window input opens a window and `receive`s in its own process (the
@@ -3487,13 +3487,13 @@ We extend it to GUI input, and adopt it as the rule for blocking work generally.
 - `deliver` is unbounded — fine for keys/scroll; sockets will want flow control
   (Phase 2). `%receive` is selective (scans per match) — fine at input rates.
 
-**References.** ADR-56 (multi-window GUI — whose worker-pinning trade-off this
-removes), ADR-46 (the display/input seam; predicted async-input-to-mailbox),
-ADR-43 (root-vs-worker thread + finite-poll model), ADR-33/34 (the dist
+**References.** ADR-056 (multi-window GUI — whose worker-pinning trade-off this
+removes), ADR-046 (the display/input seam; predicted async-input-to-mailbox),
+ADR-043 (root-vs-worker thread + finite-poll model), ADR-033/034 (the dist
 reader-thread → mailbox precedent),
 [`ROADMAP.md`](../ROADMAP.md) M3/M4.
 
-## ADR-60 — Sets: a library over maps, then promoted to a first-class `#{…}` kernel type
+## ADR-060 — Sets: a library over maps, then promoted to a first-class `#{…}` kernel type
 
 **Status:** accepted as a library (2026-05-30, `std/set.blsp`); **the deferral was
 reversed and `#{…}` promoted to a first-class `Value::Set`/`Tag::Set` kernel type on
@@ -3508,15 +3508,15 @@ it doesn't read as "a set," and there's no `union`/`intersection`/`difference`.
 
 **Decision.** Ship sets as an **opt-in Brood library** (`(require 'set)`), not a
 kernel value kind. A set *is* a map of `element → true`. This follows the repo's
-prime directive (write the language in the language — ADR-6) and "defer power
-features" (ADR-11):
+prime directive (write the language in the language — ADR-006) and "defer power
+features" (ADR-011):
 
 - Because a set is a map, **every existing map/sequence operation already applies**
   — membership is `(contains? s x)`, elements `(keys s)`, size `(count s)`,
   iteration via `fold`/`map`/`into`. The library adds *only* the genuine gaps: a
   deduping constructor `set`, single-element `conj`/`disj`, and the algebra
   `union`/`intersection`/`difference`/`subset?`. Structural equality and vector
-  keys come for free from the CHAMP map underneath (ADR-40).
+  keys come for free from the CHAMP map underneath (ADR-040).
 - **Promoted to the kernel — shipped 2026-07-24 (supersedes the original
   deferral).** A `#{…}` reader literal, `#{…}` printing, and a distinct
   `Value::Set`/`Tag::Set` all landed: the full compatibility contract
@@ -3538,25 +3538,25 @@ features" (ADR-11):
   exhaustiveness enforced most, and `GC_STRESS`+`GC_VERIFY` covered the
   wildcard-guarded GC paths a set shares with maps.
 
-**References.** ADR-6 (write the language in the language), ADR-11 (defer power
-features), ADR-40 (CHAMP map the set rides on), [`ROADMAP.md`](../ROADMAP.md)
+**References.** ADR-006 (write the language in the language), ADR-011 (defer power
+features), ADR-040 (CHAMP map the set rides on), [`ROADMAP.md`](../ROADMAP.md)
 (deferred-features list).
 
-## ADR-61 — Collect at any eval depth via an operand stack
+## ADR-061 — Collect at any eval depth via an operand stack
 
 **Status:** accepted (2026-05-30). Implemented.
 
-**Context.** Stage B's automatic copying GC (ADR-55) fired **only at the
+**Context.** Stage B's automatic copying GC (ADR-055) fired **only at the
 outermost eval** (`gc_block_depth() == 1`). The reason was a rooting invariant: a
 moving (semi-space) collector must relocate *every* live LOCAL handle, and at the
 loop top of the outermost eval the only live transients are the rooted `expr`/`env`
 — every inner eval frame's `argv`/`scope`/accumulators sit unrooted on the Rust
-stack, so collecting while one is live would strand them. ADR-58 worked around
+stack, so collecting while one is live would strand them. ADR-058 worked around
 this for `load` by resetting the block depth so each top-level form re-enters at
 depth 1.
 
 But any loop running *below* the outermost eval never reached a safepoint and grew
-unbounded (bounded only by the ADR-43 host cap):
+unbounded (bounded only by the ADR-043 host cap):
 
 - a loop in **argument position** — `(println (gen 0))` runs `gen` at depth 2;
 - a **`try`-wrapped** loop — `(try (loop) (catch e …))`, the supervised-server
@@ -3589,27 +3589,27 @@ saved/restored across coroutine suspend exactly like `GC_BLOCK`/`STACK_BASE`)
 suppresses collection during expansion — the brief growth is reclaimed at the next
 runtime safepoint, as before. `GC_BLOCK` survives only to feed the stack-overflow
 byte guard; it no longer gates GC, and the now-vestigial `GcBlockReset`/`load`
-depth-1 trick (ADR-58) is removed.
+depth-1 trick (ADR-058) is removed.
 
 **Consequences.**
 - A loop at *any* depth is now memory-bounded with no author intervention — the
   depth-2 leak repro drops from **3.5 GB → 28 MB**. The retro's spawned-vs-top-level
   spike is gone for the same reason (the mid-generation churn is reclaimable).
 - Every function call now pays a few `Vec` push/re-read/truncate operations to
-  maintain the operand stack. Correctness over speed for now (ADR-6 dogfooding);
+  maintain the operand stack. Correctness over speed for now (ADR-006 dogfooding);
   the hot path can later skip rooting for handles already known non-LOCAL
   (RUNTIME/PRELUDE forms never move) if benchmarks demand it.
-- Safety rests on the generational use-after-GC tripwire (ADR-54): a missed root
+- Safety rests on the generational use-after-GC tripwire (ADR-054): a missed root
   panics at the bad deref under `RUSTFLAGS="-C debug-assertions=on"
   BROOD_GC_STRESS=1`. The full suite and a shape battery run clean under it.
-- Supersedes the depth-1-only safepoint of ADR-55 and the `load` depth-1 reset of
-  ADR-58. `docs/memory-review.md` called this "Model b, the operand-stack VM."
+- Supersedes the depth-1-only safepoint of ADR-055 and the `load` depth-1 reset of
+  ADR-058. `docs/memory-review.md` called this "Model b, the operand-stack VM."
 
-**References.** ADR-55 (Stage B automatic GC), ADR-58 (bounded `load`), ADR-54
-(use-after-GC tripwire), ADR-43 (host memory cap), `docs/memory-model.md`,
+**References.** ADR-055 (Stage B automatic GC), ADR-058 (bounded `load`), ADR-054
+(use-after-GC tripwire), ADR-043 (host memory cap), `docs/memory-model.md`,
 `docs/memory-review.md`.
 
-## ADR-62 — TCP sockets: thin kernel, mailbox-delivered, over a reusable IO seam
+## ADR-062 — TCP sockets: thin kernel, mailbox-delivered, over a reusable IO seam
 
 **Status:** accepted (2026-05-30). Implemented (client + server; TLS is a planned
 follow-up).
@@ -3623,11 +3623,11 @@ interacts with the green scheduler.
 
 **Decision.**
 
-- **Thin kernel mechanism, policy in Brood (ADR-6).** Five primitives —
+- **Thin kernel mechanism, policy in Brood (ADR-006).** Five primitives —
   `tcp-connect` / `tcp-listen` / `tcp-send` / `tcp-close` / `tcp-local-port` —
   wrap `std::net`. Framing, request/response draining, and protocols (HTTP next)
   are Brood (`std/net/tcp.blsp`).
-- **Mailbox delivery, not polling (ADR-59).** An early non-blocking-poll design
+- **Mailbox delivery, not polling (ADR-059).** An early non-blocking-poll design
   (Brood loops over a `tcp-recv` that returns would-block) was built and then
   **replaced**: it busy-polls and pins no worker only by luck. Instead a socket
   follows the blocking-IO → mailbox rule: a dedicated **non-worker reader thread**
@@ -3640,7 +3640,7 @@ interacts with the green scheduler.
   place — `process::spawn_io_source(subscriber, name, |sink| …)` + `MailboxSink`
   — so sockets are its first consumer and `gui` / `dist` / terminal input migrate
   onto it later (they hand-roll the same pattern today). This is the concrete
-  form of ADR-59's principle.
+  form of ADR-059's principle.
 - **`Value::Socket(u64)` — a scalar handle.** Unlike the heap-bound rope, a socket
   is an id into a global registry, so the GC treats it as a leaf (never traced or
   moved) and it is valid across this runtime's processes (a spawned handler can
@@ -3657,7 +3657,7 @@ interacts with the green scheduler.
 - **Blocking corners (v1):** `tcp-connect` and `tcp-send` block their worker
   briefly (a connect handshake / a `write_all`); the *accept* loop polls on its
   own dedicated thread. Fine at the dozens-of-connections scale; a `mio` reactor
-  (ADR-59 Phase 2) is the later scale path, under the same primitives.
+  (ADR-059 Phase 2) is the later scale path, under the same primitives.
 - **TLS (done, client) — 2026-05-30.** `https` via `rustls` (the one non-thin,
   crate-backed exception; aws-lc-rs provider + bundled `webpki-roots`, no system
   OpenSSL/trust store). rustls connections can't be split read/write across
@@ -3684,15 +3684,15 @@ interacts with the green scheduler.
   the general seam, not an SSE feature: SSE server push (`std/sse`'s `sse-headers`
   / `sse-frame` / `sse-send`), long-poll, chunked downloads, and a WebSocket upgrade
   are all just `stream-fn`s on top of it — the kernel adds nothing, consistent with
-  ADR-6 (mechanism in Rust, policy in Brood) and ADR-11 (ship the simple seam,
+  ADR-006 (mechanism in Rust, policy in Brood) and ADR-011 (ship the simple seam,
   defer the power features to consumers).
 
-**References.** ADR-59 (blocking work → mailbox; the seam this builds on),
-ADR-6 (language-in-the-language), ADR-26 (immutability — sockets are the
-Rust-backed mutable-resource escape hatch, like the rope), ADR-45 (rope, the
+**References.** ADR-059 (blocking work → mailbox; the seam this builds on),
+ADR-006 (language-in-the-language), ADR-026 (immutability — sockets are the
+Rust-backed mutable-resource escape hatch, like the rope), ADR-045 (rope, the
 other opaque handle).
 
-## ADR-63 — `(exit pid reason)`: Erlang-style process termination
+## ADR-063 — `(exit pid reason)`: Erlang-style process termination
 
 **Status:** accepted (2026-05-30). Implemented: the `exit` primitive + the
 `Suspend::Kill` scheduler path.
@@ -3733,17 +3733,17 @@ dead/unknown pid is a no-op (idempotent); remote pids error for now (defer dist)
 10s watchdog (both `(exit pid :kill)` a slow worker). Self-exit takes effect at the
 caller's next yield (not instantaneous) — acceptable; revisit if needed. A
 trap-exit (`exit` delivered as a *message* to a process that opted in) is deferred
-(ADR-11) until a supervisor needs it.
+(ADR-011) until a supervisor needs it.
 
-**References.** ADR-59 (blocking-work→mailbox; the deliver-and-self-handle shape),
-KI-1b (cross-thread-resume hazard this design avoids), ADR-51 (`process-info`),
-ADR-11 (defer trap-exit), [`todo.md`] (the test/MCP timeouts built on this).
+**References.** ADR-059 (blocking-work→mailbox; the deliver-and-self-handle shape),
+KI-1b (cross-thread-resume hazard this design avoids), ADR-051 (`process-info`),
+ADR-011 (defer trap-exit), [`todo.md`] (the test/MCP timeouts built on this).
 
-## ADR-64 — Rust primitives are single-shot w.r.t. eval re-entry
+## ADR-064 — Rust primitives are single-shot w.r.t. eval re-entry
 
 **Status:** accepted (2026-05-30). `macroexpand` moved to Brood; rule adopted.
 
-**Context.** Collect-at-any-depth (ADR-61) made the copying collector fire at any
+**Context.** Collect-at-any-depth (ADR-061) made the copying collector fire at any
 eval depth. That turned a whole class of Rust code into a hazard: a `&mut Heap`
 function that holds a LOCAL handle (`Value`/`EnvId`) in a Rust local **across a
 call that re-enters `eval`/`apply`** can have that handle relocated out from under
@@ -3754,7 +3754,7 @@ and easy to reintroduce.
 
 **The key asymmetry:** **Brood code is structurally immune.** A Brood function's
 "locals" are environment bindings, and the evaluator already roots the active
-scope across every nested eval (the ADR-61 operand stack). So a loop or
+scope across every nested eval (the ADR-061 operand stack). So a loop or
 accumulator written in Brood is GC-safe *by construction* — there is no unrooted
 Rust local to go stale. The hazard exists *only* at the Rust↔eval boundary, and
 only when a Rust frame **loops or accumulates** across eval.
@@ -3762,7 +3762,7 @@ only when a Rust frame **loops or accumulates** across eval.
 **Decision.** A Rust primitive must be **single-shot with respect to eval
 re-entry**: it may call `eval`/`apply`, but must not hold a LOCAL handle across
 that call — and in particular must not *loop* over eval or *build a structure from
-eval results*. Anything that does belongs in **Brood** (ADR-6), where the
+eval results*. Anything that does belongs in **Brood** (ADR-006), where the
 evaluator roots it for free. Corollaries:
 
 - A primitive that **never** re-enters eval can't trigger a collection at all (GC
@@ -3774,7 +3774,7 @@ evaluator roots it for free. Corollaries:
   `receive_match`, `apply`, `load`/`eval-string`, the compile-pass
   `macros::macroexpand_all` — stays in Rust, hand-rooted, and is the small,
   auditable exception set. (The compile pass additionally opts out of collection
-  via `MACRO_BLOCK` — ADR-61.)
+  via `MACRO_BLOCK` — ADR-061.)
 
 **First application.** `macroexpand` (the fixpoint loop) moved to a Brood prelude
 `defn` over the single-shot `macroexpand-1` primitive — its loop state is now an
@@ -3788,12 +3788,12 @@ pass must expand rather than skip `quasiquote`). `reload-defs` → Brood (needs
 `note-definition` / read-file-forms primitives exposed). Both tracked as their own
 tasks; the Rust versions are correctly rooted in the meantime.
 
-**References.** ADR-61 (collect at any depth — the operand stack that makes Brood
-loops safe), ADR-6 (write the language in the language), ADR-59 (the
+**References.** ADR-061 (collect at any depth — the operand stack that makes Brood
+loops safe), ADR-006 (write the language in the language), ADR-059 (the
 mailbox-delivery seam that keeps I/O primitives callback-free), CLAUDE.md "Debug
 tooling" (`BROOD_GC_VERIFY` — how the six sites were found).
 
-## ADR-65 — Namespaces: expand-time resolution over the flat table, soft privacy
+## ADR-065 — Namespaces: expand-time resolution over the flat table, soft privacy
 
 **Status:** accepted; **increments 1–3 + α implemented** (2026-05-30). Inc-1: the
 substrate (resolver pass, per-process `compile_ns`, forward-ref pre-scan, qualified
@@ -3816,24 +3816,24 @@ namespaced macros are correct across namespaces without hand-qualifying (the
 **earmuff rule** (`*foo*` names are ambient/root, never namespaced) was added so
 `defdyn` vars / `*load-path*` / `*features*` stay reachable unqualified. Full design
 in [`namespaces.md`](namespaces.md). Supersedes the "deferred, point-2-only" stance
-of ADR-19. **Left open** (additive, don't block anything): LSP Tier 2 and ns-name
+of ADR-019. **Left open** (additive, don't block anything): LSP Tier 2 and ns-name
 collision policy.
 
-**Context.** ADR-19 chose Emacs-flat modules and deferred namespaces, betting
+**Context.** ADR-019 chose Emacs-flat modules and deferred namespaces, betting
 they'd fight the editor's "any code can redefine any behaviour live" grain
-(ADR-13 hot reload). Four pressures now arrive together and force the question:
-the package manager (ADR-37) loads third-party `name = URL` code into the one
+(ADR-013 hot reload). Four pressures now arrive together and force the question:
+the package manager (ADR-037) loads third-party `name = URL` code into the one
 flat global table (silent clobbering — the package manager is unsafe without an
 answer); first-party `std/` crowds the flat namespace; M2+ editor plugins from
 many authors must coexist; and the LSP needs qualified names for completion /
-cross-file nav / rename. ADR-19 left a spectrum: (1) flat [done]; (2) a Brood
+cross-file nav / rename. ADR-019 left a spectrum: (1) flat [done]; (2) a Brood
 prefix-macro layer; (3) first-class per-file resolution. This commits the
 *substrate* and most of the surface of (3), built like (2).
 
 **The reframe.** Surveying Lisps, "namespaces" is two languages. Clojure and CL
 are namespaced **and** openly redefinable; Racket is sealed **and** not
 redefinable. **Hard privacy and hot reload are the same trade-off seen from two
-sides.** ADR-19's worry holds only for the Racket end. So Brood takes the
+sides.** ADR-019's worry holds only for the Racket end. So Brood takes the
 **Clojure/CL position — namespaced with *soft* privacy**: "private" = not
 auto-imported + `--` convention + a checker lint, *never* erased from the runtime.
 A fully-qualified name (`observer/observe--internal`, like CL `::`) stays reachable
@@ -3847,22 +3847,22 @@ and live-redefinable. The grain is preserved.
   observe …)` inside `(ns observer)` defines `observer/observe`; a **resolver
   pass** in the compile pipeline rewrites reference-position symbols
   (bare → ns-qualified → imported → root/prelude fall-through). The **runtime,
-  `def`-rebinding, ADR-13 hot reload, `send`/promote/freeze, and the GC are all
+  `def`-rebinding, ADR-013 hot reload, `send`/promote/freeze, and the GC are all
   unchanged** — resolution emits a plain late-bound global. Rejected: partitioning
   the `value.rs` interner into `(ns, name)` (touches reader/eval/env/RuntimeCode/
   dist/hot-reload for a result the flat substrate already gives at the surface —
-  the big core change ADR-19 argued against).
+  the big core change ADR-019 argued against).
 - **One shared resolver for eval *and* the LSP.** The evaluator and the language
   server run the *same* pass, so the editor can never disagree with the runtime.
   Requires the `ns`/`:use`/`:refer` forms be statically analyzable from the CST
   (they are — keyworded data).
 - **Data symbols are inviolate.** The resolver rewrites only resolved
   variable/operator positions, never `quote`d content — symbols travel by name and
-  re-intern across runtimes (ADR-34); rewriting a message tag or map key would
+  re-intern across runtimes (ADR-034); rewriting a message tag or map key would
   break cross-process protocols. `resolve`/computed-symbol/`apply` are the runtime
   escape hatches.
 - **Auto-require resolves + loads from the load-path; it never *fetches*.** Deps
-  stay explicit in `project.blsp` so the lock file (ADR-37) stays computable.
+  stay explicit in `project.blsp` so the lock file (ADR-037) stays computable.
 - **Migration.** Prelude = the root namespace (unqualified `map`/`+`/`cons`,
   ergonomic macros `describe`/`test`/`is` stay root). `defmodule` evolves into
   `ns`; `provide`/`require`/`*load-path*` become the loader underneath. std
@@ -3874,20 +3874,20 @@ and live-redefinable. The grain is preserved.
   manual `gensym`); use-site rewriting breaks cross-ns macros. *Lean:* α —
   Clojure-style auto-qualifying `quasiquote` (template symbols qualify to the
   macro's defining ns; `~'foo` escapes to a bare symbol) — but it's the biggest
-  semantic change and interacts with the ADR-64 quasiquote→Brood refactor.
+  semantic change and interacts with the ADR-064 quasiquote→Brood refactor.
   Alternative β: stay unhygienic, hand-qualify cross-ns refs.
 - **Namespace-name collision across packages.** Namespacing relocates collision
   from symbol level to ns level (two packages declaring `(ns parser)`). Free-for-all
-  short names vs. package-local-name-prefixed. Best decided against ADR-37's shape.
+  short names vs. package-local-name-prefixed. Best decided against ADR-037's shape.
 
-**References.** ADR-19 (the flat-modules decision this supersedes + its spectrum),
-ADR-37/`packages.md` (the collision pressure + the no-fetch line), ADR-13
-(hot reload — the grain soft-privacy preserves), ADR-34 (symbols re-intern by
-name across runtimes — why data symbols can't be rewritten), ADR-64 (the
-quasiquote→Brood refactor that the hygiene decision rides on), ADR-11 (ship the
-simple form), ADR-25/`lsp.md` (Tier 2 — the resolver is shared with the LSP).
+**References.** ADR-019 (the flat-modules decision this supersedes + its spectrum),
+ADR-037/`packages.md` (the collision pressure + the no-fetch line), ADR-013
+(hot reload — the grain soft-privacy preserves), ADR-034 (symbols re-intern by
+name across runtimes — why data symbols can't be rewritten), ADR-064 (the
+quasiquote→Brood refactor that the hygiene decision rides on), ADR-011 (ship the
+simple form), ADR-025/`lsp.md` (Tier 2 — the resolver is shared with the LSP).
 
-## ADR-66 — Auto-gensym (`x#`): opt-in macro binding hygiene
+## ADR-066 — Auto-gensym (`x#`): opt-in macro binding hygiene
 
 **Status:** accepted (2026-05-30). Implemented in `eval/macros.rs`.
 
@@ -3896,7 +3896,7 @@ binder with a plain literal symbol (`(let (tmp …) …)`) shares one flat names
 with the caller's code, so the binder can **capture** a spliced argument (or be
 captured by it). The standing fix is a manual `(gensym)` — verbose, easy to forget
 (the `types/check/hygiene.rs` lint exists precisely because forgetting is a real
-bug). Solving this *before* namespaces (ADR-65) was chosen deliberately: "macro
+bug). Solving this *before* namespaces (ADR-065) was chosen deliberately: "macro
 hygiene" is two separable concerns — **(#1)** free-reference transparency (a
 template's `helper`/`map` resolving to the def site — the namespacing-coupled one)
 and **(#2)** introduced-binding capture (this, pre-existing and independent). #2
@@ -3906,7 +3906,7 @@ should not be entangled with the namespace work.
 sets-of-scopes) makes capture impossible without author effort, but requires
 identifiers that carry per-occurrence lexical context — fattening `Value::Sym`
 (taxes every eval + the GC) or a parallel syntax-object representation, and it
-fights two Brood invariants: symbols ship **by name** across runtimes (ADR-34 — no
+fights two Brood invariants: symbols ship **by name** across runtimes (ADR-034 — no
 meaning to a local scope set) and code is ordinary data (homoiconic; syntax objects
 need `datum->syntax`/`syntax->datum` bridges). That's the large, core-deep,
 "sweeping" change we declined. Elixir-style context-tagging is lighter but still
@@ -3937,14 +3937,14 @@ two runtime calls of one compiled body reuse the baked symbol, as in Clojure).
 
 **Scope.** This is concern **#2** only — *binding* capture. Concern **#1** (free
 references resolving at the def site across namespaces) is the α decision left open
-in ADR-65/`namespaces.md` §7; it is *not* addressed here. Full automatic
+in ADR-065/`namespaces.md` §7; it is *not* addressed here. Full automatic
 (Scheme-grade) hygiene remains deferrable indefinitely — `x#` is forward-compatible
 with adding scopes later if a real need ever appears.
 
-**References.** ADR-9 (quasiquote), ADR-65/`namespaces.md` §7 (the two-concerns
-split; #1 still open), ADR-64 (the quasiquote→Brood move this rides alongside),
-ADR-34 (symbols ship by name — why scope-bearing identifiers are costly here),
-ADR-6/11 (Brood-first, smallest core).
+**References.** ADR-009 (quasiquote), ADR-065/`namespaces.md` §7 (the two-concerns
+split; #1 still open), ADR-064 (the quasiquote→Brood move this rides alongside),
+ADR-034 (symbols ship by name — why scope-bearing identifiers are costly here),
+ADR-006/011 (Brood-first, smallest core).
 
 ### Amendment (2026-07-30) — automatic binding hygiene ("Option A")
 
@@ -3961,9 +3961,9 @@ on the safe common case.
 
 **Why this is not the full-hygiene "no" above.** The original ADR declined full
 Scheme hygiene because solving *both* capture halves needs per-symbol lexical context
-(fat `Value::Sym`), which fights ship-by-name (ADR-34) and homoiconicity and taxes
+(fat `Value::Sym`), which fights ship-by-name (ADR-034) and homoiconicity and taxes
 every eval + the GC. But concern **#1** (free-reference transparency) was *already* made
-automatic by the auto-qualifying resolver (ADR-65 §7). So the only remaining capture
+automatic by the auto-qualifying resolver (ADR-065 §7). So the only remaining capture
 vector is a template's own introduced binders, and closing that is a **structural
 alpha-rename of the template** — no per-symbol context, no `Value::Sym` change, no
 cross-process cost. It reuses the scope-tracking the namespace resolver already does
@@ -3998,21 +3998,21 @@ opt-out, `#` still works, and cross-process round-trips).
 **Updated references.** `eval/macros.rs` (`hygiene_rename`), `tests/hygiene_test.blsp`,
 `tests/autogensym_test.blsp` (the `#` mechanism it complements).
 
-## ADR-67 — Process links + `trap_exit` (the supervisor's structural orphan fix)
+## ADR-067 — Process links + `trap_exit` (the supervisor's structural orphan fix)
 
 **Status:** accepted, 2026-05-30. Implemented in a worktree (`links-trap-exit`).
 
-**Context.** `monitor` (ADR-35) is a *one-directional* death notification — it
+**Context.** `monitor` (ADR-035) is a *one-directional* death notification — it
 never affects the watched process. That's the wrong tool for the one thing the
 userland supervisor couldn't do: when the **supervisor itself** dies (crash,
 intensity-exceeded, or an external `(exit sup …)`), its children kept running —
-orphaned. `(exit pid reason)` (ADR-63) added termination but not *coupling*: the
+orphaned. `(exit pid reason)` (ADR-063) added termination but not *coupling*: the
 supervisor still had to explicitly kill each child, which a dead/crashing
 supervisor can't do. The deep-dive vs Erlang (`supervision.md`) named this the
 single biggest gap, and named the fix: Erlang's **links** (symmetric) + `trap_exit`.
 
 **Decision.** Add the general Erlang primitives, not a supervision-specific hook
-(the ADR-39 lesson — a narrow "kill my dependents" kernel feature was rejected in
+(the ADR-039 lesson — a narrow "kill my dependents" kernel feature was rejected in
 favour of the general one):
 
 - **`link`/`unlink`** — symmetric coupling in a `LINKS` table (`process/links.rs`),
@@ -4045,18 +4045,18 @@ so propagation routes through the hard `(exit peer :kill)`: the peer dies prompt
 but reports `:kill` to its own monitors rather than the originating reason. That's
 immaterial for supervision (a torn-down worker isn't monitored by anyone but its
 dead supervisor). A future "hard kill carrying an arbitrary reason" (a `hard` bit
-on the mailbox kill-state) would make it exact; deferred (ADR-11).
+on the mailbox kill-state) would make it exact; deferred (ADR-011).
 
 **Supervisor rewrite.** `std/proc/supervisor.blsp` switched from `monitor`/`[:down]`/
 `:ref` to `trap-exit` + `link` + `[:EXIT]`/`:pid`. A child crash now arrives as
 `[:EXIT child reason]`; a supervisor's *own* death propagates to its children
 (workers die by propagation; a child **sub-supervisor** traps, recognises its
 parent's `[:EXIT]` — it records the caller as `:parent` at `start-supervisor` — and
-tears its own subtree down). The `:shutdown :infinity` cascade (ADR-44) still
+tears its own subtree down). The `:shutdown :infinity` cascade (ADR-044) still
 governs *graceful* teardown (a deliberate hard kill is untrappable, so a
 sub-supervisor must opt into the cooperative `[:$stop]` path).
 
-**Why this doesn't reopen ADR-39 (KI-1).** Links add no per-call scheduler-global
+**Why this doesn't reopen ADR-039 (KI-1).** Links add no per-call scheduler-global
 state and no cross-thread coroutine resume; the teardown walk runs on the cold
 `deregister` path (where monitors already fan out), is a general primitive (any
 process links any process), and propagation reuses the existing `exit` path.
@@ -4093,27 +4093,27 @@ consulting `NODES`, so net-split and the wire send can't orphan an entry.
 expr)` ships the thunk to the peer's `:remote-spawn` server with the caller's pid
 + a fresh `(ref)`, the server spawns it and replies `[:spawned ref child-pid]`,
 and the macro blocks in `receive` for that pid (5s timeout). The returned remote
-pid carries the peer's `name@host` (ADR-73), so it's directly `monitor`/`link`-able
+pid carries the peer's `name@host` (ADR-073), so it's directly `monitor`/`link`-able
 — remote-child specs are now turnkey, not roundtrip-by-hand. Pure Brood in
 `std/prelude.blsp`; `remote--spawn-server` gained a `[:run-sync …]` clause beside
 `[:run …]`. See `remote_spawn_sync_returns_a_usable_remote_pid`.
 
-**Still deferred (ADR-11).** Exact propagated reason for a non-trapping peer (the
+**Still deferred (ADR-011).** Exact propagated reason for a non-trapping peer (the
 `hard` bit above); a `terminate/2`-style worker cleanup hook (the last OTP-parity
 item — cleanup on an *external* kill needs the trappable-shutdown path, only
 `[:$stop]`-cooperative today).
 
-**References.** ADR-35 (monitors — the one-way cousin), ADR-63 (`exit/2`),
-ADR-44 (`:shutdown` cascade), ADR-33/34 (the dist wire codec links extend),
-ADR-39 (the reverted kernel supervisor — why general primitives), `supervision.md`
+**References.** ADR-035 (monitors — the one-way cousin), ADR-063 (`exit/2`),
+ADR-044 (`:shutdown` cascade), ADR-033/034 (the dist wire codec links extend),
+ADR-039 (the reverted kernel supervisor — why general primitives), `supervision.md`
 (the vs-OTP deep dive that motivated this), `tests/link_test.blsp`,
 `crates/cli/tests/distribution.rs`.
 
-## ADR-68 — Node-connect ergonomics: default-cookie file, name-addressed Unix transport, `nest run --name`
+## ADR-068 — Node-connect ergonomics: default-cookie file, name-addressed Unix transport, `nest run --name`
 
-**Status.** Accepted, implemented 2026-05-30. Extends ADR-33/34 (distributed
+**Status.** Accepted, implemented 2026-05-30. Extends ADR-033/034 (distributed
 nodes); the wire protocol, HMAC handshake, pid routing, links/monitors and
-ADR-67 supervision are unchanged. See [`node-connect.md`](node-connect.md),
+ADR-067 supervision are unchanged. See [`node-connect.md`](node-connect.md),
 [`distribution.md`](distribution.md).
 
 **Context.** Connecting nodes was all hand-wired: `(node-start :a "127.0.0.1:9001"
@@ -4141,7 +4141,7 @@ start a node from the command line.
 3. **`nest run --name NAME`** brings up a local node before the program runs (the
    `--daemon` model), so the file is pure app logic.
 
-**Policy in Brood, mechanism in Rust** (ADR-6). The friendly `node-start` /
+**Policy in Brood, mechanism in Rust** (ADR-006). The friendly `node-start` /
 `connect` / `node-cookie` live in `std/prelude.blsp` (always on, no `require`);
 they compute the socket path, resolve the cookie, and pick the transport, over
 four thin Rust primitives: `%node-listen`, `%node-connect`, `random-token`
@@ -4152,7 +4152,7 @@ reach via its `Interp`, so none of the policy needs to be Rust.
 **Scope / deferred.** One transport per node for now (arity-1 `node-start` =
 Unix; an addr = TCP); **dual-listen** (a node serving Unix *and* TCP at once —
 the eventual editor-daemon end-state) is cleanly additive later, needs no
-protocol change (ADR-11). Windows (no `$XDG_RUNTIME_DIR` convention) is out of
+protocol change (ADR-011). Windows (no `$XDG_RUNTIME_DIR` convention) is out of
 scope; TCP works everywhere. Connecting requires a prior `node-start` (no
 implicit ephemeral client node) — explicit over magic.
 
@@ -4164,17 +4164,17 @@ M3 observer's remote-attach (`nest observe --connect name`) gains Unix addressin
 `two_unix_nodes_connect_by_name_and_message`, `wrong_cookie_rejected_over_unix`,
 `cookie_file_autogen_and_reuse`.
 
-**References.** ADR-33/34 (distributed nodes), ADR-6 (policy in Brood),
-ADR-11 (defer the powerful form — dual-listen), `node-connect.md`,
+**References.** ADR-033/034 (distributed nodes), ADR-006 (policy in Brood),
+ADR-011 (defer the powerful form — dual-listen), `node-connect.md`,
 `distribution.md`, `crates/cli/tests/distribution.rs`, `std/prelude.blsp`.
 
-## ADR-69 — Evaluator dispatch performance: cache the analysis, not the behaviour
+## ADR-069 — Evaluator dispatch performance: cache the analysis, not the behaviour
 
 **Status:** partially accepted (2026-05-30). Increments 1–2 **implemented** (branch
 `perf-eval-dispatch`); increments 3–4 **deferred** (recorded here, gated on need).
 
 **Context.** Cross-language benchmarks put Brood ~50–220× behind Node/BEAM on
-interpreted hot loops (collatz, fib, loop, reduce). The project's bar (ADR-6,
+interpreted hot loops (collatz, fib, loop, reduce). The project's bar (ADR-006,
 `CLAUDE.md`) is explicit: close that gap by making the **evaluator** more capable —
 a general mechanism that keeps `+`/`rem`/`fold`/`sum` written in Brood — **not** by
 moving hot functions into Rust builtins (an escape hatch that hides the gap and
@@ -4246,7 +4246,7 @@ with whatever next touches the eval loop's safepoint. Until then, neither is on 
 critical path — the goal was "Elixir-range is nice-to-have; stay in Brood is the
 priority," and the banked wins move us toward it without any Rust escape hatch.
 
-**Why (the shape).** Both shipped increments follow the ADR-6 worked example
+**Why (the shape).** Both shipped increments follow the ADR-006 worked example
 (multi-arity dispatch): a general evaluator capability that makes *every* Brood
 global reference / operator wrapper cheaper, so the prelude stays in Brood and gets
 faster — the opposite of moving `+`/`sum` into `builtins.rs`. The version-counter
@@ -4260,27 +4260,27 @@ per-process `RefCell` cache (keeps `Heap: Send`, never shared across threads).
 `eval::is_special_form` is exposed `pub(crate)` so the precompute can exclude
 special-form heads. No language-visible change; no new primitive; no Rust builtin.
 
-**References.** ADR-6 (write the language in the language — the governing
-principle), ADR-13 / `docs/shared-code.md` (late binding / hot reload — why the
-inline cache is version-guarded), ADR-35/54/55 (moving/generational GC — why a
-cached global handle is safe but a local one wouldn't be), ADR-23/24 +
+**References.** ADR-006 (write the language in the language — the governing
+principle), ADR-013 / `docs/shared-code.md` (late binding / hot reload — why the
+inline cache is version-guarded), ADR-035/054/055 (moving/generational GC — why a
+cached global handle is safe but a local one wouldn't be), ADR-023/024 +
 `docs/types.md` (the compatibility contract Inc-3 must clear), `docs/devlog.md`
 (the original thin-wrapper elision this caches, and the bytecode-VM follow-up).
 
-## ADR-70 — Namespace-name collisions: detect-and-reject, not mandatory prefixes
+## ADR-070 — Namespace-name collisions: detect-and-reject, not mandatory prefixes
 
 **Status:** accepted **and implemented**, 2026-05-30. Closes the one open policy
-question from ADR-65 (`namespaces.md` §8). The detect-and-reject check is wired
-into the package manager's resolution step (ADR-37 Slices 2–3 having landed) —
+question from ADR-065 (`namespaces.md` §8). The detect-and-reject check is wired
+into the package manager's resolution step (ADR-037 Slices 2–3 having landed) —
 `std/tool/package.blsp` `package--check-namespace-collisions`, run from
 `fetch`/`add`/`ensure-deps`. **Package-rooted namespaces remain the eventual
 upgrade, deliberately deferred** (see *Future direction* below).
 
-**Context.** Namespacing (ADR-65) solves *symbol* collision but raises a *namespace*
+**Context.** Namespacing (ADR-065) solves *symbol* collision but raises a *namespace*
 collision: two third-party packages can both declare `(defmodule parser)`, and the
 flat global table would merge their `parser/…` defs. Prior art: Clojure's
 reverse-domain names (`com.foo.parser` — safe, verbose, author-controlled); CL has
-no real answer; ADR-37 gives each dependency a project-local name the *importing*
+no real answer; ADR-037 gives each dependency a project-local name the *importing*
 project controls.
 
 **Decision.** Keep namespace names **flat and short** (`parser`, `observer`) — no
@@ -4290,7 +4290,7 @@ time rather than prevent them structurally:
 - Namespace names are free-for-all; the common case (descriptive names) has no
   collision, and short names keep call sites ergonomic (`parser/parse`, not
   `com.foo.parser/parse`).
-- When the package manager resolves the dependency graph (ADR-37 `nest
+- When the package manager resolves the dependency graph (ADR-037 `nest
   fetch`/lock), it **errors** if two reachable providers declare the same namespace
   name — surfaced loudly at lock time with both sources named, not silently merged.
   *(As implemented, "providers" includes the **importing project's own modules**,
@@ -4299,15 +4299,15 @@ time rather than prevent them structurally:
   source file's `(defmodule …)` name, so a file whose name differs from its module
   is still checked by the name that actually clobbers.)*
 - The heavier escape hatches — a mandatory per-dependency prefix, or an
-  import-site **alias** (`(:use [parser :as p])`) — are **deferred** (ADR-11)
+  import-site **alias** (`(:use [parser :as p])`) — are **deferred** (ADR-011)
   until a real collision in the wild justifies them. The project-local dep name
-  (ADR-37) is the natural authority for an alias when that day comes.
+  (ADR-037) is the natural authority for an alias when that day comes.
 
-**Rationale.** This is the ADR-11 "ship the simple form, defer the powerful one"
+**Rationale.** This is the ADR-011 "ship the simple form, defer the powerful one"
 call applied to names: flat names are the ergonomic default; a *detected* collision
 is a clear, actionable error (rename, or — later — alias), which beats taxing every
 call site with a verbose prefix forever to prevent a rare event. It also keeps the
-substrate (ADR-65 §3) and the soft-privacy/hot-reload story untouched — collision
+substrate (ADR-065 §3) and the soft-privacy/hot-reload story untouched — collision
 policy is purely a package-resolution concern.
 
 **Consequences.** The check is cheap (list each provider's source dir, read each
@@ -4322,9 +4322,9 @@ explored the stronger model where a dependency's local manifest name becomes a
 *impossible* rather than merely detected — plus author-declared `:exports` (soft
 module privacy) and import-site `[mod :as alias]`. It's the Cargo/Go shape
 (consumer-controlled rooting; your *own* project stays bare — no Elixir-style
-self-prefixing). We **deferred it** (ADR-11) for three reasons: (1) there are no
+self-prefixing). We **deferred it** (ADR-011) for three reasons: (1) there are no
 third-party packages yet, so it's collision-proofing an ecosystem that doesn't
-exist; (2) it touches the just-landed ADR-65 substrate (multi-segment namespaces,
+exist; (2) it touches the just-landed ADR-065 substrate (multi-segment namespaces,
 a package-scope-aware loader, sibling-alias resolution) — high risk on fresh code;
 (3) it adds two permanent knobs (`:exports`, `:as`) to prevent a problem the cheap
 check already surfaces loudly. The key de-risking insight that makes deferral nearly
@@ -4358,7 +4358,7 @@ resolver. Mechanism:
   (`package--register-rooting`). The old cross-provider collision *guard* is now narrowed
   to **within-project** collisions only (two of your own files declaring the same module)
   — a cross-dep or dep-vs-project collision is impossible once rooted, so detect-and-reject
-  is no longer needed there. Dep-local-name uniqueness (ADR-37) and the dep-shares-your-
+  is no longer needed there. Dep-local-name uniqueness (ADR-037) and the dep-shares-your-
   package-name check (ADR-172) still stand.
 - **Tests:** `crates/nest/tests/package_rooted_namespaces.rs` (two deps sharing a
   `parser` module coexist; intra-package `(:use util)` roots to `libc/util`).
@@ -4394,22 +4394,22 @@ each bundled dep's package context (via `bundle-module-package`) instead of alwa
 still only ever fires for std (whose namespaces are never packages), so the change is a no-op
 there. The **root project itself stays unrooted in the bundle** (a single package can't collide
 with itself; the entry resolves `main/main` as before) — full Elixir-uniform root-project
-bundle-rooting has no consumer and stays deferred (ADR-11). The `bundle-reject-duplicate-names`
+bundle-rooting has no consumer and stays deferred (ADR-011). The `bundle-reject-duplicate-names`
 guard is kept as a loud backstop for a genuine key collision. Covered by
 `crates/cli/tests/release_bundle.rs` (`bundled_deps_with_same_module_name_coexist_rooted`,
 end-to-end) and `tests/package_test.blsp` (bundle-collect keys deps rooted).
 
-**References.** ADR-65 (`namespaces.md` §8), ADR-37 (`packages.md`, the dep
-local-name model + the lock/resolution step that enforces this), ADR-11 (defer the
-powerful form), ADR-68/71 (the *other* ADR-71 — native extensions — is unrelated;
+**References.** ADR-065 (`namespaces.md` §8), ADR-037 (`packages.md`, the dep
+local-name model + the lock/resolution step that enforces this), ADR-011 (defer the
+powerful form), ADR-068/071 (the *other* ADR-071 — native extensions — is unrelated;
 rooting is recorded here, not as its own ADR).
 
-## ADR-71 — Native extensions are WASM components, built on fetch and wrapped in Brood
+## ADR-071 — Native extensions are WASM components, built on fetch and wrapped in Brood
 
 **Status:** proposed (2026-05-30). Design recorded in [`interop.md`](interop.md).
 Nothing implemented yet.
 
-**Context.** ADR-37 closed the native-code door: a package wanting native code
+**Context.** ADR-037 closed the native-code door: a package wanting native code
 "does it the standard Rust way (a separate crate, baked into the kernel); the
 Brood side just `require`s a wrapper." That keeps the supply chain safe but makes
 **every native capability kernel-blessed** — adding one means a PR against the
@@ -4418,7 +4418,7 @@ the editor (M2+) invites plugins (highlighters, codecs, a regex engine), that's 
 wall: third parties can't ship native code at all, and the kernel accretes every
 capability anyone ever wants. The requirement is native extensions that (1) ship
 and version *with the package*, (2) require **zero kernel recompilation**, (3)
-are portable across kernels/platforms, (4) keep ADR-37's supply-chain door shut,
+are portable across kernels/platforms, (4) keep ADR-037's supply-chain door shut,
 and (5) don't break the moving GC / per-process-heap / immutability / no-worker-
 pinning invariants.
 
@@ -4433,7 +4433,7 @@ committed decisions:
   and host architectures (its only ABI is the **WIT interface**, decoupled from
   the kernel's `Value`/GC layout) and **sandboxed** (linear-memory isolation — a
   buggy/hostile guest can't segfault the runtime or scribble the Brood heap, so
-  fault isolation survives) and **metered** (`wasmtime` fuel/epoch — fits ADR-43
+  fault isolation survives) and **metered** (`wasmtime` fuel/epoch — fits ADR-043
   and the scheduler). A native `.so` fails all three. `wasmtime` is a runtime
   crate alongside `boxcar`/`ropey` — infrastructure, not Lisp-callable behaviour.
 - **Zero kernel recompilation.** The `wasmtime` host is compiled into the kernel
@@ -4455,8 +4455,8 @@ committed decisions:
 - **The boundary marshals; it never shares handles.** The moving GC forbids
   passing a `Value` handle across a safepoint, so values cross as the **`Message`
   enum** (Brood's existing copy-on-send serialization boundary), large bytes ride
-  the **blob heap (ADR-41)**, and stateful guest objects are **opaque resource
-  handles** (the rope precedent, ADR-45). A **WASM instance is mutable state**,
+  the **blob heap (ADR-041)**, and stateful guest objects are **opaque resource
+  handles** (the rope precedent, ADR-045). A **WASM instance is mutable state**,
   so it is modelled the only two ways Brood allows — an opaque handle behind
   primitives, or owned by a process — **never a `Value`** (not sendable, not
   map-able). No new state concept.
@@ -4464,7 +4464,7 @@ committed decisions:
   fuel-capped, long calls run on the Phase-3 **blocking offload pool** and
   **deliver to the mailbox** — the same rule as TCP,
   GUI input, and dist.
-- **Supply-chain door stays shut, reframed.** ADR-37 banned arbitrary install
+- **Supply-chain door stays shut, reframed.** ADR-037 banned arbitrary install
   hooks; build-on-fetch keeps that because the build is a **declared toolchain
   invocation** (not a free-form `postinstall`) and the **output is sandboxed
   regardless** — strictly stronger than today's "bake an opaque crate into the
@@ -4476,10 +4476,10 @@ committed decisions:
 recompile **without** reopening the supply-chain hole — the sandbox is what makes
 "run untrusted native code" compatible with "don't trust it." It reuses machinery
 already built: the `Message` marshalling boundary, the blob heap, the opaque-handle
-pattern, the deliver-to-mailbox offload seam, and ADR-37's manifest/lock/cache.
+pattern, the deliver-to-mailbox offload seam, and ADR-037's manifest/lock/cache.
 And it tracks a proven trajectory (Elixir: Rustler build-on-fetch → `rustler_precompiled`).
 
-**Scope / deferred (ADR-11).** Component Model + WIT as the ABI (vs. core WASM +
+**Scope / deferred (ADR-011).** Component Model + WIT as the ABI (vs. core WASM +
 a hand-rolled ABI) — recommended but revisit if wasmtime's component support is
 too green; async guests (WASI 0.3) composing with the offload pool; zero-copy blob
 read-mapping into linear memory; sandboxing the *build* toolchain (v1: trust the
@@ -4492,26 +4492,26 @@ gains a per-dep `:native` artifact hash + build provenance; `std/tool/package.bl
 grows build orchestration + the WASM cache layout; a new `use-native` wrapper
 macro lands (likely `std/native.blsp`). The kernel embeds `wasmtime` and grows a
 small primitive set (`%wasm-instantiate`/`%wasm-call`/`%wasm-build` + resource-drop
-wiring), mirroring ADR-37's `%git-clone`/`%sha256`. No change to `require`/load
+wiring), mirroring ADR-037's `%git-clone`/`%sha256`. No change to `require`/load
 semantics — a native extension is code on the load path whose wrapper calls a
 primitive.
 
-**References.** [`interop.md`](interop.md) (the full design), ADR-37 (packages —
+**References.** [`interop.md`](interop.md) (the full design), ADR-037 (packages —
 the manifest/lock/cache extended, the "no install scripts" line reframed),
-ADR-41 (blob heap), ADR-45 (opaque immutable resource handle), ADR-43
-(resource backstops — fuel/epoch), ADR-59/62
-(deliver-to-mailbox offload), ADR-54/55 (moving/generational GC — why the
-boundary marshals), ADR-6 (write the language in the language — wrapper + policy
-in Brood), ADR-11 (defer power features).
+ADR-041 (blob heap), ADR-045 (opaque immutable resource handle), ADR-043
+(resource backstops — fuel/epoch), ADR-059/062
+(deliver-to-mailbox offload), ADR-054/055 (moving/generational GC — why the
+boundary marshals), ADR-006 (write the language in the language — wrapper + policy
+in Brood), ADR-011 (defer power features).
 
 ---
 
-## ADR-72 — Stage C: a generational nursery + tenured old generation
+## ADR-072 — Stage C: a generational nursery + tenured old generation
 
 **Status:** accepted (2026-05-30). The "make copying fast as well as stable"
-refinement deferred by `docs/memory-review.md` §6 and ADR-55; the last remaining
+refinement deferred by `docs/memory-review.md` §6 and ADR-055; the last remaining
 GC item. Builds directly on the single-space copying collector
-(ADR-55/61) and the generational-handle epoch (ADR-54).
+(ADR-055/061) and the generational-handle epoch (ADR-054).
 
 **Context.** Stage B's safepoint collector did a **full semi-space copy** every
 time: every *live* object was relocated on each collection, including long-lived
@@ -4559,7 +4559,7 @@ object lives; LOCAL accessors route young vs. old by that bit, against two epoch
   size to trigger a major); object counts, `K`/`M` suffixes accepted. The shipped
   defaults (64K / 16K / 256K objects) measured well across a sweep of alternatives;
   the knobs are for workload-specific tuning and experimentation, not a default
-  anyone must set (ADR-11 — the language asks nothing of the author).
+  anyone must set (ADR-011 — the language asks nothing of the author).
 - The heap verifier (`BROOD_GC_VERIFY`) was made generation-aware: it no longer
   re-walks immutable old-gen internals, only the live young graph + the cross-gen
   roots. Found along the way: a `flush_map` bug where a CHAMP node shared across a
@@ -4568,17 +4568,17 @@ object lives; LOCAL accessors route young vs. old by that bit, against two epoch
 
 **References.** `docs/memory-review.md` §5–6 (the design space; Stage C as the
 "copying gets fast" point), `docs/memory-model.md`,
-ADR-54 (generational handles — the epoch this reuses per-generation), ADR-55
-(Stage B copying — the collector this refines), ADR-61 (collect at any depth —
-the operand-stack roots both minor and major relocate), ADR-26 (immutability — why
-there's no general write barrier), ADR-11 (defer power features — the tuning knobs
+ADR-054 (generational handles — the epoch this reuses per-generation), ADR-055
+(Stage B copying — the collector this refines), ADR-061 (collect at any depth —
+the operand-stack roots both minor and major relocate), ADR-026 (immutability — why
+there's no general write barrier), ADR-011 (defer power features — the tuning knobs
 are opt-in).
 
 ---
 
-## ADR-73 — Node names are `name@host` (Erlang short/long names)
+## ADR-073 — Node names are `name@host` (Erlang short/long names)
 
-**Status.** Accepted, implemented 2026-05-30. Refines ADR-34/68 (node identity);
+**Status.** Accepted, implemented 2026-05-30. Refines ADR-034/068 (node identity);
 the wire protocol, handshake, transports, and cookie are unchanged. See
 [`distribution.md`](distribution.md), [`node-connect.md`](node-connect.md).
 
@@ -4607,7 +4607,7 @@ There is no epmd, so the **port stays explicit** in `connect` (`name@host:port`)
 **authoritative** `name@host` (from the handshake) — you address peers with that
 value, not a literal.
 
-**Policy in Brood, mechanism in Rust** (ADR-6). The only kernel addition is
+**Policy in Brood, mechanism in Rust** (ADR-006). The only kernel addition is
 `(hostname)` (reads `/proc/sys/kernel/hostname`). All qualification — short vs
 verbatim, local-hostname vs listen-address-host, the `name@host:port` parsing —
 lives in `std/prelude.blsp` (`node--qualify`, `node-start`, `connect`,
@@ -4622,21 +4622,21 @@ return, or use the deterministic `:a@127.0.0.1` for loopback tests) and the
 node examples. `remote-spawn`/`ensure-link` already take a node *value*, so they
 needed no change beyond `ensure-link--peer-name` now returning `name@host`.
 
-**Scope / deferred (ADR-11).** No FQDN *resolution* in the kernel — a long name
+**Scope / deferred (ADR-011).** No FQDN *resolution* in the kernel — a long name
 is had by passing it explicitly (matches how Erlang `-name` is usually given). No
 epmd-style name→port registry. Short and long names interoperate freely (Brood
 compares full `name@host` strings; it doesn't enforce Erlang's short-vs-long
 connection ban).
 
-**References.** ADR-34 (distributed nodes), ADR-68 (connect ergonomics — the
-transport this qualifies), ADR-33 (closure shipping — remote pids carry the
-node), ADR-6 (policy in Brood), ADR-11 (defer FQDN resolution / epmd),
+**References.** ADR-034 (distributed nodes), ADR-068 (connect ergonomics — the
+transport this qualifies), ADR-033 (closure shipping — remote pids carry the
+node), ADR-006 (policy in Brood), ADR-011 (defer FQDN resolution / epmd),
 `distribution.md`, `crates/cli/tests/distribution.rs`, `std/prelude.blsp`.
 
-## ADR-74 — Dual-listen: one node, several transports (`node-also-listen`)
+## ADR-074 — Dual-listen: one node, several transports (`node-also-listen`)
 
-**Status.** Accepted, implemented 2026-05-30. Builds on ADR-68 (transports) and
-ADR-73 (`name@host` identity); wire protocol, handshake, and cookie unchanged.
+**Status.** Accepted, implemented 2026-05-30. Builds on ADR-068 (transports) and
+ADR-073 (`name@host` identity); wire protocol, handshake, and cookie unchanged.
 See [`distribution.md`](distribution.md).
 
 **Context.** A node bound *one* transport: `(node-start :a)` → a local Unix
@@ -4661,7 +4661,7 @@ just more front doors. A peer reaching it via any transport completes the same
 handshake and learns the same authoritative `name@host`; the de-dup/tie-break in
 `establish` already collapses two links to one peer, so connecting via both
 transports is harmless. Pairs naturally with an **explicit** `:name@host` start
-(ADR-73) so the TCP dial host matches the identity.
+(ADR-073) so the TCP dial host matches the identity.
 
 **Why composable, not "TCP nodes are always dual."** Auto-binding a Unix socket
 for every TCP node would pollute `$XDG_RUNTIME_DIR` and make same-name TCP nodes
@@ -4669,7 +4669,7 @@ on one host collide on the socket file (and silently churn the test suite, which
 doesn't sandbox `$XDG_RUNTIME_DIR` for the TCP cases). Opt-in keeps the simple
 single-transport `node-start` unchanged and lets the daemon ask for what it wants.
 
-**Mechanism in Rust, policy in Brood** (ADR-6). `node_listen`'s bind+acceptor
+**Mechanism in Rust, policy in Brood** (ADR-006). `node_listen`'s bind+acceptor
 was extracted into `start_listener(addr)` (identity-agnostic — the handshake
 reads `NODE` at accept time), shared by the first listener and by the new
 `%node-also-listen` primitive. `node-start` rolls identity back if its first bind
@@ -4677,26 +4677,26 @@ fails (still retryable). The prelude `node-also-listen` derives the Unix path an
 picks the scheme; the kernel just binds and accepts.
 
 **Scope / deferred.** Listeners can only be *added*, not removed (no
-`node-stop-listening` — no need yet, ADR-11). Server-side TLS as a third
+`node-stop-listening` — no need yet, ADR-011). Server-side TLS as a third
 transport is still open (`rustls` is client-only). Many listeners are allowed but
 the expected shape is one Unix + one TCP.
 
-**References.** ADR-68 (transports + the `Stream` seam), ADR-73 (`name@host`),
-ADR-34 (distributed nodes), ADR-6 (policy in Brood), ADR-11 (defer listener
+**References.** ADR-068 (transports + the `Stream` seam), ADR-073 (`name@host`),
+ADR-034 (distributed nodes), ADR-006 (policy in Brood), ADR-011 (defer listener
 removal), `crates/cli/tests/distribution.rs` (`dual_listen_serves_tcp_and_unix_at_once`),
 `std/prelude.blsp`.
 
-## ADR-75 — Undo lives in the buffer value (per-buffer undo/redo stacks)
+## ADR-075 — Undo lives in the buffer value (per-buffer undo/redo stacks)
 
-**Status.** Accepted, implemented 2026-05-30. Extends ADR-45 (the immutable,
-rope-backed buffer framework) and ADR-26 (immutability). See
+**Status.** Accepted, implemented 2026-05-30. Extends ADR-045 (the immutable,
+rope-backed buffer framework) and ADR-026 (immutability). See
 [`devlog.md`](devlog.md) (2026-05-30) and `std/editor/buffer.blsp`.
 
 **Context.** The editor app (`~/src/whk/myedit`) needs undo, and — with multiple
 buffers — undo must be **per-buffer** (Emacs keeps an undo list per buffer). The
 question was *where* it lives: in the editor app (a stack of buffers in the app's
 model) or in the buffer value itself (`std/editor/buffer.blsp`). The prime directive
-(ADR-6) says general capabilities belong in the language toolkit; keybindings
+(ADR-006) says general capabilities belong in the language toolkit; keybindings
 and the kill-ring/minibuffer UX are app policy and stay in the app.
 
 **Decision.** A buffer **carries its own history**: `:undo` and `:redo` stacks of
@@ -4710,33 +4710,33 @@ Rationale:
   (just moving the app's `:current`) preserves each buffer's undo without any app
   bookkeeping — the immutable-value payoff.
 - **Cheap.** A snapshot is `{:rope :point :mark}`; the rope is an Arc-shared B-tree
-  (ADR-45), so a snapshot is O(1) and stacks share structure.
+  (ADR-045), so a snapshot is O(1) and stacks share structure.
 - **No no-op steps.** Guarding the push on a real text change keeps undo from
   having dead steps (delete at end-of-buffer, backspace at 0, empty-region delete).
 - **Restoring a region delete brings the mark back**, since the snapshot is taken
   before the delete clears it — a small nicety over Emacs.
 
-**Deferred (ADR-11).** No coalescing in v1 — one keystroke is one undo step.
+**Deferred (ADR-011).** No coalescing in v1 — one keystroke is one undo step.
 Coalescing consecutive self-inserts needs last-command tracking, which is *command*
 identity (app policy), not buffer state; pull it into the app when the editor wants
 it. The `spawn-buffer` actor ships text+point+mark and rebuilds, so history doesn't
 cross a process boundary (process-local view state) — acceptable.
 
-**References.** ADR-45 (buffer framework), ADR-26 (immutability), ADR-6 (policy
-in Brood), ADR-11 (defer coalescing), `std/editor/buffer.blsp`,
+**References.** ADR-045 (buffer framework), ADR-026 (immutability), ADR-006 (policy
+in Brood), ADR-011 (defer coalescing), `std/editor/buffer.blsp`,
 `tests/buffer_test.blsp` (the `buffer undo / redo` block).
 
 ---
 
-## ADR-76 — The execution engine becomes a closure-compiling VM
+## ADR-076 — The execution engine becomes a closure-compiling VM
 
 **Status:** accepted; **Stage 0–2b built** behind `BROOD_VM` (2026-05-30) — off by
-default. **~2–2.3×**: Stage 0–1 (mechanism + ADR-69 passthrough redirect, ~2× on
+default. **~2–2.3×**: Stage 0–1 (mechanism + ADR-069 passthrough redirect, ~2× on
 fib/loop), **2a** (`let`/`letrec` via flatten-scope addressing, ~2.3× on let-loops),
 **2b** (multi-arity, exact-arm dispatch). **Next: 2c** — local-capturing closures
 (the GC-critical unlock; see `lexical-addressing-gotchas.md`). The performance "big
 lever". Long-form companion + as-built numbers/finding:
-[`bytecode-vm.md`](bytecode-vm.md). Supersedes the deferral in ADR-69 (which
+[`bytecode-vm.md`](bytecode-vm.md). Supersedes the deferral in ADR-069 (which
 banked the cheap dispatch wins and named the VM as the honest fix for the
 tree-walker's structural tax).
 
@@ -4746,7 +4746,7 @@ global-capturing closures; frame slots on `Heap::roots`; lexical-addressed
 `BROOD_VM=1 BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` — and full-suite parity holds. A
 sharp lesson landed: the mechanism *alone* was ~10 % **slower**, because it
 delegated every primitive op back to the tree-walker via `eval::apply`; the ~2× win
-only appeared once `dispatch` reached primitives directly via the ADR-69
+only appeared once `dispatch` reached primitives directly via the ADR-069
 passthrough redirect (`(< n 2)` → `call_native(%lt)`). The takeaway — *a VM frame
 that delegates primitives can't win; the speedup is in keeping the hot loop off the
 tree-walker* — shapes Stage 2 (depth>0 lexical addressing for local-capturing
@@ -4755,7 +4755,7 @@ closures, multi-arity, more special forms, call-site inline caches).
 **Context.** The tree-walker (`eval::eval`) re-pays per call: a special-form lookup,
 an env-chain **name scan** per variable reference (`env_get`'s assoc-list walk), a
 fresh frame allocation, cons-spine walking, and operand-stack rooting — all by
-*interpreting the tree*. ADR-69 measured the structural tax at ~50–220× and
+*interpreting the tree*. ADR-069 measured the structural tax at ~50–220× and
 deferred lexical addressing partly because a `(depth,index)` reference as a runtime
 `Value` would bump the type-system compatibility contract (new `Tag` + `Ty` bit +
 GC/printer/wire support).
@@ -4774,14 +4774,14 @@ bytecode for four codebase-specific reasons:
 2. **Keeps the invariant-enforcing trampoline** — the loop's `tick()` /
    `deadline_exceeded()` / `gc_due()` checks stay; the body just runs a compiled node.
 3. **Lexical addressing needs no new `Value` tag** — the `(depth,index)` coordinate
-   is compiled-node state, never a runtime value, dissolving ADR-69's objection.
+   is compiled-node state, never a runtime value, dissolving ADR-069's objection.
 4. **Multi-arity / passthrough / macros already key off the closure structures** —
    compile per `ClosureArm`; `select_arm` is unchanged.
 
 Lexical addressing lands as a `lex_resolve` sub-pass in `eval::macros::compile`
 (after `macroexpand_all` + `resolve`), turning the per-reference name scan into a
 dense `Vec<Value>` frame-slot index — the single biggest win, and the deferred
-ADR-69 Inc-3.
+ADR-069 Inc-3.
 
 **Consequences.** Purely an execution-engine swap — the language, reader, `Value`,
 primitives, and `std/*.blsp` are unchanged (invariant). Rollout is staged behind a
@@ -4796,9 +4796,9 @@ immutability. Top risk is R1 (the VM stack as GC roots), mitigated by reusing
 `Heap::roots` and gating on `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
 
 **References.** [`bytecode-vm.md`](bytecode-vm.md) (the full plan, risk register,
-data structures), ADR-69 (the deferral this resolves), ADR-61 (the operand stack
-the VM reuses), ADR-54/55/72 (the generational copying GC `arena_flip` relocates),
-ADR-47 (multi-arity), ADR-22 (the compile pass), ADR-26 (immutability), ADR-11.
+data structures), ADR-069 (the deferral this resolves), ADR-061 (the operand stack
+the VM reuses), ADR-054/055/072 (the generational copying GC `arena_flip` relocates),
+ADR-047 (multi-arity), ADR-022 (the compile pass), ADR-026 (immutability), ADR-011.
 
 **As-built update (2026-05-31): Stage 0–2c done.** One refinement to the plan
 emerged in 2c. The merged VM does *not* address locals by `(depth,index)` and does
@@ -4834,16 +4834,16 @@ macro** (via `macros::macro_head_id`), since the VM runs only expanded forms.
 real-default `&optional` coverage; bytecode lowering is premature (no profiling shows
 node-dispatch dominating); retiring the tree-walker is infeasible until the VM is a
 complete engine (it depends on the tree-walker for every deferred form). Unrelated:
-the GC **RUNTIME-region collector** (hot-reload code churn) stays deferred (ADR-72
+the GC **RUNTIME-region collector** (hot-reload code churn) stays deferred (ADR-072
 finished the LOCAL-heap GC; live-editing.md "Stage 5 later half").
 
-## ADR-77 — Mouse `:drag` and `:release`, at cell granularity
+## ADR-077 — Mouse `:drag` and `:release`, at cell granularity
 
-**Status:** accepted (2026-05-30). Extends ADR-56's mouse vocabulary; resolves
-the deferral ADR-56 itself flagged ("Release/drag are additive when a consumer …
+**Status:** accepted (2026-05-30). Extends ADR-056's mouse vocabulary; resolves
+the deferral ADR-056 itself flagged ("Release/drag are additive when a consumer …
 needs them").
 
-**Context.** ADR-56 gave both display frontends (crossterm `term-poll`, the GUI
+**Context.** ADR-056 gave both display frontends (crossterm `term-poll`, the GUI
 `gui-open`) a deliberately minimal mouse vocabulary — `:press`, `:scroll-up`,
 `:scroll-down` — and explicitly dropped release / drag / bare motion at *both*
 backends, for one good reason: winit's `CursorMoved` fires per pixel, and a
@@ -4860,12 +4860,12 @@ shape, identical across both frontends:
 - **`:drag`** — pointer motion *with a button held*, carrying that button + the
   new cell. **Throttled to cell granularity**: emitted only when the pointer
   crosses into a new character cell, never per pixel. This is the move that makes
-  it safe where ADR-56 balked — a divider drag produces at most one event per
+  it safe where ADR-056 balked — a divider drag produces at most one event per
   cell of travel, not per pixel, so the redraw-storm footgun is gone.
 
 **Bare motion (no button) is still not emitted** at either backend — no consumer,
 and it would reintroduce the flood. So the vocabulary grows by exactly what the
-drag gesture needs and no more (ADR-11).
+drag gesture needs and no more (ADR-011).
 
 **Mechanism.**
 - *GUI* (`gui.rs`): each `Win` tracks the currently-held button (`held`, set on
@@ -4877,7 +4877,7 @@ drag gesture needs and no more (ADR-11).
   bare `Moved` still falls through to a nil poll.
 
 One encoding from both frontends, so a single keymap/handler drives either — the
-ADR-56 invariant holds. Rust tests (`mouse_event_tests`) lock the crossterm
+ADR-056 invariant holds. Rust tests (`mouse_event_tests`) lock the crossterm
 mapping (incl. bare-motion-is-nil); the GUI path is the same `Mouse`→`Message`
 shape.
 
@@ -4888,16 +4888,16 @@ kernel change. **Mouse capture caveat unchanged:** the crossterm side reports
 these only under `term-enter` (full-screen), not the inline REPL `term-raw-enter`
 seam, which must keep the terminal's own text selection.
 
-**References.** ADR-56 (the mouse vocabulary this extends, and whose deferral it
-resolves), ADR-46 (the display/input seam), ADR-58 (GUI input as mailbox
-messages), ADR-11 (ship the minimal form; additive features wait for a consumer).
+**References.** ADR-056 (the mouse vocabulary this extends, and whose deferral it
+resolves), ADR-046 (the display/input seam), ADR-058 (GUI input as mailbox
+messages), ADR-011 (ship the minimal form; additive features wait for a consumer).
 
 **Addendum (2026-05-31) — held modifiers ride on the event.** The mouse event grew
 a sixth element: `[:mouse action button row col mods]`, where `mods` is a vector of
 the held modifier keywords in a stable `:ctrl :alt :shift` order (`[]` when none).
 Both frontends fill it — the GUI from the window's tracked `ModifiersState`, the
 terminal from crossterm's `KeyModifiers` — so an app can bind Ctrl+wheel (font
-zoom via the per-window `gui-font!`, ADR-79), Ctrl+drag, etc. **This is a breaking
+zoom via the per-window `gui-font!`, ADR-079), Ctrl+drag, etc. **This is a breaking
 change, not additive:** Brood vector patterns are *fixed-length* and forbid a `&`
 rest, so a consumer destructuring the old 5-vector (`[_ a b r c]`) silently stops
 matching. The fix is positional access (`(nth ev n)`) or a 6-binder pattern —
@@ -4907,13 +4907,13 @@ action keyword or reshaping the event to a map) for generality across all action
 with the smallest shape change; the silent-break cost was accepted as the
 greenfield norm (break + update callers).
 
-## ADR-78 — Structured types: arrow + element refinements on the flat lattice
+## ADR-078 — Structured types: arrow + element refinements on the flat lattice
 
 **Status:** accepted; **shipped 2026-05-30** (the first slice of Step 5+ in
 [`types.md`](types.md)). Function-arrow types are in the `Ty` lattice and the
 advisory checker uses them to flag callbacks of the wrong arity passed to the
 higher-order combinators (`map`/`filter`/`reduce`/`fold`). Advisory throughout —
-contract #5 holds (warns, never gates). Refines the Step 5+ sketch in ADR-24.
+contract #5 holds (warns, never gates). Refines the Step 5+ sketch in ADR-024.
 
 **Context.** Steps 0–4 left `Ty` a flat `u32` bitset over the runtime tags —
 expressive enough for `int | string` or `not nil`, but it can't say *what kind of
@@ -4937,7 +4937,7 @@ with `arrow: None`.
    `{tags: Int|Fn|Native, arrow: …}` — the bitset already unions the tags, and the
    refinement attaches per-kind. A replacing enum would need a `Union(Vec<Ty>)`
    variant (a DNF of type frames), which is the bulk of the set-theoretic-algebra
-   complexity ADR-11 says to defer until a consumer needs it.
+   complexity ADR-011 says to defer until a consumer needs it.
 2. **The flat case is unchanged.** Every existing `Ty` is `{tags, arrow: None}`, so
    the lattice ops degrade to exactly today's bitset algebra — proven by the
    pre-existing lattice-law unit tests still passing untouched.
@@ -5008,18 +5008,18 @@ typing only, never a body check, so it doesn't reopen the deferred guarded-use F
 class. Sound: uncertain callback/element/init → flat fallback. See
 [`parametric-result-types.md`](parametric-result-types.md).
 
-**Still deferred (⬜, ADR-11).** Arrow/element types in the straight-line
+**Still deferred (⬜, ADR-011).** Arrow/element types in the straight-line
 `infer_sig`; intersections for overloaded fns; **type variables** for user-defined
 generics (Option A — no consumer yet).
 
-**References.** [`types.md`](types.md) (Step 5+, the compatibility contract), ADR-24
-(the set-theoretic/gradual model this extends), ADR-23, ADR-11 (ship the simple
-form, defer power), ADR-6 (mechanism in Rust, the arrow/element algebra; policy
+**References.** [`types.md`](types.md) (Step 5+, the compatibility contract), ADR-024
+(the set-theoretic/gradual model this extends), ADR-023, ADR-011 (ship the simple
+form, defer power), ADR-006 (mechanism in Rust, the arrow/element algebra; policy
 stays Brood). Lives in `crates/lisp/src/types/mod.rs` (the lattice) and
 `crates/lisp/src/types/check/{sigs,walk,guards}.rs` (callback check, element flow,
 and the `and`-guard narrowing).
 
-## ADR-79 — Per-op font scale on the GUI `Face`
+## ADR-079 — Per-op font scale on the GUI `Face`
 
 **Status:** accepted; **shipped 2026-05-31.** The GUI `Face` carries an integer
 `:scale` (≥1, default 1, capped at 16); the renderer draws that op's text
@@ -5033,7 +5033,7 @@ status strip, or a per-pane / per-buffer font was inexpressible except by a
 hand-rolled "block font" magnified out of many cells (what the foobar Game-of-Life
 demo's status strip did by hand). Recorded as **GG-1** in
 [`known-issues.md`](known-issues.md); `gui-font!`'s `:height` only resizes the
-*whole window*, not an op. `std/editor/pane.blsp` (ADR-77/78) already supplies the
+*whole window*, not an op. `std/editor/pane.blsp` (ADR-077/078) already supplies the
 pane layout + clip-rect mechanism, so the only missing piece for per-pane fonts was
 a per-op size.
 
@@ -5048,13 +5048,13 @@ carrying that buffer's scale). This resolves GG-1 and the per-pane-font remainde
 of GG-3, and reduces the foobar block-font workaround to `[:text … {:scale n}]`.
 
 **Why integer scale, not arbitrary `:height px`.** A faces-already-flow-end-to-end
-addition over a new op (ADR-11: extend the existing hook, don't grow the protocol
+addition over a new op (ADR-011: extend the existing hook, don't grow the protocol
 shape — a new optional face key is forward-compatible, and the terminal + old
 frames ignore it). Integer multiples keep the **single uniform grid**: text still
 lands on base cells, so no new metrics-query primitive and no per-pane grid math is
 needed. Arbitrary per-pixel sizing (14px vs 18px buffers) would break the single
 grid and force a `gui-font-metrics` query into Brood for layout — deferred until a
-concrete need justifies it (ADR-11).
+concrete need justifies it (ADR-011).
 
 **GG-2 follow-up (same day).** `gui-font!` was global across *all* windows — the
 `UserEvent::Font` handler retuned every open window, so a second window couldn't
@@ -5068,22 +5068,22 @@ share an `apply_font` helper). So two windows can run different fonts side by si
 **Still deferred.** Arbitrary `:height px` per buffer (see above) — needs a
 metrics-query primitive and breaks the single grid.
 
-**References.** ADR-46 (the display-protocol seam + frame-as-data), ADR-11 (ship
-the simple form, defer power), ADR-6 (mechanism in Rust, policy in Brood — the
+**References.** ADR-046 (the display-protocol seam + frame-as-data), ADR-011 (ship
+the simple form, defer power), ADR-006 (mechanism in Rust, policy in Brood — the
 pane/buffer font choice stays Brood). Lives in `crates/lisp/src/gui.rs` (`Face` +
 the renderer) and `crates/lisp/src/builtins/mod.rs` (`gui_face` parsing); documented in
 `std/editor/face.blsp`.
 
-## ADR-80 — Cursor zones: pointer-shape hints carried by the frame
+## ADR-080 — Cursor zones: pointer-shape hints carried by the frame
 
-**Status:** accepted (2026-05-31). Adds a render op to ADR-46's protocol so an app
+**Status:** accepted (2026-05-31). Adds a render op to ADR-046's protocol so an app
 can show a resize cursor over a window divider (the affordance the editor's
-drag-to-resize, ADR-77, was missing).
+drag-to-resize, ADR-077, was missing).
 
 **Context.** The OS pointer shape can only be set by the GUI thread (it owns the
 window), but `ui-run`'s `view`/`update` are pure and never hold the window handle —
 only the `:draw` step does. And bare pointer motion is deliberately *not* delivered
-to apps (ADR-56/77: it would flood the loop), so an app can't react to hover to set
+to apps (ADR-056/077: it would flood the loop), so an app can't react to hover to set
 the cursor itself. We need a way to say "show a resize cursor over this region"
 without either plumbing the window handle into `update` or streaming motion events.
 
@@ -5118,15 +5118,15 @@ pointer's pixel position — which `CursorMoved` has before it rounds to a cell 
 move rather than only when the cell changes: inside a zoomed region two zones can share
 one window cell. `set_cursor` is still called only when the shape changes.
 
-**References.** ADR-46 (the render-op protocol this extends), ADR-77 (the drag this
-affords), ADR-56 (why bare motion isn't delivered — sidestepped by hit-testing zones
-in the frontend), ADR-79 (the sibling GUI-`Face` work this lands alongside), ADR-363
+**References.** ADR-046 (the render-op protocol this extends), ADR-077 (the drag this
+affords), ADR-056 (why bare motion isn't delivered — sidestepped by hit-testing zones
+in the frontend), ADR-079 (the sibling GUI-`Face` work this lands alongside), ADR-363
 (the regions the zone walk now recurses into). Lives in
 `crates/lisp/src/gui.rs` (`Op::CursorZone`, hit-test on `CursorMoved`) +
 `crates/lisp/src/host/gui/backend/paint.rs` (`cursor_zones`, the frame walk) +
 `crates/lisp/src/builtins/mod.rs` (`gui-draw` parsing) + `std/editor/display.blsp`.
 
-## ADR-83 — Output ports (`*out*`/`*err*`) and an async, safe logger
+## ADR-083 — Output ports (`*out*`/`*err*`) and an async, safe logger
 
 **Status:** accepted, shipped (2026-05-31).
 
@@ -5140,18 +5140,18 @@ process that owns a buffer.
 
 **Decision.**
 - **A port is a one-argument function `(fn (s) …)`** that consumes a ready string
-  — nothing more (ADR-11: the simplest thing; a richer named/introspectable port
+  — nothing more (ADR-011: the simplest thing; a richer named/introspectable port
   value can come later behind `io-write` without changing callers). The prelude
   declares dynamic vars **`*out*`/`*err*`** holding the current ports and routes
   `print`/`println`/`eprint`/`eprintln` through them.
-- **Rust keeps only mechanism, split in two** (ADR-6): `%render` (args → the
+- **Rust keeps only mechanism, split in two** (ADR-006): `%render` (args → the
   space-joined display string, the exact text stdout would show) and
   `%write-out`/`%write-err` (a ready string → stdout/stderr, the former honouring
   the `with-out-str` capture stack). `*out*` defaults to `%write-out`, so
   `with-out-str` is unaffected and the default path is unchanged. Everything else
   — `std/io.blsp` (port constructors + `with-out`/`with-err`) and `std/log.blsp`
   (the logger) — is Brood.
-- **The logger is one `hatch` process** (ADR-6) carrying `{:level :backends}`.
+- **The logger is one `hatch` process** (ADR-006) carrying `{:level :backends}`.
   A log call is a fire-and-forget **cast** → async; the single process serialises
   every write → safe (no interleaving) and isolates a crashing backend. A
   *backend* is an `io` port + a min level + a formatter, so the logger **reuses
@@ -5160,7 +5160,7 @@ process that owns a buffer.
   none runs so a log is never lost.
 - **A buffer sink is a `process-port`/`process-backend`**: the string is *sent* to
   the buffer-owning process as `[:io-write s]` (copied, share-nothing), never a
-  mutated value — consistent with immutability (ADR-26) and why it is safe.
+  mutated value — consistent with immutability (ADR-026) and why it is safe.
 
 **Rejected / deferred.** A tagged-map port value (named/introspectable — deferred
 until `nest observe` wants it); a `*logger*` dynamic override (additive, deferred
@@ -5177,12 +5177,12 @@ buffer route. Lives in `crates/lisp/src/builtins/mod.rs` (`%render`/`%write-out`
 `std/io.blsp`, and `std/log.blsp`; tested in `tests/io_test.blsp` +
 `tests/log_test.blsp`.
 
-## ADR-82 — Opt-in type annotations & runtime contracts (`sig` / `sig!`)
+## ADR-082 — Opt-in type annotations & runtime contracts (`sig` / `sig!`)
 
-**Status:** accepted, shipped (2026-05-31). (ADR-81 is the concurrent dist
+**Status:** accepted, shipped (2026-05-31). (ADR-081 is the concurrent dist
 security-hardening decision; this work took the next free number.)
 
-**Context.** Brood's type system is set-theoretic and **advisory** (ADR-23/24):
+**Context.** Brood's type system is set-theoretic and **advisory** (ADR-023/024):
 it warns on a provably-wrong call, never gates, and is engineered for zero false
 positives. The Elixir paper (Castagna/Duboc/Valim, *The Design Principles of the
 Elixir Type System* — notes in `docs/research/`) shows how such a system can be
@@ -5231,27 +5231,27 @@ introspection cost). Re-`def`ing a name drops its contract (re-run `sig!` to
 reinstall). The static checker also gained, alongside this: **soundness-oracle
 tests** (every `expr_ty` over-approximates the runtime value; a clean-running
 program draws no disjointness warning) and **curated sigs** for common predicates
-(`even?`/`abs`/`count`/…). Deferred (ADR-11): a `BROOD_CONTRACTS=1` switch to
+(`even?`/`abs`/`count`/…). Deferred (ADR-011): a `BROOD_CONTRACTS=1` switch to
 enforce *every* `sig`; element-level `(list E)` / `(vector E)` runtime checks;
 intersections / rest params in the grammar; a noise-free dead-clause lint (a naive
 version flags compiler-generated guard plumbing).
 
-**References.** ADR-23/24 (set-theoretic advisory types), ADR-78 (the
-structured `arrow`/`elem` refinements the checker reuses), ADR-11 (defer power
-features), ADR-6 (policy in Brood). Design: `docs/type-annotations.md`. Review +
+**References.** ADR-023/024 (set-theoretic advisory types), ADR-078 (the
+structured `arrow`/`elem` refinements the checker reuses), ADR-011 (defer power
+features), ADR-006 (policy in Brood). Design: `docs/type-annotations.md`. Review +
 applied model: `docs/research/set-theoretic-types-in-brood.md`,
 `docs/research/elixir-set-theoretic-types.md`. Lives in
 `crates/lisp/src/types/check/annot.rs` (parser) + the `check/` walk + the contract
 macros in `std/prelude.blsp`; tests in `tests/contract_test.blsp` and the
 `soundness_oracle` module.
 
-## ADR-81 — Node-link security: pre-auth DoS hardening now, authenticated-encrypted channel required for network nodes
+## ADR-081 — Node-link security: pre-auth DoS hardening now, authenticated-encrypted channel required for network nodes
 
 **Status:** accepted (2026-05-31). The hardening half is implemented. **Update
 (2026-06-01): the channel-encryption half (gap #1) is now implemented — see
-ADR-89** (a Noise-style X25519 + ChaCha20-Poly1305 session over the `Stream`
+ADR-089** (a Noise-style X25519 + ChaCha20-Poly1305 session over the `Stream`
 seam, chosen over TLS because the reader/writer thread split can't drive one TLS
-connection). (ADR-82 is the concurrent opt-in type-annotations work; these two
+connection). (ADR-082 is the concurrent opt-in type-annotations work; these two
 landed in the same session and split the numbers.)
 
 **Context.** A security review of the distributed-node layer (`dist/`) — the only
@@ -5323,18 +5323,18 @@ one.
   capability/sandbox boundary on inbound closures) and needs its own ADR before
   M4's multi-client server mode ships.
 
-**References.** ADR-33/34 (closure shipping + handshake v2 this hardens),
-ADR-68 (the `Stream` transport seam an encrypted carrier would slot into),
-ADR-74 (dual-listen, whose `0.0.0.0` example motivates the #3 policy note),
-ADR-43 (the memory cap that is a backstop, not a substitute for this bound).
+**References.** ADR-033/034 (closure shipping + handshake v2 this hardens),
+ADR-068 (the `Stream` transport seam an encrypted carrier would slot into),
+ADR-074 (dual-listen, whose `0.0.0.0` example motivates the #3 policy note),
+ADR-043 (the memory cap that is a backstop, not a substitute for this bound).
 Lives in `crates/lisp/src/dist.rs` (`HandshakeSlot`, `MAX_IN_FLIGHT_HANDSHAKES`,
 `MAX_HANDSHAKE_FRAME`), `dist/handshake.rs` (capped handshake reads), and
 `dist/wire.rs` (`read_frame_capped`).
 
-## ADR-84 — Quasiquote is a compile/eval-time code transform, not a runtime walker
+## ADR-084 — Quasiquote is a compile/eval-time code transform, not a runtime walker
 
 **Context.** A moving collector relocates LOCAL handles; a Rust frame that holds a
-LOCAL handle across an `eval` call (which can collect at any safepoint, ADR-61)
+LOCAL handle across an `eval` call (which can collect at any safepoint, ADR-061)
 must root it on the operand stack or it dangles. The historically worst offender
 was the **runtime quasiquote walker** (`macros::quasiquote_depth`/`expand_seq`): it
 evaluated each `~unquote` / `~@unquote-splicing` *inline* while accumulating the
@@ -5355,7 +5355,7 @@ rooting dance is deleted. `expand_quasiquote` in `eval/macros.rs`.
 - **Auto-gensym (`x#`)** resolves to a fresh symbol *in* the transform, once per
   template symbol per expansion. Because a macro body is re-expanded on every
   application, each expansion still gets distinct gensyms (Clojure-style hygiene).
-- **Namespace qualification (ADR-65 §7) is unaffected.** `resolve` still descends
+- **Namespace qualification (ADR-065 §7) is unaffected.** `resolve` still descends
   the *template* and qualifies free refs at macro-definition time, before the
   transform turns the (already-qualified) template into builder code — so no
   pass-order change was needed.
@@ -5373,7 +5373,7 @@ standing guidance: a Rust primitive that re-enters `eval` should be **single-sho
 — one bounded step that returns to the evaluator — rather than a loop that drives
 evaluation while holding heap handles. When a primitive *would* need to accumulate
 across `eval`, prefer expressing it as a transform-to-code (expand, then let the
-evaluator run the code) or move it into Brood (ADR-6). Remaining rooted-Rust
+evaluator run the code) or move it into Brood (ADR-006). Remaining rooted-Rust
 re-entry points (the macroexpand fixpoint, `reload-defs`) are candidates to shrink
 the same way.
 
@@ -5382,7 +5382,7 @@ the same way.
 the full in-language suite, and a quasiquote-heavy loop (runtime backtick with
 unquote + splice + autogensym) green under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
 
-## ADR-85 — `std/` is the basic-language core; frameworks are packages; hierarchical module names
+## ADR-085 — `std/` is the basic-language core; frameworks are packages; hierarchical module names
 
 **Context.** `std/` has grown to ~38 `.blsp` modules, and most of them are *not*
 what a normal language's standard library ships. They're three other things wearing
@@ -5395,7 +5395,7 @@ the `std/` coat:
 - **The project toolchain** — `project`, `package`, `test`, `docs`, `reload`,
   `mcp`, `observer`, `repl`, `sexp` (what `nest` is built from).
 
-Everything is a **flat module name** (ADR-19/65): `(require 'buffer)` resolves the
+Everything is a **flat module name** (ADR-019/065): `(require 'buffer)` resolves the
 bare stem `buffer`, and `defmodule buffer` qualifies its defs to `buffer/insert`
 (one interned symbol; `/` is the namespace-qualified-name separator). Resolution is
 two-tier — the embedded `BUILTIN_MODULES` table in `builtins.rs` (hand-maintained
@@ -5418,7 +5418,7 @@ The user's framing: **"std must be very basic functions for a normal language."*
    principle is settled, the boundary list above is the working proposal.)
 
 2. **Frameworks and libraries ship as external packages**, installed through the
-   package manager (ADR-37), not baked into the `brood` binary. The editor
+   package manager (ADR-037), not baked into the `brood` binary. The editor
    framework, the web/net library, the concurrency framework, and the future **GUI
    framework** are all *packages a project depends on* — not always-shipped core.
    (The project **toolchain** — `test`/`project`/`package`/… — is a separate
@@ -5426,7 +5426,7 @@ The user's framing: **"std must be very basic functions for a normal language."*
    *toolchain*, not stdlib, and is a candidate for a `tool/` namespace prefix.)
 
 3. **Hierarchical module names** — the enabling language change, amending
-   ADR-19/65. `(require 'gui/window)` loads the `gui/window` module/namespace,
+   ADR-019/065. `(require 'gui/window)` loads the `gui/window` module/namespace,
    resolved from `gui/window.blsp` (and the embedded table keys on the full
    `"gui/window"` stem). The wrinkle: `/` already separates a qualified name's
    module from its def (`buffer/insert`), so module `gui/window` with a def `draw`
@@ -5439,9 +5439,9 @@ The user's framing: **"std must be very basic functions for a normal language."*
 **Consequences.**
 - The GUI question that started this is answered structurally: a GUI framework is
   *one external package* (`gui/window`, `gui/layout`), not a `std/gui/` subfolder.
-- The package manager (ADR-37) becomes the primary distribution path for
+- The package manager (ADR-037) becomes the primary distribution path for
   everything above the language core — which is why it was deliberately built
-  before M2 (ADR-37 context).
+  before M2 (ADR-037 context).
 - Migrating a framework out of `std/` is a breaking move (callers switch from a
   bundled `(require 'buffer)` to a package dependency). That's fine here
   (greenfield, no external users), but it wants a migration order that keeps the
@@ -5487,13 +5487,13 @@ The mechanical rewrite was a token-aware pass (skips comments/strings, leaves
 the Rust eval-string bootstraps in the binaries + the embedded table were updated
 to match. Full suite green.
 
-**Move 2 (lift frameworks into external packages) — REVERSED by ADR-97**
+**Move 2 (lift frameworks into external packages) — REVERSED by ADR-097**
 (2026-06-07): `brood-net` and `brood-supervisor` were never finished (the
 package dirs were deleted from the binary but never created), and the project's
 direction changed to **batteries-included** — every framework module ships in the
 default install. `net/*` and `proc/supervisor` are bundled in `CORE_MODULES`
 again; there are no internal framework packages. The text below is retained as
-the historical record of the externalization attempt. See ADR-97.
+the historical record of the externalization attempt. See ADR-097.
 
 **Move 2 (lift frameworks into external packages) — the clean slice is done**
 (2026-06-01), and surfaced a structural limit worth recording: *most of the
@@ -5514,7 +5514,7 @@ dependents** externalize cleanly — and those are exactly what shipped:
   runtime, was reworked to inline the equivalent userland `monitor`-respawn.
 
 **Internal packages skip the package manager.** An in-workspace package is not
-fetched, hashed, or locked (ADR-37 is for *external/distributed* deps). It's
+fetched, hashed, or locked (ADR-037 is for *external/distributed* deps). It's
 just a sibling `src/` directory put on `*load-path*`: a consumer adds it via
 `:source-paths` (e.g. `brood-edit`'s `:source-paths ["src" "../brood-net/src"
 "../brood-supervisor/src"]`), which `project-setup` appends to the load-path for
@@ -5524,16 +5524,16 @@ package manager* — git deps, lock, distribution — only matters once a packag
 is shared across workspaces.)
 
 Each package took its modules **and its tests** (`tests/*_test.blsp`) and, for
-net, the `webserver` example. The takeaway (an ADR-85 refinement): the
+net, the `webserver` example. The takeaway (an ADR-085 refinement): the
 "editor framework" is largely **shared UI the toolchain consumes**, not a
 detachable app framework — so `editor/*` stays bundled until/unless the REPL +
-observer are themselves repackaged (gated on a real consumer, ADR-11). The
+observer are themselves repackaged (gated on a real consumer, ADR-011). The
 editor *app* already lives outside the binary (`brood-edit`). Tracked in
 `ROADMAP.md`.
 
-## ADR-86 — GUI keys are press/release transitions, not an OS-repeat flood
+## ADR-086 — GUI keys are press/release transitions, not an OS-repeat flood
 
-**Status:** accepted (2026-05-31). The keyboard analogue of ADR-77 (which added
+**Status:** accepted (2026-05-31). The keyboard analogue of ADR-077 (which added
 mouse `:release`/`:drag`); same motive — give the app the *transitions* it needs to
 track a held input itself, rather than a producer-paced stream it can't keep up with.
 
@@ -5555,7 +5555,7 @@ with an unbounded queue and no release signal.
 - **Deliver releases.** `Released` → `[:key-up <key>]`, where `<key>` is the same value
   a press yields (`:ctrl-n`, `"a"`, `:up`). The press stays the **bare** value, so
   every existing keymap/dispatch path is untouched — release is purely additive (the
-  ADR-77 move, for keys).
+  ADR-077 move, for keys).
 
 **Missed key-up — the hard part.** A press/release model is only as good as the
 guarantee that the release arrives. The case where it doesn't is **focus loss**: you
@@ -5588,9 +5588,9 @@ repeat cap on top if it wants absolute insurance, but it isn't needed for correc
   `[:key-up]`/`:blur`. Repeat is now paced by the render loop — it can't outrun the
   screen and stops the instant the key lifts. (Editor-side; lives in `myedit/src`.)
 
-**References.** ADR-77 (mouse `:release`/`:drag` — the same "give the app transitions"
-move), ADR-58 (GUI input as mailbox messages), ADR-56 (the minimal display/input
-vocabulary, grown only when a consumer needs it), ADR-11 (ship the minimal form).
+**References.** ADR-077 (mouse `:release`/`:drag` — the same "give the app transitions"
+move), ADR-058 (GUI input as mailbox messages), ADR-056 (the minimal display/input
+vocabulary, grown only when a consumer needs it), ADR-011 (ship the minimal form).
 
 **Addendum (2026-05-31) — `ke.repeat` is unreliable on Wayland; dedup by transition,
 and expose the held key for a poll.** The original decision filtered auto-repeat with
@@ -5619,15 +5619,15 @@ key that opens a window spawned one window per repeat. Two changes close it prop
 The `:key-up`/`:blur` events from the original decision stay; the flag-based filter is
 replaced by the transition rule above.
 
-## ADR-87 — Expose O(1) kernel facts (`map-count`) as primitives rather than recompute them in Brood
+## ADR-087 — Expose O(1) kernel facts (`map-count`) as primitives rather than recompute them in Brood
 
-**Context.** "Write the language in the language" (ADR-6) says a capability
+**Context.** "Write the language in the language" (ADR-006) says a capability
 goes in Brood unless it genuinely needs Rust. `count`/`empty?` on a map were
 pure Brood over the one map enumerator, `map-pairs`: `(count (map-pairs m))` and
 `(%eq (map-pairs m) nil)`. But `map-pairs` *materialises* the whole entries list
 (an O(n) walk + n freshly-allocated `[k v]` vectors) — so asking a map only how
 *many* entries it has, or *whether* it has any, paid O(n) time and allocation
-for a fact the CHAMP trie (ADR-40) already stores: every node carries the
+for a fact the CHAMP trie (ADR-040) already stores: every node carries the
 `size` of its own subtree, so the root's `size` is the count, in O(1).
 
 **Decision.** Add a thin Rust primitive `map-count` that returns
@@ -5635,7 +5635,7 @@ for a fact the CHAMP trie (ADR-40) already stores: every node carries the
 map through it (`(map-count m)` / `(%eq (map-count m) 0)`). No `map-pairs`
 allocation for a length or an emptiness test.
 
-**Why this clears the "prefer Brood" bar (ADR-6).** The rule is *mechanism in
+**Why this clears the "prefer Brood" bar (ADR-006).** The rule is *mechanism in
 Rust, policy in Brood* — a primitive is justified when it exposes something the
 language can't bootstrap cheaply, not when it merely moves behaviour out of
 Brood for speed. The entry *count* is structural metadata the kernel data type
@@ -5667,14 +5667,14 @@ on its own, keep the surface in Brood.
   rebuilt (`make install`) or `nest check` flags the new name as unbound until
   the on-PATH toolchain catches up.
 
-**References.** ADR-6 (write the language in Brood; mechanism vs policy),
-ADR-40 (CHAMP map — the per-node `size` this reads), ADR-76 (the VM that
+**References.** ADR-006 (write the language in Brood; mechanism vs policy),
+ADR-040 (CHAMP map — the per-node `size` this reads), ADR-076 (the VM that
 inlines the `%quot` family), `docs/transients.md` (the other CHAMP-aware kernel
 hook, `%map-into`).
 
-## ADR-88 — Nodes form a transitive cluster mesh (connect to one, join all)
+## ADR-088 — Nodes form a transitive cluster mesh (connect to one, join all)
 
-**Context.** Distribution (ADR-33/34/68/73) gave us authenticated
+**Context.** Distribution (ADR-033/034/068/073) gave us authenticated
 point-to-point links: `(connect addr)` dials exactly one peer. The roadmap
 explicitly left the **cluster-join topology** open — when A connects to B, does
 it join B's whole cluster (mesh) or only B (point-to-point)? A user hit the
@@ -5699,7 +5699,7 @@ Three coordinated pieces:
    concurrent gossip for the same name). Each new link re-gossips, closing the
    mesh transitively, then goes quiet (a reconnect/duplicate doesn't re-broadcast,
    so there's no steady-state chatter). Simultaneous cross-dials collapse via the
-   existing connector tie-break (ADR-34 §1).
+   existing connector tie-break (ADR-034 §1).
 
 Mesh is **on by default**; `BROOD_NO_MESH=1` reverts to point-to-point.
 
@@ -5709,7 +5709,7 @@ everyone, any registered name is reachable cluster-wide) holds. The roadmap note
 mesh's costs — O(n²) connections and a larger trust surface — but: cluster sizes
 here are small (dev/editor-daemon scale), and the trust surface is already bounded
 by the **cookie** (you only ever link to nodes that share it; an authenticated
-peer can already ship closures = RCE per ADR-81), so auto-meshing within a
+peer can already ship closures = RCE per ADR-081), so auto-meshing within a
 cookie-sharing cluster crosses no new boundary. The opt-out covers the deliberate
 point-to-point case.
 
@@ -5727,31 +5727,31 @@ dials a mesh inevitably creates need no new race handling.
   in `crates/cli/tests/distribution.rs`.
 - Wire format bumped to v3 (greenfield — no back-compat; a v2 peer is rejected at
   the magic prefix).
-- **Deferred (ADR-11):** auto-reconnect / re-heal after a transient link drop
+- **Deferred (ADR-011):** auto-reconnect / re-heal after a transient link drop
   (use `ensure-link`); FQDN/host-routability resolution beyond what `name@host`
   already assumes; a global cap on concurrent mesh dials (bounded today by
   `MAX_GOSSIP_PEERS` per frame). Mesh over an *untrusted* TCP network is now safe:
-  the channel is encrypted + integrity-protected (ADR-89), exactly as point-to-point.
+  the channel is encrypted + integrity-protected (ADR-089), exactly as point-to-point.
 
-**References.** ADR-33/34 (closure shipping, handshake v2 + connector
-tie-break), ADR-68 (Unix transport + cookie), ADR-73 (`name@host` identity),
-ADR-81 (channel TLS — still required before untrusted-network exposure),
+**References.** ADR-033/034 (closure shipping, handshake v2 + connector
+tie-break), ADR-068 (Unix transport + cookie), ADR-073 (`name@host` identity),
+ADR-081 (channel TLS — still required before untrusted-network exposure),
 `docs/distribution.md` §Cluster mesh.
 
-## ADR-89 — Node-link channel encryption: a Noise-style X25519 + ChaCha20-Poly1305 session over the Stream seam
+## ADR-089 — Node-link channel encryption: a Noise-style X25519 + ChaCha20-Poly1305 session over the Stream seam
 
-**Status:** accepted + implemented (2026-06-01). Closes ADR-81's gap #1 (no
+**Status:** accepted + implemented (2026-06-01). Closes ADR-081's gap #1 (no
 channel confidentiality / per-frame integrity) — the headline network-security
 item. Confined to `dist/`; **does not touch the language kernel**
 (eval/heap/GC/value model unchanged).
 
-**Context.** ADR-81's security review found that the cookie handshake
+**Context.** ADR-081's security review found that the cookie handshake
 authenticates only the *handshake*: steady-state node-link frames travelled
 **cleartext with no per-frame MAC**. Over TCP an on-path attacker who lets the
 handshake complete could (a) read every inter-node message passively, and (b)
 **inject a forged `Send` carrying a closure → RCE** afterward — *without* knowing
 the cookie. The roadmap forbade exposing a TCP node on an untrusted network until
-this closed. ADR-81 named the fix as "an authenticated-encrypted channel (TLS,
+this closed. ADR-081 named the fix as "an authenticated-encrypted channel (TLS,
 **or a Noise-style session over the existing `Stream` seam**)".
 
 **Decision — the Noise-style session, not TLS.** A live link runs **two
@@ -5768,7 +5768,7 @@ The scheme (`dist/session.rs` + `dist/handshake.rs`, wire v4):
   stays secret even if the long-term cookie later leaks). Each side puts a fresh
   ephemeral pubkey in its `Hello`.
 - **Authenticated by the existing cookie-HMAC:** *both* ephemeral pubkeys are
-  folded into the `Auth` MAC (alongside the names + addr already there, ADR-88),
+  folded into the `Auth` MAC (alongside the names + addr already there, ADR-088),
   so a man-in-the-middle can't substitute its own DH key — a swapped `Hello.eph_pub`
   fails the MAC check, no cookie ⇒ no forged MAC.
 - **HKDF-SHA256** (built on the in-tree `hmac`/`sha2` — no separate `hkdf` crate)
@@ -5790,14 +5790,14 @@ The scheme (`dist/session.rs` + `dist/handshake.rs`, wire v4):
 
 **Consequences.**
 - A TCP node now has an **authenticated, forward-secret, integrity-protected**
-  link. ADR-81's "trusted-network/VPN only" caveat for TCP nodes is **lifted**.
+  link. ADR-081's "trusted-network/VPN only" caveat for TCP nodes is **lifted**.
 - **Authentication now implies a secure channel** — the cookie proves possession
   at handshake time *and* the session protects every byte after.
 - **Closure-shipping between *trusting* nodes is still RCE-by-design** — that is
   the Erlang model and the basis of hot code mobility, not a bug. A
   mutually-distrusting / multi-tenant threat model (no inbound code from untrusted
   peers, or a sandbox on inbound closures) remains a **separate future ADR** before
-  any multi-client server mode ships (as ADR-81 already flagged).
+  any multi-client server mode ships (as ADR-081 already flagged).
 - The reader/writer thread split is unchanged — the property that made the
   per-direction AEAD the right fit (and TLS the wrong one) here.
 
@@ -5809,23 +5809,23 @@ real-TCP/Unix `crates/cli/tests/distribution.rs` cases (incl. closure shipping,
 mesh, monitors, links, supervisor, wrong-cookie rejection) stay green over the
 encrypted path; full `make test` green.
 
-**References.** ADR-81 (the gap this closes — pre-auth DoS hardening was the other
-half), ADR-33/34 (closure shipping + handshake v2 this builds on), ADR-68 (the
-`Stream` seam the session rides), ADR-88 (the addr-in-MAC pattern the pubkey-in-MAC
+**References.** ADR-081 (the gap this closes — pre-auth DoS hardening was the other
+half), ADR-033/034 (closure shipping + handshake v2 this builds on), ADR-068 (the
+`Stream` seam the session rides), ADR-088 (the addr-in-MAC pattern the pubkey-in-MAC
 mirrors). Lives in `crates/lisp/src/dist/session.rs` (the AEAD framing),
 `dist/handshake.rs` (DH + HKDF + key agreement), `dist/wire.rs` (the `Hello` pubkey
 + `encode_payload` + magic v4), `dist.rs` (`establish` threads the session into the
 reader/writer).
 
-## ADR-90 — Serving a `ui-run` app to remote frontends: app-on-daemon, thin client over the display seam
+## ADR-090 — Serving a `ui-run` app to remote frontends: app-on-daemon, thin client over the display seam
 
 **Status:** accepted + implemented (2026-06-01). The headline **M4 deliverable** —
 "the same runtime listens on a socket and serves the M3 protocol to attached
 frontends (the Emacs `--daemon`/`emacsclient` model)." All Brood policy
 (`std/editor/serve.blsp`) over the existing mechanism; **no kernel change**.
 
-**Context.** The substrate was all built: node-connect (encrypted, ADR-89),
-dual-listen (ADR-74), registered names, location-transparent `send`, monitors, the
+**Context.** The substrate was all built: node-connect (encrypted, ADR-089),
+dual-listen (ADR-074), registered names, location-transparent `send`, monitors, the
 M3 display protocol (a frame is plain send-able data), and `ui-run` with its
 pluggable `display` map. `nest observe --connect` proved *remote rendering* — but in
 the **pull** direction: the loop + model run on the *client*, which requests
@@ -5840,7 +5840,7 @@ display)`; the only new piece is the `display`:
   the client's `[:key k]`, `:size` is the size reported at attach, `:leave` tells the
   client to restore its terminal (`[:bye]`). A `[:detach]` or a monitor `[:down …]`
   (client died / link split) returns `:close`, which `ui-run` already treats as quit.
-  This realizes ADR-46 literally: one display protocol, now a frontend that lives on
+  This realizes ADR-046 literally: one display protocol, now a frontend that lives on
   the wire — so an app written for a local terminal serves remotely with no change.
 - **`serve` / session manager** — `(serve make-model view update)` registers a manager
   under the well-known node name `serve-name` (`:ui`). Each `[:attach client cols rows]`
@@ -5860,7 +5860,7 @@ display)`; the only new piece is the `display`:
 The daemon side is a normal `nest run --name N app.blsp` whose `main` calls `(serve …)`
 then parks; the only new CLI command is `nest attach` (mirrors `nest observe --connect`).
 
-**Scope (ADR-11 — ship the slice).** **In:** app-on-daemon + thin client; many
+**Scope (ADR-011 — ship the slice).** **In:** app-on-daemon + thin client; many
 concurrent clients (independent sessions); graceful attach / detach / client-death
 teardown. **Deferred:** a *shared* model across clients (collaborative editing — each
 session is independent; sharing is done by talking to a common process); live terminal
@@ -5875,7 +5875,7 @@ buffers; a dedicated `nest serve` auto-park command.
 - The observer's *pull* remote-attach and this *push* serve are complementary: pull =
   inspect a runtime's processes; push = drive an app whose state lives server-side.
 - Multi-tenant / mutually-distrusting serving is **not** in scope — closure mobility
-  between trusting nodes is still RCE-by-design (ADR-81/89); a sandbox boundary is a
+  between trusting nodes is still RCE-by-design (ADR-081/089); a sandbox boundary is a
   separate future ADR.
 
 **Tested.** `tests/serve_test.blsp` (in-process client plays the protocol): attach →
@@ -5887,13 +5887,13 @@ throwing `make-model`) still notifies the client via the monitor; `remote-displa
 `real-tcp` group): a daemon serves a counter app, a TTY-less client attaches and drives
 it (n=0 → n=1) and quits. Full `make test` green.
 
-**References.** ADR-46 (the display-protocol seam this rides — "one protocol, many
-frontends"), ADR-53 (the observer's *pull* remote-attach this complements), ADR-68
-(node-connect by name), ADR-89 (the encrypted channel it serves over), ADR-74
-(dual-listen — local + remote front doors), ADR-11 (deferring shared model / resize).
+**References.** ADR-046 (the display-protocol seam this rides — "one protocol, many
+frontends"), ADR-053 (the observer's *pull* remote-attach this complements), ADR-068
+(node-connect by name), ADR-089 (the encrypted channel it serves over), ADR-074
+(dual-listen — local + remote front doors), ADR-011 (deferring shared model / resize).
 Lives in `std/editor/serve.blsp`; `nest attach` in `crates/nest/src/main.rs`.
 
-## ADR-91 — RUNTIME-region collection: single-process compaction now; multi-process via an Erlang-style 2-generation model
+## ADR-091 — RUNTIME-region collection: single-process compaction now; multi-process via an Erlang-style 2-generation model
 
 **Status:** accepted (2026-06-01; multi-process direction revised 2026-07-07). The
 single-process collector is **implemented + tested**. The multi-process collector
@@ -5911,12 +5911,12 @@ language-surface change beyond the `(runtime-collect)` builtin + the `:runtime-*
 on `(gc-stats)`.
 
 **Context — two kinds of memory.** Brood's heap has a per-process **LOCAL** region
-(private; collected by the generational copying GC, ADR-55/61/72 — no coordination,
+(private; collected by the generational copying GC, ADR-055/061/072 — no coordination,
 each process collects its own) and one shared **RUNTIME** code region per runtime
 (`RuntimeCode`, behind `Arc`, `boxcar`-backed append-only slabs). `def` / hot-reload
 `promote`s a closure-graph into RUNTIME and rebinds the global; **old versions are
 never overwritten** (append-only), so an in-flight call keeps running the version it
-entered on while new lookups get the new one — Erlang-style hot reload (ADR-13,
+entered on while new lookups get the new one — Erlang-style hot reload (ADR-013,
 `shared-code.md`). The cost: RUNTIME grows with redefinition churn and was never
 reclaimed.
 
@@ -6145,16 +6145,16 @@ belongs to and drops a whole dead generation.
 `(gc-stats)` `:runtime-closures`/`:runtime-threshold` + `(runtime-collect)` for
 visibility. A long-lived server with live processes still accretes superseded code until
 Step 2 lands — acceptable for now (normal sessions are negligible; the dedup of
-structurally-unchanged redefs, ADR-42, already curbs the common case).
+structurally-unchanged redefs, ADR-042, already curbs the common case).
 
-**References.** ADR-72 (the generational LOCAL GC this reuses the trace/forward/verify
-machinery from), ADR-13 + `shared-code.md` (why RUNTIME is shared — hot reload),
-ADR-55/61 (the safepoint + operand-stack rooting), ADR-42 (unchanged-redef dedup),
-ADR-11 (deferring Step 2). Lives in `crates/lisp/src/core/heap.rs`
+**References.** ADR-072 (the generational LOCAL GC this reuses the trace/forward/verify
+machinery from), ADR-013 + `shared-code.md` (why RUNTIME is shared — hot reload),
+ADR-055/061 (the safepoint + operand-stack rooting), ADR-042 (unchanged-redef dedup),
+ADR-011 (deferring Step 2). Lives in `crates/lisp/src/core/heap.rs`
 (`runtime_collect*`, `maybe_runtime_collect`, `flush_rt_*`, `verify_rt_slabs`,
 `rt_gc_*`), `builtins.rs` (`runtime-collect`, the `gc-stats` `:runtime-*` keys).
 
-## ADR-92 — Editor syntax grammars are generated from the language's own introspection
+## ADR-092 — Editor syntax grammars are generated from the language's own introspection
 
 **Status:** accepted + implemented (2026-06-01). Pure Brood policy
 (`std/tool/grammar.blsp`) + a thin `nest grammar` shim; the only kernel change is
@@ -6169,7 +6169,7 @@ highlighter), but `brood-mode` repeated it (`brood-special-forms`), the new
 `spawn`/`error` while the canonical list didn't.
 
 **Decision.** **Generate the editor grammars from `(special-forms)` — one source of
-truth.** A small Brood tool (`std/tool/grammar.blsp`, dogfooding — ADR-6) turns the
+truth.** A small Brood tool (`std/tool/grammar.blsp`, dogfooding — ADR-006) turns the
 canonical list into a VS Code **TextMate** grammar (`(tmlanguage)` → JSON) and the
 **Emacs** `brood-special-forms` defconst (`(emacs-special-forms)`), surfaced as
 `nest grammar [tmlanguage|emacs]` (the `nest doc` model; prints to stdout, redirect to
@@ -6201,13 +6201,13 @@ form means editing `SPECIAL_FORMS` once, then regenerating — no per-editor edi
 - Macros not promoted (anything still outside `(special-forms)`) are coloured by the
   LSP's semantic tokens as functions, not by the static grammar — the intended split.
 
-**References.** ADR-6 (policy in Brood), ADR-52 (`(special-forms)` shared with the
+**References.** ADR-006 (policy in Brood), ADR-052 (`(special-forms)` shared with the
 LSP/REPL highlighter), the central `kw::` spelling module (devlog 2026-05-30). Lives in
 `std/tool/grammar.blsp`, `crates/nest/src/main.rs` (`nest grammar`),
 `crates/lisp/src/builtins/mod.rs` (`SPECIAL_FORMS`) + `core/keywords.rs` (the new consts);
 consumed by `brood-vscode` and `brood-mode`.
 
-## ADR-93 — Native char-class scanners + `scan-tokens`: lexing mechanism in Rust, faces in Brood
+## ADR-093 — Native char-class scanners + `scan-tokens`: lexing mechanism in Rust, faces in Brood
 
 **Status:** accepted + implemented (2026-06-02). Three new builtins
 (`string-span`, `string-span-until`, `scan-tokens`); the Brood fontifier
@@ -6247,7 +6247,7 @@ Two adjacent pure-Brood wins shipped with it: `special-form?` is now an O(1) set
 and `hl--number?` gates the `string->number` parse behind a first-char check.
 
 **Consequences.**
-- The mechanism/policy seam matches ADR-6: char scanning genuinely needs Rust (a
+- The mechanism/policy seam matches ADR-006: char scanning genuinely needs Rust (a
   per-char interpreted loop is the bottleneck); faces + head-position are Brood, editable
   live. `scan-tokens` is general tooling (a sibling of `parse-source`), reusable by
   structural tools and completion, not highlight-specific.
@@ -6269,16 +6269,16 @@ that tiles by the union of span + range edges and merges overlay faces per segme
 during a **drag-select** renders as O(segments), not the old O(chars) per-char merge:
 `ed-view` with a viewport-spanning region ~50ms → ~17ms. The whole Brood `fontify-runs`
 is now a one-line call into it; the per-char `fontify-runs--*` helpers are deleted.
-Separately, a flood of per-cell mouse `:drag` events (ADR-80) made a fast drag render
+Separately, a flood of per-cell mouse `:drag` events (ADR-080) made a fast drag render
 cell-by-cell, so `editor/ui`'s `gui-display` poll now coalesces queued drags to the
 latest (`ui--coalesce-drag`) — render once per gesture step, not once per cell crossed.
 
-**References.** ADR-6 (mechanism in the kernel, policy in Brood), ADR-52
+**References.** ADR-006 (mechanism in the kernel, policy in Brood), ADR-052
 (`highlight-spans` shape, `(special-forms)`), the editor's per-frame span cache. Lives in
 `crates/lisp/src/builtins/mod.rs` (`string_span`/`string_span_until`/`scan_tokens`/`span_runs`),
 `std/editor/highlight.blsp`, `std/editor/markdown.blsp`.
 
-## ADR-94 — `overlay-route`: the modal-overlay dispatch fallthrough lives in `editor/ui`
+## ADR-094 — `overlay-route`: the modal-overlay dispatch fallthrough lives in `editor/ui`
 
 **Status:** accepted + implemented (2026-06-02). One small `std/editor/ui.blsp`
 addition (`overlay-route` + `overlay-active`); the editor and the observer both adopt
@@ -6309,14 +6309,14 @@ app's own data (its modes, its model shape); only the dispatch policy is shared.
 
 **Consequences.** The dispatch rule has one home and one test (`tests/ui_test.blsp`); a
 new modal feature in either app is a list entry, not new control flow. The seam is the
-same spirit as ADR-46 (one `ui-run` loop, many apps): shared *mechanism* in
+same spirit as ADR-046 (one `ui-run` loop, many apps): shared *mechanism* in
 `editor/ui`, per-app *policy* (which overlays, what they do) in the app.
 
-**References.** ADR-46 (the `ui-run` framework). Lives in `std/editor/ui.blsp`
+**References.** ADR-046 (the `ui-run` framework). Lives in `std/editor/ui.blsp`
 (`overlay-route`/`overlay-active`); consumed by `brood-edit`'s `input.blsp` and
 `std/tool/observer.blsp`.
 
-## ADR-95 — OS clipboard: `clipboard-get` / `clipboard-set!` builtins (the `clipboard` feature)
+## ADR-095 — OS clipboard: `clipboard-get` / `clipboard-set!` builtins (the `clipboard` feature)
 
 **Status:** accepted + implemented (2026-06-02). Two builtins behind a `clipboard`
 feature (pulled in by `gui`), via the `arboard` crate. The editor's kill/copy/yank sync
@@ -6347,11 +6347,11 @@ runtime / headless tests link no clipboard stack — there the builtins are grac
 toggleable; a non-clipboard build is unaffected. A right-click context menu (next) drives
 the same commands by mouse.
 
-**References.** ADR-46 (frontends), ADR-6 (mechanism in the kernel, policy in Brood).
+**References.** ADR-046 (frontends), ADR-006 (mechanism in the kernel, policy in Brood).
 Lives in `crates/lisp/src/builtins/mod.rs` (`clipboard` mod + the two builtins), `Cargo.toml`
 (`clipboard` feature / `arboard`), `brood-edit`'s `commands.blsp` + `main.blsp`.
 
-## ADR-96 — VM perf as the JIT runway: one road, not two
+## ADR-096 — VM perf as the JIT runway: one road, not two
 
 **Status:** accepted + round 1 implemented (2026-06-06): items 1–5 all landed —
 fib −22%, sum_tail −26%, cons_build −42%, sort −13…−24%, spawn_fanout −25%
@@ -6391,7 +6391,7 @@ Differential corpus extended with `try`/`binding`/`isolate` thunk routing and
 apply-unfolding cases. GC-stress + heap verifier clean.
 
 **Context.** A JIT (emit machine code at runtime) is the natural next rung above the
-closure-compiling VM (ADR-76): both engines compile a form once, but the VM *interprets*
+closure-compiling VM (ADR-076): both engines compile a form once, but the VM *interprets*
 the compiled `Node` tree (a Rust `match` per node — ~50–100 instructions for a hot
 `(+ a b)`), where a JIT would run ~8. The question was whether to start one, run it in
 parallel with VM tuning, or defer it. Analysis showed the architecture is unusually
@@ -6410,11 +6410,11 @@ work and the JIT prerequisites are *mostly the same list*.
    mechanism (the epoch-guarded slot, generalizing `Prim2`'s guard); never hard-bind a
    resolution without a guard; prefer indirection tables over in-place AST patching
    (machine code can't be atomically rewritten the way `rewrite_node` patches `ConstVal`s
-   under an ADR-91 compaction); explicit safepoint discipline (values live in
+   under an ADR-091 compaction); explicit safepoint discipline (values live in
    `Heap::roots` slots across any call/alloc); the packed-64-bit `Value` question is
    open and must be decided before 1.0.
 3. **Gate any actual codegen** (Cranelift, executable pages) on: bytecode lowering done
-   (ADR-76 §2.4's internal change), the editor existing, and a real profile showing
+   (ADR-076 §2.4's internal change), the editor existing, and a real profile showing
    interpretive dispatch — not allocation/GC/`env_get` — as the bottleneck.
 
 **Benchmark protocol (binding for this round).** An archived `scripts/bench.sh` baseline
@@ -6427,18 +6427,18 @@ meter of JIT runway, so a future JIT becomes an increment (a back-end for an IR 
 already trust) rather than a project. The cost: we deliberately leave the template-JIT
 2–4× on the table until the gates above are met.
 
-**References.** ADR-76 (the VM; its §2.4 names bytecode lowering as an internal change),
-ADR-69 (dispatch perf — the passthrough + IC groundwork), ADR-91 (RUNTIME compaction),
-ADR-26 (immutability), ADR-38 (bundle-size vs Cranelift). Lives in
+**References.** ADR-076 (the VM; its §2.4 names bytecode lowering as an internal change),
+ADR-069 (dispatch perf — the passthrough + IC groundwork), ADR-091 (RUNTIME compaction),
+ADR-026 (immutability), ADR-038 (bundle-size vs Cranelift). Lives in
 `crates/lisp/src/eval/compile/mod.rs`; plan + analysis in `docs/vm-perf-and-jit-runway.md`.
 
-## ADR-97 — Batteries-included default install; split + rename the process framework
+## ADR-097 — Batteries-included default install; split + rename the process framework
 
-**Status:** accepted (2026-06-07). Amends **ADR-85 Move 2** (reverses the
+**Status:** accepted (2026-06-07). Amends **ADR-085 Move 2** (reverses the
 externalization) and supersedes the short-lived stopgap that merged supervision
 into `proc/hatch`.
 
-**Context.** ADR-85 Move 2 lifted the net library (`net/tcp`/`net/http`/`net/sse`)
+**Context.** ADR-085 Move 2 lifted the net library (`net/tcp`/`net/http`/`net/sse`)
 into a `brood-net` package and planned a `brood-supervisor` package for
 `proc/supervisor`, on the thesis "keep the bundled stdlib small; push frameworks
 out to packages." In practice the modules were *deleted* from the binary but the
@@ -6446,7 +6446,7 @@ packages were **never created**, so `brood-edit` (which `(:use)`s `net/sse` and
 `proc/supervisor`) couldn't start — `nest run` died with `cannot find module
 'net/sse'`. The project's direction also clarified: Brood should be
 **batteries-included** — the editor, net, and concurrency frameworks are part of
-what the language ships, not optional fetched deps. The package manager (ADR-37)
+what the language ships, not optional fetched deps. The package manager (ADR-037)
 remains, but for *third-party* deps only; we do not externalize our own framework.
 
 Separately, `proc/hatch` was the only metaphorically-named module in `std/` (every
@@ -6469,7 +6469,7 @@ common consumer**: a gen_server-style server framework and OTP-style supervision
    `!` / `gen-call` / `stop` keep their names. The `nest new` scaffold template
    `hatch` is renamed `gen`.
 
-**Consequences.** The lean-binary goal of ADR-85 is explicitly traded for a
+**Consequences.** The lean-binary goal of ADR-085 is explicitly traded for a
 batteries-included default — every runtime carries the net + concurrency
 frameworks. `std/` is still curated (the *language* core stays small); the
 framework modules live under their `editor/`, `net/`, `proc/` namespaces and are
@@ -6481,7 +6481,7 @@ prelude freeze (devlog). Consumers updated: `std/log` (`proc/gen` + `spawn-serve
 `brood-edit` drops its `:source-paths` hacks and `(:use proc/supervisor)` /
 `(:use net/*)` resolve from the binary.
 
-## ADR-98 — Shrink the core: drop the `lambda`/`let*` aliases; demote `defmacro` to a macro
+## ADR-098 — Shrink the core: drop the `lambda`/`let*` aliases; demote `defmacro` to a macro
 
 **Status:** accepted (2026-06-07).
 
@@ -6522,7 +6522,7 @@ so the bootstrap is order-safe. One stale grammar-test assertion (which used
 `let*` to demonstrate regex-escaping — `match*` still covers it) was removed. Full
 suite green on both engines.
 
-## ADR-99 — `proc/gen` is a real gen_server: `info`/`init`/`terminate` + a call timeout
+## ADR-099 — `proc/gen` is a real gen_server: `info`/`init`/`terminate` + a call timeout
 
 **Status:** accepted (2026-06-07).
 
@@ -6538,7 +6538,7 @@ monitored); (2) **no `init`/`terminate`** lifecycle hooks; (3) the client
 `gen-call` **blocked forever** on a dead or wedged server, where OTP defaults to a
 5 s timeout and monitors the callee.
 
-**Decision.** Close all three in **pure Brood** — no kernel/Rust surface (ADR-6).
+**Decision.** Close all three in **pure Brood** — no kernel/Rust surface (ADR-006).
 
 1. **`defprocess` gains `info`, `init`, `terminate` clauses.** `info` matches a
    non-envelope message (body → next state, like `cast`); `init` runs once at
@@ -6558,7 +6558,7 @@ monitored); (2) **no `init`/`terminate`** lifecycle hooks; (3) the client
    monitor is always dropped — and a late `[:down]` flushed — before returning.
 3. **`spawn-server-link` / `spawn-server-named`** added (Erlang `start_link` and a
    registered name) alongside the existing `spawn-server`. Kept to three helpers
-   rather than a link×name matrix (ADR-11); link+name is one line at the call site.
+   rather than a link×name matrix (ADR-011); link+name is one line at the call site.
 
 **Consequences.** A `defprocess` server now composes correctly under monitors and
 `proc/supervisor`, never leaks unmatched messages, and `gen-call` fails fast
@@ -6579,8 +6579,8 @@ startup) are tracked in [ROADMAP.md](../ROADMAP.md).
 **Status:** accepted (2026-06-07). Fresh-only stealing **landed**; full migration
 **deferred** (committed direction). See [concurrency-v2.md](concurrency-v2.md)
 §3.2/§7, [memory-model.md](memory-model.md) (the "stepping VM" coupling),
-[scheduler.md](scheduler.md). Builds on ADR-18/27 (M:N scheduler + preemption),
-ADR-76 (the VM that reified the operand stack), ADR-55 (automatic copying GC).
+[scheduler.md](scheduler.md). Builds on ADR-018/027 (M:N scheduler + preemption),
+ADR-076 (the VM that reified the operand stack), ADR-055 (automatic copying GC).
 
 **Context.** The scheduler pins each process to its spawn-worker for life: a
 process never migrates between worker threads after it has started. KI-1b
@@ -6593,7 +6593,7 @@ the **native Rust stack** — true of the tree-walker *and* of today's VM, whose
 `exec_call → vm_apply` path still recurses natively (only the operand stack was
 reified and only tail calls are trampolined). Any saved native stack is
 thread-affine and fragile to move; swapping the stackful substrate inherits the
-same hazard. So spawn-placement (ADR-18 era) balances *process count*, not
+same hazard. So spawn-placement (ADR-018 era) balances *process count*, not
 ongoing *CPU load*, and cannot self-correct when a process turns long-running
 *after* placement.
 
@@ -6619,7 +6619,7 @@ ongoing *CPU load*, and cannot self-correct when a process turns long-running
    The surrounding machinery is already migration-ready: `Send` per-process heaps,
    migration-surviving scheduler thread-locals, the one-owner (INV-2) handshake,
    and INV-1 (no slot reuse) are all engine-independent.
-3. **Defer the build** (ADR-11) until a workload shows fresh-only stealing +
+3. **Defer the build** (ADR-011) until a workload shows fresh-only stealing +
    spawn-placement leaves real long-task-occupancy skew. Staged inside the VM
    behind a flag (reify call stack → swap suspension for state capture → generalise
    stealing → optional periodic rebalancer), each step keeping the suite and the §6
@@ -6643,7 +6643,7 @@ staging, and its added acceptance bar live in `concurrency-v2.md` §7.
 
 **Status:** accepted (2026-06-07). Landed in `std/editor/ui.blsp` (the
 `:timers` model API + the clock-threaded `ui--loop`); tests in
-`tests/ui_test.blsp`. Builds on ADR-46 (the one render-op protocol / many
+`tests/ui_test.blsp`. Builds on ADR-046 (the one render-op protocol / many
 frontends seam `ui-run` lives on) and the M4 let-it-crash render loop.
 
 **Context.** `ui-run` had a single poll timeout — `:tick-ms` (default 1000 ms) —
@@ -6700,11 +6700,11 @@ double-click-word / triple-click-line — independent of timers but part of the 
 ## ADR-101 — JIT compilation: three-layer assembly model, Cranelift backend, calling convention
 
 **Status:** accepted (architecture, 2026-06-07). Implementation gated on bytecode
-lowering + editor workload profile (ADR-96 prerequisites). Full design in
+lowering + editor workload profile (ADR-096 prerequisites). Full design in
 [`vm-perf-and-jit-runway.md`](vm-perf-and-jit-runway.md) §6. Staged roadmap in
 [`ROADMAP.md`](../ROADMAP.md) (JIT tier-1 entries under the VM section).
 
-**Context.** ADR-96 deferred actual JIT codegen until three gates pass: (a) the
+**Context.** ADR-096 deferred actual JIT codegen until three gates pass: (a) the
 VM is bytecode-based, (b) a real editor workload profile names interpretive
 dispatch as the bottleneck, and (c) the `Value` representation is decided. The
 June 2026 profiling harness confirms the VM is already dispatch-bound at its
@@ -6718,9 +6718,9 @@ JIT calling convention is needed. This ADR records those decisions.
 **Backend: Cranelift (`--features jit`).** `cranelift-codegen` is the codegen
 backend, compiled only when `--features jit` is requested. It is pure Rust (no
 C++ dep), designed for dynamic-language JITs (used by Wasmtime and the rustc
-Cranelift backend), and passes ADR-14's bar — ~7 kloc of Cranelift IR generation
+Cranelift backend), and passes ADR-014's bar — ~7 kloc of Cranelift IR generation
 replaces hand-assembling x86-64 and AArch64. Default builds and `nest release`
-bundles (ADR-38) are unaffected; the large binary is an explicit opt-in.
+bundles (ADR-038) are unaffected; the large binary is an explicit opt-in.
 LLVM would add stronger optimisations but those are tier-2 territory; a
 hand-rolled assembler drops AArch64 and costs more to maintain.
 
@@ -6752,18 +6752,18 @@ hand-rolled assembler drops AArch64 and costs more to maintain.
 - Runtime services (`brood_rt_alloc_pair`, `brood_rt_gc_safepoint`,
   `brood_rt_tick`, `brood_rt_global_epoch`, `brood_rt_call_slow`) are `#[no_mangle]
   extern "C"` functions. Their addresses live in a per-arm indirection table
-  (ADR-96 §4.C) that RUNTIME compaction (ADR-91) can rewrite without
+  (ADR-096 §4.C) that RUNTIME compaction (ADR-091) can rewrite without
   invalidating machine code.
-- Epoch guard: the call-site IC (ADR-96 §4.A) compiles to `cmp [EPOCH_SLOT],
+- Epoch guard: the call-site IC (ADR-096 §4.A) compiles to `cmp [EPOCH_SLOT],
   r_epoch; jne slow_path`. A `def` hot-reload bumps the global epoch and
   invalidates all JIT'd IC caches at their next call.
-- Preemption: JIT'd loop back-edges call `brood_rt_tick()` (ADR-27).
+- Preemption: JIT'd loop back-edges call `brood_rt_tick()` (ADR-027).
 
 **Prerequisites not in this ADR:**
 
-1. Bytecode lowering (ADR-96, the JIT on-ramp) — Cranelift IR is generated
+1. Bytecode lowering (ADR-096, the JIT on-ramp) — Cranelift IR is generated
    from flat bytecode ops, not from the `Node` tree.
-2. `Value` representation decision (ADR-96 §4.E — NaN-box vs 16-byte enum).
+2. `Value` representation decision (ADR-096 §4.E — NaN-box vs 16-byte enum).
    The tier-1 design with values in `Heap::roots` works with either rep, but a
    single-word `Value` is what JIT'd register code wants, and pre-alpha is the
    cheapest window to decide this.
@@ -6779,7 +6779,7 @@ unaffected. The `Value`-repr decision is flagged as a prerequisite blocker.
 `tree-sitter-parse` builtin, feature `treesit`) + `std/editor/treesit.blsp` (the
 generic fontify/navigation policy); tests in `tests/tree_sitter_test.blsp` and
 `tests/treesit_module_test.blsp`. Drives ROADMAP §C (multi-language editor modes:
-ruby/elixir). Builds on ADR-45 (the rope + `parse-source-positioned` positioned
+ruby/elixir). Builds on ADR-045 (the rope + `parse-source-positioned` positioned
 CST) and the `std/tool/sexp` node abstraction.
 
 **Context.** The editor (brood-edit) is policy over Brood: brood-mode gets
@@ -6844,7 +6844,7 @@ and `tree-sitter-parse` reports any `:lang` as "not built into this runtime
 bare `cargo test` stays green. **End state:** dynamic runtime grammar loading
 (`.so`/`.wasm` at runtime, no compile-time enum at all) — then the kernel ships
 neither grammar nor language list; deferred until a real editor mode needs it
-(ADR-11).
+(ADR-011).
 
 **Follow-up (2026-09-03) — the end state landed: grammars load at runtime, and the
 generic policy grew an indenter.** The deferral above named its trigger ("until a real
@@ -6913,13 +6913,13 @@ around in the editor.)
 
 **Decision.**
 
-**Mirror the socket mechanism (ADR-62), not extend `%os-cmd`.** A persistent child
+**Mirror the socket mechanism (ADR-062), not extend `%os-cmd`.** A persistent child
 is the same *shape* as a TCP stream: a bidirectional byte channel plus a lifecycle,
 where reads must not pin a scheduler worker. So it reuses the same seam sockets use
-— the blocking-IO → mailbox handoff (ADR-59, `spawn_io_source`). Each child's
+— the blocking-IO → mailbox handoff (ADR-059, `spawn_io_source`). Each child's
 stdout and stderr are read on dedicated non-worker threads that **deliver to the
 owning process's mailbox**; the Brood side just `receive`s. `%os-cmd` stays the
-one-shot tool it is; this is a separate primitive, not a knob on it (ADR-11).
+one-shot tool it is; this is a separate primitive, not a knob on it (ADR-011).
 
 **Message vocabulary** (handle = a `Value::Subprocess`):
 - `[:proc handle data]` — a stdout chunk;
@@ -6945,7 +6945,7 @@ rejects a socket — the id names an OS process on this host.
 (spawn with piped stdio, throws if the program can't start), `proc-send` (write a
 string to stdin + flush, blocking), `proc-close` (kill if running + drop stdin,
 idempotent; the final `[:proc-closed …]` still reaches the owner). Deferred as
-power features until a concrete need (ADR-11): a graceful stdin-EOF-without-kill,
+power features until a concrete need (ADR-011): a graceful stdin-EOF-without-kill,
 an explicit exit-code wait, a controlling-process handoff like sockets have.
 
 **Implementation notes.** The registry holds the child's stdin behind its own
@@ -7043,10 +7043,10 @@ concurrent block). The kernel-event sources (ADR-137), the metric aggregators
 (counter/sum/gauge/summary/`sample-every` + the bucketed `distribution`/histogram with
 `metric-percentile`, `tests/telemetry_metrics_test.blsp`), and node up/down through the
 `[:runtime kind]` stream (`watch-nodes`) all shipped 2026-07-24 — all pure Brood over
-this seam. `defevent` schemas and the remote tier remain deferred follow-ons (ADR-11)
+this seam. `defevent` schemas and the remote tier remain deferred follow-ons (ADR-011)
 — see the roadmap entry.
 
-This decision **superseded two earlier cuts** in the same session (greenfield, ADR-0
+This decision **superseded two earlier cuts** in the same session (greenfield, ADR-000
 spirit): first an async single-registry process; then, after asking "why is Erlang
 synchronous," an inline-in-the-caller model (Erlang's own shape). The inline model was
 then reversed for the **hard requirement below**.
@@ -7078,7 +7078,7 @@ kernel surface**:
   so a *throwing* handler is caught and **detached** — the listener survives normal
   handler bugs. Only an *uncatchable* fault kills the listener.
 - **Restartable, handlers survive.** The handler table is a `def`-rebound global
-  (`*telemetry-handlers*`, visible across processes — ADR-13), **not** listener
+  (`*telemetry-handlers*`, visible across processes — ADR-013), **not** listener
   state. So the listener is a stateless executor: supervise it (an ordinary
   `:permanent` child) and a crash restarts it with every handler intact.
   `start-telemetry` spawns + registers it (`:telemetry`); `stop-telemetry` ends it.
@@ -7134,7 +7134,7 @@ schemas, and the remote tier.
 the `Message::Table` codec (cross-process, runtime-local), and
 `tests/table_test.blsp` (17 cases incl. cross-process sharing + concurrent-incr
 atomicity). Deferred: owner-death GC / `heir`, ordered/bag tables, select/match,
-a distributed (Mnesia-like) tier — all gated on a real consumer (ADR-11).
+a distributed (Mnesia-like) tier — all gated on a real consumer (ADR-011).
 
 **Context.** Shared, concurrently-read/written state is the one thing the
 process-and-immutable-data model can't express cheaply: a process holding a map
@@ -7146,7 +7146,7 @@ coming daemon want the same. The user's framing: build it carefully, **fewer fea
 but more robust**, and "call it `table`."
 
 **Decision.** A `table` is genuine mutable state, so per the immutability contract
-(ADR-26) it is a **Rust-backed opaque resource behind primitives**, never a mutable
+(ADR-026) it is a **Rust-backed opaque resource behind primitives**, never a mutable
 `Value` — the blessed path (like the rope). `Value::Table(u64)` is a scalar handle
 into a global registry of stores. Unlike `Socket`/`Subprocess` (process-local) it is
 **sendable** (`Message::Table`): every copy of the handle indexes the *same* store,
@@ -7257,7 +7257,7 @@ arity/doc entry in `crates/lisp/src/builtins/mod.rs` (beside `%str-index-of`); t
 `string-split`/`string-split--acc` defns removed from `std/prelude.blsp`;
 `tests/strings_test.blsp` already covers the semantics.
 
-**Context.** Per ADR-6/8 the string library (`split`/`join`/`replace`/`trim`/…) is
+**Context.** Per ADR-006/008 the string library (`split`/`join`/`replace`/`trim`/…) is
 written in Brood over the `substring`/`%str-index-of`/`str` primitives, and `string-split`
 was a pure-Brood tail-recursion: find the separator, emit the head, recurse on the *tail*
 substring. But Brood strings are char-indexed and `substring` is O(index) (UTF-8 has no
@@ -7271,7 +7271,7 @@ quadratic cost was latent everywhere, not just the editor.
 **Decision.** Make `string-split` a native builtin — one O(n) pass via Rust's `str::split`
 (empty separator → chars, matching the old semantics and `string->list`). A correct O(n)
 version is unexpressible in pure Brood given char-indexed `substring`, so this is genuinely
-kernel-worthy (ADR-8's bar), and it *shrinks* the surface: one focused builtin replaces a
+kernel-worthy (ADR-008's bar), and it *shrinks* the surface: one focused builtin replaces a
 recursive Brood pair and joins the existing native string-scanner family
 (`%str-index-of`/`string-span`/`string-span-until`). The 174 KB parse dropped ~840 ms →
 ~10 ms; every `string-split` caller benefits.
@@ -7289,14 +7289,14 @@ heavier (compile per call), wrong semantics (literal vs pattern), removes nothin
 gradual-assignment check in `check_def`, the return-type check in `check_fn_seeded`, and
 `expr_ty`'s declared-global fallback (`crates/lisp/src/types/check/{walk,guards,ctx,annot}.rs`).
 Tests in `check.rs`; supersedes the "foundation-only, unconsumed" status note in `types.md`
-(refines ADR-24).
+(refines ADR-024).
 
 **Context.** `GradualTy`/`consistent_with` had been built and unit-tested but had **zero
 production callers** — referenced only by their own tests, with a standing note to "wire it
 in only when a real gradual-assignment consumer arrives." The question was delete it
 (greenfield: drop dead weight) or give it the consumer. The compatibility answer settled it:
 `GradualTy` is the *set-theoretic* way to do gradual typing (consistent subtyping derived
-from set inclusion, not a Siek–Taha bolt-on — ADR-24), so it's the right direction; what it
+from set inclusion, not a Siek–Taha bolt-on — ADR-024), so it's the right direction; what it
 lacked was a job.
 
 **The key insight (why this isn't just disjointness rebranded).** The existing advisory
@@ -7317,7 +7317,7 @@ global with a declared type is `dynamic_within(t)` — a **bounded dynamic**. `O
 only known/unknown; it can't say "unknown but definitely numeric." So `(def count label)`
 with `label : string`, `count : int` is flagged (`string ∩ int = ⊥`), where the disjointness
 pass — treating every global as an untracked `None` — sees nothing. This is the genuine
-value-add, and it's exactly the hot-reload-safety motivation of ADR-24 (a global is
+value-add, and it's exactly the hot-reload-safety motivation of ADR-024 (a global is
 `dynamic(t)`, never assumed static): it warns on a provable mismatch with the declared
 *contract*, and defers when the bound merely overlaps.
 
@@ -7334,7 +7334,7 @@ types are sound *over-approximations* (`(+ int int)` is typed `number`). So:
 The result held the zero-false-positive bar through every slice: project-wide `nest check`
 over `std/` + `tests/` stayed at 3 warnings (all the intentional non-tail recursion lint).
 
-**Deferred (ADR-11).** Catching a wider *call-result* body (body typed `number`, declared
+**Deferred (ADR-011).** Catching a wider *call-result* body (body typed `number`, declared
 `int`) needs **precise** result types — overloaded/dependent arithmetic sigs, or full
 occurrence-typing body inference (the historical false-positive source). Both wait for a
 concrete consumer that justifies trading the perfect no-FP record. The bounded option
@@ -7366,7 +7366,7 @@ the new `lmap`/`lfilter`/`lkeep`/`lremove` + `eduction`.
 lazy view silently drops those effects unless realised. The design's "footgun is benign
 because Brood is immutable" was wrong: immutability constrains *data*, not *I/O*. Making the
 default lazy would force auditing ~180 `map`/`filter` sites and adopting a permanent "never
-map for effect" discipline — a poor trade against ADR-11 (ship the simple form; defer the
+map for effect" discipline — a poor trade against ADR-011 (ship the simple form; defer the
 powerful, sharp-edged one). Opt-in fusion keeps the idiom intact and the win available.
 
 **Mechanics.** Realising a view runs its transducer (a Brood closure), which the pure-heap
@@ -7395,7 +7395,7 @@ immutable `assoc` folds). Kept the kernel-internal watermarked CHAMP build
 
 **Context.** A user-facing transient (`Value::Transient` + `assoc!`) had been shipped
 (the "Phase 2 overruled" note in `docs/transients.md`) for fast map building. But a
-Lisp-callable, identity-mutable data structure directly contradicts ADR-26's first,
+Lisp-callable, identity-mutable data structure directly contradicts ADR-026's first,
 absolute bullet — *"Lisp data is immutable. No primitive mutates a `Value`; none may be
 added."* `docs/transients.md`'s own Phase-1 section had argued exactly this and rejected
 the user-facing surface; it was overruled, then the cost showed up: the GC grew a
@@ -7414,15 +7414,15 @@ the value, never observable as mutation.
 **Consequence (the upside).** Removing the mutable transient let the GC delete the write
 barrier and epoch re-anchor that existed only for it. The minor flip's founding invariant —
 *old never points to young, no write barriers for data* — holds for every value again; the
-sole remembered-set is the `def`/env-frame *binding* barrier (ADR-13, binding mutation, not
+sole remembered-set is the `def`/env-frame *binding* barrier (ADR-013, binding mutation, not
 data). ~840 net lines removed. CLAUDE.md now states the rule absolutely so it isn't
-re-litigated. Reaffirms and hardens ADR-26; reverts the transient half of the work in
+re-litigated. Reaffirms and hardens ADR-026; reverts the transient half of the work in
 `docs/transients.md`.
 
 ## ADR-113 — mimalloc as the allocator backend (spend memory for speed; Brood targets long-running apps)
 
 **Status:** accepted (2026-06-15). `core/alloc.rs`'s `Counting` global allocator delegates to
-`mimalloc::MiMalloc` (`BACKEND`) instead of `System`; byte-counting/limits (ADR-43) unchanged.
+`mimalloc::MiMalloc` (`BACKEND`) instead of `System`; byte-counting/limits (ADR-043) unchanged.
 `mimalloc` added to the `brood` lib deps.
 
 **Context.** Brood is built for **long-running applications — editors and web servers — not
@@ -7435,7 +7435,7 @@ the `wordcount`/`assoc` hot path in `malloc`/`free`/`Drop`.
 **Decision.** Route the counting allocator's backend through **mimalloc** (per-thread heaps +
 size-segregated free lists → ~bump-speed alloc/free). Drop-in `GlobalAlloc`, MIT, no correctness
 surface (byte counter tallies requested `Layout` sizes around it; `BROOD_MEM_LIMIT` still works;
-startup unchanged at ~38 ms). Relaxes ADR-5's dependency-free rule for genuine runtime
+startup unchanged at ~38 ms). Relaxes ADR-005's dependency-free rule for genuine runtime
 infrastructure — the bar `boxcar` already cleared.
 
 **Trade.** Faster (~15% `wordcount`, ~28% `bintree`, single-thread geomean ~12× → ~9.9× off the
@@ -7486,14 +7486,14 @@ JIT int-subset); it is now a `debug_assert!(heap.dbg_value_stale(v).is_none())` 
 regression of the invariant trips loudly in debug instead of corrupting. Detection at large already
 exists: the per-deref epoch tripwire, `BROOD_GC_VERIFY`, and `BROOD_JIT_VERIFY`.
 
-**Context.** Brood's data is immutable (ADR-26/112) and processes are isolated (per-process LOCAL
+**Context.** Brood's data is immutable (ADR-026/112) and processes are isolated (per-process LOCAL
 heap, messages deep-copied). The reasonable intuition — *"with immutability + isolation, GC should
 be easy; are we over-complicating it?"* — is half right, and worth pinning down precisely:
 
 - **What those properties already buy, and we cash in.** Because data never mutates, *old can never
   point to young*, so the generational minor collection needs **no data write barrier / remembered
   set** (the sole remembered set is the narrow `def`/env-frame *binding* rebind for hot reload,
-  ADR-13). Per-process heaps collect independently (no stop-the-world); a dead process frees its
+  ADR-013). Per-process heaps collect independently (no stop-the-world); a dead process frees its
   whole heap wholesale. That is the payoff, and it is real.
 - **What they do *not* buy.** The complexity that remains is not from handling mutation (there is
   none). It is from one **performance** choice: a **moving/copying** nursery (for bump allocation +
@@ -7560,7 +7560,7 @@ simplicity-first escape, and the immutability invariant guarantees it would be c
 must spill handles before calls (structural, done) and Rust glue must re-read from `roots` after
 safepoints (a reviewable invariant, now debug-checked at the last unguarded site). That is cheaper
 and lower-risk than either a stack-map implementation (redundant) or a collector rewrite
-(throughput regression). Supersedes nothing; refines ADR-35/55 (the copying collector stays) and
+(throughput regression). Supersedes nothing; refines ADR-035/055 (the copying collector stays) and
 ADR-101 (documents that the JIT's GC-root contract is spill-to-roots, *not* stack maps).
 
 ## ADR-115 — Record/shape types: `(record :k T …)`, full `fields` refinement
@@ -7573,7 +7573,7 @@ boundary; `Ty` carries a full `fields` refinement with width/depth subtyping;
 `(get r :k)` resolves to the exact field type on both a declared *and* an inferred
 record; a `{…}` map literal infers its own record shape with zero annotation.
 Advisory throughout — contract #5 holds. Refines the Step 5+ staircase alongside
-ADR-78's arrow/element/map_kv refinements.
+ADR-078's arrow/element/map_kv refinements.
 
 **Context.** `(map K V)` ([`type-map-kv.md`](type-map-kv.md)) gives a map *uniform*
 key/value types, but most config/options/record-shaped maps aren't uniform —
@@ -7588,7 +7588,7 @@ rather than reusing the `{…}` map-literal reader syntax — it slots into
 `Value::Map`-shaped branch to the parser. Fields are **required by default**; an
 `(optional T)` wrapper marks a field as allowed to be absent/`nil`. Records are
 **open**: extra keys beyond the declared fields are allowed and ignored (the
-permissive direction of structural width subtyping) — the ADR-11-simple choice,
+permissive direction of structural width subtyping) — the ADR-011-simple choice,
 since a closed-record variant is a pure addition later if a concrete need for it
 shows up.
 
@@ -7648,10 +7648,10 @@ ever *miss* a warning, never manufacture a false one (contract #5).
 **Deferred** (`type-records.md`): closed records (reject unknown keys);
 `assoc`/`keys`/`vals` field-precise sinks (only `get` was built, the highest-value
 case); a less conservative subtyping algorithm. Each additive, gated on a real
-consumer per ADR-11.
+consumer per ADR-011.
 
 **Trade.** No new `Value`/`Tag` variant. Supersedes nothing; extends the Step 5+
-staircase ADR-78 started and sits alongside `(map K V)` (ADR-78's third slice) as
+staircase ADR-078 started and sits alongside `(map K V)` (ADR-078's third slice) as
 a second, heterogeneous map refinement.
 
 ## ADR-116 — Intersection of arrows: overloaded functions via `(and A B …)`
@@ -7662,13 +7662,13 @@ type can now depend on which arm's domain a call's argument provably matches —
 `(and (int -> int) (bool -> bool))` — instead of the old behavior where two
 distinct known arrows silently widened to "any function", discarding both. No new
 grammar: reuses the already-shipped `(and …)` conjunctive-type syntax. Advisory
-throughout — contract #5 holds. Refines the Step 5+ staircase alongside ADR-78
+throughout — contract #5 holds. Refines the Step 5+ staircase alongside ADR-078
 (arrow/element/map_kv) and ADR-115 (records); closes the item `ROADMAP.md`
 flagged as **"the single biggest expressiveness gap"**.
 
-**Context.** ADR-78 explicitly deferred this when it chose `Ty` as a
+**Context.** ADR-078 explicitly deferred this when it chose `Ty` as a
 single-refinement struct over a replacing enum: "intersections for overloaded
-fns... the bulk of the set-theoretic-algebra complexity ADR-11 says to defer."
+fns... the bulk of the set-theoretic-algebra complexity ADR-011 says to defer."
 `(and (int -> int) (bool -> bool))` already *parsed* (the existing `(and …)` grammar
 folds pairwise through `Ty::intersect`), but `intersect`'s generic `merge_intersect`
 helper treated two distinct known `Sig`s as an unresolvable conflict and widened to
@@ -7754,7 +7754,7 @@ inert everywhere it isn't used).
 **Trade.** No new `Value`/`Tag` variant — an overloaded function is still a plain
 runtime closure/native, same as any other `Fn`/`Native`-tagged value; `overload` is
 purely a static refinement. Supersedes nothing; closes the Step 5+ "Gaps to parity"
-item ADR-78 deferred.
+item ADR-078 deferred.
 
 **Addendum 2026-09-17 — several matching arms MEET.** The first cut unioned the
 results of every arm the arguments fit; the meet is the reading the declaration
@@ -7915,7 +7915,7 @@ checker consumer of refinements that already existed (ADR-105/117). Supersedes
 nothing; activates the exhaustiveness use case those two ADRs were introduced
 for but hadn't yet wired up.
 
-## ADR-119 — Incremental `nest check` cache: designed, not built (defer per ADR-11)
+## ADR-119 — Incremental `nest check` cache: designed, not built (defer per ADR-011)
 
 **Status:** proposed (design only), 2026-07-05. Full design in
 [incremental-check.md](incremental-check.md). No runtime code. Recorded so the hard
@@ -7935,7 +7935,7 @@ question raised: isn't there now an argument for a proper compilation/caching st
 **Decision — design it now, build it later, in two phases.** Yes, incremental checking is
 the architecturally-correct answer for scale, but (a) today's real Brood projects are tiny
 — the only driver is a synthetic benchmark — and (b) cache invalidation under Brood's
-late-binding model is the genuinely hard part. So ADR-11 applies: **write the design,
+late-binding model is the genuinely hard part. So ADR-011 applies: **write the design,
 defer the build** until a real large codebase justifies it. The design splits by
 invalidation shape:
 
@@ -8080,12 +8080,12 @@ surfaced exactly the one true-positive finding above and nothing else.
 **Status:** proposed (design only), 2026-07-05. Full design in
 [type-soundness-reload.md](type-soundness-reload.md). No runtime code — recorded
 so the reload-conflict resolution is on paper before implementation starts, per
-ADR-11 (gated on this being picked up as the next slice of type-system work).
+ADR-011 (gated on this being picked up as the next slice of type-system work).
 
 **Context.** `ROADMAP.md`'s Elixir-parity gap list previously marked
 *pervasive static soundness/gating* as something Brood deliberately won't
 pursue (✋), reasoning that gating on global `def`/`defn` types must conflict
-with Erlang-style hot reload (ADR-13: a `def` rebinds a global unconditionally
+with Erlang-style hot reload (ADR-013: a `def` rebinds a global unconditionally
 at runtime, visible to every process sharing that runtime's code region on its
 next lookup). That framing is revised: whole-program soundness, including
 globals, is now the target, not a deliberately-skipped item.
@@ -8111,7 +8111,7 @@ permanent `dynamic()`); have the checker record a dependency edge whenever a
 call site is gated on a global's type; on every `def` that rebinds a global,
 run a targeted re-check of the new body plus every recorded dependent, and
 surface a fresh advisory warning for any assumption that no longer holds. The
-reload always still happens — this never blocks `def`, preserving ADR-13 and
+reload always still happens — this never blocks `def`, preserving ADR-013 and
 the live-image premise. A genuine hard gate only exists for **batch/CI
 tooling** (`nest check`/`nest test`, a future `--strict` switch treating any
 warning — including these — as a failing exit code), never for the
@@ -8121,7 +8121,7 @@ inside a running image.
 **Why not a hard reject-on-reload.** Blocking `def` when it breaks a caller's
 prior proof fights the project's reason to exist — routine, deliberately
 inconsistent intermediate states while live-editing. There's also no clean
-implementation point: the shared-code-region model (ADR-13) would need to
+implementation point: the shared-code-region model (ADR-013) would need to
 know every live caller across every process sharing the runtime and decide the
 fate of in-flight calls, which the append-only, no-rollback region isn't built
 for.
@@ -8404,7 +8404,7 @@ Elixir-parity gap list picked up this session — Brood previously had no way
 to express a fixed-arity, per-position-typed vector shape at all.
 
 **Decision.** A fifth structural refinement on `Ty` — `tuple:
-Option<Arc<Vec<Ty>>>`, tagged to `Vector` alone (not `pair`, per ADR-3's
+Option<Arc<Vec<Ty>>>`, tagged to `Vector` alone (not `pair`, per ADR-003's
 vector/list split) — following the exact layering pattern `fields` (ADR-115,
 records-on-`Map`) already established: a tuple is still a plain runtime
 `[ ]` vector, no new `Value` kind, just a refinement the checker reasons
@@ -8473,7 +8473,7 @@ genuinely disabled this time) — unchanged at 91. 362/362 unit tests,
 **Deferred:** nested type variables inside a tuple position (`(tuple ?A
 ?B)`) — the `SigWithVars`/`SigTerm` route doesn't have a tuple case yet,
 only the non-variable `parse_type` path does; gated on a real consumer
-(ADR-11).
+(ADR-011).
 
 **Correction (same day, discovered while building ADR-129).** This entry's
 "91 warnings before and after" corpus-diff claim was itself measured through
@@ -8591,7 +8591,7 @@ map carries no clue what record it is at the def site or in an error; (3)
 surfaces far away, with nothing to catch it. Against that pull stands a
 documented decision (the stub: *"Brood has no records/types — model data with
 plain maps; for polymorphism use `defprotocol`/`defimpl`"*), the absolute
-immutability rule (ADR-26/112), and the keep-the-core-small rule (ADR-11).
+immutability rule (ADR-026/112), and the keep-the-core-small rule (ADR-011).
 Two things have since shifted the ground under the old stance: the checker now
 has real record/shape types — `(record :k T …)`, open, width/depth subtyping,
 per-field `get` result types (ADR-115) — and a **closed record is already a
@@ -8622,9 +8622,9 @@ the *surface* — and whether it demands any new core.
    new core `Value` kind (compatibility-contract cost per `docs/types.md`), it
    fractures the "records are maps" property (every map builtin would need a
    record arm, or records become second-class), and it buys nominal identity we
-   have no concrete consumer for. Exactly the power-feature ADR-11 says to
+   have no concrete consumer for. Exactly the power-feature ADR-011 says to
    defer until a need forces it, and a violation of "Rust provides mechanism,
-   Brood provides policy" (ADR-6) — this is policy.
+   Brood provides policy" (ADR-006) — this is policy.
 
 **Decision — option 2, worked out concretely.** `defrecord` is a Brood prelude
 macro (bootstrapped like the other `def*` macros; the `eval/mod.rs` stub is
@@ -8662,14 +8662,14 @@ point (x y))` expands to plain `defn`s over existing primitives:
 **Net kernel cost: zero.** No `Value`, no `Tag`, no special form, no builtin —
 100% a prelude macro plus type machinery that already shipped. This is the
 option maximally aligned with all three governing rules at once: minimal core
-(ADR-11 — a macro over primitives, never a special form), write-the-language-
-in-the-language (ADR-6 — it lives in `std/`), and absolute immutability
-(ADR-26 — a record is a plain immutable map, no sneaky mutable anything). It
+(ADR-011 — a macro over primitives, never a special form), write-the-language-
+in-the-language (ADR-006 — it lives in `std/`), and absolute immutability
+(ADR-026 — a record is a plain immutable map, no sneaky mutable anything). It
 complements rather than reverses the map-first stance: records *are* maps, so
 the stub's advice was never wrong, only incomplete — `defrecord` is the named,
 typo-checked *front door* to the same immutable map it always recommended.
 
-**Open sub-questions, deferred to the build slice (each an ADR-11 additive, not
+**Open sub-questions, deferred to the build slice (each an ADR-011 additive, not
 a blocker):**
 
 - **Nominal vs. structural identity.** As specified a record has **no** nominal
@@ -8698,7 +8698,7 @@ a blocker):**
 a killed access tax, and free typo-safety — at zero core cost. Supersedes the
 `defrecord`/`deftype` helpful-error stub in `eval/mod.rs` (records now exist, as
 sugar); extends ADR-115's record types with a value-level front end; leaves
-ADR-26 immutability and the ADR-6/11 core-size rules fully intact.
+ADR-026 immutability and the ADR-006/011 core-size rules fully intact.
 
 ## ADR-131 — Dead-clause lint broadens to precise surface `let`-locals (not just sig-typed params)
 
@@ -8831,14 +8831,14 @@ separator; a clean name still prints bare (`hello`, `:my-key`, `1+`). Non-readab
 (`str`/`print`) always emits the raw name — bars are a *reader* device, not for display.
 A single `Scanner::scan_bar_body` backs all three tokenizers — the **reader**, the tooling
 **CST** (`cst.rs`), and **`scan-tokens`** (the highlighter/formatter stream) — so they can't
-disagree on where a bar-quoted token runs (the ADR-25 "one source of truth" rule). Safe
+disagree on where a bar-quoted token runs (the ADR-025 "one source of truth" rule). Safe
 to add because no existing Brood source uses `|` as a symbol character (all `|` occurrences
 are in strings/comments).
 
 **Consequences.** Every symbol and keyword now round-trips through `pr-str`/`read`,
 including the pathological spellings — important for a self-editing editor that serializes
 values. The language gains one lexical form (no special form, no evaluator change). This
-is deliberately more than the strictly-minimal design (ADR-11 would defer a power
+is deliberately more than the strictly-minimal design (ADR-011 would defer a power
 feature), taken because the round-trip *invariant* the printer already claims was
 genuinely broken for keyword-from-string, a real use. See also the sibling reader change
 the same day: number-shaped tokens now need genuine numeric intent (a digit + valid sign
@@ -8996,7 +8996,7 @@ the `system-monitor` builtin (`builtins/system.rs`), emit sites in
 deopt branch (`eval/compile/mod.rs`); Brood policy `telemetry/watch-runtime`
 (`std/telemetry.blsp`); tested by `tests/sysmon_test.blsp`. Deferred follow-ons:
 node up/down through this stream, `defevent` schemas, aggregators, the
-`nest observe`/`nest mcp` consumers, the remote tier (ADR-11 — see roadmap).
+`nest observe`/`nest mcp` consumers, the remote tier (ADR-011 — see roadmap).
 
 **Context.** The observability timing tier (2026-07-18) added *counts and
 snapshots* — `gc-stats` pauses, `sched-stats`, the sampling profiler — but no
@@ -9136,7 +9136,7 @@ copies. Erlang's model, and a natural fit for a process/`receive` language
 whose data is immutable — an immutable tree cannot be cyclic, so the walker
 needs no visited set, and flattening is structurally guaranteed to terminate.
 
-**Deliberately NOT included** (ADR-11): `str`/`join` stay display-rendering —
+**Deliberately NOT included** (ADR-011): `str`/`join` stay display-rendering —
 making them flatten would change what `(str [1 2])` prints and conflate
 "render for humans" with "serialise for devices"; a future decision may add an
 explicit in-memory `iolist->string` if `utf8-bytes->string`+`bytes-concat`
@@ -9168,7 +9168,7 @@ arithmetic) already existed, so no kernel surface grew; a full-range `:u64`
 read past `i64` *just works* because ints auto-widen to big integers, giving
 exact Erlang semantics for free.
 
-**Deliberately NOT included** (ADR-11): **bit-granular** (sub-byte) widths —
+**Deliberately NOT included** (ADR-011): **bit-granular** (sub-byte) widths —
 byte-aligned segments cover TLV/length-prefixed protocols; a flag byte's bit
 fields are one `bit-and`/`bit-shift-right` away, and bit offsets would double
 the lowering's complexity for one consumer (WebSocket headers). **Float
@@ -9223,7 +9223,7 @@ rebuilt anyway.
 
 **Decision.** The roadmap's "growable read buffer (or `bytes` transient)" item
 is resolved by **not building it**. A mutable append-buffer *value* — however
-disguised — is a transient, and ADR-26 forbids transients absolutely (one was
+disguised — is a transient, and ADR-026 forbids transients absolutely (one was
 shipped and removed once already). And the need it targeted no longer exists:
 the read-side idiom is a **list of inbound chunks joined once** at the parse
 boundary (`bytes-concat` of the reversed chunk list — the list is itself an
@@ -9325,7 +9325,7 @@ teardown.
 
 ## ADR-144 — The dirty-native offload pool: blocking natives park a process, not a worker
 
-**Decision.** BEAM dirty-scheduler parity via the ADR-59 seam, not scheduler
+**Decision.** BEAM dirty-scheduler parity via the ADR-059 seam, not scheduler
 surgery. A new kernel mechanism **`%offload`** runs an **allow-listed**
 blocking native on a small OS pool (≈`nproc/4`, min 2, lazily started): the
 caller's args are deep-copied out as `Message`s, the pool thread rebuilds them
@@ -9346,7 +9346,7 @@ duration of a clone.
 
 **Why this shape.** The runtime already has exactly one blessed pattern for
 "blocking work must not hold a worker": run it off-thread, deliver a message,
-`receive` (ADR-59 — sockets, subprocess pipes). Reusing it means zero new
+`receive` (ADR-059 — sockets, subprocess pipes). Reusing it means zero new
 park/suspend machinery in the VM, errors ride the existing structured-error
 seam, and the policy layer is ~ten lines of Brood. The alternative — true
 BEAM-style process *migration* onto dirty schedulers — buys generality (any
@@ -9355,13 +9355,13 @@ consumer needs to offload heap-sharing work. Reduction preemption already
 bounds *short* native hogging (~one quantum); the pool is for the genuinely
 long tail the `BROOD_STALL_MS` tracer was built to find.
 
-**Also unlocked.** The ADR-71 WASM interop story listed the offload pool as
+**Also unlocked.** The ADR-071 WASM interop story listed the offload pool as
 its gate (a sandboxed component call is a long native); that gate is now
 open.
 
 ## ADR-145 — WASM component interop, slice 1: the sandboxed native-extension host
 
-**Decision.** ADR-71 (proposed 2026-05-30, docs/interop.md) moves to
+**Decision.** ADR-071 (proposed 2026-05-30, docs/interop.md) moves to
 **accepted and partially implemented**. The kernel embeds `wasmtime`
 (Component Model + Cranelift, fuel metering on) behind a **default-on `wasm`
 cargo feature** (the `jit` precedent; `--no-default-features` strips the
@@ -9448,7 +9448,7 @@ in-tree was triaged: 14 functions that siblings genuinely needed were
 format's `format-cst-root`), and eleven test files declare
 `(:use-internals …)` for the genuinely-internal helpers they pin.
 
-**Supersedes** the "privacy is soft" clause of ADR-19/65 and the
+**Supersedes** the "privacy is soft" clause of ADR-019/065 and the
 "link-checked `--private`" hatch-findings item (this is the stronger form).
 
 **Update (2026-08-04) — privacy is now a recorded mechanism, not a name
@@ -9498,19 +9498,19 @@ across the brood repo + 15 sibling projects migrated the tree, driven by a tempo
 
 **Status:** accepted / implemented (2026-07-24); **the git-backed-registry half is SUPERSEDED by
 ADR-211** — the registry shipped as a hosted HTTP/tarball service (hive), not a git index. The `:tarball` dep kind, the
-`%untar-gz` primitive, and the ADR-37 invariants below are unchanged and still current. Extends
-ADR-37. Design in [`packages.md`](packages.md) (*The registry (v2)* + the manifest/subcommand
+`%untar-gz` primitive, and the ADR-037 invariants below are unchanged and still current. Extends
+ADR-037. Design in [`packages.md`](packages.md) (*The registry (v2)* + the manifest/subcommand
 tables); tests in `tests/package_test.blsp` (tarball + registry blocks).
 
-**Context.** ADR-37 shipped a git-/path-deps package manager and *deferred* three
-things to v2 "until a concrete pain shows up" (ADR-11): tarball/HTTP source kinds, a
+**Context.** ADR-037 shipped a git-/path-deps package manager and *deferred* three
+things to v2 "until a concrete pain shows up" (ADR-011): tarball/HTTP source kinds, a
 registry, and discovery. The concrete pull arrived (a request to finish both). Two
-things also changed since ADR-37: a byte-faithful in-tree HTTP client now exists
+things also changed since ADR-037: a byte-faithful in-tree HTTP client now exists
 (`std/net`, ADR-141/143) — so the planned Rust `%http-get` is unnecessary — and
 first-class bytes + `%digest` make download+verify trivial.
 
 **Decision.** Add two source kinds and a registry, reusing the existing machinery and
-keeping every ADR-37 invariant.
+keeping every ADR-037 invariant.
 
 - **`:tarball` deps** — `[name :tarball URL :sha256 HEX]`. Downloaded via `std/net`'s
   `http-get` (dogfooding the language over a new Rust HTTP client), or read from a
@@ -9518,7 +9518,7 @@ keeping every ADR-37 invariant.
   bounded number of redirects (release assets 302 to a CDN). The **`:sha256` is
   mandatory** — the integrity pin standing in for git's reviewed commit; the bytes
   are verified before extraction, and a mismatch is a loud error. This preserves
-  ADR-37's "no unverified code" property (the npm supply-chain surface stays closed).
+  ADR-037's "no unverified code" property (the npm supply-chain surface stays closed).
   Extraction is the **one new Rust primitive, `%untar-gz`** — a thin shell to system
   `tar` (the same dependency tradeoff as `%git-clone`'s `git`), on the ADR-144 offload
   allow-list, stripping the single wrapper directory so the package root lands in
@@ -9527,7 +9527,7 @@ keeping every ADR-37 invariant.
 
 - **A git-backed registry** — the index is **just a git repo** of metadata
   (`packages/<name>.blsp` = a vector of `{:version :git :ref :description}` entries),
-  **not a hosted service**. This is the crux: it keeps ADR-37's decisive property —
+  **not a hosted service**. This is the crux: it keeps ADR-037's decisive property —
   *no central infrastructure to host or pay for* — while adding discovery and named
   resolution (the crates.io-index / Go-proxy model). A URL index is cloned into
   `_deps/.registry-<hash>/`; a local-path index is used in place. `nest publish`
@@ -9537,17 +9537,17 @@ keeping every ADR-37 invariant.
   greps it. A **`[name :version "X.Y.Z"]`** dep resolves the **exact** version to its
   git source and pins it, reusing the `:git` clone/cache/lock path.
 
-- **Invariants kept from ADR-37.** No semver / constraint solver — registry deps are
+- **Invariants kept from ADR-037.** No semver / constraint solver — registry deps are
   *exact* version pins, and two versions of one name is still a loud conflict. No
   install scripts — a tarball/registry package is the same pure Brood source a git dep
   is; nothing runs at fetch beyond `require`'s normal top-level evaluation. Two new
   optional manifest fields, `:description` and `:repository`, feed `publish`.
 
-**Why.** The registry-shape choice ADR-37 called "baked in once and hard to walk
+**Why.** The registry-shape choice ADR-037 called "baked in once and hard to walk
 back" is answered without reversing it: a git-backed index *is* decentralized. The
 one new Rust primitive (`%untar-gz`) is mechanism the language genuinely can't
 bootstrap (a gzip+tar decoder); download, verify, index format, resolution, publish,
-and search are all Brood policy (ADR-6). *(This deferred list is superseded — see
+and search are all Brood policy (ADR-006). *(This deferred list is superseded — see
 ADR-211's "deferred list, corrected": semver ranges and tarball-backed entries shipped;
 the cloned-index TTL is moot under the hosted design; signed packages remain the one open
 supply-chain item.)*
@@ -9573,7 +9573,7 @@ A function counts as covered when it is **entered once**. The implementation
 - `global-names` + `source-location` enumerate the denominator — every global that
   is a function defined under the project's `:source-paths`. Macros, natives, and
   data are excluded; std and the prelude can't inflate the count.
-- `def` rebinding + late binding (ADR-13) *are* the instrumentation: each target
+- `def` rebinding + late binding (ADR-013) *are* the instrumentation: each target
   is rebound to a shim that records a hit and forwards. Late binding means every
   already-loaded caller, in any process, picks up the shim with no reload.
 - `Value::Table` (ADR-107) collects hits. Tests run across processes with separate
@@ -9581,10 +9581,10 @@ A function counts as covered when it is **entered once**. The implementation
   tests can't lose an update. The sanctioned mutable structure, used for exactly
   what it exists for.
 
-**Why this split.** It is the ADR-6 principle applied honestly: Rust provides
+**Why this split.** It is the ADR-006 principle applied honestly: Rust provides
 mechanism, Brood provides policy — and here Brood needed *no* new mechanism, so
 adding a VM coverage mode would have been building machinery to avoid using the
-language. It also satisfies the ADR-11 bar: the cheap tier answers the question
+language. It also satisfies the ADR-011 bar: the cheap tier answers the question
 that changes behaviour ("what does my suite never touch?"), and the expensive tier
 stays deferred until something concrete needs it.
 
@@ -9650,7 +9650,7 @@ unchanged; the JIT off; `std/tool/coverage.blsp` extended rather than replaced.
 ## ADR-149 — A binding container is a **list**; a vector there is an error
 
 **Context.** Param lists and `let` bindings were documented as lists ("code is
-lists, data is vectors", ADR-10) but vectors were *also* accepted, as a
+lists, data is vectors", ADR-010) but vectors were *also* accepted, as a
 convenience for Clojure muscle memory. That made every Clojure binding shape
 **reinterpret** instead of fail, because a vector in a binding *position* is
 already meaningful — it destructures:
@@ -9708,7 +9708,7 @@ called out in the language reference's Clojure crib table.
 
 ## ADR-151 — Ambient names are **declared** (`defdyn`), not spelled (`*earmuffs*`)
 
-**Context.** Under ADR-65 any `*earmuffed*` name was *ambient*: never
+**Context.** Under ADR-065 any `*earmuffed*` name was *ambient*: never
 namespaced, so a `def` of it in any module rebound one root binding. That is
 right for `*load-path*` and `defdyn` knobs, and wrong for everything else — it
 made an ordinary module-local constant silently global:
@@ -9779,7 +9779,7 @@ cheap to close:
    at the outer level (`` `(a `(b ~(+ 1 2))) `` → `(a (quasiquote (b 3)))`, where
    the standard reading leaves `(+ 1 2)` alone). Now an error with a hint; a
    `` ` `` inside an `~unquote` is ordinary code and stays legal. Level tracking
-   can land later and can only widen what is accepted (ADR-11).
+   can land later and can only widen what is accepted (ADR-011).
 
 Two related fixes came out of the same pass:
 
@@ -9802,7 +9802,7 @@ default is to reject it and name the fix (`docs/llm-native.md`).
 
 ## ADR-153 — `sig` adoption: annotate `std/`, and what that exposed
 
-**Context.** ADR-82 shipped `(sig …)`/`(sig! …)` as the type-annotation surface.
+**Context.** ADR-082 shipped `(sig …)`/`(sig! …)` as the type-annotation surface.
 A surface review (2026-07-25) found **zero `(sig …)` declarations across 46k lines
 of `std/`** — the feature was designed, documented, and never used, so nothing was
 learned from it. The options were: adopt it, replace it with an inline annotation
@@ -9885,7 +9885,7 @@ months), the renames are free — the deciding factor for the trims below.
   machinery, no new reader syntax, nothing to migrate. `{{`/`}}` are literal braces;
   braces nest inside a hole. Chosen over a reader sigil because `#"…"` is already the
   (rejected) Clojure-regex form and `#b"…"`/`#{…}` are taken — and because "policy in
-  Brood, mechanism in Rust" (ADR-6) prefers a macro to a permanent surface commitment.
+  Brood, mechanism in Rust" (ADR-006) prefers a macro to a permanent surface commitment.
 - **Local loops — `letrec`, not a `loop`/`recur` macro** (prototyped, then dropped).
   The 83 top-level `--acc`/`--loop` helpers were the motivation, and a `loop`/`recur`
   macro was built first (a `letrec` expansion with a macro-time code-walk rewriting
@@ -10071,7 +10071,7 @@ diagnostic pointing at the body rather than the pattern.
   Brood has no alternative/boolean patterns and this ADR does not add them; it makes
   their absence *audible*.
 - A **map pattern** accepts only `:keys` and `:or`; any other key (general
-  `{:key subpattern}` nesting, `:as` — both still deferred per ADR-11) is a clean
+  `{:key subpattern}` nesting, `:as` — both still deferred per ADR-011) is a clean
   error. `{}` stays legal as the honest "any map" pattern. The check runs in
   `match-map-vars`/`match-compile-map`, so it covers `match`, refutable `let`,
   `fn`/`defn` clauses and `receive` at once — one grammar, one rejection.
@@ -10219,7 +10219,7 @@ multiple dispatch, and **no second axis keyed on a `:type` field**, even though 
 is what would make `defrecord` values dispatchable per shape (records are structural
 maps, ADR-130, so they all land on `:map`). A `:type` axis would silently change
 what *any* map carrying a `:type` key dispatches to — a reinterpretation of existing
-data, which is the failure mode ADR-152 exists to prevent. Per ADR-11 the simple
+data, which is the failure mode ADR-152 exists to prevent. Per ADR-011 the simple
 shape ships; the documented workaround is to branch on a field inside the `:map`
 implementation, and the record-shape axis is recorded in ROADMAP as a question
 rather than a plan.
@@ -10376,7 +10376,7 @@ lifecycle (init/completion arities). Clojure's full protocol has three arities p
 stage; Brood's has one, which is all `fold` needs. Early termination is the first
 thing a real use will want (`take`), and it wants a `reduced` sentinel threaded
 through `fold` — a change to the hottest function in the library, deliberately not
-bundled here (ADR-11).
+bundled here (ADR-011).
 
 **Consequences.** `lmap`/`lfilter`/… are unchanged and remain the ergonomic form —
 they now simply share a documented vocabulary with user stages. Purely additive: five
@@ -10384,7 +10384,7 @@ new prelude functions, no kernel change.
 
 ## ADR-162 — Retire the `lambda` alias: `fn` is the only spelling
 
-**Context.** ADR-98 decided to drop the `lambda`/`let*` aliases. `let*` went;
+**Context.** ADR-098 decided to drop the `lambda`/`let*` aliases. `let*` went;
 `lambda` stayed, and ADR-108 then recorded the opposite — that both are exact
 synonyms canonicalised at macroexpand. Meanwhile `docs/language.md` claimed for
 months that *"the `lambda` synonym was removed — one spelling each"*, and the
@@ -10440,7 +10440,7 @@ goes wrong (a `fold` parameter and a `fold` call are the same shape in a Lisp, s
 call-position heuristics rename binders). Not worth it: `docs/language.md` now states
 that `reduce` dispatches to `fold` and that `fold` is the strict-arity primitive.
 
-**`cond`'s bare `else` stays** (ADR-4). `:else`, `true`, and `42` all catch by plain
+**`cond`'s bare `else` stays** (ADR-004). `:else`, `true`, and `42` all catch by plain
 truthiness, so blessing the symbol `else` does add a reserved word for no capability —
 but it is used throughout `std/` and every sibling project, reads better than `:else`
 at the end of a long `cond`, and removing it would break every downstream `cond` in
@@ -10490,7 +10490,7 @@ The review's fairest criticism — a function's name, parameters, and types live
 forms with an ordering constraint that only bites under `BROOD_CONTRACTS=1` — is real,
 and the fix (`(defn f ((x int) -> int) …)`) is a change to `defn`, the checker's
 `sig_of`, `defrecord`'s emitted sigs, `sig!`'s wrapping, and every `sig` in `std/`.
-That is an ADR-82 revision, not a tweak. Deferred with the reasoning recorded, not
+That is an ADR-082 revision, not a tweak. Deferred with the reasoning recorded, not
 dismissed.
 
 ## ADR-164 — `get`/`nth` diagnostics: an error must name the operation the caller wrote
@@ -10656,7 +10656,7 @@ defect.
 **Context.** Every global was rebindable, including `get`, `+`, `first` and `when`.
 `docs/language.md` advertised it — *"Because it's ordinary Brood, any of it can be
 redefined at runtime"* — and the prelude's own docs treated it as a feature. But the
-feature it was justified by, ADR-13 Erlang-style hot reload, is about **your** code:
+feature it was justified by, ADR-013 Erlang-style hot reload, is about **your** code:
 you redefine your editor's commands while the editor runs. Nothing in that story
 requires patching `get`.
 
@@ -10735,7 +10735,7 @@ happens.
   is the argument for it in miniature. Everything else that looked like a
   redefinition — `path/join`, `http/response/capitalize`, `proc/agent/get`,
   `mitch/update` — is module-scoped and never touched the root binding. The namespace
-  system (ADR-65) had already done the work.
+  system (ADR-065) had already done the work.
 - **Blast radius in the kernel's own test suite: six tests**, and they were the
   interesting part. Three were fixture collisions (`inc`, `keep`, `dec`). Three
   existed *to prove redefinition of a shipped function works* across the VM/JIT —
@@ -10863,7 +10863,7 @@ functions dispatching on the first argument's **identity**.
    layered on top, held in a reserved `:__id__` field.
 3. **The `:type`-field axis is permanently rejected.** Sniffing a `:type` key
    would silently reroute *any* map that happens to carry one — the exact
-   implicitness ADR-11 rejects. A `defrecord` identity is explicit and
+   implicitness ADR-011 rejects. A `defrecord` identity is explicit and
    construction-time, which is the same power made safe. This closes the
    pre-1.0 breaking question in
    [`roadmap-for-v1.md`](roadmap-for-v1.md) §3.
@@ -10917,7 +10917,7 @@ include the id; use `fields`), deferred behind a possible future hidden slot.
 **Consequences.**
 - One seam to learn and document instead of two-and-a-half. The polymorphism
   section of [`language.md`](language.md) is now a single story.
-- ADR-11 is honoured on stricter terms than the rejected axis would have allowed:
+- ADR-011 is honoured on stricter terms than the rejected axis would have allowed:
   the identity is opt-in per *definition*, not inferred per *value*.
 - Coherence is explicit rather than guaranteed. A cross-module clash is possible;
   it is just never silent.
@@ -10933,8 +10933,8 @@ include the id; use `fields`), deferred behind a possible future hidden slot.
   been migrated (KI-16).
 
 **References.** ADR-158 (the protocol facility this supersedes), ADR-130 (records
-are structural — preserved), ADR-11 (defer power features / no implicit capture),
-ADR-6 (all of `ability` is Brood; zero new Rust primitives),
+are structural — preserved), ADR-011 (defer power features / no implicit capture),
+ADR-006 (all of `ability` is Brood; zero new Rust primitives),
 [`protocol-dispatch-design.md`](protocol-dispatch-design.md) (the full design
 record: the measurements, the language survey, and the space explored),
 [`roadmap-for-v1.md`](roadmap-for-v1.md) §3 (the pre-freeze question this closes).
@@ -10977,7 +10977,7 @@ alongside the Brood idiom — `#|…|#` → `;`/`(comment …)`, `1/2` → `(/ 1
 `0.5M` decimal, `0x1F` → `(string->number "1F" 16)`, `1_000` → `1000`, `1N` → plain
 `1` (integers already widen to bignum). The hint for a reserved-numeric token lives in
 `syntax/atom.rs` (`reserved_numeric_hint`) so the reader and the tooling CST explain it
-identically (the ADR-25 one-definition rule), and `AtomKind::ReservedNumeric` maps to
+identically (the ADR-025 one-definition rule), and `AtomKind::ReservedNumeric` maps to
 `NodeKind::Error` so the LSP flags it like a malformed literal rather than offering to
 rename it.
 
@@ -11014,15 +11014,15 @@ ratio type would be additive rather than breaking.
   printer began bar-quoting them — `(symbol "1+")` still round-trips, now as `|1+|`.
   Another dividend of the one-definition rule.
 - Deliberately unaffected: `1M`/`1.0M` decimals, `.5`, `5.`, `1e10`, and the three
-  reader-literal floats `inf`/`nan`/`-inf` (already irreversible — ADR-62-era; those
+  reader-literal floats `inf`/`nan`/`-inf` (already irreversible — ADR-062-era; those
   bare tokens can never be names).
 - Closes the last open pre-freeze **language-surface** decision. The remaining v1
   paperwork is ratifying the freeze list itself as its own ADR.
 
 **References.** [`roadmap-for-v1.md`](roadmap-for-v1.md) §2 (the pre-freeze question
 this closes), ADR-166 (reserved names — the same relax-is-safe/add-is-breaking
-asymmetry, applied to bindings instead of reader syntax), ADR-25 (the CST/reader
-one-definition rule the shared hint honours), ADR-11 (defer power features — ratios
+asymmetry, applied to bindings instead of reader syntax), ADR-025 (the CST/reader
+one-definition rule the shared hint honours), ADR-011 (defer power features — ratios
 stay reservable, not shipped), [`llm-native.md`](llm-native.md) (the teaching-hint
 convention). Tests: `tests/reader_hints_test.blsp`, `tests/reader_malformed_test.blsp`,
 `tests/malformed_test.blsp`.
@@ -11040,7 +11040,7 @@ kept being re-litigated. This ADR gathers them into one ratified list, the compa
 this one records the permanent *absences*, so the freeze is a document a user can trust
 rather than a version bump.
 
-**The principle.** Two rules generate the whole list. **ADR-11** — favour the simplest
+**The principle.** Two rules generate the whole list. **ADR-011** — favour the simplest
 surface, defer power features until a concrete need justifies them; every knob is a tax
 on every user, forever. And the **freeze asymmetry** (ADR-166): *relaxing* a restriction
 later is backward-compatible, so a refusal can always be reversed if a real need appears
@@ -11052,7 +11052,7 @@ recoverable and the cost of the feature is permanent; when in doubt, refuse.
 
 | Refused | Why | Where decided |
 |---|---|---|
-| Mutation of data — no `set!`, atoms, cells, transients | The whole design rests on it: no write barriers, share-nothing processes, safe freezing | ADR-26, ADR-112 |
+| Mutation of data — no `set!`, atoms, cells, transients | The whole design rests on it: no write barriers, share-nothing processes, safe freezing | ADR-026, ADR-112 |
 | `while` / `loop` / `recur` | Proper tail calls make recursion O(1); `letrec` covers local loops | ADR-154 |
 | Named arguments (`&key`) | A trailing options map + `{:keys …}` reads the same and composes with `merge` | ADR-163 |
 | Metadata (`^{}`), reader macros, `#(…)`, `#_` | Permanent surface for what a macro already does; `^` is the pattern pin | ADR-150 |
@@ -11068,7 +11068,7 @@ recoverable and the cost of the feature is permanent; when in doubt, refuse.
 | Multiple dispatch | Single dispatch on the first argument's identity; `match` covers the rest | ADR-158, ADR-168 |
 | Dispatch inferred from a `:type` **field** | Would silently reroute any map carrying `:type`; a `defrecord` identity is explicit and construction-time instead | ADR-168 |
 | Nominal *types* | `defrecord` is structural sugar over a map; `defrecord` adds a dispatch-only identity, not a type — `type-of` is still `:map` and `=` stays structural | ADR-130, ADR-168 |
-| More than one spelling per thing | `lambda`, `let*`, `car`/`cdr`, `concat`, `some?`, `length` all removed | ADR-98, ADR-154, ADR-162 |
+| More than one spelling per thing | `lambda`, `let*`, `car`/`cdr`, `concat`, `some?`, `length` all removed | ADR-098, ADR-154, ADR-162 |
 | Monkey-patching the language | shipped functions are reserved; extend with an ability, shadow with `let`, or namespace it | ADR-166 |
 
 **What this list is not.** It is not a list of things that can never be reconsidered —
@@ -11077,7 +11077,7 @@ by the asymmetry above, any *relaxation* stays open (a future Brood could grow r
 additive). It is the set of things 1.0 **ships without**, stated so the absence reads as
 a decision rather than an oversight. The genuinely irreversible entries — the reader
 reservations (ADR-169) and the record-dispatch axis (ADR-168) — are the ones that had to
-be settled *before* the freeze; the rest are simply deferred power features (ADR-11)
+be settled *before* the freeze; the rest are simply deferred power features (ADR-011)
 that a later version may add.
 
 **Consequences.**
@@ -11089,7 +11089,7 @@ that a later version may add.
   file remains the pre-freeze *work* tracker (the irreversible decisions + the deferred
   list), and this ADR is the permanent *refusals* record.
 
-**References.** ADR-11 (defer power features — the generating principle), ADR-166 (the
+**References.** ADR-011 (defer power features — the generating principle), ADR-166 (the
 relax-is-safe / add-is-breaking asymmetry), [`roadmap-for-v1.md`](roadmap-for-v1.md) (the
 pre-freeze gate this ratifies the freeze-list half of), and every ADR cited in the table
 above.
@@ -11141,7 +11141,7 @@ bank)` alone. Two activation levers for the library author:
   unchanged); and
 - a consumer needs `(:use show)` of its own only to call the protocol functions
   (`to-str`/`inspect`) *explicitly* — implicit display through the print hook needs no
-  import. The open question deferred here (ADR-11): whether to **split** the ability
+  import. The open question deferred here (ADR-011): whether to **split** the ability
   (side-effect-free `Display`/`Inspect` a library depends on to declare impls) from the
   **activation** (`(def *show* …)`, an app/opt-in step), so a library can register an
   impl *without* flipping global print behavior. Left for a concrete need.
@@ -11163,7 +11163,7 @@ on demand, not in the bootstrapped core; the prelude cannot depend on them. So t
 is a prelude primitive (nil default) that the `show` module *installs* on load —
 Erlang-style late binding, and faithful to Elixir's "the protocol is there once its
 module is available." An always-on version would require moving the ability system into
-the core image; deferred (ADR-11) until a concrete need.
+the core image; deferred (ADR-011) until a concrete need.
 
 **Consequences.**
 - A record can define its screen display: `(impl Display money/usd (to-str [m] …))`,
@@ -11179,7 +11179,7 @@ the core image; deferred (ADR-11) until a concrete need.
   left as a documented follow-up.
 
 **References.** ADR-168 (abilities — the mechanism), ADR-130 (records as maps carrying
-`:__id__`), ADR-6 (policy in Brood, not Rust), ADR-11 (defer the always-on variant).
+`:__id__`), ADR-006 (policy in Brood, not Rust), ADR-011 (defer the always-on variant).
 
 ## ADR-172 — Abilities v2: app-sovereign coherence, `impl`/`bridge`, compile-enforced, live-replaceable
 
@@ -11221,13 +11221,13 @@ language:
   what Clojure reaches for `defmulti` to do (dispatch on a map's tag). What single dispatch
   can't express is (a) **multiple dispatch** (an arg-tuple key, the binary-method case) and
   (b) **structural dispatch on a plain map's field** — and (b) is deliberately *closed* by
-  the ADR-11 nominal-identity line, not a gap. That leaves only cross-type binary methods,
+  the ADR-011 nominal-identity line, not a gap. That leaves only cross-type binary methods,
   which the next point declines to serve implicitly. So a `defmulti`/`defmethod` seam (a
   second, arbitrary-dispatch polymorphism mechanism, interpreted tier, no type hierarchy —
   the Clojure split) is **deferred with an explicit trigger**: build it *if and when* a
   concrete need for dispatch-on-multiple-args or dispatch-on-a-computed-value appears that
   single-dispatch + records can't serve acceptably. Until then it is the "two ways to be
-  polymorphic" tax ADR-11 tells us not to pay. If built, it would also be the principled
+  polymorphic" tax ADR-011 tells us not to pay. If built, it would also be the principled
   home for structural dispatch (subsuming (b)) — abilities would stay the fast, nominal,
   JIT-specialized core.
 - **No implicit cross-type arithmetic.** `Num`/`Ord` are therefore **homogeneous**:
@@ -11261,7 +11261,7 @@ substanceless:
   behavior `impl` lacks. Its only purpose was to be the sanctioned, greppable, app-only
   channel for *orphan* impls, so that `impl` could be restricted to owned slots (§1).
   A second form that does exactly what an existing form does, to support a restriction we
-  are not adopting, is precisely what "keep the language as small as possible" and ADR-11
+  are not adopting, is precisely what "keep the language as small as possible" and ADR-011
   forbid — the same reasoning that dropped `:bridges` (§4).
 - **The orphan rule (§1) is premature.** "A library must not `impl` a type/ability it
   doesn't own" guards against a *multi-third-party-library* collision that greenfield
@@ -11277,7 +11277,7 @@ substanceless:
   real multi-library orphan conflict ever appears, orphan-authorization becomes a **lint on
   plain `impl`** — "an orphan impl outside the app is flagged; inside the app it's allowed
   and listed" — with no new form, and it stays **advisory in the live image / hard-reject in
-  CI** (§6). Deferred until such a conflict exists (ADR-11).
+  CI** (§6). Deferred until such a conflict exists (ADR-011).
 
 Net model: **abilities remain the open ADR-168 registry, made deterministic by the §3
 precedence ladder.** `impl` is legal for any ability and any id — primitive, owned, or
@@ -11294,7 +11294,7 @@ which meant a library could flip global print behavior just by being used. A des
 review (2026-07-28) reframed the problem: the axis that matters is not *coherence* but
 **authority** — the application author must outrank every library — and the goal is
 **compile-time guarantees without giving up hot reload** (the language's north star,
-ADR-13). Full Rust-style static dispatch is therefore off the table; the target is
+ADR-013). Full Rust-style static dispatch is therefore off the table; the target is
 *static guarantees over live-replaceable semantics*.
 
 **Decision.** One authority model for every ability, enforced by the compiler, dispatched
@@ -11349,7 +11349,7 @@ ordinary way:
 
 The reusable logic lives in a package; the **app always declares the link**. You can
 never end up with a bridge you did not write — maximal auditability, and it keeps
-`bridge` unambiguously app-only (which shrinks the ADR-70 dependency: "who is the app"
+`bridge` unambiguously app-only (which shrinks the ADR-070 dependency: "who is the app"
 only has to answer "the root/entry program," never "an authorized bridge package").
 Colliding `bridge` forms for the same `(A, id)` remain a **compile-time error the app
 resolves**, not a silent last-wins.
@@ -11390,7 +11390,7 @@ never-fail path stay native. `Inspect`/`inspect` is the explicit debug form. Thi
 only Display-specific machinery; the *authority* rules above are uniform across every
 ability (Display is not privileged in who-may-impl, only in being on an implicit path).
 
-**9 — Optional + dev dependencies.** Today the package manager (ADR-37) has one
+**9 — Optional + dev dependencies.** Today the package manager (ADR-037) has one
 **required** `:dependencies` list plus per-dep `:features` (Cargo-style build flags); no
 optional/dev distinction. This ADR adds both — noting that with `:bridges` dropped (§4),
 `:optional`'s *strongest* motivation (gating a glue package on both libraries being
@@ -11404,7 +11404,7 @@ present) is gone, so it falls back to the generic Cargo/Elixir optional dependen
   (ecto/decimal …))` where `ecto` isn't a dependency is *inert*, not an error — the type
   doesn't exist, so the form contributes nothing.
 - **`:dev-dependencies`** — a second list resolved for `nest test`/dev and on the dev
-  load path, but **excluded from a release bundle** (ADR-38). Unaffected by the `:bridges`
+  load path, but **excluded from a release bundle** (ADR-038). Unaffected by the `:bridges`
   removal; the clearly-useful half.
 
 **10 — Implementation plan (staged).** Slices, in dependency order:
@@ -11418,7 +11418,7 @@ present) is gone, so it falls back to the generic Cargo/Elixir optional dependen
    dropped, §4.)
 3. **Coherence checking** — owner-only `impl` (own ability or type), orphan → hard reject,
    `bridge` conflicts, at `nest check` (`types/check/protocol.rs`, which already tracks
-   record identity). *Wants ADR-70 for the clean app/library line; interim uses the
+   record identity). *Wants ADR-070 for the clean app/library line; interim uses the
    root-namespace convention.*
 4. **Precedence resolution** — `app > type-owner > ability-owner > :default > native`,
    deterministic and static; extend `*impls*`'s keying + `impl-for` to carry provenance.
@@ -11427,7 +11427,7 @@ present) is gone, so it falls back to the generic Cargo/Elixir optional dependen
 6. **Display always-on core** — records-only dispatch on the `str`/`%render` path,
    app-gated `display-on`, guarded; supersede the opt-in `std/show.blsp` (ADR-171).
 
-ADR-70 (package-rooted namespaces) gates the clean app/library distinction in slices 2–3
+ADR-070 (package-rooted namespaces) gates the clean app/library distinction in slices 2–3
 only; everything else is independent. Slice 1 has no blockers and is the starting point.
 
 **How it compares.**
@@ -11462,9 +11462,9 @@ every-instant (the live image can transiently hold incoherence, by design). Spee
 best-effort (dynamic-eval / heterogeneous receivers don't monomorphize). More machinery
 underneath (speculative specialization + deopt is heavier than a frozen table — the cost
 of liveness). And the clean *app-vs-library* line (who may `bridge`, whose `impl` wins)
-wants **package-rooted namespaces** ([ADR-70](decisions.md), not yet done); the interim
+wants **package-rooted namespaces** ([ADR-070](decisions.md), not yet done); the interim
 convention is that the program's root namespace / entry module is the app. This ADR gives
-ADR-70 a concrete motivation.
+ADR-070 a concrete motivation.
 
 *Migration from what ships today.* `std/show.blsp` (ADR-171) is the interim runtime
 `Display`/`Inspect`; its activate-on-`:use` model becomes app-gated (`display-on`), and
@@ -11475,10 +11475,10 @@ the sanctioned orphan escape. No `Value` kind, special form, or immutability con
 changes.
 
 **References.** ADR-168 (the open runtime ability mechanism this tightens), ADR-171 (the
-interim `Display` protocol), ADR-13 (hot reload — the constraint that rules out frozen
+interim `Display` protocol), ADR-013 (hot reload — the constraint that rules out frozen
 static dispatch), ADR-123–126 (checker never gates the live image; CI hard-rejects),
-ADR-130 (records as maps carrying `:__id__`), ADR-70 (package-rooted namespaces — the
-clean app/library line), ADR-11 (defer power features — why the always-on-in-core and
+ADR-130 (records as maps carrying `:__id__`), ADR-070 (package-rooted namespaces — the
+clean app/library line), ADR-011 (defer power features — why the always-on-in-core and
 bridge machinery are scoped, not maximal).
 
 ## ADR-173 — `spy`: a homoiconic tree-tracing debug macro (borrow Elixir's `dbg`, do it more Lisp)
@@ -11496,7 +11496,7 @@ to transliterate `dbg` (special-case a fixed set of constructs, reconstruct sour
 from the AST) or exploit that Brood code *is* data.
 
 **Decision.** Ship it as **`spy`** (a Lisp-tradition name over `dbg`), a **prelude
-macro** — not a Rust builtin (ADR-6: mechanism in Rust, policy in Brood) — with
+macro** — not a Rust builtin (ADR-006: mechanism in Rust, policy in Brood) — with
 three deliberate choices:
 
 **1 — Full homoiconic tree-trace, not a fixed special-case set.** `spy` fully
@@ -11520,7 +11520,7 @@ stdout data); a host — the editor, the `nest observe` viewer, a test — rebin
 sink to capture the trace as data. This is the "even better than `dbg`" bet and the
 seam that lets the self-editing editor later render `spy` values as inline overlays
 (M2/M3). It also subsumes the "no-op in production" need without a separate gate
-(ADR-11): rebind the sink to a no-op — no `*debug*` knob added.
+(ADR-011): rebind the sink to a no-op — no `*debug*` knob added.
 
 **Consequences.** One new public macro (`spy`) + one dynamic (`*spy-sink*`); no core
 / evaluator change, no new special form (ADR keeps the core small). Scope drawn at
@@ -11528,9 +11528,9 @@ descend-into `if`/`do`/`let`/`letrec` + calls; other special forms trace their t
 value only (sound, conservative) — a fuller per-special-form rule table is deferred
 until wanted. No source position in the trace yet (no position primitive is exposed
 for a macro's argument form); the source *form* echo carries the information. Related:
-[[with]] (ADR — the prior ergonomics borrow), ADR-6 (write it in Brood), ADR-11
+[[with]] (ADR — the prior ergonomics borrow), ADR-006 (write it in Brood), ADR-011
 (defer power — why the special-form rules and a `:label` arg are scoped, not maximal),
-ADR-13 (hot reload — the sink seam mirrors the late-binding philosophy).
+ADR-013 (hot reload — the sink seam mirrors the late-binding philosophy).
 
 ## ADR-174 — A process-native tracing debugger (`std/tool/debug`)
 
@@ -11601,11 +11601,11 @@ paths, and the split is forced by the engine:
   locals in **positional slots, not by name** (`%locals` — which walks named env frames —
   works only under the tree-walker), so no runtime primitive can recover them. B is a
   **compiler intrinsic**: teach the compiler to emit a `{name → slot-value}` map from its
-  lexical-scope table at a `%scope` marker. Per ADR-11 it's a focused, VM-careful pass of
+  lexical-scope table at a `%scope` marker. Per ADR-011 it's a focused, VM-careful pass of
   its own, not bundled — the roadmap tracks it.
 
-Related: ADR-173 ([[spy]] — the sink this builds on), ADR-6 (write it in Brood),
-ADR-13 (hot reload — the late-binding kinship), ADR-46/51 (`nest observe` — the render
+Related: ADR-173 ([[spy]] — the sink this builds on), ADR-006 (write it in Brood),
+ADR-013 (hot reload — the late-binding kinship), ADR-046/051 (`nest observe` — the render
 target for a future debugger pane). Still open: wiring the causal tree into `nest observe`
 as an interactive pane, and cross-*node* causality (deliberately excluded — the debugger
 is per-runtime).
@@ -11642,7 +11642,7 @@ Brood already has three of the four pieces:
 |---|---|
 | module area (code) | shared PRELUDE / RUNTIME AST regions |
 | literal area | `ConstVal::Handle` into those regions |
-| export table + hot reload | global table + `global_epoch` / ADR-91 generations |
+| export table + hot reload | global table + `global_epoch` / ADR-091 generations |
 | **compiled code, node-global** | **absent — per-process `vm_cache` + IC tables** |
 
 **Decision.** Move the compiled artefacts to the runtime, mirroring `jit_code_cache`:
@@ -11703,7 +11703,7 @@ predate sealing and read as unfrozen, which is a measurement artefact, not a res
 **The fraction is workload-dependent, and the first two rows are not representative.**
 They are prelude-dominated microbenchmarks with one user function between them; a real
 application is full of user→user calls, every one of which is late-bound because user
-code *must* stay redefinable for ADR-13 hot reload. Adding 40 mutually-calling user
+code *must* stay redefinable for ADR-013 hot reload. Adding 40 mutually-calling user
 functions drops the frozen share to 66.9%, and the late-bound share grows with the size
 of the user's own code. Quoting "~99%" as the design's operating point would be
 measuring the standard library and calling it an application.
@@ -11748,7 +11748,7 @@ affect. Direct links need no epoch guard, so hot reload stops disturbing frozen 
   existing per-process arm registration rather than a new lookup). Originally the gating
   stage; the freeze demotes it to **optional and much smaller**, since after Stage 1 it
   covers only the ~1% late-bound residue. Deferred until Stage 2 measurement shows
-  whether it matters at all — ADR-11.
+  whether it matters at all — ADR-011.
 - **Stage 2 — shared `CompiledArm` cache.** The `jit_code_cache` analogue over
   `Arc<CompiledArm>`, same key, same epoch guard, same idempotent publish. With Stage 1
   in place, per-process IC cost stays proportional to arms actually used.
@@ -11771,11 +11771,11 @@ affect. Direct links need no epoch guard, so hot reload stops disturbing frozen 
   our IC entries cache *global* resolutions that are already epoch-guarded and hold
   promoted/immovable callees, so they arguably belong with the code too. Blocked on
   `CallIcEntry.fast` being a `Cell` (not `Sync`); it would need the atomic treatment
-  `FastLink` already uses. Deferred until Stages 1–2 are measured — ADR-11.
+  `FastLink` already uses. Deferred until Stages 1–2 are measured — ADR-011.
 
 **User code and hot reload are untouched — that is the point of the ADR-166 line.**
 Direct-linking applies *only* to sealed names. A user function is never sealed, so its
-call sites keep the inline cache and the epoch guard, and ADR-13 hot reload behaves
+call sites keep the inline cache and the epoch guard, and ADR-013 hot reload behaves
 exactly as today. Sharing a *user* arm is likewise already-solved ground rather than new
 risk: `share_key` covers "a RUNTIME/PRELUDE arm" and the installer checks
 `epoch == global_epoch()` before use, so a `def` (which bumps `version` at
@@ -11845,7 +11845,7 @@ tree-walked-body shape, so no route leaks it as a crash).
 Two details are the actual lesson:
 
 - **The passthrough redirect is a load-bearing safepoint.** In a tree-walked loop whose
-  operators are thin wrappers (`>`/`-`/`+` are Brood defns over `%`-prims, ADR-69),
+  operators are thin wrappers (`>`/`-`/`+` are Brood defns over `%`-prims, ADR-069),
   the hot path ticks in `passthrough_redirect_ok` — the reduction budget drains there,
   so the loop-top check alone can be starved of rollovers. The eval *deadline* had
   already escaped through this exact gap once (its check is in that function for that
@@ -11859,7 +11859,7 @@ Two details are the actual lesson:
 **REPL consequence** (`std/tool/repl.blsp`, the feature this unblocked). Interactive
 sessions install a SIGINT handler (`%install-interrupt-handler` / `%interrupt-taken?`,
 the minimal kernel seam — a relaxed atomic store in the handler, a read-and-clear
-probe; ADR-6, signals are mechanism). Each submitted form evaluates in a spawned
+probe; ADR-006, signals are mechanism). Each submitted form evaluates in a spawned
 green process; the loop parks in `receive` polling the flag (~40ms), and Ctrl-C
 `(exit child :kill)`s it — `; interrupted`, prompt back, image intact; `def`s made by
 the child persist (shared code region). A second Ctrl-C while the first hasn't landed
@@ -11876,8 +11876,8 @@ re-verified across default / `BROOD_NO_JIT=1` / `BROOD_VM=0`, under
 runaway form; session, `*1`, and child-made `def`s all intact after).
 
 **References.** ADR-100 §8 (state-capture preemption and the `capture` gate this check
-was wrongly folded into), ADR-63 (exit signals), ADR-69 (thin-wrapper passthrough —
-why the redirect is the hot tick), ADR-52/ADR-48 (the REPL this serves), the
+was wrongly folded into), ADR-063 (exit signals), ADR-069 (thin-wrapper passthrough —
+why the redirect is the hot tick), ADR-052/ADR-048 (the REPL this serves), the
 2026-07-28 devlog entries (including the wrong first diagnosis and what it missed).
 
 ## ADR-177 — `std/` adopts abilities: which seams became protocols, and which stayed `cond`
@@ -11888,7 +11888,7 @@ why the redirect is the hot tick), ADR-52/ADR-48 (the REPL this serves), the
 nominal dispatch through `%dispatch`'s inline cache, precedence by tier), and ADR-171
 shipped the first one (`Display`). The 2026-07-28 audit that accompanied ADR-171 looked
 for more candidates in `std/` and found only two, concluding "the rest of `std/` is
-correctly-closed `cond`/state-machines per ADR-11". A second, deliberately more
+correctly-closed `cond`/state-machines per ADR-011". A second, deliberately more
 aggressive pass over the same tree found that conclusion too narrow: it had asked only
 "where does third-party extension want in?", which is one of *four* distinct reasons a
 site wants an ability.
@@ -11947,7 +11947,7 @@ about can join.
   which is not the same thing.
 - **Closed internal AST/CST node kinds** (`std/regex`, `std/format`, `std/tool/sexp`,
   `std/editor/treesit`) — single-module, hot, and genuinely closed: correct `cond`/table
-  dispatch per ADR-11.
+  dispatch per ADR-011.
 - **`std/telemetry`'s metric kinds** — closed, one site, state in a `Table`. Sealing would
   buy checker coverage only; not worth the churn.
 - **Error-value rendering** (`std/tool/test`, `std/tool/repl`, the prelude) — all three
@@ -11977,7 +11977,7 @@ updated — `project_test`, `package_test`, `datetime_test`), and each of the fo
 
 **References.** ADR-168 (abilities subsume `defprotocol`), ADR-171 (`Display`, and the
 narrower audit this widens), ADR-172 (the authority model, `:sealed`, `%dispatch`),
-ADR-11 (prefer the simplest design — the reason the rejection list is as long as the
+ADR-011 (prefer the simplest design — the reason the rejection list is as long as the
 adoption list), ADR-130 (`defrecord`), the 2026-07-29 devlog entry.
 
 ## ADR-178 — A parked receiver is a private heap: the single-copy local send
@@ -11989,7 +11989,7 @@ wire format: `to_message` walked the value out of the sender's heap into a `Mess
 `from_message` rebuilt it in the receiver's. That is two complete traversals and two
 complete allocations of the payload for a delivery that never leaves the machine. It
 exists because the two heaps are genuinely isolated — a process's data is its own, and a
-message crosses as a deep copy (ADR-18) — so there is no shared representation to hand
+message crosses as a deep copy (ADR-018) — so there is no shared representation to hand
 over.
 
 But the copy does not have to go through an *intermediate* form. The obstacle was never
@@ -12047,13 +12047,13 @@ unrealised seq-views). The decline path restores `waiter` exactly as it found it
 
 **Alternatives rejected.** *Sharing the value instead of copying it* — that is a different
 language: per-process heaps and copy-on-send are what make a process's data its own and
-collection process-local (ADR-18). *Copying into a running receiver under a heap lock* —
+collection process-local (ADR-018). *Copying into a running receiver under a heap lock* —
 would put a lock on every heap access in the system to serve the send path. *Keeping the
 `Message` but pooling it* — pools the allocation and keeps both traversals, which are the
 actual cost.
 
-See also ADR-18 (per-process heaps, copy-on-send), ADR-35 (the tracing collector and
-what counts as a root), ADR-91 (shared-region collection), `docs/runtime-frontier.md`
+See also ADR-018 (per-process heaps, copy-on-send), ADR-035 (the tracing collector and
+what counts as a root), ADR-091 (shared-region collection), `docs/runtime-frontier.md`
 (where this sat in the option book, as L1), the 2026-07-29 devlog entry.
 
 ## ADR-179 — Multiple dispatch (`defmulti`/`defmethod`): the resolution and closure algebra
@@ -12109,7 +12109,7 @@ This is deliberately the **minimal correct core.** Partial wildcards (a pattern 
 `[money _]` matching `(money, anything)`) plus a specificity order are *exactly* where
 ambiguity lives: `(money, money)` would be applicable to both `[money _]` and `[_ money]`,
 neither more specific, and Brood has **no type hierarchy** to break the tie (record ids are
-flat). So partial wildcards are **deferred** (ADR-11); if a real need appears, they are a
+flat). So partial wildcards are **deferred** (ADR-011); if a real need appears, they are a
 separate decision that must define the specificity partial-order *and* make an unresolved
 tie a loud ambiguity error (never a silent pick). Exact-tuple + single-default ships now
 because it is the version that is unambiguous without any of that machinery.
@@ -12176,7 +12176,7 @@ benchmark moves.
 epoch-validated dispatch cache, and cross-process correctness all carry over unchanged — a
 redefined `defmethod` is an ordinary `def`, visible on the next dispatch.
 
-**8 — Deferred (ADR-11), with named triggers.** (a) **Partial wildcards + specificity**:
+**8 — Deferred (ADR-011), with named triggers.** (a) **Partial wildcards + specificity**:
 build only if a real need for `[T _]`-style patterns appears, and only with a defined
 specificity order and loud-ambiguity semantics. (b) **Coercion/promotion tower**: rejected
 above; revisit only if a genuine numeric-tower type (rational, complex, a bignum a user
@@ -12184,8 +12184,8 @@ defines) makes explicit-per-pair authoring painful *and* the coercion is unambig
 that type.
 
 **References.** ADR-172 (abilities/single-dispatch, the deferred-`defmulti` note this
-discharges), ADR-168 (the value-dispatch seam), ADR-26 (immutability — why `=` must stay a
-kernel guarantee), ADR-11 (ship the minimal correct form; defer wildcards and the coercion
+discharges), ADR-168 (the value-dispatch seam), ADR-026 (immutability — why `=` must stay a
+kernel guarantee), ADR-011 (ship the minimal correct form; defer wildcards and the coercion
 tower), the 2026-07-29 devlog entry.
 
 ## ADR-180 — Typed ability ops: the checker consumes `:-> RET` return types
@@ -12241,14 +12241,14 @@ are unaffected (verified: zero new warnings across `std/` + `tests/`). Parsing +
 `AbilityInfo.op_params` in `types/check/protocol.rs`; the call-site check in
 `walk::check_into`'s ability hook.
 
-**Deferred (ADR-11).** (b) **An ability name as a return/param type** (`:-> Shape` meaning
+**Deferred (ADR-011).** (b) **An ability name as a return/param type** (`:-> Shape` meaning
 the union of the ability's members) — a nominal self-type; **shipped** as ADR-181. (c)
 **Runtime enforcement** under a `BROOD_CONTRACTS`-style flag — checker-only for now, matching
 `sig`'s default.
 
 **References.** ADR-181 (ability-name-as-a-type, the follow-on this deferred item (b)
 becomes), ADR-172/168 (the ability seam), ADR-110 (the gradual `sig` return check this
-mirrors), ADR-24 (set-theoretic gradual types), ADR-11 (ship the minimal form, defer
+mirrors), ADR-024 (set-theoretic gradual types), ADR-011 (ship the minimal form, defer
 params/self-types), the 2026-07-29 devlog entry.
 
 ## ADR-181 — A sealed ability is a type: the finite union of its members
@@ -12354,14 +12354,14 @@ plain `map`-typed value is *not* provably-not-a-Shape (an unrefined map could ca
 returns, `:-> Shape` works too — an op may declare it returns another ability's domain, and
 that union flows into call-site inference like any other return type.
 
-**Deferred (ADR-11).** (a) An **open** ability as a type (needs a non-enumerated
+**Deferred (ADR-011).** (a) An **open** ability as a type (needs a non-enumerated
 "implements" type — a real extension, unbuilt). (b) **Same-name abilities across modules**
 resolve by bare name (the registries are bare-keyed); a qualified `mod/Ability` type
 spelling is a clean follow-on if a collision ever bites.
 
 **References.** ADR-180 (typed ops — the sibling this composes with), ADR-172/168 (the
-ability seam + `:sealed`), ADR-24 (set-theoretic types — a union *is* set union here),
-ADR-11 (sealed-only, defer the open case), the 2026-07-29 devlog entry.
+ability seam + `:sealed`), ADR-024 (set-theoretic types — a union *is* set union here),
+ADR-011 (sealed-only, defer the open case), the 2026-07-29 devlog entry.
 
 ## ADR-182 — Ability-dispatch monomorphization (`BROOD_MONO`, Tier 1)
 
@@ -12433,7 +12433,7 @@ devlog entry.
 
 **Status:** accepted + shipped.
 
-**Context.** `editor/ui/overlay-route` (ADR-94) is the fallthrough rule every `ui-run`
+**Context.** `editor/ui/overlay-route` (ADR-094) is the fallthrough rule every `ui-run`
 app's transient modes share: the minibuffer, a completion popup, incremental search — one
 of them is open, it captures input, a non-owned key dismisses it and re-dispatches. Until
 now an overlay was a closure vtable, `{:active? :owns? :handle :exit}`, with nil slots
@@ -12467,7 +12467,7 @@ behaviour, same as the closure slots did.
 **Why not a `defmulti`.** Dispatch is on one value (the overlay); the ability is the
 single-dispatch seam and keeps the inline-cache fast path (ADR-172).
 
-**References.** ADR-94 (overlay-route), ADR-168/172 (abilities), `tests/ui_test.blsp`
+**References.** ADR-094 (overlay-route), ADR-168/172 (abilities), `tests/ui_test.blsp`
 ("overlay-route — Overlay ability records").
 
 ## ADR-184 — `trace-fn`/`break-fn`: function-boundary instrumentation in the live image
@@ -12479,7 +12479,7 @@ source* — both require editing the code being debugged. The classic operationa
 Erlang's `dbg:tpl`, Emacs' `trace-function` — is instrumenting a **function by name in
 the running image**: "show me every call to `foo`", "pause whoever calls `bar`", with
 no source edit and a clean uninstall. Brood already has the sanctioned seam for this:
-`def` rebinding + late binding (ADR-13), the same mechanism `nest test --cover`
+`def` rebinding + late binding (ADR-013), the same mechanism `nest test --cover`
 instruments with. The first consumer is the myedit editor's debugger UI (trace/break
 the function at point), but the REPL wants it just as much.
 
@@ -12515,7 +12515,7 @@ the body in `spy` (source-level) when you need the tree.
 unbound-symbol. It now sends `{:value v}` — `(eval-at d 1 "value")` works at a step
 park, pinned by a test.
 
-**References.** ADR-173 (spy), ADR-174 (the debugger process), ADR-13 (late binding,
+**References.** ADR-173 (spy), ADR-174 (the debugger process), ADR-013 (late binding,
 the instrumentation seam), ADR-166 (reserved names), `tests/debug_test.blsp`
 ("function-boundary instrumentation").
 
@@ -12596,13 +12596,13 @@ every op. `nest check` stays zero-warning across `std/` + `tests/`.
 **No new core.** Entirely prelude (`defability`/`defrecord` macros + `derive-into`) plus an
 advisory checker adjustment: no new special form, no `Value` kind, no builtin.
 
-**Deferred (ADR-11).** (a) Wiring recipes onto built-in abilities (e.g. a structural
+**Deferred (ADR-011).** (a) Wiring recipes onto built-in abilities (e.g. a structural
 `Display`); ordering for records is a *multimethod* (`compare-to`, ADR-179), a different seam
 than ability `:derive-record`. (b) A generic structural default as a convenience *atop* the
 per-ability recipe, if repetition warrants it.
 
 **References.** ADR-168/172 (abilities, the `:default` fallback and precedence tiers),
-ADR-179 (multimethods — the multi-arg sibling; why ordering isn't an ability), ADR-11 (ship
+ADR-179 (multimethods — the multi-arg sibling; why ordering isn't an ability), ADR-011 (ship
 the minimal form), ADR-130 (records as maps), `tests/ability_test.blsp` ("provided
 (default-body) ops", "derive: …").
 
@@ -12637,7 +12637,7 @@ its return and other params are still checked — instead of being discarded who
 
 **References.** ADR-181 (sealed-ability-as-a-type, the base this extends), ADR-151 (earmuffed
 names are ambient — why the bare registry names are correct), ADR-172/168 (the ability seam +
-the missing-impl call check that carries the open-ability safety), ADR-11 (`any` is the
+the missing-impl call check that carries the open-ability safety), ADR-011 (`any` is the
 minimal sound resolution; defer a richer "implements X" type), the 2026-07-29 devlog entry.
 
 ## ADR-187 — Record patterns in `match`: `(record name {map-pattern})`
@@ -12763,7 +12763,7 @@ After both, the full `std/` + `tests/` sweep is clean — zero false positives.
 callers' args) and per-arm multi-arity params; and the `and`/`or`-guard and
 higher-order-callback inference still listed in `check.rs`.
 
-**References.** ADR-110/24 (the gradual, advisory type discipline this inherits), ADR-125
+**References.** ADR-110/024 (the gradual, advisory type discipline this inherits), ADR-125
 (a redefinable global is `dynamic()` — why a reassigned global can't be pinned), the
 2026-07-29 devlog entry.
 
@@ -12820,7 +12820,7 @@ non-literal argument is invisible to the graph (load-time-undecidable); it can o
 warning, never invent one.
 
 **References.** KI-17 (docs/known-issues.md), ADR-119 (the incremental check cache the closure
-field extends), ADR-65 (modules/namespaces), the 2026-07-30 devlog entry.
+field extends), ADR-065 (modules/namespaces), the 2026-07-30 devlog entry.
 
 ## ADR-190 — Occurrence typing: inferred parameters check callers (derived, no annotation)
 
@@ -12884,7 +12884,7 @@ inference only fills the gap where none is declared. Nothing here makes anyone t
 
 **References.** ADR-188 (same-file inference — the return side this completes with params),
 ADR-181/186 (a sealed ability is a finite record-id union — the ability-op domain),
-ADR-172/168 (sealed abilities, the `:default` fallback), ADR-23/24 (advisory, gradual, no
+ADR-172/168 (sealed abilities, the `:default` fallback), ADR-023/024 (advisory, gradual, no
 false positives — the soundness bar this holds to), `tests/sig_adoption_test.blsp`
 ("occurrence typing"), the 2026-07-30 devlog entry.
 
@@ -12987,11 +12987,11 @@ warning-clean (no std ability declares `:requires` yet).
 
 **References.** ADR-185 (provided ops — a required ability's provided op is satisfied by default),
 ADR-181 (sealed abilities — the sibling conformance contract), ADR-172/168 (the ability seam),
-ADR-11 (the composition-over-power discipline), `tests/ability_test.blsp` ("super-abilities").
+ADR-011 (the composition-over-power discipline), `tests/ability_test.blsp` ("super-abilities").
 
 ## ADR-194 — A closure crosses a local send by shared handle only when it is *already* shared
 
-**Context.** Processes of one runtime share a code region (ADR-13,
+**Context.** Processes of one runtime share a code region (ADR-013,
 `docs/shared-code.md`); `spawn` already `promote`s its thunk into it, so parent and child
 run one copy. `send` did not: `closure_to_message` deep-copies every arm's body forms and
 `closure_from_message` re-allocates them in the receiver, so a process holding a received
@@ -13018,7 +13018,7 @@ reclaim instead of dying at the next minor GC. Peak RSS over N sent-and-discarde
 ran 129 / 190 / 340 / **541** MB at N = 100k / 200k / 400k / 800k against a flat 112–180 MB
 for the copy — growth proportional to closures sent, i.e. unbounded in a long-running
 receiver, and `BROOD_RT_GC_FLOOR=64` barely dented it. Restricted to already-shared closures
-the same run is flat (150 MB). **The blocker is reclamation convergence (ADR-91 stage 4),
+the same run is flat (150 MB). **The blocker is reclamation convergence (ADR-091 stage 4),
 not the handoff** — do not re-attempt the wider rule before that lands.
 
 **Why the narrow rule is still worth it.** A closure that captures **no locals** is already a
@@ -13039,8 +13039,8 @@ GC tripwire + heap verifier) across mass spawn + hot reload + forced RUNTIME agi
 identical checksums, plus five distribution-chaos runs including closure-shipping
 `remote-spawn`.
 
-**References.** ADR-13 (shared live code), ADR-91 (RUNTIME region aging/compaction),
-ADR-178 (the L1 local-send fast path this extends), ADR-33 (closures as data on the wire —
+**References.** ADR-013 (shared live code), ADR-091 (RUNTIME region aging/compaction),
+ADR-178 (the L1 local-send fast path this extends), ADR-033 (closures as data on the wire —
 unchanged), `docs/runtime-frontier.md` A3, devlog 2026-07-30.
 
 ## ADR-195 — The receive-mark: a receive pinned on a fresh `ref` skips the backlog
@@ -13192,12 +13192,12 @@ exactly the distinction the error-message match could not make.
 
 **Context.** Evaluating text a user is *currently typing* (an editor playground, a
 remote REPL pane) needs three properties at once: it must not be able to mutate the
-host image (all processes share one global table — ADR-13 — so an in-image
+host image (all processes share one global table — ADR-013 — so an in-image
 `eval-string` of `(defn cmd-forward-char …)` redefines the running editor), it must
 survive a runaway form (kill one eval, keep the session), and it must answer in
 milliseconds (a debounced on-type loop can't pay a runtime start per keystroke).
 Nothing shipped covers the triple: in-image `task` eval is fast and hang-safe but
-not mutation-safe; `%isolate` is unusable next to concurrent writers (ADR-17 — its
+not mutation-safe; `%isolate` is unusable next to concurrent writers (ADR-017 — its
 wholesale global-table restore, and it reaps pids); spawn-per-run subprocesses
 (myedit's testrun shape) are safe but pay full startup per request; `nest mcp`'s
 eval tool is per-session but speaks MCP JSON-RPC and has no per-eval timeout.
@@ -13265,7 +13265,7 @@ behind (ADR-201).
 
 **Context.** `nest release` appends an app to the **lean** runtime
 (`--no-default-features`), which compiles `DEV_MODULES` away entirely — the point of
-ADR-38: a shipped app carries no test framework, observer, MCP/doc/hot-reload
+ADR-038: a shipped app carries no test framework, observer, MCP/doc/hot-reload
 tooling, or REPL. The split was drawn by how *tool-shaped* a module looked, and two
 modules were filed wrongly by that reading: `debug` (the tracing debugger) and
 `eval-server` (ADR-198). The editor (`../bedit`) requires both at the top of
@@ -13395,7 +13395,7 @@ every future reader has to learn, whereas a CAS is one idea that covers all of t
 
 **Consequences.**
 - The transform must be **pure** — a retry runs it again. All current ones build an immutable
-  value, which is the only thing they *can* do (ADR-26), so this is free.
+  value, which is the only thing they *can* do (ADR-026), so this is free.
 - Equality is structural, so an ABA against an equal-valued registry is indistinguishable —
   and harmless, since the retry would recompute the same answer.
 - `%registry-update!`'s four ops are all expressible on top of the CAS, so it could be
@@ -13494,9 +13494,9 @@ provenance (`*impl-from*`) out of dispatch.
 
 ## ADR-205 — `(:use …)` import resolution follows the Elixir model, not silent last-wins
 
-**Status:** accepted + implemented (2026-08-02). Refines [ADR-65](decisions.md) (namespaces).
+**Status:** accepted + implemented (2026-08-02). Refines [ADR-065](decisions.md) (namespaces).
 
-**Context.** ADR-65 made `(:use mod)` refer a module's public names bare via a per-file
+**Context.** ADR-065 made `(:use mod)` refer a module's public names bare via a per-file
 import table. The table was a plain last-write-wins map, and the resolver consulted it after
 the current namespace and before root — which left three silent failure modes an audit
 surfaced. (1) Two `(:use a) (:use b)` clauses that both export `thing` silently resolved to
@@ -13533,15 +13533,15 @@ The advisory checker builds its import context by the same rules (the `%refer` `
 a genuine clash fails loudly at the point it's introduced, a prelude shadow is visible, and the
 shadowed original is always recoverable. The cost is that a pre-existing silent clash now fails
 the load — correct for greenfield (surface the problem), and the std suite had none. This is
-policy over the flat table (ADR-65's substrate is unchanged); the runtime is still one flat
+policy over the flat table (ADR-065's substrate is unchanged); the runtime is still one flat
 interned-symbol global table with an expand-time resolver.
 
 ## ADR-206 — "referenced-but-not-imported" is solved by LSP auto-import, not runtime autoload
 
-**Status:** accepted + implemented (2026-08-02). Refines [ADR-65](decisions.md) (namespaces),
+**Status:** accepted + implemented (2026-08-02). Refines [ADR-065](decisions.md) (namespaces),
 extends the `code_actions.rs` quick-fix surface (`docs/lsp.md`).
 
-**Context.** ADR-65 §9 recorded two flavours of *auto-require* for the ergonomics of using a
+**Context.** ADR-065 §9 recorded two flavours of *auto-require* for the ergonomics of using a
 name from a module you haven't imported: **import-driven** (a `(:use …)` loads the module —
 shipped) and **reference-driven** (a bare `mod/name` reference *autoloads* the module on first
 sight, Emacs `autoload` / Guile style — deferred). The question was whether to build the
@@ -13567,14 +13567,14 @@ image's global table) are known, the editor offers:
   `editor/treesit`, ADR-205 §7b) is a *choice*, never a silent pick.
 
 Discovery is workspace-wide for free: `project/setup-tooling-image` loads every project source
-into the LSP image (ADR-31), so `introspect::global_names` already sees project modules and
+into the LSP image (ADR-031), so `introspect::global_names` already sees project modules and
 embedded std alike — no separate cross-file index. Filtered so the offer is never wrong: the
 file's own namespace, an already-imported module, and private `--` providers are dropped.
 
 **Rejected: reference-driven runtime autoload.** It would couple symbol resolution to filesystem
 side effects, run inside `nest check` (which shares the resolver), and — the deciding cost — make
-a module's dependency set *implicit*, blurring exactly the static analysis ADR-65 §6 says
-namespaces exist to enable. ADR-65's "loads-but-never-fetches" line protects the lock file but
+a module's dependency set *implicit*, blurring exactly the static analysis ADR-065 §6 says
+namespaces exist to enable. ADR-065's "loads-but-never-fetches" line protects the lock file but
 not analyzability. The narrow context where autoload is idiomatic — a live, self-modifying image
 (Emacs) — is served well enough by the REPL's existing unbound-name hint; if a REPL-only
 autoload is ever wanted it can be added there, scoped away from file loads and `nest check`, but
@@ -13582,7 +13582,7 @@ it is explicitly *not* the general mechanism.
 
 **Consequences.** Library code stays explicit and statically analyzable (the modern default),
 the package manager's dependency graph stays computable, and the ergonomic gap closes with a
-familiar Rust-analyzer/TS-style affordance. This supersedes ADR-65 §9's "reference-driven"
+familiar Rust-analyzer/TS-style affordance. This supersedes ADR-065 §9's "reference-driven"
 flavour as a language feature (import-driven `:use` stands unchanged). Implemented in
 `crates/lsp/src/code_actions.rs` with unit coverage for discovery, the header edit (bare and
 clause-grouped), qualify, the multi-provider choice, and the own-namespace/already-imported/private
@@ -13709,19 +13709,19 @@ So both ends are closed:
 pure backtracking solver, the registry wiring (a `:version` manifest entry is now a
 range, resolved from live published metadata into the lock), and the `:brood` runtime
 gate all ship and are tested.
-**Supersedes ADR-37's "no constraint solver — direct refs only" invariant**,
-deliberately, the way ADR-70's package-rooting superseded its own "detect-and-reject"
+**Supersedes ADR-037's "no constraint solver — direct refs only" invariant**,
+deliberately, the way ADR-070's package-rooting superseded its own "detect-and-reject"
 interim. The user asked for "a full resolver with many many tests," a considered reversal
-of the ship-the-simple-form deferral (ADR-11) now that a real ecosystem (the hive
+of the ship-the-simple-form deferral (ADR-011) now that a real ecosystem (the hive
 registry, ADR-147) exists to resolve against.
 
-**Context.** ADR-37 shipped git-deps + a lock file and explicitly declined a solver:
+**Context.** ADR-037 shipped git-deps + a lock file and explicitly declined a solver:
 each dep pinned an exact ref, and two deps wanting different versions of the same package
 was a loud error the user fixed by hand. That was the right first cut, and it held while
 "a dependency" meant "a git URL at a tag." The registry (ADR-147) changed the shape of the
 problem: packages now have *many published versions* and declare ranges against each other,
 so "resolve the newest set that satisfies everyone" is a question that finally has data
-behind it — and hand-pinning a transitive diamond is exactly the recurring pain ADR-37
+behind it — and hand-pinning a transitive diamond is exactly the recurring pain ADR-037
 named as the cost of deferring.
 
 **Decision.** A backtracking, **newest-compatible** resolver (the Cargo/npm/pub family),
@@ -13839,7 +13839,7 @@ graph against a loopback registry exposed two walls, both fixed:
   `/releases` endpoint now carries each release's deps, so one request per package covers
   everything (the registry-index model — Cargo's index, npm's packument); and the pre-fetch
   walks the dependency closure **breadth-first with each level fetched concurrently** — Brood's
-  non-blocking sockets (ADR-62) let a spawned fetcher park on I/O rather than pin a worker,
+  non-blocking sockets (ADR-062) let a spawned fetcher park on I/O rather than pin a worker,
   so a level's requests overlap instead of summing. The lock fast path still makes a repeat
   resolve network-free.
 
@@ -13967,7 +13967,7 @@ git package with overlapping-but-different ranges reconcile only if the greedy n
 satisfies both, rather than the solver finding a common older version. Making a git package a
 first-class member of the PubGrub universe would require fetching each candidate tag's manifest
 (a shallow clone per in-range tag) to learn its dependencies, and a merged registry+git closure —
-materially more code and network. Deferred per ADR-11 until a concrete need; git deps are
+materially more code and network. Deferred per ADR-011 until a concrete need; git deps are
 overwhelmingly direct and singular, where greedy newest-matching is exactly right. *Now closed:*
 the resolver's last deferred algorithm item. *Still deferred (plumbing, not the solver):* semver
 ranges over `:git` **tarball** sources, and registry index auto-refresh.
@@ -14091,13 +14091,13 @@ spliced callee, and an arm deopting on every activation).
 ## ADR-211 — The registry is a hosted service (hive), not a git-backed index
 
 **Status:** accepted / documenting shipped reality (2026-08-04). **Supersedes the registry half
-of ADR-147** (the `:tarball` dep kind and the ADR-37 invariants it kept are unchanged). Client in
+of ADR-147** (the `:tarball` dep kind and the ADR-037 invariants it kept are unchanged). Client in
 `std/tool/package.blsp`
 (the `registry--*` functions); server is the sibling **hive** app (`../hive`, a Brood/Hatch/
 Postgres service on Fly.io).
 
 **Context — the code outran the ADR.** ADR-147 decided the registry would be "**just a git repo**
-of metadata … **not a hosted service**", to keep ADR-37's "no central infrastructure to host or
+of metadata … **not a hosted service**", to keep ADR-037's "no central infrastructure to host or
 pay for" property. That is not what shipped. Two forces pulled the other way and were acted on
 without recording an ADR — this one closes that gap:
 
@@ -14174,7 +14174,7 @@ and the checksum just certifies "these are the bytes hive recorded", not "the ow
 Signing closes that gap: a release carries a signature over its checksum, made with the publisher's
 private key, that a client can verify against the publisher's public key.
 
-**Decision — TOFU, advisory, ed25519.** Three choices, each the smaller/simpler option (ADR-11):
+**Decision — TOFU, advisory, ed25519.** Three choices, each the smaller/simpler option (ADR-011):
 
 - **Trust model: TOFU (trust-on-first-use), NOT a keyserver.** The client PINS a package's public
   key in the lock on first install; a later release of that package signed by a *different* key is
@@ -14185,7 +14185,7 @@ private key, that a client can verify against the publisher's public key.
   notices. The cost is that the *first* install of a package is unverified (the SSH `known_hosts`
   model); a keyserver would centralise trust back into hive, which already serves the bytes, so it
   would add authorship-binding while leaving hive able to swap the key — a weaker guarantee for more
-  infrastructure. Rejected. Out-of-band key distribution (most secure) is premature (ADR-11).
+  infrastructure. Rejected. Out-of-band key distribution (most secure) is premature (ADR-011).
 
 - **Enforcement: advisory, not gating.** Verification NEVER blocks an install — a missing signature,
   an unverifiable one, or a changed key is a **warning**, exactly as the type checker never gates the
@@ -14193,11 +14193,11 @@ private key, that a client can verify against the publisher's public key.
   instead of a signal. A future `enforced` mode (refuse unsigned/mismatch) is a config flag, additive.
 
 - **Algorithm: ed25519** (`ed25519-dalek`, the sibling of the `x25519-dalek` already vetted-in for
-  the ADR-34 handshake — the "don't roll your own crypto" bar ADR-5/dependency policy already
+  the ADR-034 handshake — the "don't roll your own crypto" bar ADR-005/dependency policy already
   meets). The **new Rust primitive** is the trio `%ed25519-keygen` / `%ed25519-sign` /
   `%ed25519-verify` (raw bytes in/out, like `%digest`) — mechanism the language genuinely can't
   bootstrap; key generation, storage, the publish/verify flow, and the TOFU pin are all Brood policy
-  (ADR-6).
+  (ADR-006).
 
 **Shape.**
 - **What is signed:** the release's **sha256 checksum bytes** (32 bytes). The checksum already binds
@@ -14219,7 +14219,7 @@ private key, that a client can verify against the publisher's public key.
 **Why.** Signing is the one thing sha256 can't give (authorship), and TOFU delivers the bulk of the
 value with zero new trust infrastructure — the registry stays a relay, the guarantee degrades
 gracefully (advisory), and the mechanism is one small vetted primitive with all policy in Brood. The
-deferred-until-needed bar (ADR-11) is met by a concrete pull: a public registry with token auth is
+deferred-until-needed bar (ADR-011) is met by a concrete pull: a public registry with token auth is
 exactly where "a stolen token published under my name" becomes a real risk.
 
 ## ADR-213 — A sparse char→byte index on the string slot: char indexing is O(1) in both encoding regimes
@@ -14466,7 +14466,7 @@ table above is).
 **Validation.** `tests/shared_arm_test.blsp` pins the split the change turns on: instances
 of one `fn` form keep their own captures (in one process and across 24 concurrent ones — the
 publish race), a closure built fresh per call is right every time, a `def` is observed
-through a shared arm (late binding, ADR-13), and a closure whose body is built by `eval`
+through a shared arm (late binding, ADR-013), and a closure whose body is built by `eval`
 (unkeyable, no cache) still runs. Every case passes with `BROOD_NO_SHARED_ARMS=1` as well,
 which is what makes it an optimisation rather than a semantic. A sabotage that collides keys
 (`p.0 & !0xffff`) fails the *boot*, so the gate is sensitive.
@@ -14640,7 +14640,7 @@ failing (KI-34 — the image was written every cold start and never read from):
   `(def *image-sections* …)` written inside module `project` binds `project/*image-sections*`
   while `require-force`, root code, goes on reading the empty root one. `set-image-source!` is
   the root code that binds them, exactly as `set-load-path!` is for `*load-path*`.
-- **The image branch precedes the package branch.** A project roots its OWN modules (ADR-70),
+- **The image branch precedes the package branch.** A project roots its OWN modules (ADR-070),
   so `*package-module-files*` holds `myproj/shapes` as surely as a dependency's `foo/b`;
   consulted after it, the image branch is unreachable for every module of every named project.
   Preferring the image is also right on its own terms — it is only installed once its
@@ -14657,13 +14657,13 @@ module makes `require-one` early-return, so nothing is ever materialised and the
 silently do not exist — the first thing sectioning broke. `require` re-provides each feature
 as it materialises it; a feature with no section (a std module pulled in during the build) is
 re-required from embedded source, which is idempotent and cheap. The encoding reuses the **distribution wire format** over
-`process::Message`, which already serialises closures as data (ADR-33) — so this adds no
+`process::Message`, which already serialises closures as data (ADR-033) — so this adds no
 second implementation of code serialisation, and inherits a decision that turns out to
 matter: `wire::put_sym` writes symbol **names**, not the dense interner ids, so an image
 never depends on the order symbols happened to be interned in. The interner problem that
 would normally dominate an image format simply does not arise.
 
-Rust supplies only mechanism (ADR-6): `%image-write path names fingerprint` and
+Rust supplies only mechanism (ADR-006): `%image-write path names fingerprint` and
 `%image-read path fingerprint`. The fingerprint is an **opaque string** this layer stores
 and compares, so every policy question — what to snapshot, what invalidates an image, who
 rebuilds it — stays in Brood (`std/tool/project.blsp`).
@@ -14682,7 +14682,7 @@ list exists. So the set is **derived** (2026-08-07). `%registry-update!` / `%reg
 the only ways a registry is written; the kernel records the names they write and
 `(%registry-names)` reports them, so a registry added later is carried without anyone
 remembering to. What remains in `std/tool/project.blsp` is an *exclusion* list —
-`*features*`, `*features-loading*`, `*deprecation-seen*`, and ADR-70's two package-module
+`*features*`, `*features-loading*`, `*deprecation-seen*`, and ADR-070's two package-module
 maps — where forgetting an entry costs a redundant load, never a wrong answer. `*features*` in
 particular must **not** be imaged (see above): restoring it makes `require-one` early-return and
 nothing is ever materialised.
@@ -14704,7 +14704,7 @@ a macro is encoded as its closure plus a flag and rebuilt as a macro. This is co
 **Hot reload is unaffected, and that is the load-bearing property.** The image defines
 exactly the globals a source load would have, via the same `env_define`. Everything after
 startup — `def` rebinding, late binding, a running process observing a redefinition
-(ADR-13) — is identical. `tests/startup_image_test.blsp` pins this directly: a process
+(ADR-013) — is identical. `tests/startup_image_test.blsp` pins this directly: a process
 spawned *before* a `def` observes the new binding after an imaged start.
 
 **Measured**, ~16 300 files of ~180 lines:
@@ -14893,7 +14893,7 @@ Safe (a binary change must invalidate an image) and harmless in practice, since
 raised on any value with no portable form, and a `Value::Table` is a per-runtime registry
 handle (ADR-107), so it has none. The blast radius was the problem: one `(def *cache* (table))`
 anywhere forfeited the image for the *whole project*, which then reloaded from source every
-start. Since a table is the language's only sanctioned mutable structure (ADR-26), that made
+start. Since a table is the language's only sanctioned mutable structure (ADR-026), that made
 the blessed way to hold shared state also the way to lose imaged startup — found in hatch,
 whose `web/static` caches a fingerprint manifest and ETags in two tables, and reproduced on a
 bare `nest new` plus one table global.
@@ -14996,10 +14996,10 @@ buffer refuses the damaging edit itself, on every path.
 
 ## ADR-220 — Standard-library module names are reserved package names
 
-**Status:** accepted **and implemented**, 2026-08-11. Extends ADR-70 (package-rooted
+**Status:** accepted **and implemented**, 2026-08-11. Extends ADR-070 (package-rooted
 namespaces) and ADR-166 (reserved *function* names).
 
-**Context.** Package-rooted namespaces (ADR-70) auto-root every dependency's and the root
+**Context.** Package-rooted namespaces (ADR-070) auto-root every dependency's and the root
 project's modules under a package prefix — dep `foo`'s `(defmodule b)` becomes `foo/b`. The
 standard library is the one thing that loads with *no* package context, so its modules keep
 short, bare names (`json`, `set`, `text`, `net/tcp`, `proc/gen`). That is the intended Elixir
@@ -15027,7 +15027,7 @@ baked in), backs **three enforcement layers**:
    `nest fetch`/`add`.
 
 **Rationale.** This makes the stdlib-name reservation **mechanically enforced**, not merely
-conventional — stronger than Elixir. Because everything but the stdlib auto-roots (ADR-70), a
+conventional — stronger than Elixir. Because everything but the stdlib auto-roots (ADR-070), a
 bare top-level module name now belongs to the standard library *by construction*, and the
 three layers guarantee nothing else can quietly take one. Deriving the reserved set from
 `(builtin-modules)` means adding or removing a std module updates the reservation automatically.
@@ -15035,7 +15035,7 @@ three layers guarantee nothing else can quietly take one. Deriving the reserved 
 **Consequences.** No language-surface change and no call-site change. A dependency author who
 picked a stdlib name must rename (surfaced loudly at add/publish/load, with the owned namespace
 named). The reservation is *name-level* (the whole prefix), broader than the exact-collision it
-strictly needs to prevent — a deliberate ADR-11 choice: a simple, explainable rule ("a package
+strictly needs to prevent — a deliberate ADR-011 choice: a simple, explainable rule ("a package
 can't be named after a stdlib module") beats a narrow one that still permits confusing names.
 Relaxing a reservation later (freeing a name) is safe; *adding* one is the breaking direction —
 the same asymmetry ADR-166 records for function names.
@@ -15120,7 +15120,7 @@ separates them, and both directions were verified by sabotage.
 **What was deliberately not built.** No `LoweringPlan` struct — the plan doc predicted one and the
 code disproved it. `jit_lower_arm` makes exactly two choices before delegating, and the *order*
 between them is load-bearing, so a value bundling both would invite the failure below. No
-`name()` on the trait, no capability query, no second backend. Per ADR-11 an additive feature
+`name()` on the trait, no capability query, no second backend. Per ADR-011 an additive feature
 costs nothing to defer, and here a shape with no reader would actively mislead.
 
 **The failure this surfaced, which no existing gate could see.** The first version of the hoist
@@ -15170,7 +15170,7 @@ working as aliases. Successor work (AOT, the `jit`→`native` renames) noted at 
 
 **Context.** Brood presented its execution machinery as two engines and a separate JIT switch:
 `BROOD_VM=0` selected the tree-walker in `compile/mod.rs`, `BROOD_NO_JIT=1` disabled native
-tiering in `jit_runtime.rs`, and the two were unrelated env reads in unrelated modules. ADR-76
+tiering in `jit_runtime.rs`, and the two were unrelated env reads in unrelated modules. ADR-076
 called the VM "the default engine" and the tree-walker "the escape hatch"; ADR-221 modelled the
 engine choice as an `enum Engine { TreeWalker, Bytecode }` and every consumer matched on it.
 
@@ -15253,7 +15253,7 @@ makes overdue — deferred to keep this change reviewable.
 **Where AOT lands, which is the point of doing this first.** AOT is **tier 2 admitted at load**
 rather than earned at run time. That is the entire difference, and under the peer framing it had
 nowhere to sit. Its blockers are unchanged and recorded in `backend-seams.md` §6: the constant
-pool must stay a *backend* concern (ADR-91 measured that the indirection AOT needs buys the JIT
+pool must stay a *backend* concern (ADR-091 measured that the indirection AOT needs buys the JIT
 nothing, so putting it in the shared lowering would slow tier 2), epoch admission wants ADR-217's
 deferred per-arm symbol tracking, and an unprofiled AOT build is sound-but-deopt-prone because
 speculation is guarded.
@@ -15264,13 +15264,13 @@ speculation is guarded.
 
 **Status:** **Phase 1 (definition-side) implemented (2026-08-12)** — a file may declare more
 than one `(defmodule …)`. **Phase 2: cross-file require-by-name for a co-located module
-implemented (2026-08-13)** — first for named (ADR-70 rooted) projects via the rooting registry,
+implemented (2026-08-13)** — first for named (ADR-070 rooted) projects via the rooting registry,
 then (**Phase 2b**, same day) for **nameless projects and bare `brood file.blsp` runs** via a
 `*load-path*`-scan fallback in `require` (see Phase 2b below). The **persisted AOT index**
 (module↔file decoupling, LSP routing, folding the checks into an index) stays deferred to M2
-plugin pressure. Design in [module-index.md](module-index.md). Sits on the ADR-70 trajectory
+plugin pressure. Design in [module-index.md](module-index.md). Sits on the ADR-070 trajectory
 (package-rooting), one step further. The user's request for co-located test modules — which
-need a co-located module reachable across files — is the concrete ADR-11 driver that lifted
+need a co-located module reachable across files — is the concrete ADR-011 driver that lifted
 the Phase 2 deferral for the require-by-name slice.
 
 **Phase 1 — multiple modules per file (the region model).** A file is a sequence of
@@ -15298,7 +15298,7 @@ files*, and for the root project that reduces to **one generalization**: the fil
 and already correct — `project-root-project-rooting` registers `pkg/secondary → file` into
 `*package-module-files*`, and `require-force-in`'s existing `*package-module-files*` branch
 loads it through `require-force-package` under the package context. The registration key and
-the lookup key are produced by the *same* ADR-70 rooting rule over the *same* module set
+the lookup key are produced by the *same* ADR-070 rooting rule over the *same* module set
 (`(:use secondary)` expands to `(require (%root-module-name 'secondary))`; `%root-module-name`
 roots iff `secondary` is in the active package's set — which the generalized scan now puts
 there), so they cannot drift. No prelude change, no new `require` branch, no new Rust builtin.
@@ -15337,7 +15337,7 @@ feature → provider, ability → impls) would consolidate all of it, following 
 **Decision.** **Record the design and defer the build.** The advantages are real (O(1) symbol
 find, collision/reserved checks as index queries, `BROOD_MONO` by default, cheap whole-program
 queries, module↔file decoupling incl. multi-module files) but they are shaped like *faster /
-more unified*, which ADR-11 says to defer until a concrete need justifies the cost. The concrete
+more unified*, which ADR-011 says to defer until a concrete need justifies the cost. The concrete
 need is **M2+ plugin pressure** — many modules from many authors, an editor that navigates by
 symbol — the same trigger §8 of `namespaces.md` names for package-rooting. The namespace bug hunt
 (devlog 2026-08-12) found the current machinery *robust*, so nothing is forcing it now, and the
@@ -15346,7 +15346,7 @@ root project is small enough that the filename convention is not a bottleneck.
 **The one invariant any future build rests on.** The index is a *cache of live truth, never the
 truth*: auto-refreshed, mtime-invalidated, with every consumer falling back to live scanning when
 it is absent or stale (the LSP already needs that for unsaved buffers). The flat interned symbol
-table stays the runtime truth and ADR-65 resolution *semantics do not change* — the index
+table stays the runtime truth and ADR-065 resolution *semantics do not change* — the index
 accelerates lookup, never meaning. In a hot-reload system a stale index that misdirects is worse
 than none, which is the whole risk and why it must never be authoritative.
 
@@ -15410,7 +15410,7 @@ allocation is a process-local `uid → Arc<ArmHandle>` cache, so the steady stat
 bump on an existing handle. Implemented and measured: `spawn-live` **+0.9% against a 0.2%
 floor** — i.e. nothing. Trading an allocation for a hash lookup is a wash, and the cache brings a
 new invalidation obligation (it holds arms alive, so it has to be cleared with `vm_cache` on a
-free-epoch change). Reverted rather than carried (ADR-11).
+free-epoch change). Reverted rather than carried (ADR-011).
 
 **The rejected alternative, and why.** The obvious fix is to stop cloning and let the callee
 chain *borrow* the arm, which requires the arm to be immortal. That is sound for a sealed
@@ -15477,7 +15477,7 @@ test inline. This is an ADR-223 loader property, orthogonal to this ADR.
 separately and more simply: keeping test code out of the ship (this ADR's strip), dev/test-only
 deps (`:dev-dependencies`, excluded from the bundle, ADR-172), and env-specific config (runtime
 `defdyn`/`BROOD_*`). Consolidating them behind a build-env knob is exactly the "unify/add-a-knob"
-shape ADR-11 defers until M2+ app-config pressure forces it. **Scope:** named (ADR-70 rooted)
+shape ADR-011 defers until M2+ app-config pressure forces it. **Scope:** named (ADR-070 rooted)
 projects, matching ADR-223 Phase 2. `nest new` keeps the `tests/` layout; co-located is opt-in.
 
 ## ADR-226 — Function-head guards: `:when` on defn/fn clause heads, via the match engine
@@ -15501,7 +15501,7 @@ a guard-bearing fn now simply takes the existing `match*` path: `clause_has_when
 makes a `:when` clause no longer count as "arity-only" in `lower_fn` and `fn_needs_lowering`.
 Zero new evaluator machinery; the guard, fall-through, hygiene, name-resolution, and **proper
 tail calls** all come from `match*` unchanged (verified: `count-down 200000` through a guarded
-clause does not overflow). This is the "keep the core small" bar (ADR-11) met by reuse.
+clause does not overflow). This is the "keep the core small" bar (ADR-011) met by reuse.
 
 **Cost is opt-in.** Only a fn that *uses* a guard pays the `match*` dispatch (pattern-match
 the argument tuple) instead of native arity dispatch; a guard-free arity fn is unchanged.
@@ -15539,7 +15539,7 @@ follow-up as shipped".
 **Context.** The stdlib is written in Brood, but the bulk lives in a flat, un-namespaced
 `std/prelude.blsp` (~6000 lines) where every function — from `map`/`filter`/`reduce` to niche
 helpers like `dedupe`/`chunk-by` — is a bare global. The separate `std/*.blsp` modules (`set`,
-`json`, `csv`, …) already namespace via `defmodule` (ADR-65), but the prelude never did.
+`json`, `csv`, …) already namespace via `defmodule` (ADR-065), but the prelude never did.
 
 **Decision — a principled split, run as a staged program.** *Core* collection-protocol ops,
 arithmetic, type predicates, combinators, and all language-runtime machinery **stay bare in the
@@ -15720,7 +15720,7 @@ but as an **internal** mechanism, not a language form.
 
 **Why the loader stays in Brood (not a Rust `%require`).** The obvious "make it a kernel primitive"
 move — a `%require` alongside `%refer`/`%alias` — would move the loader's *policy* (load-path
-resolution, cycle handling) out of Brood into Rust, violating ADR-6 (policy in Brood, mechanism
+resolution, cycle handling) out of Brood into Rust, violating ADR-006 (policy in Brood, mechanism
 in Rust). So `require-one` stays a Brood function. It is not sprinkled everywhere: where a qualified
 reference already covers the load, the explicit call is **dropped** (inference), not renamed. It is
 called only by the irreducible cases: the `:use`/`:alias`/`:use-internals` expansion, the
@@ -15743,12 +15743,12 @@ published library that still calls it is incompatible with this runtime. Depende
 deploy, which fetches libraries from the registry) break until those libraries are **republished**
 require-less. The migration of a library's *source* is not enough; it must be re-published and
 re-fetched. This is the one real cost of the removal, accepted deliberately: pre-1.0, greenfield,
-better a small language now than a redundant form kept forever (ADR-11).
+better a small language now than a redundant form kept forever (ADR-011).
 
 
 ## ADR-230 — The `string` library: every op whose subject is a string lives under `string/*`
 
-**Status:** accepted, shipped 2026-08-18. Follows ADR-65 (namespaces), ADR-227 (`enum`/`math`
+**Status:** accepted, shipped 2026-08-18. Follows ADR-065 (namespaces), ADR-227 (`enum`/`math`
 namespacing), ADR-229 (auto-require).
 
 **Context.** The string surface had rotted into three inconsistent homes: bare-and-unprefixed in the
@@ -15757,12 +15757,12 @@ prelude (`trim`, `pad-left`, `replace`, `char-at`, `join`, `capitalize`, `blank?
 `string-split`, `string-normalize`, `string-span`), and a one-function `text` module (`text/fill`).
 `(trim s)` and `(string-split s ",")` sat side by side — same type, two conventions — and a caller
 had to *memorise* which string operation was "core enough" to be bare. That is the opposite of the
-namespaced, discoverable surface ADR-65/227 established for `enum`/`map`/`math`.
+namespaced, discoverable surface ADR-065/227 established for `enum`/`map`/`math`.
 
 **Decision.** Introduce `std/string.blsp` — a real `(defmodule string)` — as the single canonical
 home for **every operation whose subject is a string**, and move the whole surface there with one
 name per op (`string/trim`, `string/split`, `string/length`, `string/pad-left`, `string/join`, …).
-No bare forwarders, no compatibility aliases (greenfield, ADR-11): callers write the qualified name
+No bare forwarders, no compatibility aliases (greenfield, ADR-011): callers write the qualified name
 or `(:use string)`.
 
 **The boundary rule — what is a `string/*` op and what stays bare.**
@@ -15816,7 +15816,7 @@ ADR-229): a published library calling a now-moved bare name is incompatible unti
 ## ADR-231 — The `file` library: every filesystem operation lives under `file/*`
 
 **Status:** accepted, shipped 2026-08-18. Follows ADR-230 (the `string` library) — the same
-treatment, one stage later — and ADR-65 (namespaces), ADR-227 (`enum`/`math` namespacing),
+treatment, one stage later — and ADR-065 (namespaces), ADR-227 (`enum`/`math` namespacing),
 ADR-229 (auto-require).
 
 **Context.** The filesystem surface had the same rot ADR-230 fixed for strings, in a different
@@ -15829,7 +15829,7 @@ conventions each fs operation happened to use.
 
 **Decision.** Give the filesystem the same single-home, one-name-per-op treatment: every operation
 that touches the filesystem is registered under `file/*`, with no bare forwarders and no
-compatibility aliases (greenfield, ADR-11). The 18 kernel primitives become `file/slurp`,
+compatibility aliases (greenfield, ADR-011). The 18 kernel primitives become `file/slurp`,
 `file/slurp-bytes`, `file/spit`, `file/spit-append`, `file/spit-bytes`, `file/spit-private`,
 `file/exists?`, `file/dir?`, `file/stat`, `file/mtime`, `file/size`, `file/ls`, `file/mkdir`,
 `file/rm`, `file/rmdir`, `file/rename`, `file/cp`, `file/cwd`. The rename also normalises the
@@ -15956,7 +15956,7 @@ top-level `std/ansi.blsp`. The rule is therefore **not** "one slash always" but 
 must earn its keep": a genuine namespace (editor) keeps it; a filing convenience (proc, net,
 tool) does not.
 
-**Consequence.** `reserved-package-name?` (ADR-70/166/220) is derived from the embedded
+**Consequence.** `reserved-package-name?` (ADR-070/166/220) is derived from the embedded
 module list, so it now reserves the **flat** names (`http`, `tcp`, `sse`, `reconnect`, `gen`,
 `agent`, `supervisor`) and no longer reserves `net`/`proc` as group prefixes — a package may
 now legitimately be named `net` or `proc`, but not `http`/`gen`/etc. `editor` remains a
@@ -16000,7 +16000,7 @@ bases so neither was obviously redundant:
   `seq/group-by`, `seq/zip-with`. The core `seq` *function* is unaffected — a module name is not a
   value binding, so `(seq coll)` and the `seq/` qualifier never collide.
 
-Greenfield, so every rename updates all callers with no compatibility shim (ADR-6 / project
+Greenfield, so every rename updates all callers with no compatibility shim (ADR-006 / project
 convention). No overlap is created: `string/to-bytes`/`from-bytes` and the `seq/*` names collide
 with nothing; removing `path/exists?` drops one recorded overlap.
 
@@ -16053,7 +16053,7 @@ same `set_imports` save/restore as `One`. Guarded by the new "clashes resolve la
 `stream-map`, `version-compare`, `mcp-*-tool`, `sse-send`. Qualified, that reads doubled:
 `queue/queue-push`, `stream/stream-map`. The prefix was a pre-namespacing crutch for bare
 usability (`queue-push` self-describes; `stream-map` avoids colliding with core `map`), but under
-namespacing (ADR-65/70) the module qualifier already says which module a name is from, so the
+namespacing (ADR-065/070) the module qualifier already says which module a name is from, so the
 prefix is pure noise in the qualified spelling — and `set/union`, `map/merge-with`, `json/parse`,
 `string/split` already show the house style.
 
@@ -16112,7 +16112,7 @@ and short stdlib names. Elixir has **no** hard reservation: Hex gives globally-u
 names, the convention is to nest modules under your app name (`Ecto.Query`), `Kernel` is the
 shadowable-but-warned base, and import conflicts warn. Elixir's is convention + rarity + non-fatal
 resolution; Brood can do better because dependencies are reached under a **project-controlled local
-name** (ADR-37/70), not a global one.
+name** (ADR-037/070), not a global one.
 
 **Decision.**
 
@@ -16122,7 +16122,7 @@ name** (ADR-37/70), not a global one.
    `reserved-package-name?` predicate: **publish** (the hive gate), **add/fetch/resolve**
    (`package-guard-reserved-names` — a `:path`/`:git`/registry dep named `json`/`set`/`enum`/… is
    rejected fast, with "the stdlib owns the '…' namespace"), and **require** (the load-time guard).
-   A package's own modules root under *its* name anyway (ADR-70), so the only collision surface —
+   A package's own modules root under *its* name anyway (ADR-070), so the only collision surface —
    "a dependency whose prefix equals a stdlib name" — is exactly the one this forbids.
 
 2. **Therefore stdlib namespaces are un-shadowable, and there is no namespace escape.** A qualified
@@ -16672,7 +16672,7 @@ longer contains `string` or `seq` after a bare boot. See ADR-247 for the other h
 **Context.** The warm boot reads the prelude **twice**: once as the cached expansions that drive
 evaluation, and once as the raw `PRELUDE` text via `read_all_positioned`, purely so
 `note_definition` can record where each prelude `def` was written (`M-.` into the standard library,
-ADR-31). The second read built the whole prelude AST on the heap to extract, in the end, a
+ADR-031). The second read built the whole prelude AST on the heap to extract, in the end, a
 `Symbol → (file, line, col)` map — 3.5 ms of a 26 ms boot, and the AST's allocation on top.
 
 **Decision.** Record the names at cache-*write* time, where the raw forms are already in hand, and
@@ -16775,7 +16775,7 @@ gone — the backstop alone converts the corruption into silently lost JIT cover
 
 ## ADR-249 — `string/->codepoints` gets a native inverse
 
-**Context.** ADR-6 says Rust provides mechanism and Brood provides policy, and the bar for
+**Context.** ADR-006 says Rust provides mechanism and Brood provides policy, and the bar for
 a new primitive is deliberately high: it must improve *overall* language performance and
 build up a capability, not move one slow function into Rust. `string/->codepoints` is a
 native — an O(n) pass to the indexable code vector every text parser in `std/` wants — and
@@ -16793,7 +16793,7 @@ to put one back together: `std/json`'s per-string, per-key and per-number-slice 
 **Decision.** Add `%codepoints->string` — one pass into a `String`, accepting a vector, list
 or `bytes` value — and point `string/codepoints->` at it.
 
-This clears the ADR-6 bar on both counts rather than one. It is *mechanism*: UTF-8-encoding
+This clears the ADR-006 bar on both counts rather than one. It is *mechanism*: UTF-8-encoding
 a sequence of code points is not a rule Brood can express cheaply, any more than the forward
 direction was, and the asymmetry of having one half native was the accident. And it pays off
 broadly rather than at a call site: it is the inverse of a primitive whose whole purpose is
@@ -17147,7 +17147,7 @@ the inconsistency should read this entry first.
 `:module/name` id from `(current-ns)` — `defability` stores the name verbatim, so `math/zero`
 is spelled out at the `defability` and at every `impl`. Auto-qualifying would need a
 resolution rule (what a bare `zero` means inside `math` versus outside it), which is a
-mechanism change, not a rename. Deferred deliberately (ADR-11): explicit costs nothing and
+mechanism change, not a rename. Deferred deliberately (ADR-011): explicit costs nothing and
 the registry key then matches what is written.
 
 **Ability names are not globals.** `(bound? 'display)` is false — they key `*abilities*` /
@@ -17763,7 +17763,7 @@ direction.
 
 **Status:** accepted and implemented, 2026-08-27.
 
-**Context.** The lattice has had `negate`/`difference` since ADR-23 — the else-branch of a
+**Context.** The lattice has had `negate`/`difference` since ADR-023 — the else-branch of a
 type guard *is* a complement, and the checker has always computed one — but the surface
 grammar had no way to write one. So the most-wanted annotation in a nil-carrying language,
 "anything but nil", could not be said.
@@ -17901,7 +17901,7 @@ Four independent highlighters would each have had to encode that: the VS Code Te
 grammar, the tree-sitter query, `brood-mode`'s font-lock, and the in-language highlighter
 `std/editor/highlight.blsp` that the REPL and bedit use.
 
-**Decision.** State the rule **once, in the kernel**, the way ADR-92 already states
+**Decision.** State the rule **once, in the kernel**, the way ADR-092 already states
 "what reads as a keyword": `builtins::DOC_FORMS` pairs each doc-carrying `def…` head with
 whether it builds a function, and the `(doc-forms)` primitive returns it as
 `head -> :fn | :head`. Every consumer reads it:
@@ -18175,7 +18175,7 @@ can be written down, not what is known.
 **Status:** accepted (2026-08-28)
 
 A `(sig …)` can declare a parameter's *full signature* — `(sig apply-it ((int -> string)
--> any))` — and ADR-78 has carried arrow refinements since Step 5. But the one site that
+-> any))` — and ADR-078 has carried arrow refinements since Step 5. But the one site that
 could use one, the call inside the body, consulted only *global* signature sources. So an
 arrow parameter was **inert in both directions**:
 
@@ -18629,11 +18629,11 @@ form with keyword clauses rather than three macros, so a name can carry all thre
 - **`:beta` warns with its reason**, through the same advisory path. The runtime notice
   sketched in the roadmap is deferred: the static path is where it is actionable, and a
   per-call hook would need the once-per-name deduplication ADR-232's drop warning uses —
-  additive, and gated on a real consumer (ADR-11).
+  additive, and gated on a real consumer (ADR-011).
 
 **Metadata is cleared by any redefinition**, in `env_define`, exactly as privacy is. A `def`
 that rebinds a name mid-run must not leave the *old* name's `:deprecated` attached to the
-new one — ADR-13's late binding applies to the facts about code, not only to the code.
+new one — ADR-013's late binding applies to the facts about code, not only to the code.
 
 **It is an annotation on a definition, so it belongs beside one at top level**, like
 `(sig …)`. `meta` resolves its name to the current namespace the way a `def` head is
@@ -19324,14 +19324,14 @@ an *advisory* diagnostic, and nothing is gated. Removal is a later, separate dec
 **Context.** `not=` is four lines of prelude — `((a b) (not (%eq a b)))` plus a variadic arm
 over `(not (apply = xs))` — and nothing else in the system knows the name: no special form,
 no primitive, no opcode, no checker guard, no JIT case. Its whole Rust footprint is one line
-in `types/check/sigs.rs` that it shares with `=`. Held against the bar ADR-11 sets and the
+in `types/check/sigs.rs` that it shares with `=`. Held against the bar ADR-011 sets and the
 `==` review applied last week (a name must buy a *capability*, not a spelling), it fails on
 the first count: `(not= a b)` is by construction `(not (= a b))`.
 
 Two things sharpen that from "redundant" to "worse":
 
 - **It is the slower of the two, structurally.** `=`'s two-arg body is a direct primitive
-  call, so ADR-69's thin-wrapper elision collapses `(= i 7)` to a `Prim2SlotInt`; `not`'s
+  call, so ADR-069's thin-wrapper elision collapses `(= i 7)` to a `Prim2SlotInt`; `not`'s
   body is a leaf, so the leaf inliner splices it — the caller ends up with no call at all.
   `not=`'s body is a **nested** call, which the elision cannot reach (the same shape the
   `<=` comment in `std/prelude/core.blsp` already warned about) and which disqualifies it
@@ -19414,7 +19414,7 @@ failure spelled identically. Before any function can grow a raising mirror, `!` 
 one thing, and it meant two: four raising bangs (`tempo/new!`, `parse!`, `parse-span!`,
 `sig!`) against 37 effectful ones (`gui/title!`, `run!`, `coverage/begin!`,
 `project-write-failed!`). The Scheme reading was already vacuous here: `!` marks *mutation*
-there, and Brood has none (ADR-26), so every effectful bang was marking "does I/O" —
+there, and Brood has none (ADR-026), so every effectful bang was marking "does I/O" —
 which the name says anyway.
 
 **Decision.** `!` is reserved for functions that **raise on failure**. Effectful names
@@ -19487,7 +19487,7 @@ the name had gone — that fact lived only in `docs/decisions.md`.
 
 **Not chosen.** A ledger in Brood with a Rust table generated from it (two sources of truth
 drift, and a drifted rename hint is worse than none). Gating on every warning (the checker
-is advisory by design, ADR-23/24; a type warning on a program that runs is advice). Gating
+is advisory by design, ADR-023/024; a type warning on a program that runs is advice). Gating
 `--check-boot` too (a slower boot check that answers a question `nest check` already
 answers). A `(meta … :deprecated)` per old name (ADR-283 needs the old name to still exist;
 these do not — the rename *removed* them, which is the point).
@@ -19508,7 +19508,7 @@ silently*. That was overstated: the kernel does print `process N died: <located 
 stderr and appends it to `.brood_crash_dump` (KI-72's fix). What it prints is one line —
 no trace, no kind/code, no hint — and it prints it again for every iteration of a crash
 loop, and there is no seam by which a host (an editor's message area, telemetry) can
-receive it as anything but stderr. OTP's answer is not kernel supervision (ADR-39 tried
+receive it as anything but stderr. OTP's answer is not kernel supervision (ADR-039 tried
 that and reverted it: the kernel supervisor *was* the scheduler-race surface) but the
 `logger` process: every crash is *reported* whether or not it is *handled*.
 
@@ -19669,7 +19669,7 @@ entry, the `proc/flag` arm, `E0046`. Tests: `tests/process_limit_test.blsp`.
 **Context.** Item F of the 2026-08-30 OTP-gap backlog. A receiver that cannot keep up
 accumulates its mailbox without bound — the one unbounded buffer in the share-nothing
 model — and the failure is the machine's, not the process's. BEAM has `max_heap_size`
-(mirrored as `:max-heap`, ADR-51-era) but no queue bound; the request for one is
+(mirrored as `:max-heap`, ADR-051-era) but no queue bound; the request for one is
 perennial there, and a queue bound is the more *legible* guard (messages, not bytes).
 
 **Decision.** Mirror `:max-heap`'s protocol exactly, on the queue axis:
@@ -19706,7 +19706,7 @@ the bound; add it with the observer work if wanted.
 
 ## ADR-309 — `spawn-monitor`: the monitor side of the atomic-spawn gap
 
-**Context.** ADR-67 added `spawn-link` because `(let (p (spawn expr)) (link p) p)` is
+**Context.** ADR-067 added `spawn-link` because `(let (p (spawn expr)) (link p) p)` is
 racy: a child that exits inside the spawn→link gap is linked *dead*, and the kernel then
 reports `:noproc` **instead of the child's real exit reason**. The primitive registers the
 link while the child sits in `REGISTRY` but is not yet enqueued, so it cannot exit first.
@@ -19745,7 +19745,7 @@ insertion and enqueue, and no amount of Brood can reach inside it.
 - The failure is a **silent wrong answer**, not an error. The receive fires; the reason
   merely says "already gone". A supervisor reading `:noproc` where `:normal` belonged
   restarts a `:transient` child that exited cleanly — which is the same class of bug
-  ADR-67's docstring already warned about on the link side.
+  ADR-067's docstring already warned about on the link side.
 - It is timing-dependent, so it passes every test on a fast machine and fails on a loaded
   CI runner, which is the shape that costs the most to diagnose.
 - The two-step form *looks* correct, and reviewers had already worked around it rather than
@@ -19960,7 +19960,7 @@ hits across std/ + tests/ → 5 → 0, the 5 being catch-all arms of guarded dis
 `_`-prefixed). `reduce-ok`/`first-ok`-style derivatives are **rejected**: `ok->` subsumes
 `first-ok` entirely, and a `-ok` per combinator is the combinatorial growth this repo
 forbids. A short-circuiting fold is deferred until the new warning shows the need — the
-concrete evidence ADR-11 asks for before adding a knob. `conj` still declares no domain,
+concrete evidence ADR-011 asks for before adding a knob. `conj` still declares no domain,
 so `(conj <failure> x)` is silent when written directly; that is separate work.
 
 ## ADR-313 — the default crash reporter arms lazily: subscribe in the prelude, load on the first crash
@@ -20413,7 +20413,7 @@ unexpected.
   over: `std/tool/repl.blsp` guards `(symbol? start-ns)` on a global that `nest` rebinds
   **from Rust** (`(def repl/*repl-start-ns* …)` in `crates/nest/src/main.rs`). A global's
   bound is taken from its initializer, so the checker believes it is forever `nil` — which
-  is exactly what ADR-23 forbids ("redefinable globals are `dynamic()`"). Fixing that at
+  is exactly what ADR-023 forbids ("redefinable globals are `dynamic()`"). Fixing that at
   the source is its own change. The 21 remaining hits are one shape — `(refute (pred x))`
   or `(is (not (pred x)))`, a deliberate assertion that the predicate is false — and carry
   `check-allow :type-mismatch`, which is what that directive is for. That is the lint's
@@ -20846,7 +20846,7 @@ covered here through the registry set, which is the fact that was lost.
 
 ## ADR-322 — `nest`'s dispatch moves into Brood, one subcommand per commit
 
-**Context.** `brood` bootstraps into `(repl/run)` (ADR-48); `nest` did not. Its
+**Context.** `brood` bootstraps into `(repl/run)` (ADR-048); `nest` did not. Its
 `crates/nest/src/main.rs` was 2,771 lines of Rust — a clap `Cmd` enum plus one `cmd_*`
 function per subcommand, each of which formatted a Brood form *as a string* and evaluated it.
 Policy written in the host language, one `format!` away from the language it drives: the
@@ -20917,7 +20917,7 @@ rethrown for the normal report) are all Brood. `test/test-make-filter` went publ
 `Interp::new()`, keyed on the subcommand: `BROOD_COVERAGE`/`BROOD_NO_JIT` for
 `--cover-lines`/`--cover-branches` and `BROOD_NO_RELOAD_DIAG` for any `--cover*`, because the
 kernel caches those flags on first read during the prelude build — set from Brood they are
-simply absent, with no error to notice — plus the ADR-43 default memory ceiling and the
+simply absent, with no error to notice — plus the ADR-043 default memory ceiling and the
 stale-stdlib warning. The router also accepts the global `-j` AFTER the subcommand now (clap
 did), stripping it before Brood sees the words. Sabotage-verified: with the arming removed,
 4 of `coverage_lines.rs`'s 6 cases fail. `main.rs` 2,547 → 2,113; `nest.blsp` 595 lines.
@@ -21088,7 +21088,7 @@ build has `WITH_GUI ?= 0`, `brood/gui` sat un-compiled for Apple indefinitely (K
 The obvious reading is that supporting macOS means restructuring the runtime around a GUI
 toolkit's demand for `main`. It does not, because of a decision already taken for an
 unrelated reason: `cli_support::run_on_main_stack` moves all work to a spawned thread sized
-to `WORKER_STACK_BYTES`, so the ADR-43 stack-budget guard behaves identically on the root
+to `WORKER_STACK_BYTES`, so the ADR-043 stack-budget guard behaves identically on the root
 thread and inside spawned processes. The runtime has therefore never run on the OS main
 thread, which has only ever blocked in `join()`.
 
@@ -21649,7 +21649,7 @@ sign goes in front (`-0xFF`, `+0x10`).
   `0xZZ`) or none at all (`0x`) are a parse error with a **per-radix hint** naming the
   legal digits — "a binary literal holds only `0` and `1`" — rather than the generic
   reserved-token hint. `AtomKind::RadixInvalid` is its own variant so the CST maps it to
-  `Error` and the LSP flags it like every other malformed literal (the ADR-25
+  `Error` and the LSP flags it like every other malformed literal (the ADR-025
   one-definition rule: the hint text lives in `syntax/atom.rs`, and the reader and the
   tooling tree both read it).
 - **Only a digit-led token is a radix literal.** `x0b1`, `a0xFF`, `foo0x1` are names, as
@@ -21692,7 +21692,7 @@ is a `failure` and `0x1F` in source is `31`, and neither can be mistaken for the
   second relaxation the freeze allows.
 
 **References.** [ADR-169](#adr-169) (the reservation), [ADR-196](#adr-196) (the first
-cash-in, and the precedent for "spelling, not type"), [ADR-25](#adr-025) (the shared
+cash-in, and the precedent for "spelling, not type"), [ADR-025](#adr-025) (the shared
 hint), [ADR-310](#adr-310) (why the runtime parse answers `failure`). Tests:
 `tests/reader_hints_test.blsp` (reads, per-radix errors, the `i64::MIN` edge, bignum
 spill, non-digit-led names).
@@ -21726,7 +21726,7 @@ library it *could* call.
 
 **What the code already knows.** Three facts make this a bounded change rather than a
 redesign. (1) Resolving a qualified reference needs nothing from its module: `resolve_sym`
-rewrites an alias prefix and roots an intra-package name (ADR-70) from the *reference's*
+rewrites an alias prefix and roots an intra-package name (ADR-070) from the *reference's*
 spelling and the package context — it never reads the target module. (2) `require-one` is
 already the concurrency-safe loader (ADR-136/225): a process that requires a module another
 process is mid-loading waits for that load, never sees a partial module, and the CAS claim
@@ -21908,7 +21908,7 @@ everything, and that is where bedit stood.
 1. **A memo table is loop state, bound around `view`.** `ui-loop` keeps the previous
    turn's fragments as a map `{key -> [deps ops]}` on its `clock` bookkeeping (like the
    timers: never rolled back with the model) and binds it to the dynamic `*ui-memo*`
-   (ADR-32) while `view` runs. Outside a loop the var is nil, so a test that calls a
+   (ADR-032) while `view` runs. Outside a loop the var is nil, so a test that calls a
    view directly gets the plain frame it always did.
 2. **`(ui-memo key deps thunk)` is the fragment.** Inside a loop it reuses the previous
    ops when the key's `deps` are `=`, else runs the thunk — and returns a one-element
@@ -22479,11 +22479,11 @@ kill is global, as in Emacs); a `registry-watch`er is sent `[:registry-added nam
 meta]` and `[:registry-removed name :killed|:died]`. The registry keeps no mirror: a
 process that dies is dropped and announced, a holder that still has the text re-shares,
 and everyone else relinks on the `:added` that follows. Frames are (2): one process per
-window, which is the routing the runtime already mandates (ADR-58/59).
+window, which is the routing the runtime already mandates (ADR-058/059).
 
 **Consequences.** A local frame and a remote `--attach` window become the same thing at
 different distances, both clients of the registry. The window-id-on-input half of
-ADR-59 stays deferred, now with the reason recorded: it is only needed for (1), and its
+ADR-059 stays deferred, now with the reason recorded: it is only needed for (1), and its
 sound form is a per-window mailbox. bedit's collab registry (keyed by path, with a text
 mirror for respawn) is a candidate client of this module — left as is, so its respawn
 semantics and tests stay untouched.
@@ -23183,7 +23183,7 @@ an inference could prove about the call's surroundings: the same `(zero)` raises
 impl" or answers `0` by the checker's reach. That is the property ADR-123/124 exist to
 rule out — the checker is advisory, never gates the live image, and a `def` always wins —
 and the direction [types.md](types.md) names as "not the TypeScript route". It is also
-ADR-11's case: three reviews, no consumer asking.
+ADR-011's case: three reviews, no consumer asking.
 
 **Decision.** Declined. Brood stays values-first, with Clojure and Elixir, which have no
 return-type polymorphism either: generic code names its target AS A VALUE. Three idioms,
@@ -23209,7 +23209,7 @@ keyword's identity is `:keyword`, so `(zero-of :int)` cannot key a `defmulti` to
 answer is a `match` (closed) or a `def`'d table (open by rebinding, ad hoc). If a real
 generic library ever wants it, the small, sound, dynamic feature is a multimethod keyed on a
 designator argument — not return-type dispatch — and that would be the concrete need
-ADR-11 waits for.
+ADR-011 waits for.
 ## ADR-362 — Process-shaped code runs on the VM, so the VM gets the instructions it dispatches on: predicates, vector tests, map reads
 
 **Status.** Accepted (2026-09-17).
@@ -23330,7 +23330,7 @@ re-laid, the status bar jumps, and a kinetic wheel stream re-rasterises the whol
 per event — five fixes in a morning each moved the jank somewhere else, because the model
 was wrong, not the pacing. What an editor user means by zoom is Emacs's `text-scale-adjust`:
 THIS buffer, bigger; the rest of the window as it was. The grid had one way to say that,
-the `:scale` face attribute (ADR-79), and it is a whole-number multiple of the cell — the
+the `:scale` face attribute (ADR-079), and it is a whole-number multiple of the cell — the
 smallest step it can express is a doubling. The window's text at 15 px next to a buffer at
 17 px was not a frame the runtime could draw.
 
@@ -23476,7 +23476,7 @@ a single-collection term, and for the stated reason. (2) A new name (`(sequence 
 avoid the subset surprise — a second word for the same idea costs every reader more than
 the one line of documentation the subset needs. (3) Leaving the longhand: it is exactly
 this union, so the spelling is the whole feature — and it was already being written by
-hand, which is the concrete need ADR-11 asks for.
+hand, which is the concrete need ADR-011 asks for.
 
 **Consequence.** `stats/min` and `stats/max` lose their `(check-allow :trusted …)` and are
 CHECKED; `stats/median` and `stats/percentile` lose the longhand. A wrong element type is
@@ -24064,7 +24064,7 @@ finding, and a future function that answers a sentinel gets the same guard for f
 **Status:** implemented 2026-09-20. The mechanism for `b2d` (the 2D game engine,
 `broodlang/b2d`), and the `gui-gpu` render target rewritten from OpenGL to wgpu.
 
-**Context.** The display protocol (ADR-46) is a vector of render ops in *character
+**Context.** The display protocol (ADR-046) is a vector of render ops in *character
 cells* — the grain an editor lives at, and one two games (`pong`, `brood-life`) had already
 pushed to its limit through `:vspans` and `:cells`. A sprite lives at a sub-cell position,
 moves by pixels, is a texture, turns. None of that is expressible, and no Brood policy
@@ -24075,7 +24075,7 @@ pinning, the sandbox a wasm component cannot escape, signed packages that would 
 `dlopen` anything, the wasm playground), and it does not even buy graphics, because
 per-sprite calls across an FFI are too slow and every FFI engine ends up with batched
 command lists — which is what the seam already is. Breaking the frontend out into its own
-process over the ADR-90 link: the right eventual shape, and orthogonal — nothing here
+process over the ADR-090 link: the right eventual shape, and orthogonal — nothing here
 references in-process memory, so it stays open. Extending the seam: this.
 
 The GPU path itself could not be extended as it stood. `gui/gpu.rs` requested a **GLES
@@ -24220,7 +24220,7 @@ is not applied. Every op kind is now drawn on both targets; the GPU target is no
 
 ### ADR-374 addendum 2 (2026-09-20, later still) — the window as its own process
 
-The frontend break-out (ADR-90's shape, for a game) turned out to be three messages
+The frontend break-out (ADR-090's shape, for a game) turned out to be three messages
 and one primitive, all policy: `remote-display` gained `:texture`, `:texture-free` and
 `:configure`, each one client-bound message (`[:texture tex rgba w h]`, `[:texture-free
 tex]`, `[:window opts]`) the thin client's `attach-display-loop` applies to its own display
@@ -24264,7 +24264,7 @@ holds the frame.
 Assets stayed Brood: a bundle carries source only, so `b2d-assets/embed!` writes a module
 that registers files as base64 and `read` prefers the embedded bytes to the file. No
 runtime change for that, deliberately — an archive format for binaries in the bundle is a
-real design (ADR-38 territory) and the game did not need it.
+real design (ADR-038 territory) and the game did not need it.
 
 ## ADR-376 — `reduced` ends a `transduce` by throwing, not by boxing
 
@@ -24298,11 +24298,11 @@ unhandled throw with a recognisable payload — it is a transducer protocol, and
 
 **Not decided, on purpose.** A STATEFUL stage — `xtake`'s counter, a windower, a
 de-duplicator — needs somewhere to keep state across inputs and something to release it
-when the run ends. Brood has no cell to keep it in (ADR-26); a `table` per run works but
+when the run ends. Brood has no cell to keep it in (ADR-026); a `table` per run works but
 the `(rf) -> rf'` contract has no completion arity to drop it from, and a table dropped
 only when the stage fires `reduced` leaks whenever the input runs out first. The honest
 shape is Clojure's completing arity — `(rf acc)` once at the end — which is a protocol
-change every stage and `transduce` would carry. Deferred until a stage needs it (ADR-11);
+change every stage and `transduce` would carry. Deferred until a stage needs it (ADR-011);
 `xtake-while` covers the stopping case without state.
 
 **Consequences.** `transduce` pays one `try` frame per call. A stage may stop a run from
@@ -24415,7 +24415,7 @@ are the ones where Brood's rules make the obvious port wrong.
 **Decisions.**
 
 - **`memoize` is a `table` the returned closure captures** — not a process. Brood has no
-  cell (ADR-26), and the only mutable structure is the table; a process would serialise
+  cell (ADR-026), and the only mutable structure is the table; a process would serialise
   every call through one mailbox, which is the opposite of what a memoized hot function
   wants. Consequences the docstring states: keys are the argument list compared
   structurally (so memoize over values, never a pid or a closure); every hit is a fresh
@@ -24443,7 +24443,7 @@ are the ones where Brood's rules make the obvious port wrong.
 - **`seq/pmap`** spawns a process per item, tags replies with a `ref` so it never consumes
   another message, collects by index and answers in `coll`'s order. A worker that raises is
   re-raised in the caller — after every worker has reported, so the mailbox is clean. It is
-  `map`'s parallel sibling, not an executor: no pool, no batching, no bound (ADR-11; a
+  `map`'s parallel sibling, not an executor: no pool, no batching, no bound (ADR-011; a
   bounded variant is a `partition` away).
 - **`string/format`** gains the `-` flag (left-align) and a width on `%s` and `%f`
   (`%10s`, `%8.2f`); `%N.Mf` combines a width with a precision. Octal stays out.
@@ -24493,7 +24493,7 @@ runtime has no `:gui-gpu` feature, which is how this will be noticed next time.
 **Context.** Every `nest` invocation learned the project's module graph — which file declares
 which `(defmodule …)` — by reading every source file whole (`reflect/read-all` of
 `file/slurp`, every form built as a value) and filtering for module headers, and did so
-twice: `package/module-files` for package rooting (ADR-70) and `package-provided-modules`
+twice: `package/module-files` for package rooting (ADR-070) and `package-provided-modules`
 for the package-identity map (ADR-172); a cold load added a third pass (`project-file-feature`,
 per file loaded). At the calibrated shape (16 300 files × 180 lines) this was 80 µs a file and
 invisible inside a 1.3 s warm start. At 1 000 files × 3 000 lines it was 3 ms a file and **the
@@ -24813,7 +24813,7 @@ alias head. A test asserting that its own module's `(sig …)` raises must call 
 module or use `sig!` (`crates/nest/tests/contracts_default.rs`'s fixture moved `lies` into
 its own module and asserts the inside call is NOT checked).
 
-**Not done.** An explicitly-qualified reference inside an ADR-70 rooted package
+**Not done.** An explicitly-qualified reference inside an ADR-070 rooted package
 (`commands/cmd-open` written inside `bedit/commands`) is compared unrooted and stays
 checked; bare references — the norm — qualify to the full name and cross the boundary.
 
@@ -25081,7 +25081,7 @@ over `regex-automata`'s `meta::Regex`). `std/regex.blsp` keeps its parser and ga
 translator; its Thompson NFA, bitset DFA, Pike VM and token scanner are deleted (1,486 → ~560
 lines). Supersedes ADR-352's engine; its `tokens` semantics stand.
 
-**Context.** The engine was written in Brood, on purpose (ADR-6): an NFA compiled once,
+**Context.** The engine was written in Brood, on purpose (ADR-006): an NFA compiled once,
 a bitset lazy DFA for `match?`, a Pike VM for captures, and ADR-352's scanner for lexers.
 It was linear-time and correct, and it was slow for the one caller that matters most: an
 editor. bedit decides whether each visible row of a results buffer is a `file:line` link
@@ -25090,7 +25090,7 @@ a 19-line *git-status* took 25 ms to paint, 96 ms under `nest run`, on every bli
 engine's per-character cost is the interpreter's, and making the interpreter 50× faster at
 bit-twiddling set simulation is not on any roadmap.
 
-**Decision.** Split along ADR-6's own line — Rust for mechanism, Brood for policy.
+**Decision.** Split along ADR-006's own line — Rust for mechanism, Brood for policy.
 
 - **Policy stays Brood.** The dialect is the parser's: a stray `*`/`{`/`)` and an
   unterminated `[` are the characters they look like, `\n` is an `n`, `.` crosses newlines,
@@ -25223,15 +25223,15 @@ that shadowed a root one (`(defn map …)` in its module) was re-pointed with
 `(def mod/map map)`, anything else became a stub raising "was removed when a reload was
 rolled back". Both leave a binding behind: `bound?` stays true, the tombstone is what the
 module's bare `map` keeps resolving to (it is still `mod/map` at compile time, because the
-resolver qualifies a bare name whenever `mod/name` is bound — ADR-65), and a stub is a
+resolver qualifies a bare name whenever `mod/name` is bound — ADR-065), and a stub is a
 function that exists only to fail.
 
 **Decision.** `(reflect/undef 'mod/name)` removes the binding and returns whether one went
 away. Rust holds the mechanism, Brood the policy of when to call it.
 
 - **The argument is the global's full name, as data.** A quoted symbol is never resolved
-  (ADR-65: data symbols are inviolate), so `'map` inside a module still names the root
-  `map`. A package-relative name roots as a `def` target does (ADR-70).
+  (ADR-065: data symbols are inviolate), so `'map` inside a module still names the root
+  `map`. A package-relative name roots as a `def` target does (ADR-070).
 - **What Brood ships is refused** — reserved names (ADR-166) and every prelude binding
   (which also covers the prelude's dynamic knobs, which `is_sealed` exempts): removing
   `map` from the runtime is not a thing a program may do to every other program.
@@ -25293,13 +25293,13 @@ throws.
 ## ADR-392 — Clipboard images: `os/clipboard-image` answers a PNG, natively, or nil
 
 **Status:** implemented (2026-09-29). Extends
-[ADR-95](#adr-095--os-clipboard-clipboard-get--clipboard-set-builtins-the-clipboard-feature).
+[ADR-095](#adr-095--os-clipboard-clipboard-get--clipboard-set-builtins-the-clipboard-feature).
 Design and open questions: [clipboard-images.md](clipboard-images.md).
 
 **Context.** The clipboard builtins were text only, so an app that wanted a pasted
 screenshot (Zubr, the coding agent) shelled out to `pngpaste`, `wl-paste` or `xclip`
 depending on the machine, each of which may not be installed. The runtime already linked
-`arboard`, which reads images natively; ADR-95 turned its `image-data` feature off only
+`arboard`, which reads images natively; ADR-095 turned its `image-data` feature off only
 to avoid pulling in the `image` crate, and `image` 0.25 has since been linked anyway for
 `image-thumb`.
 
@@ -25312,7 +25312,7 @@ to avoid pulling in the `image` crate, and `image` 0.25 has since been linked an
   the same resize path as `image-thumb` (`builtins/filesystem.rs`'s `fit_within`, now
   shared), and a non-positive bound is nil, as a non-positive box is for `image-thumb`.
 - **Nil, never an error, for anything about the environment:** no image on the clipboard,
-  no display, a build without the `clipboard` feature — the ADR-95 contract. A caller
+  no display, a build without the `clipboard` feature — the ADR-095 contract. A caller
   never branches on a build flag.
 - **The clipboard is untrusted input.** A source over 16384 px a side or 512 MB of RGBA is
   refused as nil (`IMAGE_MAX_SIDE` / `IMAGE_MAX_ALLOC`, the constants `image-thumb`'s decode
@@ -25833,7 +25833,7 @@ false, as for any function that crossed a process boundary.
 
 **Context.** A call whose head is a value rather than a global name — `(f acc x)` with `f` a
 parameter, every callback a higher-order function calls — has no call-site inline cache
-(ADR-96 caches only free-global heads). From native code it went `brood_rt_call_slow` →
+(ADR-096 caches only free-global heads). From native code it went `brood_rt_call_slow` →
 `jit_dispatch_call`, whose computed branch ran `compiled_arm_for` (the closure read, the
 body-cache key, `sync_free_epoch`, a `SmallMap` probe, the arity scan), `closure(id)` for the
 env and `vm_arm_block` (a second map probe) on every call. Measured from a native loop: ~940
@@ -25872,6 +25872,33 @@ closure 943 → 706, capturing 1 058 → 817, a global function passed as a valu
 (named heads unchanged at 415). What remains of the gap to a named call is the frame and exit
 handling (`fill_captures`, `finish_nested`, `native_feedback`) and the unconditional stack
 probe (KI-14), which an in-IR fast link for computed heads would remove. A thin-wrapper
-callback — `(fn (a x) (+ a x))`, which the dispatcher redirects to `+` by name (ADR-69)
-rather than running its body — does not reach this path at all and still costs ~1 900
-instructions a call from native code; see the handoff.
+callback — `(fn (a x) (+ a x))`, which the dispatcher redirected to `+` by name (ADR-069)
+rather than running its body — did not reach this path at all; ADR-408 routes it here.
+
+## ADR-408 — Native code runs a thin wrapper's compiled body instead of redirecting
+
+**Status:** implemented (2026-10-14). Narrows ADR-069's redirect to the interpreters.
+
+**Context.** A thin wrapper — an arm whose body only forwards its parameters to another
+head, `(fn (acc x) (+ acc x))` — is redirected by the dispatcher (ADR-069): the call goes to
+the inner head, resolved by name, on the already-evaluated args. That spares the tree-walker
+and the VM a frame. From native code it was the slow path: `jit_dispatch_call` found the
+wrapper's arm not native, fell to `dispatch`, and the redirect then took two by-name hops
+(`+`'s own two-argument arm is a wrapper of `%add`), each a `passthrough_arm` read, an
+`env_get`, `boundary_redirect` and an argument remap — ~1 900 instructions a call. And because
+the redirect never runs the wrapper's body, its arm never got hot, never tiered, and so never
+reached the native link. The canonical reducer was the slowest callback there is.
+
+**Decision.** When native code reaches the slow path with a closure whose selected arm is a
+thin wrapper, it runs the wrapper's compiled arm (`vm_apply`) like any closure's. The arm
+tiers up on those runs, and later calls take the native path — with ADR-406's memo for a
+computed head. The interpreters keep the redirect. The answer is the same: the compiled body
+resolves its inner head by the same late-bound name, and applies the contract boundary
+(ADR-383) at compile time, which is what `boundary_redirect` re-creates by value for the
+redirect.
+
+**Consequences.** A thin-wrapper callback from native code costs what any closure value does:
+~714 instructions a call, from 1 892 (anonymous) and 2 120 (a global wrapper passed as a
+value). An error's trace through such a call reads the same as before. Guards: `jit_computed_call_test` (the wrapper reaches `:native`; a
+redefinition of the inner function is still seen through it), `contract_test` (the boundary
+holds through a wrapper a native loop calls — red under `BROOD_NO_CONTRACT_BOUNDARY=1`).

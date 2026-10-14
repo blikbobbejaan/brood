@@ -217,7 +217,9 @@ terminal"). Pairs with a `verify-tui` skill once the entry point exists.
 
 `nest format` rewrites every `.blsp` under the project's source + test paths in
 place using a single, opinionated style. `nest format --check` does the same
-walk read-only and exits non-zero if anything would change — the CI mode. Both
+walk read-only and exits non-zero if anything would change — the CI mode. In a git
+work tree a file git ignores is not the project's and is skipped by both (generated
+output such as a fuzz run's `stress/fuzz_out/`; a tracked file is never skipped). Both
 are policy in Brood (`std/format.blsp`); the only new Rust is the `parse-source`
 primitive, which returns the lossless CST as nested vectors so the walker can
 see whitespace and comments.
