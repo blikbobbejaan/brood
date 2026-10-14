@@ -17312,6 +17312,15 @@ Four follow-ups to the merge.
   repo nothing is dropped). In Brood, over `os/cmd`, not a new primitive. Guard: a throwaway
   git project with an unformatted file under an ignored directory passes the check and fails
   it without the ignore rule — red with the filter disabled.
+- **`thread_exhaustion`'s no-worker case passed only without a stdlib image** (found by the
+  post-merge `test-both`, red on both engines). It ran `brood` under a three-thread budget and
+  expected no scheduler worker to start; whether one did depended on whether the JIT compiler
+  thread had taken the third slot first, which it did only when the boot compiled something —
+  loading std from SOURCE. With a live image a worker started and the runtime ran: tier 0 failed
+  always (no JIT thread), tier 2 failed once the image was live, and a fresh worktree (no image)
+  passed, which is how it shipped green. Two threads is the budget that means "no worker" on
+  every tier and boot path (probed: all six combinations). Still a guard: with the runtime's
+  `live == 0` exit disabled it hangs to the 60 s kill and fails.
 - **The renumbering commit stripped zero-padding** (`a279e76c`): its regex re-printed every
   matched number as an integer, so `ADR-073` became `ADR-73` in the 53 files it touched — 1 254
   lines, already pushed. The check that commit ran normalised numbers before comparing, so it

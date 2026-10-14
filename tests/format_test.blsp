@@ -13,6 +13,7 @@
 
 ;; Drop any fixtures a prior run left in /tmp (at load, before any test runs).
 (purge-stale-temp "brood-fmt-safe-")
+(purge-stale-temp "brood-fmt-ignored-")
 
 (describe "format: every literal kind stays inlineable"
   ;; Regression: `single-line` enumerated the leaf node kinds by hand and returned nil
@@ -451,10 +452,11 @@
           exe (first (seq/filter [(path/join bin "brood") (path/join bin ".." "brood")]
                        file/exists?))
           dir (temp-dir "brood-fmt-ignored-")
-          prog (path/temp "brood-fmt-ignored-run-")
-          check (fn (ignore)
+          ;; the program lives beside the project, not in it: a top-level .blsp is the project's
+          prog (str dir "-run.blsp")
+          check (fn (run ignore)
                   (file/spit (path/join dir ".gitignore") ignore)
-                  (os/cmd exe [prog] {:cwd dir :env {"BROOD_NO_CHECK" "1"}}))
+                  (os/cmd run [prog] {:cwd dir :env {"BROOD_NO_CHECK" "1"}}))
           ugly "(defn g (y)\n        (* y 2))\n")
       (file/mkdir dir)
       (file/mkdir (path/join dir "src"))
@@ -464,14 +466,15 @@
       (file/spit (path/join dir "src/a.blsp") "(defn f (x) (+ x 1))\n")
       (file/spit (path/join dir "src/gen/b.blsp") ugly)
       (file/spit prog "(format/project-check)\n")
-      (when (and exe (os/cmd-ok? (os/cmd "git" ["init" "-q" dir])))
-        (let (ignored (check "src/gen/\n") owned (check ""))
+      (when (and (string? exe) (os/cmd-ok? (os/cmd "git" ["init" "-q" dir])))
+        (let (ignored (check exe "src/gen/\n") owned (check exe ""))
           (assert= 0 (get ignored :exit))
           (is (includes? (get ignored :stdout) "all clean"))
           (refute (= 0 (get owned :exit)))
           (is (includes? (str (get owned :stdout) (get owned :stderr)) "gen/b.blsp"))))
       ;; never formatted, either way
       (assert= ugly (file/slurp (path/join dir "src/gen/b.blsp")))
+      (file/rm prog)
       (file/rmdir dir)))
   (test "an already-formatted file is left unchanged"
     (let (dir (temp-dir "brood-fmt-safe-")

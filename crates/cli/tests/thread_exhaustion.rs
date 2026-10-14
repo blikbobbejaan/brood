@@ -117,7 +117,12 @@ fn each_refused_thread_is_a_caught_error_and_the_program_finishes() {
 fn a_runtime_without_a_worker_says_so_and_exits() {
     assert_namespaces_available();
     let directory = scratch("no-worker");
-    let outcome = run_with_thread_limit(&directory, 3);
+    // Two: the main thread and the program's, and nothing else. Three left room for a worker
+    // whenever the JIT compiler thread had not started first — and whether it had depended on
+    // how much the boot compiled: loading the standard library from source tiered something up
+    // before the pool started, booting from the stdlib image did not. So the test passed only
+    // without an image, failing at tier 0 always and at tier 2 once the image was live.
+    let outcome = run_with_thread_limit(&directory, 2);
     let _ = std::fs::remove_dir_all(&directory);
     let report = format!("{}\n{}", outcome.stdout, outcome.stderr);
     assert!(
