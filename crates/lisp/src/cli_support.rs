@@ -299,9 +299,20 @@ pub fn write_stderr(s: &str) {
 }
 
 /// The stdout twin of [`write_stderr`] — same broken-pipe discipline for the
-/// streamed lines the CLI sends to stdout (e.g. `brood --check`'s stdout sink).
+/// streamed lines the CLI sends to stdout (e.g. `brood --check`'s stdout sink). Any
+/// other failure (a full disk) is fatal: stdout is the result, and a run that lost it
+/// must not exit 0 (KI-244).
 pub fn write_stdout(s: &str) {
-    write_stream(&mut std::io::stdout(), s);
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    match out.write_all(s.as_bytes()).and_then(|_| out.flush()) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => {
+            write_stderr(&format!("brood: cannot write to stdout: {e}\n"));
+            std::process::exit(1);
+        }
+    }
 }
 
 fn write_stream(w: &mut impl std::io::Write, s: &str) {
@@ -336,7 +347,14 @@ where
         .name(name.to_string())
         .stack_size(crate::process::WORKER_STACK_BYTES)
         .spawn(f)
-        .unwrap_or_else(|e| panic!("spawn {name} thread: {e}"));
+        .unwrap_or_else(|error| {
+            // Nothing has run yet, so there is nothing to report but the cause.
+            eprintln!(
+                "brood: cannot start the {name} thread ({error}); {}",
+                crate::process::THREAD_LIMIT_HINT
+            );
+            std::process::exit(1)
+        });
     // Not a plain `join`, because the thread we are standing on is a resource: macOS will
     // only run an AppKit event loop on the process MAIN thread, and winit has no escape
     // hatch there the way Wayland/X11 do (KI-125). Since the runtime already lives on the

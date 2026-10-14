@@ -2503,6 +2503,17 @@ process only** — uncaught, it kills just the offender, and every other process
 (and the runtime) is untouched. That's the isolation the global
 `BROOD_MEM_LIMIT` cap can't give: its hard tier aborts the whole OS process.
 
+The global cap has two tiers. Crossing the **soft** limit (`BROOD_MEM_SOFT_LIMIT`,
+default three quarters of the hard one) stops the process holding the most memory —
+its heap plus its queued messages — with `E0043`, and names it on stderr; when that
+is the process that noticed, the error is raised in it, catchably (ADR-399). A
+**hard**-limit crossing — one allocation too large for the headroom — aborts the
+OS process after one line naming the limit. With neither variable set, a process in
+a memory-capped container (a cgroup `memory.max`) takes its hard limit from the cap,
+at three quarters of it, so a runaway ends with `E0043` rather than an
+out-of-memory kill that names nothing; elsewhere there is no cap unless you set one.
+`BROOD_MEM_LIMIT=0` turns the limits off.
+
 Policy stays in Brood: to spawn a capped worker, set the flag first thing in
 the spawned fn —
 

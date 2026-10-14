@@ -561,11 +561,11 @@ pub(crate) fn ensure_workers() {
         // else a deep native recursion would overflow the default ~2 MiB thread stack
         // *before* the guard trips a clean error. The reservation is virtual/lazy.
         let mut live = 0usize;
+        let mut refusal = None;
         for wid in 0..n {
             let started = std::thread::Builder::new()
                 .stack_size(WORKER_STACK_BYTES)
                 .spawn(move || worker_loop(wid))
-                .is_ok()
                 // Retry once at the default stack size: the big reservation is the most
                 // likely thing to be refused, and a worker with a small stack is far
                 // better than no worker (a deep native recursion on it trips the stack
@@ -573,13 +573,26 @@ pub(crate) fn ensure_workers() {
                 // `thread::spawn` — the panicking variant would unwind inside
                 // `call_once`, poisoning `WORKERS_STARTED` (every later `ensure_workers`
                 // then panics) and blowing up whichever caller started the pool.
-                || std::thread::Builder::new()
-                    .name(format!("brood-worker-{wid}"))
-                    .spawn(move || worker_loop(wid))
-                    .is_ok();
-            if started {
-                live += 1;
+                .or_else(|_| {
+                    std::thread::Builder::new()
+                        .name(format!("brood-worker-{wid}"))
+                        .spawn(move || worker_loop(wid))
+                });
+            match started {
+                Ok(_) => live += 1,
+                Err(error) => refusal = Some(error),
             }
+        }
+        if live == 0 {
+            // Not a reduced pool but none: no process can ever run, and the stdlib's own
+            // processes are already waited on, so the runtime would hang without a word.
+            // There is nothing to recover — say why, and stop.
+            eprintln!(
+                "brood: cannot start any scheduler worker ({}); {}",
+                refusal.map_or_else(|| "refused".to_string(), |error| error.to_string()),
+                crate::process::THREAD_LIMIT_HINT
+            );
+            std::process::exit(1);
         }
         fault_stranded_work();
         if live != n {

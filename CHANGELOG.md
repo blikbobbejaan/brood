@@ -12,9 +12,24 @@ most 5 s), so a server that answers before reading the whole request no longer t
 its response (KI-228); a closed socket's descriptor is now held until then. A listener that
 runs out of file descriptors accepts its backlog once descriptors free up, instead of waiting
 for a new connection (KI-227). Two runtimes in one process (embedders) no longer share the
-module resolver's not-found memo or image kind index (KI-226).
+module resolver's not-found memo or image kind index (KI-226). A dotted list such as
+`(1 . 2)` can be sent to another process, to another node, and stored in a table; it used to
+raise "improper list" (KI-240; node wire protocol v10). Under a thread or task limit,
+`os/spawn`, `offload` and the first socket raise a catchable error when the OS refuses a
+thread, instead of panicking (`os/spawn` used to leave its child running), and a runtime that
+can start no scheduler worker exits naming the cause instead of hanging (KI-241). A loop that
+allocates a megabyte an iteration is stopped at the soft memory limit instead of running on
+to the hard limit's abort (KI-242). A process stopped by the soft limit inside a long native
+call no longer keeps the next holder from being stopped (KI-243). Writing to a stdout that
+fails (a full disk under `> out.txt`) raises `cannot write to stdout` instead of dropping the
+output and exiting 0 (KI-244). A `receive` inside a form evaluated with `reflect/eval` no
+longer re-runs the code before it each time it waits (KI-245).
 
-**Changed.** Crossing the soft memory limit (`BROOD_MEM_LIMIT`) stops the process holding the
+**Changed.** With no `BROOD_MEM_LIMIT` set, `brood` and `nest run` inside a memory-capped
+container take their memory limits from the cap — the hard limit at three quarters of it — so
+a runaway ends with `E0043` naming the process rather than an out-of-memory kill that names
+nothing; `BROOD_MEM_LIMIT=0` turns them off (ADR-407). Reaching the hard memory limit prints
+the limit and the cause before the abort. Crossing the soft memory limit stops the process holding the
 most memory — its heap plus its queued messages — and names it on stderr, instead of raising
 in whichever process happened to run next, which was usually a busy bystander (KI-229,
 ADR-399). The stopped process exits with the `E0043` error as its reason, so its supervisor

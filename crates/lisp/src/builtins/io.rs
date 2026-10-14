@@ -140,17 +140,19 @@ pub(super) fn capture_take(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// error: the `print!` macro would panic on it with a Rust backtrace + crash
 /// dump (every observed `failed printing to stdout: Broken pipe` crash bottoms
 /// out here), so instead we restore the terminal and exit quietly, exactly as
-/// the default SIGPIPE disposition would. Any other write/flush failure is
-/// best-effort-dropped (matches the old `.flush().ok()`).
-pub(super) fn write_stdout(s: &str) {
+/// the default SIGPIPE disposition would. Any other failure — a full disk under
+/// `brood report.blsp > out.txt` — is the caller's error: dropping it made the run
+/// exit 0 with its output missing (KI-244).
+pub(super) fn write_stdout(s: &str) -> Result<(), LispError> {
     use std::io::Write;
     let mut out = std::io::stdout();
-    if let Err(e) = out.write_all(s.as_bytes()).and_then(|_| out.flush()) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
+    match out.write_all(s.as_bytes()).and_then(|_| out.flush()) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {
             restore_terminal_on_exit();
             std::process::exit(0);
         }
-        // Other errors: nothing useful to do from a print primitive; drop it.
+        Err(e) => Err(LispError::runtime(format!("cannot write to stdout: {e}"))),
     }
 }
 
@@ -160,7 +162,8 @@ pub(super) fn write_stdout(s: &str) {
 /// crash dump (every observed `failed printing to stderr: Broken pipe` crash
 /// bottoms out in a bare `eprint!`/`eprintln!`), so instead we restore the
 /// terminal and exit quietly, exactly as the default SIGPIPE disposition would.
-/// Any other write/flush failure is best-effort-dropped.
+/// Any other write/flush failure is dropped: unlike stdout, stderr carries no result,
+/// and an error raised for it would be reported to the same broken stream.
 pub(super) fn write_stderr(s: &str) {
     use std::io::Write;
     let mut err = std::io::stderr();
@@ -198,7 +201,7 @@ pub(super) fn render(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult 
 pub(super) fn write_out(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let s = expect_string(heap, "%write-out", arg(args, 0))?;
     if !capture_write(&s) {
-        write_stdout(&s);
+        write_stdout(&s)?;
     }
     Ok(Value::nil())
 }

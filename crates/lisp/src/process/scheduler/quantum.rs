@@ -90,6 +90,15 @@ pub(crate) fn tick_capture() -> bool {
     })
 }
 
+/// End this thread's quantum, so the next safepoint runs the once-per-quantum checks. The
+/// allocator calls it for a large allocation over the soft memory limit: a loop that
+/// allocates a megabyte an iteration covers hundreds of megabytes inside one quantum, past
+/// the soft limit to the hard one, before the check would otherwise run (KI-242). Safe
+/// inside the allocator: `REDUCTIONS` is a `const` thread-local with no destructor.
+pub(crate) fn expire_quantum() {
+    REDUCTIONS.with(|r| r.set(0));
+}
+
 /// What a driver's safepoint should do ([`driver_safepoint`]).
 pub(crate) enum Safepoint {
     /// Keep running.

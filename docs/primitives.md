@@ -345,8 +345,8 @@ literal — no constructor call.
 |  | `gc-trace` | 0–1 | Query (no arg) or set (truthy arg) per-collection GC trace logging for this process; returns the resulting state. When on, each minor/major collection prints a one-line summary to stderr. Defaulted from BROOD_GC_TRACE. |
 |  | `runtime-collect` | 0 | Compact the shared RUNTIME code region, reclaiming superseded versions of redefined globals (hot-reload churn). Returns {:before N :after M :reclaimed (N-M) :ran bool} (closure counts). |
 |  | `vm-stats` | 0 | A snapshot map of VM work-attribution counters (the perf-stats feature). :enabled is false unless the binary was built with --features perf-stats; |
-|  | `mem-limit` | 0 | Hard memory ceiling in bytes (0 = unlimited); crossing it aborts the process. Set via BROOD_MEM_LIMIT. |
-|  | `mem-soft-limit` | 0 | Soft memory ceiling in bytes (0 = unlimited); crossing it raises a catchable E0043 at the next safepoint. |
+|  | `mem-limit` | 0 | Hard memory ceiling in bytes (0 = unlimited); crossing it aborts the process. Set via BROOD_MEM_LIMIT, or by a container's memory cap. |
+|  | `mem-soft-limit` | 0 | Soft memory ceiling in bytes (0 = unlimited); crossing it stops the process holding the most memory with E0043. |
 ## Special forms (not primitives)
 
 These are evaluation rules in `crates/lisp/src/eval.rs`, not functions — they

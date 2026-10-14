@@ -478,6 +478,13 @@ pub(crate) enum VmOutcome {
 /// empty lexical scope: no locals at top level); anything else defers to the
 /// tree-walker. `env` is the process's global/root env.
 pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
+    // A top-level form runs in `exec_value`, which cannot be captured, and every caller is
+    // native (`reflect/eval`, `eval-string`, the loader, a tree-walked `def`). A `receive`
+    // in it must block, not suspend: a suspend rode up to the enclosing body driver, which
+    // captured at the CALL into the native, and the resume ran the whole form again — a
+    // `reflect/eval`'d spawn-then-receive spawned anew on every message (KI-245). The same
+    // guard the tree-walker's entries take.
+    let _not_capturable = crate::process::TreeWalkGuard::enter();
     let mut scope = Scope::new();
     // When invoked with a *non-global* env — a `def` RHS evaluated inside a `let`,
     // e.g. `(let (me …) (def f (fn () me)))` — the form's closures must be able to

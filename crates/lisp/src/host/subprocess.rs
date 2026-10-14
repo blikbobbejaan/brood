@@ -9,7 +9,7 @@
 //! write to its stdin, and receive its output as mailbox messages.
 //!
 //! A child never blocks a scheduler worker. Its stdout and stderr are each read on
-//! a dedicated non-worker thread (`spawn_io_source`) that **delivers to the owning
+//! a dedicated non-worker thread (an `IoThread`) that **delivers to the owning
 //! process's mailbox**; the Brood side just `receive`s. Shapes (the handle is a
 //! `Value::Subprocess`):
 //!
@@ -64,8 +64,8 @@ use std::time::Duration;
 use crate::core::value;
 use crate::host::owned::OwnedTable;
 use crate::process::{
-    chunk_flush, chunk_payload, deliver_credited, spawn_io_source, CreditSource, DeliveryCredit,
-    Message,
+    chunk_flush, chunk_payload, deliver_credited, reserve_io_thread, CreditSource, DeliveryCredit,
+    IoThread, Message,
 };
 
 /// A live child process: the write half (its stdin) plus a shared handle to the
@@ -451,6 +451,7 @@ fn end_msg(tag: &str, id: u64, code: Option<i32>) -> Message {
 /// owner to consume. The exit drain does not wait (it is bounded by one pipe's
 /// contents), so `:proc-exit` never waits on the owner reading.
 fn start_output_reader<R: OutputSource>(
+    thread: IoThread,
     id: u64,
     tag: &'static str,
     source: R,
@@ -459,7 +460,7 @@ fn start_output_reader<R: OutputSource>(
     binary: Arc<AtomicBool>,
 ) {
     let budget = lifecycle.new_budget();
-    spawn_io_source(subscriber, "brood-proc-reader", move |_sink| {
+    thread.run_source(subscriber, move |_sink| {
         let mut source = source;
         let mut buffer = [0u8; 65536];
         let mut carry: Vec<u8> = Vec::new();
@@ -632,8 +633,14 @@ fn read_until_end<R: OutputSource>(
 /// for as long as `close`/`signal` can reach the child through the registry, so a
 /// descendant still holding the pipes can be killed through the group without any risk
 /// of the id having been recycled.
-fn start_waiter(id: u64, child: Arc<ChildHandle>, lifecycle: Arc<Lifecycle>, subscriber: u64) {
-    spawn_io_source(subscriber, "brood-proc-wait", move |sink| {
+fn start_waiter(
+    thread: IoThread,
+    id: u64,
+    child: Arc<ChildHandle>,
+    lifecycle: Arc<Lifecycle>,
+    subscriber: u64,
+) {
+    thread.run_source(subscriber, move |sink| {
         let code = wait_for_exit(&child);
         #[cfg(unix)]
         lifecycle.raise_exited();
@@ -748,6 +755,11 @@ pub fn spawn(
     }
     // Before the spawn: once there is a child, every failure would have to clean it up.
     let lifecycle = Arc::new(Lifecycle::new(2)?);
+    let ChildThreads {
+        writer: writer_thread,
+        readers: mut reader_threads,
+        waiter: waiter_thread,
+    } = ChildThreads::reserve(2)?;
     let mut child = command.spawn()?;
     // Take the three pipe ends; piped() guarantees they are Some.
     let stdin: ChildStdin = child.stdin.take().expect("piped stdin");
@@ -762,7 +774,7 @@ pub fn spawn(
         }),
     });
     let binary = Arc::new(AtomicBool::new(false));
-    let writer = start_stdin_writer(stdin);
+    let writer = start_stdin_writer(writer_thread, stdin);
     reg().insert(
         id,
         subscriber,
@@ -775,6 +787,7 @@ pub fn spawn(
         },
     );
     start_output_reader(
+        next_reader(&mut reader_threads),
         id,
         "proc",
         stdout,
@@ -783,6 +796,7 @@ pub fn spawn(
         binary.clone(),
     );
     start_output_reader(
+        next_reader(&mut reader_threads),
         id,
         "proc-err",
         stderr,
@@ -790,8 +804,42 @@ pub fn spawn(
         subscriber,
         binary,
     );
-    start_waiter(id, child, lifecycle, subscriber);
+    start_waiter(waiter_thread, id, child, lifecycle, subscriber);
     Ok(id)
+}
+
+/// Every thread a child needs, started before the child is: its stdin writer, one reader
+/// per output pipe, and its waiter. A child spawned first and then refused a thread would
+/// have nobody to read its pipes or reap it, and its lifecycle would wait forever on the
+/// reader that never started.
+struct ChildThreads {
+    writer: IoThread,
+    readers: Vec<IoThread>,
+    waiter: IoThread,
+}
+
+impl ChildThreads {
+    fn reserve(readers: usize) -> std::io::Result<ChildThreads> {
+        let refused = |error: std::io::Error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot start a thread for the child's pipes: {error}"),
+            )
+        };
+        Ok(ChildThreads {
+            writer: reserve_io_thread("proc-stdin").map_err(refused)?,
+            readers: (0..readers)
+                .map(|_| reserve_io_thread("brood-proc-reader").map_err(refused))
+                .collect::<std::io::Result<_>>()?,
+            waiter: reserve_io_thread("brood-proc-wait").map_err(refused)?,
+        })
+    }
+}
+
+fn next_reader(reader_threads: &mut Vec<IoThread>) -> IoThread {
+    reader_threads
+        .pop()
+        .expect("a reader reserved per output pipe")
 }
 
 /// `(proc-set-binary handle on)` — switch `handle` between text mode (default)
@@ -821,25 +869,20 @@ pub fn set_binary(id: u64, on: bool) -> std::io::Result<()> {
 /// or owner death), and dropping `stdin` on the way out is what gives the child EOF.
 /// A write error also ends it: the child is gone, and its death is already reported to the
 /// owner as `[:proc-exit …]` by the waiter, which is the one report worth having.
-fn start_stdin_writer<W: Write + Send + 'static>(mut stdin: W) -> mpsc::SyncSender<Vec<u8>> {
+fn start_stdin_writer<W: Write + Send + 'static>(
+    thread: IoThread,
+    mut stdin: W,
+) -> mpsc::SyncSender<Vec<u8>> {
     let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(WRITE_QUEUE_CAP);
-    let spawned = std::thread::Builder::new()
-        .name("proc-stdin".into())
-        .spawn(move || {
-            while let Ok(buf) = rx.recv() {
-                if stdin.write_all(&buf).is_err() || stdin.flush().is_err() {
-                    break;
-                }
+    thread.run(move || {
+        while let Ok(buf) = rx.recv() {
+            if stdin.write_all(&buf).is_err() || stdin.flush().is_err() {
+                break;
             }
-            // Explicit for the reader: this is the EOF the child waits for.
-            drop(stdin);
-        });
-    if spawned.is_err() {
-        // Out of threads. The receiver drops here, so every later `send` reports a
-        // disconnected writer rather than silently succeeding into a channel nobody
-        // drains — and stdin closes, which the child sees as EOF.
-        eprintln!("subprocess: cannot spawn stdin writer thread; this child accepts no input");
-    }
+        }
+        // Explicit for the reader: this is the EOF the child waits for.
+        drop(stdin);
+    });
     tx
 }
 
@@ -1140,6 +1183,11 @@ pub fn spawn_pty(
 
     // Before the spawn: once there is a child, every failure would have to clean it up.
     let lifecycle = Arc::new(Lifecycle::new(1)?);
+    let ChildThreads {
+        writer: writer_thread,
+        readers: mut reader_threads,
+        waiter: waiter_thread,
+    } = ChildThreads::reserve(1)?;
     let (master, slave) = pty::open_pair()?;
     pty::set_winsize(std::os::fd::AsRawFd::as_raw_fd(&master), cols, rows)?;
 
@@ -1212,7 +1260,7 @@ pub fn spawn_pty(
         }),
     });
     let binary = Arc::new(AtomicBool::new(false));
-    let writer = start_stdin_writer(write_file);
+    let writer = start_stdin_writer(writer_thread, write_file);
     reg().insert(
         id,
         subscriber,
@@ -1224,8 +1272,16 @@ pub fn spawn_pty(
             pty: Some(master),
         },
     );
-    start_output_reader(id, "proc", read_file, lifecycle.clone(), subscriber, binary);
-    start_waiter(id, child, lifecycle, subscriber);
+    start_output_reader(
+        next_reader(&mut reader_threads),
+        id,
+        "proc",
+        read_file,
+        lifecycle.clone(),
+        subscriber,
+        binary,
+    );
+    start_waiter(waiter_thread, id, child, lifecycle, subscriber);
     Ok(id)
 }
 

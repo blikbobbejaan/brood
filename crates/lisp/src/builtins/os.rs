@@ -522,34 +522,40 @@ fn os_cmd_collect(
     timeout: Option<std::time::Duration>,
 ) -> std::io::Result<OsCmdOutcome> {
     use std::io::{Read, Write};
-    let writer = match (child.stdin.take(), stdin_text) {
-        (Some(mut pipe), Some(text)) => Some(std::thread::spawn(move || {
-            // EPIPE from a child that exits early just ends the write
-            let _ = pipe.write_all(text.as_bytes());
-        })),
-        _ => None,
+    // `Builder::spawn`, not `thread::spawn`: the OS can refuse a thread (KI-241), and the
+    // child is already running, so a refusal kills and reaps it and is the call's error.
+    let stdin_pipe = child.stdin.take();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let started_threads = (|| {
+        let writer = match (stdin_pipe, stdin_text) {
+            (Some(mut pipe), Some(text)) => Some(std::thread::Builder::new().spawn(move || {
+                // EPIPE from a child that exits early just ends the write
+                let _ = pipe.write_all(text.as_bytes());
+            })?),
+            _ => None,
+        };
+        let drain = |pipe: Option<Box<dyn Read + Send>>| {
+            std::thread::Builder::new().spawn(move || {
+                let mut buffer = Vec::new();
+                if let Some(mut reader) = pipe {
+                    let _ = reader.read_to_end(&mut buffer);
+                }
+                buffer
+            })
+        };
+        let stdout_reader = drain(stdout_pipe.map(|pipe| Box::new(pipe) as Box<dyn Read + Send>))?;
+        let stderr_reader = drain(stderr_pipe.map(|pipe| Box::new(pipe) as Box<dyn Read + Send>))?;
+        Ok::<_, std::io::Error>((writer, stdout_reader, stderr_reader))
+    })();
+    let (writer, stdout_reader, stderr_reader) = match started_threads {
+        Ok(threads) => threads,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
     };
-    let drain = |pipe: Option<Box<dyn Read + Send>>| {
-        std::thread::spawn(move || {
-            let mut buffer = Vec::new();
-            if let Some(mut reader) = pipe {
-                let _ = reader.read_to_end(&mut buffer);
-            }
-            buffer
-        })
-    };
-    let stdout_reader = drain(
-        child
-            .stdout
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
-    let stderr_reader = drain(
-        child
-            .stderr
-            .take()
-            .map(|pipe| Box::new(pipe) as Box<dyn Read + Send>),
-    );
     let started = std::time::Instant::now();
     let mut timed_out = false;
     let status = loop {

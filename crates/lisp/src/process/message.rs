@@ -93,6 +93,9 @@ pub enum Message {
     /// lambda still points at the *sender's* source line. `None` for lists
     /// built at runtime (no recorded position to begin with).
     List(Vec<Message>, Option<Pos>),
+    /// An improper (dotted) list, `(a b . c)`: the items, then the tail as the LAST
+    /// element — so it has at least two, and every walker treats it as a flat container.
+    Dotted(Vec<Message>),
     Vector(Vec<Message>),
     Map(Vec<(Message, Message)>),
     /// A **failure** value — its fields, mirroring `Map` (they share one CHAMP store).
@@ -174,9 +177,10 @@ pub(crate) fn message_bytes(message: &Message) -> usize {
             }
             Message::Str(text) => total += text.capacity(),
             Message::StrShared(blob) | Message::Bytes(blob) => total += blob.len(),
-            Message::List(items, _) | Message::Vector(items) | Message::Set(items) => {
-                pending.extend(items.iter())
-            }
+            Message::List(items, _)
+            | Message::Dotted(items)
+            | Message::Vector(items)
+            | Message::Set(items) => pending.extend(items.iter()),
             Message::Map(entries) | Message::Failure(entries) => {
                 for (key, value) in entries {
                     pending.push(key);
@@ -209,6 +213,7 @@ impl Clone for Message {
                 pin: pin.clone(),
             },
             Message::List(items, pos) => grow(|| Message::List(items.clone(), *pos)),
+            Message::Dotted(items) => grow(|| Message::Dotted(items.clone())),
             Message::Vector(items) => grow(|| Message::Vector(items.clone())),
             Message::Map(entries) => grow(|| Message::Map(entries.clone())),
             Message::Failure(entries) => grow(|| Message::Failure(entries.clone())),
@@ -243,7 +248,10 @@ impl Drop for Message {
 /// Move every child of `m` into `out`, leaving `m` a childless shell.
 fn take_children(m: &mut Message, out: &mut Vec<Message>) {
     match m {
-        Message::List(items, _) | Message::Vector(items) | Message::Set(items) => {
+        Message::List(items, _)
+        | Message::Dotted(items)
+        | Message::Vector(items)
+        | Message::Set(items) => {
             out.append(items);
         }
         Message::Map(entries) | Message::Failure(entries) => {
@@ -474,6 +482,8 @@ trait CopyTarget {
     /// A list (from a cons spine or a range); `whole` is the source value, for its
     /// source position.
     fn list(&mut self, src: &Heap, whole: Value, items: Vec<Self::Out>) -> Self::Out;
+    /// An improper list: its items, then its tail as the last element.
+    fn dotted(&mut self, items_and_tail: Vec<Self::Out>) -> Self::Out;
     fn vector(&mut self, items: Vec<Self::Out>) -> Self::Out;
     fn map(&mut self, entries: Vec<(Self::Out, Self::Out)>) -> Self::Out;
     fn set(&mut self, elements: Vec<Self::Out>) -> Self::Out;
@@ -567,25 +577,33 @@ fn copy_value_inner<T: CopyTarget>(
         Value::Pair(_) => {
             // Walk the spine charging per cons cell, so the L1 copy declines a huge list
             // before paying its whole O(n) spine under the mailbox lock.
+            // A dotted list's tail rides as one more item (`dotted` knows it is the tail).
             let mut items = Vec::new();
             let mut cursor = v;
-            loop {
+            let dotted = loop {
                 match cursor.unpack() {
-                    crate::core::value::ValueRef::Nil => break,
+                    crate::core::value::ValueRef::Nil => break false,
                     crate::core::value::ValueRef::Pair(pair) => {
                         target.charge()?;
                         let (head, tail) = src.pair(pair);
                         items.push(head);
                         cursor = tail;
                     }
-                    _ => return Err(target.refuse(|| LispError::type_err("improper list"))),
+                    _ => {
+                        items.push(cursor);
+                        break true;
+                    }
                 }
-            }
+            };
             let mut out = Vec::with_capacity(items.len());
             for item in items {
                 out.push(copy_value(target, src, item, depth + 1)?);
             }
-            target.list(src, v, out)
+            if dotted {
+                target.dotted(out)
+            } else {
+                target.list(src, v, out)
+            }
         }
         Value::Vector(id) => {
             // Read straight off the slab: `src` is borrowed shared and the recursion takes
@@ -744,6 +762,10 @@ impl CopyTarget for IntoMessage {
     #[inline]
     fn list(&mut self, src: &Heap, whole: Value, items: Vec<Message>) -> Message {
         Message::List(items, src.form_pos_only(whole))
+    }
+    #[inline]
+    fn dotted(&mut self, items_and_tail: Vec<Message>) -> Message {
+        Message::Dotted(items_and_tail)
     }
     #[inline]
     fn vector(&mut self, items: Vec<Message>) -> Message {
@@ -1189,6 +1211,7 @@ pub(crate) fn message_fits(m: &Message, budget: i64) -> bool {
     fn walk(m: &Message, left: &mut i64) {
         match m {
             Message::List(..)
+            | Message::Dotted(..)
             | Message::Vector(..)
             | Message::Map(..)
             | Message::Failure(..)
@@ -1202,7 +1225,10 @@ pub(crate) fn message_fits(m: &Message, budget: i64) -> bool {
         }
         *left -= 1;
         match m {
-            Message::List(items, _) | Message::Vector(items) | Message::Set(items) => {
+            Message::List(items, _)
+            | Message::Dotted(items)
+            | Message::Vector(items)
+            | Message::Set(items) => {
                 for it in items {
                     walk(it, left);
                     if *left < 0 {
@@ -1245,6 +1271,7 @@ pub fn from_message(heap: &mut Heap, m: &Message) -> Value {
 fn from_message_timed(heap: &mut Heap, m: &Message) -> Value {
     match m {
         Message::List(..)
+        | Message::Dotted(..)
         | Message::Vector(..)
         | Message::Map(..)
         | Message::Failure(..)
@@ -1320,6 +1347,16 @@ fn from_message_inner(heap: &mut Heap, m: &Message) -> Value {
                 heap.set_form_pos(v, *p);
             }
             v
+        }
+        Message::Dotted(items) => {
+            let mut vals = Vec::with_capacity(items.len());
+            for item in items {
+                vals.push(from_message(heap, item));
+            }
+            // Never empty off this runtime's encoder, and the wire decoder refuses fewer
+            // than two; an empty one still rebuilds as `nil` rather than panic.
+            let tail = vals.pop().unwrap_or(Value::nil());
+            heap.list_with_tail(vals, tail)
         }
         Message::Vector(items) => {
             let mut vals = Vec::with_capacity(items.len());
@@ -1600,7 +1637,7 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 
 /// Deep-copy `v` out of `src` and into `dst`, returning the equivalent value in `dst`.
 /// `None` for anything the message path refuses (a rope, a macro, a builtin, an
-/// unrealised lazy seq, an improper list) or that is nested past [`MAX_MESSAGE_DEPTH`], and
+/// unrealised lazy seq) or that is nested past [`MAX_MESSAGE_DEPTH`], and
 /// for a failure or a closure it cannot share by handle — the caller then falls back to the
 /// `Message` path, which carries those or produces the proper user-facing error.
 /// Bounded: `budget` (start it at [`l1_copy_budget`]) is decremented as the copy walks and
@@ -1746,6 +1783,11 @@ impl CopyTarget for IntoHeap<'_> {
     #[inline]
     fn list(&mut self, _src: &Heap, _whole: Value, items: Vec<Value>) -> Value {
         self.dst.list(items)
+    }
+    #[inline]
+    fn dotted(&mut self, mut items_and_tail: Vec<Value>) -> Value {
+        let tail = items_and_tail.pop().expect("a dotted list has a tail");
+        self.dst.list_with_tail(items_and_tail, tail)
     }
     #[inline]
     fn vector(&mut self, items: Vec<Value>) -> Value {
@@ -2399,12 +2441,21 @@ mod decline_tests {
     }
 
     #[test]
-    fn an_improper_list_is_refused_by_both() {
+    fn an_improper_list_crosses_by_both() {
         let mut src = Heap::new();
-        let dotted = src.alloc_pair(Value::Int(1), Value::Int(2));
-        declines_as_a_kind_gap(&src, dotted);
-        let error = refusal(&src, dotted);
-        assert_eq!(error.message, "improper list");
+        let inner = src.alloc_pair(Value::Int(3), Value::Int(4));
+        let dotted = src.list_with_tail(vec![Value::Int(1), inner], Value::Int(2));
+        let mut dst = Heap::new();
+        let expected_inner = dst.alloc_pair(Value::Int(3), Value::Int(4));
+        let expected = dst.list_with_tail(vec![Value::Int(1), expected_inner], Value::Int(2));
+        let mut budget = i64::MAX;
+        let copied = copy_cross_heap(&src, &mut dst, dotted, &mut budget)
+            .expect("the heap copy carries `(1 (3 . 4) . 2)`");
+        assert!(dst.equal(copied, expected));
+        let message = to_message(&src, dotted).expect("a message carries `(1 (3 . 4) . 2)`");
+        assert!(matches!(message, Message::Dotted(ref items) if items.len() == 3));
+        let rebuilt = from_message(&mut dst, &message);
+        assert!(dst.equal(rebuilt, expected));
     }
 
     /// Short of the size cap, a range too long to realise is refused by `range_to_vec`.

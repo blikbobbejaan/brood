@@ -253,7 +253,11 @@ pub const FLAGS: &[DebugFlag] = &[
         GC,
         "RUNTIME code-region reclamation threshold; a huge value effectively disables compaction",
     ),
-    f("BROOD_MEM_LIMIT", GC, "hard memory cap for a run (bytes)"),
+    f(
+        "BROOD_MEM_LIMIT",
+        GC,
+        "hard memory cap for a run (bytes; default: 3/4 of a container's memory cap, else none; 0 = none)",
+    ),
     f("BROOD_MEM_SOFT_LIMIT", GC, "soft memory cap for a run (bytes)"),
     external(
         "MIMALLOC_PURGE_DELAY",

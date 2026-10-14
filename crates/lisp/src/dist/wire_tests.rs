@@ -409,6 +409,37 @@ fn handshake_cap_rejects_a_frame_over_the_small_ceiling_pre_auth() {
 }
 
 #[test]
+fn a_dotted_list_roundtrips_and_a_tailless_one_is_refused() {
+    let msg = Message::Dotted(vec![Message::Int(1), Message::Int(2), Message::Int(3)]);
+    let f = Frame::Send {
+        target: Target::Pid(1),
+        msg,
+    };
+    match read_full(&f) {
+        Frame::Send {
+            msg: Message::Dotted(ref items),
+            ..
+        } => assert!(matches!(
+            items.as_slice(),
+            [Message::Int(1), Message::Int(2), Message::Int(3)]
+        )),
+        _ => panic!("a dotted list should cross as one"),
+    }
+    // One element is a tail with no item: no pair can hold it.
+    let mut payload = vec![FRAME_SEND];
+    encode_target(&mut payload, &Target::Pid(1));
+    payload.push(M_DOTTED);
+    payload.extend_from_slice(&1u32.to_be_bytes());
+    payload.push(M_NIL);
+    let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&payload);
+    match read_frame(&mut Cursor::new(framed)) {
+        Err(e) => assert_eq!(e.kind(), io::ErrorKind::InvalidData),
+        Ok(_) => panic!("a dotted list of one element should be refused"),
+    }
+}
+
+#[test]
 fn bogus_collection_count_errors_without_huge_alloc() {
     // A tiny frame whose list claims billions of elements: prealloc is bounded
     // by the remaining bytes, and decoding fails cleanly on EOF (no OOM).

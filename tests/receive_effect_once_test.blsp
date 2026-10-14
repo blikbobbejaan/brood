@@ -1,0 +1,46 @@
+;;; Regression guard: a `receive` reached through `reflect/eval` runs the code before it
+;;; once (KI-245).
+;;;
+;;; A form handed to `reflect/eval` runs under a native frame, so a `receive` in it cannot
+;;; be captured. It used to suspend anyway: the suspend rode up to the process's body
+;;; driver, which captured at the call INTO `reflect/eval`, and the resume evaluated the
+;;; whole form again. The doctest of `os/spawn` — spawn a child, then wait for its exit —
+;;; spawned 484 children in one run, each re-run waiting on the child it had just made.
+;;;
+;;; Each test counts an effect placed before the `receive` and releases the `receive` with
+;;; a message from another process, so the wait really parks.
+
+(defmodule receive-effect-once-test (:use test))
+
+(def runs (table/new))
+
+(defn- release-after (pid ms)
+  (spawn (receive (after ms (send pid :go)))))
+
+(defn- effect-then-receive-via-eval (key)
+  (reflect/eval (reflect/read-string (str "(do (table/incr receive-effect-once-test/runs "
+                                       key " 1)" " (receive (:go :got) (after 5000 :timeout)))"))))
+
+(describe "a receive under reflect/eval does not re-run what came before it"
+  (test "directly"
+    (release-after (self) 50)
+    (assert= (effect-then-receive-via-eval :direct) :got)
+    (assert= (table/get runs :direct) 1))
+
+  (test "inside try"
+    (release-after (self) 50)
+    (assert= (try (effect-then-receive-via-eval :in-try) (catch e e)) :got)
+    (assert= (table/get runs :in-try) 1))
+
+  (test "inside a map callback"
+    (release-after (self) 50)
+    (assert= (map [1] (fn (_) (effect-then-receive-via-eval :in-map))) (list :got))
+    (assert= (table/get runs :in-map) 1))
+
+  (test "a spawn-then-receive spawns one child"
+    (let (before (table/get runs :spawned 0))
+      (assert= (reflect/eval (reflect/read-string (str "(let (p (os/spawn \"true\" []))"
+                                                    " (table/incr receive-effect-once-test/runs :spawned 1)"
+                                                    " (receive ([:proc-exit ^p c] c) (after 5000 :timeout)))")))
+        0)
+      (assert= (table/get runs :spawned) (+ before 1)))))

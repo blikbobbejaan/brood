@@ -59,6 +59,9 @@
   (test "keyword" (assert= (roundtrip :some-key) :some-key))
   (test "empty coll" (assert= (roundtrip [{} [] (list)]) [{} [] (list)]))
   (test "nested list" (assert= (roundtrip (list 1 (list 2 3) 4)) (list 1 (list 2 3) 4)))
+  (test "dotted list"
+    (assert= (roundtrip (cons 1 2)) (cons 1 2))
+    (assert= (roundtrip '(1 (2 . 3) [4 (5 . 6)] . "tail")) '(1 (2 . 3) [4 (5 . 6)] . "tail")))
   (test "vector of maps" (assert= (roundtrip [{:a 1} {:b [2 3]}]) [{:a 1} {:b [2 3]}]))
   (test "deep nested"
     (assert= (roundtrip {:xs [1 2 {:y (list :a :b)}] :n 999999999999})

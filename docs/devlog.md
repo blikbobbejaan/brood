@@ -17200,6 +17200,87 @@ this map. Conflicts were mechanical: both sides appended to the docs; origin mad
 per-runtime (`heap.is_dynamic`) where this branch had factored `push_bindings`; this branch had
 moved the reduction ticks into `scheduler/quantum.rs` where origin edited their neighbours.
 
+## 2026-10-14 (later) — deep data, refused threads, fast allocators, and a default memory ceiling
+
+Four probes, four fixes (KI-240..243), and the default ceiling (ADR-407). Written on a branch
+from `d7625f28` as KI-230..233 and ADR-400 and renumbered past the preemption merge before
+landing; the code merged with `scheduler/quantum.rs`, where `expire_quantum` now lives.
+
+**Deep data.** Every Rust walker a value reaches — printing, equality, hashing, sort, JSON,
+send in both directions, `def`, table put and key, the collector, `postwalk`, `flatten` —
+ran over a list, vector, map and pair chain nested a million deep, and sets 30 000 deep.
+None crashed: each either finished or raised a catchable error (`json/encode` and
+`seq/postwalk` hit the recursion limits). The finding was elsewhere: a dotted pair could not
+be sent or stored at all, "improper list" from both copy paths, though the language documents
+it as a value (KI-240). `Message::Dotted` carries the tail as the last item, so every walker
+treats it as a flat container; the node wire gained a tag (protocol v10). Building a deeply
+nested *set* is quadratic — each level hashes its whole element, 15 s at depth 20 000 — which
+is a cost, not a crash, and is left as it is.
+
+**Refused threads.** A user namespace (`unshare -U`) gives a program its own thread count, so
+`ulimit -u N` there is an exact budget on any machine. Under it, `os/spawn` panicked after its
+child had started, `offload` and the first `tcp/listen` panicked, startup panicked with a
+backtrace, and with no scheduler worker the runtime hung without a word (KI-241). A child's
+threads are now reserved before the child exists (`IoThread`); the offload pool and the
+reactor start lazily and return the refusal as an error; the lazily-started singletons (JIT
+compiler, heartbeat) no longer panic inside a `LazyLock`/`Once`, which would have poisoned
+them for good.
+
+**Fast allocators.** Building a test for a victim stuck in a native call turned up a larger
+gap: the stuck victim's loop, allocating a megabyte an iteration, ran from the soft limit to
+the hard abort by itself, because the VM checks the soft limit once per quantum and a native
+loop once per 128 iterations (KI-242). The allocator now ends the thread's quantum on a large
+allocation over the limit — `REDUCTIONS` is a `const` thread-local, safe to touch there — and
+within the last eighth once per 1/64 of the limit, so a fast hoarder also measures itself for
+the selector; a native arm hears of it when its builtin call returns. The first version only
+fired over the limit, and the hoarder crossed the near band in fourteen iterations without
+publishing a figure; the test hoarded to 350 MB under a 384 MiB limit and never entered the
+band at all (352 MB is seven eighths of 384 MiB). The hard abort, when it still comes, now
+says which limit and why, from a stack buffer — it runs inside the allocator. Then the stuck
+victim itself (KI-243): the selector stopped nobody while its victim lived, and a victim in a
+native call lives until the call returns; after 250 ms it is now skipped. The leak test of
+KI-229 had to grow in pieces under 64 KiB: with the hook, a leak growing by megabytes noticed
+the crossing itself and raised in place, which is right but no longer tested that a
+bystander who notices does not pay.
+
+**The default ceiling.** With no `BROOD_MEM_LIMIT`, a process in a memory-capped cgroup takes
+its hard limit from the tightest `memory.max` on its path. Seven eighths of the cap was the
+first choice and was wrong: under a 600 MB `systemd-run` scope the leak was out-of-memory
+killed before the soft limit tripped, because the container counts resident memory and the
+allocator counts live bytes (resident ran at about 1.45× live). At three quarters, caps of
+600 MB, 1 GB and 2 GB each ended the leak with `E0043`; with the limits off it was killed,
+exit 137, nothing printed. This machine's user slice carries a 20 GiB cap, so a plain `brood`
+here now has a 15 GiB ceiling; the test runners keep their 3 GiB.
+
+Also: `nest explain`'s entry for blocking natives advertised `(proc/offload …)`, which is
+unbound; the function is the bare `offload`.
+
+**Then, after the merge** — light probes only, the machine being in use. Descriptors: under
+`ulimit -n 64`, `os/spawn`, `spawn-pty`, `os/cmd`, file reads and listens each fail with a
+catchable `Too many open files`, and 200 children, 200 failed spawns and 200 `os/cmd`s in
+sequence leak nothing. A full disk (`/dev/full`): file writes raise `No space left on
+device`, the images are written to a temporary file and renamed, but stdout dropped its
+errors and the run exited 0 (KI-244). Panics from Brood: the builtins' `expect`s are all
+behind the type checks they rely on; the tree-sitter and GUI key-name tables took their
+locks with `.lock().expect`, so one panic while holding one would have made every later
+parse panic too — they use the poison-tolerant `core::sync::lock` like everything else.
+Deep data in Brood: `json/decode` handles 100 000 levels; `json/encode` and `seq/postwalk`
+raise a catchable `recursion too deep` at a million, and stay as they are — rewriting a
+benchmarked encoder is not something to do without measuring it. The non-Unix `os/cmd`
+starts its pipe threads with `Builder::spawn` and reaps the child on a refusal; checking it
+through a `wasm32` build (also non-Unix) caught `1 << 62` in the new cgroup reader, which
+does not fit a 32-bit `usize` — it reads the cap as `u64` now. A fuzz-differential pass on
+the merged tree (`metamorphic`, `pipeline`, `tier_transition`, `trycatch`, `match`,
+`strings`; 300 programs, four engine configs each): clean.
+
+The pre-push gate on the merged tree then failed `doc_examples_test` on address space —
+1 324 threads, all belonging to 317 zombie `sh` children. A logging `sh` on `PATH` named the
+`os/spawn` example, run 484 times: a `receive` under `reflect/eval` suspended to the body
+driver, which captured at the call into the native and re-ran the whole form on resume
+(KI-245). `compile::run` was the one native entry to evaluation that left the capture flag
+set; it takes the tree-walker's guard now. The plain double run predates the merge; the
+merge's folds-in-the-driver extended it to a `map` callback, which is what the doctest hit.
+
 ## 2026-10-14 (later) — thin-wrapper callbacks from native code (ADR-408); KI-239 fixed; the format check ignores what git ignores
 
 Four follow-ups to the merge.
