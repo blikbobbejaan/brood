@@ -86,7 +86,7 @@ pub(super) fn binding(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult
 }
 
 /// Push `names` bound to `vals` on the dynamic stack — the one implementation behind the
-/// `%binding` native, the VM's inline `binding` (`Inst::BindEnter`, ADR-401) and its
+/// `%binding` native, the VM's inline `binding` (`Inst::BindEnter`, ADR-402) and its
 /// evaluator twin. Every name must be dynamic (else it is almost certainly a typo — a plain
 /// global won't track the rebind), and the counts must match: matched lengths are a
 /// guarantee of the `binding` MACRO, not of the primitive, and a raw

@@ -120,7 +120,7 @@ pub(super) struct Funcs {
     /// and return them, so operands are stored in place rather than copied across.
     pub pushroom: FuncRef,
     /// `brood_rt_in_call_journal(heap, packed) -> *mut Value` — an error path's in-call
-    /// journal (ADR-400): room for the operands beneath the call in flight, or null.
+    /// journal (ADR-401): room for the operands beneath the call in flight, or null.
     pub incall: FuncRef,
     /// `brood_rt_call_slow` — the general Brood→Brood dispatch (the fast-link miss path).
     pub callslow: FuncRef,

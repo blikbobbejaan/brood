@@ -13,7 +13,7 @@
 ;;; supervisor can restart it. `vm_apply` now probes the remaining native stack and raises
 ;;; the ordinary catchable depth error instead (the VM sibling of the JIT's KI-14 fix).
 ;;;
-;;; An inline `try` no longer takes that path (ADR-399): its body is bytecode in the
+;;; An inline `try` no longer takes that path (ADR-400): its body is bytecode in the
 ;;; driver's own loop, so it recurses on heap frames like any call. The guard is exercised
 ;;; through the `%try` builtin called with a thunk that is not a literal `fn` — the shape
 ;;; the compiler does not inline, which still re-enters natively per level.
@@ -42,7 +42,7 @@
     (if (= n 0)
       0
       (+ 1 (let (body (fn () (nsg-raise (- n 1)))) (%try body (fn (e) (throw e)))))))
-  ;; An inline `try` (ADR-399): its body runs in the driver, on heap frames.
+  ;; An inline `try` (ADR-400): its body runs in the driver, on heap frames.
   ;; check-allow :discarded-catch — the catch never fires; the depth is the answer
   (defn nsg-inline-try (n) (if (= n 0) 0 (try (+ 1 (nsg-inline-try (- n 1))) (catch e 0)))))
 

@@ -659,7 +659,7 @@ fn jit_lower_arm_inner(
         [ckpt_slot, arm.ckpt_slot]
     };
     entry::emit_checkpoint_reset(&mut b, resets, rb_var, base);
-    // ADR-400: an activation that makes non-tail calls (the only kind that can recurse
+    // ADR-401: an activation that makes non-tail calls (the only kind that can recurse
     // natively) and whose layout the driver can rebuild mid-call — every one but the
     // self-spliced upgrade. Its calls' error paths write the in-call journal, so the
     // activations it calls may preempt by unwinding; it polls reductions at entry.
@@ -679,7 +679,7 @@ fn jit_lower_arm_inner(
             std::mem::offset_of!(crate::jit::JitCallCtx, no_child_unwind) as i32,
         );
     }
-    // ADR-400: the entry reduction poll. A native recursion has no back edge, so nothing
+    // ADR-401: the entry reduction poll. A native recursion has no back edge, so nothing
     // in it ever settled reductions with the scheduler: a `bintree`-style walk ran to the
     // end in one quantum however deep it went. An `unwindable` arm now charges one
     // reduction per activation from a countdown on the heap, settling a batch with

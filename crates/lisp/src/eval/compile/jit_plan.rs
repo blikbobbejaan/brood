@@ -230,7 +230,7 @@ fn max_leader_depth(code: &[Inst]) -> usize {
 /// invalidates the arm before it re-enters native code). Such arms skip checkpointing
 /// entirely ([`jit_ckpt_depth`]) — the journal writes after every non-tail call were ~5 %
 /// of bintree's *instructions*, and the journal area and its per-activation reset another
-/// 10 % (ADR-400 moved the in-call journal out of the frame so they need none). Anything
+/// 10 % (ADR-401 moved the in-call journal out of the frame so they need none). Anything
 /// else — a call to another fn or a native (where all effects live), a computed callee,
 /// `table-put`, a catch frame — keeps the exactly-once checkpoint machinery.
 fn pure_self_recursive(
@@ -599,7 +599,7 @@ pub(super) mod codegen {
     /// — `SelfCall` arg `k` is exactly `Node::Local(k)` in *every* self-call — i.e. the
     /// loop-invariant locals. The JIT hoists an invariant **vector** slot's element base
     /// out of the loop (LICM): a load whose source can't be mutated (Brood is immutable,
-    /// ADR-026) is invariant with no alias analysis. Returns `vec![false; nrequired]` when
+    /// ADR-26) is invariant with no alias analysis. Returns `vec![false; nrequired]` when
     /// the arm has no `SelfCall` (not a loop — nothing to hoist).
     pub fn invariant_param_slots(body: &Node, nrequired: usize) -> Vec<bool> {
         let mut calls = Vec::new();

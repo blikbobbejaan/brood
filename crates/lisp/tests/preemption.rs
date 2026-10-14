@@ -1,4 +1,4 @@
-//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-018): a
+//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-18): a
 //! CPU-bound process with no `receive` must not monopolise its worker. We pin the
 //! pool to ONE worker so a CPU-bound hog and a responder must share a single
 //! core — only preemption lets the responder run at all.
@@ -15,7 +15,7 @@
 //! run queue + preemption: quantum 1 runs the hog (preempted after its reduction
 //! budget, because the responder is waiting → re-enqueued at the back), quantum 2 runs
 //! the responder (replies + exits). The hog is long but finite: alone, a process is not
-//! preempted (nothing would run instead, ADR-400), so an endless one would hold the
+//! preempted (nothing would run instead, ADR-401), so an endless one would hold the
 //! hand-driven worker forever once the responder is gone.
 
 use brood::{process, Interp};

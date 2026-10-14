@@ -793,7 +793,7 @@ pub(super) fn seqview_pred(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispRe
 /// the hot `first`/`rest` builtins; every other consumer realises in the prelude
 /// (via `seq`) or fuses (via `fold`).
 
-// ---- The native folds behind `fold` (ADR-402) ----
+// ---- The native folds behind `fold` (ADR-403) ----
 //
 // `fold` walks a vector or a range in spans: each `%…-fold-span` call folds up to `n`
 // elements in a native loop and returns the accumulator when the collection is done — most
@@ -1176,7 +1176,7 @@ pub(super) fn vector_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// `(vector-assoc v i x)` — a fresh vector like `v` with index `i` set to `x`.
 /// The vector counterpart of `%map-assoc`; O(n) copy (vectors are flat), one
 /// allocation, no cons churn. `i` must be in `[0, len)` (append-at-end is a
-/// deferred power feature, ADR-011). No GC safepoint runs inside a builtin, so
+/// deferred power feature, ADR-11). No GC safepoint runs inside a builtin, so
 /// the cloned handles stay valid across `alloc_vector`.
 pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);

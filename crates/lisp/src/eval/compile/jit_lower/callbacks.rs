@@ -149,7 +149,7 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         &signature(module, &[pointer, i64], &[]),
     )?;
     // brood_rt_tick_n(heap, n, ctx) -> u8: the batched back-edge poll (burns n reductions);
-    // the activation context says whether a spent budget may preempt (ADR-400).
+    // the activation context says whether a spent budget may preempt (ADR-401).
     let tick_n = import(
         module,
         "brood_rt_tick_n",
@@ -243,7 +243,7 @@ pub(super) fn declare_callbacks(module: &mut JITModule, pointer: Type) -> Option
         &signature(module, &[pointer, i64], &[pointer]),
     )?;
     // brood_rt_in_call_journal(heap, packed) -> *mut Value: on an error path, record this
-    // activation as paused mid-call for the preempt unwinding through it (ADR-400) and
+    // activation as paused mid-call for the preempt unwinding through it (ADR-401) and
     // reserve room for its operands — null when the error is a real one.
     let in_call_journal = import(
         module,

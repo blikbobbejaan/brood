@@ -13,12 +13,12 @@ devlog entries of the same dates.
 ## State (2026-10-14)
 
 - **Released:** v0.37.0. Unreleased on `main`, **not pushed** (check `git log origin/main..`):
-  `67a540e1` preemption reaches every shape of running code (ADR-399..404, KI-223..231);
+  `67a540e1` preemption reaches every shape of running code (ADR-400..405, KI-230..238);
   `95c8b749` one native entry (`jit_runtime/entry.rs`), one quantum module
   (`process/scheduler/quantum.rs`), folds walked in spans; `4f0fa07f` / `3ec72080` the gate
-  sweep; then handoff item B (the fold span result stops allocating) and item A (ADR-405, the
+  sweep; then handoff item B (the fold span result stops allocating) and item A (ADR-406, the
   computed-call memo). Devlog entries of 2026-10-12 … 2026-10-14 carry the narrative and numbers.
-- `known-issues.md` has one **watching** entry, KI-232 (a dist test node's connect refused right
+- `known-issues.md` has one **watching** entry, KI-239 (a dist test node's connect refused right
   after its peer was seen listening; retry-absorbed, not reproducible on demand, diagnostic
   armed). Gates run green for items A and B: `make test-both`, `make gcstress`, fuzz
   (`tier_transition`, `metamorphic`, `pipeline`, plus `numeric`/`arithmetic` for B), clippy
@@ -43,7 +43,7 @@ stdimage`; `make ab` now writes both arms' images itself), the timing binary fro
 anything on the scheduler path, `make latency-gate`. `perf record` is capped at 1 kHz here:
 aggregate 20-40 runs, and build `make perf-symbols` for names.
 
-**A. DONE (2026-10-14, ADR-405, devlog "native code memoises calls to a closure value").**
+**A. DONE (2026-10-14, ADR-406, devlog "native code memoises calls to a closure value").**
 `jit_dispatch_call` memoises a computed-head call's arm, env and IC block per closure instance:
 ~240 instructions off every such call (anonymous closure 943 → 706; named heads 415). What
 remains of the gap to a named call is `fill_captures`, `finish_nested`, `native_feedback` and the
@@ -52,7 +52,7 @@ the handoff's original design) is the next step there; check `staged` (KI-19) an
 `mono_devirtualize` when allocating the site.
 
 **C. A thin-wrapper callback costs ~1 900 instructions a call from native code** — named or
-not. `(fn (acc x) (+ acc x))`, the canonical reducer, is a passthrough (ADR-069): the dispatcher
+not. `(fn (acc x) (+ acc x))`, the canonical reducer, is a passthrough (ADR-69): the dispatcher
 never runs its body, it redirects to `+` by NAME on every call — `passthrough_arm`, `env_get`,
 `boundary_redirect`, a second hop to `+`'s own passthrough arm, then `call_native` (profile:
 `dispatch` 35–38%, `env_get` ~6–11%). The compiled body would be one inlined `Prim2`. The redirect

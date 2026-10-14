@@ -75,7 +75,7 @@ pub struct SysMon {
     /// Report JIT deopts (native arm fell back to the VM).
     pub deopt: bool,
     /// Report a scheduling quantum that held its worker at least this many µs (0 = not
-    /// selected) — BEAM's `long_schedule` (ADR-403). A quantum is bounded by the reduction
+    /// selected) — BEAM's `long_schedule` (ADR-404). A quantum is bounded by the reduction
     /// budget, so one this long is code that could not be preempted: a long native
     /// builtin, an unboxed native recursion, a blocking call.
     pub long_schedule_us: u64,

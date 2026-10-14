@@ -156,11 +156,11 @@ worker's mailbox so it can't satisfy a later test's receive."
       (assert= :quiet (sysmon-quiet-about worker 200)))
     (sysmon-done))
 
-  (test ":long-schedule reports a quantum that held its worker past the threshold (ADR-403)"
+  (test ":long-schedule reports a quantum that held its worker past the threshold (ADR-404)"
     ;; One `sort` of a large vector is a single native call — nothing preempts it at any
     ;; tier — so the quantum it runs in holds its worker for its whole duration. A
     ;; permutation, not a reversed range: the sort finds a reversed run in linear time, and
-    ;; with nothing else waiting the BUILD's quanta restart the timer (ADR-400), so the sort
+    ;; with nothing else waiting the BUILD's quanta restart the timer (ADR-401), so the sort
     ;; must hold the worker past the threshold on its own. Pinned to `worker` like the
     ;; threshold test above: the subscription sees every process.
     (proc/system-monitor (self) {:long-schedule-us 1000})

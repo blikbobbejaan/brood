@@ -498,7 +498,7 @@ fn settle_native_frame(
     Some((ra, rip))
 }
 
-/// Rebuild the native activations a preempt unwound through (ADR-400) as interpreter
+/// Rebuild the native activations a preempt unwound through (ADR-401) as interpreter
 /// frames: the thread's unwind record ([`take_unwound`]) holds them innermost first, each frame still where it ran in
 /// `roots`. The callers — every one but the innermost — are appended to `frames`, outermost
 /// first, each paused just after the call it made, its operand stack restored from the
@@ -509,7 +509,7 @@ fn settle_native_frame(
 /// callee's frame starts above the caller's operand stack, so every frame moves: the whole
 /// region is copied out and laid back down in interpreter order. Nothing in between
 /// allocates, so no collection can run while the values are off the root stack.
-/// The catch half of the driver's `raise!` (ADR-399), for an error that is not a control
+/// The catch half of the driver's `raise!` (ADR-400), for an error that is not a control
 /// signal while this driver has an open `try`: unwind to the frame that opened the innermost
 /// one, bind the caught value and hand back where to resume — the `try`'s frame when it is a
 /// caller (`Some`, to install as the current frame; `None` when it is the current one) and
@@ -539,7 +539,7 @@ fn catch_in_driver(
     };
     debug_assert!(
         depth.is_some(),
-        "an open try's frame is not on this driver's stack (ADR-399): {h:?}"
+        "an open try's frame is not on this driver's stack (ADR-400): {h:?}"
     );
     let Some(d) = depth else {
         return Err(e);
@@ -583,7 +583,7 @@ fn rebuild_unwound_frames(heap: &mut Heap, frames: &mut Vec<BcFrame>) -> BcFrame
     unwound.reverse();
     let first = unwound
         .first()
-        .expect("an unwind with no recorded activation (ADR-400)")
+        .expect("an unwind with no recorded activation (ADR-401)")
         .0
         .base;
     let region: Vec<Value> = (first..heap.roots_len()).map(|i| heap.root_at(i)).collect();
@@ -599,9 +599,9 @@ fn rebuild_unwound_frames(heap: &mut Heap, frames: &mut Vec<BcFrame>) -> BcFrame
         let env_base = heap.env_roots_len();
         let env = heap.root_env(f.env);
         if i < innermost {
-            let journal = journal.expect("an unwound caller left no in-call journal (ADR-400)");
+            let journal = journal.expect("an unwound caller left no in-call journal (ADR-401)");
             let resume = jit_in_call_resume_arm(&f.arm, f.nslots)
-                .expect("a self-spliced activation was recorded mid-call (ADR-400)");
+                .expect("a self-spliced activation was recorded mid-call (ADR-401)");
             debug_assert_eq!(
                 resume.nslots, f.nslots,
                 "an in-call journal of another layout"
@@ -845,7 +845,7 @@ pub(crate) fn vm_run_bc(
 
     // Raise `e` from the current frame: if one of THIS driver's open `try`s can take it,
     // resume at its handler (`continue` the loop, `catch_in_driver`); otherwise unwind the
-    // whole driver and return the error, as before (ADR-399).
+    // whole driver and return the error, as before (ADR-400).
     macro_rules! raise {
         ($l:lifetime, $e:expr) => {
             raise!($l, $e, false)
@@ -928,7 +928,7 @@ pub(crate) fn vm_run_bc(
             if !crate::process::macro_block_active() && heap.gc_due() {
                 heap.collect(&mut [], &mut []);
             }
-            // RUNTIME-region collection (ADR-091): the VM-engine counterpart of the
+            // RUNTIME-region collection (ADR-91): the VM-engine counterpart of the
             // tree-walker's safepoint. Once churn crosses the threshold, compact the shared
             // code region (single-process) or — on a shared runtime with the multi-process
             // collector armed — advance the age/migrate/drain/free state machine. Every
@@ -961,7 +961,7 @@ pub(crate) fn vm_run_bc(
                     heap.maybe_runtime_collect(&mut [], &mut []);
                 }
             }
-            // RUNTIME-drain cooperative report (ADR-091 Stage 3c): the VM-engine
+            // RUNTIME-drain cooperative report (ADR-91 Stage 3c): the VM-engine
             // counterpart of the tree-walker's safepoint report. While a generation
             // drain is armed, this process reports whether it still references the
             // draining generation. Read-only probe; the hot path is one atomic load.
@@ -980,7 +980,7 @@ pub(crate) fn vm_run_bc(
             // which splits the inline loop's safepoint the same way. Per frame boundary they
             // would cost twice per non-tail call.
             // A quantum boundary: a spent budget, or — where this driver can capture — a
-            // preemption owed by code that could not yield itself (ADR-402).
+            // preemption owed by code that could not yield itself (ADR-403).
             if let crate::process::Safepoint::Quantum { yield_now } =
                 crate::process::driver_safepoint(capture)
             {
@@ -1090,7 +1090,7 @@ pub(crate) fn vm_run_bc(
                     // Destination for a Done result: this entry hands one back, so it
                     // owns a stack local (see `crate::jit::JitArmFn`).
                     let mut jit_ret = Value::Nil;
-                    // ADR-400: the top-level driver's native entry is unwindable — its
+                    // ADR-401: the top-level driver's native entry is unwindable — its
                     // callees' preempts can come back as frames to rebuild.
                     let jit_outcome = jit_tier_in_frame(
                         cur_arm.arc(),
@@ -1122,7 +1122,7 @@ pub(crate) fn vm_run_bc(
                         Some(3) => {
                             let e = jit_take_error(heap)
                                 .expect("JIT error outcome without a parked error");
-                            // A preempt unwound out to here (ADR-400): this frame is the
+                            // A preempt unwound out to here (ADR-401): this frame is the
                             // outermost activation it passed — record it with the rest.
                             if e.is_preempt_unwind() {
                                 debug_assert!(capture, "an unwind reached a nested driver");
@@ -1450,7 +1450,7 @@ pub(crate) fn vm_run_bc(
                     })));
                 }
             }
-            // A native preempt unwound out to this driver (ADR-400): rebuild every activation
+            // A native preempt unwound out to this driver (ADR-401): rebuild every activation
             // it passed as an interpreter frame and park, exactly as a preempt of the frame
             // path would — the innermost frame resumes at its back edge and re-tiers; each
             // caller resumes just after the call that frame is serving.

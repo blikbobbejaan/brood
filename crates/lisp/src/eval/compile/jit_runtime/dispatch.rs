@@ -16,7 +16,7 @@ pub(crate) fn jit_dispatch_call(
     argc: usize,
     site: u32,
     head: Symbol,
-    // May the callee preempt by unwinding (ADR-400)? What the calling activation may pass on.
+    // May the callee preempt by unwinding (ADR-401)? What the calling activation may pass on.
     unwind: bool,
 ) -> Option<Value> {
     use std::sync::atomic::Ordering::Acquire;

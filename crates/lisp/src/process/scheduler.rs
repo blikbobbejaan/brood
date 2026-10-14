@@ -19,7 +19,7 @@
 //! - [`REDUCTIONS`] — countdown to the next preempt; [`tick`] decrements
 //!   it from inside `eval`'s loop.
 //! - [`GC_BLOCK`] — eval/macroexpand nesting depth; feeds the stack-overflow
-//!   byte guard (no longer the GC safepoint — ADR-061). [`MACRO_BLOCK`] —
+//!   byte guard (no longer the GC safepoint — ADR-61). [`MACRO_BLOCK`] —
 //!   compile-pass depth; the GC safepoint suppresses collection while it's
 //!   nonzero. Both reset per quantum (each quantum runs on a fresh worker
 //!   stack), so workers multiplexing several processes don't leak depths.
@@ -812,7 +812,7 @@ impl Process {
             // The root program process (ADR-135): drive the top-level forms.
             Some(prog) => crate::eval::compile::run_program_body(&mut self.heap, prog, resume),
             // The fresh run TAKES the body: it may be a handle into this process's own
-            // heap (a spawned closure copied in, ADR-404), which nothing roots once the
+            // heap (a spawned closure copied in, ADR-405), which nothing roots once the
             // driver has it — a collection would leave a copy here stale.
             None => {
                 let body = if resume.is_none() {
@@ -895,13 +895,13 @@ pub fn self_mailbox_seq() -> u64 {
 /// A process with no ctx has never `spawn`ed or messaged, so it isn't in
 /// [`REGISTRY`] and can't be sharing a runtime under a drain — so skipping its
 /// report is sound. The cheap read the eval / VM safepoint uses to report drain
-/// liveness (ADR-091 Stage 3c); a single thread-local borrow, no allocation.
+/// liveness (ADR-91 Stage 3c); a single thread-local borrow, no allocation.
 pub fn current_pid() -> Option<u64> {
     CURRENT.with(|c| c.borrow().as_ref().map(|ctx| ctx.pid))
 }
 
 /// A snapshot of every live local process's pid — the [`REGISTRY`] keys. This is
-/// the live set the RUNTIME-drain union queries (ADR-091 Stage 3c). It is
+/// the live set the RUNTIME-drain union queries (ADR-91 Stage 3c). It is
 /// **complete** for the drain's purposes: `spawn` registers a child (before it can
 /// run) and its parent, and `receive`/`self` register the root, so every process
 /// that could hold a reference to the draining generation is present.
@@ -946,7 +946,7 @@ pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) ->
     reaped
 }
 
-/// The eval / VM safepoint's cooperative RUNTIME-drain report (ADR-091 Stage 3c):
+/// The eval / VM safepoint's cooperative RUNTIME-drain report (ADR-91 Stage 3c):
 /// this process reports whether it still references the draining generation. Called
 /// only when [`Heap::drain_active`](crate::core::heap::Heap::drain_active) already
 /// returned true. **Throttled** to 1/`DRAIN_REPORT_STRIDE` safepoints via
@@ -962,7 +962,7 @@ pub fn report_drain_liveness(heap: &Heap) {
     }
 }
 
-/// **RUNTIME collector — Stage 5 (parked-process drain inspection, ADR-091).** A parked
+/// **RUNTIME collector — Stage 5 (parked-process drain inspection, ADR-91).** A parked
 /// process (suspended in `receive`) can't report its own liveness for a drain armed
 /// *after* it parked — it isn't running, so it never reaches a safepoint. Left
 /// unhandled, an idle server parked on current-generation code would block **every**
@@ -997,7 +997,7 @@ fn report_parked_liveness() {
 }
 
 /// Is the currently-draining RUNTIME generation dead — has *every* live process
-/// reported clean for the current drain epoch (ADR-091 Stage 3c)? Reads the live
+/// reported clean for the current drain epoch (ADR-91 Stage 3c)? Reads the live
 /// set from the scheduler [`REGISTRY`] and delegates the per-epoch ack check to the
 /// heap. `false` when no drain is armed. Once this is `true`, Stage 4 may free the
 /// generation.

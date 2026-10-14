@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Tail-latency gate — run on the benchmark box, not CI (a timing gate on a shared runner cannot
 # tell a regression from a noisy neighbour). Runs `stress/latency_probe.blsp` RUNS times and
-# fails when any run saw too many quanta over 1 ms (`:long-schedule`, ADR-403 — the structural
+# fails when any run saw too many quanta over 1 ms (`:long-schedule`, ADR-404 — the structural
 # signal: code that could not be preempted) or when the WORST p99 is over its budget. p99.9 and
 # max are reported, not gated: on an open-loop row they move run to run by 3× on this box.
 #
 #   scripts/latency-gate.sh [RUNS]          env: BROOD=<binary> MAX_LONG=<n> MAX_P99_US=<µs>
 #
 # Measured 2026-10-13 (i5-11500H, 12 cores, 20k req/s, 5% fat, 20 000 requests): p99 85–115 µs
-# on v0.37.0, 76–80 µs after ADR-399..404, with 2–11 long quanta a run. (v0.37.0 predates
+# on v0.37.0, 76–80 µs after ADR-400..405, with 2–11 long quanta a run. (v0.37.0 predates
 # `:long-schedule`, so its count reads 0 — `BROOD_STALL_MS=1` saw nearly one per fat request.)
 set -uo pipefail
 cd "$(dirname "$0")/.."

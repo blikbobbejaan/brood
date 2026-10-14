@@ -69,7 +69,7 @@ pub(crate) enum DirectNative {
     /// The activation has to continue on the VM in its in-place frame (deopt / preempt /
     /// declined / i64 depth bail): hand it to the driver as `ChunkExit::CallResume`.
     Handoff { outcome: Option<i64> },
-    /// A preempt unwound out of the callee (ADR-400) — its frames are recorded in
+    /// A preempt unwound out of the callee (ADR-401) — its frames are recorded in
     /// the thread's unwind record (`take_unwound`) and still in `roots`: hand the driver `ChunkExit::Unwound`.
     Unwound,
 }
@@ -153,7 +153,7 @@ pub(crate) fn vm_call_native_direct(
             heap.truncate_roots(base);
             DirectNative::Done(ret)
         }
-        // A preempt unwinding out of this callee (ADR-400): record it and leave its frame
+        // A preempt unwinding out of this callee (ADR-401): record it and leave its frame
         // for the driver to rebuild.
         Some(3)
             if jit_unwind_through(heap, 3, unwind, |_| {
@@ -250,7 +250,7 @@ pub(crate) fn jit_tier_in_frame(
     env: EnvRoot,
     frame_nslots: usize,
     out: *mut Value,
-    // May the activation preempt by unwinding (ADR-400)? Only a top-level driver says yes.
+    // May the activation preempt by unwinding (ADR-401)? Only a top-level driver says yes.
     unwind: bool,
 ) -> Option<i64> {
     use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};

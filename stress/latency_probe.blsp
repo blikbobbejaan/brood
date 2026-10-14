@@ -5,9 +5,9 @@
 ;; up, and each handler reports how late it STARTED against that schedule (queueing delay
 ;; counts — coordinated omission is the failure this exists to expose). Every 20th request
 ;; is fat: it holds its worker for ~500 µs of real work, in a native loop called from a
-;; native handler — the shape that went unpreempted before ADR-400 and stalled the requests
+;; native handler — the shape that went unpreempted before ADR-401 and stalled the requests
 ;; queued behind it. A system-monitor subscription counts every quantum that held a worker
-;; over 1 ms (`:long-schedule`, ADR-403): code that could not be preempted.
+;; over 1 ms (`:long-schedule`, ADR-404): code that could not be preempted.
 ;;
 ;; Prints `#metric name=value` lines; `BENCH_N` sets the request count (default 20000).
 

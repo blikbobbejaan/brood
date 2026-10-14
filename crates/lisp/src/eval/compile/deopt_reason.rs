@@ -124,7 +124,7 @@ pub(crate) enum DeoptReason {
     /// A register-carried parameter's entry tag check failed; payload = the slot.
     EntryParamTag = 106,
     /// The entry reduction poll found a limit waiting to be raised, which only the VM can
-    /// do (ADR-400) — the entry twin of `BackEdgeLimitPending`.
+    /// do (ADR-401) — the entry twin of `BackEdgeLimitPending`.
     EntryLimitPending = 107,
 }
 

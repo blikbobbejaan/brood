@@ -1,4 +1,4 @@
-//! The compiling execution engine — ADR-076, [`docs/bytecode-vm.md`].
+//! The compiling execution engine — ADR-76, [`docs/bytecode-vm.md`].
 //!
 //! A **closure-compiling VM over a lexically-addressed IR**: a form compiles once
 //! into a [`Node`] tree run by a trampoline ([`vm_apply`]). The crux is GC: a
@@ -6,7 +6,7 @@
 //! operand stack, so the moving collector relocates them in place (the collector's
 //! root walk) with **no new root set** — `Node::Local(i)` reads `root_at(base+i)`.
 //!
-//! **The VM is the default engine** (ADR-076 Stage 3); `BROOD_TIER=0` forces the
+//! **The VM is the default engine** (ADR-76 Stage 3); `BROOD_TIER=0` forces the
 //! tree-walker. A closure is VM-compiled when it's built from the core vocabulary
 //! ([`Node`] below): `if`/`do`/`let`/`letrec`/`fn`/`quote` plus calls and vector/map
 //! literals, with `&optional` (nil- *or* real-default) and any capture (global *or*
@@ -75,7 +75,7 @@ pub enum Tier {
     /// floor, and the differential reference. Total by construction: whatever a higher tier
     /// declines lands here, so it must accept everything. ~10× slower than tier 1.
     TreeWalk,
-    /// **Tier 1** — the closure-compiling bytecode VM (ADR-076 Stage 3). Defers a form outside
+    /// **Tier 1** — the closure-compiling bytecode VM (ADR-76 Stage 3). Defers a form outside
     /// its vocabulary to tier 0; the default floor for real work.
     Bytecode,
     /// **Tier 2** — native code from a [`crate::jit::JitBackend`] (ADR-101/221), *earned* by
@@ -176,7 +176,7 @@ pub(crate) fn run_top_form(heap: &mut Heap, form: Value, env: EnvId) -> LispResu
 }
 
 /// "This `Node::Call` has no call-site inline cache" — the callee isn't a free
-/// global reference (ADR-096).
+/// global reference (ADR-96).
 pub const NO_SITE: u32 = u32::MAX;
 
 mod ir;
@@ -364,7 +364,7 @@ fn bind_def(heap: &mut Heap, name: Value, v: Value) -> Result<(), LispError> {
 /// the bytecode call depth crosses this many frames, replacing the native-stack byte
 /// guard the `Node` engine uses (the driver doesn't grow the native stack per Brood
 /// call, so unbounded non-tail recursion grows `frames` + `Heap::roots` instead).
-/// Generous — the soft-memory cap (ADR-043) is the real backstop; this just turns an
+/// Generous — the soft-memory cap (ADR-43) is the real backstop; this just turns an
 /// infinite non-tail recursion into a catchable error before it exhausts memory.
 const MAX_BC_FRAMES: usize = 1 << 20;
 
@@ -429,10 +429,10 @@ pub(crate) struct Suspended {
     entry_env: usize,
     entry_arms: usize,
     /// `Heap::vm_handlers` length at the driver's entry: the open `try`s below it belong
-    /// to an outer driver and are never this one's to catch into (ADR-399).
+    /// to an outer driver and are never this one's to catch into (ADR-400).
     handler_floor: u32,
     /// The dynamic stack's length at the driver's entry: an error that leaves the driver
-    /// truncates back to it, undoing every inline `binding` it skipped (ADR-401). `u32`s,
+    /// truncates back to it, undoing every inline `binding` it skipped (ADR-402). `u32`s,
     /// both, so the two floors take the space one word did — a parked process's
     /// continuation counts against the per-process floor (`tests/process_floor.rs`).
     dyn_floor: u32,

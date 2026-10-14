@@ -11,7 +11,7 @@
 //! The outcome half has two shapes. A **driver** entry hands every outcome but a value back
 //! to the bytecode driver, which owns the frame. A **nested** entry — any caller that must
 //! produce a value then and there — finishes the outcome itself: a preempt unwinding through
-//! it is recorded (ADR-400), an error propagates, a staged tail call is followed, and a
+//! it is recorded (ADR-401), an error propagates, a staged tail call is followed, and a
 //! deopt or preempt resumes at the callee's checkpoint or re-runs it on the VM.
 //! [`finish_nested`] is that, once, for every nested caller.
 
@@ -42,7 +42,7 @@ pub(crate) struct NativeEntry {
     /// The callee's IC block cursors, or `None` when the caller has installed them.
     pub(crate) ic_bases: Option<(u32, u32)>,
     pub(crate) from: EntryFrom,
-    /// May the activation preempt by unwinding (`JitCallCtx::unwind`, ADR-400)?
+    /// May the activation preempt by unwinding (`JitCallCtx::unwind`, ADR-401)?
     pub(crate) unwind: bool,
 }
 
@@ -212,7 +212,7 @@ pub(crate) fn finish_nested(
 ) -> Nested {
     let mut resolve = Some(resolve);
     let mut callee: Option<NestedCallee> = None;
-    // A preempt this callee may honour, or one unwinding through it (ADR-400): record it and
+    // A preempt this callee may honour, or one unwinding through it (ADR-401): record it and
     // leave its frame where it lies. Only an arm known to be the one that ran is recorded;
     // anything else takes the preempt the old way, re-run below.
     if jit_unwind_through(heap, outcome, frame.unwind, |h| {

@@ -1,4 +1,4 @@
-//! Preemption reaches EVERY shape of running code, not just a top-level loop (ADR-399).
+//! Preemption reaches EVERY shape of running code, not just a top-level loop (ADR-400).
 //!
 //! `preemption.rs` proves a CPU-bound process cannot starve a peer on one worker. That hog is
 //! a plain self-tail loop at the bottom of its process — the one shape the bytecode driver
@@ -78,7 +78,7 @@ fn every_shape_of_running_code_is_preemptible() {
     let shapes: &[(&str, &str)] = &[
         // The baseline every scheduler already got right: a bare loop.
         ("a bare self-tail loop", "(spin 200000 0 0)"),
-        // ADR-399: the body of an inline `try` runs in the driver's own loop.
+        // ADR-400: the body of an inline `try` runs in the driver's own loop.
         ("a loop inside try", "(try (spin 200000 0 0) (catch e nil))"),
         // …and the handler, which runs in the same frame once the body has thrown.
         (
@@ -95,13 +95,13 @@ fn every_shape_of_running_code_is_preemptible() {
             "a loop called from inside try",
             "(try (+ 1 (spin 200000 0 0)) (catch e nil))",
         ),
-        // ADR-401: a `binding` body runs in the driver too (it was a thunk the `%binding`
+        // ADR-402: a `binding` body runs in the driver too (it was a thunk the `%binding`
         // native evaluated nested).
         (
             "a loop inside binding",
             "(binding (*shape-x* 1) (spin 200000 0 0))",
         ),
-        // KI-230: a set, ratio or decimal literal no longer sends its function to the
+        // KI-237: a set, ratio or decimal literal no longer sends its function to the
         // tree-walker.
         (
             "a loop under a function with a set literal",
@@ -115,7 +115,7 @@ fn every_shape_of_running_code_is_preemptible() {
             "a loop under a function with a decimal literal",
             "(decimal-hog 200000)",
         ),
-        // ADR-402: `fold` walks a vector or range in Brood — per element for a reducer it
+        // ADR-403: `fold` walks a vector or range in Brood — per element for a reducer it
         // calls, per native span for a primitive one — so it yields like any loop.
         (
             "a vector fold with a slow reducer",
@@ -232,7 +232,7 @@ const NATIVE_CHAIN: &str = r#"
     :ok
 "#;
 
-/// ADR-400: a native loop called from native code is preempted by unwinding the native
+/// ADR-401: a native loop called from native code is preempted by unwinding the native
 /// activations into interpreter frames. It used to deopt into a nested interpreter that
 /// could not be preempted either, so a warm request handler calling a warm loop ran it to
 /// the end in one quantum — the latency row's 1–2 ms fat handlers.
@@ -327,7 +327,7 @@ fn an_unwound_native_chain_returns_the_same_value() {
     );
 }
 
-/// ADR-400: a native RECURSION — no back edge anywhere — is preempted at the entry
+/// ADR-401: a native RECURSION — no back edge anywhere — is preempted at the entry
 /// reduction poll and unwound through every level. It used to run to the end in one
 /// quantum: a tree walk, a nested encode, any recursive function that tiered.
 #[test]
@@ -347,7 +347,7 @@ fn a_native_recursion_is_preemptible() {
     );
 }
 
-/// ADR-400: a pure self-recursive arm journals nothing in its frame — no area, no reset on
+/// ADR-401: a pure self-recursive arm journals nothing in its frame — no area, no reset on
 /// its hot path — so the operand beneath its second call (the first call's result) survives
 /// an unwind only through the side record its error path writes at the top of `roots`.
 /// Unwound and rebuilt many times over, the tree count must come out exact.
@@ -400,7 +400,7 @@ fn an_unwound_native_recursion_returns_the_same_value() {
     );
 }
 
-/// ADR-401: a `receive` inside a `binding` body parks, and resumes with the binding still in
+/// ADR-402: a `receive` inside a `binding` body parks, and resumes with the binding still in
 /// force; it used to block the worker like a `try`-wrapped one.
 #[test]
 fn a_receive_inside_binding_parks_and_keeps_its_binding() {

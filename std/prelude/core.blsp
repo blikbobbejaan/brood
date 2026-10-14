@@ -255,7 +255,7 @@ this by implementing the `Display` ability, which takes over this name below.
 
 ;; ---- folding (the workhorse; tail-recursive, so it is stack-safe) ----
 
-;; ADR-402: `fold` over a vector or a range is preemptible like any loop — a 40-element fold
+;; ADR-403: `fold` over a vector or a range is preemptible like any loop — a 40-element fold
 ;; whose reducer ran 10 ms used to be one quantum, because the whole walk was one native
 ;; call. The walk is these loops: each `%…-fold-span` folds up to `%fold-span` elements in a
 ;; native loop, ending a span early between two elements when the quantum owes a preemption;
@@ -402,7 +402,7 @@ fusing path, and `seq` calls it to coerce — use `seq` or `into` in your own co
     (fold coll x (first more))))
 
 ;; ---- arithmetic (variadic, built on the 2-arg primitives) ----
-;; Multi-arity (ADR-047): the 0/1/2-argument clauses bind their parameters
+;; Multi-arity (ADR-47): the 0/1/2-argument clauses bind their parameters
 ;; *directly* and call the primitive — no `& xs` rest-list, no `fold`, just one
 ;; env frame — so the overwhelmingly common 2-argument call (`(+ a b)`) is ~40×
 ;; cheaper than folding over a variadic rest-list. Only the 3+-argument fallback
@@ -504,7 +504,7 @@ something that CAN be ordered: `(< '(1 2))` raises rather than silently answerin
     (<= 1 2)     → true
     (<= 1 1 2)   → true    ; equal neighbours are allowed
     (<= 2 1)     → false"
-  ;; 2-arg body is a direct primitive call (a <= b) so the ADR-069 thin-wrapper
+  ;; 2-arg body is a direct primitive call (a <= b) so the ADR-69 thin-wrapper
   ;; elision reaches it — `(not (%lt b a))` would be a nested call it can't.
   ((a b) (%le a b))
   ((a) (do (%le a a) true))
@@ -541,9 +541,9 @@ inlines, while this wrapper stays a call — and it does not mislead past two ar
 ;; Three reasons this name is going away, none of them "it is redundant" alone:
 ;;   1. It buys a spelling. `(not= a b)` IS `(not (= a b))` — the body above says so — and
 ;;      nothing in the kernel, the compiler or the checker knows the name (no special form,
-;;      no primitive, no opcode, no guard). ADR-011's bar for a name is a capability.
+;;      no primitive, no opcode, no guard). ADR-11's bar for a name is a capability.
 ;;   2. It is SLOWER than what it abbreviates, and structurally so. `=`'s 2-arg body is a
-;;      direct primitive call, so ADR-069's thin-wrapper elision collapses `(= i 7)` to a
+;;      direct primitive call, so ADR-69's thin-wrapper elision collapses `(= i 7)` to a
 ;;      `Prim2Slot*`; `not`'s body is a leaf, so the leaf inliner splices it. `not=`'s body
 ;;      is a NESTED call — the exact shape the `<=` note above says the elision cannot reach,
 ;;      and not a leaf either — so it stays a boxed `Call` forever and the caller never gets
@@ -560,8 +560,8 @@ inlines, while this wrapper stays a call — and it does not mislead past two ar
 ;; These read like special forms but are ordinary macros over `if`/`do`/`let`.
 ;; The compile pass (macroexpand-all) expands them once, so they cost nothing at
 ;; runtime while the evaluator's core stays just `if`/`do`/`let`/`fn`/… — policy
-;; in Brood, mechanism in Rust (ADR-006/008). There is no `while`: data is
-;; immutable and there's no local mutation (ADR-026), so loops are recursion (TCO
+;; in Brood, mechanism in Rust (ADR-6/8). There is no `while`: data is
+;; immutable and there's no local mutation (ADR-26), so loops are recursion (TCO
 ;; keeps the stack O(1)) or processes.
 
 (defmacro when (test & body)
@@ -766,7 +766,7 @@ no-op; the marker is read only by the type checker (`nest check`)."
       (first xs)
       (let (g (gensym "or")) `(let (~g ~(first xs)) (if ~g ~g (or ~@(rest xs))))))))
 
-;; cond: flat test/expr pairs (ADR-004); a final `else` is the catch-all.
+;; cond: flat test/expr pairs (ADR-4); a final `else` is the catch-all.
 ;;
 ;; `else` needs the special case below: a bare symbol would otherwise be an unbound
 ;; reference. `:else` needs none — a keyword is self-evaluating and truthy — and is
@@ -805,7 +805,7 @@ no-op; the marker is read only by the type checker (`nest check`)."
 
 ;; ---- macro expansion --------------------------------------------------------
 ;; Fully expand `form`'s head macro by iterating the single-step `macroexpand-1`
-;; primitive to a fixpoint. Written in Brood, not Rust (ADR-064): the loop's state
+;; primitive to a fixpoint. Written in Brood, not Rust (ADR-64): the loop's state
 ;; is an env-bound local the evaluator already roots, so it can't strand a handle
 ;; across a GC safepoint the way a hand-rooted Rust loop could. `macroexpand-1` is
 ;; the irreducible single-shot primitive (one expansion, holding nothing across

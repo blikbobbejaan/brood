@@ -1,4 +1,4 @@
-//! Native preempt-unwind (ADR-400): how a reduction budget that runs out inside a chain of
+//! Native preempt-unwind (ADR-401): how a reduction budget that runs out inside a chain of
 //! native activations reaches the scheduler.
 //!
 //! The bytecode driver can only park a process whose whole stack is interpreter frames — a
@@ -125,10 +125,10 @@ pub(crate) fn jit_unwind_through(
         // then the frames already recorded could not be rebuilt by anyone.
         assert!(
             unwind,
-            "a preempt unwound out of an activation entered without `unwind` (ADR-400)"
+            "a preempt unwound out of an activation entered without `unwind` (ADR-401)"
         );
         let frame = callee(heap)
-            .expect("a native activation the preempt unwound through could not be named (ADR-400)");
+            .expect("a native activation the preempt unwound through could not be named (ADR-401)");
         record_unwound(frame);
         return true;
     }

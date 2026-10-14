@@ -42,7 +42,7 @@ pub const SYS_EXIT: &str = "exit";
 /// `[:system :deopt pid fn-name-or-nil]` — a JIT'd arm fell back to the VM.
 pub const SYS_DEOPT: &str = "deopt";
 /// `[:system :long-schedule pid {:us n}]` — a scheduling quantum ran past the subscriber's
-/// threshold (BEAM `long_schedule`, ADR-403).
+/// threshold (BEAM `long_schedule`, ADR-404).
 pub const SYS_LONG_SCHEDULE: &str = "long-schedule";
 
 // --- Exit / down reasons. ---

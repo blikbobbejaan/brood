@@ -369,7 +369,7 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
 /// which is the reason [`crate::jit::JitArmFn`] is a named type and this is a helper.
 ///
 /// It enters as a top-level driver does — `unwind` set, so a spent budget preempts
-/// (ADR-400). [`run_arm_nested`] enters as everything else does.
+/// (ADR-401). [`run_arm_nested`] enters as everything else does.
 #[cfg(feature = "jit")]
 fn run_arm(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize) -> (i64, Value) {
     run_arm_with(f, heap, base, 1)
@@ -768,7 +768,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     heap.push_root(Value::int(1_000_000));
     heap.push_root(Value::int(0));
     let (alone_outcome, alone_ret) = run_arm(f, &mut heap, base);
-    // The same loop entered where nothing can capture it (ADR-400): a preempt could only
+    // The same loop entered where nothing can capture it (ADR-401): a preempt could only
     // deopt into an interpreter that cannot capture either, so it keeps running native on a
     // fresh quantum and finishes — sum 0..1_000_000.
     crate::process::yield_now();
@@ -2770,7 +2770,7 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
     };
     // Stand in for the scheduler: a capture-mode run with a small budget, refilled on
     // every resume exactly as `run_one` does, and a process waiting for the worker (with
-    // none, a spent budget does not unwind — ADR-400).
+    // none, a spent budget does not unwind — ADR-401).
     crate::process::set_capture_run(true);
     crate::process::test_pretend_queued(1);
     crate::process::set_reduction_budget_for_test(300);

@@ -31,7 +31,7 @@ use crate::core::heap::{FastLink, Heap};
 // Debug builds trace each callback under `BROOD_JIT_CB_TRACE=1`
 // (`debug_flags::jit_callback_trace`).
 
-/// Preemption poll (ADR-027). JIT'd loop back-edges call this; returns nonzero when the
+/// Preemption poll (ADR-27). JIT'd loop back-edges call this; returns nonzero when the
 /// process should yield. Mirrors the VM's loop-top exactly: only a **capture-mode green
 /// process** is preemptible (`tick_capture` decrements the reduction budget and yields at
 /// zero); the root/eval thread (and any non-capture run) never preempts — it just keeps
@@ -43,7 +43,7 @@ use crate::core::heap::{FastLink, Heap};
 /// unwinding; `2` = leave for the VM: a limit is waiting to be RAISED — the soft memory
 /// ceiling (E0043), a per-process heap limit, a mailbox overflow, a hard kill — and native
 /// code cannot raise, so it deopts and the VM's own safepoint raises it (KI-156). Whether
-/// a spent budget preempts is `quantum::native_poll`'s decision (ADR-400/402).
+/// a spent budget preempts is `quantum::native_poll`'s decision (ADR-401/403).
 ///
 /// # Safety
 /// `heap` is a live heap; the limit peeks read it only. `ctx` is the running activation's
@@ -123,7 +123,7 @@ pub extern "C" fn brood_rt_in_capture(_heap: *mut Heap) -> u8 {
 
 /// GC safepoint check. JIT'd code calls this where the interpreter would collect (a
 /// loop top / before an allocation burst): collect if due and not inside the compile
-/// pass (mirrors the eval safepoint, ADR-061).
+/// pass (mirrors the eval safepoint, ADR-61).
 ///
 /// # Safety
 /// `heap` must be the live, pinned context pointer for the current JIT'd call, with no
@@ -899,7 +899,7 @@ pub unsafe extern "C" fn brood_rt_push_room(
 }
 
 /// An arm's error path, leaving while a call is in flight: `packed` is `(resume ip << 16) |
-/// operand depth`. For a preempt unwinding through (ADR-400), the room for those operands at
+/// operand depth`. For a preempt unwinding through (ADR-401), the room for those operands at
 /// the top of `roots`, which the caller fills at once; null for any other error. See
 /// [`crate::eval::compile::begin_in_call_journal`].
 ///

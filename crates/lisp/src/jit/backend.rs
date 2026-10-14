@@ -80,7 +80,7 @@ use crate::eval::compile::CompiledArm;
 /// (`scripts/jit-lower-witness.sh`, `tests/jit.rs`), a conformance suite it inherits rather
 /// than reinvents.
 /// Deliberately *only* the two lowering entry points: no `name()`, no capability query, no
-/// configuration hook. Each of those is a knob with no caller today, and per ADR-011 an
+/// configuration hook. Each of those is a knob with no caller today, and per ADR-11 an
 /// additive feature costs nothing to defer — whoever adds a second backend adds the ones
 /// that turn out to be needed, with their actual uses.
 /// The ABI of a JIT-compiled arm: `(heap, base, out) -> outcome`.
@@ -132,7 +132,7 @@ pub(crate) struct JitCallCtx {
     pub gateway: u64,
     /// The arm's name for diagnostics (`Heap::jit_dbg_fn`).
     pub dbg_fn: u32,
-    /// May THIS activation answer a spent reduction budget by preempting (ADR-400)? 1 only
+    /// May THIS activation answer a spent reduction budget by preempting (ADR-401)? 1 only
     /// when every activation between it and a top-level bytecode driver can be rebuilt as
     /// an interpreter frame: the driver entering native code sets it, and a native→native
     /// call passes on its caller's (unless `no_child_unwind`). Every other way in — a builtin calling
@@ -190,7 +190,7 @@ impl JitCallCtx {
     }
 
     /// May the activations a native arm calls through a runtime callback preempt by
-    /// unwinding (ADR-400)? Its own `unwind`, unless it cannot be rebuilt mid-call.
+    /// unwinding (ADR-401)? Its own `unwind`, unless it cannot be rebuilt mid-call.
     ///
     /// # Safety
     /// As [`JitCallCtx::assert_into`].

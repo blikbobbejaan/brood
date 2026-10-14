@@ -306,7 +306,7 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
                 module: *module,
             });
         }
-        // `TryEnter · body · TryExit · Jump end · handler: … · end:` (ADR-399). Both paths
+        // `TryEnter · body · TryExit · Jump end · handler: … · end:` (ADR-400). Both paths
         // leave exactly one value above the operand height `TryEnter` recorded: the body's
         // by falling through `TryExit`, the handler's after the driver truncated the stack
         // back to that height and stored the caught value in `bind_slot`.
@@ -333,7 +333,7 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
             };
             code[j_end] = Inst::Jump(end_ip);
         }
-        // `vals · BindEnter · body · BindExit` (ADR-401).
+        // `vals · BindEnter · body · BindExit` (ADR-402).
         Node::Binding { names, vals, body } => {
             emit_node(vals, code)?;
             code.push(Inst::BindEnter {

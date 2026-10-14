@@ -7,8 +7,8 @@
 //! continuation yields when the budget is spent. Code that cannot — a nested evaluation
 //! behind a builtin, a native activation that cannot unwind — runs on into a fresh budget,
 //! and the process OWES the scheduler a preemption that the next point that can capture
-//! pays (ADR-402). And the costly preemptions — unwinding a native stack into interpreter
-//! frames (ADR-400) — are paid only when some process is waiting for a worker: with none
+//! pays (ADR-403). And the costly preemptions — unwinding a native stack into interpreter
+//! frames (ADR-401) — are paid only when some process is waiting for a worker: with none
 //! queued, a preempted process would be re-queued and picked straight back up.
 
 use super::*;
@@ -18,7 +18,7 @@ thread_local! {
     /// runs on it at a time).
     static REDUCTIONS: Cell<u32> = const { Cell::new(0) };
     /// A preemption the process owes: a quantum ran out where nothing could yield, while a
-    /// process was waiting (ADR-402) — `OWED_FRESH`, or `OWED_STOPPED` once a native loop
+    /// process was waiting (ADR-403) — `OWED_FRESH`, or `OWED_STOPPED` once a native loop
     /// has stopped between elements to pay it ([`stop_between_elements`]).
     static OWED: Cell<u8> = const { Cell::new(OWED_NONE) };
 }
@@ -39,7 +39,7 @@ fn reduction_budget() -> u32 {
 }
 
 /// A quantum starts on this worker (`run_one`): a full budget, nothing owed, and the
-/// `:long-schedule` timer armed (ADR-403).
+/// `:long-schedule` timer armed (ADR-404).
 pub(crate) fn begin() {
     REDUCTIONS.with(|r| r.set(reduction_budget()));
     OWED.with(|o| o.set(OWED_NONE));
@@ -102,9 +102,9 @@ pub(crate) enum Safepoint {
 /// A driver's safepoint (the loop top, an inline loop's back edge) charges one reduction. When
 /// the budget is spent a driver that can capture yields — if a process is waiting for a
 /// worker; with none, a yield would re-queue the process and pick it straight back up, so it
-/// runs on into a fresh quantum, as native code does (ADR-400). A driver that cannot capture
+/// runs on into a fresh quantum, as native code does (ADR-401). A driver that cannot capture
 /// runs on and owes the preemption ([`refill_nested_quantum`]). And a driver that can capture
-/// pays a preemption owed by code that could not (ADR-402).
+/// pays a preemption owed by code that could not (ADR-403).
 #[inline]
 pub(crate) fn driver_safepoint(capture: bool) -> Safepoint {
     if tick_capture() {
@@ -147,7 +147,7 @@ fn take_owed() -> bool {
     OWED.with(|o| o.replace(OWED_NONE)) != OWED_NONE
 }
 
-/// Should a native loop that calls Brood per element — a fold's span (ADR-402) — stop before
+/// Should a native loop that calls Brood per element — a fold's span (ADR-403) — stop before
 /// its next element? Once per owed preemption: the loop returns, and the Brood walk around it
 /// yields at its back edge if it can capture. Where nothing can, the debt stays owed for the
 /// next point that can, and only a FRESH one stops the loop again — so a fold running nested
@@ -191,7 +191,7 @@ pub(crate) fn tick_reporting_hard_kill() -> bool {
 pub(crate) enum NativePoll {
     /// Keep running.
     Run,
-    /// Preempt by unwinding to the driver (ADR-400).
+    /// Preempt by unwinding to the driver (ADR-401).
     Preempt,
     /// Leave for the interpreter: a hard kill is pending, which only its safepoint raises.
     Leave,
@@ -240,7 +240,7 @@ pub(crate) fn native_poll(n: u32, unwind: bool) -> NativePoll {
 }
 
 /// Charge `n` reductions for work a native loop did without ticking — a fold's span of
-/// primitive steps (ADR-402). Nothing yields here: the next safepoint does, if this spent
+/// primitive steps (ADR-403). Nothing yields here: the next safepoint does, if this spent
 /// the budget.
 pub(crate) fn charge(n: u32) {
     REDUCTIONS.with(|r| r.set(r.get().saturating_sub(n)));

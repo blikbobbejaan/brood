@@ -124,7 +124,7 @@ fn retire_pid_tail(pid: u64, reason: Message) {
     for w in remote {
         monitor::fire_down(w, pid, reason.clone());
     }
-    // Links (ADR-067), after monitors and with no table lock held: notify every
+    // Links (ADR-67), after monitors and with no table lock held: notify every
     // linked peer — a trappable `[:EXIT pid reason]` if it traps, else an abnormal
     // reason propagates as a hard kill that cascades through *its* links. Mirrors
     // the sequential lock discipline above (never holds REGISTRY/MONITORS here).
@@ -343,7 +343,7 @@ fn spawn_impl_timed(
     let runtime = heap.runtime_arc();
     let mut child = Heap::with_regions(prelude, runtime);
     // The body, valid in the child: a closure that captures locals is copied into the
-    // child's own heap, code shared and captured values copied (ADR-404); anything else is
+    // child's own heap, code shared and captured values copied (ADR-405); anything else is
     // promoted into the shared RUNTIME region — a no-op for a top-level function.
     let f = crate::process::message::copy_closure_into(heap, f, &mut child)
         .unwrap_or_else(|| heap.promote(f));
@@ -392,7 +392,7 @@ fn spawn_impl_timed(
     // in the child heap (same `runtime` Arc).
     child.set_global(EnvId::GLOBAL);
 
-    // Package-rooted namespaces (ADR-070): the child inherits the spawner's package
+    // Package-rooted namespaces (ADR-70): the child inherits the spawner's package
     // context. "Which package is this code from?" is a property of the CODE, not of the
     // process running it — a worker spawned inside project `bedit` is still running
     // bedit's code, so its qualified intra-project references (`commands/cmd-open`) must
@@ -476,7 +476,7 @@ pub fn spawn_root_program(
     let runtime = heap.runtime_arc();
     let mut child = Heap::with_regions(prelude, runtime);
     child.set_global(EnvId::GLOBAL);
-    // Package-rooted namespaces (ADR-070): the program inherits the caller's package
+    // Package-rooted namespaces (ADR-70): the program inherits the caller's package
     // context, exactly as a spawned child does above. `nest run FILE` runs `project/setup`
     // (which installs the project's context) and then launches the file through here —
     // without this the file's `(:use model)` would load the project's module a second

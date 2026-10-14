@@ -237,7 +237,7 @@ fn wait_until_socket(path: &std::path::Path) {
 
 /// Two local nodes connect **by name** over a Unix-domain socket — no port, no
 /// explicit cookie. Proves the name-addressed transport + the auto-generated
-/// shared cookie file end-to-end (ADR-068): both children share one sandboxed
+/// shared cookie file end-to-end (ADR-68): both children share one sandboxed
 /// `$HOME`, so `(node/cookie)` mints the secret once and the second reads it back.
 #[test]
 fn two_unix_nodes_connect_by_name_and_message() {
@@ -262,7 +262,7 @@ fn two_unix_nodes_connect_by_name_and_message() {
 "#;
     let client = r#"
 (node/start :ub)
-;; connect returns the peer's authoritative name@host (ADR-073) — address by it.
+;; connect returns the peer's authoritative name@host (ADR-73) — address by it.
 (def peer (node/connect "ua"))
 (send {:name :echo :node peer} [:hi (self)])
 (def remote (receive ([:pong p] p) (after 30000 (throw "no reply by name"))))
@@ -342,7 +342,7 @@ fn wrong_cookie_rejected_over_unix() {
 }
 
 /// The cookie file is auto-generated once (mode `0600`) and reused: two runs in
-/// the same sandboxed `$HOME` print the *same* secret (ADR-068).
+/// the same sandboxed `$HOME` print the *same* secret (ADR-68).
 #[test]
 fn cookie_file_autogen_and_reuse() {
     use std::os::unix::fs::PermissionsExt;
@@ -377,7 +377,7 @@ fn cookie_file_autogen_and_reuse() {
     assert_eq!(mode, 0o600, "cookie file must be owner-only");
 }
 
-/// Cross-node closure shipping (ADR-033, the wire codec's `M_CLOSURE` path).
+/// Cross-node closure shipping (ADR-33, the wire codec's `M_CLOSURE` path).
 /// The client ships a `(fn (x) (* x n))` to a remote worker, with `n` a free
 /// local captured from the surrounding `let`. The worker applies it and sends
 /// the result back. Proves the full closure-as-data path end-to-end:
@@ -1232,7 +1232,7 @@ fn duplicate_connect_is_deduplicated() {
     );
 }
 
-/// **Cluster mesh (ADR-088): connecting to a shared hub transitively connects
+/// **Cluster mesh (ADR-88): connecting to a shared hub transitively connects
 /// the spokes.** Three nodes A, B, C; A and C each `connect` only to the hub B.
 /// Neither A nor C ever dials the other — yet A must end up linked to C (and
 /// vice versa), because B gossips its peer table and they auto-dial. This is the
@@ -1459,7 +1459,7 @@ fn node_down_is_detected() {
     );
 }
 
-/// Cross-node **links** (ADR-067): node B links a worker on node A and traps
+/// Cross-node **links** (ADR-67): node B links a worker on node A and traps
 /// exits; when the worker crashes, A propagates a `Frame::Exit` over the link and
 /// B receives `[:EXIT <remote-pid> [:error …]]`. Exercises `Frame::Link` (B→A,
 /// recording A's reverse half) + `Frame::Exit` (A→B, link death) + trap delivery
@@ -1520,7 +1520,7 @@ fn remote_link_death_delivers_exit_to_a_trapping_peer() {
     );
 }
 
-/// Cross-node **`(exit remote-pid :kill)`** (ADR-067): node B terminates a worker
+/// Cross-node **`(exit remote-pid :kill)`** (ADR-67): node B terminates a worker
 /// on node A directly. B also `monitor`s it, so the resulting death comes back as
 /// `[:down … :kill]`. Exercises the non-link `Frame::Exit` (B→A → `scheduler::exit`).
 #[test]
@@ -1571,7 +1571,7 @@ fn remote_exit_kills_a_worker() {
     );
 }
 
-/// End-to-end **cross-node supervision** (ADR-067, the #1 payoff): a supervisor on
+/// End-to-end **cross-node supervision** (ADR-67, the #1 payoff): a supervisor on
 /// node B supervises a worker on node A, and restarts it when it crashes — all
 /// over the distributed link. The supervisor (inlined here rather than using
 /// bundled `supervisor`) does a roundtrip
@@ -1642,7 +1642,7 @@ fn supervisor_restarts_a_remote_child() {
     );
 }
 
-/// Node names are qualified to `name@host` (ADR-073): a TCP node takes the host
+/// Node names are qualified to `name@host` (ADR-73): a TCP node takes the host
 /// from its listen address (so peers can derive the same name from the dial
 /// address), and pids print with that qualified node. Single process — no peer.
 #[test]
@@ -1669,7 +1669,7 @@ fn node_name_is_qualified_with_host() {
     );
 }
 
-/// `(node/spawn-sync node expr)` (ADR-067 residual) runs `expr` on a peer and
+/// `(node/spawn-sync node expr)` (ADR-67 residual) runs `expr` on a peer and
 /// **returns the child's pid** — a remote pid carrying the peer's `name@host`.
 /// Proves the request/reply roundtrip and that the returned pid is usable
 /// (the child messages back through a captured local).
@@ -1718,7 +1718,7 @@ fn remote_spawn_sync_returns_a_usable_remote_pid() {
     );
 }
 
-/// **Dual-listen** (ADR-074): one node serves *both* a TCP endpoint and a local
+/// **Dual-listen** (ADR-74): one node serves *both* a TCP endpoint and a local
 /// Unix socket via `node-also-listen`. A client reaches the same node — same
 /// authoritative `name@host`, same registered `:echo` — over each transport.
 /// Needs a shared `$HOME`/`$XDG_*` (for the cookie + the Unix socket dir) *and* a
@@ -2403,7 +2403,7 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
 (def peer (node/connect "b@127.0.0.1:{port_b}"))
 (send {{:name :ghost :node peer}} [:x])
 (send {{:name :ghost :node peer}} [:x])
-;; Address the LOCAL node by its authoritative `name@host` (ADR-073) — a bare `:a` is
+;; Address the LOCAL node by its authoritative `name@host` (ADR-73) — a bare `:a` is
 ;; not this node's name, so it would take the unknown-*node* path instead of the
 ;; unregistered-*name* path this half of the test is about.
 (send {{:name :localghost :node (node/name)}} [:x])
@@ -2412,7 +2412,7 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
 "#
     );
 
-    // KI-232: A's `node/connect` was once refused although `wait_until_listening` had just
+    // KI-239: A's `node/connect` was once refused although `wait_until_listening` had just
     // reached B's port. What B looked like once A finished tells the candidates apart — B
     // gone (`b_exited` set), B alive but no longer listening, or B listening (then the
     // refusal was a transient, or the probe reached something else on the port).
@@ -2448,7 +2448,7 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
     assert_eq!(
         inbound, 1,
         "B should warn exactly once for the repeated inbound send (dedup).\n\
-         --- after A finished: {b_state} (KI-232) ---\n\
+         --- after A finished: {b_state} (KI-239) ---\n\
          --- B stderr ---\n{b_err}\n--- A stderr ---\n{a_err}"
     );
     assert!(

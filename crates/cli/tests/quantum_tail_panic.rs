@@ -56,7 +56,7 @@ fn run(path: &std::path::Path, fault_at: Option<u32>) -> (String, String, bool) 
 
 /// Four long-running processes on fewer workers (`BROOD_J=1`), preempted many times
 /// because one is always waiting for a worker (a process alone is not preempted — nothing
-/// would run instead, ADR-400), monitored by a main process that then parks. Because main
+/// would run instead, ADR-401), monitored by a main process that then parks. Because main
 /// is parked it consumes almost no quanta, so an injected fault lands on a spinner — and
 /// main is released only by every spinner's `[:down …]`, which only a real retire can send
 /// for the struck one.

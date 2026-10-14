@@ -805,7 +805,7 @@ pub(crate) fn exec_chunk(
                                 }
                                 DirectNative::Unwound => {
                                     // The parked signal has done its job: the frames it
-                                    // passed are recorded (ADR-400).
+                                    // passed are recorded (ADR-401).
                                     let _ = jit_take_error(heap);
                                     return Ok(ChunkExit::Unwound { keep_current: true });
                                 }
@@ -894,7 +894,7 @@ pub(crate) fn exec_chunk(
                                 // Only a call whose callee was entered unwindable can see
                                 // one, and a call through `dispatch` never enters one so.
                                 Some(crate::error::Control::PreemptUnwind) => unreachable!(
-                                    "a native preempt-unwind reached a nested call (ADR-400)"
+                                    "a native preempt-unwind reached a nested call (ADR-401)"
                                 ),
                             };
                             return Ok(ChunkExit::Suspend { deadline });
@@ -970,7 +970,7 @@ pub(crate) fn exec_chunk(
                 for k in 0..*argc {
                     argv.push(heap.root_at(n - argc + k));
                 }
-                // Hot-reload guard (ADR-013). `SelfCall` is the zero-lookup loop back-edge:
+                // Hot-reload guard (ADR-13). `SelfCall` is the zero-lookup loop back-edge:
                 // it resets the frame and jumps to ip 0 without consulting the global at
                 // all, so without this guard a `def` of the very function a loop is running
                 // would never be observed — a long-lived `(defn serve (state) … (serve next))`
@@ -1130,7 +1130,7 @@ pub(crate) fn exec_chunk(
                 }
                 heap.push_root(closure);
             }
-            // Inline `try` (ADR-399): the body runs right here as ordinary bytecode, so
+            // Inline `try` (ADR-400): the body runs right here as ordinary bytecode, so
             // the driver's preemption, `receive` capture and native calls all reach it.
             // `TryEnter` only registers where to unwind to; the catch itself is the
             // driver's (`vm_run_bc`), which owns the frame stack an error unwinds.
@@ -1149,10 +1149,10 @@ pub(crate) fn exec_chunk(
                 let closed = heap.vm_handlers.pop();
                 debug_assert!(
                     closed.is_some_and(|h| h.base == base),
-                    "TryExit closed a handler this frame did not open (ADR-399): {closed:?} at base {base}"
+                    "TryExit closed a handler this frame did not open (ADR-400): {closed:?} at base {base}"
                 );
             }
-            // Inline `binding` (ADR-401): push the names for the body that follows. An error
+            // Inline `binding` (ADR-402): push the names for the body that follows. An error
             // that skips `BindExit` is restored by the driver, which truncates the dynamic
             // stack to what the catching `try` (or its own entry) recorded.
             Inst::BindEnter { names } => {

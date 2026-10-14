@@ -67,7 +67,7 @@ pub(super) fn emit_call(
     epoch_ptr: Option<Value>,
     tailcall: Block,
     // This call's ip, when the activation may be rebuilt mid-call: a non-tail call's error
-    // path then records the frame as paused at this call (ADR-400) before leaving.
+    // path then records the frame as paused at this call (ADR-401) before leaving.
     journal: Option<usize>,
     frame: Frame,
     funcs: Funcs,
@@ -216,7 +216,7 @@ pub(super) fn emit_call(
     // Non-tail: dispatch through the interpreter inline (a safepoint): result →
     // `out_slot`, status in a register.
     //
-    // The call's error exit (ADR-400). When this activation may be rebuilt mid-call, it is a
+    // The call's error exit (ADR-401). When this activation may be rebuilt mid-call, it is a
     // block of its own that first records the frame as paused AT this call — the ip after
     // it, and the operands beneath it (every handle among them was spilled to a slot above,
     // so each is a slot or a scalar), copied to the room `brood_rt_in_call_journal` reserves
@@ -341,7 +341,7 @@ pub(super) fn emit_call(
         b.ins().brif(ep_ok, chk_ident, &[], miss, &[]);
 
         // chk_ident: the slot must link the *same* callee this site calls. A call-site id
-        // reused across a `runtime_collect` table clear (ADR-096) can leave a slot
+        // reused across a `runtime_collect` table clear (ADR-96) can leave a slot
         // populated by a different arm for a different callee; the epoch guard alone
         // wouldn't catch it (same epoch). Match the slot's resolved `sym`/`argc` against
         // this site's baked `head`/`argc` — exactly the validation the IC probe paths do —
@@ -526,7 +526,7 @@ pub(super) fn emit_call(
                 b.ins().stack_store(pt, d1, ctx_slot, depth_o);
                 b.ins().stack_store(pt, gw, ctx_slot, gw_o);
                 b.ins().stack_store(pt, head_v, ctx_slot, dbg_o);
-                // ADR-400: the callee may preempt by unwinding iff this activation may and
+                // ADR-401: the callee may preempt by unwinding iff this activation may and
                 // can be rebuilt mid-call — which is what a journal here says. Its
                 // `no_child_unwind` starts at 0; only a self-spliced prologue sets it.
                 let unw_o = std::mem::offset_of!(JitCallCtx, unwind) as i32;
