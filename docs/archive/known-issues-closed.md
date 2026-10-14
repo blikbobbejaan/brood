@@ -13395,6 +13395,32 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-248 — a large allocation passed the hard limit when the snapshot had not seen an earlier large block ✅ FIXED 2026-10-14
+
+**Symptom.** `cli::memory_pressure::one_allocation_past_the_hard_limit_names_the_limit` failed
+under `BROOD_TIER=0` on every run that booted from the stdlib image and passed on a source
+boot: `(str quarter quarter quarter quarter quarter)` over a 100 MB string was built — 606 MB
+allocated against a 512 MiB hard limit — and the run ended with the soft limit's catchable
+error at the next `io/puts` instead of the hard limit's abort. Reproduced at `8539f335`. First
+filed as an imaged-boot difference at tier 0. **Cause.** The per-allocation hard-limit check
+read `APPROX_LIVE`, a snapshot refreshed every `PEAK_SAMPLE` (512) allocations a thread. Its
+comment's argument — "a single oversized allocation is still caught directly by its own size"
+— holds only when the snapshot already counts the earlier large blocks, and the lag is a count
+of allocations, not bytes: a source boot allocated enough after `quarter` to refresh it (the
+refusal read "on top of 66 MiB live"), an imaged boot did not, so `stale + 500 MB` passed. The
+same run at tier 2 showed the other face: a later 100 MB request refused "on top of 578 MiB
+live", the 500 MB string having gone through. **Why it survived.** The suite's tier-0 half
+usually source-boots this test (the first run after nextest's image rebuild), so `make
+test-both` read it green. **Fix.** `would_exceed_hard` judges an allocation of at least
+`LARGE_ALLOCATION` (64 KiB), or any the snapshot puts within the top eighth of the limit, by
+the exact shard sum, and leaves that sum in the snapshot so a refusal reports the true figure.
+No limit set is still one load; small allocations far from the limit still read the snapshot.
+The `memory_pressure` file: 12/12 across both tiers after (1 pass in 9 at tier 0 before).
+**Guard.** `core::alloc::tests::a_large_allocation_sees_the_large_blocks_the_snapshot_has_not`
+stages 100 MB the snapshot has not seen and asks for 500 MB under 512 MiB; sabotage (the
+snapshot-only body back) reds it with "500 MB on top of an unseen 100 MB passed a 512 MiB hard
+limit".
+
 ## KI-247 — a holder that had just died left the next safepoint to raise in a bystander ✅ FIXED 2026-10-14
 
 **Symptom.** `cli::memory_pressure::a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder`

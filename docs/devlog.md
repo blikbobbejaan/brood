@@ -17424,3 +17424,9 @@ source boot aborts on; the suite usually source-boots that test, which is why it
 Attributing these took one discipline worth repeating: a test needing a dev-tools primitive
 (`%gc-collect`) cannot be reproduced with a release binary at all — compare the baseline
 worktree's own test build, not a release-fast A/B.
+
+**KI-248, fixed the same night.** Not an imaged-boot or tier-0 bug at all: the hard-limit check
+read a live-bytes snapshot refreshed every 512 allocations a thread, and a 100 MB string made
+since the last refresh was invisible to it, so a 500 MB `str` on top passed a 512 MiB limit.
+The boot path only decided whether enough allocations happened afterwards to refresh it. A
+large (≥64 KiB) or near-limit allocation now checks the exact shard sum.
