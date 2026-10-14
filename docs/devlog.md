@@ -17325,7 +17325,9 @@ Four follow-ups to the merge.
   run at 2.655 s — its 2 s polling deadline plus setup — and passed 50/50 on demand (20 under
   full load). The reap of a dropped runtime's parked processes is asynchronous; the deadline is
   now 30 s, which a pass never waits for. `process_floor` also went red at `ae4e69a3`: the
-  other line's KI-246 hash memo, fixed by its own `d6c3db0a` (8 bytes a process, not 72).
+  other line's KI-246 hash memo, fixed by its own `d6c3db0a` (8 bytes a process, not 72) — which
+  left the figure at 4 020–4 021 against a 4 020 bound, two 8 B memo pointers on top of 3 996. The
+  bound is 4 040, with the sentence the file asks for.
 - **The renumbering commit stripped zero-padding** (`a279e76c`): its regex re-printed every
   matched number as an integer, so `ADR-073` became `ADR-73` in the 53 files it touched — 1 254
   lines, already pushed. The check that commit ran normalised numbers before comparing, so it

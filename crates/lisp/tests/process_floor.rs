@@ -22,10 +22,14 @@
 //! value from native code — and buys ~240 instructions on every such call. Measured 3 976–3 985
 //! before it, 3 995–3 996 after, which left 4 B under the old bound against ~9 B of run-to-run
 //! jitter.
+//!
+//! Raised 4 020 → 4 040 (2026-10-14): KI-246's hash memo (`Heap::hash_memo`, a lazily boxed
+//! `OnceCell`) is a second 8 B pointer, and it buys nested-set hashing in linear time.
+//! Measured 4 020–4 021 with both memos, which left no headroom against the jitter above.
 
 use brood::Interp;
 
-const FLOOR_BYTES: i64 = 4020;
+const FLOOR_BYTES: i64 = 4040;
 
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {
