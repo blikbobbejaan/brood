@@ -45,6 +45,11 @@ static TIMERS: LazyLock<(Mutex<TimerQueue>, Condvar)> =
 #[cfg(not(target_arch = "wasm32"))]
 static TIMER_STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Whether a refused timer thread has been reported. Every `arm_timer` retries, and under
+/// a thread limit that is every timeout armed: one line says it, not one per retry.
+#[cfg(not(target_arch = "wasm32"))]
+static TIMER_REFUSAL_REPORTED: AtomicBool = AtomicBool::new(false);
+
 /// How many timer threads have actually entered [`timer_loop`] — what lets a test tell
 /// "the flag is set" from "a thread is really running".
 #[cfg(not(target_arch = "wasm32"))]
@@ -209,9 +214,11 @@ fn ensure_timer_thread() {
         // Release the claim so the next `arm_timer` tries again — the whole point of not
         // using a `Once` here. Queued deadlines are not lost, only late.
         TIMER_STARTED.store(false, Ordering::Release);
-        eprintln!(
-            "brood: cannot start the timer thread ({e}); timeouts are delayed until one starts"
-        );
+        if !TIMER_REFUSAL_REPORTED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "brood: cannot start the timer thread ({e}); timeouts are delayed until one starts"
+            );
+        }
     }
 }
 

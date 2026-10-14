@@ -266,6 +266,13 @@
       (table/put t :v v)
       (assert= (table/get t :v) v)))
 
+  (test "a dotted list round-trips as a value and as a key"
+    (let (t (table/new) v '(1 (2 . 3) . 4))
+      (table/put t :v v)
+      (assert= (table/get t :v) v)
+      (table/put t v :found)
+      (assert= (table/get t '(1 (2 . 3) . 4)) :found)))
+
   (test "a table handle can be stored as a value in another table"
     (let (outer (table/new) inner (table/new))
       (table/put inner :x 7)

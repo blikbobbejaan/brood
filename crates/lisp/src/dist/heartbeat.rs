@@ -10,9 +10,9 @@
 
 use std::io;
 use std::net::Shutdown;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::wire::{encode_payload, Frame};
@@ -29,20 +29,36 @@ pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 /// dropped probe doesn't flap a healthy link.
 const DOWN_AFTER: Duration = Duration::from_secs(6);
 
-static HEARTBEAT_STARTED: Once = Once::new();
+static HEARTBEAT_STARTED: AtomicBool = AtomicBool::new(false);
 
-/// Start the single shared heartbeat thread once, on the first established
-/// link. `establish` calls this; subsequent calls are no-ops via [`Once`].
+/// Start the single shared heartbeat thread, on the first established link. `establish`
+/// calls this for every link; once the thread runs, the calls are no-ops.
+///
+/// Not a `Once`: the OS can refuse the thread (`EAGAIN` under a thread or task limit), and
+/// a panic inside `call_once` would poison it, failing every later link. A refusal
+/// releases the claim instead, so the next link tries again.
 pub(super) fn ensure_heartbeat() {
-    HEARTBEAT_STARTED.call_once(|| {
+    if HEARTBEAT_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    let started = std::thread::Builder::new()
+        .name("dist-heartbeat".into())
         // Re-spawn on panic so a single bad iteration doesn't silently stop
         // liveness detection for the rest of the process lifetime.
-        std::thread::spawn(|| loop {
+        .spawn(|| loop {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(heartbeat_loop));
             eprintln!("dist: heartbeat thread panicked; restarting");
             std::thread::sleep(HEARTBEAT_INTERVAL);
         });
-    });
+    if let Err(error) = started {
+        HEARTBEAT_STARTED.store(false, Ordering::Release);
+        eprintln!(
+            "dist: cannot start the heartbeat thread ({error}); a dead peer goes unnoticed until the next link starts one"
+        );
+    }
 }
 
 /// On each tick, inspect every link. Three tiers by silence duration:

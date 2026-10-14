@@ -188,8 +188,10 @@ const MAX_GOSSIP_PEERS: usize = 4096;
 /// sender's incarnation to `Hello` (and folds it into the `Auth` MAC), so a
 /// restarted peer's new link replaces its predecessor's instead of being refused as
 /// a duplicate — a v8 peer would fail the handshake on the trailing bytes, so the
+/// byte bumps; **v10** adds `M_DOTTED`, an improper list (KI-240) — to a v9 peer the
+/// new tag is a decode error that tears the link down on the first one sent, so the
 /// byte bumps.
-pub(super) const PROTOCOL_MAGIC: [u8; 4] = *b"BRD\x09";
+pub(super) const PROTOCOL_MAGIC: [u8; 4] = *b"BRD\x0a";
 pub(super) const NONCE_LEN: usize = 32;
 pub(super) const MAC_LEN: usize = 32;
 /// Length of an X25519 public key (the ephemeral DH key in `Hello`, ADR-089).
@@ -504,12 +506,15 @@ const M_NATIVE: u8 = 18;
 const M_BYTES: u8 = 19;
 /// A failure value — its fields, encoded exactly like `M_MAP`'s entries.
 const M_FAILURE: u8 = 20;
+/// An improper list ([`Message::Dotted`]): a count, then the items with the tail last.
+const M_DOTTED: u8 = 21;
 
 pub(crate) fn encode_msg(w: &mut Vec<u8>, m: &Message) -> io::Result<()> {
     // A container step grows the native stack when it is near its end (see
     // `process::grow`): a message is nested as deep as the sender built it.
     match m {
         Message::List(..)
+        | Message::Dotted(..)
         | Message::Vector(..)
         | Message::Map(..)
         | Message::Failure(..)
@@ -586,6 +591,13 @@ fn encode_msg_inner(w: &mut Vec<u8>, m: &Message) -> io::Result<()> {
             // expect it can stop early on the count, but every encoder/decoder
             // pair after this revision writes it. See `Message::List`'s docs.
             put_opt_pos(w, *pos);
+        }
+        Message::Dotted(items) => {
+            w.push(M_DOTTED);
+            put_u32(w, items.len() as u32);
+            for it in items {
+                encode_msg(w, it)?;
+            }
         }
         Message::Vector(items) => {
             w.push(M_VECTOR);
@@ -779,6 +791,20 @@ fn decode_msg_at_inner(r: &mut Cursor<Vec<u8>>, depth: u32) -> io::Result<Messag
             }
             let pos = get_opt_pos(r)?;
             Message::List(items, pos)
+        }
+        M_DOTTED => {
+            let n = get_u32(r)? as usize;
+            if n < 2 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("a dotted list needs an item and a tail, got {n} elements"),
+                ));
+            }
+            let mut items = Vec::with_capacity(prealloc(r, n));
+            for _ in 0..n {
+                items.push(decode_msg_at(r, depth + 1)?);
+            }
+            Message::Dotted(items)
         }
         M_VECTOR => {
             let n = get_u32(r)? as usize;

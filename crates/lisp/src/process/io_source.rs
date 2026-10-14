@@ -9,8 +9,9 @@
 //!
 //! This module is the one reusable seam for that pattern. A blocking source
 //! (`crate::host::net` sockets today; `gui`/`dist`/terminal input are slated to migrate
-//! onto it) calls [`spawn_io_source`] with the subscriber process and a body that
-//! reads its resource and `emit`s [`Message`]s. `Message` is a plain enum and
+//! onto it) reserves a thread ([`reserve_io_thread`]) and runs on it
+//! ([`IoThread::run_source`]) a body that reads its resource and `emit`s [`Message`]s
+//! to the subscriber process. `Message` is a plain enum and
 //! symbols are a global interner, so the body builds messages off-heap without
 //! touching any process's `Heap`.
 
@@ -56,20 +57,48 @@ pub fn sink_pair(subscriber: u64) -> (MailboxSink, Arc<AtomicU64>) {
     )
 }
 
-/// Run `body` on a fresh non-worker OS thread named `name`; it reads some blocking
-/// resource and `emit`s messages to `subscriber`'s mailbox until it returns. The
-/// spawned thread owns whatever it blocks on.
+/// A non-worker OS thread started ahead of its work, waiting for it.
 ///
-/// This is the thread-per-resource shape of the ADR-059 pattern (subprocess
-/// pipes); sockets ride the net reactor's single thread instead (ADR-143) via
-/// [`sink_pair`].
-pub fn spawn_io_source<F>(subscriber: u64, name: &str, body: F)
-where
-    F: FnOnce(&MailboxSink) + Send + 'static,
-{
-    let (sink, _cell) = sink_pair(subscriber);
+/// The OS can refuse a thread (`EAGAIN` under a thread or task limit). A caller that needs
+/// several — a child process's pipe readers and waiter — reserves them all before it
+/// commits to anything that would need undoing, so a refusal is an error it returns, never
+/// a child left running with no thread to reap it. Dropping an unused reservation ends its
+/// thread.
+pub struct IoThread {
+    work: std::sync::mpsc::SyncSender<Box<dyn FnOnce() + Send>>,
+}
+
+/// Start an [`IoThread`] named `name`, or say why the OS would not.
+pub fn reserve_io_thread(name: &str) -> std::io::Result<IoThread> {
+    let (work, waiting) = std::sync::mpsc::sync_channel::<Box<dyn FnOnce() + Send>>(1);
     std::thread::Builder::new()
         .name(name.to_string())
-        .spawn(move || body(&sink))
-        .expect("spawn blocking-io source thread");
+        .spawn(move || {
+            if let Ok(job) = waiting.recv() {
+                job()
+            }
+        })?;
+    Ok(IoThread { work })
+}
+
+impl IoThread {
+    /// Run `job` on this thread.
+    pub fn run(self, job: impl FnOnce() + Send + 'static) {
+        // The thread waits on the channel until this send or the drop, so it cannot fail.
+        let _ = self.work.send(Box::new(job));
+    }
+
+    /// Run `body` as a blocking source: it reads some resource and `emit`s messages to
+    /// `subscriber`'s mailbox until it returns, owning whatever it blocks on.
+    ///
+    /// This is the thread-per-resource shape of the ADR-059 pattern (subprocess
+    /// pipes); sockets ride the net reactor's single thread instead (ADR-143) via
+    /// [`sink_pair`].
+    pub fn run_source<F>(self, subscriber: u64, body: F)
+    where
+        F: FnOnce(&MailboxSink) + Send + 'static,
+    {
+        let (sink, _cell) = sink_pair(subscriber);
+        self.run(move || body(&sink));
+    }
 }

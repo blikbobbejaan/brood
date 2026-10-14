@@ -66,34 +66,61 @@ struct OffloadJob {
 static OFFLOAD_TOKEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
 
 /// The pool: a few OS threads sharing one job queue (dirty work is the
-/// exception, not the load — BEAM's dirty schedulers are similarly few).
+/// exception, not the load — the pool is deliberately small).
 /// Workers block on the shared receiver; the mutex is held only across the
 /// dequeue, so jobs run concurrently.
-fn offload_pool() -> &'static std::sync::Mutex<std::sync::mpsc::Sender<OffloadJob>> {
+struct OffloadPool {
+    jobs: std::sync::Mutex<std::sync::mpsc::Sender<OffloadJob>>,
+    queue: std::sync::Arc<std::sync::Mutex<std::sync::mpsc::Receiver<OffloadJob>>>,
+    /// Workers started so far. The OS can refuse a thread (`EAGAIN` under a thread or
+    /// task limit), so the pool fills up lazily: each job tops it up toward `target`.
+    workers: std::sync::Mutex<usize>,
+    target: usize,
+}
+
+fn offload_pool() -> &'static OffloadPool {
     use std::sync::{mpsc, Arc, Mutex, OnceLock};
-    static POOL: OnceLock<Mutex<mpsc::Sender<OffloadJob>>> = OnceLock::new();
+    static POOL: OnceLock<OffloadPool> = OnceLock::new();
     POOL.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<OffloadJob>();
-        let rx = Arc::new(Mutex::new(rx));
-        let n = std::thread::available_parallelism()
+        let (jobs, queue) = mpsc::channel::<OffloadJob>();
+        let parallelism = std::thread::available_parallelism()
             .map(|p| p.get())
             .unwrap_or(4);
-        let workers = (n / 4).max(2);
-        for i in 0..workers {
-            let rx = Arc::clone(&rx);
-            std::thread::Builder::new()
-                .name(format!("brood-offload-{i}"))
+        OffloadPool {
+            jobs: Mutex::new(jobs),
+            queue: Arc::new(Mutex::new(queue)),
+            workers: Mutex::new(0),
+            target: (parallelism / 4).max(2),
+        }
+    })
+}
+
+impl OffloadPool {
+    /// Start workers up to the target. `Err` only when the pool has none at all — then a
+    /// queued job would wait forever, so the caller must not queue it.
+    fn ensure_workers(&self) -> Result<(), std::io::Error> {
+        let mut workers = crate::core::sync::lock(&self.workers);
+        while *workers < self.target {
+            let queue = std::sync::Arc::clone(&self.queue);
+            let started = std::thread::Builder::new()
+                .name(format!("brood-offload-{}", *workers))
                 .spawn(move || loop {
-                    let job = rx.lock().expect("offload queue").recv();
+                    let job = crate::core::sync::lock(&queue).recv();
                     match job {
                         Ok(j) => run_offload_job(j),
                         Err(_) => break,
                     }
-                })
-                .expect("spawn offload worker");
+                });
+            match started {
+                Ok(_) => *workers += 1,
+                Err(error) if *workers == 0 => return Err(error),
+                // Fewer workers than the target still run every job; the next job
+                // tries again.
+                Err(_) => break,
+            }
         }
-        Mutex::new(tx)
-    })
+        Ok(())
+    }
 }
 
 /// Run one job on a pool thread: rebuild the args in a private scratch heap,
@@ -192,6 +219,13 @@ pub(super) fn offload_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     for v in call_args {
         msgs.push(crate::process::to_message(heap, v)?);
     }
+    let pool = offload_pool();
+    pool.ensure_workers().map_err(|error| {
+        LispError::runtime(format!(
+            "%offload: cannot start an offload thread: {error}"
+        ))
+        .with_hint("the operating system refused a new thread; a thread or task limit (ulimit -u, a container's pids limit) is reached")
+    })?;
     let token = OFFLOAD_TOKEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (sink, _cell) = crate::process::sink_pair(crate::process::self_pid());
     let job = OffloadJob {
@@ -200,6 +234,6 @@ pub(super) fn offload_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         sink,
         token,
     };
-    let _ = offload_pool().lock().expect("offload queue").send(job);
+    let _ = crate::core::sync::lock(&pool.jobs).send(job);
     Ok(Value::Int(token))
 }

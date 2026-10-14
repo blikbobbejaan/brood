@@ -25601,3 +25601,41 @@ or native buffers; stopping a process would free nothing attributable).
 - Near the limit, each process walks its slab entries every 50 ms: O(entries) per period,
   only while live memory is within an eighth of the limit. With no limit set, the check is
   one load of a zero, as before.
+
+## ADR-407 — A container's memory cap sets the default limits; a large allocation ends the quantum
+
+**Status:** implemented (2026-10-14). Amends ADR-043 and ADR-399. KI-242, KI-243.
+
+**Context.** `brood` and `nest run` set no memory limit unless `BROOD_MEM_LIMIT` is given.
+In a container with a memory cap, a runaway then ends in the kernel's out-of-memory kill:
+exit 137, nothing printed, every process gone. ADR-399 made the soft limit safe to default
+(it stops the holder, not a bystander), which left the question of the number. Separately,
+two gaps let a runaway reach the hard limit anyway: a loop allocating a megabyte an
+iteration covered the soft limit's headroom inside one quantum (KI-242), and a victim stuck
+in a native call kept the selector from stopping anyone else (KI-243).
+
+**Decision.**
+- With neither `BROOD_MEM_LIMIT` nor `BROOD_MEM_SOFT_LIMIT` set, a process in a
+  memory-capped cgroup takes a hard limit of three quarters of the tightest `memory.max` on
+  its cgroup path (v1: `memory.limit_in_bytes`), and a soft limit of three quarters of that.
+  The test runners take the lower of their 3 GiB default and this. Outside a capped
+  container nothing changes. `BROOD_MEM_LIMIT=0` turns the limits off.
+- Three quarters, not seven eighths: the container counts resident memory, the allocator
+  counts live bytes, and the difference — pages the allocator keeps after a free, stacks,
+  mapped code — measured about 1.45× live for a leak making garbage as it grew. Under a
+  600 MB cap a hard limit an eighth below was killed before the soft limit tripped; at three
+  quarters, caps of 600 MB, 1 GB and 2 GB each ended the same leak with `E0043`.
+- An allocation of 64 KiB or more over the soft limit ends the allocating thread's quantum,
+  so the once-per-quantum check runs at the next tick; within the last eighth, once per 1/64
+  of the limit, so a fast allocator measures itself for the selector. A native arm learns of
+  it through a thread-local flag read when a builtin call returns.
+- A victim not gone 250 ms after it was stopped is skipped by the next selection.
+
+**Consequences.**
+- A runaway in a capped container stops with `E0043` naming the process, and the rest of the
+  runtime survives; a supervisor can restart it.
+- A program that legitimately needs more than three quarters of its container's cap must set
+  `BROOD_MEM_LIMIT` (or `0`).
+- Near the soft limit, a process making large allocations yields at most once per 1/64 of the
+  limit allocated; with no soft limit set the hook is one comparison of the allocation size.
+- The cap is read once, at startup. A container resized while running keeps the old limits.

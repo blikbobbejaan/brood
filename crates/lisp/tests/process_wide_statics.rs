@@ -59,11 +59,12 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("host/net.rs", "REGISTRY", ProcessUniqueKeys),
     ("host/subprocess.rs", "REGISTRY", ProcessUniqueKeys),
     ("host/wasm.rs", "REGISTRY", ProcessUniqueKeys),
-    // The scheduler, timer, offload pool and stdin are one per machine; sysmon observes them.
+    // The scheduler, timer and stdin are one per machine; sysmon observes them.
     ("process/timer.rs", "TIMERS", OneMachine),
     ("process/sysmon.rs", "MONITORS", OneMachine),
-    ("builtins/offload.rs", "POOL", OneMachine),
     ("builtins/io.rs", "STDIN_READER", OneMachine),
+    // The net reactor multiplexes every socket in the OS process on one thread.
+    ("host/net.rs", "STARTING", OneMachine),
     ("builtins/filesystem.rs", "LOCK", OneMachine),
     // The allocator's count, and so the soft memory limit, is the OS process's.
     ("process/pressure.rs", "PRESSURE", OneMachine),

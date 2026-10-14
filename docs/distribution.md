@@ -138,8 +138,8 @@ Silence it with `BROOD_NO_DROP_WARN=1`.
 `TcpListener` for `host:port` — and runs an acceptor thread; `connect` dials the
 matching carrier. A single `Stream { Tcp | Unix }` enum (ADR-068) carries the
 link, so everything below is transport-agnostic. Both ends perform the
-authenticated handshake (ADR-034 v2; wire **v9**, ADR-089): a 4-byte
-magic+version prefix (`b"BRD\x09"`), then a `Hello { node, nonce, eph_pub, addr,
+authenticated handshake (ADR-034 v2; wire **v10**, ADR-089): a 4-byte
+magic+version prefix (`b"BRD\x0a"`), then a `Hello { node, nonce, eph_pub, addr,
 incarnation }` exchange (each side a fresh 32-byte nonce, a fresh **ephemeral X25519
 pubkey**, the address peers should dial it at, and its **incarnation** — a random id the
 runtime process mints once, so a peer can tell a restart from a duplicate link; it is

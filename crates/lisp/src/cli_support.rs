@@ -336,7 +336,14 @@ where
         .name(name.to_string())
         .stack_size(crate::process::WORKER_STACK_BYTES)
         .spawn(f)
-        .unwrap_or_else(|e| panic!("spawn {name} thread: {e}"));
+        .unwrap_or_else(|error| {
+            // Nothing has run yet, so there is nothing to report but the cause.
+            eprintln!(
+                "brood: cannot start the {name} thread ({error}); {}",
+                crate::process::THREAD_LIMIT_HINT
+            );
+            std::process::exit(1)
+        });
     // Not a plain `join`, because the thread we are standing on is a resource: macOS will
     // only run an AppKit event loop on the process MAIN thread, and winit has no escape
     // hatch there the way Wayland/X11 do (KI-125). Since the runtime already lives on the

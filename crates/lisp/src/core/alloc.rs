@@ -23,7 +23,8 @@
 //!
 //! - **Hard limit** ([`set_hard_limit`]): enforced *here*, in `alloc`/`realloc`.
 //!   An allocation that would cross it returns null, so Rust's OOM handler aborts
-//!   the whole brood process. Ungraceful (kills every green process) but it is
+//!   the whole brood process, after one stderr line naming the limit
+//!   (`report_hard_limit`). Ungraceful (kills every green process) but it is
 //!   the backstop that guarantees the *host* survives any allocation pattern,
 //!   including a single huge allocation between eval safepoints.
 //! - **Soft limit** ([`soft_limit_state`]): *not* enforced here — checked at the
@@ -34,9 +35,10 @@
 //!   giant allocation is the only case that reaches the hard limit.
 //!
 //! Normal `brood file.blsp` runs and the REPL stay unlimited unless
-//! `BROOD_MEM_LIMIT` is set ([`init_limits_from_env`]); the test runners default
-//! both on ([`init_limits_with_default`]) so an adversarial test can't take the
-//! machine down.
+//! `BROOD_MEM_LIMIT` is set ([`init_limits_from_env`]) or they run in a
+//! memory-capped container, whose cap sets both ([`container_memory_cap`]); the
+//! test runners default both on ([`init_limits_with_default`]) so an adversarial
+//! test can't take the machine down.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::cell::Cell;
@@ -160,16 +162,127 @@ fn would_exceed_hard(size: usize) -> bool {
     limit != 0 && APPROX_LIVE.load(Ordering::Relaxed).saturating_add(size) > limit
 }
 
+/// An allocation at least this large checks the soft limit itself.
+const LARGE_ALLOCATION: usize = 64 * 1024;
+
+thread_local! {
+    /// Large-allocation bytes this thread may still make near the soft limit before its
+    /// quantum is ended again. A `const` thread-local with no destructor, so the allocator
+    /// may touch it.
+    static NEAR_ALLOWANCE: Cell<usize> = const { Cell::new(0) };
+    /// Set with every quantum ended here; taken by a JIT'd arm's builtin call
+    /// ([`take_soft_attention`]), which polls its reductions from a register every 128
+    /// iterations and so never sees the ended quantum in time.
+    static SOFT_ATTENTION: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Did a large allocation on this thread end its quantum for the soft limit since the last
+/// call? One thread-local read; clears it.
+#[inline]
+pub fn take_soft_attention() -> bool {
+    // Read first: this runs on every builtin call from native code, and is almost always
+    // false, so the common case stores nothing.
+    SOFT_ATTENTION.with(|attention| attention.get() && attention.replace(false))
+}
+
+/// End this thread's quantum for the soft limit, and flag it for a JIT'd caller.
+fn soft_limit_attention() {
+    SOFT_ATTENTION.with(|attention| attention.set(true));
+    crate::process::expire_quantum();
+}
+
+/// A large allocation of `size` bytes just landed. Over the soft limit, end this thread's
+/// quantum, so the once-per-quantum safepoint check runs at the next reduction tick:
+/// without it, a loop allocating a megabyte an iteration covers hundreds of megabytes
+/// inside one quantum and reaches the hard limit — an abort — before the soft limit is
+/// ever checked. Within the last eighth, do the same once per 1/64 of the limit, so a fast
+/// allocator measures itself on the way up and the choice of whom to stop at the crossing
+/// sees it (`process/pressure.rs`). Sums the shards (exact, not the lagging snapshot);
+/// only large allocations pay, and only while a soft limit is set.
+#[cold]
+fn large_allocation_made(size: usize) {
+    let soft = SOFT_LIMIT.load(Ordering::Relaxed);
+    if soft == 0 {
+        return;
+    }
+    let live = live_bytes();
+    if live > soft {
+        soft_limit_attention();
+    } else if live > soft - soft / 8 {
+        NEAR_ALLOWANCE.with(|allowance| {
+            if allowance.get() <= size {
+                allowance.set(soft / 64);
+                soft_limit_attention();
+            } else {
+                allowance.set(allowance.get() - size);
+            }
+        });
+    }
+}
+
+/// Say why the process is about to abort, once. Rust's handler for the null that follows
+/// prints only `memory allocation of N bytes failed`, which names neither the limit nor
+/// that one was set. This runs inside the allocator, so it must not allocate: the line is
+/// formatted into a stack buffer and written straight to the stderr descriptor.
+#[cold]
+fn report_hard_limit(size: usize) {
+    use std::fmt::Write;
+    static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if REPORTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    struct StackLine {
+        bytes: [u8; 400],
+        len: usize,
+    }
+    impl Write for StackLine {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            let room = self.bytes.len() - self.len;
+            let taken = text.len().min(room);
+            self.bytes[self.len..self.len + taken].copy_from_slice(&text.as_bytes()[..taken]);
+            self.len += taken;
+            Ok(())
+        }
+    }
+    let mut line = StackLine {
+        bytes: [0; 400],
+        len: 0,
+    };
+    let limit = HARD_LIMIT.load(Ordering::Relaxed);
+    let cause = if size >= limit / 16 {
+        "one value this large is being built in a single step"
+    } else {
+        "memory grew faster than the soft limit could stop it"
+    };
+    let _ = writeln!(
+        line,
+        "brood: hard memory limit reached ({} MiB, BROOD_MEM_LIMIT): an allocation of {} KiB \
+         on top of {} MiB live was refused, and the runtime aborts; {cause}.",
+        limit >> 20,
+        size >> 10,
+        APPROX_LIVE.load(Ordering::Relaxed) >> 20,
+    );
+    #[cfg(unix)]
+    // SAFETY: writes initialised bytes from a live stack buffer to the stderr descriptor.
+    unsafe {
+        libc::write(2, line.bytes.as_ptr().cast(), line.len);
+    }
+}
+
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if would_exceed_hard(layout.size()) {
             // Null tells Rust the allocation failed; the default handler then
             // aborts the process. The host survives; the brood process doesn't.
+            report_hard_limit(layout.size());
             return std::ptr::null_mut();
         }
         let ptr = BACKEND.alloc(layout);
         if !ptr.is_null() {
             record_alloc(layout.size());
+            if layout.size() >= LARGE_ALLOCATION {
+                large_allocation_made(layout.size());
+            }
         }
         ptr
     }
@@ -182,6 +295,7 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         // Only a *growth* can cross the limit; a shrink is always allowed.
         if new_size > layout.size() && would_exceed_hard(new_size - layout.size()) {
+            report_hard_limit(new_size - layout.size());
             return std::ptr::null_mut();
         }
         let new_ptr = BACKEND.realloc(ptr, layout, new_size);
@@ -189,6 +303,9 @@ unsafe impl GlobalAlloc for Counting {
             let old = layout.size();
             if new_size >= old {
                 record_alloc(new_size - old);
+                if new_size - old >= LARGE_ALLOCATION {
+                    large_allocation_made(new_size - old);
+                }
             } else {
                 record_dealloc(old - new_size);
             }
@@ -245,27 +362,10 @@ pub fn set_hard_limit(bytes: usize) {
     HARD_LIMIT.store(bytes, Ordering::Relaxed);
 }
 
-/// Set the soft ceiling (`0` disables). Polled at the eval safepoint via
-/// [`soft_limit_hit`], which raises a catchable `LispError`.
+/// Set the soft ceiling (`0` disables). Polled at the safepoints via
+/// [`soft_limit_state`]; crossing it raises a catchable `LispError`.
 pub fn set_soft_limit(bytes: usize) {
     SOFT_LIMIT.store(bytes, Ordering::Relaxed);
-}
-
-/// `Some(live_bytes)` when the soft ceiling is set and currently exceeded, else
-/// `None`. The eval safepoint calls this and, on `Some`, returns an `E0043`
-/// error. Cheap when disabled: one relaxed load of a zero, early `None`.
-#[inline]
-pub fn soft_limit_hit() -> Option<usize> {
-    let limit = SOFT_LIMIT.load(Ordering::Relaxed);
-    if limit == 0 {
-        return None;
-    }
-    let live = live_bytes();
-    if live > limit {
-        Some(live)
-    } else {
-        None
-    }
 }
 
 /// Where live memory stands against the soft ceiling, for the eval safepoint.
@@ -279,8 +379,9 @@ pub enum SoftLimit {
     Over(usize),
 }
 
-/// [`soft_limit_hit`] with the approach reported too. Cheap when no ceiling is set: one
-/// relaxed load of a zero.
+/// Whether the soft ceiling is crossed (with the live byte count) or approached — the
+/// safepoints' probe. Cheap when no ceiling is set: one relaxed load of a zero; otherwise
+/// it sums the shards.
 #[inline]
 pub fn soft_limit_state() -> SoftLimit {
     let limit = SOFT_LIMIT.load(Ordering::Relaxed);
@@ -335,11 +436,11 @@ pub fn parse_size(s: &str) -> Option<usize> {
 }
 
 /// Read `BROOD_MEM_LIMIT` (hard) and `BROOD_MEM_SOFT_LIMIT` (soft) from the env
-/// and apply them; absent vars leave the corresponding limit untouched. When
-/// only the hard limit is given, the soft limit is derived as 3/4 of it (so the
-/// graceful path fires first). A malformed value is warned about and ignored.
-/// Called by every entry point — for plain runs / the REPL this is the *only*
-/// way a limit gets set, so they stay unlimited unless the user opts in.
+/// and apply them. When only the hard limit is given, the soft limit is derived as
+/// 3/4 of it (so the graceful path fires first). A malformed value is warned about
+/// and ignored. Called by every entry point. With neither variable set, a process
+/// inside a memory-capped container takes its limits from the cap
+/// ([`container_memory_cap`]); anywhere else plain runs and the REPL stay unlimited.
 pub fn init_limits_from_env() {
     init_limits_inner(None);
 }
@@ -347,9 +448,76 @@ pub fn init_limits_from_env() {
 /// Like [`init_limits_from_env`], but when an env var is *absent* fall back to
 /// the given defaults instead of leaving the limit off. The test runners use
 /// this so an adversarial test can't OOM the host; an explicit env var still
-/// wins. Pass `(0, 0)` to behave exactly like [`init_limits_from_env`].
+/// wins, and a container cap lower than a default wins over it. Pass `(0, 0)` to
+/// behave exactly like [`init_limits_from_env`].
 pub fn init_limits_with_default(default_hard: usize, default_soft: usize) {
-    init_limits_inner(Some((default_hard, default_soft)));
+    init_limits_inner(Some((default_hard, default_soft)).filter(|&(hard, _)| hard != 0));
+}
+
+/// The limits a container cap implies: the hard limit a quarter below the cap, and
+/// the soft three quarters of that. Well below the cap because the container counts
+/// resident memory and the allocator counts live bytes: pages the allocator keeps
+/// after a free, thread stacks and mapped code are the difference, and a leak making
+/// garbage as it grows measured resident at about 1.45 times live — under a 600 MB
+/// cap, a hard limit an eighth below it was out-of-memory killed before the soft
+/// limit tripped. The container's kill names nothing, where the limits stop or name
+/// the process holding the memory (ADR-399).
+fn limits_for_cap(cap: usize) -> (usize, usize) {
+    let hard = cap / 4 * 3;
+    (hard, hard / 4 * 3)
+}
+
+/// The memory cap of the container this process runs in, if it has one: the
+/// tightest `memory.max` on its cgroup's path (cgroup v2), else the tightest
+/// `memory.limit_in_bytes` (v1). `None` with no cap, no cgroup filesystem, or off
+/// Linux.
+pub fn container_memory_cap() -> Option<usize> {
+    let membership = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    cap_from_cgroups(&membership, |path| std::fs::read_to_string(path).ok())
+}
+
+/// [`container_memory_cap`] over a `/proc/self/cgroup` text and a file reader, so the
+/// walk is testable without a container. A cap may be set on any ancestor (a systemd
+/// slice, a container runtime's parent), so every level counts and the lowest wins.
+fn cap_from_cgroups(membership: &str, read: impl Fn(&str) -> Option<String>) -> Option<usize> {
+    // v1 reports a "practically unlimited" cap as a page-rounded i64::MAX.
+    const UNLIMITED_V1: usize = 1 << 62;
+    let tightest = |root: &str, file: &str, path: &str| {
+        let mut tightest: Option<usize> = None;
+        let mut level = path.trim_end_matches('/');
+        loop {
+            let cap = read(&format!("{root}{level}/{file}"))
+                .and_then(|text| text.trim().parse::<usize>().ok())
+                .filter(|&cap| cap < UNLIMITED_V1);
+            if let Some(cap) = cap {
+                tightest = Some(tightest.map_or(cap, |seen| seen.min(cap)));
+            }
+            match level.rfind('/') {
+                Some(cut) => level = &level[..cut],
+                None => return tightest,
+            }
+        }
+    };
+    let mut v1_path = None;
+    for line in membership.lines() {
+        let mut fields = line.splitn(3, ':');
+        let (Some(_), Some(controllers), Some(path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if controllers.is_empty() {
+            if let Some(cap) = tightest("/sys/fs/cgroup", "memory.max", path) {
+                return Some(cap);
+            }
+        } else if controllers
+            .split(',')
+            .any(|controller| controller == "memory")
+        {
+            v1_path = Some(path);
+        }
+    }
+    v1_path.and_then(|path| tightest("/sys/fs/cgroup/memory", "memory.limit_in_bytes", path))
 }
 
 fn init_limits_inner(defaults: Option<(usize, usize)>) {
@@ -368,6 +536,17 @@ fn init_limits_inner(defaults: Option<(usize, usize)>) {
 
     let hard_env = env("BROOD_MEM_LIMIT");
     let soft_env = env("BROOD_MEM_SOFT_LIMIT");
+    // Inside a capped container the cap is a ceiling the caller's defaults cannot exceed,
+    // and the default when there are none. Not consulted when the user set either limit.
+    let defaults = match (hard_env, soft_env) {
+        (None, None) => match (defaults, container_memory_cap().map(limits_for_cap)) {
+            (Some((hard, soft)), Some((cap_hard, cap_soft))) => {
+                Some((hard.min(cap_hard), soft.min(cap_soft)))
+            }
+            (defaults, container) => defaults.or(container),
+        },
+        _ => defaults,
+    };
 
     // Hard: explicit env wins; else the provided default (if any).
     let hard = hard_env.or(defaults.map(|(h, _)| h));
@@ -416,5 +595,70 @@ mod tests {
         // A sane sum passes through untouched; a torn one keeps the previous figure.
         assert_eq!(settle_live_sum(4096, 7), 4096);
         assert_eq!(settle_live_sum(usize::MAX - 10, 7), 7);
+    }
+
+    fn files(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let entries: Vec<(String, String)> = entries
+            .iter()
+            .map(|&(path, text)| (path.to_string(), text.to_string()))
+            .collect();
+        move |path| {
+            entries
+                .iter()
+                .find(|(known, _)| known == path)
+                .map(|(_, text)| text.clone())
+        }
+    }
+
+    /// The cap may sit on any ancestor of the process's own cgroup — a systemd slice, a
+    /// container runtime's parent — and the tightest one is what the kernel enforces.
+    #[test]
+    fn the_tightest_v2_cap_on_the_path_wins() {
+        let membership = "0::/machine.slice/app.scope\n";
+        let read = files(&[
+            ("/sys/fs/cgroup/machine.slice/app.scope/memory.max", "max\n"),
+            ("/sys/fs/cgroup/machine.slice/memory.max", "1073741824\n"),
+        ]);
+        assert_eq!(cap_from_cgroups(membership, read), Some(1 << 30));
+        let read = files(&[
+            (
+                "/sys/fs/cgroup/machine.slice/app.scope/memory.max",
+                "536870912\n",
+            ),
+            ("/sys/fs/cgroup/machine.slice/memory.max", "1073741824\n"),
+        ]);
+        assert_eq!(cap_from_cgroups(membership, read), Some(1 << 29));
+    }
+
+    #[test]
+    fn no_cap_anywhere_is_none() {
+        let read = files(&[("/sys/fs/cgroup/user.slice/memory.max", "max\n")]);
+        assert_eq!(cap_from_cgroups("0::/user.slice\n", read), None);
+        // A container whose cgroup is the namespace root, with no file to read.
+        assert_eq!(cap_from_cgroups("0::/\n", files(&[])), None);
+    }
+
+    /// cgroup v1 names the memory controller on its own line, and reports "unlimited" as
+    /// a page-rounded `i64::MAX`.
+    #[test]
+    fn a_v1_memory_controller_cap_is_read_and_its_unlimited_is_none() {
+        let membership = "12:pids:/docker/abc\n4:memory:/docker/abc\n1:name=systemd:/docker/abc\n";
+        let read = files(&[(
+            "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes",
+            "268435456\n",
+        )]);
+        assert_eq!(cap_from_cgroups(membership, read), Some(1 << 28));
+        let read = files(&[(
+            "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes",
+            "9223372036854771712\n",
+        )]);
+        assert_eq!(cap_from_cgroups(membership, read), None);
+    }
+
+    #[test]
+    fn a_cap_leaves_room_below_it_and_soft_below_hard() {
+        let (hard, soft) = limits_for_cap(1 << 30);
+        assert_eq!(hard, (1 << 30) / 4 * 3);
+        assert_eq!(soft, hard / 4 * 3);
     }
 }

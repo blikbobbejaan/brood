@@ -344,7 +344,11 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
     use std::sync::mpsc::{sync_channel, TryRecvError};
     let (ptx, prx) = sync_channel::<Option<JitWorkItem>>(256);
     let (dtx, drx) = sync_channel::<JitWorkItem>(256);
-    std::thread::Builder::new()
+    // A refused thread (`EAGAIN` under a thread or task limit) must not panic: this is a
+    // `LazyLock`, and a panic would poison it for every later tiering attempt in every
+    // process. The receivers drop with the closure, so each enqueue fails and its arm
+    // stays on the bytecode VM, exactly as a full queue does.
+    let started = std::thread::Builder::new()
         .name("brood-jit".into())
         .spawn(move || {
             // If codegen ever *panics* (a Cranelift verifier/finalize failure, e.g. an
@@ -564,8 +568,12 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     Err(_) => break,
                 }
             }
-        })
-        .expect("spawn brood-jit compiler thread");
+        });
+    if let Err(error) = started {
+        eprintln!(
+            "brood: cannot start the JIT compiler thread ({error}); code runs on the bytecode VM"
+        );
+    }
     JitCompiler {
         primary: ptx,
         deferred: dtx,

@@ -269,7 +269,7 @@ fn reactor_up() -> std::io::Result<()> {
     if REACTOR_DOWN.load(Ordering::SeqCst) {
         return Err(reactor_dead_err());
     }
-    Ok(())
+    start_reactor().map(|_| ())
 }
 
 /// The reactor thread's exit hook: mark the reactor dead, say so once on stderr, and
@@ -375,37 +375,54 @@ impl Reactor {
     }
 }
 
-/// The reactor singleton, started on first socket use.
+static REACTOR: OnceLock<Reactor> = OnceLock::new();
+
+/// The reactor singleton. Every socket-creating entry point starts it first through
+/// [`reactor_up`], which reports a reactor that cannot start as an error.
 fn reactor() -> &'static Reactor {
-    static R: OnceLock<Reactor> = OnceLock::new();
-    R.get_or_init(|| {
-        let poll = Poll::new().expect("net reactor: mio poll");
-        let waker = Waker::new(poll.registry(), WAKER_TOKEN).expect("net reactor: waker");
-        let registry = poll
-            .registry()
-            .try_clone()
-            .expect("net reactor: registry clone");
-        let (tx, rx) = std::sync::mpsc::channel::<Cmd>();
-        std::thread::Builder::new()
-            .name("brood-net-reactor".into())
-            .spawn(move || {
-                // The reactor multiplexes EVERY socket in the runtime on this one
-                // thread, so its death must be observed, not swallowed: catch a
-                // panic (a `poll` error returns normally) and run the death hook —
-                // mark the reactor down, fail every socket at its owner, and make
-                // subsequent socket ops error instead of silently succeeding.
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    reactor_loop(poll, rx)
-                }));
-                reactor_died(r.err());
-            })
-            .expect("spawn net reactor thread");
-        Reactor {
-            tx,
-            waker,
-            registry,
-        }
-    })
+    start_reactor().unwrap_or_else(|error| panic!("net reactor: {error}"))
+}
+
+/// Start the reactor on first socket use. Fallible: the OS can refuse its thread
+/// (`EAGAIN` under a thread or task limit) or its poll descriptors (`EMFILE`), and either
+/// is the caller's error to report. Nothing is kept from a failed start, so the next
+/// socket tries again.
+fn start_reactor() -> std::io::Result<&'static Reactor> {
+    static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if let Some(reactor) = REACTOR.get() {
+        return Ok(reactor);
+    }
+    let _starting = crate::core::sync::lock(&STARTING);
+    if let Some(reactor) = REACTOR.get() {
+        return Ok(reactor);
+    }
+    let poll = Poll::new()?;
+    let waker = Waker::new(poll.registry(), WAKER_TOKEN)?;
+    let registry = poll.registry().try_clone()?;
+    let (tx, rx) = std::sync::mpsc::channel::<Cmd>();
+    std::thread::Builder::new()
+        .name("brood-net-reactor".into())
+        .spawn(move || {
+            // The reactor multiplexes EVERY socket in the runtime on this one
+            // thread, so its death must be observed, not swallowed: catch a
+            // panic (a `poll` error returns normally) and run the death hook —
+            // mark the reactor down, fail every socket at its owner, and make
+            // subsequent socket ops error instead of silently succeeding.
+            let r =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reactor_loop(poll, rx)));
+            reactor_died(r.err());
+        })
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("cannot start the network thread: {error}"),
+            )
+        })?;
+    Ok(REACTOR.get_or_init(|| Reactor {
+        tx,
+        waker,
+        registry,
+    }))
 }
 
 // ---- message builders (off-heap; symbols are a global interner) ----

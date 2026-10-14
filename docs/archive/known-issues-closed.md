@@ -13268,3 +13268,87 @@ the runtime, so measuring now starts before the crossing. **Guard.**
 flooded with 100 KB messages beside a ticker; each asserts the culprit's `[:down …]` carries
 `E0043`, the bystander is alive, and stderr names the stopped process. Both are red with the
 old raise-in-place restored (the flood case also reached the hard abort).
+
+## KI-240 — an improper list could not cross a process boundary or enter a table ✅ FIXED 2026-10-14
+
+**Symptom.** `(send pid (cons 1 2))` killed the sender with `E0030 improper list`, and
+`(table/put t :k '(1 . 2))` raised the same; the receiving side never saw the value. A dotted
+list is a documented value (`docs/language.md`: "makes an improper list (round-trips with the
+printer)"), and the only value the docs say cannot be sent is a builtin. **Cause.** Both copy
+paths — the heap-to-heap copy and the `Message` encoder — walked a list's spine into a `Vec`
+and refused any tail that was not `nil`; `Message::List` had nowhere to put a tail, and tables
+store values as messages. A unit test asserted the refusal. **Why it survived.** Every
+message test sent proper lists; the refusal was written as a deliberate decline and tested as
+one. Found by a probe running every value walker over a million-deep `(cons acc 1)` chain.
+**Fix.** `Message::Dotted(items)` — the items, then the tail as the last element, so every
+walker (clone, drop, size, fit, rebuild) treats it as a flat container; the heap copy builds it
+with `list_with_tail`. The node wire gains `M_DOTTED` (protocol v10; a decoder refuses fewer
+than two elements). **Guard.** `process::message::decline_tests::an_improper_list_crosses_by_both`
+(both copy paths, a nested dotted pair inside), `dist::wire::tests::a_dotted_list_roundtrips_and_a_tailless_one_is_refused`,
+`tests/message_roundtrip_test.blsp` "dotted list", `tests/table_test.blsp` "a dotted list
+round-trips as a value and as a key" — all red with the refusal restored.
+
+## KI-241 — a refused OS thread panicked or hung the runtime ✅ FIXED 2026-10-14
+
+**Symptom.** Under a thread or task limit, `os/spawn` killed its caller with a Rust panic
+(`spawn blocking-io source thread: … Resource temporarily unavailable`) after the child had
+already started, leaving the child with no reader and no reaper; `offload` and the first
+`tcp/listen` panicked the same way; startup with one thread too few printed a panic and a
+backtrace; and a runtime that could start no scheduler worker printed "only 0 of 2 scheduler
+workers could be started" and then hung, because the stdlib's own processes never ran.
+**Cause.** These thread starts used `.expect` — the offload pool inside a `OnceLock`, the
+reactor inside another, the JIT compiler inside a `LazyLock` (a panic there would have poisoned
+it for every later tiering attempt), the dist heartbeat inside a `Once` — and a child's three
+pipe threads were started after the child. The worker pool tolerated a short pool but not an
+empty one. **Why it survived.** The thread limit is per user, so nothing could set a
+reproducible budget; the timer and the dialler had already been fixed one at a time.
+**Fix.** `process::io_source::IoThread` — a thread reserved ahead of its work; a child's
+writer, readers and waiter are all reserved before `Command::spawn`, so a refusal is an
+`os/spawn` error and no child exists. The offload pool tops itself up per job and refuses a job
+only when it has no worker; the reactor starts from `reactor_up`, which every socket entry
+point calls, and reports a refused thread or poll descriptor as the operation's error; the JIT
+compiler, heartbeat and timer print one line and degrade (bytecode only, a retry on the next
+link or timeout). No worker at all, or no runtime thread at startup, exits with one line naming
+the cause. **Guard.** `crates/cli/tests/thread_exhaustion.rs` runs a program in a fresh user
+namespace (`unshare -U`), where the thread count starts at zero: at a budget of 4 each facility
+must be refused as a caught error and the program must finish; at 3 the runtime must exit 1
+naming the missing workers. Red with the reader's `.expect` restored (a panic) and with the
+no-worker exit removed (a 60 s hang).
+
+## KI-242 — a fast-allocating loop ran past the soft memory limit to the hard abort ✅ FIXED 2026-10-14
+
+**Symptom.** Under `BROOD_MEM_LIMIT=512M`, `(defn hoard (kept) (hoard (conj kept (string/repeat
+"x" 1000000))))` aborted the runtime at the hard limit ("memory allocation of 40 bytes
+failed") instead of raising `E0043`. The same timing let a fast hoarder cross the last eighth
+before the limit without measuring itself, so the selector of KI-229 never saw it.
+**Cause.** The VM checks the soft limit once per quantum (thousands of reductions) and a
+native loop once per 128 iterations; at a megabyte an iteration either covers the soft
+limit's quarter of headroom between two checks. **Why it survived.** The memory-limit tests
+cons small cells, which take millions of iterations to reach a limit. **Fix.** An allocation of
+64 KiB or more over the soft limit ends the allocating thread's quantum (`REDUCTIONS` is a
+`const` thread-local, safe to touch in the allocator), so the once-per-quantum check runs at
+the next tick; within the last eighth it does so once per 1/64 of the limit, so the process
+measures itself on the way up. A thread-local flag makes a native arm's builtin call run the
+check on return, and the JIT's back-edge poll now measures near the limit as well as raising
+over it. The hard-limit abort, when it still comes, prints one line first — the limit, the
+refused size, live memory, and whether one value was too large or memory outran the soft
+limit — written from a stack buffer, since it runs inside the allocator. **Guard.**
+`memory_pressure::a_fast_allocating_loop_stops_at_the_soft_limit_not_the_hard_one` (red with
+the hook disabled: the hard abort), `one_allocation_past_the_hard_limit_names_the_limit` (red
+with the line suppressed: the bare Rust message).
+
+## KI-243 — a stopped process stuck in a native call shielded every other process ✅ FIXED 2026-10-14
+
+**Symptom.** A process holding 325 MiB, stopped by the soft limit while it waited in
+`os/cmd`, stayed alive until the call returned; meanwhile a leak beside it grew from the soft
+limit to the hard one and the runtime aborted. **Cause.** ADR-399's selector stopped nobody
+else while its last victim was alive, on the reasoning that the victim's memory was about to
+go. A hard exit lands at the victim's next safepoint, and a native call reaches none. **Why it
+survived.** KI-229's tests stopped processes that were parked or looping in Brood code.
+**Fix.** A victim still alive `STOP_GRACE` (250 ms) after it was stopped is left out of the
+next selection, which stops the largest holder still able to die (or raises in place when
+that is the current process). **Guard.**
+`memory_pressure::a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder` — a hoarder
+grows into the last eighth, blocks in `os/cmd "sleep"`, and a leak pushes past the limit; the
+hoarder must be stopped and the leak must go down with `E0043`, with no hard abort. Red with
+the grace made unbounded.

@@ -407,6 +407,15 @@ pub(crate) fn set_reduction_budget_for_test(n: u32) {
     REDUCTIONS.with(|r| r.set(n));
 }
 
+/// End this thread's quantum at its next reduction tick, which runs the once-per-quantum
+/// checks there. The allocator calls it for a large allocation over the soft memory limit:
+/// a loop that allocates a megabyte an iteration covers hundreds of megabytes inside one
+/// quantum, past the soft limit to the hard one, before the check would otherwise run.
+/// Safe inside the allocator: `REDUCTIONS` is a `const` thread-local with no destructor.
+pub(crate) fn expire_quantum() {
+    REDUCTIONS.with(|r| r.set(0));
+}
+
 /// Reduction tick for the capture-mode VM driver: like [`tick`] but **returns**
 /// whether the budget is exhausted (so the driver captures + yields a `Preempted`).
 /// Decrements otherwise. The budget is refreshed by `run_one` at the next resume.

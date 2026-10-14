@@ -71,7 +71,12 @@ pub(crate) use scheduler::take_current_mailbox_overflow;
 pub(crate) use message::{grow, MAX_MESSAGE_DEPTH};
 // The reusable blocking-IO → mailbox seam (ADR-059): any subsystem that must
 // block runs it on a non-worker thread and delivers to a process mailbox.
-pub(crate) use io_source::{sink_pair, spawn_io_source, MailboxSink};
+pub(crate) use io_source::{reserve_io_thread, sink_pair, IoThread, MailboxSink};
+
+/// What to do when the OS refuses a thread the runtime cannot work without.
+pub(crate) const THREAD_LIMIT_HINT: &str = "the operating system refused a thread: raise the \
+     thread limit (ulimit -u, a container's pids limit)";
+
 pub use monitor::{demonitor, monitor, monitored_by, next_ref};
 // Erlang-style links (ADR-067): symmetric failure coupling + `trap_exit`.
 pub use links::{link_count, link_self, set_trap_exit, unlink_self};
@@ -102,9 +107,9 @@ pub fn parked_process_count() -> usize {
 // when to capture a continuation (vs. yield the coroutine / block the root), and by the
 // `receive` gate to tell a capturable top-level receive from a native-nested one.
 pub(crate) use scheduler::{
-    capture_hard_kill_pending, capture_top_level, charge_native, dirty_block, in_capture_run,
-    refill_nested_quantum, set_capture_top_level, tick_capture, tick_reporting_hard_kill,
-    TreeWalkGuard,
+    capture_hard_kill_pending, capture_top_level, charge_native, dirty_block, expire_quantum,
+    in_capture_run, refill_nested_quantum, set_capture_top_level, tick_capture,
+    tick_reporting_hard_kill, TreeWalkGuard,
 };
 // The batched variant is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.

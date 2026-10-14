@@ -168,10 +168,10 @@ the `nest mcp` tools of the same names.")
      :example "(match frame ((bytes (len :u16) (body len) & rest) body) (_ :short))"
      :see "docs/language.md §Bytes patterns"}
     {:intent "run a slow / blocking native call without stalling"
-     :keywords ["blocking" "slow" "proc/offload" "git" "long" "io" "dirty"]
-     :idiom "Run an allow-listed blocking native on the proc/offload pool: `(proc/offload f & args)` parks only this process, never a scheduler worker."
-     :example "(proc/offload file/slurp-bytes \"big.tar\")"
-     :see "docs/language.md §Blocking natives (proc/offload)"}
+     :keywords ["blocking" "slow" "offload" "git" "long" "io" "dirty"]
+     :idiom "Run an allow-listed blocking native on the offload pool: `(offload f & args)` parks only this process, never a scheduler worker."
+     :example "(offload file/slurp-bytes \"big.tar\")"
+     :see "docs/language.md §Blocking natives (offload)"}
     {:intent "define a private helper / hide an implementation detail"
      :keywords ["private" "hidden" "internal" "encapsulate" "defp" "defn-" "def-"]
      :idiom "`defn-` and `def-` define a MODULE-PRIVATE name (ADR-146) — a clean name, no marker in it. Another module can't reference it (compile error) without `(:use-internals foo)`."

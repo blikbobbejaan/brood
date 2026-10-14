@@ -13,7 +13,9 @@
 //! stops the largest at once — a hard exit carrying the `E0043` error, so its monitors,
 //! links and supervisor see why — and names it on stderr. Nobody else is interrupted.
 //! (It cannot wait for fresh figures: a fast runaway crosses the remaining quarter to the
-//! hard limit in milliseconds.)
+//! hard limit in milliseconds.) A victim that has not died within [`STOP_GRACE`] is inside
+//! a long native call and reaches no safepoint to die at; the next crossing looks past it
+//! and stops the largest holder that can.
 //!
 //! Two cases keep the old behaviour, an `E0043` raised in the current process: the largest
 //! holder IS the current process (it raises, catchably, as a runaway loop always did), and
@@ -48,10 +50,17 @@ fn period() -> u64 {
     (EPOCH.elapsed().as_millis() / PERIOD.as_millis()) as u64 + 1
 }
 
+/// How long a stopped process has to die before the selector looks past it. A hard exit
+/// lands at the victim's next safepoint, normally within microseconds; one inside a long
+/// native call (a subprocess wait, a huge sort) reaches none until the call returns, and
+/// meanwhile the rest of the runtime keeps allocating toward the hard limit.
+const STOP_GRACE: Duration = Duration::from_millis(250);
+
 struct Pressure {
-    /// The process last stopped: nobody else is stopped until it is gone, and its memory
-    /// with it.
-    stopping: Option<u64>,
+    /// The processes stopped and not yet gone, with when. Nobody else is stopped while one
+    /// is within [`STOP_GRACE`] — its memory is about to go — and once past it a victim is
+    /// left out of the next selection, which stops the largest holder still able to die.
+    stopped: Vec<(u64, Instant)>,
     /// When a selection last found no process worth stopping. Within a [`PERIOD`] of it
     /// the current process raises without selecting again — a selection walks every
     /// parked heap, and over the limit every safepoint asks.
@@ -59,7 +68,7 @@ struct Pressure {
 }
 
 static PRESSURE: Mutex<Pressure> = Mutex::new(Pressure {
-    stopping: None,
+    stopped: Vec::new(),
     unattributable: None,
 });
 
@@ -78,11 +87,13 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
     let Ok(mut pressure) = PRESSURE.try_lock() else {
         return None;
     };
-    if let Some(pid) = pressure.stopping {
-        if is_alive(pid) {
-            return None;
-        }
-        pressure.stopping = None;
+    pressure.stopped.retain(|&(pid, _)| is_alive(pid));
+    if pressure
+        .stopped
+        .iter()
+        .any(|&(_, since)| since.elapsed() < STOP_GRACE)
+    {
+        return None;
     }
     if pressure
         .unattributable
@@ -90,10 +101,11 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
     {
         return Some(crate::eval::memory_limit_error(live));
     }
-    match largest_holder() {
+    let stuck: Vec<u64> = pressure.stopped.iter().map(|&(pid, _)| pid).collect();
+    match largest_holder(&stuck) {
         Some((pid, held)) if held >= live / ATTRIBUTABLE && Some(pid) != me => {
             stop(pid, held, live);
-            pressure.stopping = Some(pid);
+            pressure.stopped.push((pid, Instant::now()));
             None
         }
         Some((pid, held)) if held >= live / ATTRIBUTABLE => {
@@ -118,11 +130,13 @@ fn publish(heap: &Heap) {
     });
 }
 
-/// The local process holding the most memory — heap plus queued messages — and how much.
-fn largest_holder() -> Option<(u64, usize)> {
+/// The local process holding the most memory — heap plus queued messages — and how much,
+/// leaving out the `stuck`: stopped already, and not dying.
+fn largest_holder(stuck: &[u64]) -> Option<(u64, usize)> {
     REGISTRY
         .entries()
         .into_iter()
+        .filter(|(pid, _)| !stuck.contains(pid))
         .map(|(pid, mailbox)| {
             let state = crate::core::sync::lock(&mailbox.state);
             let queued: usize = state

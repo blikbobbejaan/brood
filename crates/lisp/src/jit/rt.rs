@@ -54,10 +54,14 @@ use crate::core::heap::{FastLink, Heap};
 /// `heap` is a live heap; the limit peeks read it only.
 #[no_mangle]
 pub unsafe extern "C" fn brood_rt_tick_n(heap: *mut Heap, n: i64) -> u8 {
-    if crate::core::alloc::soft_limit_hit().is_some()
-        || (*heap).proc_limit_pending()
-        || crate::process::current_mailbox_overflow_pending()
-    {
+    match crate::core::alloc::soft_limit_state() {
+        crate::core::alloc::SoftLimit::Clear => {}
+        // A native loop near the limit measures itself like an interpreted one, or the
+        // choice of whom to stop at the crossing never sees it (KI-229).
+        crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(&*heap),
+        crate::core::alloc::SoftLimit::Over(_) => return 2,
+    }
+    if (*heap).proc_limit_pending() || crate::process::current_mailbox_overflow_pending() {
         return 2;
     }
     if crate::process::in_capture_run() {
@@ -949,6 +953,13 @@ pub unsafe extern "C" fn brood_rt_call_native_fl(
     let base = h.roots_len() - argc as usize;
     let r = f(slice, env, h);
     h.truncate_roots(base);
+    // A builtin that made a large allocation near or over the soft limit: run the check the
+    // VM runs once per quantum now, not at the back-edge poll up to 128 iterations later —
+    // a megabyte an iteration covers the soft limit's headroom to the hard one in fewer.
+    let r = match r {
+        Ok(v) if crate::core::alloc::take_soft_attention() => soft_limit_check(h).map(|()| v),
+        r => r,
+    };
     match r {
         Ok(v) => {
             *out = v;
@@ -957,6 +968,25 @@ pub unsafe extern "C" fn brood_rt_call_native_fl(
         Err(e) => {
             h.jit_pending_error = Some(e);
             1
+        }
+    }
+}
+
+/// The soft-limit half of the VM's `quantum_checks`, for a native arm: measure this process
+/// near the limit; over it, let the selector decide who pays (`process/pressure.rs`).
+#[cold]
+fn soft_limit_check(heap: &Heap) -> Result<(), crate::error::LispError> {
+    match crate::core::alloc::soft_limit_state() {
+        crate::core::alloc::SoftLimit::Clear => Ok(()),
+        crate::core::alloc::SoftLimit::Near => {
+            crate::process::near_soft_limit(heap);
+            Ok(())
+        }
+        crate::core::alloc::SoftLimit::Over(used) => {
+            match crate::process::soft_limit_crossed(heap, used) {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
     }
 }
