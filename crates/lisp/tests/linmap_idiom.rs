@@ -361,6 +361,12 @@ fn a_fold_over_a_range_with_a_literal_is_a_counted_loop() {
     ] {
         assert!(out.contains(w), "expected `{w}` in:\n{out}");
     }
+    // `(reduce coll init f)` is `(fold coll init f)`, and takes the same loop — the
+    // spelling the docs teach, which `nqueens` writes.
+    let out = expansion("(defn go (n) (reduce (range n) 0 (fn (acc x) (+ acc x))))");
+    for w in ["%range-bounds", "letrec", "(range? ", "(>= rng-i"] {
+        assert!(out.contains(w), "expected `{w}` in:\n{out}");
+    }
     // Any collection: the range check and the range loop ride along, the ordinary fold
     // behind them. (The vector and list loops are parked — `FOLD_LOOP_SMALL_ATOMS` — so a
     // vector or list fold pays no copies beyond the range loop's.)
@@ -381,6 +387,8 @@ fn a_fold_over_a_range_with_a_literal_is_a_counted_loop() {
     for src in [
         "(defn go (n) (fold (range n) 0 +))",
         "(defn go (n) (let (range (fn (n) (list 9))) (fold (range n) 0 (fn (acc x) x))))",
+        "(defn go (n) (reduce (range n) 0 +))",
+        "(defn go (n) (let (reduce (fn (c i f) :mine)) (reduce (range n) 0 (fn (acc x) x))))",
         big.as_str(),
     ] {
         let out = expansion(src);

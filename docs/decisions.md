@@ -23151,6 +23151,11 @@ only through an undocumented name is not a language feature; it is a benchmark t
    safety, evaluation order and count, empty and negative ranges, the errors),
    `scripts/fuzz/generators/pipeline.py` (the same chain folded from a pre-built view, which
    the rewrite cannot see; sabotage of the filter stage reds 13 of 60).
+   **Amended 2026-10-14:** a plain `(reduce COLL INIT (fn (acc x) BODY))` takes the counted
+   loop too — it is `(fold COLL INIT f)` — where only a FUSED pipeline under `reduce` did
+   before. It is the spelling the docs teach, and `nqueens` writes it: −21% instructions,
+   113 → 90 ms. std spells it `fold` (344 sites to 17), so the extra body copy costs boot
+   nothing measurable.
 
 **Consequences.** `wordcount` 857 → 66 ms and `persistent-map` 535 → 79 ms on the idiomatic
 ports (`make ab --floor`, every other row noise); the benchmark rows are now the code a user
@@ -25947,3 +25952,15 @@ redirect.
 value). An error's trace through such a call reads the same as before. Guards: `jit_computed_call_test` (the wrapper reaches `:native`; a
 redefinition of the inner function is still seen through it), `contract_test` (the boundary
 holds through a wrapper a native loop calls — red under `BROOD_NO_CONTRACT_BOUNDARY=1`).
+
+**Amended 2026-10-14 (same day): the by-name call did not link.** The figures above are for a
+wrapper passed as a VALUE. Called by NAME from native code — `(defn add (a x) (+ a x))` from a
+native loop, the commonest helper there is — it stayed on the slow path at ~2 100
+instructions a call: the caller runs interpreted until it tiers, the interpreter caches the
+wrapper on the call IC WITHOUT an arm (it redirects), and `jit_dispatch_call` read an arm-less
+hit as a builtin and returned nothing for a closure, so the miss branch that attaches the arm —
+and from which the fast link is published — never ran again. The arm-less hit now attaches the
+arm: ~420 instructions a call, a non-wrapper helper's cost. Guard:
+`jit_runtime::link::tests::a_thin_wrapper_called_by_name_publishes_its_fast_link` (sabotage:
+never publishes); late binding through the link in `jit_computed_call_test` ("a thin wrapper
+called by name from native code").

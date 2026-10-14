@@ -131,13 +131,38 @@ pub(crate) fn jit_dispatch_call(
                 };
             }};
         }
+        // Resolve a closure callee's arm for this site and cache it on the call IC, from
+        // which the next call publishes its fast link.
+        let cache_closure_arm = |heap: &mut Heap, id| {
+            compiled_arm_for(heap, id, argc).map(|a| {
+                let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
+                let cb = heap.vm_arm_block(&a);
+                if !heap.is_dynamic(head) {
+                    heap.vm_call_ic_put(
+                        site,
+                        crate::core::heap::CallIcEntry {
+                            sym: head,
+                            argc: argc as u32,
+                            epoch,
+                            callee: Value::func(id),
+                            arm: Some((a.clone(), env)),
+                            // Overwritten inside `vm_call_ic_put`.
+                            callee_bases: (0, 0),
+                        },
+                    );
+                }
+                (a, env, cb)
+            })
+        };
         let resolved: Option<(Arc<ArmHandle>, EnvId, (u32, u32))> = if elided {
             match heap.vm_call_ic_probe(site, head, argc as u32, epoch) {
                 Some((_, Some(t))) => Some(t),
-                // IC hit on a NATIVE callee (arm-less entry, filled below on first
-                // resolve): the whole call is one arity-checked fn-pointer call.
-                Some((v, None)) if !over_cap => {
-                    if let ValueRef::Native(nid) = v.unpack() {
+                // An arm-less IC hit: a builtin callee, or a closure the interpreter cached
+                // without its arm.
+                Some((v, None)) if !over_cap => match v.unpack() {
+                    // A builtin (arm-less entry, filled below on first resolve): the whole
+                    // call is one arity-checked fn-pointer call.
+                    ValueRef::Native(nid) => {
                         // Reaching here means the IR's flat-cell fast path missed (cold
                         // site, cleared table, or new epoch) — republish so the next call
                         // stays entirely in IR (arity pre-validated for this argc).
@@ -148,34 +173,24 @@ pub(crate) fn jit_dispatch_call(
                         }
                         call_native_direct!(nid)
                     }
-                    None
-                }
+                    // A closure cached WITHOUT its arm: the interpreter's entry for a thin
+                    // wrapper, which the VM runs through the dispatcher's redirect (ADR-069)
+                    // and so never gives an arm. Native code runs the wrapper's own arm
+                    // (ADR-408), and a link is published only from an entry that carries
+                    // one — so attach it here. Returning `None` instead sent every call
+                    // from native code to such a callee down the slow path for good: the
+                    // entry kept hitting, so the miss branch that fills the arm never ran
+                    // (`(defn add (a x) (+ a x))` from a native loop, ~2 100 instructions a
+                    // call against ~30 once linked and inlined).
+                    ValueRef::Fn(id) => cache_closure_arm(heap, id),
+                    _ => None,
+                },
                 _ => {
                     // Miss: resolve the callee global (the only `env_get` on the call path,
                     // and only while cold) and fill the IC.
                     let cenv = heap.read_root_env(heap.jit_call_env);
                     match heap.env_get(cenv, head).map(|v| v.unpack()) {
-                        Some(ValueRef::Fn(id)) => {
-                            compiled_arm_for(heap, id, argc).map(|a| {
-                                let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
-                                let cb = heap.vm_arm_block(&a);
-                                if !heap.is_dynamic(head) {
-                                    heap.vm_call_ic_put(
-                                        site,
-                                        crate::core::heap::CallIcEntry {
-                                            sym: head,
-                                            argc: argc as u32,
-                                            epoch,
-                                            callee: Value::func(id),
-                                            arm: Some((a.clone(), env)),
-                                            // Overwritten inside `vm_call_ic_put`.
-                                            callee_bases: (0, 0),
-                                        },
-                                    );
-                                }
-                                (a, env, cb)
-                            })
-                        }
+                        Some(ValueRef::Fn(id)) => cache_closure_arm(heap, id),
                         // A builtin callee: fill an arm-less IC entry (so the next call
                         // takes the direct path above) and call it now. Dynamic heads are
                         // never cached (they can shadow per call) but still call direct.

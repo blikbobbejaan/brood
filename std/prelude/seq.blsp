@@ -6,17 +6,19 @@
 ;; stack. Sequences are cons-lists; `zip` pairs are 2-vectors (the tuple idiom).
 
 ;; (range hi) -> 0..hi-1 ; (range lo hi) -> lo..hi-1 ; (range lo hi step).
-(defn range (a & more)
-  "A range of integers: `(range hi)` is 0..hi-1, `(range lo hi)` is lo..hi-1, `(range lo hi step)` strides by `step`. The result is a *lazy* range — `fold`/`reduce`/`sum`/`count` walk it without building a list (O(1) memory); every other op treats it as the list of those integers. Empty ranges are `nil`.
+(defn range "A range of integers: `(range hi)` is 0..hi-1, `(range lo hi)` is lo..hi-1, `(range lo hi step)` strides by `step`. The result is a *lazy* range — `fold`/`reduce`/`sum`/`count` walk it without building a list (O(1) memory); every other op treats it as the list of those integers. Empty ranges are `nil`.
 
     (range 4)        → (0 1 2 3)
     (range 2 5)      → (2 3 4)
     (range 0 10 3)   → (0 3 6 9)
     (range 0)        → nil"
-  (cond
-    (empty? more) (%range 0 a 1)
-    (empty? (rest more)) (%range a (first more) 1)
-    else (%range a (first more) (second more))))
+  ((hi) (%range 0 hi 1))
+  ((lo hi) (%range lo hi 1))
+  ((lo hi step) (%range lo hi step)))
+;; Declared: a multi-arity function has no single inferred parameter signature. This is
+;; what the variadic definition inferred — the first bound an int, which lets the checker
+;; flag `(range (/ n 2))`; the rest unconstrained.
+(sig range (int &optional any any -> list))
 
 ;; (take n coll) -> the first n elements (fewer if coll is shorter).
 (defn take (coll n)

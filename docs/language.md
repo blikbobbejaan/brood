@@ -2811,7 +2811,8 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   every non-tail-to-tail rewrite lands in. `ys` is shared, not copied, so only the
   prefix costs anything.
 - `range`: `(range hi)` → `0..hi-1`; `(range lo hi)` → `lo..hi-1`;
-  `(range lo hi step)` steps (ascending or descending). The result is a **lazy
+  `(range lo hi step)` steps (ascending or descending); any other arity is an
+  arity error. The result is a **lazy
   range** — an O(1) value that stands in for the list it denotes: it prints,
   compares (`=`), hashes, and `type-of`s exactly like that list, and
   `fold`/`reduce`/`sum`/`count` consume it in a counted loop with **zero
