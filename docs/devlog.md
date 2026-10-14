@@ -17361,3 +17361,10 @@ from 1 536 to 450 MiB within seconds.
 
 Also: ADR-406's closing sentence about thin wrappers, re-worded in the session that added
 ADR-408, had landed as a loose paragraph after ADR-407; it is back in ADR-406.
+
+CI then failed `process_floor`: a parked process cost 4 078 B against its 4 020 B floor —
+the memo's `RefCell<HashMemo>` and work counter sat inline in every heap (~72 B), and every
+spawn pays for the `Heap` struct. The memo is now a `OnceCell<Box<…>>`, allocated the first
+time a hash is worth remembering (8 B inline), and the work counter is a thread-local. The
+floor test had not been in the targeted set run before the push; it belongs there for any
+change to `Heap`'s fields.
