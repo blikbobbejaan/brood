@@ -398,30 +398,14 @@ fn list_or_vec_items(heap: &Heap, v: Value) -> Vec<Value> {
 /// `Vec<String>`. `nil` / absent → empty. Backs the optional KI-17 reachability set on
 /// the `check-file*` builtins.
 fn required_mods_arg(heap: &Heap, v: Value) -> Vec<String> {
-    // Flatten to a Vec<Value> first (list or vector), then read each element's name —
-    // keeps the heap borrows non-overlapping.
-    let items: Vec<Value> = match v {
-        Value::Vector(vid) => heap.vector(vid).iter().copied().collect(),
-        _ => {
-            let mut acc = Vec::new();
-            let mut cur = v;
-            while let Value::Pair(p) = cur {
-                let (car, cdr) = heap.pair(p);
-                acc.push(car);
-                cur = cdr;
-            }
-            acc
-        }
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        match item {
-            Value::Str(id) => out.push(heap.string(id).to_string()),
-            Value::Sym(s) => out.push(value::symbol_name(s)),
-            _ => {}
-        }
-    }
-    out
+    list_or_vec_items(heap, v)
+        .into_iter()
+        .filter_map(|item| match item {
+            Value::Str(id) => Some(heap.string(id).to_string()),
+            Value::Sym(s) => Some(value::symbol_name(s)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// `(%module-direct-requires path)` — the file's own module name and the modules it

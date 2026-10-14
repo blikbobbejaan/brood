@@ -2,7 +2,7 @@
 //! bytes), metadata, and the atomic `%file-swap`. Policy — `file/*`, `path/*` — is Brood.
 
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{kw, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
 use super::bytes::{bytes_to_value, collect_bytes, flatten_iolist};
@@ -346,11 +346,7 @@ pub(super) fn make_dir(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// `(file/spit path content)` — write `content` (a string) to `path`, replacing any
 /// existing file. Returns nil. The write-side counterpart to `load`.
 pub(super) fn spit(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pv = arg(args, 0);
-    let path = match pv {
-        Value::Str(id) => heap.string(id).to_string(),
-        _ => return Err(LispError::wrong_type(heap, "file/spit", "string path", pv)),
-    };
+    let path = expect_string(heap, "file/spit", arg(args, 0))?;
     // Content is any iolist (ADR-139): describe the file as a tree of
     // strings/bytes and it is flattened exactly once, here at the write.
     let mut content = Vec::new();
@@ -577,7 +573,6 @@ pub(super) fn image_thumb(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // GC-safe: no eval between this alloc and map_from_pairs (a builtin never fires
     // GC mid-execution), mirroring file_stat holding its string handles.
     let rgba = bytes_to_value(thumb.as_raw(), heap);
-    let kw = |k: &'static str| Value::keyword(value::intern(k));
     let pairs = vec![
         (kw("width"), Value::int(w as i64)),
         (kw("height"), Value::int(h as i64)),
@@ -647,7 +642,6 @@ pub(super) fn file_stat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     #[cfg(not(unix))]
     let (mode, exec, nlink, uid, gid) = (0_i64, false, 1_i64, 0_u32, 0_u32);
 
-    let kw = |k: &'static str| Value::keyword(value::intern(k));
     // Owner/group names (getpwuid/getgrgid), falling back to the numeric id as a string.
     let owner = uid_name(uid).unwrap_or_else(|| uid.to_string());
     let group = gid_name(gid).unwrap_or_else(|| gid.to_string());

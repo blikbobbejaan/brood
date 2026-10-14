@@ -21,24 +21,14 @@
 use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+mod support;
+use support::{temp_dir, TempDir};
 
 fn tempdir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-cov-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(path.join("src")).unwrap();
-    std::fs::create_dir_all(path.join("tests")).unwrap();
-    TempDir { path }
+    let dir = temp_dir(&format!("cov-{tag}"));
+    std::fs::create_dir_all(dir.path.join("src")).unwrap();
+    std::fs::create_dir_all(dir.path.join("tests")).unwrap();
+    dir
 }
 
 /// A project with `live` (called by the tests) and `dead` (never called). `dead`'s body

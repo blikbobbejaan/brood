@@ -297,7 +297,7 @@ fn fire_down_inner(w: Watcher, dying_pid: u64, reason: Message) {
     match w {
         Watcher::Local { pid, mref } => deliver(
             pid,
-            down_message(local_node_pid_msg(dying_pid), mref, reason),
+            down_message(Message::local_pid(dying_pid), mref, reason),
         ),
         // A dedicated `Frame::Down`, not an ordinary send: the watcher's node
         // retires its `PENDING_REMOTE` entry when the one-shot delivers, which
@@ -307,16 +307,6 @@ fn fire_down_inner(w: Watcher, dying_pid: u64, reason: Message) {
         Watcher::Remote { node, pid, mref } => {
             crate::dist::send_down(node, pid, mref, dying_pid, reason)
         }
-    }
-}
-
-/// The `Message::Pid` for a process that lives on **this** runtime — the
-/// `pid` field of a `[:down …]` we're firing. Wraps the (always-local-here)
-/// node-name lookup so the call site reads as "make the pid value".
-fn local_node_pid_msg(pid: u64) -> Message {
-    Message::Pid {
-        node: crate::dist::local_node(),
-        id: pid,
     }
 }
 

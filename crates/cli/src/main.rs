@@ -244,7 +244,7 @@ fn run_bundle(args: Vec<String>) {
     let mut interp = Interp::new();
     let list = args
         .iter()
-        .map(|a| format!("\"{}\"", brood::introspect::escape_brood_string(a)))
+        .map(|a| brood::introspect::string_literal(a))
         .collect::<Vec<_>>()
         .join(" ");
     let code = format!("(project-release/run-bundle (list {list}))");
@@ -292,7 +292,7 @@ fn run_test_files(interp: &mut Interp, files: &[String]) {
     for path in files {
         let src = brood::cli_support::read_source_or_exit("brood", Path::new(path));
         if !no_check_env() {
-            check_one_file_for_run(interp, path, &src);
+            check_one_file(interp, path, &src, true);
         }
         if let Err(e) = brood::cli_support::eval_file(interp, path, &src) {
             // Restore the terminal first: a TUI program that entered raw mode and
@@ -310,40 +310,21 @@ fn run_test_files(interp: &mut Interp, files: &[String]) {
     }
 }
 
-/// Where the advisory checker's warnings land — stdout for the explicit
-/// `brood --check` command (the user wants the warnings), stderr for the
-/// implicit pre-run check (sidebar info that shouldn't muddle stdout).
-enum CheckSink {
-    Stdout,
-    Stderr,
-}
-
 /// Run the advisory checker over a single file's source, writing each warning
-/// as a GNU `FILE:LINE:COL: warning: msg` line to the chosen sink. Returns
-/// `true` when at least one warning was emitted. **Never** raises — a parse
-/// error here is reported but signalled by the bool, so the caller can choose
-/// whether to continue (regular run) or fail fast (`--check`).
-fn check_one_file(interp: &mut Interp, path: &str, src: &str, sink: CheckSink) -> bool {
-    check_one_file_ext(interp, path, src, sink, false)
-}
-
-/// [`check_one_file`] for the RUN pre-flight: the verdict is served from the run-check
-/// cache when this binary has checked this exact text before, and recorded otherwise
-/// (`cli_support::run_check_cache_read`/`_write` — what it keys on, what it declines).
-/// `brood --check` never reads the cache: it is the authoritative entry point, and a
+/// as a GNU `FILE:LINE:COL: warning: msg` line. Returns `true` when at least one
+/// warning was emitted. **Never** raises — a parse error here is reported but
+/// signalled by the bool, so the caller can choose whether to continue (regular
+/// run) or fail fast (`--check`).
+///
+/// `for_run` is the RUN pre-flight: warnings go to stderr (sidebar info that
+/// shouldn't muddle the program's stdout), and the verdict is served from the
+/// run-check cache when this binary has checked this exact text before, and
+/// recorded otherwise (`cli_support::run_check_cache_read`/`_write` — what it keys
+/// on, what it declines). `brood --check` writes to stdout (the user wants the
+/// warnings) and never reads the cache: it is the authoritative entry point, and a
 /// verdict it prints must be the walk it just did.
-fn check_one_file_for_run(interp: &mut Interp, path: &str, src: &str) -> bool {
-    check_one_file_ext(interp, path, src, CheckSink::Stderr, true)
-}
-
-fn check_one_file_ext(
-    interp: &mut Interp,
-    path: &str,
-    src: &str,
-    sink: CheckSink,
-    cached: bool,
-) -> bool {
-    let warnings = match cached
+fn check_one_file(interp: &mut Interp, path: &str, src: &str, for_run: bool) -> bool {
+    let warnings = match for_run
         .then(|| brood::cli_support::run_check_cache_read(&interp.heap, src))
         .flatten()
     {
@@ -360,13 +341,13 @@ fn check_one_file_ext(
                 }
             };
             let just_forms: Vec<_> = forms.into_iter().map(|(f, _)| f).collect();
-            let before = if cached {
+            let before = if for_run {
                 brood::cli_support::run_check_features_before(&interp.heap)
             } else {
                 Vec::new()
             };
             let w = brood::types::check::check_file(&mut interp.heap, &just_forms);
-            if cached {
+            if for_run {
                 brood::cli_support::run_check_cache_write(&interp.heap, src, &before, &w);
             }
             w
@@ -388,9 +369,10 @@ fn check_one_file_ext(
             Some(p) => format!("{}:{}:{}: {kind}: {}", path, p.line, p.col, msg),
             None => format!("{}: {kind}: {}", path, msg),
         };
-        match sink {
-            CheckSink::Stdout => brood::cli_support::write_stdout(&format!("{line}\n")),
-            CheckSink::Stderr => brood::cli_support::write_stderr(&format!("{line}\n")),
+        if for_run {
+            brood::cli_support::write_stderr(&format!("{line}\n"));
+        } else {
+            brood::cli_support::write_stdout(&format!("{line}\n"));
         }
     }
     warned
@@ -410,9 +392,7 @@ fn run_check_files(interp: &mut Interp, files: &[String]) {
     let mut warned = false;
     for path in files {
         let src = brood::cli_support::read_source_or_exit("brood", Path::new(path));
-        if check_one_file(interp, path, &src, CheckSink::Stdout) {
-            warned = true;
-        }
+        warned |= check_one_file(interp, path, &src, false);
     }
     if warned {
         std::process::exit(1);
@@ -426,7 +406,7 @@ fn run_files(interp: &mut Interp, files: &[String]) {
         // program stdout). `BROOD_NO_CHECK=1` opts out; an unchanged program replays its
         // last verdict from the run-check cache instead of walking again.
         if !no_check_env() {
-            check_one_file_for_run(interp, path, &src);
+            check_one_file(interp, path, &src, true);
         }
         // Run the whole program as one green process (ADR-135): a top-level driver
         // talking to a spawned worker then uses the userspace direct-handoff path (no

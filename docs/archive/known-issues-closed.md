@@ -13395,6 +13395,36 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-249 — a module loaded inside a test file dropped out of `*features*` after it ✅ FIXED 2026-10-14
+
+**Symptom.** `nest test tests/registry_test.blsp tests/lazy_load_test.blsp` failed every
+time: `lazy_load_test.blsp:209: … a MACRO head into an imaged module still loads before
+expansion, and expands`, `(is (loaded? "telemetry"))` → `false`. Each file passed alone, and
+so did the pair with `BROOD_NO_STDIMAGE=1`. Minimal shape: file A `(:use telemetry)`, file B
+reads `(contains? *features* "telemetry")` → false while `(bound? 'telemetry/attach)` → true.
+**Cause.** A registry op made during a module load goes into "the frame that defined the
+registry" when one of the process's open loads did (`staged_frame_of`), so a module that
+defines a registry and then requires submodules registering into it publishes as one. The
+test was "this frame holds a staged binding for the name" — and a registry OP stages one
+too. The scoped runner loads each file in a DIRECT frame (KI-170); its `defmodule` provides
+the file into `*features*` first, so every module the file then loaded lazily (the image
+path's `:use` defers; the source path loaded before the provide, which is why only imaged
+runs failed) had its `provide` routed into the file's frame. The file's own restore discards
+a direct frame's writes, so the module's bindings were replayed and its `*features*` entry
+was not. **Why it survived.** It needs two files in one `nest test` run, a module first loaded
+after the file's own provide, and the stdlib image; the full suite runs files in an order
+where `telemetry` was loaded before any file that checks it. **Fix.** `LoadStage::defined`
+records the names a frame actually defined; ops route by that. A frame that only registered
+into a registry holds a VIEW of it, rebuilt from the live value plus its own ops when a
+nested load publishes into that registry (`refresh_registry_views`), so the file still sees
+the module as loaded while it is loading. The `%registry-cas!` funnel keeps staging into any
+frame holding a binding: its new map was computed from that view, and written live it would
+publish the frame's unpublished ops early. **Guard.** `crates/nest/tests/direct_load_frame.rs`
+`a_module_required_by_a_directly_loaded_file_stays_provided_for_the_next_file`. Sabotaged
+both ways: the old routing → `zz_provided_test.blsp:4:5: test failed: b › the module file a
+required is still provided`; no view refresh → `aa_require_test.blsp:4: test failed: a › sees
+the nested provide while loading`.
+
 ## KI-246 — building nested sets took quadratic time ✅ FIXED 2026-10-14
 
 **Symptom.** `(fold (range n) 0 (fn (acc _) #{acc}))` took 0.9 s at depth 5 000, 3.5 s at

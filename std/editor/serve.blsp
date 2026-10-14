@@ -103,12 +103,11 @@ see `attach`), it is queued to this session's own mailbox as `[:client-opts opts
 BEFORE `ui-run` starts, so it is the first event the app's `update` folds (through
 `remote-display`'s async pass-through) — the seam a collaborative app reads a
 participant's name from."
-  (do
-    (monitor client)
-    (send client [:attached (self)])
-    (when (and (map? opts) (not (empty? opts)))
-      (send (self) [:client-opts opts]))
-    (ui-run (make-model) view update (remote-display client cols rows))))
+  (monitor client)
+  (send client [:attached (self)])
+  (when (and (map? opts) (not (empty? opts)))
+    (send (self) [:client-opts opts]))
+  (ui-run (make-model) view update (remote-display client cols rows)))
 
 (defn- serve-manager (make-model view update &optional sessions)
   "The session manager loop (registered under `serve-name`): on each `[:attach client
@@ -196,21 +195,20 @@ timeout. The connect handshake shared by the terminal (`attach`) and GUI
 (`attach-display`) clients — the only difference between them is the frontend, not the
 protocol. An empty/nil `opts` sends the old 4-element attach, so a new client still
 speaks to an old daemon."
-  (do
-    (if (and (map? opts) (not (empty? opts)))
-      (send {:name serve-name :node peer} [:attach (self) cols rows opts])
-      (send {:name serve-name :node peer} [:attach (self) cols rows]))
-    (receive
-      ([:attached session] session)
-      ([:nodedown ^peer] nil)
-      (after 5000 (error "attach: no response from the server (is it serving?)")))))
+  (if (and (map? opts) (not (empty? opts)))
+    (send {:name serve-name :node peer} [:attach (self) cols rows opts])
+    (send {:name serve-name :node peer} [:attach (self) cols rows]))
+  (receive
+    ([:attached session] session)
+    ([:nodedown ^peer] nil)
+    (after 5000 (error "attach: no response from the server (is it serving?)"))))
 
 (defn- attach-session (peer &optional opts)
   "Report our terminal size, ask `peer`'s session manager to attach us, and run the
 client loop once the daemon replies with our session pid."
   (let ([cols rows] (term/size)
         session (attach-handshake peer cols rows opts))
-    (when session (do (monitor session) (attach-loop peer session)))))
+    (when session (monitor session) (attach-loop peer session))))
 
 (defn attach (spec &optional cookie opts)
   "Attach this terminal to a `ui-run` app served by the peer named in `spec`
@@ -222,15 +220,14 @@ the terminal, so a refused / wrong-cookie / bad-spec error surfaces cleanly with
 wrecking the screen; then enters raw mode, paints the frames the daemon pushes, and
 ships back every key until the app quits (`[:bye]`) or the link drops. The terminal is
 always restored on exit."
-  (do
-    (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
-    (let (peer (node/connect spec))
-      ; raises a clean error on failure, terminal untouched
-      (node/monitor peer)
-      (term/enter)
-      (try
-        (do (attach-session peer opts) (term/leave))
-        (catch e (do (term/leave) (throw e)))))))
+  (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
+  (let (peer (node/connect spec))
+    ; raises a clean error on failure, terminal untouched
+    (node/monitor peer)
+    (term/enter)
+    (try
+      (do (attach-session peer opts) (term/leave))
+      (catch e (term/leave) (throw e)))))
 
 ;; ---- client side (a GUI / any-display frontend) ------------------------------
 ;; The terminal client (above) reads input from the TTY (`term/poll`) and frames from
@@ -284,17 +281,16 @@ loop (`attach-display-loop`) serves both. Connects *before* entering the display
 refused / wrong-cookie / bad-spec error surfaces without stranding a window; the display
 is always torn down (`:leave`) on exit. `cookie` defaults to `(node/cookie)`; `opts` is
 the optional identity map (see `attach`)."
-  (do
-    (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
-    (let (peer (node/connect spec))
-      (node/monitor peer)
-      ((get display :enter))
-      (try
-        (let ([cols rows] ((get display :size))
-              session (attach-handshake peer cols rows opts))
-          (when session (do (monitor session) (attach-display-loop peer session display)))
-          ((get display :leave)))
-        (catch e (do ((get display :leave)) (throw e)))))))
+  (node/start (attach-gen-name) "127.0.0.1:0" (or cookie (node/cookie)))
+  (let (peer (node/connect spec))
+    (node/monitor peer)
+    ((get display :enter))
+    (try
+      (let ([cols rows] ((get display :size))
+            session (attach-handshake peer cols rows opts))
+        (when session (monitor session) (attach-display-loop peer session display))
+        ((get display :leave)))
+      (catch e ((get display :leave)) (throw e)))))
 
 (defn attach-display-local (display &optional opts)
   "Attach `display` (e.g. `(gui-display)`, a native window) to a serve session running in THIS
@@ -308,25 +304,24 @@ Composes with both: under `serve` the host gets its own session; under `serve-sh
 the one shared model — its own view of the collaborative doc. `opts` is the optional identity
 map (see `attach`) — the host is a participant too. The display is always torn down (`:leave`)
 on exit."
-  (do
-    ((get display :enter))
-    (try
-      (let ([cols rows] ((get display :size))
-            manager (proc/whereis serve-name))
-        ;; The documented precondition, said out loud: without it the send below had no
-        ;; addressee, and the failure read as a type error in `send`.
-        (if (nil? manager)
-          (error "attach-display-local: no serve session in this runtime — run `(serve …)` first")
-          (if (and (map? opts) (not (empty? opts)))
-            (send manager [:attach (self) cols rows opts])
-            (send manager [:attach (self) cols rows])))
-        (let (session (receive
-                        ([:attached s] s)
-                        (after 5000
-                          (error "attach-display-local: the local serve manager did not answer"))))
-          (when session (do (monitor session) (attach-display-loop nil session display))))
-        ((get display :leave)))
-      (catch e (do ((get display :leave)) (throw e))))))
+  ((get display :enter))
+  (try
+    (let ([cols rows] ((get display :size))
+          manager (proc/whereis serve-name))
+      ;; The documented precondition, said out loud: without it the send below had no
+      ;; addressee, and the failure read as a type error in `send`.
+      (if (nil? manager)
+        (error "attach-display-local: no serve session in this runtime — run `(serve …)` first")
+        (if (and (map? opts) (not (empty? opts)))
+          (send manager [:attach (self) cols rows opts])
+          (send manager [:attach (self) cols rows])))
+      (let (session (receive
+                      ([:attached s] s)
+                      (after 5000
+                        (error "attach-display-local: the local serve manager did not answer"))))
+        (when session (monitor session) (attach-display-loop nil session display)))
+      ((get display :leave)))
+    (catch e ((get display :leave)) (throw e))))
 
 ;; ---- shared session (many frontends, ONE model — collaborative) --------------
 ;; `serve` gives each client its OWN model (independent sessions). `serve-shared` runs a
@@ -363,9 +358,8 @@ close (`[:bye]`). Tail-recursive; one hub per shared session."
   "Query `hub` for the shared session's `[cols rows]` (a local round-trip), falling back to
 `[80 24]` if it doesn't answer promptly. Selective on `[:hub-size …]`, so it never eats the
 `[:key …]` inputs also queued on the session's mailbox."
-  (do
-    (send hub [:size (self)])
-    (receive ([:hub-size c r] [c r]) (after 200 [80 24]))))
+  (send hub [:size (self)])
+  (receive ([:hub-size c r] [c r]) (after 200 [80 24])))
 
 (defn- shared-display (hub)
   "The `ui-run` display for a shared session: `:draw` ships each frame to `hub` (fanned to

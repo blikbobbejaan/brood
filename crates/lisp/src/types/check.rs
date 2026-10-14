@@ -833,18 +833,6 @@ fn arities_overlap(a: Arity, b: Arity) -> bool {
     a.min <= b_max && b.min <= a_max
 }
 
-/// The arity an arrow signature admits — the same mapping the call-site arity check
-/// applies to a declared sig.
-fn sig_arity(sig: &Sig) -> Arity {
-    if sig.rest.is_some() {
-        Arity::at_least(sig.params.len())
-    } else if sig.optional.is_empty() {
-        Arity::exact(sig.params.len())
-    } else {
-        Arity::range(sig.params.len(), sig.params.len() + sig.optional.len())
-    }
-}
-
 /// Warn when one file binds the same top-level name twice in one module: the
 /// later `def`/`defn`/`defn-`/`defmacro`/`defdyn`/`defrecord` silently replaces the
 /// earlier, so the first is dead code that still reads as the definition. Found the hard
@@ -992,7 +980,7 @@ fn check_sig_declarations(
             annot::parse_sig_decl(heap, form),
             ctx.file_arity(qualified).or_else(|| ctx.file_arity(name)),
         ) {
-            let declared = sig_arity(&sig);
+            let declared = walk::arity_of_sig(&sig);
             if !arities_overlap(declared, def_arity) {
                 out.push((
                     pos,
@@ -1043,21 +1031,13 @@ fn collect_register_sig_forms_inner(heap: &mut Heap, form: Value, out: &mut Vec<
     }
     if crate::core::value::symbol_is(head, "%register-sig") && items.len() == 3 {
         // items[1] = (quote name), items[2] = (quote type)
-        if let (Some(name), Some(ty)) = (unwrap_quote(heap, items[1]), unwrap_quote(heap, items[2]))
+        if let (Some(name), Some(ty)) =
+            (walk::unquote(heap, items[1]), walk::unquote(heap, items[2]))
         {
             let sig_head = crate::core::value::sym("sig");
             let rebuilt = heap.list(vec![sig_head, name, ty]);
             out.push(rebuilt);
         }
-    }
-}
-
-/// The inner form of `(quote X)` → `X`; `None` for anything else.
-fn unwrap_quote(heap: &Heap, form: Value) -> Option<Value> {
-    let items = heap.list_to_vec(form).ok()?;
-    match items.as_slice() {
-        [Value::Sym(h), inner] if crate::core::value::symbol_is(*h, kw::QUOTE) => Some(*inner),
-        _ => None,
     }
 }
 
@@ -1084,8 +1064,8 @@ fn extract_use_module_names(heap: &Heap, forms: &[Value]) -> Vec<String> {
 /// Every module named in an *import* clause of the header — `(:use mod)`,
 /// `(:use-internals mod)`, and `(:alias mod [:as short])`, each of which **loads** `mod`
 /// (an `:alias` `(require …)`s its target, then adds the `short/` prefix; references via
-/// the alias macro-expand to `mod/…`). Used for the KI-17 reachability set — a module
-/// reached by any of these is genuinely required. Kept separate from
+/// the alias macro-expand to `mod/…`). Used for the file's world (B8) and the
+/// whole-project require edges — a module reached by any of these is genuinely required. Kept separate from
 /// [`extract_use_module_names`], whose `:use`-only view backs the unused-import lint.
 fn extract_import_module_names(heap: &Heap, forms: &[Value]) -> Vec<String> {
     extract_clause_modules(heap, forms, &["use", "use-internals", "alias", "load"])
@@ -1136,10 +1116,7 @@ fn extract_clause_modules(heap: &Heap, forms: &[Value], keywords: &[&str]) -> Ve
 
 /// The module name a top-level `(require …)` targets, if any — `(require 'mod)`,
 /// `(require "mod")`, or `(require 'mod :as m)`. `None` for a non-require form or a
-/// dynamic require whose module argument isn't a literal symbol/string (harmless: an
-/// un-added prefix can only *add* a warning, so a dynamic require that this misses is
-/// caught by the `raw_qualified` guard / the sweep, never a silent unsoundness the
-/// other way).
+/// dynamic require whose module argument isn't a literal symbol/string.
 fn require_target(heap: &Heap, form: Value) -> Option<String> {
     let items = list_items(heap, form)?;
     match items.first() {
@@ -1163,15 +1140,13 @@ fn require_target(heap: &Heap, form: Value) -> Option<String> {
     }
 }
 
-/// The KI-17 reachability set — module prefixes the file makes reachable *itself*:
-/// every `(:use M)` in its header, every `(require 'M)` **anywhere** in the file
-/// (including one nested in a function body — `project.blsp` requires `test`/`package`
-/// lazily inside the functions that use them, to keep startup lean), and its own
-/// namespace. A file that requires `M` *somewhere* is treated as reaching `M` for the
-/// whole file — an over-approximation, which is the sound direction (it can only
-/// *suppress* a warning, never invent one). Direct requires only, not their transitive
-/// closure; matching the discipline that a file `require`s what it names. See
-/// [`Ctx::required_mods`] and `walk::unrequired_module`.
+/// The module prefixes the file makes reachable *itself*: every `(:use M)` in its
+/// header, every `(require 'M)` **anywhere** in the file (including one nested in a
+/// function body — `project.blsp` requires `test`/`package` lazily inside the functions
+/// that use them, to keep startup lean), and its own namespace. A file that requires `M`
+/// *somewhere* is treated as reaching `M` for the whole file — an over-approximation.
+/// Direct requires only, not their transitive closure. The seed of the file's world
+/// (B8, `check_file_mode`).
 fn collect_required_modules(
     heap: &Heap,
     forms: &[Value],
@@ -1184,8 +1159,8 @@ fn collect_required_modules(
         mods.insert(value::symbol_name(ns));
     }
     // Every module the file itself declares (ADR-223: a file may open more than one
-    // `(defmodule …)`) is trivially "required" — an intra-file qualified reference to a
-    // co-located sibling module must not read as an unrequired-module use. `file_ns` above
+    // `(defmodule …)`) is trivially reachable — an intra-file qualified reference to a
+    // co-located sibling module is in the file's world. `file_ns` above
     // is only the first; add the rest (the caller roots every entry, so the bare names here
     // gain their rooted form too).
     for m in crate::eval::macros::file_modules(heap, forms) {
@@ -1239,8 +1214,8 @@ fn close_through_std(heap: &mut Heap, mods: &mut HashSet<String>) {
 /// A file's own module name (from its `(defmodule …)` header, or `None`) and the module
 /// names it **directly** pulls in — `(:use …)` / `(:use-internals …)` clauses plus every
 /// `(require 'M)` anywhere in the file. The edge list the whole-project driver
-/// (`std/tool/project.blsp`) closes transitively into each file's KI-17 reachability set,
-/// then feeds back to [`check_file_ext`]. Own ns is excluded from `requires`.
+/// (`std/tool/project.blsp`) closes transitively into each file's require-closure, then
+/// feeds back to [`check_file_ext`] as the seed of the file's world (B8). Own ns is excluded from `requires`.
 pub fn module_direct_requires(heap: &Heap, forms: &[Value]) -> (Option<String>, Vec<String>) {
     let file_ns = crate::eval::macros::file_ns(heap, forms);
     let own = file_ns.map(value::symbol_name);
@@ -1291,10 +1266,7 @@ fn collect_require_targets(heap: &Heap, form: Value, out: &mut HashSet<String>) 
 
 /// Every qualified symbol *name* (`"mod/name"`, module segment non-empty) appearing
 /// anywhere in the un-expanded `forms` — the user-written references. Over-approximate
-/// (includes quoted data and binder positions), which is sound for the KI-17 lint: it
-/// only *permits* a warning the walk independently decides to emit (and the walk already
-/// excludes quotes/binders), so a name present only after macro expansion is treated as
-/// macro-injected and never flagged.
+/// (includes quoted data and binder positions): it only ever WIDENS the file's world.
 fn collect_raw_qualified(heap: &Heap, forms: &[Value]) -> HashSet<String> {
     collect_all_syms(heap, forms)
         .into_iter()
@@ -1806,13 +1778,11 @@ fn inferred_signature(ctx: &Ctx, name: Symbol) -> Option<Sig> {
     Some(Sig::new(params, ret))
 }
 
-/// [`check_file`] with an explicit **KI-17 reachability set** — the file's *transitive*
-/// require-closure (module names), computed by the whole-project driver
-/// (`std/tool/project.blsp`, which alone sees every file's header). Unioned with the
-/// file's own direct requires (which `check_file_ext` derives from `forms`), it becomes
-/// [`Ctx::required_mods`]: a user-written `mod/name` whose `mod` is outside the closure
-/// resolves only by load-order luck and is flagged. Pass `&[]` for the single-file /
-/// LSP path, where the un-required module simply isn't loaded and the lint is inert.
+/// [`check_file`] with the file's *transitive* require-closure (module names), computed
+/// by the whole-project driver (`std/tool/project.blsp`, which alone sees every file's
+/// header). Unioned with the file's own direct requires (which `check_file_ext` derives
+/// from `forms`), it seeds the file's world — what its registry reads may see (B8).
+/// Pass `&[]` for the single-file / LSP path.
 pub fn check_file_ext(
     heap: &mut Heap,
     forms: &[Value],
@@ -2216,40 +2186,32 @@ fn collect_file_scope(
     // per file was the residual O(files²) after the header-eval redesign — an O(1) `Arc`
     // clone on all but the first file of a whole-project check.
     ctx.set_known_ns_arc(heap.known_ns_prefixes());
-    // The unrequired-module lint (KI-17): `required` is what THIS file pulls in (its
-    // `:use`/`require` + own ns); `raw_qualified` restricts the lint to references the
-    // user literally wrote. In a whole-project check every module is bound image-wide,
-    // so a written `mod/name` whose `mod` is absent here resolves only by load-order luck.
-    let mut required = collect_required_modules(heap, forms, file_ns);
-    required.extend(extra_required.iter().cloned());
+    // The file's WORLD (B8): what its registry reads may see. It starts from what THIS
+    // file pulls in (its `:use`/`require` + own ns, plus the driver's require-closure).
+    let mut visible = collect_required_modules(heap, forms, file_ns);
+    visible.extend(extra_required.iter().cloned());
     // Package-rooted namespaces (ADR-070): a `(:use b)`/`require` target roots to
-    // `pkg/b` at load, and the resolved `pkg/b/name` references this lint checks are
-    // rooted too — so the reachable set must carry each entry's ROOTED form as well,
-    // or an intra-package reference is falsely flagged "unrequired". `root_module_name`
-    // is identity for an external / std / already-rooted name, so the unrooted entries
-    // stay valid too (both forms are kept). Inert outside a package context.
-    let rooted: Vec<String> = required
+    // `pkg/b` at load, and the resolved `pkg/b/name` references are rooted too — so the
+    // set must carry each entry's ROOTED form as well. `root_module_name` is identity for
+    // an external / std / already-rooted name, so the unrooted entries stay valid too
+    // (both forms are kept). Inert outside a package context.
+    let rooted: Vec<String> = visible
         .iter()
         .map(|m| value::symbol_name(heap.root_module_name(value::intern(m))))
         .collect();
-    required.extend(rooted);
-    let raw_qualified = collect_raw_qualified(heap, forms);
-    // The file's WORLD (B8): what its registry reads may see. Wider than the KI-17 set
-    // — a std module reached only by a qualified `tempo/new!` is loaded on first use
-    // (ADR-335) and needs no `:use`, so every qualified prefix counts too — and closed
-    // through the standard library: the driver closes over PROJECT files, so a std
-    // module is a leaf there, but what it requires is in the file's world as well
-    // (`tempo` reaches `datetime`), and a value the file can construct must never be
-    // read as invisible.
-    let mut visible: HashSet<String> = required.clone();
+    visible.extend(rooted);
+    // A std module reached only by a qualified `tempo/new!` is loaded on first use
+    // (ADR-335) and needs no `:use`, so every user-written qualified prefix counts too —
+    // and the set is closed through the standard library: the driver closes over PROJECT
+    // files, so a std module is a leaf there, but what it requires is in the file's world
+    // as well (`tempo` reaches `datetime`), and a value the file can construct must never
+    // be read as invisible.
     visible.extend(
-        raw_qualified
+        collect_raw_qualified(heap, forms)
             .iter()
             .filter_map(|q| q.rfind('/').map(|slash| q[..slash].to_string())),
     );
     close_through_std(heap, &mut visible);
-    ctx.set_required_mods(required);
-    ctx.set_raw_qualified(raw_qualified);
     for &form in expanded {
         collect_def_names(heap, form, &mut ctx);
     }
@@ -3159,7 +3121,7 @@ pub fn check_file_with_deps(
     check_file_with_deps_ext(heap, forms, &[])
 }
 
-/// [`check_file_with_deps`] with the KI-17 reachability set (see [`check_file_ext`]).
+/// [`check_file_with_deps`] with the file's require-closure (see [`check_file_ext`]).
 pub fn check_file_with_deps_ext(
     heap: &mut Heap,
     forms: &[Value],

@@ -184,37 +184,21 @@ fn offload_msg(tag: &str, token: i64, payload: crate::process::Message) -> crate
 /// delivers `[:offload token result]` or `[:offload-error token err]` to the
 /// calling process's mailbox. Policy lives in the prelude `offload` wrapper.
 pub(super) fn offload_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let (func, name) = match arg(args, 0) {
+    let (func, name) = expect!(heap, "%offload", arg(args, 0), "native function",
         Value::Native(id) => {
             let n = heap.native(id);
             (n.func, n.name.clone())
-        }
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%offload",
-                "native function",
-                other,
-            ))
-        }
-    };
+        },
+    )?;
     if !OFFLOAD_ALLOWED.contains(&name.as_str()) {
         return Err(LispError::runtime(format!(
             "%offload: `{name}` is not offload-safe — only long/blocking data-in/data-out natives run on the pool (see (doc '%offload))"
         )));
     }
-    let call_args: Vec<Value> = match arg(args, 1) {
+    let call_args: Vec<Value> = expect!(heap, "%offload", arg(args, 1), "vector of arguments",
         Value::Vector(id) => heap.vector(id).to_vec(),
         Value::Nil => Vec::new(),
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%offload",
-                "vector of arguments",
-                other,
-            ))
-        }
-    };
+    )?;
     let mut msgs = Vec::with_capacity(call_args.len());
     for v in call_args {
         msgs.push(crate::process::to_message(heap, v)?);

@@ -107,17 +107,9 @@ enum HashAlgo {
 }
 
 fn hash_algo(name: &'static str, kw: Value, heap: &mut Heap) -> Result<HashAlgo, LispError> {
-    let sym = match kw {
+    let sym = expect!(heap, name, kw, "algorithm keyword",
         Value::Keyword(s) => s,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                name,
-                "algorithm keyword",
-                other,
-            ))
-        }
-    };
+    )?;
     match value::symbol_name(sym).as_str() {
         "md5" => Ok(HashAlgo::Md5),
         "sha1" => Ok(HashAlgo::Sha1),

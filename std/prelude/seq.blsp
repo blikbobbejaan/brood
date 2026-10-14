@@ -374,13 +374,13 @@ import (and so `(:use set)` can't shadow them).
 (defn- %defrecord-fname (f) (if (pair? f) (first f) f))
 (defn- %defrecord-ftype (f) (if (pair? f) (second f) nil))
 (defn- %defrecord-acc-sym (rec fld) (symbol (str (->string rec) "-" (->string fld))))
-(defn- %defrecord-derives (opts)
-  "The vector following `:derives` in a `defrecord`'s trailing opts (the abilities to
-  derive), or nil. Each named ability must declare a `:derive-record` recipe (ADR-185)."
+;; The form following keyword `kw` in a macro's flat option list, or nil — how `defrecord`
+;; reads `:derives` and `defability` (tools.blsp) reads `:sealed`/`:requires`/`:derive-record`.
+(defn- %form-after (opts kw)
   (cond
     (empty? opts) nil
-    (= (first opts) :derives) (second opts)
-    else (%defrecord-derives (rest opts))))
+    (= (first opts) kw) (second opts)
+    else (%form-after (rest opts) kw)))
 (defn- %defrecord-check-opts (rec opts)
   "Refuse anything after a `defrecord`'s field list but `:derives [Ability …]`. It used to
   be ignored: `(defrecord pt (x int) (y int))` — typed fields written one list each —
@@ -523,7 +523,8 @@ prelude declares one, so `:derives` always names an ability from your own code."
         ;; WITHOUT first evaluating the ability's `defability`, so the recipe isn't registered
         ;; at expand time. `%derive-into` registers the impls at load; the checker reads these
         ;; forms statically (they mark the ability's ops as implemented for `id`).
-        derives (%defrecord-derives opts)
+        ;; Each named ability must declare a `:derive-record` recipe (ADR-185).
+        derives (%form-after opts :derives)
         derive-calls (if derives
                        (map derives
                          (fn (a)
@@ -826,7 +827,7 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
         " Brood is lists-for-code, vectors-for-data (unlike Clojure) — a vector"
         " *inside* a binding position is still destructuring: (for ([k v] pairs) k)."))
     (%for-check-binds binds)
-    (let (split (%for-split-into (map binds identity))
+    (let (split (%for-split-into binds)
           binds (first split)
           into (second split)
           acc (gensym "acc")
@@ -853,13 +854,13 @@ A trailing `:into coll` collects with `conj` onto `coll` instead of building a l
         (pr-str binds)
         ". Syntax: (fold-for (acc init x xs :when p) body)"))
     (%for-check-binds (rest (rest binds)))
-    (when (second (%for-split-into (map (rest (rest binds)) identity)))
+    (when (second (%for-split-into (rest (rest binds))))
       (error "fold-for: :into is for's clause — the accumulator IS the result here."
         " Syntax: (fold-for (acc init x xs :when p) body)"))
     (let (acc (first binds)
           init (second binds)
           body (if (empty? (rest body)) (first body) (cons 'do body)))
-      `(let (~acc ~init) ~(%for-fold acc (map (rest (rest binds)) identity) body)))))
+      `(let (~acc ~init) ~(%for-fold acc (rest (rest binds)) body)))))
 
 ;; (doseq (pat coll) body...) — run `body` for its side effects over each item,
 ;; returning nil. Just `for` run for effect (the result list is discarded). The
@@ -920,11 +921,9 @@ when nothing is dropped, exactly as `(drop [1 2 3] 0)` does.
     (drop-while [5 1] (fn (x) (< x 3)))       → [5 1]   ; nothing dropped, so `coll` itself
 
 Works on any collection `drop` does — vectors and strings included."
-  (%drop-while-from pred coll))
-(defn- %drop-while-from (pred coll)
   (if (empty? coll)
     coll
-    (if (pred (first coll)) (%drop-while-from pred (rest coll)) coll)))
+    (if (pred (first coll)) (drop-while (rest coll) pred) coll)))
 
 (%defseq mapcat
   (f)

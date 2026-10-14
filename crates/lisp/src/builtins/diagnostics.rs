@@ -556,21 +556,25 @@ pub(super) fn native_tier_p(_: &[Value], _: EnvId, _heap: &mut Heap) -> LispResu
     Ok(Value::boolean(native))
 }
 
+/// The `argc` argument of the `(%… f argc)` arm probes, which select an arm by arity.
+#[cfg(feature = "dev-tools")]
+fn arm_argc(heap: &Heap, who: &str, v: Value) -> Result<usize, LispError> {
+    match v {
+        Value::Int(n) if n >= 0 => Ok(n as usize),
+        other => Err(LispError::wrong_type(
+            heap,
+            who,
+            "non-negative int (argc)",
+            other,
+        )),
+    }
+}
+
 /// `(%jit-arm-state f argc)` — see the registration.
 #[cfg(feature = "dev-tools")]
 pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let f = args[0];
-    let argc = match args[1] {
-        Value::Int(n) if n >= 0 => n as usize,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%jit-arm-state",
-                "non-negative int (argc)",
-                other,
-            ))
-        }
-    };
+    let argc = arm_argc(heap, "%jit-arm-state", args[1])?;
     let state = |s: &str| value::kw(s);
     // The arm's state, with its consecutive and total deopt counts (0 where there is none).
     let (st, deopts, deopts_total) = match f {
@@ -625,17 +629,7 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// `(%vm-arm-ops f argc)` — see the registration.
 #[cfg(feature = "dev-tools")]
 pub(super) fn vm_arm_ops(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let argc = match args[1] {
-        Value::Int(n) if n >= 0 => n as usize,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%vm-arm-ops",
-                "non-negative int (argc)",
-                other,
-            ))
-        }
-    };
+    let argc = arm_argc(heap, "%vm-arm-ops", args[1])?;
     let Value::Fn(id) = args[0] else {
         return Ok(Value::nil());
     };
@@ -655,17 +649,7 @@ pub(super) fn vm_arm_ops(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 /// `(%vm-arm-stale? f argc)` — see the registration.
 #[cfg(feature = "dev-tools")]
 pub(super) fn vm_arm_stale_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let argc = match args[1] {
-        Value::Int(n) if n >= 0 => n as usize,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%vm-arm-stale?",
-                "non-negative int (argc)",
-                other,
-            ))
-        }
-    };
+    let argc = arm_argc(heap, "%vm-arm-stale?", args[1])?;
     let Value::Fn(id) = args[0] else {
         return Ok(Value::nil());
     };

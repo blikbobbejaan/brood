@@ -12,28 +12,11 @@
 //! property of the binding and not of the declaring form — exactly what ADR-381 changed. So
 //! the image is BUILT first, into a private cache, and the run is checked to have read it.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("brood-contracts-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::temp_dir;
 
 struct Run {
     out: String,
@@ -117,7 +100,7 @@ fn build_image(root: &Path, cache: &Path) {
 
 #[test]
 fn nest_run_enforces_own_and_std_contracts_by_default() {
-    let tmp = tempdir("run");
+    let tmp = temp_dir("contracts-run");
     let root = tmp.path.join("cdef");
     let cache = tmp.path.join("cache");
     write_project(&root);
@@ -164,7 +147,7 @@ fn nest_run_enforces_own_and_std_contracts_by_default() {
 
 #[test]
 fn brood_contracts_zero_opts_out_of_the_default() {
-    let tmp = tempdir("optout");
+    let tmp = temp_dir("contracts-optout");
     let root = tmp.path.join("cdef");
     let cache = tmp.path.join("cache");
     write_project(&root);
@@ -188,7 +171,7 @@ fn brood_contracts_zero_opts_out_of_the_default() {
 
 #[test]
 fn nest_test_enforces_contracts_by_default() {
-    let tmp = tempdir("test");
+    let tmp = temp_dir("contracts-test");
     let root = tmp.path.join("cdef");
     let cache = tmp.path.join("cache");
     write_project(&root);
@@ -213,7 +196,7 @@ fn nest_test_enforces_contracts_by_default() {
 /// `BROOD_CONTRACTS=1 nest stdimage` must say no.
 #[test]
 fn stdimage_refuses_to_build_with_contracts_armed() {
-    let tmp = tempdir("stdimage");
+    let tmp = temp_dir("contracts-stdimage");
     let root = tmp.path.join("cdef");
     let cache = tmp.path.join("cache");
     write_project(&root);

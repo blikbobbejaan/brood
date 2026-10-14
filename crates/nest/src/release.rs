@@ -15,14 +15,10 @@
 const EMBEDDED_RUNTIME: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/embedded-runtime"));
 
 /// The triple this `nest` was built for (baked in by `build.rs`) — a `--target`
-/// equal to it is served by the embedded runtime, no cache entry needed.
-const HOST_TRIPLE: &str = env!("NEST_HOST_TRIPLE");
-
-/// The triple this `nest` runs on — the one `--target` whose artifact can actually
-/// be executed here, so the only one `nest release`'s boot check can run.
-pub(crate) fn host_triple() -> &'static str {
-    HOST_TRIPLE
-}
+/// equal to it is served by the embedded runtime, no cache entry needed. It is also the
+/// one `--target` whose artifact can actually be executed here, so the only one
+/// `nest release`'s boot check can run.
+pub(crate) const HOST_TRIPLE: &str = env!("NEST_HOST_TRIPLE");
 
 /// The base runtime bytes to append the app to — the single **lean + gui**
 /// runtime (no test/observer/MCP/doc/hot-reload/REPL/GC-debug surface, but the

@@ -429,6 +429,17 @@ fn extract<P: serde::de::DeserializeOwned>(req: Request) -> Result<(RequestId, P
 }
 
 impl Document {
+    /// A document version with its analysis built once, here — every later request
+    /// against this URI reads `analysis` rather than re-parsing the source.
+    fn new(text: String, version: i32) -> Self {
+        let analysis = analyze(&text);
+        Document {
+            text,
+            analysis,
+            version,
+        }
+    }
+
     /// The byte offset of an LSP `position` in this document.
     fn offset(&self, position: lsp_types::Position) -> u32 {
         self.analysis.line_index.offset(&self.text, position)
@@ -878,21 +889,9 @@ fn handle_notification(
             let Some(opened) = params::<lsp_types::DidOpenTextDocumentParams>(notification) else {
                 return Ok(());
             };
-            let uri = opened.text_document.uri;
-            let text = opened.text_document.text;
-            let version = opened.text_document.version;
-            // Cache the analysis once per document version — every later
-            // request against this URI reads from `doc.analysis` rather than
-            // re-parsing the source.
-            let analysis = analyze(&text);
-            docs.insert(
-                uri.clone(),
-                Document {
-                    text,
-                    analysis,
-                    version,
-                },
-            );
+            let document = opened.text_document;
+            let uri = document.uri;
+            docs.insert(uri.clone(), Document::new(document.text, document.version));
             publish(connection, docs, interp, bootstrapped, &uri)?;
         }
         DidChangeTextDocument::METHOD => {
@@ -917,15 +916,7 @@ fn handle_notification(
             for change in &changed.content_changes {
                 apply_content_change(&mut text, change);
             }
-            let analysis = analyze(&text);
-            docs.insert(
-                uri.clone(),
-                Document {
-                    text,
-                    analysis,
-                    version,
-                },
-            );
+            docs.insert(uri.clone(), Document::new(text, version));
             publish(connection, docs, interp, bootstrapped, &uri)?;
         }
         DidCloseTextDocument::METHOD => {

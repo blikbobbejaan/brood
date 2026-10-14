@@ -364,12 +364,12 @@ than `:arity` admits, or fewer than it demands."
 `:no-positional-with`. First violation wins, in clap's words."
   (let (flags (get parsed :flags)
         on? (fn (flag) (get flags flag))
-        conflict (first (seq/filter (get spec :conflicts)
-                          (fn (pair) (and (on? (nth pair 0)) (on? (nth pair 1))))))
-        missing (first (seq/filter (seq (get spec :requires))
-                         (fn ([flag needed]) (and (on? flag) (not (on? needed))))))
-        lonely (first (seq/filter (get spec :no-positional-with)
-                        (fn (flag) (and (on? flag) (not (empty? (get parsed :positionals))))))))
+        conflict (seq/find (get spec :conflicts)
+                   (fn (pair) (and (on? (nth pair 0)) (on? (nth pair 1)))))
+        missing (seq/find (seq (get spec :requires))
+                  (fn ([flag needed]) (and (on? flag) (not (on? needed)))))
+        lonely (seq/find (get spec :no-positional-with)
+                 (fn (flag) (and (on? flag) (not (empty? (get parsed :positionals)))))))
     (cond
       (get parsed :error) parsed
       conflict
@@ -403,7 +403,7 @@ clap's words."
             hi (nth range 1)
             label (str "'" flag " <" (get kind :value) ">'"))
         (cond
-          (or (failure? n) (not (int? n)))
+          (not (int? n))
             (assoc acc
               :error (str "invalid value '" raw "' for " label ": invalid digit found in string"))
           (or (and lo (< n lo)) (and hi (> n hi)))
@@ -598,7 +598,7 @@ selector; a name that merely contains a colon still loads."
   (let (i (string/last-index-of arg ":"))
     (if (and (int? i) (> i 0))
       (let (n (string/->number (string/substring arg (+ i 1) (string/length arg))))
-        (if (and (not (failure? n)) (int? n)) [(string/substring arg 0 i) n] [arg nil]))
+        (if (int? n) [(string/substring arg 0 i) n] [arg nil]))
       [arg nil])))
 
 (defn- file-lines (args)

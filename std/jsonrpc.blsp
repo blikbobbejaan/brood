@@ -105,10 +105,9 @@ line), or nil when it is absent or not a number."
                     message (try
                               (json/decode body)
                               (catch e
-                                (do
-                                  (log/warn (str "jsonrpc: a frame that is not JSON was dropped: "
-                                              (error-message e)))
-                                  nil))))
+                                (log/warn (str "jsonrpc: a frame that is not JSON was dropped: "
+                                            (error-message e)))
+                                nil)))
                 (decode-acc remaining (if (nil? message) acc (cons message acc)))))))))))
 
 (defn decode (buf)

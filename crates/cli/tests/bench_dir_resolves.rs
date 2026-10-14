@@ -23,13 +23,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root")
-        .to_path_buf()
-}
+mod support;
+use support::repo_root;
 
 fn resolve(root: &Path) -> String {
     let out = Command::new(repo_root().join("scripts/bench-dir.sh"))

@@ -24,10 +24,8 @@ last few calls, compared by `=` — for arguments like a buffer's rope, where ha
   (seq/keep params
     (fn (p)
       (cond
-        (and (symbol? p) (string/starts-with? (->string p) "&")) nil
-        (symbol? p) p
         (list? p) (first p)
-        :else nil))))
+        (and (symbol? p) (not (string/starts-with? (->string p) "&"))) p))))
 
 (defn recent-lookup (store key)
   "The `[key value]` entry of `store` whose key is `=` to `key`, or nil. The lookup half
@@ -55,21 +53,16 @@ a render path asked twice a frame about the same buffer. The store is a global (
 plus `-recent`), so every process calling the function shares it.
 
     (defmemo rows-of 8 (rope width) \"…\" (expensive rope width))"
-  (let (doc (if (string? (first body)) (list (first body)) '())
-        forms (if (string? (first body)) (rest body) body)
-        store (symbol (str (->string name) "-recent"))
-        key (gensym "key")
-        hit (gensym "hit")
-        value (gensym "value"))
+  (let (doc? (string? (first body))
+        store (symbol (str (->string name) "-recent")))
     `(do
        (def ~store '())
        (defn ~name ~params
-         ~@doc
-         (let (~key [~@(param-names params)]
-               ~hit (memo/recent-lookup ~store ~key))
-           (if ~hit
-             (second ~hit)
-             (let (~value (do ~@forms))
-               (do
-                 (def ~store (memo/recent-remember ~store ~key ~value ~capacity))
-                 ~value))))))))
+         ~@(if doc? (list (first body)) '())
+         (let (key# [~@(param-names params)]
+               hit# (memo/recent-lookup ~store key#))
+           (if hit#
+             (second hit#)
+             (let (value# (do ~@(if doc? (rest body) body)))
+               (def ~store (memo/recent-remember ~store key# value# ~capacity))
+               value#)))))))

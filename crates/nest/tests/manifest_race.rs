@@ -14,24 +14,8 @@
 use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-race-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::{temp_dir, TempDir};
 
 /// A minimal dependency project, so `add` can actually resolve it.
 fn write_dep(root: &Path, name: &str) {
@@ -51,7 +35,7 @@ fn write_dep(root: &Path, name: &str) {
 
 /// A host project with `count` sibling deps available to add.
 fn workspace(tag: &str, deps: &[&str]) -> (TempDir, std::path::PathBuf) {
-    let tmp = tempdir(tag);
+    let tmp = temp_dir(&format!("race-{tag}"));
     for d in deps {
         write_dep(&tmp.path, d);
     }

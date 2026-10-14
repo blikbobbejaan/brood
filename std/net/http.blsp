@@ -414,14 +414,7 @@ bytes can never disagree."
         headers (assoc (or (/get resp :headers) {})
                   "Content-Length" (str (count body-bytes))
                   "Connection" "close"))
-    ["HTTP/1.0 "
-      (str status)
-      " "
-      (http-reason status)
-      "\r\n"
-      (render-headers headers)
-      "\r\n"
-      body-bytes]))
+    (conj (render-head status headers) body-bytes)))
 
 ;; ---- streaming responses (the connection-handoff seam) ----------------------
 ;; A handler that returns `(stream-response …)` keeps the connection open: the

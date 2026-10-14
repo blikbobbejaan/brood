@@ -24,19 +24,9 @@
 //! The emission now asks the cached-bool primitive inline and enters the checking function
 //! only armed. Same probe: the checker is rebound to record the op it is asked about.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
 
 const PROGRAM: &str = "\
 (def %kw-calls (%table))\n\
@@ -61,17 +51,7 @@ const PROGRAM: &str = "\
 (io/puts (str \"size-bad: \" (try (size \"x\") (catch e (str \"RAISED \" (get e :kind))))))\n";
 
 fn run(contracts: bool) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = TempDir {
-        path: std::env::temp_dir().join(format!(
-            "brood-contract-offer-{}-{nanos}",
-            std::process::id()
-        )),
-    };
-    std::fs::create_dir_all(&dir.path).expect("create temp dir");
+    let dir = support::temp_dir("contract-offer");
     let program = dir.path.join("program.blsp");
     std::fs::write(&program, PROGRAM).expect("write program");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));

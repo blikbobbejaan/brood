@@ -161,7 +161,7 @@ or a failure for a platform no release is built for.
                       (replace-binaries unpacked directory)
                       (say "installed brood " tag " to " directory)
                       :installed)
-                    (catch problem (do (file/rmdir scratch) (throw problem)))))
+                    (catch problem (file/rmdir scratch) (throw problem))))
       (file/rmdir scratch)
       outcome)))
 

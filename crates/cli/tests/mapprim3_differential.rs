@@ -20,26 +20,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+use support::{temp_dir, TempDir};
 
 fn fixture(tag: &str, source: &str) -> (TempDir, PathBuf) {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    let file = path.join("probe.blsp");
+    let dir = temp_dir(tag);
+    let file = dir.path.join("probe.blsp");
     std::fs::write(&file, source).expect("write fixture");
-    (TempDir { path }, file)
+    (dir, file)
 }
 
 fn run(file: &PathBuf, prims: bool, extra: &[(&str, &str)]) -> String {

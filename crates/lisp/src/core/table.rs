@@ -79,16 +79,7 @@ impl std::hash::Hasher for IdentityHasher {
         self.0 = i;
     }
 }
-#[derive(Default, Clone, Copy)]
-struct BuildIdentityHasher;
-impl std::hash::BuildHasher for BuildIdentityHasher {
-    type Hasher = IdentityHasher;
-    #[inline]
-    fn build_hasher(&self) -> IdentityHasher {
-        IdentityHasher(0)
-    }
-}
-type StoreMap = HashMap<u64, Bucket, BuildIdentityHasher>;
+type StoreMap = HashMap<u64, Bucket, std::hash::BuildHasherDefault<IdentityHasher>>;
 
 // ---- Dense slot encoding -----------------------------------------------------
 //

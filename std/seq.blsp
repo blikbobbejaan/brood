@@ -76,9 +76,10 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
     nil
     (reverse (dedupe-acc (rest coll) (first coll) (list (first coll))))))
 
-;; distinct-by: like the bare `distinct`, but dedup by a key function — keep the
-;; first item for each distinct `(f item)`. A map carried alongside the result is
-;; the "seen" set of keys (stores only `true`, so one `%map-get` distinguishes it).
+;; distinct-by: keep the first item for each distinct `(f item)`. A map carried alongside
+;; the result is the "seen" set of keys, so membership is O(1)-ish rather than an O(n²)
+;; scan; it stores only `true`, so one `%map-get` (default `false`) tells present from
+;; absent without `contains?`'s two-sentinel probe.
 (defn distinct-by (coll f)
   "The items of `coll` with duplicates removed by key: keeps the first item for each distinct `(f item)`, order-preserving. `(distinct-by :id users)` keeps one user per id (≈ `Enum.uniq_by`).
 
@@ -97,9 +98,7 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
   "A map from each `(f x)` to the list of items of `coll` that produced it, each list in original order.
 
     (seq/group-by [1 2 3 4] math/even?)   → {false (1 3), true (2 4)}
-    (seq/group-by [\"a\" \"bb\"] count)       → {1 (\"a\"), 2 (\"bb\")}
-
-    (seq/group-by [1 2 3 4] math/even?)   → {false (1 3), true (2 4)}"
+    (seq/group-by [\"a\" \"bb\"] count)       → {1 (\"a\"), 2 (\"bb\")}"
   ;; Prepend per group (O(1)) then reverse every group's list once at the end.
   ;; Direct kernel `%map-assoc`/`%map-get` — the accumulator is always a map.
   (map/update-vals (fold coll
@@ -126,12 +125,11 @@ running folds (`scan` `reduce-while`), pairwise combination (`zip-with`
     (seq/interleave [1 2] [:a :b])   → (1 :a 2 :b)"
   (interleave-acc a b nil))
 
-;; (chunk-every n coll) — like partition but keeps the trailing partial chunk.
 (defn- chunk-every-acc (n coll acc)
   (if (empty? coll)
     (reverse acc)
     (chunk-every-acc n (drop coll n) (cons (into [] (take coll n)) acc))))
-;; The index/count comes FIRST and the collection LAST throughout this module. A call
+;; The collection comes FIRST and the index/count after it throughout this module. A call
 ;; that reverses the two is the one rename mistake nothing catches: the arity is unchanged
 ;; and no name is unbound, so `nest check` is silent and the wrong answer surfaces somewhere
 ;; else entirely (KI-71 — `remove-nth`'s own move to index-first read as seven unrelated
@@ -150,7 +148,6 @@ trailing partial chunk is kept. `n` must be positive; zero or less is an error.
     (error "seq/chunk-every: chunk size must be positive, got " n)))
 (sig chunk-every (seqable int -> any))
 
-;; (chunk-by f coll) — consecutive runs where (f x) returns the same value.
 (defn- chunk-by-acc (f coll key curr acc)
   (if (empty? coll)
     (reverse (cons (into [] (reverse curr)) acc))
@@ -168,8 +165,6 @@ A new chunk starts each time the return value of `f` changes.
       nil
       (chunk-by-acc f (rest s) (f (first s)) (list (first s)) nil))))
 
-;; (scan f init coll) — running fold: returns a list of all intermediate values
-;; including the seed.
 (defn- scan-acc (f acc coll result)
   (if (empty? coll)
     (reverse result)
@@ -182,8 +177,6 @@ starting with `init`. `(scan '(1 2 3) 0 +)` → `(0 1 3 6)`.
     (seq/scan [1 2 3] 0 +)      → (0 1 3 6)"
   (scan-acc f init (seq coll) (list init)))
 
-;; (zip-with a b f) — map `f` over pairs, stopping at the shorter sequence. Data first,
-;; callback last (ADR-308), like every other combinator.
 (defn- zip-with-acc (a b f acc)
   (if (or (empty? a) (empty? b))
     (reverse acc)
@@ -195,7 +188,6 @@ input. `(zip-with '(1 2) '(3 4) +)` → `(4 6)`.
     (seq/zip-with [1 2] [10 20] +)   → (11 22)"
   (zip-with-acc (seq a) (seq b) f nil))
 
-;; (min-by f coll) / (max-by f coll) — find the element whose key is smallest/largest.
 (defn min-by (coll f)
   "The item in `coll` for which `(f item)` is smallest; `nil` if `coll` is empty.
 
@@ -231,14 +223,11 @@ equality); recover the item itself with `find`.
     (seq/index-where [1 3 4] math/even?)   → 2"
   (index-where-from pred coll 0))
 
-;; `subvec` is the ONE deliberate exception to this module's index-first rule: it takes
-;; the vector first, because two indices trailing a collection (`(subvec start end v)`)
-;; reads worse than either alternative and because it mirrors `string/substring`, the
-;; op it is the vector counterpart of. The `sig` still pins the shape, which is what
-;; KI-71 was actually about — a reversed pair that keeps its arity and stays silent.
+;; `subvec` mirrors `string/substring`, the op it is the vector counterpart of. The `sig`
+;; pins the shape, which is what KI-71 was about — a reversed pair that keeps its arity
+;; and stays silent.
 (defn subvec (v start & more)
-  "A fresh vector of v's elements in [start, end); end defaults to the length. The
-vector comes FIRST here, unlike the rest of this module — see the note above.
+  "A fresh vector of v's elements in [start, end); end defaults to the length.
 
     (seq/subvec [1 2 3 4] 1 3)   → [2 3]"
   (if (empty? more) (%subvec v start) (%subvec v start (first more))))
@@ -320,7 +309,6 @@ when the caller needs indexed access. The complement of [[filterv]].
     (seq/rejectv [1 2 3 4] math/even?)   → [1 3]"
   (into [] (seq/reject coll pred)))
 
-;; (find pred coll) -> the first element satisfying pred, or nil.
 (defn find (coll pred)
   "The first item of `coll` for which `(pred x)` holds, or `nil`.
 
@@ -338,16 +326,12 @@ when the caller needs indexed access. The complement of [[filterv]].
 ;; bare `seqable` domain admits every collection the combinators walk.
 (sig find (seqable (any -> any) -> any))
 
-;; distinct: keep the first occurrence of each item. A map carried alongside the result
-;; acts as the "seen" set, so membership is O(1)-ish rather than the O(n²) a
-;; `member?`-per-item scan would cost. State is the 2-vector [seen result-rev].
-;;
-;; Here, not in the prelude: a prelude-resident helper that only a module uses costs
-;; boot-image size and reads as a core primitive in `reflect/global-names`.
+;; distinct: `distinct-by`'s seen-map walk keyed on the item itself — its own step rather
+;; than `(distinct-by coll identity)`, so the checker can verify the `(list any)` result
+;; that `distinct-by`'s `any` cannot vouch for. Here, not in the prelude: a
+;; prelude-resident helper that only a module uses costs boot-image size and reads as a
+;; core primitive in `reflect/global-names`.
 (defn- distinct-step (state x)
-  ;; the "seen" map only ever stores `true`, so a single `%map-get` (default `false`)
-  ;; distinguishes present from absent — no need for `contains?`'s two-sentinel probe
-  ;; (which exists to tell a stored `nil`/`false` from absence).
   (if (%map-get (nth state 0) x false)
     state
     [(%map-assoc (nth state 0) x true) (cons x (nth state 1))]))
@@ -561,7 +545,7 @@ The collection comes FIRST, like every other function in this module
     (seq/remove-nth [10 20 30] 1)        → [10 30]
     (seq/remove-nth (list 1 2 3) 0)      → (2 3)"
   (if (vector? coll)
-    (into (seq/subvec coll 0 i) (seq/subvec coll (inc i) (count coll)))
+    (into (seq/subvec coll 0 i) (seq/subvec coll (inc i)))
     (append (take coll i) (drop coll (inc i)))))
 (sig remove-nth (seqable int -> any))
 

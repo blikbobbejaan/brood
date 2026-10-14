@@ -31,24 +31,8 @@ const SELF_CONTAINED: &[&str] = &["default", "tui-loop", "gen", "editor", "gui"]
 /// `gui/open`). Those three keep the boot case, which is all a headless runner can ask.
 const RUNNABLE: &[&str] = &["default", "gen"];
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-scaf-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::{temp_dir, TempDir};
 
 struct Run {
     out: String,
@@ -73,7 +57,7 @@ fn nest(dir: &Path, args: &[&str]) -> Run {
 
 /// Scaffold `template` into a fresh temp dir; returns (dir, project root).
 fn scaffold(template: &str) -> (TempDir, std::path::PathBuf) {
-    let tmp = tempdir(template);
+    let tmp = temp_dir(&format!("scaf-{template}"));
     let name = format!("p_{}", template.replace('-', "_"));
     let made = nest(&tmp.path, &["new", &name, "--template", template]);
     assert!(made.ok, "nest new {template} failed: {}", made.out);
@@ -326,7 +310,7 @@ fn scaffolded_hatch_template_explains_its_missing_dep() {
 #[test]
 fn next_steps_are_accurate_per_template() {
     // Self-contained: the generic next step really works.
-    let tmp = tempdir("next-default");
+    let tmp = temp_dir("scaf-next-default");
     let made = nest(&tmp.path, &["new", "nx", "--template", "default"]);
     assert!(made.ok, "{}", made.out);
     assert!(
@@ -340,7 +324,7 @@ fn next_steps_are_accurate_per_template() {
         ("hatch", vec!["../hatch", "../store-postgres"]),
         ("web-api", vec!["../hatch"]),
     ] {
-        let tmp = tempdir(&format!("next-{template}"));
+        let tmp = temp_dir(&format!("scaf-next-{template}"));
         let made = nest(&tmp.path, &["new", "nx", "--template", template]);
         assert!(made.ok, "{}", made.out);
         for dep in &expect_deps {
@@ -361,7 +345,7 @@ fn next_steps_are_accurate_per_template() {
 /// Singular vs plural in that message — one dep must not read "as sibling path deps".
 #[test]
 fn the_sibling_dep_message_agrees_in_number() {
-    let tmp = tempdir("plural");
+    let tmp = temp_dir("scaf-plural");
     let made = nest(&tmp.path, &["new", "nx", "--template", "web-api"]);
     assert!(made.ok, "{}", made.out);
     assert!(
@@ -383,7 +367,7 @@ fn the_sibling_dep_message_agrees_in_number() {
 /// project's).
 #[test]
 fn two_scaffolded_projects_can_depend_on_each_other() {
-    let tmp = tempdir("compose");
+    let tmp = temp_dir("scaf-compose");
     for name in ["alpha", "beta"] {
         let made = nest(&tmp.path, &["new", name]);
         assert!(made.ok, "scaffolding {name} failed:\n{}", made.out);
@@ -415,7 +399,7 @@ fn two_scaffolded_projects_can_depend_on_each_other() {
 /// The library module is named for the project, so the filename follows it.
 #[test]
 fn the_scaffolded_library_module_is_named_after_the_project() {
-    let tmp = tempdir("named");
+    let tmp = temp_dir("scaf-named");
     assert!(nest(&tmp.path, &["new", "greeter"]).ok);
     let root = tmp.path.join("greeter");
     assert!(

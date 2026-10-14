@@ -25,11 +25,9 @@ pub(in crate::types::check) fn is_gensym_sym(s: Symbol) -> bool {
         .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// True when `head` is a function-literal head — `fn` or its synonym `lambda`.
-/// Both spell the same special form (`lambda` Just Works, see the evaluator), and
-/// both survive macro expansion as their original head, so every reader of a `fn`
-/// shape (here, [`guards::lambda_ret`], and `protocol`'s arity reader) must accept
-/// the two. Single source of truth so they can't drift.
+/// True when `head` is a function-literal head — `fn`, the only spelling since
+/// `lambda` was retired (ADR-162). Every reader of a `fn` shape (here,
+/// [`guards::lambda_ret`], and `protocol`'s arity reader) asks this one predicate.
 pub(in crate::types::check) fn is_fn_head(head: Symbol) -> bool {
     value::symbol_is(head, kw::FN)
 }
@@ -220,14 +218,14 @@ pub(super) fn def_value_is_variadic(heap: &Heap, value_form: Value) -> bool {
 /// Checks the form as a param list, and if its first element is itself a list
 /// (the clause shape), checks that nested param list too.
 pub(super) fn part_has_rest(heap: &Heap, part: Value) -> bool {
-    if params_have_rest(heap, part) {
+    if params_form_has_rest(heap, part) {
         return true;
     }
     // Multi-arity clause: ((params) body…) — look at the inner param list.
     match list_items(heap, part) {
         Some(items) => items
             .first()
-            .is_some_and(|&inner| params_have_rest(heap, inner)),
+            .is_some_and(|&inner| params_form_has_rest(heap, inner)),
         None => false,
     }
 }
@@ -311,40 +309,25 @@ pub(super) fn params_arity(heap: &Heap, params: Value) -> Option<Arity> {
     })
 }
 
-/// True if the parameter-list form `params` contains a `&` (or `&rest`) marker —
-/// i.e. the function it belongs to is variadic. A vector or list param list is
-/// accepted; a non-list form (e.g. a docstring) yields `false`.
-pub(super) fn params_have_rest(heap: &Heap, params: Value) -> bool {
-    let items = match params {
-        Value::Vector(id) => heap.vector(id).to_vec(),
-        Value::Nil | Value::Pair(_) => match list_items(heap, params) {
-            Some(v) => v,
-            None => return false,
-        },
-        _ => return false,
-    };
-    items.iter().any(|p| {
-        matches!(p, &Value::Sym(s)
-            if value::symbol_is(s, kw::AMP) || value::symbol_is(s, kw::AMP_REST))
-    })
+/// `(quote X)` → `Some(X)`; `None` for anything else.
+pub(in crate::types::check) fn unquote(heap: &Heap, v: Value) -> Option<Value> {
+    match list_items(heap, v)?.as_slice() {
+        &[Value::Sym(head), inner] if value::symbol_is(head, kw::QUOTE) => Some(inner),
+        _ => None,
+    }
 }
 
 /// `(quote SYM)` → the symbol's name; used to read `register-impl`'s quoted ability / op.
 pub(super) fn quoted_sym_name(heap: &Heap, v: Value) -> Option<String> {
-    let items = list_items(heap, v)?;
-    if items.len() == 2 && matches!(items[0], Value::Sym(s) if value::symbol_is(s, kw::QUOTE)) {
-        match items[1] {
-            Value::Sym(s) | Value::Keyword(s) => Some(value::symbol_name(s)),
-            _ => None,
-        }
-    } else {
-        None
+    match unquote(heap, v)? {
+        Value::Sym(s) | Value::Keyword(s) => Some(value::symbol_name(s)),
+        _ => None,
     }
 }
 
 /// The bare (last `/`-segment) name of a symbol head — `ability/register-impl` and a
 /// bare `%register-impl` both read as `"%register-impl"`.
-pub(super) fn head_name(sym: Symbol) -> String {
+pub(in crate::types::check) fn head_name(sym: Symbol) -> String {
     let full = value::symbol_name(sym);
     full.rsplit('/').next().unwrap_or(&full).to_string()
 }
@@ -377,13 +360,11 @@ pub(in crate::types::check) fn fn_form_items(heap: &Heap, form: Value) -> Option
 /// out. The result is *just* what would be in scope — used to seed `Ctx`
 /// without false-flagging the inner body's references.
 /// Does this parameter list end in a `& rest` tail? (The `&`/`&rest` marker; a
-/// bare-symbol binder follows it.) Used to seed the rest binder as `list<elem>`.
+/// bare-symbol binder follows it.) Used to seed the rest binder as `list<elem>`, and to
+/// tell a variadic function. A vector or list param list is accepted; a non-list form
+/// (e.g. a docstring) yields `false`.
 pub(in crate::types::check) fn params_form_has_rest(heap: &Heap, form: Value) -> bool {
-    let items = match form {
-        Value::Vector(id) => heap.vector(id).to_vec(),
-        Value::Nil | Value::Pair(_) => list_items(heap, form).unwrap_or_default(),
-        _ => return false,
-    };
+    let items = heap.list_or_vector_items(form).unwrap_or_default();
     items.iter().any(|&it| {
         matches!(it, Value::Sym(s) if value::symbol_is(s, kw::AMP) || value::symbol_is(s, kw::AMP_REST))
     })
@@ -392,11 +373,7 @@ pub(in crate::types::check) fn params_form_has_rest(heap: &Heap, form: Value) ->
 /// Per binder of `form` (aligned with [`fn_params`]), the `&optional` default expression
 /// — `(name default)` — or `None` for a plain parameter / an optional without one.
 pub(in crate::types::check) fn fn_param_defaults(heap: &Heap, form: Value) -> Vec<Option<Value>> {
-    let items = match form {
-        Value::Vector(id) => heap.vector(id).to_vec(),
-        Value::Nil | Value::Pair(_) => list_items(heap, form).unwrap_or_default(),
-        _ => return Vec::new(),
-    };
+    let items = heap.list_or_vector_items(form).unwrap_or_default();
     let mut out = Vec::new();
     for item in items {
         match item {
@@ -425,11 +402,7 @@ pub(in crate::types::check) fn fn_param_defaults(heap: &Heap, form: Value) -> Ve
 }
 
 pub(in crate::types::check) fn fn_params(heap: &Heap, form: Value) -> Vec<Symbol> {
-    let items = match form {
-        Value::Vector(id) => heap.vector(id).to_vec(),
-        Value::Nil | Value::Pair(_) => list_items(heap, form).unwrap_or_default(),
-        _ => return Vec::new(),
-    };
+    let items = heap.list_or_vector_items(form).unwrap_or_default();
     let mut out = Vec::new();
     for item in items {
         match item {
@@ -618,11 +591,7 @@ pub(in crate::types::check) fn bind_pattern(
 /// Parse a `let` bindings form — accepts both `(name val name val …)` lists
 /// and `[name val name val …]` vectors, the two shapes the reader emits.
 pub(in crate::types::check) fn bindings(heap: &Heap, form: Value) -> Option<Vec<Value>> {
-    match form {
-        Value::Vector(id) => Some(heap.vector(id).to_vec()),
-        Value::Nil | Value::Pair(_) => list_items(heap, form),
-        _ => None,
-    }
+    heap.list_or_vector_items(form)
 }
 
 /// The body forms of a `(do …)`, or `None` for anything else. `defn-`/`def-` expand to
@@ -656,11 +625,7 @@ pub(in crate::types::check) fn list_items(heap: &Heap, mut v: Value) -> Option<V
 /// How many of a parameter list's binders are REQUIRED — the ones before the first
 /// `&optional` / `&` / `&rest` marker.
 pub(in crate::types::check) fn required_param_count(heap: &Heap, form: Value) -> usize {
-    let items = match form {
-        Value::Vector(id) => heap.vector(id).to_vec(),
-        Value::Nil | Value::Pair(_) => list_items(heap, form).unwrap_or_default(),
-        _ => return 0,
-    };
+    let items = heap.list_or_vector_items(form).unwrap_or_default();
     items
         .iter()
         .take_while(|item| {

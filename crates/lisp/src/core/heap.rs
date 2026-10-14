@@ -2362,6 +2362,16 @@ impl Heap {
         }
     }
 
+    /// The items of a vector or proper list, or `None` for anything else (unlike
+    /// [`Heap::seq_items`], which also accepts ranges and sets).
+    pub fn list_or_vector_items(&self, v: Value) -> Option<Vec<Value>> {
+        match v.unpack() {
+            ValueRef::Vector(id) => Some(self.vector(id).to_vec()),
+            ValueRef::Nil | ValueRef::Pair(_) => self.list_to_vec(v).ok(),
+            _ => None,
+        }
+    }
+
     /// Treat a list or vector as a sequence of items.
     pub fn seq_items(&self, v: Value) -> Result<Vec<Value>, LispError> {
         match v.unpack() {

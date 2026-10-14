@@ -92,9 +92,7 @@ impl Heap {
         #[cfg(debug_assertions)]
         {
             static GC_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *GC_TRACE.get_or_init(|| {
-                std::env::var("BROOD_GC_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
-            }) {
+            if crate::diagnostics::debug_flags::is_armed(&GC_TRACE, "BROOD_GC_TRACE") {
                 eprintln!(
                     "[gc-trace] collect: nursery pairs={} vecs={} strs={} envs={} closures={} | old pairs={} vecs={}",
                     self.local.pairs.len(),
@@ -354,7 +352,7 @@ impl Heap {
             // anyway, for an A/B.
             static RESERVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             self.local =
-                if *RESERVE.get_or_init(|| std::env::var_os("BROOD_GC_TENURE_RESERVE").is_some()) {
+                if crate::diagnostics::debug_flags::is_set(&RESERVE, "BROOD_GC_TENURE_RESERVE") {
                     Slabs::with_capacity_like(&young)
                 } else {
                     Slabs::default()
@@ -476,9 +474,8 @@ impl Heap {
     /// normal `--release` binary without a debug-assertions rebuild — O(live) per collection
     /// only when the flag is set.
     fn gc_verify_enabled() -> bool {
-        use std::sync::OnceLock;
-        static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("BROOD_GC_VERIFY").is_some())
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        crate::diagnostics::debug_flags::is_set(&ON, "BROOD_GC_VERIFY")
     }
 
     /// Debug heap verifier (`BROOD_GC_VERIFY`). Walk every LOCAL handle reachable

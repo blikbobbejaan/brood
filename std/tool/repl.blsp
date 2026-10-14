@@ -185,7 +185,7 @@ highlights. Used to colour a printed result on an interactive TTY."
 
 (defn- repl-command-for (cmd)
   "The registered command whose `:names` include `cmd`, or nil."
-  (first (seq/filter *repl-commands* (fn (c) (repl-has-name? (get c :names) cmd)))))
+  (seq/find *repl-commands* (fn (c) (repl-has-name? (get c :names) cmd))))
 
 (defn register-repl-command (spec)
   "Register a `,cmd` meta-command. `spec` is `{:names (->string alias…) :usage str
@@ -211,15 +211,9 @@ registration order, the new one last). The extension seam tools use to add comma
     (let ([cmd _] (repl-meta-parts (string/substring line 1)))
       (not (nil? (repl-command-for cmd))))))
 
-(defn- repl-pad (s n)
-  "Right-pad string `s` with spaces to at least width `n`."
-  (let (gap (- n (string/length s)))
-    (if (<= gap 0) s (str s (apply str (map (range gap) (constantly " ")))))))
-(sig repl-pad (string int -> string))
-
 (defn- repl-command-help-line (c)
   "One aligned `  ,usage   summary` line for a registered command."
-  (str "  " (repl-pad (get c :usage) 15) " " (get c :summary)))
+  (str "  " (string/pad-right (get c :usage) 15) " " (get c :summary)))
 
 (defn- repl-meta-help (rest)
   "Print the `,help` table — generated from the command registry (skipping `:hidden`
@@ -230,10 +224,10 @@ entries) plus the static Tab / `*1 *2 *3` footer."
                "\n")
              "\n"
              "  "
-             (repl-pad "Tab" 15)
+             (string/pad-right "Tab" 15)
              " complete the name under the cursor; again to list matches\n"
              "  "
-             (repl-pad "*1 *2 *3" 15)
+             (string/pad-right "*1 *2 *3" 15)
              " the last three result values;  *e  the last error"
              "\e[0m")))
 

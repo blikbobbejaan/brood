@@ -357,7 +357,7 @@ static BOUNDARY_BOUND: AtomicBool = AtomicBool::new(false);
 pub(crate) fn boundary_active() -> bool {
     static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     BOUNDARY_BOUND.load(Ordering::Acquire)
-        && !*DISABLED.get_or_init(|| std::env::var_os("BROOD_NO_CONTRACT_BOUNDARY").is_some())
+        && !crate::diagnostics::debug_flags::is_set(&DISABLED, "BROOD_NO_CONTRACT_BOUNDARY")
 }
 
 /// The module of a qualified name (`string/char-at` → `string`), `None` for a root name.

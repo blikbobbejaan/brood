@@ -359,7 +359,7 @@ returns at least one piece, and the checker leans on that.
     (string/fields \" 1  2 \")   → (\"1\" \"2\")
     (string/fields \"a , b,,\" \",\")   → (\"a\" \"b\")
     (string/fields \"   \")   → nil"
-  (seq/filter (map (split s sep) trim) (fn (piece) (not (= piece "")))))
+  (seq/reject (map (split s sep) trim) empty?))
 (sig fields (string &optional string -> (or nil (list string))))
 
 (defn fill (s width &optional (prefix ""))
@@ -512,31 +512,22 @@ things in the same image is a name worth spending to fix.
 
 (defn- format-spec (template i n args acc)
   ;; called with `i` pointing one past the `%`
-  (cond
-    (>= i n) (error "string/format: unterminated specifier (lone '%' at end of format string)")
-    (= (string/char-at template i) "%") (format-loop template (inc i) n args (str acc "%"))
-    (= (string/char-at template i) "s")
-      (format-loop template (inc i) n (rest args) (str acc (str (first args))))
-    (= (string/char-at template i) "d")
-      (format-loop template (inc i) n (rest args) (str acc (format-int (first args) i)))
-    (= (string/char-at template i) "x")
-      (format-loop template (inc i) n (rest args) (str acc (format-hex (first args) false)))
-    (= (string/char-at template i) "X")
-      (format-loop template (inc i) n (rest args) (str acc (format-hex (first args) true)))
-    ;; a width: `%8d`, `%02x`, `%10s`, `%8.2f` — digits (a leading 0 asks for zero fill)
-    ;; then the specifier; `%-10s` left-justifies instead (ADR-379).
-    (format-digit? (string/char-at template i))
-      (format-width template i n args acc (= (string/char-at template i) "0") false 0)
-    (= (string/char-at template i) "-") (format-width template (inc i) n args acc false true 0)
-    (= (string/char-at template i) "f")
-      (format-loop template
-        (inc i)
-        n
-        (rest args)
-        (str acc (math/->fixed (first args) 6)))
-    (= (string/char-at template i) ".") (format-prec template (inc i) n args acc 0)
-    else
-      (error (str "format: unrecognized specifier '%" (string/char-at template i) "' at column " i))))
+  (let (c (if (< i n) (string/char-at template i) nil)
+        emit (fn (text) (format-loop template (inc i) n (rest args) (str acc text))))
+    (cond
+      (nil? c) (error "string/format: unterminated specifier (lone '%' at end of format string)")
+      (= c "%") (format-loop template (inc i) n args (str acc "%"))
+      (= c "s") (emit (str (first args)))
+      (= c "d") (emit (format-int (first args) i))
+      (= c "x") (emit (format-hex (first args) false))
+      (= c "X") (emit (format-hex (first args) true))
+      (= c "f") (emit (math/->fixed (first args) 6))
+      ;; a width: `%8d`, `%02x`, `%10s`, `%8.2f` — digits (a leading 0 asks for zero fill)
+      ;; then the specifier; `%-10s` left-justifies instead (ADR-379).
+      (format-digit? c) (format-width template i n args acc (= c "0") false 0)
+      (= c "-") (format-width template (inc i) n args acc false true 0)
+      (= c ".") (format-prec template (inc i) n args acc 0)
+      else (error (str "format: unrecognized specifier '%" c "' at column " i)))))
 
 (defn- format-digit? (c)
   (let (d (string/->number c)) (and (int? d) (>= d 0) (<= d 9))))
@@ -615,11 +606,11 @@ wrong), the way `%d` passes a float through."
         n
         (rest args)
         (str acc (math/->fixed (first args) p)))
-    else
+    (format-digit? (string/char-at template i))
       (let (d (string/->number (string/char-at template i)))
-        (if (and (int? d) (>= d 0) (<= d 9))
-          (format-prec template (inc i) n args acc (+ (* p 10) d))
-          (error (str "format: expected digit or 'f' after '.' in specifier, got '"
-                   (string/char-at template i)
-                   "' at column "
-                   i))))))
+        (format-prec template (inc i) n args acc (if (int? d) (+ (* p 10) d) p)))
+    else
+      (error (str "format: expected digit or 'f' after '.' in specifier, got '"
+               (string/char-at template i)
+               "' at column "
+               i))))

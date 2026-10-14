@@ -10,32 +10,10 @@
 //! is being run). A *fresh* interpreter per (expr, engine) keeps side effects
 //! (`def`, `print`, `spawn`) from leaking across the two runs.
 
-use std::sync::LazyLock;
+use brood::eval::compile::Tier;
 
-use brood::eval::compile::{set_forced_ceiling, Tier};
-use brood::Interp;
-
-static MEM_GUARD: LazyLock<()> = LazyLock::new(|| {
-    brood::core::alloc::init_limits_with_default(
-        brood::core::alloc::TEST_DEFAULT_HARD,
-        brood::core::alloc::TEST_DEFAULT_SOFT,
-    );
-});
-
-/// Evaluate `src` in a fresh interpreter pinned to one engine. `Ok(printed)` or
-/// `Err(message)` — the message alone (engine-independent), not the position, which
-/// is asserted separately in `basic.rs`.
-fn eval_on(src: &str, ceiling: Tier) -> Result<String, String> {
-    LazyLock::force(&MEM_GUARD);
-    set_forced_ceiling(Some(ceiling));
-    let mut interp = Interp::new();
-    let out = match interp.eval_str(src) {
-        Ok(v) => Ok(interp.print(v)),
-        Err(e) => Err(e.message.clone()),
-    };
-    set_forced_ceiling(None);
-    out
-}
+mod support;
+use support::eval_on;
 
 /// Assert the bytecode VM agrees with the reference tree-walker on `src`.
 /// The ceilings this differential compares, and **not** [`Tier::ALL`] (ADR-222).

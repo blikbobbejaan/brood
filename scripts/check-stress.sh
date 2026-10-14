@@ -58,13 +58,7 @@ STRESS_ENV="N=5 CHUNKS=5 SIZE=8 ITER=2 ROUNDS=2 SECS=1 PROCS=4"
 gate_require_fresh "$BROOD"
 gate_load_modules "$BROOD"
 
-want=("$@")
-matches() {
-  [ ${#want[@]} -eq 0 ] && return 0
-  local n="$1" w
-  for w in "${want[@]}"; do [ "$w" = "$n" ] && return 0; done
-  return 1
-}
+GATE_WANT=("$@")
 
 fail=0
 echo ">>> checking stress harnesses with $BROOD (${RUN_SECS}s each, tests ${TEST_SECS}s)"
@@ -79,7 +73,7 @@ for f in "$ROOT"/stress/*_test.blsp; do
   [ -f "$f" ] || continue
   name="stress/$(basename "$f" .blsp)"
   short="$(basename "$f" .blsp)"
-  matches "$short" || continue
+  gate_matches "$short" || continue
   case " $STRESS_SKIP " in *" $short "*)
     echo "  skip    $name (named in STRESS_SKIP)"; continue ;;
   esac
@@ -87,7 +81,8 @@ for f in "$ROOT"/stress/*_test.blsp; do
     echo "  skip    $name (needs the \`test\` module, absent from this lean build)"; continue
   fi
   out="$(cd "$ROOT" && timeout "$TEST_SECS" "$BROOD" --test "$f" 2>&1)"
-  if printf '%s\n' "$out" | grep -qE '0 failed'; then
+  status=$?
+  if gate_suite_passed "$status" "$out"; then
     echo "  ok      $name ($(printf '%s\n' "$out" | grep -oE '[0-9]+ tests, [0-9]+ passed' | head -1))"
   else
     fail=1
@@ -107,17 +102,11 @@ for f in "$ROOT"/stress/*.blsp "$ROOT"/scripts/fuzz/stress/*.blsp; do
     "$ROOT"/stress/*) name="stress/$short" ;;
     *)               name="fuzz/$short" ;;
   esac
-  matches "$short" || continue
+  gate_matches "$short" || continue
   case " $STRESS_SKIP " in *" $short "*)
     echo "  skip    $name (named in STRESS_SKIP)"; continue ;;
   esac
-  out="$(cd "$ROOT" && env $STRESS_ENV timeout "$RUN_SECS" "$BROOD" "$f" 2>&1)"
-  gate_classify "$out"
-  case "$GATE_VERDICT" in
-    ok)   echo "  ok      $name" ;;
-    skip) echo "  skip    $name ($GATE_DETAIL)" ;;
-    *)    fail=1; echo "  FAIL    $name"; printf '%s\n' "$GATE_DETAIL" | sed 's/^/            /' ;;
-  esac
+  gate_report "$name" "$(cd "$ROOT" && env $STRESS_ENV timeout "$RUN_SECS" "$BROOD" "$f" 2>&1)"
 done
 
 # ---- the two distributed chaos harnesses -------------------------------------
@@ -133,8 +122,8 @@ done
 # and is visible in the log; the point of this gate is only that the harness can still run.
 for chaos in dist_chaos dist_chaos_remote_spawn; do
   script="$ROOT/scripts/fuzz/$chaos.sh"
-  [ -x "$script" ] || [ -f "$script" ] || continue
-  matches "$chaos" || continue
+  [ -f "$script" ] || continue
+  gate_matches "$chaos" || continue
   out="$(cd "$ROOT" && timeout 300 bash "$script" 1 2>&1)"; rc=$?
   case $rc in
     2) fail=1

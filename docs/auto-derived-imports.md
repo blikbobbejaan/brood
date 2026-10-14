@@ -36,9 +36,9 @@ this trigger over Design B:
   applies to `json/decode`, `csv/…`, project modules — the reason stage 4 (`json`) could
   drop its `json-` export prefix and rely on `json/decode` self-loading.
 
-The checker's KI-17 *"reference to an unrequired module"* lint (`unrequired_module`,
-`walk.rs`) is now permanently obsolete — a qualified reference requires its own module —
-and is neutralized to a no-op (its `required_mods`/`raw_qualified` scaffolding retained).
+The checker's KI-17 *"reference to an unrequired module"* lint is obsolete — a qualified
+reference requires its own module — and was deleted (2026-10-14), along with its
+`:unrequired` `check-allow` category.
 
 ### When the load happens: first use, not file load (ADR-335, 2026-09-12)
 

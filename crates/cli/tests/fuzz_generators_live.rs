@@ -13,16 +13,11 @@
 //! `sig`; its preamble is real code, so the unbound-symbol rule still applies) and `syntax`
 //! (random tokens — an unbound name there is the point, so it is held only to `run.sh`'s
 //! no-crash rule and skipped here).
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root")
-        .to_path_buf()
-}
+mod support;
+use support::repo_root;
 
 #[test]
 fn every_fuzz_generator_emits_programs_that_run() {

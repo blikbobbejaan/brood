@@ -69,9 +69,7 @@ pub(super) fn dump_ir(context: &Context, code: &[Inst], arm: &CompiledArm, check
     eprintln!(
         "[jit-ir] ===== arm: {} ({}) ckpt_slot: {} insts: {} =====",
         code.len(),
-        arm.dbg_name
-            .map(crate::core::value::symbol_name_ref)
-            .unwrap_or("<closure>"),
+        arm.dbg_label(),
         checkpoint_slot,
         operations.join(" ")
     );

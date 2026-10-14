@@ -244,15 +244,13 @@ fn kw(s: &str) -> Message {
     Message::Keyword(value::intern(s))
 }
 
-fn pid_msg(pid: u64) -> Message {
-    Message::Pid {
-        node: crate::dist::local_node(),
-        id: pid,
-    }
-}
-
 fn event(kind: &str, subject: u64, detail: Message) -> Message {
-    Message::Vector(vec![kw(pk::SYSTEM), kw(kind), pid_msg(subject), detail])
+    Message::Vector(vec![
+        kw(pk::SYSTEM),
+        kw(kind),
+        Message::local_pid(subject),
+        detail,
+    ])
 }
 
 /// Build the event once and deliver it to each of `targets` (a clone per
@@ -347,7 +345,7 @@ pub fn emit_spawn(child: u64, parent: u64) {
     }
     let targets = interested(child, |m| m.spawn);
     if !targets.is_empty() {
-        fan_out(&targets, pk::SYS_SPAWN, child, pid_msg(parent));
+        fan_out(&targets, pk::SYS_SPAWN, child, Message::local_pid(parent));
     }
 }
 

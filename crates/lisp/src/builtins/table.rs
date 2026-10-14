@@ -111,25 +111,30 @@ pub(super) fn expect_table(heap: &Heap, who: &str, v: Value) -> Result<u64, Lisp
     )
 }
 
+/// The `(table key …)` prefix every keyed primitive opens with: the table handle in
+/// argument 0, checked, and the key in argument 1 vetted by `check_key`.
+fn keyed_table(heap: &Heap, who: &str, args: &[Value]) -> Result<u64, LispError> {
+    let id = expect_table(heap, who, arg(args, 0))?;
+    crate::core::table::check_key(who, arg(args, 1))?;
+    Ok(id)
+}
+
 pub(super) fn table_new(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::table(crate::core::table::create()))
 }
 
 pub(super) fn table_put(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "table/put", arg(args, 0))?;
-    crate::core::table::check_key("table/put", arg(args, 1))?;
+    let id = keyed_table(heap, "table/put", args)?;
     crate::core::table::put(heap, id, arg(args, 1), arg(args, 2))
 }
 
 pub(super) fn table_get(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "table/get", arg(args, 0))?;
-    crate::core::table::check_key("table/get", arg(args, 1))?;
+    let id = keyed_table(heap, "table/get", args)?;
     crate::core::table::get(heap, id, arg(args, 1), arg(args, 2))
 }
 
 pub(super) fn table_has(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "table/has?", arg(args, 0))?;
-    crate::core::table::check_key("table/has?", arg(args, 1))?;
+    let id = keyed_table(heap, "table/has?", args)?;
     Ok(Value::boolean(crate::core::table::has(
         heap,
         id,
@@ -138,14 +143,12 @@ pub(super) fn table_has(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 }
 
 pub(super) fn table_delete(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "table/delete", arg(args, 0))?;
-    crate::core::table::check_key("table/delete", arg(args, 1))?;
+    let id = keyed_table(heap, "table/delete", args)?;
     crate::core::table::delete(heap, id, arg(args, 1))
 }
 
 pub(super) fn table_incr(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "table/incr", arg(args, 0))?;
-    crate::core::table::check_key("table/incr", arg(args, 1))?;
+    let id = keyed_table(heap, "table/incr", args)?;
     let delta = match arg(args, 2) {
         Value::Nil => 1, // (table-incr t k) defaults the delta to 1
         v => expect_int(heap, "table/incr", v)?,
@@ -154,14 +157,12 @@ pub(super) fn table_incr(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 }
 
 pub(super) fn table_add(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "%table-add", arg(args, 0))?;
-    crate::core::table::check_key("%table-add", arg(args, 1))?;
+    let id = keyed_table(heap, "%table-add", args)?;
     crate::core::table::add(heap, id, arg(args, 1), arg(args, 2))
 }
 
 pub(super) fn table_sub(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let id = expect_table(heap, "%table-sub", arg(args, 0))?;
-    crate::core::table::check_key("%table-sub", arg(args, 1))?;
+    let id = keyed_table(heap, "%table-sub", args)?;
     crate::core::table::sub(heap, id, arg(args, 1), arg(args, 2))
 }
 

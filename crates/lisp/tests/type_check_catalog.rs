@@ -18,17 +18,8 @@
 use brood::types::check::check_file;
 use brood::Interp;
 
-/// The checker warnings for a self-contained snippet — the exact `check_file`
-/// path the CLI/LSP use (prelude loaded, whole-file mode). A fresh `Interp` per
-/// call keeps cases independent.
-fn warnings(src: &str) -> Vec<String> {
-    let mut interp = Interp::new();
-    let forms = brood::syntax::reader::read_all(&mut interp.heap, src).expect("parse");
-    check_file(&mut interp.heap, &forms)
-        .into_iter()
-        .map(|(_, msg)| msg)
-        .collect()
-}
+mod support;
+use support::warnings;
 
 /// `(code, needle)` — `code` must produce a warning containing `needle` (so we
 /// confirm the *right* diagnostic fired, not an incidental one).

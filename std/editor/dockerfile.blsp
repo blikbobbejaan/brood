@@ -33,20 +33,16 @@ case-insensitively), and quoted-string arguments. Pure, so independently testabl
 ;; ---- scanning helpers -------------------------------------------------------
 
 (defn- dk-lead-ws (line i n)
-  (if (and (< i n) (or (= (string/char-at line i) " ") (= (string/char-at line i) "\t")))
-    (dk-lead-ws line (inc i) n)
-    i))
+  (math/min n (string/span line i " \t")))
 (sig dk-lead-ws (string int int -> int))
 
 (defn- dk-word-end (line i n)
   "The offset just past the non-whitespace run starting at `i`."
-  (if (and (< i n) (not (= (string/char-at line i) " ")) (not (= (string/char-at line i) "\t")))
-    (dk-word-end line (inc i) n)
-    i))
+  (math/min n (string/span-until line i " \t")))
 (sig dk-word-end (string int int -> int))
 
 (defn- dk-find (line i n ch)
-  (cond (>= i n) -1 (= (string/char-at line i) ch) i else (dk-find line (inc i) n ch)))
+  (if (>= i n) -1 (index-of line ch i)))
 (sig dk-find (string int int string -> int))
 
 (defn- dk-strings (line base i n acc)

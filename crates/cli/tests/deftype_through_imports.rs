@@ -13,30 +13,14 @@
 //! Loose disk modules, checked from their directory, as `checker_cross_module_ability.rs`
 //! does — the loader finds `a`/`b` on the default load path.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+use support::{temp_dir, TempDir};
 
 fn write_fixture() -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "brood-deftype-imports-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&path).expect("create temp dir");
+    let temp = temp_dir("deftype-imports");
+    let path = &temp.path;
     // Two modules, each declaring a `shape` of a different shape.
     std::fs::write(
         path.join("a.blsp"),
@@ -76,7 +60,7 @@ fn write_fixture() -> TempDir {
          (defn f (s) 0)\n",
     )
     .unwrap();
-    TempDir { path }
+    temp
 }
 
 fn check(dir: &std::path::Path, file: &str) -> String {

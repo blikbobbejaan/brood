@@ -1,4 +1,4 @@
-use super::numeric::{arg, expect_int, expect_rope_ref, two};
+use super::numeric::{arg, expect_int, expect_rope_ref, expect_symbol, two};
 use super::realize_seqview;
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Symbol, Value};
@@ -869,7 +869,7 @@ impl Reducer {
         env: EnvId,
     ) -> Result<(Value, bool), LispError> {
         if let Some(op) = self.prim {
-            if let Some(v) = crate::eval::compile::prim_apply_step(op, acc, x)? {
+            if let Some(v) = crate::eval::compile::prim_apply(op, acc, x)? {
                 return Ok((v, true));
             }
         }
@@ -1363,17 +1363,7 @@ pub(super) fn dispatch_proven(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 /// lock — see there for why `(def *X* (assoc *X* …))` in Brood cannot be made safe.
 pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     use crate::core::heap::RegistryOp;
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        v => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%registry-update!",
-                "symbol",
-                v,
-            ))
-        }
-    };
+    let sym = expect_symbol(heap, "%registry-update!", arg(args, 0))?;
     // Keywords are interned, so compare the interned ids rather than the Values.
     let op_sym = match arg(args, 1) {
         Value::Keyword(k) => k,
@@ -1386,22 +1376,18 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
             ))
         }
     };
-    let op = if op_sym == value::intern("assoc") {
-        RegistryOp::Assoc
-    } else if op_sym == value::intern("assoc-new") {
-        RegistryOp::AssocNew
-    } else if op_sym == value::intern("dissoc") {
-        RegistryOp::Dissoc
-    } else if op_sym == value::intern("cons-new") {
-        RegistryOp::ConsNew
-    } else if op_sym == value::intern("append-new") {
-        RegistryOp::AppendNew
-    } else if op_sym == value::intern("merge") {
-        RegistryOp::Merge
-    } else {
-        return Err(LispError::type_err(
-            "%registry-update!: op must be :assoc, :assoc-new, :dissoc, :cons-new, :append-new or :merge",
-        ));
+    let op = match value::symbol_name_ref(op_sym) {
+        "assoc" => RegistryOp::Assoc,
+        "assoc-new" => RegistryOp::AssocNew,
+        "dissoc" => RegistryOp::Dissoc,
+        "cons-new" => RegistryOp::ConsNew,
+        "append-new" => RegistryOp::AppendNew,
+        "merge" => RegistryOp::Merge,
+        _ => {
+            return Err(LispError::type_err(
+                "%registry-update!: op must be :assoc, :assoc-new, :dissoc, :cons-new, :append-new or :merge",
+            ))
+        }
     };
     let path = match arg(args, 2).unpack() {
         crate::core::value::ValueRef::Vector(id) => heap.vector(id).to_vec(),
@@ -1435,10 +1421,7 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
 /// `path` (a vector of one or two keys), or nil for an entry nobody owns. See
 /// [`Heap::registry_writer`] (KI-136).
 pub(super) fn registry_writer(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        v => return Err(LispError::wrong_type(heap, "%registry-writer", "symbol", v)),
-    };
+    let sym = expect_symbol(heap, "%registry-writer", arg(args, 0))?;
     let path = match arg(args, 1).unpack() {
         crate::core::value::ValueRef::Vector(id) => heap.vector(id).to_vec(),
         _ => Vec::new(),
@@ -1453,17 +1436,7 @@ pub(super) fn registry_writer(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
 /// from the shared globals table bypassing the per-process inline cache (ADR-225)? For a
 /// load-once guard that must not miss a racing `provide`; see [`Heap::registry_member`].
 pub(super) fn registry_member(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        v => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%registry-member?",
-                "symbol",
-                v,
-            ))
-        }
-    };
+    let sym = expect_symbol(heap, "%registry-member?", arg(args, 0))?;
     Ok(Value::boolean(heap.registry_member(sym, arg(args, 1))))
 }
 
@@ -1477,10 +1450,7 @@ pub(super) fn registry_member(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
 /// `registry-swap!` retries around this); only the read-decide-write is indivisible. See
 /// [`Heap::registry_cas`].
 pub(super) fn registry_cas(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        v => return Err(LispError::wrong_type(heap, "%registry-cas!", "symbol", v)),
-    };
+    let sym = expect_symbol(heap, "%registry-cas!", arg(args, 0))?;
     Ok(Value::boolean(heap.registry_cas(
         env,
         sym,

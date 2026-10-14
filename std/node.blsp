@@ -122,38 +122,22 @@ on this machine share one cookie; set `$BROOD_COOKIE` to override."
 
 (defn- node-socket-path (s) (str (node-runtime-dir) "/" s ".sock"))
 
-;; Index of the first "@" in s, or -1. No string-split primitive — and a node
-;; spec only ever has the one separator — so a small char scan is plenty.
-
-(defn- node-at (s i n)
-  (cond
-    (>= i n) -1
-    (= (string/substring s i (inc i)) "@") i
-    else (node-at s (inc i) n)))
-(sig node-at (string int int -> int))
-
-;; Last index of `:` in s (or -1) — needed to split "name@host:port" into the
-;; node name "name@host" and the port, IPv6-host-safe (the port colon is last).
-
-(defn- node-last-colon (s i n last)
-  (cond
-    (>= i n) last
-    (= (string/substring s i (inc i)) ":") (node-last-colon s (inc i) n i)
-    else (node-last-colon s (inc i) n last)))
-(sig node-last-colon (string int int int -> int))
+;; A node spec is split with the prelude's `index-of` (the one `@`) and the kernel's
+;; `%str-last-index-of` (the LAST `:`, so an IPv6 host's colons stay in the host) — the
+;; native `string/last-index-of` wraps, called directly so this module loads no `string`.
 
 ;; The bare name-part of a node name (before any `@`). Used for the local Unix
 ;; socket filename — the socket is same-machine, so the host qualifier is
 ;; identity only, not part of the path.
 (defn- node-name-part (s)
-  (let (at (node-at s 0 (string/length s)))
+  (let (at (index-of s "@"))
     (if (>= at 0) (string/substring s 0 at) s)))
 
 ;; The host part of a "host:port" address (everything before the last colon),
 ;; IPv6-safe. So a TCP node's name host == the host peers dial, keeping
 ;; `connect`/`reconnect` name-derivation consistent with the node's identity.
 (defn- node-addr-host (addr)
-  (let (lc (node-last-colon addr 0 (string/length addr) -1))
+  (let (lc (%str-last-index-of addr ":"))
     (if (>= lc 0) (string/substring addr 0 lc) addr)))
 
 ;; Qualify a node name to `name@host` (ADR-073):
@@ -165,7 +149,7 @@ on this machine share one cookie; set `$BROOD_COOKIE` to override."
 (defn- node-qualify (nm addr)
   (let (s (->string nm))
     (cond
-      (>= (node-at s 0 (string/length s)) 0) (keyword s)
+      (>= (index-of s "@") 0) (keyword s)
       (nil? addr) (keyword (str s "@" (os/hostname)))
       else (keyword (str s "@" (node-addr-host addr))))))
 
@@ -197,7 +181,7 @@ node — call `(node/start …)` first."
   (when (= (name) :nonode)
     (error "node/connect: this runtime is not a node yet — call (node/start name) first"))
   (let (n (string/length spec)
-        at (node-at spec 0 n))
+        at (index-of spec "@"))
     (if (< at 0)
       ;; Bare name → local Unix node. The peer's real name is `name@thishost`;
       ;; pass that as the claimed name (the handshake confirms it).
@@ -205,7 +189,7 @@ node — call `(node/start …)` first."
         (str "unix:" (node-socket-path spec)))
       ;; Qualified → remote TCP: "name@host:port". The node name is everything
       ;; before the (last) port colon; the dial address is everything after `@`.
-      (let (lc (node-last-colon spec 0 n -1))
+      (let (lc (%str-last-index-of spec ":"))
         (when (<= lc at)
           (error "node/connect: a remote node needs \"name@host:port\" (a bare name is local), got "
             spec))

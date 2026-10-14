@@ -15,19 +15,11 @@
 //! are directly observable. The bug is not a coverage bug.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-fn repo_root() -> PathBuf {
-    // .../crates/cli -> repo root
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root")
-        .to_path_buf()
-}
+use support::repo_root;
 
 struct TempFile {
     path: PathBuf,

@@ -771,18 +771,12 @@ arithmetic for years and months, exact millisecond arithmetic below that.
 
 ;; ---- formatting -------------------------------------------------------------
 
-(defn- tp-pad-digits (n w)
-  (let (s (str n)
-        need (- w (string/length s)))
-    (if (> need 0) (str (string/repeat "0" need) s) s)))
-(sig tp-pad-digits (int int -> string))
-
 (defn- tp-pad (n w)
   ;; The sign is handled before padding — otherwise year -44 pads to \"0-44\".
   ;; Unlike `datetime/dt-zero-pad` this does NOT spend a digit on the sign: only
   ;; years can be negative here, and ISO 8601's expanded form wants four digits
   ;; after the sign (`-0044`), not three.
-  (if (< n 0) (str "-" (tp-pad-digits (- n) w)) (tp-pad-digits n w)))
+  (if (< n 0) (str "-" (string/pad-left (str (- n)) w "0")) (string/pad-left (str n) w "0")))
 (sig tp-pad (int int -> string))
 
 (defn ->iso (t)

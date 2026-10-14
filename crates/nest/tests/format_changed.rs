@@ -8,6 +8,9 @@
 use std::path::Path;
 use std::process::Command;
 
+mod support;
+use support::temp_dir;
+
 fn have_git() -> bool {
     Command::new("git")
         .arg("--version")
@@ -55,8 +58,8 @@ fn format_changed_only_touches_git_changed_files() {
         eprintln!("skipping: git not available");
         return;
     }
-    let tmp = tempdir();
-    let root = tmp.path();
+    let tmp = temp_dir("fmt");
+    let root = tmp.path.as_path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     write(&root.join("project.blsp"), "(project :name scratch)\n");
     // Already well-formatted, so a whole-project format would rewrite 0 either
@@ -114,8 +117,8 @@ fn format_changed_only_touches_git_changed_files() {
 
 #[test]
 fn format_changed_falls_back_outside_a_git_repo() {
-    let tmp = tempdir();
-    let root = tmp.path();
+    let tmp = temp_dir("fmt");
+    let root = tmp.path.as_path();
     std::fs::create_dir_all(root.join("src")).unwrap();
     write(&root.join("project.blsp"), "(project :name scratch)\n");
     write(&root.join("src/a.blsp"), "(defn   a   () 1)\n");
@@ -129,31 +132,4 @@ fn format_changed_falls_back_outside_a_git_repo() {
         "(defn a () 1)\n",
         "the fallback whole-project format should still reformat the file"
     );
-}
-
-/// Minimal unique temp dir (avoids a dev-dependency just for this).
-fn tempdir() -> TempDir {
-    let base = std::env::temp_dir();
-    let pid = std::process::id();
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = base.join(format!("brood-fmt-{pid}-{n}"));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
-
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl TempDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }

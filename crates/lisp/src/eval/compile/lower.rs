@@ -730,18 +730,10 @@ pub fn reduce_prim_op(heap: &Heap, f: Value) -> Option<PrimOp> {
     matches!(op, PrimOp::Add | PrimOp::Mul).then_some(op)
 }
 
-/// Apply an inlinable 2-ary [`PrimOp`] to a single `(x, y)` pair from outside the
-/// bytecode loop (the `range_reduce` fast path). `Ok(Some(v))` when handled inline;
-/// `Ok(None)` to defer to the real reducer (i64 overflow → BigInt, or a
-/// Float/BigInt operand the scalar path doesn't own) so results stay bit-identical.
-pub fn prim_apply_step(op: PrimOp, x: Value, y: Value) -> Result<Option<Value>, LispError> {
-    prim_apply(op, x, y)
-}
-
-/// Tighter variant of [`prim_apply_step`] for the range-fold hot path: both
+/// Tighter variant of [`prim_apply`] for the range-fold hot path: both
 /// operands are already `i64` (range element + integer accumulator), no Value
 /// boxing involved. Returns the next `i64` accumulator, or `None` on overflow
-/// (caller must fall back to the full `prim_apply_step` / `eval_apply` path).
+/// (caller must fall back to the full `prim_apply` / `eval_apply` path).
 /// Only covers `Add` and `Mul` since those are the only ops [`reduce_prim_op`]
 /// admits.
 #[inline]

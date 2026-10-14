@@ -19,13 +19,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
+mod support;
+use support::workspace_root;
 
 /// Every file we scan for *references*: the docs themselves plus the source that cites them.
 fn scanned_files(root: &Path) -> Vec<PathBuf> {

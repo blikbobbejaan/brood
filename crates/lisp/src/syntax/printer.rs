@@ -4,7 +4,7 @@
 //! - [`display`] is *human* (strings raw) — what `print`/`str` use.
 
 use crate::core::heap::Heap;
-use crate::core::value::{symbol_name_ref, Value, ValueRef};
+use crate::core::value::{symbol_name_ref, Value, ValueRef, VecId};
 
 /// Maximum nesting the printer will descend into. Past this we stop
 /// recursing — a printed REPL value should never be the thing that overflows
@@ -121,22 +121,7 @@ fn write_value(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u
         // A range prints as the list it stands in for: `(0 1 2 3 4)`.
         ValueRef::Range(id) => {
             out.push('(');
-            let (lo, hi, step) = heap.range_parts(id);
-            let mut i = lo;
-            let mut first = true;
-            while if step > 0 { i < hi } else { i > hi } {
-                if !first {
-                    out.push(' ');
-                }
-                first = false;
-                write_value(out, heap, Value::int(i), readable, depth + 1);
-                // A range ending near `i64::MAX`/`MIN` would wrap here (and loop
-                // forever in release): the next element past the edge does not exist.
-                i = match i.checked_add(step) {
-                    Some(next) => next,
-                    None => break,
-                };
-            }
+            write_range_items(out, heap, id, readable, depth, &mut true);
             out.push(')');
         }
         // A lazy seq-view can't be realised here (the printer has no evaluator to
@@ -284,19 +269,7 @@ fn write_list(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u3
             // dotted `(9 . (0 1))` — which would not read back as itself, and
             // `=`/`count` treat the spine as proper.
             ValueRef::Range(id) => {
-                let (lo, hi, step) = heap.range_parts(id);
-                let mut i = lo;
-                while if step > 0 { i < hi } else { i > hi } {
-                    if !first {
-                        out.push(' ');
-                    }
-                    first = false;
-                    write_value(out, heap, Value::int(i), readable, depth + 1);
-                    i = match i.checked_add(step) {
-                        Some(next) => next,
-                        None => break, // the range's last element sits at the i64 edge
-                    };
-                }
+                write_range_items(out, heap, id, readable, depth, &mut first);
                 break;
             }
             other => {
@@ -307,6 +280,33 @@ fn write_list(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u3
         }
     }
     out.push(')');
+}
+
+/// Write a lazy range's elements as list items, space-separated after the first
+/// (`first` carries across, so a range in a list's tail splices into its spine).
+fn write_range_items(
+    out: &mut String,
+    heap: &Heap,
+    id: VecId,
+    readable: bool,
+    depth: u32,
+    first: &mut bool,
+) {
+    let (lo, hi, step) = heap.range_parts(id);
+    let mut i = lo;
+    while if step > 0 { i < hi } else { i > hi } {
+        if !*first {
+            out.push(' ');
+        }
+        *first = false;
+        write_value(out, heap, Value::int(i), readable, depth + 1);
+        // A range ending near `i64::MAX`/`MIN` would wrap here (and loop forever in
+        // release): the next element past the edge does not exist.
+        i = match i.checked_add(step) {
+            Some(next) => next,
+            None => break,
+        };
+    }
 }
 
 fn format_float(f: f64) -> String {

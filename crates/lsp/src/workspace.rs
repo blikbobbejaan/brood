@@ -27,8 +27,7 @@ use brood::introspect;
 
 /// The symbol name at `offset`, if the cursor is on one.
 pub fn symbol_at<'s>(root: &Node, text: &'s str, offset: u32) -> Option<&'s str> {
-    let n = root.node_at(offset)?;
-    (n.kind == NodeKind::Symbol).then(|| n.text(text))
+    root.symbol_at(offset).map(|n| n.text(text))
 }
 
 /// The short (unqualified) tail of a possibly-qualified name: `observer/observe`
@@ -201,12 +200,7 @@ fn record_fields(
             }
         };
         for form in root.forms() {
-            let is_defrecord = form.kind == NodeKind::List
-                && form
-                    .forms()
-                    .next()
-                    .is_some_and(|h| h.kind == NodeKind::Symbol && h.text(&text) == "defrecord");
-            if !is_defrecord {
+            if form.head_symbol(&text) != Some("defrecord") {
                 continue;
             }
             if form
@@ -373,7 +367,7 @@ pub(crate) fn all_sources<'a>(interp: &mut Interp, docs: &'a Documents) -> Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{analyze, Document, Documents};
+    use crate::{Document, Documents};
 
     #[test]
     fn rename_is_namespace_sound_across_files() {
@@ -402,14 +396,7 @@ mod tests {
         let uri_a = crate::path_to_uri(&a_path.display().to_string()).unwrap();
         let uri_b = crate::path_to_uri(&src.join("b.blsp").display().to_string()).unwrap();
         let mut docs = Documents::new();
-        docs.insert(
-            uri_a.clone(),
-            Document {
-                text: a_src.clone(),
-                analysis: analyze(&a_src),
-                version: 1,
-            },
-        );
+        docs.insert(uri_a.clone(), Document::new(a_src, 1));
 
         let edit = rename(&mut interp, &docs, &uri_a, "observe", "watch")
             .expect("rename a's observe → watch");
@@ -449,14 +436,7 @@ mod tests {
         let a_src = std::fs::read_to_string(&a_path).unwrap();
         let uri_a = crate::path_to_uri(&a_path.display().to_string()).unwrap();
         let mut docs = Documents::new();
-        docs.insert(
-            uri_a.clone(),
-            Document {
-                text: a_src.clone(),
-                analysis: analyze(&a_src),
-                version: 1,
-            },
-        );
+        docs.insert(uri_a.clone(), Document::new(a_src, 1));
 
         let edit =
             rename(&mut interp, &docs, &uri_a, "point", "coord").expect("rename point → coord");

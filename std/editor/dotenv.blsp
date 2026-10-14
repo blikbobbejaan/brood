@@ -28,23 +28,18 @@ classifies a `#` comment, an optional leading `export` keyword, the `KEY` of a
 
 (defn- env-lead-ws (line i n)
   "The column where `line`'s leading whitespace (spaces / tabs) ends."
-  (if (and (< i n) (or (= (string/char-at line i) " ") (= (string/char-at line i) "\t")))
-    (env-lead-ws line (inc i) n)
-    i))
+  (math/min n (string/span line i " \t")))
 (sig env-lead-ws (string int int -> int))
 
 (defn- env-find (line i n ch)
   "The offset of the next single-char `ch` at or after `i` in `line`, or -1."
-  (cond (>= i n) -1 (= (string/char-at line i) ch) i else (env-find line (inc i) n ch)))
+  (if (>= i n) -1 (index-of line ch i)))
 (sig env-find (string int int string -> int))
 
-(defn- env-key-char? (c)
-  "True if `c` may appear in a dotenv key (letters, digits, `_`, `.`)."
-  (or (includes? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789" c)
-    (= c "_")
-    (= c ".")))
 (defn- env-key-end (line i n)
-  (if (and (< i n) (env-key-char? (string/char-at line i))) (env-key-end line (inc i) n) i))
+  ;; a dotenv key is letters, digits, `_` and `.`
+  (math/min n
+    (string/span line i "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.")))
 (sig env-key-end (string int int -> int))
 
 ;; ---- per-line spans ---------------------------------------------------------

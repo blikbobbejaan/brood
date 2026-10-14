@@ -136,4 +136,4 @@ For an even-length sequence, returns the mean of the two middle values.
     (stats/mode [1 1 2])     → 1"
   (when (empty? xs) (error "stats/mode: empty sequence"))
   (let (freq (frequencies xs))
-    (fold (rest xs) (first xs) (fn (best x) (if (> (get freq x) (get freq best)) x best)))))
+    (max-by xs (fn (x) (get freq x)))))

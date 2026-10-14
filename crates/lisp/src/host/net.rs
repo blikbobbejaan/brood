@@ -983,7 +983,11 @@ fn plain_interests(c: &PlainConn) -> Option<Interest> {
     // it explicitly, since the edge that would have announced buffered data is spent.
     // A lingering close (write half shut) reads to discard, paused or not.
     let want_read = !c.read_done && (c.write_shut || (c.reading && !c.flow.is_paused()));
-    let want_write = !c.out.is_empty();
+    interests_for(want_read, !c.out.is_empty())
+}
+
+/// The poll interests for wanting to read and/or write; `None` = want neither.
+fn interests_for(want_read: bool, want_write: bool) -> Option<Interest> {
     match (want_read, want_write) {
         (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
         (true, false) => Some(Interest::READABLE),
@@ -992,25 +996,38 @@ fn plain_interests(c: &PlainConn) -> Option<Interest> {
     }
 }
 
-fn sync_plain_registration(id: u64, c: &mut PlainConn, registry: &mio::Registry) {
-    match plain_interests(c) {
+/// Bring `stream`'s registration in line with `interests`: (re)register it under `id`'s
+/// token, or deregister it on `None`. `registered` tracks which call mio expects next.
+fn sync_registration(
+    id: u64,
+    stream: &mut MioStream,
+    registered: &mut bool,
+    interests: Option<Interest>,
+    registry: &mio::Registry,
+) {
+    match interests {
         Some(interests) => {
-            let res = if c.registered {
-                registry.reregister(&mut c.stream, Token(id as usize), interests)
+            let res = if *registered {
+                registry.reregister(stream, Token(id as usize), interests)
             } else {
-                registry.register(&mut c.stream, Token(id as usize), interests)
+                registry.register(stream, Token(id as usize), interests)
             };
             if res.is_ok() {
-                c.registered = true;
+                *registered = true;
             }
         }
         None => {
-            if c.registered {
-                let _ = registry.deregister(&mut c.stream);
-                c.registered = false;
+            if *registered {
+                let _ = registry.deregister(stream);
+                *registered = false;
             }
         }
     }
+}
+
+fn sync_plain_registration(id: u64, c: &mut PlainConn, registry: &mio::Registry) {
+    let interests = plain_interests(c);
+    sync_registration(id, &mut c.stream, &mut c.registered, interests, registry);
 }
 
 /// Returns true when the connection should be torn down.
@@ -1135,35 +1152,12 @@ fn discard_until_blocked(stream: &mut MioStream) -> bool {
 
 fn tls_interests(c: &TlsConn) -> Option<Interest> {
     // See `plain_interests` — a paused stream drops read interest.
-    let want_read = !c.read_done && !c.flow.is_paused();
-    let want_write = c.conn.wants_write();
-    match (want_read, want_write) {
-        (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
-        (true, false) => Some(Interest::READABLE),
-        (false, true) => Some(Interest::WRITABLE),
-        (false, false) => None,
-    }
+    interests_for(!c.read_done && !c.flow.is_paused(), c.conn.wants_write())
 }
 
 fn sync_tls_registration(id: u64, c: &mut TlsConn, registry: &mio::Registry) {
-    match tls_interests(c) {
-        Some(interests) => {
-            let res = if c.registered {
-                registry.reregister(&mut c.stream, Token(id as usize), interests)
-            } else {
-                registry.register(&mut c.stream, Token(id as usize), interests)
-            };
-            if res.is_ok() {
-                c.registered = true;
-            }
-        }
-        None => {
-            if c.registered {
-                let _ = registry.deregister(&mut c.stream);
-                c.registered = false;
-            }
-        }
-    }
+    let interests = tls_interests(c);
+    sync_registration(id, &mut c.stream, &mut c.registered, interests, registry);
 }
 
 /// Finish a TLS connection: emit the right terminal message once. Returns true.

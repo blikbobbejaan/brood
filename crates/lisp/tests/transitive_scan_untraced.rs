@@ -21,12 +21,8 @@
 use brood::types::check;
 use brood::Interp;
 
-fn loaded(interp: &mut Interp, module: &str) -> bool {
-    let value = interp
-        .eval_str(&format!("(contains? *features* \"{module}\")"))
-        .expect("read *features*");
-    interp.print(value) == "true"
-}
+mod support;
+use support::loaded;
 
 #[test]
 fn transitive_scan_loads_without_the_trace() {

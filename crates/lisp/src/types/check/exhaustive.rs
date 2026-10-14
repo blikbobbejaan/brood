@@ -28,7 +28,7 @@ use crate::types::Ty;
 use super::ctx::Ctx;
 use super::infer::expr_ty;
 use super::sigs::declared_heap_sig;
-use super::walk::{fn_params, list_items, resolves_to_macro};
+use super::walk::{fn_form_items, fn_params, list_items, resolves_to_macro};
 
 /// Entry: walk every top-level form for sealed-`match` exhaustiveness, from the file's
 /// accumulated `ctx` (globals + sigs + abilities). `(defmodule M …)` is a directive that sets
@@ -175,12 +175,10 @@ fn walk_def(
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2)) {
-        if let Some(value_items) = list_items(heap, val) {
-            if matches!(value_items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "fn")) {
-                let sig = sig_of(heap, ctx, name, namespace);
-                walk_fn_seeded(heap, &value_items, ctx, namespace, out, sig.as_ref());
-                return;
-            }
+        if let Some(value_items) = fn_form_items(heap, val) {
+            let sig = sig_of(heap, ctx, name, namespace);
+            walk_fn_seeded(heap, &value_items, ctx, namespace, out, sig.as_ref());
+            return;
         }
     }
     recurse_rest(heap, items, ctx, namespace, out);

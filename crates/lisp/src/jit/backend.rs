@@ -14,9 +14,10 @@
 //!    backend-independent decisions made above it (`eval/compile/jit_lower.rs` today; see
 //!    `docs/backend-seams.md` §3 for the move that hoists them out).
 //! 2. **Output** — [`JitArmFn`], i.e.
-//!    `extern "C" fn(heap: *mut Heap, base: i64, out: *mut Value) -> i64`. The compiled fn
-//!    reads its frame slots from `roots[base..]`, computes in registers, and on Done
-//!    **writes its result through `out`** — the caller's slot, not `roots[base]`. Returning
+//!    `extern "C" fn(heap: *mut Heap, base: i64, out: *mut Value, ctx: *mut JitCallCtx) -> i64`.
+//!    The compiled fn reads its frame slots from `roots[base..]`, computes in registers, and
+//!    on Done **writes its result through `out`** — the caller's slot, not `roots[base]`
+//!    — and reads its activation state from `ctx` ([`JitCallCtx`]). Returning
 //!    `None` from [`JitBackend::lower_arm`] means "out of my subset, keep running the VM" —
 //!    never a failure.
 //! 3. **Outcome codes** — the returned `i64` is `0` Done, `1` deopt, `2` preempt, `3` error
@@ -71,19 +72,7 @@
 use crate::core::value::Symbol;
 use crate::eval::compile::CompiledArm;
 
-/// A JIT backend: turns a decided-upon [`CompiledArm`] into native code satisfying the six
-/// obligations in the [module docs](self).
-///
-/// Implemented once today, by [`super::cranelift::CraneliftBackend`]. The point of the trait
-/// is not polymorphism — it is that a second backend has a compile-checked target and,
-/// through the shared `rt` table and the shared gates
-/// (`scripts/jit-lower-witness.sh`, `tests/jit.rs`), a conformance suite it inherits rather
-/// than reinvents.
-/// Deliberately *only* the two lowering entry points: no `name()`, no capability query, no
-/// configuration hook. Each of those is a knob with no caller today, and per ADR-011 an
-/// additive feature costs nothing to defer — whoever adds a second backend adds the ones
-/// that turn out to be needed, with their actual uses.
-/// The ABI of a JIT-compiled arm: `(heap, base, out) -> outcome`.
+/// The ABI of a JIT-compiled arm: `(heap, base, out, ctx) -> outcome`.
 ///
 /// **This alias exists because the compiler cannot check this ABI.** Every caller reaches a
 /// lowered arm through `mem::transmute` of a raw code pointer, so a signature that drifts
@@ -222,6 +211,19 @@ impl JitCallCtx {
     }
 }
 
+/// A JIT backend: turns a decided-upon [`CompiledArm`] into native code satisfying the six
+/// obligations in the [module docs](self).
+///
+/// Implemented once today, by [`super::cranelift::CraneliftBackend`]. The point of the trait
+/// is not polymorphism — it is that a second backend has a compile-checked target and,
+/// through the shared `rt` table and the shared gates
+/// (`scripts/jit-lower-witness.sh`, `tests/jit.rs`), a conformance suite it inherits rather
+/// than reinvents.
+///
+/// Deliberately *only* the lowering entry points and the tiering advisories: no `name()`,
+/// no capability query, no configuration hook. Each of those is a knob with no caller
+/// today, and per ADR-011 an additive feature costs nothing to defer — whoever adds a
+/// second backend adds the ones that turn out to be needed, with their actual uses.
 pub(crate) trait JitBackend {
     /// Lower `arm` to native code, or `None` to bail to the VM (obligations 1–3).
     fn lower_arm(&mut self, arm: &CompiledArm, slot_tags: &[u8]) -> Option<*const u8>;

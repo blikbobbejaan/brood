@@ -20,7 +20,6 @@
 (defn tel-ids (event) (map (get (handlers) event nil) (fn (h) (get h :id))))
 (defn tel-await (n)
   (if (= n 0) :ok (receive (:done (tel-await (- n 1))) (after *test-wait-ms* :timeout))))
-(defn threw? (thunk) (try (do (thunk) false) (catch e true)))
 
 ;; ---- emit + handlers --------------------------------------------------------
 (defn- evt (r)

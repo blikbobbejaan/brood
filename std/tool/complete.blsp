@@ -99,9 +99,7 @@ suggestions\", never to an error on the user's command line."
 (defn- complete-manifest-dirs (root key default)
   (let (form (complete-manifest root)
         declared (if (nil? form) nil (complete-safely (fn () (complete-plist-get (rest form) key))))
-        rels (if (or (nil? declared) (not (or (vector? declared) (pair? declared))))
-               default
-               declared))
+        rels (if (or (vector? declared) (pair? declared)) declared default))
     (map rels (fn (r) (path/join root r)))))
 
 ;; Strip `root/` from an absolute path so completions read as the relative paths a
@@ -190,12 +188,7 @@ suggestions\", never to an error on the user's command line."
 ;; which is exactly what this module's own tests are full of — was being harvested as
 ;; real tags, offering names like `a` and `unit` that no test actually carries. A
 ;; multi-line string could fool the line-local check; that costs one wrong hint.
-(defn- complete-line-start (text i) (complete-line-start-walk text i 0))
-
-(defn- complete-line-start-walk (text i at)
-  (let (nl (index-of-from text "\n" at))
-    (if (or (< nl 0) (>= nl i)) at (complete-line-start-walk text i (+ nl 1)))))
-(sig complete-line-start-walk (string int int -> int))
+(defn- complete-line-start (text i) (inc (string/last-index-of text "\n" i)))
 
 (defn- complete-in-string? (text i)
   (let (prefix (string/substring text (complete-line-start text i) i)
@@ -203,7 +196,6 @@ suggestions\", never to an error on the user's command line."
         cleaned (string/replace prefix "\\\"" ""))
     ;; Odd number of quotes before the position ⇒ still inside one.
     (= 1 (math/rem (- (count (string/split cleaned "\"")) 1) 2))))
-(sig complete-in-string? (string int -> bool))
 (sig complete-in-string? (string int -> bool))
 
 ;; The bare names of the `:keyword`s in a whitespace-separated fragment.

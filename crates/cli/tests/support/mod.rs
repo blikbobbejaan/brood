@@ -1,15 +1,57 @@
-//! Shared harness for the tests that run **real `brood` OS processes over loopback**
+//! Shared harness for the `cli` integration tests: scratch directories and script files,
+//! and the helpers for the tests that run **real `brood` OS processes over loopback**
 //! (`distribution.rs`, `serve_attach.rs`, `observe_attach.rs`).
 //!
-//! These three had their own copies of the same four helpers, which is how the port
+//! Those three had their own copies of the same four helpers, which is how the port
 //! allocator's KI-27 bug came to be fixed in one file and left in two. One definition now.
 #![allow(dead_code)] // each test binary uses a subset
 
 use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// The repository root (`crates/cli` → two levels up).
+pub fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("repo root")
+        .to_path_buf()
+}
+
+/// A scratch directory under the system temp dir, removed (best effort) on drop. The `cli`
+/// tests have no `tempfile` dev-dependency; this is the one copy.
+pub struct TempDir {
+    pub path: PathBuf,
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Create `<temp>/brood-{tag}-{pid}-{nanos}` — unique per test process and per call.
+pub fn temp_dir(tag: &str) -> TempDir {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{nanos}", std::process::id()));
+    std::fs::create_dir_all(&path).expect("create temp dir");
+    TempDir { path }
+}
+
+/// Write `source` to `<temp>/brood-{name}.blsp` and return its path. The name is fixed (no
+/// pid), so each caller prefixes it with its own file's tag to stay out of the others' way.
+pub fn script(name: &str, source: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!("brood-{name}.blsp"));
+    std::fs::write(&path, source).expect("write script");
+    path
+}
 
 /// Serialises the *bind→spawn* window between tests **in this process**. Two tests racing
 /// through [`free_port`] can both pick the same port; the loser's child then fails to bind,

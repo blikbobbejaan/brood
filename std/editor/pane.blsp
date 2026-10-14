@@ -387,10 +387,7 @@ into its rect and the dividers between them."
 
 (defn- pane-find (items point)
   "The first `{:rect …}` in `items` whose rect contains `point`, or nil."
-  (cond
-    (empty? items) nil
-    (pane-in-rect? (get (first items) :rect) point) (first items)
-    else (pane-find (rest items) point)))
+  (seq/find items (fn (item) (pane-in-rect? (get item :rect) point))))
 
 (defn pane-at (layout point)
   "The pane (`{:path :payload :selected :rect}`) under `point`, or nil."

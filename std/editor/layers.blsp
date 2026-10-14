@@ -383,11 +383,7 @@ shebang. The version suffix is kept (`python3`), a trailing newline and argument
 (defn- layers-match-file (file rules)
   "Walk `rules` (newest-first); return the `:type` of the first whose `:match` fits
 `file`, else nil."
-  (if (empty? rules)
-    nil
-    (if (layers-file-matches? file (get (first rules) :match))
-      (get (first rules) :type)
-      (layers-match-file file (rest rules)))))
+  (get (seq/find rules (fn (rule) (layers-file-matches? file (get rule :match)))) :type))
 
 (defn buffer-type-for (buf)
   "The type of `buf`. An explicitly-set `:type` wins — it was either stamped by a

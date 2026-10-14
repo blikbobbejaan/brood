@@ -100,9 +100,7 @@ paints the role `:classes` gives its text, or nothing."
 
 (defn- lexer-skip-ws (line s e)
   "`s` advanced past the spaces and tabs before `e`."
-  (if (and (< s e) (or (= (string/char-at line s) " ") (= (string/char-at line s) "\t")))
-    (lexer-skip-ws line (inc s) e)
-    s))
+  (math/min e (string/span line s " \t")))
 
 (defn- lexer-line-rules (grammar line faces)
   "The spans of the `:line` rules that match at `line`'s start: a `[prefix paint suffix

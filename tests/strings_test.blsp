@@ -399,8 +399,8 @@
     (assert= "llo" (string/substring "hello" 2))
     (assert= "😀b" (string/substring "a😀b" 1))
     (assert= "" (string/substring "abc" 3 3))
-    (is (try (do (string/substring "abc" 0 4) false) (catch e true)))
-    (is (try (do (string/substring "abc" -1 2) false) (catch e true))))
+    (assert-error (string/substring "abc" 0 4))
+    (assert-error (string/substring "abc" -1 2)))
   (test "string-span scans runs correctly on non-ASCII text"
     ;; Same fast path, in the tokenizer inner loop: `start` is a CHAR index.
     (assert= 3 (string/span "aaabbb" 0 "a"))

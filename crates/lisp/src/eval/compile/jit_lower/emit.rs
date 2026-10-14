@@ -55,6 +55,31 @@ pub(super) fn load_roots_base(
     b.ins().load(types::I64, MemFlagsData::trusted(), heap, off)
 }
 
+/// Read back the three words a callback wrote into `out_slot` (the out-pointer ABI).
+pub(super) fn read_out_slot(
+    b: &mut FunctionBuilder,
+    out_slot: StackSlot,
+) -> (
+    cranelift_codegen::ir::Value,
+    cranelift_codegen::ir::Value,
+    cranelift_codegen::ir::Value,
+) {
+    let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
+    let w1 = b
+        .ins()
+        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
+    let w2 = b
+        .ins()
+        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
+    (w0, w1, w2)
+}
+
+/// [`read_out_slot`] as an `Op::Handle`.
+pub(super) fn handle_from_out_slot(b: &mut FunctionBuilder, out_slot: StackSlot) -> Op {
+    let (w0, w1, w2) = read_out_slot(b, out_slot);
+    Op::Handle(w0, w1, w2)
+}
+
 /// The runtime-call context threaded into the extracted call/read helpers (and,
 /// as the decomposition proceeds, the per-`Inst` arm bodies): the heap pointer
 /// param, the scratch out-slot for the out-pointer ABI, the target pointer type,
@@ -1263,17 +1288,7 @@ pub(super) fn call_handle(
     args.push(out_addr);
     args.extend_from_slice(operands);
     b.ins().call(fref, &args);
-    let w0 = b.ins().stack_load(types::I64, types::I64, fu.out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, fu.out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b.ins().stack_load(
-        types::I64,
-        types::I64,
-        fu.out_slot,
-        PAYLOAD_OFFSET as i32 + 8,
-    );
-    Op::Handle(w0, w1, w2)
+    handle_from_out_slot(b, fu.out_slot)
 }
 
 /// Dynamic-index vector read, fully inline for a LOCAL vector (either storage):
@@ -1437,16 +1452,7 @@ pub(super) fn vector_ref(
     b.ins()
         .brif(status, f.deopt, &[BlockArg::Value(deopt_reason)], cont, &[]);
     b.switch_to_block(cont);
-    let w0 = b.ins().stack_load(types::I64, types::I64, fu.out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, fu.out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b.ins().stack_load(
-        types::I64,
-        types::I64,
-        fu.out_slot,
-        PAYLOAD_OFFSET as i32 + 8,
-    );
+    let (w0, w1, w2) = read_out_slot(b, fu.out_slot);
     b.ins().jump(
         vr_done,
         &[
@@ -1498,17 +1504,7 @@ pub(super) fn table_prim(
         &[BlockArg::Value(deopt_reason)],
     );
     b.switch_to_block(cont);
-    let w0 = b.ins().stack_load(types::I64, types::I64, fu.out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, fu.out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b.ins().stack_load(
-        types::I64,
-        types::I64,
-        fu.out_slot,
-        PAYLOAD_OFFSET as i32 + 8,
-    );
-    Op::Handle(w0, w1, w2)
+    handle_from_out_slot(b, fu.out_slot)
 }
 
 /// Runtime-dispatched `=` on materialised operands — the codegen twin of the VM's
@@ -1840,13 +1836,7 @@ pub(super) fn inline_vec_ref(
     b.ins()
         .brif(hstatus, deopt, &[BlockArg::Value(deopt_reason)], hok, &[]);
     b.switch_to_block(hok);
-    let h0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-    let h1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-    let h2 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
+    let (h0, h1, h2) = read_out_slot(b, out_slot);
     b.ins().jump(
         ivr_done,
         &[

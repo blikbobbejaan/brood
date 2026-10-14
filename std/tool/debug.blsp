@@ -497,7 +497,7 @@ running shows `:value :running`."
         enters (seq/filter events (fn (e) (= (get e :kind) :span-enter)))
         exits (seq/filter events (fn (e) (= (get e :kind) :span-exit)))
         value-of (fn (id)
-                   (let (ex (first (seq/filter exits (fn (e) (= (get e :span) id)))))
+                   (let (ex (seq/find exits (fn (e) (= (get e :span) id))))
                      (if ex (get ex :value) :running)))
         children-of (fn (parent-id)
                       (seq/filter enters (fn (e) (= (get e :parent) parent-id)))))
@@ -514,7 +514,7 @@ running shows `:value :running`."
   "The causal tree as a flat list of indented, pid-tagged strings (one per span)."
   (mapcat nodes
     (fn (node)
-      (cons (str (apply str (map (range depth) (constantly "  ")))
+      (cons (str (string/repeat "  " depth)
               (get node :label)
               " ["
               (get node :pid)

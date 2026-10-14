@@ -7,7 +7,7 @@
 //!
 //! No user code runs — see `docs/lsp.md`.
 
-use brood::syntax::cst::{Node, NodeKind};
+use brood::syntax::cst::Node;
 use brood::syntax::scope::{BindingKind, Resolution, ScopeTree};
 use brood::Interp;
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
@@ -27,10 +27,7 @@ pub fn hover(
     index: &LineIndex,
     offset: u32,
 ) -> Option<Hover> {
-    let node = root.node_at(offset)?;
-    if node.kind != NodeKind::Symbol {
-        return None;
-    }
+    let node = root.symbol_at(offset)?;
     let name = node.text(text);
 
     // A `defmodule` clause target — the module name in `(:use …)`/`(:alias …)`, or

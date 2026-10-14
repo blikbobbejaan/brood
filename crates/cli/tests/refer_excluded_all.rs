@@ -22,29 +22,7 @@
 //! precisely the case the wave does not produce.
 
 mod support;
-
-use std::path::PathBuf;
-
-// The cli tests each carry their own tiny TempDir (no `tempfile` dev-dependency here);
-// mirrored from `stdimage_reporting.rs` so the shape stays recognisable.
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn temp_dir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    TempDir { path }
-}
+use support::temp_dir;
 
 /// Run `src` as a program and return its stderr.
 fn stderr_of(dir: &std::path::Path, name: &str, src: &str) -> String {

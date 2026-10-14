@@ -25,22 +25,6 @@
 
 ;; ---- internal helpers -------------------------------------------------------
 
-(defn- path-last-sep (s i)
-  (if (< i 0)
-    -1
-    (if (= (string/char-at s i) "/")
-      i
-      (path-last-sep s (- i 1)))))
-(sig path-last-sep (string int -> int))
-
-(defn- path-last-dot (s i)
-  (if (< i 0)
-    -1
-    (if (= (string/char-at s i) ".")
-      i
-      (path-last-dot s (- i 1)))))
-(sig path-last-dot (string int -> int))
-
 ;; Join a non-empty list of components in order, inserting / between them.
 (defn- path-glue (head rest-parts)
   (if (nil? rest-parts)
@@ -59,7 +43,7 @@ ignored so `(basename \"/usr/bin/\")` returns `\"bin\"`. `(basename \"/\")` retu
     (path/basename \"/a/b/c.txt\")   → \"c.txt\""
   (let (n (string/length p)
         e (if (and (> n 1) (= (string/char-at p (- n 1)) "/")) (- n 1) n)
-        i (path-last-sep p (- e 1)))
+        i (string/last-index-of p "/" e))
     (cond
       (< i 0) (string/substring p 0 e)
       (= e 1) "/"
@@ -74,7 +58,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
     (path/dirname \"/a/b/c.txt\")    → \"/a/b\""
   (let (n (string/length p)
         e (if (and (> n 1) (= (string/char-at p (- n 1)) "/")) (- n 1) n)
-        i (path-last-sep p (- e 1)))
+        i (string/last-index-of p "/" e))
     (cond
       (< i 0) "."
       (= i 0) "/"
@@ -87,7 +71,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
     (path/extension \"/a/b/c.txt\")  → \".txt\""
   (let (b (basename p)
         n (string/length b)
-        i (path-last-dot b (- n 1)))
+        i (string/last-index-of b "."))
     (if (<= i 0) "" (string/substring b i n))))
 (sig extension (string -> string))
 
@@ -96,8 +80,7 @@ Returns `\".\"` for a bare name, `\"/\"` for the root.
 
     (path/stem \"/a/b/c.txt\")       → \"c\""
   (let (b (basename p)
-        n (string/length b)
-        i (path-last-dot b (- n 1)))
+        i (string/last-index-of b "."))
     (if (<= i 0) b (string/substring b 0 i))))
 
 (defn with-extension (p ext)
@@ -131,7 +114,7 @@ an empty argument list.
     (let (p (first parts))
       (cond
         (= p "") (join-loop (rest parts) acc)
-        (and (> (string/length p) 0) (= (string/char-at p 0) "/")) (join-loop (rest parts) (list p))
+        (string/starts-with? p "/") (join-loop (rest parts) (list p))
         else (join-loop (rest parts) (cons p acc))))))
 (sig join-loop :total)
 

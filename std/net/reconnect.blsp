@@ -93,24 +93,15 @@ unrelated message cost nothing."
           (reconnect-down spec peer opts subs (reconnect-next-delay delay opts)))))))
 (sig reconnect-wait (string (or keyword nil) map list int int -> any))
 
-(defn- reconnect-boot (spec opts)
-  "Watcher body: connect (or start retrying immediately) and run the state loop."
-  ;; check-allow :discarded-catch — a failed connect IS the down state this loop exists to retry
-  (let (up (check-allow :discarded-catch (try (node/connect spec) (catch _ nil))))
-    (if up
-      (do
-        (node/monitor up)
-        (reconnect-up spec up opts nil))
-      (reconnect-down spec nil opts nil (reconnect-opt opts :min-ms 500)))))
-
 (defn watch (spec &optional opts)
   "Keep the link to the node at `spec` (a `connect` spec — `\"name\"` local or
 `\"name@host:port\"` remote) alive: connect now, and on `[:nodedown]` retry with
 exponential backoff (`opts` `{:min-ms 500 :max-ms 30000}`) until it's back.
 Idempotent per spec (a named watcher process); returns the watcher's pid. This
 runtime must already be a node (`node-start`)."
+  ;; The watcher starts in the disconnected state, whose first act is the connect attempt.
   (let (o (or opts {}))
-    (spawn (reconnect-proc-name spec) (reconnect-boot spec o))))
+    (spawn (reconnect-proc-name spec) (reconnect-down spec nil o nil (reconnect-opt o :min-ms 500)))))
 
 (defn subscribe (spec)
   "Register the current process with `spec`'s watcher (start it with `watch`

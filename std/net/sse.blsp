@@ -100,22 +100,19 @@ data) …))` from an `http` handler to push events to a browser `EventSource`."
   "Fold one SSE field `line` into event map `ev`. `data` lines accumulate (joined by
 `\\n`); `event`/`id`/`retry` set their field; comment lines (`:`-prefixed) and blanks
 are ignored. One optional space after the colon is stripped."
-  (cond
-    (= line "") ev
-    (string/starts-with? line ":") ev
-    else
-      (let (i (index-of line ":")
-            field (if (< i 0) line (string/substring line 0 i))
-            raw (if (< i 0) "" (string/substring line (+ i 1) (string/length line)))
-            val (if (string/starts-with? raw " ") (string/substring raw 1 (string/length raw)) raw))
-        (cond
-          (= field "data")
-            (assoc ev
-              :data (if (nil? (get ev :data)) val (str (get ev :data) "\n" val)))
-          (= field "event") (assoc ev :event val)
-          (= field "id") (assoc ev :id val)
-          (= field "retry") (assoc ev :retry val)
-          else ev))))
+  ;; A blank line and a `:` comment both have the empty field name, so they fall to `else`.
+  (let (i (index-of line ":")
+        field (if (< i 0) line (string/substring line 0 i))
+        raw (if (< i 0) "" (string/substring line (+ i 1) (string/length line)))
+        val (if (string/starts-with? raw " ") (string/substring raw 1 (string/length raw)) raw))
+    (cond
+      (= field "data")
+        (assoc ev
+          :data (if (nil? (get ev :data)) val (str (get ev :data) "\n" val)))
+      (= field "event") (assoc ev :event val)
+      (= field "id") (assoc ev :id val)
+      (= field "retry") (assoc ev :retry val)
+      else ev)))
 
 (defn- parse-event (block)
   "Parse one event `block` (its field lines) into `{:event :data :id …}`, defaulting

@@ -17,7 +17,7 @@
 (describe "ADR-315: no primitive absorbs — that stays the raising channel"
   (test "arithmetic on a failure still raises, as it did before"
     ;; the mechanisms are opt-in; nothing changed underneath them
-    (is (try (do (+ 1 (bad)) false) (catch _ true))))
+    (assert-error (+ 1 (bad))))
 
   (test "and a collection still STORES one — which is why the mechanisms are needed"
     ;; this is the original defect, deliberately left in place: `conj` declares no domain,

@@ -475,7 +475,7 @@ impl Heap {
     // ===== Definition sites (cross-file xref; ADR-031) =========================
 
     /// Every recorded def site, for the prelude image (ADR-314) to carry. The imaged boot
-    /// evaluates no `def`, so nothing calls [`Heap::record_def_site`] there and stdlib
+    /// evaluates no `def`, so nothing calls [`Heap::note_definition`] there and stdlib
     /// `M-.` would otherwise go dark.
     pub fn def_sites_snapshot(&self) -> Vec<(Symbol, SourceLoc)> {
         self.runtime
@@ -486,25 +486,10 @@ impl Heap {
     }
 
     /// Reinstate a def site verbatim — the restore half of [`Heap::def_sites_snapshot`].
-    /// Unlike `record_def_site` this takes the file explicitly rather than reading
+    /// Unlike `note_definition` this takes the file explicitly rather than reading
     /// `current_file`, because the imaged boot is not "inside" a file when it runs.
     pub fn set_def_site(&self, name: Symbol, loc: SourceLoc) {
         self.runtime.def_sites_write().insert(name, loc);
-    }
-
-    /// Record `name`'s definition site directly, without a form to read it from. Uses
-    /// [`current_file`], so it is a no-op when no file is set, exactly like
-    /// [`note_definition`].
-    ///
-    /// [`current_file`]: Self::current_file
-    /// [`note_definition`]: Self::note_definition
-    pub fn record_def_site(&mut self, name: Symbol, pos: crate::error::Pos) {
-        let Some(file) = self.cold().and_then(|c| c.current_file.clone()) else {
-            return;
-        };
-        self.runtime
-            .def_sites_write()
-            .insert(name, SourceLoc { file, pos });
     }
 
     /// If `form` is a top-level `def`/`defn`/`defmacro`, record its name's source

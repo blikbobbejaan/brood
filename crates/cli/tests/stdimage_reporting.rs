@@ -16,29 +16,10 @@
 //! Each case gets its own `XDG_CACHE_HOME`, so it is testing the state it set up rather than
 //! whatever this developer's machine happens to have cached.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn temp_dir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    TempDir { path }
-}
+use support::{temp_dir, TempDir};
 
 /// A one-assertion suite file — the summary line is what is under test, not the tests.
 const SUITE: &str = "(defmodule stdimage-line-test (:use test))\n\

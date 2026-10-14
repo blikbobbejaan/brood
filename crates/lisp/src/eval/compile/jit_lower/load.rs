@@ -2,26 +2,13 @@
 //! `Const`, `Global`/`GlobalIc`, `SetLocal`, and the deopt-resume journal written after an
 //! effect. jit-only.
 #![cfg(feature = "jit")]
-use super::emit::{self, Frame};
+use super::emit::{self, handle_from_out_slot, Frame};
 use super::entry::Hoisted;
 use super::*;
-use crate::core::value::jit_layout::PAYLOAD_OFFSET;
 use cranelift_codegen::ir::{types, FuncRef, InstBuilder, MemFlagsData, StackSlot, Type};
 use cranelift_frontend::FunctionBuilder;
 
 type SsaValue = cranelift_codegen::ir::Value;
-
-/// Read the three words a callback wrote into `out_slot` back as an `Op::Handle`.
-fn handle_from_out_slot(b: &mut FunctionBuilder, out_slot: StackSlot) -> Op {
-    let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-    Op::Handle(w0, w1, w2)
-}
 
 /// `Inst::Const`: an int or float literal becomes an unboxed SSA value; `nil` a constant
 /// 3-word handle (a consumer that wants an int tag-checks and deopts); a bool an `Op::Bool`.

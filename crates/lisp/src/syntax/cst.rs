@@ -104,6 +104,34 @@ impl Node {
     pub fn forms(&self) -> impl Iterator<Item = &Node> {
         self.children.iter().filter(|c| !c.kind.is_trivia())
     }
+
+    /// The innermost node at byte offset `at` when it is a `Symbol` — the "is the
+    /// cursor on a name?" question hover, goto, rename and references all open with.
+    pub fn symbol_at(&self, at: u32) -> Option<&Node> {
+        self.node_at(at)
+            .filter(|node| node.kind == NodeKind::Symbol)
+    }
+
+    /// The head symbol's text when this node is a `List` led by a symbol — `def` in
+    /// `(def x 1)`. The form-head test every CST walker (scope analysis, the language
+    /// server) starts from.
+    pub fn head_symbol<'s>(&self, src: &'s str) -> Option<&'s str> {
+        self.head_of_kind(NodeKind::Symbol, src)
+    }
+
+    /// The head keyword's text when this node is a `List` led by a keyword — `:use`
+    /// in a `(:use m)` module-header clause.
+    pub fn head_keyword<'s>(&self, src: &'s str) -> Option<&'s str> {
+        self.head_of_kind(NodeKind::Keyword, src)
+    }
+
+    fn head_of_kind<'s>(&self, kind: NodeKind, src: &'s str) -> Option<&'s str> {
+        if self.kind != NodeKind::List {
+            return None;
+        }
+        let head = self.forms().next()?;
+        (head.kind == kind).then(|| head.text(src))
+    }
 }
 
 /// Parse `src` into a lossless CST. Never fails: malformed input is recorded as

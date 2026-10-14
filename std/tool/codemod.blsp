@@ -131,7 +131,7 @@
   ;; form whose first significant item is a def-head symbol.
   (let (significant (seq/filter kids
                       (fn (k) (not (includes? [:whitespace :comment] (node-kind k)))))
-        head (if (empty? significant) nil (first significant))
+        head (first significant)
         head-name (if (and head (= (node-kind head) :symbol)) (node-payload head) nil)
         def-form? (and head-name (includes? *def-heads* head-name))
         ;; `(quote x)` in list form quotes its arguments, as the `'x` wrapper does.

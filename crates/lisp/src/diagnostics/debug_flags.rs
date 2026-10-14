@@ -572,33 +572,35 @@ const NON_FLAGS: &[&str] = &["BROOD_GIT_SHA", "BROOD_STDLIB_HASH", "BROOD_EMBED_
 /// sites across the tiering code.
 pub fn jit_bail_trace() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_JIT_BAIL_TRACE").is_some())
+    is_set(&ON, "BROOD_JIT_BAIL_TRACE")
 }
 
 /// `BROOD_TRACE_COMPILE` is set — read once. Asked on every closure compile and at each
 /// stale-bindings mark (`[compile] …` lines).
 pub fn trace_compile() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_TRACE_COMPILE").is_some())
+    is_set(&ON, "BROOD_TRACE_COMPILE")
 }
 
 /// `BROOD_TRACE_LOWER` is set — read once. Times each JIT lowering (`[lower] …` lines).
 pub fn trace_lower() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_TRACE_LOWER").is_some())
+    is_set(&ON, "BROOD_TRACE_LOWER")
 }
 
 // ---- The evaluator's and JIT's toggles, each read once and cached. A lever that is ON by
 // default answers `true` unless its `BROOD_NO_*` opt-out is set. One reader per flag, so the
 // catalogue above and the runtime cannot disagree about which flags exist.
 
-/// `name` is set (to anything) — read once into `cell`.
-fn is_set(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
+/// `name` is set (to anything) — read once into `cell`. The one spelling of a cached
+/// presence flag; the subsystems that keep their own reader (GC, scheduler, mailbox,
+/// image, contracts) call it too, so "set" means the same thing for every flag.
+pub(crate) fn is_set(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
     *cell.get_or_init(|| std::env::var_os(name).is_some())
 }
 
 /// `name` is set to something other than empty or `0` — read once into `cell`.
-fn is_armed(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
+pub(crate) fn is_armed(cell: &std::sync::OnceLock<bool>, name: &str) -> bool {
     *cell.get_or_init(|| std::env::var(name).is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
@@ -736,8 +738,8 @@ pub fn print_catalogue() {
         "BROOD_* environment flags — all {} the runtime reads, triage groups first.",
         FLAGS.iter().filter(|f| f.ours).count()
     );
-    println!("Set any to 1 unless a value is described. CLAUDE.md's table is the long form:");
-    println!("it carries the measurement history behind each default.");
+    println!("Set any to 1 unless a value is described. The measurement history behind a");
+    println!("default lives in its ADR or devlog entry.");
     let width = FLAGS.iter().map(|f| f.name.len()).max().unwrap_or(0);
     // Drive the grouping from GROUP_ORDER rather than from adjacency in the array, so an
     // entry added away from its siblings cannot split its group and print the heading twice.

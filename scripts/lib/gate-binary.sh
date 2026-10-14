@@ -1,14 +1,16 @@
 # shellcheck shell=bash
-# Which binary does a corpus gate run? — sourced by `check-examples.sh`, `check-stress.sh`
-# and `check-corpora.sh`. Not executable on its own; set `ROOT` first.
+# Which binary does a corpus gate run? — sourced by `check-examples.sh`, `check-stress.sh`,
+# `check-corpora.sh` and `green.sh`. Not executable on its own; set `ROOT` first.
 #
 # WHY THIS EXISTS. `make release` builds RELEASE_DIR = `target/release-fast`; only a plain
 # `cargo build --release` writes `target/release`. All three gates defaulted to
 # `target/release` alone while their error told you to "run `make release-brood` first" —
 # a target that writes the OTHER path. So locally the gate could not run, and the command it
 # named could not fix that. This is KI-76's wrong-artifact class, which cost 9 commits of
-# drift and two phantom `unbound symbol` failures; `green.sh` carries the fix inline and
-# these three did not.
+# drift and two phantom `unbound symbol` failures; `green.sh` carried the fix inline and
+# these three did not. It now takes the picker and the freshness test from here too: its
+# inline copy had already drifted (its sha pattern missed the `-dirty` marker, so the rescue
+# below never fired for a dirty build).
 #
 # Three rules, all of them KI-76's:
 #
@@ -68,31 +70,49 @@ gate_pick() {
 # fresh clone) rewrites mtimes without changing content, so sources look newer than a binary
 # that is in fact current. Then, and only then, ask git whether anything it bakes in moved.
 gate_require_fresh() {
-    local bin="$1" head bin_sha newer
+    local bin="$1"
     if [ ! -x "$bin" ]; then
         echo "the gate DID NOT RUN — no binary at $bin" >&2
         echo "  build with \`make release\` (target/release-fast) or \`cargo build --release -p cli -p nest\`" >&2
         exit 2
     fi
-    # `crates/*/tests/` is excluded: an integration test compiles into its OWN test binary,
-    # never into these, so it cannot change what a gate sees.
-    newer="$(find "$ROOT/std" "$ROOT/crates" \( -name '*.blsp' -o -name '*.rs' \) \
-               -not -path "$ROOT/crates/*/tests/*" -newer "$bin" -print -quit 2>/dev/null)"
-    [ -z "$newer" ] && return 0                      # baked what is on disk — done
-
-    head="$(gate_head_sha)"; bin_sha="$(gate_sha_of "$bin")"
-    if [ -n "$head" ] && [ -n "$bin_sha" ] && [ "$bin_sha" != "$head" ] &&
-       git -C "$ROOT" cat-file -e "${bin_sha}^{commit}" 2>/dev/null &&
-       [ -z "$(git -C "$ROOT" diff --name-only "$bin_sha" HEAD -- std crates \
-                 ':(exclude)crates/*/tests/*' 2>/dev/null)" ] &&
-       [ -z "$(git -C "$ROOT" status --porcelain -- std crates 2>/dev/null)" ]; then
-        echo "note: $bin is from $bin_sha and older than $newer, but nothing it bakes in changed — its verdict is current" >&2
+    if gate_freshness "$bin"; then
+        [ "$GATE_RESCUED" = 1 ] &&
+            echo "note: $bin is from $GATE_BIN_SHA and older than $GATE_NEWER, but nothing it bakes in changed — its verdict is current" >&2
         return 0
     fi
-    echo "the gate DID NOT RUN — $newer is newer than $bin" >&2
+    echo "the gate DID NOT RUN — $GATE_NEWER is newer than $bin" >&2
     echo "  rebuild with \`make release\` (or \`cargo build --release -p cli -p nest\`), then re-run." >&2
     echo "  A stale binary bakes in a stale std/, so its verdict is about a different tree." >&2
     exit 2
+}
+
+# gate_freshness <path> — the judgement `gate_require_fresh` acts on, without acting: returns
+# 0 when <path>'s baked-in `std/`+`crates/` is the tree's, 1 when it is stale. Sets
+# GATE_NEWER (the first source newer than the binary, or empty), GATE_BIN_SHA (the sha the
+# binary reports) and GATE_RESCUED=1 when only the sha rescue made it current. `green.sh`
+# reports through this rather than exiting.
+GATE_NEWER=""; GATE_BIN_SHA=""; GATE_RESCUED=0
+gate_freshness() {
+    local bin="$1" head
+    GATE_RESCUED=0
+    GATE_BIN_SHA="$(gate_sha_of "$bin")"
+    # `crates/*/tests/` is excluded: an integration test compiles into its OWN test binary,
+    # never into these, so it cannot change what a gate sees.
+    GATE_NEWER="$(find "$ROOT/std" "$ROOT/crates" \( -name '*.blsp' -o -name '*.rs' \) \
+                    -not -path "$ROOT/crates/*/tests/*" -newer "$bin" -print -quit 2>/dev/null)"
+    [ -z "$GATE_NEWER" ] && return 0                 # baked what is on disk — done
+
+    head="$(gate_head_sha)"
+    if [ -n "$head" ] && [ -n "$GATE_BIN_SHA" ] && [ "$GATE_BIN_SHA" != "$head" ] &&
+       git -C "$ROOT" cat-file -e "${GATE_BIN_SHA}^{commit}" 2>/dev/null &&
+       [ -z "$(git -C "$ROOT" diff --name-only "$GATE_BIN_SHA" HEAD -- std crates \
+                 ':(exclude)crates/*/tests/*' 2>/dev/null)" ] &&
+       [ -z "$(git -C "$ROOT" status --porcelain -- std crates 2>/dev/null)" ]; then
+        GATE_RESCUED=1
+        return 0
+    fi
+    return 1
 }
 
 # ── which modules does this binary carry? ────────────────────────────────────────────────
@@ -164,4 +184,37 @@ gate_classify() {
     done <<< "$bad"
     GATE_VERDICT="skip"
     GATE_DETAIL="needs$absent, absent from this lean build (\`cargo build --release -p cli\` for a full run)"
+}
+
+# ── shared gate plumbing ─────────────────────────────────────────────────────────────────
+
+# gate_matches <name> — true when the caller named no filters, or named <name>. The caller
+# sets GATE_WANT=("$@") first.
+GATE_WANT=()
+gate_matches() {
+    [ ${#GATE_WANT[@]} -eq 0 ] && return 0
+    local name="$1" wanted
+    for wanted in "${GATE_WANT[@]}"; do [ "$wanted" = "$name" ] && return 0; done
+    return 1
+}
+
+# gate_suite_passed <exit-status> <output> — a test suite passed only when it exited 0 AND
+# printed its summary line with exactly zero failures. Matching a bare `0 failed` accepted
+# "10 failed"; a missing summary (the runner died before printing) must fail too.
+gate_suite_passed() {
+    local exit_status="$1" output="$2"
+    [ "$exit_status" -eq 0 ] || return 1
+    printf '%s\n' "$output" | grep -qE '^[0-9]+ tests, [0-9]+ passed, 0 failed([,( ]|$)'
+}
+
+# gate_report <name> <output> — classify a program's output and print its row; sets the
+# caller's `fail=1` on a failure.
+gate_report() {
+    local name="$1"
+    gate_classify "$2"
+    case "$GATE_VERDICT" in
+        ok)   echo "  ok      $name" ;;
+        skip) echo "  skip    $name ($GATE_DETAIL)" ;;
+        *)    fail=1; echo "  FAIL    $name"; printf '%s\n' "$GATE_DETAIL" | sed 's/^/            /' ;;
+    esac
 }

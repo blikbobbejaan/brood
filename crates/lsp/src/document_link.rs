@@ -52,16 +52,11 @@ fn collect_module_names<'a>(node: &'a Node, src: &str, out: &mut Vec<&'a Node>) 
     if matches!(node.kind, NodeKind::Quote | NodeKind::Quasi) {
         return;
     }
-    if node.kind == NodeKind::List {
-        let mut forms = node.forms();
-        if let Some(head) = forms.next() {
-            // `(:use foo …)` / `(:alias foo …)` — the form right after the keyword.
-            if head.kind == NodeKind::Keyword && matches!(head.text(src), ":use" | ":alias") {
-                if let Some(name) = node.forms().nth(1) {
-                    if name.kind == NodeKind::Symbol {
-                        out.push(name);
-                    }
-                }
+    // `(:use foo …)` / `(:alias foo …)` — the form right after the keyword.
+    if matches!(node.head_keyword(src), Some(":use" | ":alias")) {
+        if let Some(name) = node.forms().nth(1) {
+            if name.kind == NodeKind::Symbol {
+                out.push(name);
             }
         }
     }

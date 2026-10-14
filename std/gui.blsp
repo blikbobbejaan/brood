@@ -115,17 +115,14 @@
 ;; origin; both window painters draw them — the GPU render target instanced (a
 ;; `--with-gui-gpu` build, unless BROOD_GUI_GPU=0), the CPU painter in software.
 
+;; The texture registry — handle → [w h] — shared by every process; the counter under
+;; :next allocates handles from 1, process-wide, so a handle can never name another window's
+;; texture. Created at LOAD, never on first use: the lazy `(when (nil? …) (def …))` it
+;; replaced was a check-then-define race — two processes allocating their first texture at
+;; once each saw nil and each `def`'d a table, the second `def` orphaned the first's handles,
+;; and `texture-size` answered nil or another test's size (ui_test, in the full suite only,
+;; 2026-09-21). A table global images by value (`KIND_TABLE`), empty at build.
 (def *textures* (table/new))
-
-(defn- textures ()
-  "The texture registry — handle → [w h] — shared by every process; the counter under
-:next allocates handles from 1, process-wide, so a handle can never name another window's
-texture. Created at LOAD (`*textures*`), never on first use: the lazy `(when (nil? …)
-(def …))` it replaced was a check-then-define race — two processes allocating their first
-texture at once each saw nil and each `def`'d a table, the second `def` orphaned the first's
-handles, and `texture-size` answered nil or another test's size (ui_test, in the full
-suite only, 2026-09-21). A table global images by value (`KIND_TABLE`), empty at build."
-  *textures*)
 
 (defn size-px (id)
   "Window id's inner size as [w h] in PHYSICAL pixels (tracks resize / HiDPI) — the frame a pixel-space app lays itself out in, where gui/size is the cell grid. Under `{:input :pixels}` the window's [:resize w h] message carries the same numbers.
@@ -143,7 +140,7 @@ suite only, 2026-09-21). A table global images by value (`KIND_TABLE`), empty at
   "Allocate a texture handle for a `w`×`h` upload and remember the size under it — the Brood half of gui/texture, on its own for an app that uploads through a DISPLAY map's `:texture` (a window it did not open, or a thin client's over the wire — `editor/ui/display-texture`) rather than a window id. The handle is process-wide and never reused, so it can name a texture in any window.
 
     (gui/texture-size (gui/alloc-texture 4 2))   → [4 2]"
-  (let (registry (textures)
+  (let (registry *textures*
         tex (table/incr registry :next))
     (table/put registry tex [w h])
     tex))
@@ -152,15 +149,12 @@ suite only, 2026-09-21). A table global images by value (`KIND_TABLE`), empty at
   "The [w h] in texture pixels a handle from gui/texture was uploaded with, or nil for an unknown handle (one this process never uploaded, or already freed).
 
     (gui/texture-size 0)   → nil"
-  (table/get (textures) tex))
+  (table/get *textures* tex))
 
+;; The sound registry — handle → seconds of audio — shared by every process, created at
+;; load like `*textures*` (and for the same race); the counter under :next allocates handles
+;; from 1.
 (def *sounds* (table/new))
-
-(defn- sounds ()
-  "The sound registry — handle → seconds of audio — shared by every process, created at
-load like `textures` (and for the same race); the counter under :next allocates handles
-from 1."
-  *sounds*)
 
 (defn alloc-sound (seconds)
   "Allocate a sound handle and remember how long the sound runs — the Brood half of
@@ -168,7 +162,7 @@ gui/sound, on its own for an app that uploads through a DISPLAY map's `:sound`
 (`editor/ui/display-sound`). Process-wide, never reused.
 
     (gui/sound-seconds (gui/alloc-sound 0.25))   → 0.25"
-  (let (registry (sounds)
+  (let (registry *sounds*
         snd (table/incr registry :next))
     (table/put registry snd seconds)
     snd))
@@ -177,7 +171,7 @@ gui/sound, on its own for an app that uploads through a DISPLAY map's `:sound`
   "How long the sound under handle `snd` runs, in seconds, or nil for an unknown handle.
 
     (gui/sound-seconds 0)   → nil"
-  (table/get (sounds) snd))
+  (table/get *sounds* snd))
 
 (defn sound (id pcm rate &optional channels)
   "Keep a sound for window id's `[:sound snd vol]` frame ops and return its handle:
@@ -198,7 +192,7 @@ carrying its op. Errors on a bad rate, channel count or an odd byte count.
   "Forget sound snd of window id. Idempotent. Returns nil.
 
     (try (do (gui/sound-free 0 1) (gui/sound-seconds 1)) (catch e nil))   → nil"
-  (table/delete (sounds) snd)
+  (table/delete *sounds* snd)
   (%gui-sound-free id snd))
 
 (defn input (id mode)
@@ -211,7 +205,7 @@ carrying its op. Errors on a bad rate, channel count or an odd byte count.
   "Release texture tex of window id and forget its size; a later [:sprite …] naming it draws nothing. Idempotent. Returns nil.
 
     (try (do (gui/texture-free 0 1) (gui/texture-size 1)) (catch e nil))   → nil   ; forgotten, whether or not a window/backend exists"
-  (table/delete (textures) tex)
+  (table/delete *textures* tex)
   (%gui-texture-free id tex))
 
 (defn line (x0 y0 x1 y1 color &optional width)

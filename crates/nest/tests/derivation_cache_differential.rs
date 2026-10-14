@@ -16,33 +16,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
-
-fn blsp_files(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "blsp") {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out
-}
+mod support;
+use support::{blsp_files, workspace_root};
 
 /// `nest check --strict --suggest-sigs FILES…` from the workspace root, stdout and stderr
 /// together (the cache changes no exit code either, but the text is the finer assertion).

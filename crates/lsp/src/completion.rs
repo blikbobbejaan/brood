@@ -232,11 +232,8 @@ fn enclosing_impl(node: &Node, offset: u32, src: &str) -> Option<String> {
             return Some(p);
         }
     }
-    if node.kind == NodeKind::List {
-        let mut forms = node.forms();
-        if forms.next().map(|n| n.text(src)) == Some("impl") {
-            return forms.next().map(|n| n.text(src).to_string());
-        }
+    if node.head_symbol(src) == Some("impl") {
+        return node.forms().nth(1).map(|n| n.text(src).to_string());
     }
     None
 }

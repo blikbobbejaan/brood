@@ -457,8 +457,9 @@ throwing `update` is logged (`ui-log-error`) and drops that one input, returning
   (let ([next ms] (ui-timed (fn ()
                               (try
                                 (update model input cols rows)
-                                (catch e (do (ui-log-error "update" e) model))))))
-    (do (ui-trace "update" ms (ui-abbrev (pr-str input))) next)))
+                                (catch e (ui-log-error "update" e) model)))))
+    (ui-trace "update" ms (ui-abbrev (pr-str input)))
+    next))
 
 (defn- ui-drain-input (model update display cols rows fuel)
   "Fold every input ALREADY queued into `model` WITHOUT rendering between them, returning

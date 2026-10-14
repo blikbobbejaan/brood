@@ -987,22 +987,11 @@ pub(crate) fn hof_apply_native(
                     let seen = SEEN.get_or_init(|| std::sync::Mutex::new(Default::default()));
                     let key = Arc::as_ptr(arm) as usize;
                     if seen.lock().map(|mut g| g.insert(key)).unwrap_or(false) {
-                        let name = arm
-                            .dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>");
-                        let ops: Vec<&str> = arm
-                            .chunk
-                            .as_ref()
-                            .map(|c| c.code.as_slice())
-                            .unwrap_or(&[])
-                            .iter()
-                            .map(crate::eval::compile::jit_plan::codegen::inst_opcode_name)
-                            .collect();
                         eprintln!(
-                            "[jit-bail] arm={name} reason=hof-arm-already-bailed nslots={} ops=[{}]",
+                            "[jit-bail] arm={} reason=hof-arm-already-bailed nslots={} ops=[{}]",
+                            arm.dbg_label(),
                             arm.nslots,
-                            ops.join(" ")
+                            arm.dbg_opcodes()
                         );
                     }
                 }

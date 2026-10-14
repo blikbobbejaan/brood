@@ -17,15 +17,10 @@
 //! Sabotage-verified: removing the `stranded_probe()` call from the park path fails the
 //! fault run (no report) while the control still passes.
 
-use std::io::Write;
 use std::process::Command;
 
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-stranded-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 /// Returns the run's wall time alongside its output: the latch assertion below is stated
 /// per STARVATION EPISODE, and how many episodes a run can contain is a function of how
@@ -60,7 +55,7 @@ const REPORT: &str = "[sched] STRANDED WORK (KI-88 signature)";
 
 #[test]
 fn an_idle_pool_with_nothing_queued_is_not_reported() {
-    let path = script("control", WORKLOAD);
+    let path = script("stranded-control", WORKLOAD);
     let (stdout, stderr, ok, _elapsed) = run(&path, false);
     assert!(
         ok,
@@ -79,7 +74,7 @@ fn an_idle_pool_with_nothing_queued_is_not_reported() {
 
 #[test]
 fn queued_work_no_worker_can_find_is_reported_within_the_window() {
-    let path = script("fault", WORKLOAD);
+    let path = script("stranded-fault", WORKLOAD);
     let (stdout, stderr, ok, elapsed) = run(&path, true);
     assert!(
         ok,

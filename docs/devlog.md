@@ -17370,3 +17370,74 @@ spawn pays for the `Heap` struct. The memo is now a `OnceCell<Box<…>>`, alloca
 time a hash is worth remembering (8 B inline), and the work counter is a thread-local. The
 floor test had not been in the targeted set run before the push; it belongs there for any
 change to `Heap`'s fields.
+
+## 2026-10-14 (night) — a simplification sweep, and three order-dependent failures fixed
+
+A whole-tree pass for code more complicated than it needs to be; behaviour unchanged except
+for one gate bug. **Rust:** the unrequired-module lint (KI-17), a permanent no-op since the
+ADR-227 follow-up, is gone with its `Ctx` fields — the require sets it collected still seed
+the file's world (B8); `pop_dynamic`/`record_def_site` (no callers) deleted; copy-pasted
+helpers merged (`Heap::list_or_vector_items`, `Message::local_pid`, the LSP's `chain_to`,
+`expect_symbol` at a dozen hand-written sites, one name-query helper in `tooling.rs`);
+`FinishBytes` and `BuildIdentityHasher` replaced by a fn argument and `BuildHasherDefault`;
+`brood`'s three checker entry points are one; `nest`'s `run`/`ensure_stdimage` wrappers folded.
+**Brood:** ~230 lines of hand-rolled loops replaced by the prelude/`seq`/`string` functions
+they re-implemented, plus dead privates and leftover `(map … identity)` copies.
+**Gate fix:** `check-stress.sh` passed a stress test whose summary read "10 failed" (a bare
+`0 failed` grep, ignoring the exit status) — the bug `check-examples.sh` had already fixed.
+Both scripts now share `gate_matches`/`gate_report`/`gate_suite_passed` from
+`scripts/lib/gate-binary.sh`. `make bench` (an unreferenced alias of `make benchmark`) is gone.
+
+**Three order-dependent failures, all on `8539f335` too, now fixed.**
+- `registry_test` + `lazy_load_test` in one run failed `lazy_load_test.blsp:209` every time
+  (KI-249): a module a test file loaded after its own `defmodule` kept its bindings but lost
+  its `*features*` entry at the file boundary, because the nested load's `provide` was staged
+  into the file's own direct frame and discarded with it.
+- `contract_test` failed under 4 of 5 `--seed`s alone: its reload test redefined the shared
+  boundary fixture's `f`, and the tests beside it read the reloaded body when it ran first.
+  The reload test has its own fixture module now.
+- `lazy_load_test.blsp:71` failed once in a seeded batch: two other tests loaded
+  `lazyprobe-a`, whose load writes the marker file the operand-reference test asserts is
+  absent. They load a marker-free `lazyprobe-plain` instead.
+
+The first two surfaced only because a batch was run with `--seed`: in the default order every
+one of these files passes. A seeded run of the files a change touches is cheap and worth doing.
+
+**Second pass** (same night, per area). *eval/jit:* the JIT fallback callbacks' park-or-answer
+tail is one `answer_or_park`; the out-slot reads in `jit_lower` are one pair of helpers; the
+VM driver's 8 frame literals and 6 capture returns are `current_frame!`/`return_captured!`;
+`CompiledArm::dbg_label`/`dbg_opcodes` replace ~23 copies; the three fold pre-check walkers
+share `form_has_call`; stranded doc comments on `JitBackend` and `tail_of_cons` are back on
+their items. *types:* one `walk::unquote` for five copies, `sig_arity` (a copy of
+`arity_of_sig`) and three display forwarders gone, and the inert `:unrequired` `check-allow`
+category removed with the lint it once suppressed. *core/builtins:* hand-written type checks
+moved onto `expect!`/`expect_string` (`file/spit` and `os/run-process` now say "expected
+string" like their siblings), `os/spawn`/`os/spawn-pty` share `spawn_spec`, the table and
+arm-probe primitives share their argument preamble. *runtime/binaries:* a third LSP copy of
+`chain_to`, `introspect.rs`'s eval-copy-reclaim and file-context boilerplate, the printer's
+two range writers, the reactor's plain/TLS registration, `Message::nests`, and `nest`'s
+duplicated runtime setup. *std:* `task-run`'s two `receive`s are one, `reconnect-boot` is
+gone (the watcher starts in the down state, so a failed first connect no longer retries
+once before the backoff), `format-spec` binds its character once, auto-gensyms in
+`defmemo`/`bench`, stale argument-order comments in `seq` corrected.
+
+**Third pass** (across areas, and the parts nobody had looked at). *Rust across crates:*
+`Node::head_symbol`/`head_keyword`/`symbol_at` on the CST replace a dozen hand-rolled head
+tests in `syntax/scope` and the LSP; `introspect::string_literal` replaces five ways of
+quoting a string into Brood source; `eval::macros::form_items` and the checker's
+`let_bindings` were copies of `Heap::list_or_vector_items`/`walk::bindings`; 14 hand-written
+`OnceLock` env readers use `debug_flags::is_set`/`is_armed`; `kw::LAMBDA` was dead.
+*Rust tests:* each test crate has a `tests/support` module — the `TempDir` struct alone had
+27 copies. *Scripts:* `green.sh` judges binary freshness through `scripts/lib/gate-binary.sh`
+(its inline copy missed `-dirty` shas); `scripts/suggest-renames.blsp` is gone (superseded by
+`nest check --fix-renames`); the Makefile's nextest check, sanitizer prefix and binary list are
+each written once. *Brood:* `markdown`'s block closers share one emitter (output compared
+byte-for-byte over every `docs/**/*.md`), `project-check`'s seven root lookups and `docs`'
+three entry setups are one each, `test`'s insertion sort is `sort-by`, test files use
+`assert-error` instead of five private `threw?` variants.
+
+Two bugs fell out. The `:slow` test report printed each row as `(123) ms` (`(rest entry)` on
+a pair). And `reflect/references-in-source` — the MCP `callers` tool — had its own
+`line_starts` that broke only on `\n`, so after a lone CR it reported lines early; it now uses
+the reader's `scanner::line_starts` (guard in `tests/introspection_test.blsp`, red with the
+old definition).

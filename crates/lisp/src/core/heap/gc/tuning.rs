@@ -227,5 +227,5 @@ pub(in crate::core::heap) fn min_tenure() -> usize {
 /// cached; `(gc-trace on/off)` overrides it per process at runtime.
 pub(in crate::core::heap) fn gc_trace_default() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_GC_TRACE").is_some())
+    crate::diagnostics::debug_flags::is_set(&ON, "BROOD_GC_TRACE")
 }

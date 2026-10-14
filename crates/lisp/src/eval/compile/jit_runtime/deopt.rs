@@ -259,10 +259,7 @@ pub(crate) fn vm_resume_deopt(
 pub(crate) fn jit_latch_suspend_host(arm: &CompiledArm) {
     use std::sync::atomic::Ordering::Release;
     if crate::diagnostics::debug_flags::jit_bail_trace() {
-        let name = arm
-            .dbg_name
-            .map(crate::core::value::symbol_name_ref)
-            .unwrap_or("<closure>");
+        let name = arm.dbg_label();
         eprintln!("[jit-bail] arm={name} reason=suspend-latched");
     }
     arm.jit_code.store(crate::jit::BAILED, Release);
@@ -334,7 +331,7 @@ pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
         if crate::diagnostics::debug_flags::jit_bail_trace() {
             eprintln!(
                 "[jit-relower] arm={} reason=polymorphic-param slots={:#b}: {n} entry-tag deopts; re-tiering with those slots boxed",
-                arm_name(arm),
+                arm.dbg_label(),
                 arm.jit_poly_slots.load(Relaxed)
             );
         }
@@ -365,17 +362,11 @@ fn float_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
         if crate::diagnostics::debug_flags::jit_bail_trace() {
             eprintln!(
                 "[jit-relower] arm={} reason=float-through-erased-reads: {n} integer-guard deopts on a Float; re-tiering in float context",
-                arm_name(arm)
+                arm.dbg_label()
             );
         }
         reset_arm_untried(heap, arm);
     }
-}
-
-fn arm_name(arm: &CompiledArm) -> &'static str {
-    arm.dbg_name
-        .map(crate::core::value::symbol_name_ref)
-        .unwrap_or("<closure>")
 }
 
 /// Drop an arm's installed code and put it back at the tier threshold so its next call
@@ -450,18 +441,7 @@ pub(crate) fn jit_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
         // more visible than the cause, and `BROOD_DEOPT_TRACE` needs `perf-stats` while this
         // does not.
         if crate::diagnostics::debug_flags::jit_bail_trace() {
-            let name = arm
-                .dbg_name
-                .map(crate::core::value::symbol_name_ref)
-                .unwrap_or("<closure>");
-            let ops: Vec<&str> = arm
-                .chunk
-                .as_ref()
-                .map(|c| c.code.as_slice())
-                .unwrap_or(&[])
-                .iter()
-                .map(crate::eval::compile::jit_plan::codegen::inst_opcode_name)
-                .collect();
+            let name = arm.dbg_label();
             eprintln!(
                 "[jit-bail] arm={name} reason=deopt-thrash-latched nslots={} deopts={d} \
                  last-deopt={} inline_installed={} ops=[{}]",
@@ -469,7 +449,7 @@ pub(crate) fn jit_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
                 DeoptReason::describe(heap.jit_deopt_reason()),
                 arm.inline_installed
                     .load(std::sync::atomic::Ordering::Acquire),
-                ops.join(" ")
+                arm.dbg_opcodes()
             );
         }
         arm.jit_code.store(crate::jit::BAILED, Release);

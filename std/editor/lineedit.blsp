@@ -400,22 +400,6 @@ all in (and a new project's own globals, since it's the live runtime)."
 ;; redefinable global, so a session on a tall terminal can raise it.
 (def *lineedit-completion-max-rows* 6)
 
-;; check-allow: deliberately non-tail — depth = rows of the completion listing being chunked.
-(check-allow :non-tail-recursion
-  (defn- lineedit-chunk (n items)
-    "Consecutive `n`-sized chunks of `items`, **keeping** a trailing partial chunk —
-  unlike `partition`, which drops it. A listing must not silently lose its last row."
-    (if (empty? items)
-      '()
-      (cons (take items n) (lineedit-chunk n (drop items n))))))
-
-(defn- lineedit-widest (strs acc)
-  "The length of the longest string in `strs`, or `acc` if none is longer."
-  (if (empty? strs)
-    acc
-    (lineedit-widest (rest strs) (math/max acc (string/length (first strs))))))
-(sig lineedit-widest ((list string) int -> int))
-
 (defn- lineedit-completion-rows (cands width)
   "Pure: the display rows listing `cands` in a `width`-column terminal — laid out
 across in equal columns (row-major, as bash lists), capped at
@@ -423,12 +407,13 @@ across in equal columns (row-major, as bash lists), capped at
 fit. Each row is truncated to `width - 1` columns so it can never wrap (a wrapped row
 would desync the `[:up n]` cursor restore)."
   (let (room (math/max 1 (- width 1))
-        colw (+ 2 (lineedit-widest cands 0))
+        colw (+ 2 (fold cands 0 (fn (widest c) (math/max widest (string/length c)))))
         ncols (math/max 1 (math/quot room colw))
         total (count cands)
         shown (math/min total (* ncols *lineedit-completion-max-rows*))
         more (- total shown)
-        rows (map (lineedit-chunk ncols (take cands shown))
+        ;; `chunk-every`, not `partition`: a listing must not silently lose its last row
+        rows (map (seq/chunk-every (take cands shown) ncols)
                (fn (row)
                  (let (line (string/trimr (apply str (map row (fn (c) (string/pad-right c colw))))))
                    (if (> (string/length line) room) (string/substring line 0 room) line)))))

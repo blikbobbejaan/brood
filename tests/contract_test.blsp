@@ -655,6 +655,15 @@
 (sig! forced (int -> int))
 (defn via-forced (x) (forced x))")
 
+;; The reload test's own copy: it redefines `f`, and the tests above run in any order
+;; beside it, so on the shared fixture they read the reloaded body under `--seed`.
+(%load-string
+  "(defmodule contract-reload-fixture)
+(sig f (int -> int))
+(check-allow :type-mismatch (defn f (x) (str \"f:\" x)))
+(defn direct (x) (let (y x) (f y)))
+(defn wrapper (x) (f x))")
+
 (defn- boundary-raises? (thunk)
   (= :contract (try (do (thunk) :no-error) (catch e (get e :kind)))))
 
@@ -669,8 +678,7 @@
     (assert= 90000 (contract-boundary-fixture/hot 30000 0)))
   ;; A thin wrapper called from native code runs its compiled arm (so it can tier up), not
   ;; the dispatcher's redirect: the compiled arm must apply the boundary the redirect did —
-  ;; armed, a call that reached the shim would raise on the string `f` returns. (Only that:
-  ;; the reload test below may swap `f`'s body mid-loop, so the total is not fixed.)
+  ;; armed, a call that reached the shim would raise on the string `f` returns.
   (test "the boundary holds through a thin wrapper a native loop calls"
     (refute (boundary-raises? (fn () (contract-boundary-fixture/wrap-hot 30000 0))))
     (refute (boundary-raises? (fn () (contract-boundary-fixture/hof-hot 30000)))))
@@ -680,10 +688,11 @@
     (is (boundary-raises? (fn () (contract-boundary-fixture/via-forced "x"))))
     (is (boundary-raises? (fn () (contract-boundary-fixture/forced "x")))))
   (test "a reload keeps the module's own calls on the new body"
-    (%load-string "(defmodule contract-boundary-fixture) (check-allow :type-mismatch (defn f (x) (str \"v2:\" x)))")
-    (assert= "v2:x" (contract-boundary-fixture/wrapper "x"))
-    (assert= "v2:x" (contract-boundary-fixture/direct "x"))
-    (assert= (%contracts-armed?) (boundary-raises? (fn () (contract-boundary-fixture/f "x"))))))
+    (assert= "f:x" (contract-reload-fixture/wrapper "x"))
+    (%load-string "(defmodule contract-reload-fixture) (check-allow :type-mismatch (defn f (x) (str \"v2:\" x)))")
+    (assert= "v2:x" (contract-reload-fixture/wrapper "x"))
+    (assert= "v2:x" (contract-reload-fixture/direct "x"))
+    (assert= (%contracts-armed?) (boundary-raises? (fn () (contract-reload-fixture/f "x"))))))
 
 ;; --- nominal types: a record name, a sealed ability, an open one (2026-10-02) ----------
 ;; The checker reads a `defrecord` name as that record's identity and a SEALED ability as

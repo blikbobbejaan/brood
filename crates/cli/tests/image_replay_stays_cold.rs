@@ -17,19 +17,9 @@
 //! `string` behind it) on top would make `nth` itself hot across three replays, which is a
 //! program doing real work, not the replay's own cost.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
 
 const PROGRAM: &str = "\
 (def %not-total 0)\n\
@@ -45,15 +35,7 @@ fn materialising_math_from_the_image_keeps_not_cold() {
     if std::env::var_os("BROOD_NO_STDIMAGE").is_some() {
         return;
     }
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = TempDir {
-        path: std::env::temp_dir()
-            .join(format!("brood-replay-cold-{}-{nanos}", std::process::id())),
-    };
-    std::fs::create_dir_all(&dir.path).expect("create temp dir");
+    let dir = support::temp_dir("replay-cold");
     std::fs::write(dir.path.join("program.blsp"), PROGRAM).expect("write program");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));
     cmd.arg("program.blsp")

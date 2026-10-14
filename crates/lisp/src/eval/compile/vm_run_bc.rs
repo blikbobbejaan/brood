@@ -503,10 +503,7 @@ fn settle_native_frame(
                 // persistent deopt names its arm and nothing else.
                 eprintln!(
                     "[deopt] arm={} watch={} resume_ip={} depth={} reason={}",
-                    cur_arm
-                        .dbg_name
-                        .map(crate::core::value::symbol_name_ref)
-                        .unwrap_or("<closure>"),
+                    cur_arm.dbg_label(),
                     cur_arm.deopt_watch,
                     ckpt >> 16,
                     ckpt & 0xffff,
@@ -937,6 +934,42 @@ pub(crate) fn vm_run_bc(
         }};
     }
 
+    // The current frame's registers as a `BcFrame` running `$arm`: the current arm when a
+    // capture saves it, the caller's when a call suspends it.
+    macro_rules! current_frame {
+        ($arm:expr) => {
+            BcFrame {
+                arm: $arm,
+                ip: cur_ip,
+                base: cur_base,
+                env: cur_env,
+                env_base: cur_env_base,
+                arm_slot: cur_arm_slot,
+                ic_bases: heap.ic_bases(),
+                entry_epoch: cur_entry_epoch,
+                #[cfg(feature = "jit")]
+                back_edges: cur_back_edges,
+            }
+        };
+    }
+
+    // Return the captured continuation — `frames` under `$cur`, with this driver's entry
+    // marks — as `VmOutcome::$outcome`, WITHOUT unwinding (ADR-100 §8).
+    macro_rules! return_captured {
+        ($outcome:ident, $cur:expr, $deadline:expr) => {
+            return Ok(VmOutcome::$outcome(Box::new(Suspended {
+                frames,
+                cur: $cur,
+                entry_roots,
+                entry_env,
+                entry_arms,
+                handler_floor,
+                dyn_floor,
+                deadline: $deadline,
+            })))
+        };
+    }
+
     'drive: loop {
         'safepoint: {
             if std::mem::take(&mut returned_to_caller) {
@@ -1042,28 +1075,7 @@ pub(crate) fn vm_run_bc(
                     // State-capture preemption (ADR-100 §8.1), in place of the coroutine
                     // yield: the frame boundary is the safepoint. The spent budget captures the
                     // continuation so `run_one` re-enqueues it (on any worker — live migration).
-                    let cur = BcFrame {
-                        arm: cur_arm,
-                        ip: cur_ip,
-                        base: cur_base,
-                        env: cur_env,
-                        env_base: cur_env_base,
-                        arm_slot: cur_arm_slot,
-                        ic_bases: heap.ic_bases(),
-                        entry_epoch: cur_entry_epoch,
-                        #[cfg(feature = "jit")]
-                        back_edges: cur_back_edges,
-                    };
-                    return Ok(VmOutcome::Preempted(Box::new(Suspended {
-                        frames,
-                        cur,
-                        entry_roots,
-                        entry_env,
-                        entry_arms,
-                        handler_floor,
-                        dyn_floor,
-                        deadline: None,
-                    })));
+                    return_captured!(Preempted, current_frame!(cur_arm), None);
                 }
             }
         }
@@ -1315,18 +1327,7 @@ pub(crate) fn vm_run_bc(
                 // switch the registers to the callee. `exec_chunk` already dropped the
                 // callee+args operands, so the callee's frame starts at `roots_len()`.
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
-                frames.push(BcFrame {
-                    arm: caller_arm,
-                    ip: cur_ip,
-                    base: cur_base,
-                    env: cur_env,
-                    env_base: cur_env_base,
-                    arm_slot: cur_arm_slot,
-                    ic_bases: heap.ic_bases(),
-                    entry_epoch: cur_entry_epoch,
-                    #[cfg(feature = "jit")]
-                    back_edges: cur_back_edges,
-                });
+                frames.push(current_frame!(caller_arm));
                 heap.set_ic_bases(bases);
                 cur_env_base = heap.env_roots_len();
                 cur_env = heap.root_env(genv);
@@ -1365,18 +1366,7 @@ pub(crate) fn vm_run_bc(
                     raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
-                frames.push(BcFrame {
-                    arm: caller_arm,
-                    ip: cur_ip,
-                    base: cur_base,
-                    env: cur_env,
-                    env_base: cur_env_base,
-                    arm_slot: cur_arm_slot,
-                    ic_bases: heap.ic_bases(),
-                    entry_epoch: cur_entry_epoch,
-                    #[cfg(feature = "jit")]
-                    back_edges: cur_back_edges,
-                });
+                frames.push(current_frame!(caller_arm));
                 heap.set_ic_bases(bases);
                 cur_env_base = heap.env_roots_len();
                 cur_env = heap.root_env(genv);
@@ -1417,17 +1407,7 @@ pub(crate) fn vm_run_bc(
                     raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
-                frames.push(BcFrame {
-                    arm: caller_arm,
-                    ip: cur_ip,
-                    base: cur_base,
-                    env: cur_env,
-                    env_base: cur_env_base,
-                    arm_slot: cur_arm_slot,
-                    ic_bases: heap.ic_bases(),
-                    entry_epoch: cur_entry_epoch,
-                    back_edges: cur_back_edges,
-                });
+                frames.push(current_frame!(caller_arm));
                 heap.set_ic_bases(bases);
                 cur_env_base = heap.env_roots_len();
                 cur_env = heap.root_env(genv);
@@ -1466,27 +1446,7 @@ pub(crate) fn vm_run_bc(
                     // A native PREEMPT: yield NOW with this frame, as the frame path's
                     // `Some(2)` arm does — see its comment for why it must not wait for
                     // the interpreter's next safepoint.
-                    let cur = BcFrame {
-                        arm: cur_arm,
-                        ip: cur_ip,
-                        base: cur_base,
-                        env: cur_env,
-                        env_base: cur_env_base,
-                        arm_slot: cur_arm_slot,
-                        ic_bases: heap.ic_bases(),
-                        entry_epoch: cur_entry_epoch,
-                        back_edges: cur_back_edges,
-                    };
-                    return Ok(VmOutcome::Preempted(Box::new(Suspended {
-                        frames,
-                        cur,
-                        entry_roots,
-                        entry_env,
-                        entry_arms,
-                        handler_floor,
-                        dyn_floor,
-                        deadline: None,
-                    })));
+                    return_captured!(Preempted, current_frame!(cur_arm), None);
                 }
             }
             // A native preempt unwound out to this driver (ADR-401): rebuild every activation
@@ -1497,17 +1457,7 @@ pub(crate) fn vm_run_bc(
             Ok(ChunkExit::Unwound { keep_current }) => {
                 debug_assert!(capture, "a native preempt unwound into a nested driver");
                 if keep_current {
-                    frames.push(BcFrame {
-                        arm: cur_arm,
-                        ip: cur_ip,
-                        base: cur_base,
-                        env: cur_env,
-                        env_base: cur_env_base,
-                        arm_slot: cur_arm_slot,
-                        ic_bases: heap.ic_bases(),
-                        entry_epoch: cur_entry_epoch,
-                        back_edges: cur_back_edges,
-                    });
+                    frames.push(current_frame!(cur_arm));
                 } else {
                     // The current frame is the outermost unwound activation and is rebuilt
                     // with the rest: drop its own env root and arm registration first.
@@ -1517,16 +1467,7 @@ pub(crate) fn vm_run_bc(
                     }
                 }
                 let cur = rebuild_unwound_frames(heap, &mut frames);
-                return Ok(VmOutcome::Preempted(Box::new(Suspended {
-                    frames,
-                    cur,
-                    entry_roots,
-                    entry_env,
-                    entry_arms,
-                    handler_floor,
-                    dyn_floor,
-                    deadline: None,
-                })));
+                return_captured!(Preempted, cur, None);
             }
             Ok(ChunkExit::Tail {
                 arm,
@@ -1591,28 +1532,7 @@ pub(crate) fn vm_run_bc(
             Ok(ChunkExit::Preempt) => {
                 // Reduction budget exhausted at the inline SelfCall safepoint. The frame
                 // is already reset (ip=0 inside exec_chunk); capture and re-enqueue.
-                let cur = BcFrame {
-                    arm: cur_arm,
-                    ip: cur_ip,
-                    base: cur_base,
-                    env: cur_env,
-                    env_base: cur_env_base,
-                    arm_slot: cur_arm_slot,
-                    ic_bases: heap.ic_bases(),
-                    entry_epoch: cur_entry_epoch,
-                    #[cfg(feature = "jit")]
-                    back_edges: cur_back_edges,
-                };
-                return Ok(VmOutcome::Preempted(Box::new(Suspended {
-                    frames,
-                    cur,
-                    entry_roots,
-                    entry_env,
-                    entry_arms,
-                    handler_floor,
-                    dyn_floor,
-                    deadline: None,
-                })));
+                return_captured!(Preempted, current_frame!(cur_arm), None);
             }
             Ok(ChunkExit::Suspend { deadline }) => {
                 // A clean `receive` parked (ADR-100 §8). `exec_chunk` rewound `cur_ip`
@@ -1622,28 +1542,7 @@ pub(crate) fn vm_run_bc(
                 // it WITHOUT unwinding — the operand stack and frame slots must survive
                 // on the heap for the resume (a collection while parked relocates them
                 // in place; the saved `base`/`env_base` indices stay valid).
-                let cur = BcFrame {
-                    arm: cur_arm,
-                    ip: cur_ip,
-                    base: cur_base,
-                    env: cur_env,
-                    env_base: cur_env_base,
-                    arm_slot: cur_arm_slot,
-                    ic_bases: heap.ic_bases(),
-                    entry_epoch: cur_entry_epoch,
-                    #[cfg(feature = "jit")]
-                    back_edges: cur_back_edges,
-                };
-                return Ok(VmOutcome::Suspended(Box::new(Suspended {
-                    frames,
-                    cur,
-                    entry_roots,
-                    entry_env,
-                    entry_arms,
-                    handler_floor,
-                    dyn_floor,
-                    deadline,
-                })));
+                return_captured!(Suspended, current_frame!(cur_arm), deadline);
             }
             Err(e) => {
                 // A `Control::Kill` that unwound untrappably through a `try`/`%isolate`/HOF

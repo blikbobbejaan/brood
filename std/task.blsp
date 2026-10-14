@@ -48,20 +48,16 @@ timeout). Pure Brood over spawn / receive / exit (ADR-006).")
 ;; Waits for exactly one of: the worker's result, a cooperative cancel, or (when a
 ;; timeout is set) the deadline. On timeout/cancel it hard-kills the worker — a
 ;; looping worker never checks its own mailbox, so `:kill` (untrappable, fires at
-;; the next reduction even when parked) is the only thing that stops it.
+;; the next reduction even when parked) is the only thing that stops it. A nil `timeout`
+;; makes the `after` wait forever, exactly as a `receive` without one does.
 (defn- task-run (thunk reply-to timeout)
   (let (coord (self)
         worker (spawn (task-worker thunk coord)))
-    (if (nil? timeout)
-      (receive
-        ([:task--result [:ok v]] (send reply-to [:task-done coord v]))
-        ([:task--result [:err m]] (send reply-to [:task-error coord m]))
-        (:task--cancel (exit worker :kill)))
-      (receive
-        ([:task--result [:ok v]] (send reply-to [:task-done coord v]))
-        ([:task--result [:err m]] (send reply-to [:task-error coord m]))
-        (:task--cancel (exit worker :kill))
-        (after timeout (do (exit worker :kill) (send reply-to [:task-timeout coord])))))))
+    (receive
+      ([:task--result [:ok v]] (send reply-to [:task-done coord v]))
+      ([:task--result [:err m]] (send reply-to [:task-error coord m]))
+      (:task--cancel (exit worker :kill))
+      (after timeout (exit worker :kill) (send reply-to [:task-timeout coord])))))
 
 (defn task (thunk & opts)
   "Run 0-arg `thunk` in a child process, off the current process's loop, and
@@ -92,7 +88,7 @@ pid). Returns nil."
 pattern — a debounced search, an interactive eval re-run, a live recheck — where a new
 trigger should abandon the previous job rather than queue behind it. Store the returned
 handle and pass it back as `prev` on the next trigger."
-  (when (not (nil? prev)) (cancel prev))
+  (when prev (cancel prev))
   (apply task thunk opts))
 
 (defn await (thunk-or-handle timeout-ms)
@@ -118,7 +114,7 @@ to keep an interactive loop live."
       (receive
         ([:await--reply [:ok v]] v)
         ([:await--reply [:err m]] (error m))
-        (after timeout-ms (do (exit w :kill) (error "await: timed out after " timeout-ms "ms")))))))
+        (after timeout-ms (exit w :kill) (error "await: timed out after " timeout-ms "ms"))))))
 
 (defn- await-handle (handle timeout-ms)
   "Block for the outcome of an already-started `task`. Matches on the handle, so a
@@ -128,4 +124,4 @@ the task is cancelled, so nothing is left running behind us."
     ([:task-done ^handle v] v)
     ([:task-error ^handle m] (error m))
     ([:task-timeout ^handle] (error "await: the task timed out"))
-    (after timeout-ms (do (cancel handle) (error "await: timed out after " timeout-ms "ms")))))
+    (after timeout-ms (cancel handle) (error "await: timed out after " timeout-ms "ms"))))

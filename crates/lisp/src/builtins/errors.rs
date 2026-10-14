@@ -1,6 +1,6 @@
 use super::numeric::{arg, expect_string};
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{EnvId, Value};
 use crate::error::{LispError, LispResult};
 use crate::eval::compile::apply_engine;
 // Only the debug-only `%force-panic` renders a value; a release build has no use for it.
@@ -107,14 +107,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// the *unexpanded* argument forms and splices the result in place of the call.
 /// The `defmacro` macro (std/prelude.blsp) lowers to this, so macro definition is
 /// plain Brood over a one-line primitive rather than its own core special form.
-pub(super) fn make_macro(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Fn(id) => Ok(Value::macro_(id)),
-        other => Err(LispError::type_err(format!(
-            "%make-macro: expected a fn, got {}",
-            value::tag(other).name()
-        ))),
-    }
+pub(super) fn make_macro(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    expect!(heap, "%make-macro", arg(args, 0), "fn",
+        Value::Fn(id) => Value::macro_(id),
+    )
 }
 
 pub(super) fn throw(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -160,16 +156,12 @@ pub(super) fn force_panic(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 /// inline (small) strings and PRELUDE/RUNTIME handles.
 #[cfg(debug_assertions)]
 pub(super) fn blob_ptr(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Str(id) => Ok(heap
+    expect!(heap, "%blob-ptr", arg(args, 0), "string",
+        Value::Str(id) => heap
             .local_shared_blob_ptr(id)
             .map(|p| Value::int(p as i64))
-            .unwrap_or(Value::nil())),
-        other => Err(LispError::type_err(format!(
-            "%blob-ptr: expected a string, got {}",
-            value::tag(other).name()
-        ))),
-    }
+            .unwrap_or(Value::nil()),
+    )
 }
 
 /// `(%blob-strong-count s)` — debug-only. Current `Arc::strong_count` for
@@ -178,16 +170,12 @@ pub(super) fn blob_ptr(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
 /// stable when callers are quiescent (what the leak-check test asserts).
 #[cfg(debug_assertions)]
 pub(super) fn blob_strong_count(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Str(id) => Ok(heap
+    expect!(heap, "%blob-strong-count", arg(args, 0), "string",
+        Value::Str(id) => heap
             .local_shared_blob_strong_count(id)
             .map(|n| Value::int(n as i64))
-            .unwrap_or(Value::nil())),
-        other => Err(LispError::type_err(format!(
-            "%blob-strong-count: expected a string, got {}",
-            value::tag(other).name()
-        ))),
-    }
+            .unwrap_or(Value::nil()),
+    )
 }
 
 pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {

@@ -247,7 +247,7 @@
   (test "a single guarded clause is a precondition — a failed guard raises"
     (let (only-pos (fn ((n) :when (> n 0) n)))
       (assert= 5 (only-pos 5))
-      (is (try (do (only-pos -1) false) (catch _ true)))))
+      (assert-error (only-pos -1))))
   (test "guarded clauses preserve tail calls (deep recursion stays O(1) stack)"
     (let (count-down (fn ((n acc) :when (= n 0) acc)
                        ((n acc) (count-down (- n 1) (+ acc 1)))))

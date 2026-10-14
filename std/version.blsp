@@ -210,22 +210,16 @@ everything (the \"no release yet\" placeholder a registry starts from).
     (= i 0) (or (first parts) 0)
     else (nth0 (rest parts) (dec i))))
 
-(defn- first-nonzero-index (parts)
-  (first-nonzero-index-go parts 0))
-(defn- first-nonzero-index-go (parts i)
-  (cond
-    (empty? parts) nil
-    (not (= (first parts) 0)) i
-    else (first-nonzero-index-go (rest parts) (inc i))))
-
 (defn- bump-index (op parts)
   ;; The 0-based component the exclusive upper bound increments.
   ;;   `^`  : the first non-zero component (so 1.x.y bumps major, 0.2.y bumps minor);
   ;;          if every written component is zero, the last one written.
   ;;   `~>` : one shallower than written — index (written-count - 2), floored at 0.
-  (if (= op "^")
-    (or (first-nonzero-index parts) (math/max 0 (dec (count parts))))
-    (math/max 0 (- (count parts) 2))))
+  (let (nonzero (seq/index-where parts (fn (p) (not (= p 0)))))
+    (cond
+      (not (= op "^")) (math/max 0 (- (count parts) 2))
+      (>= nonzero 0) nonzero
+      else (math/max 0 (dec (count parts))))))
 
 (defn- upper-bound (parts bump-index)
   ;; A 3-int list: components before `bump-index` copied, the one at it incremented,

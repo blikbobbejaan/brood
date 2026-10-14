@@ -577,10 +577,7 @@ pub(crate) fn global_miss_in_arm(
     if heap.global_epoch() != epoch {
         heap.mark_arm_stale(arm);
         if crate::diagnostics::debug_flags::trace_compile() {
-            let name = arm
-                .dbg_name
-                .map(value::symbol_name_ref)
-                .unwrap_or("<closure>");
+            let name = arm.dbg_label();
             eprintln!(
                 "[compile] stale-bindings arm={name}: a miss on {} loaded its module; recompiles at its next activation",
                 value::symbol_name_ref(sym)

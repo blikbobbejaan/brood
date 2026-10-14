@@ -13,24 +13,12 @@
 //! a positively-known bound by inclusion. It must be a shape only STRICT reports — a
 //! failure arm is not, since ADR-316 reports one in both modes.
 
-use std::path::Path;
-use std::process::Command;
-
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+mod support;
+use support::{nest, temp_dir, TempDir};
 
 fn project() -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-ckmode-{}-{n}", std::process::id()));
+    let temp = temp_dir("ckmode");
+    let path = &temp.path;
     std::fs::create_dir_all(path.join("src")).unwrap();
     std::fs::write(
         path.join("project.blsp"),
@@ -45,23 +33,7 @@ fn project() -> TempDir {
          (defn q (s) (string/length (p s)))\n",
     )
     .unwrap();
-    TempDir { path }
-}
-
-fn nest(dir: &Path, args: &[&str]) -> (String, bool) {
-    let out = Command::new(env!("CARGO_BIN_EXE_nest"))
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("run nest");
-    (
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        out.status.success(),
-    )
+    temp
 }
 
 #[test]

@@ -346,9 +346,10 @@ pub(super) fn is_output_sink(s: Symbol) -> bool {
 }
 
 /// The arity a signature describes: `&` rest → unbounded, `&optional` → a range, else an
-/// exact count. Shared by the declared-sig path and the arrow-parameter path, which have to
-/// agree — they are the same question asked of the same shape.
-pub(super) fn arity_of_sig(sg: &Sig) -> Arity {
+/// exact count. Shared by the declared-sig path, the arrow-parameter path and the
+/// sig-vs-definition arity check (`check_sig_declarations`), which have to agree — they
+/// are the same question asked of the same shape.
+pub(in crate::types::check) fn arity_of_sig(sg: &Sig) -> Arity {
     if sg.rest.is_some() {
         Arity::at_least(sg.params.len())
     } else if sg.optional.is_empty() {

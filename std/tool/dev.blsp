@@ -99,11 +99,10 @@
 
 ;; A macro, so it expands at the CALL site: `%now` is the kernel primitive, reachable from
 ;; anywhere, which is what lets this live in a module without the expansion depending on
-;; `dev` being loaded wherever the timing happens. The gensyms keep `label`/`expr` from
-;; capturing `t0`/`r` if the caller happens to use those names.
+;; `dev` being loaded wherever the timing happens. The auto-gensyms keep `label`/`expr`
+;; from capturing the binders if the caller happens to use the same names.
 (defmacro bench (label expr)
   "Evaluate `expr`, print `label: N ms`, and return `expr`'s value."
-  (let (started (gensym "t0") r (gensym "r"))
-    `(let (~started (%now) ~r ~expr)
-       (io/puts (str ~label ": " (- (%now) ~started) " ms"))
-       ~r)))
+  `(let (started# (%now) result# ~expr)
+     (io/puts (str ~label ": " (- (%now) started#) " ms"))
+     result#))

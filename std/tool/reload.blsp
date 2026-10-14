@@ -104,7 +104,7 @@ behind a long-lived loop has changed since it started."
             restore (fn () (%set-package-context (first prev) (second prev))))
         (try
           (let (result (thunk)) (restore) result)
-          (catch e (do (restore) (throw e))))))))
+          (catch e (restore) (throw e)))))))
 
 (defn- reload-loop (path last &optional on-reload)
   (let (now (file/mtime path))

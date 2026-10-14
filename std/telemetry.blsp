@@ -341,16 +341,9 @@ with the default crash reporter, an MCP snapshot, or a second `watch-runtime`."
 ;; events — and catches BOTH inbound peers and outbound `connect`s, which a
 ;; per-spec `monitor-node` alone would miss.
 
-(defn- telemetry-member? (ys x)
-  "Whether list `ys` contains `x` (by `=`)."
-  (cond
-    (empty? ys) false
-    (= (first ys) x) true
-    else (telemetry-member? (rest ys) x)))
-
 (defn- telemetry-absent (xs ys)
   "The elements of list `xs` not present in list `ys`."
-  (seq/filter xs (fn (x) (not (telemetry-member? ys x)))))
+  (seq/filter xs (fn (x) (not (includes? ys x)))))
 
 (defn- telemetry-nodes-loop (known interval)
   "Poll `(node/list)` every `interval` ms, emit a `[:runtime :nodeup]`/`[:runtime

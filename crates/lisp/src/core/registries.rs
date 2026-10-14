@@ -21,8 +21,6 @@
 pub const FEATURES: &str = "*features*";
 /// In-flight loads: module name → the pid that claimed the load.
 pub const FEATURES_LOADING: &str = "*features-loading*";
-/// Processes waiting on an in-flight load: module name → `[pid ref]` list.
-pub const FEATURES_WAITING: &str = "*features-waiting*";
 /// The registries a module load must write to the live table even while its other writes are
 /// staged (ADR-344): a set of registry SYMBOLS. Policy, defined by the prelude beside the
 /// registries it names; see `Heap::is_live_coordination_registry`.

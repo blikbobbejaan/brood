@@ -18,12 +18,15 @@
 (defn- fixture (name body)
   (file/spit (path/join *dir* (str name ".blsp")) (str "(defmodule " name ")\n" body)))
 
-;; A plain module; its load writes a marker.
+;; A module whose load writes a marker. Only the operand-reference test may load it: the
+;; marker is a shared file, and a concurrent test's load wrote it mid-check.
 (fixture "lazyprobe-a"
   (str "(file/spit \""
     (path/join *dir* "a-loaded")
     "\" \"yes\")\n"
     "(defn answer () 42)\n"))
+;; A plain module, for every other test that loads one.
+(fixture "lazyprobe-plain" "(defn answer () 42)\n")
 ;; The racing module appends to its marker, so a double load would leave two bytes.
 (fixture "lazyprobe-race"
   (str "(file/spit-append \""
@@ -99,9 +102,9 @@
         (is (includes? out "cold=42 after-call=true")))))
 
   (test "the unbound error is unchanged for a typo, in a module that exists or not"
-    (let (in-module (try (let (f lazyprobe-a/nope) f) (catch e (error-message e)))
+    (let (in-module (try (let (f lazyprobe-plain/nope) f) (catch e (error-message e)))
           no-module (try (let (f nomod-xyz/thing) f) (catch e (error-message e))))
-      (is (includes? in-module "unbound symbol: lazyprobe-a/nope"))
+      (is (includes? in-module "unbound symbol: lazyprobe-plain/nope"))
       (is (includes? no-module "unbound symbol: nomod-xyz/thing"))))
 
   (test "an error inside the module surfaces at first use rather than being hidden"
@@ -332,12 +335,12 @@
           exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
                        file/exists?))
           prog (path/temp "eagerunbound-")
-          ;; `lazyprobe-a/answer` is unbound until its fixture loads; under EAGER the load
+          ;; `lazyprobe-plain/answer` is unbound until its fixture loads; under EAGER the load
           ;; happens at the compile pass, before the first form runs.
           _ (file/spit prog
               (string/join [(str "(reflect/add-load-path \"" *dir* "\")")
-                             "(defn go () (apply lazyprobe-a/answer nil))"
-                             "(io/puts (str \"loaded=\" (contains? *features* \"lazyprobe-a\") \" v=\" (go)))"]
+                             "(defn go () (apply lazyprobe-plain/answer nil))"
+                             "(io/puts (str \"loaded=\" (contains? *features* \"lazyprobe-plain\") \" v=\" (go)))"]
                 "\n"))
           result (if exe (os/cmd "env" ["BROOD_NO_CHECK=1" "BROOD_NO_LAZY_LOAD=1" exe prog]) nil))
       (when result

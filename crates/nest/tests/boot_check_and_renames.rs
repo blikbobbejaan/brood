@@ -11,30 +11,15 @@
 use std::path::Path;
 use std::process::Command;
 
+mod support;
+use support::{temp_dir, TempDir};
+
 // ---------- scaffolding ----------
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl TempDir {
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
 fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(path.join("src")).unwrap();
-    TempDir { path }
+    let tmp = temp_dir(tag);
+    std::fs::create_dir_all(tmp.path.join("src")).unwrap();
+    tmp
 }
 
 fn write(path: &Path, contents: &str) {
@@ -45,7 +30,7 @@ fn write(path: &Path, contents: &str) {
 /// the parts these gates don't read.
 fn project(tag: &str) -> TempDir {
     let tmp = tempdir(tag);
-    let root = tmp.path();
+    let root = &tmp.path;
     write(&root.join("project.blsp"), "(project :name scratch)\n");
     write(
         &root.join("src/main.blsp"),
@@ -76,7 +61,7 @@ fn nest(dir: &Path, args: &[&str]) -> (i32, String) {
 #[test]
 fn check_boot_passes_then_fails_on_a_load_time_unbound_name() {
     let tmp = project("bootchk");
-    let root = tmp.path();
+    let root = &tmp.path;
     write(
         &root.join("src/helper.blsp"),
         "(defmodule helper \"a sibling module\")\n\n(defn helped () 1)\n",
@@ -116,7 +101,7 @@ fn check_boot_passes_then_fails_on_a_load_time_unbound_name() {
 #[test]
 fn check_boot_fails_when_the_entry_point_is_missing() {
     let tmp = project("bootentry");
-    let root = tmp.path();
+    let root = &tmp.path;
 
     // Every module loads cleanly; only `:main` is unresolvable. This is the half a
     // load-everything check would still miss if it stopped at loading.
@@ -135,7 +120,7 @@ fn check_boot_fails_when_the_entry_point_is_missing() {
 #[test]
 fn check_boot_runs_nothing() {
     let tmp = project("bootnorun");
-    let root = tmp.path();
+    let root = &tmp.path;
     // `main` would raise if it were called. The check must resolve it and stop.
     write(
         &root.join("src/main.blsp"),
@@ -155,7 +140,7 @@ fn check_boot_runs_nothing() {
 /// every branch of the decision.
 fn rot_project(tag: &str) -> TempDir {
     let tmp = project(tag);
-    let root = tmp.path();
+    let root = &tmp.path;
     write(
         &root.join("src/rot.blsp"),
         // `lonely` imports nothing, so a bare reference to a sibling's public name is
@@ -177,7 +162,7 @@ fn rot_project(tag: &str) -> TempDir {
 #[test]
 fn fix_renames_dry_run_classifies_without_writing() {
     let tmp = rot_project("fixdry");
-    let root = tmp.path();
+    let root = &tmp.path;
     let before = std::fs::read_to_string(root.join("src/rot.blsp")).unwrap();
 
     let (_code, out) = nest(root, &["check", "--fix-renames", "--dry-run"]);
@@ -211,7 +196,7 @@ fn fix_renames_dry_run_classifies_without_writing() {
 #[test]
 fn fix_renames_rewrites_references_only() {
     let tmp = rot_project("fixapply");
-    let root = tmp.path();
+    let root = &tmp.path;
     let sibling_before = std::fs::read_to_string(root.join("src/sibling.blsp")).unwrap();
 
     let (_code, out) = nest(root, &["check", "--fix-renames"]);
@@ -250,7 +235,7 @@ fn fix_renames_is_quiet_and_clean_on_a_healthy_project() {
     // The negative control. Without it the assertions above could all be satisfied by a
     // tool that reports rot unconditionally.
     let tmp = project("fixclean");
-    let (code, out) = nest(tmp.path(), &["check", "--fix-renames", "--dry-run"]);
+    let (code, out) = nest(&tmp.path, &["check", "--fix-renames", "--dry-run"]);
     assert_eq!(code, 0, "a clean project must exit 0:\n{out}");
     assert!(
         out.contains("no unbound names"),
@@ -264,7 +249,7 @@ fn fix_renames_is_quiet_and_clean_on_a_healthy_project() {
 /// shape: `nest run` used to print the warning and launch anyway.
 fn ledger_project(tag: &str) -> TempDir {
     let tmp = project(tag);
-    let root = tmp.path();
+    let root = &tmp.path;
     write(
         &root.join("src/main.blsp"),
         "(defmodule main \"entry\")\n\n\
@@ -276,7 +261,7 @@ fn ledger_project(tag: &str) -> TempDir {
 #[test]
 fn run_refuses_to_launch_over_an_unbound_symbol() {
     let tmp = ledger_project("rungate");
-    let root = tmp.path();
+    let root = &tmp.path;
 
     let (code, out) = nest(root, &["run"]);
 
@@ -298,7 +283,7 @@ fn run_refuses_to_launch_over_an_unbound_symbol() {
 #[test]
 fn run_no_check_launches_regardless() {
     let tmp = ledger_project("runnocheck");
-    let root = tmp.path();
+    let root = &tmp.path;
 
     let (code, out) = nest(root, &["run", "--no-check"]);
 
@@ -309,7 +294,7 @@ fn run_no_check_launches_regardless() {
 #[test]
 fn fix_renames_consults_the_ledger_first() {
     let tmp = ledger_project("fixledger");
-    let root = tmp.path();
+    let root = &tmp.path;
 
     let (_code, out) = nest(root, &["check", "--fix-renames"]);
 

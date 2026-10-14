@@ -3583,15 +3583,6 @@ impl Ty {
         self.alts.is_some().then(|| self.terms_vec())
     }
 
-    /// A recursive type's body — the same terms, without the binder — for the
-    /// renderer, which prints the binder itself.
-    /// The element refinement this one term carries, if any — for the renderer's mixed
-    /// join, which lists tags and must not drop what a sequence member says of its
-    /// elements.
-    pub(crate) fn term_elem_for_display(&self) -> Option<Ty> {
-        self.elem.as_deref().cloned()
-    }
-
     /// The int interval's rendering, `[0..]`, for the renderer; empty without one.
     pub(crate) fn int_suffix(&self) -> String {
         self.int_range
@@ -3617,20 +3608,6 @@ impl Ty {
         }
     }
 
-    /// The length suffix when `tag` is countable.
-    pub(crate) fn len_suffix_for(&self, tag: Tag) -> String {
-        if (1u32 << bit(tag)) & COUNT_BITS != 0 {
-            self.len_suffix()
-        } else {
-            String::new()
-        }
-    }
-
-    /// A single term's int interval, for `to_source`.
-    pub(crate) fn int_interval_for_source(&self) -> Option<Range> {
-        self.single()?.int_range
-    }
-
     /// Is this exactly a ranged int — one term, the int tag alone, nothing else refined?
     pub(crate) fn is_only_ranged_int(&self) -> bool {
         self.single().is_some_and(|t| {
@@ -3647,6 +3624,8 @@ impl Ty {
         Some((r, without))
     }
 
+    /// A recursive type's body — the same terms, without the binder — for the
+    /// renderer, which prints the binder itself.
     pub(crate) fn body_for_display(&self) -> Ty {
         Ty {
             mu: false,
@@ -4167,16 +4146,6 @@ impl Ty {
     /// This term's subtractions, for rendering. `None` when it subtracts nothing.
     pub(super) fn subtracted(&self) -> Option<&[Ty]> {
         self.neg.as_deref().map(|v| v.as_slice())
-    }
-
-    /// The positive part, for rendering — see [`Ty::positive`].
-    pub(super) fn positive_for_display(&self) -> Ty {
-        self.positive()
-    }
-
-    /// Whether this single term is empty, for rendering — see [`Ty::term_is_never`].
-    pub(super) fn term_is_empty_for_display(&self) -> bool {
-        self.term_is_never()
     }
 
     /// This term without its subtractions — the `P` of `P ∖ N`.

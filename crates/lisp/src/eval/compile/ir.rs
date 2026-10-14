@@ -108,10 +108,7 @@ pub enum PrimOp3 {
 
 impl PrimOp3 {
     pub(super) fn from_native_name(name: &str) -> Option<PrimOp3> {
-        match name {
-            _ if name == kw::TABLE_PUT => Some(PrimOp3::TablePut),
-            _ => None,
-        }
+        (name == kw::TABLE_PUT).then_some(PrimOp3::TablePut)
     }
 }
 
@@ -871,8 +868,30 @@ pub struct LeafInline {
     pub epoch: u64,
 }
 
+impl CompiledArm {
+    /// The arm's name for diagnostics: its `dbg_name`, or `<closure>` for an anonymous arm.
+    pub(crate) fn dbg_label(&self) -> &'static str {
+        self.dbg_name
+            .map(crate::core::value::symbol_name_ref)
+            .unwrap_or("<closure>")
+    }
+}
+
 #[cfg(feature = "jit")]
 impl CompiledArm {
+    /// The arm's bytecode as a space-separated opcode list, for the `[jit-bail]` traces.
+    pub(crate) fn dbg_opcodes(&self) -> String {
+        let code = self
+            .chunk
+            .as_ref()
+            .map(|c| c.code.as_slice())
+            .unwrap_or(&[]);
+        code.iter()
+            .map(super::jit_plan::codegen::inst_opcode_name)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
     /// The frame size the **currently installed** native version runs against —
     /// the per-engine frame-sizing key for two-stage tiering. Small native → `nslots`;
     /// inlined native (post-swap) → `inline_nslots`.

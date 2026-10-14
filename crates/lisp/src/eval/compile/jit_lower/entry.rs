@@ -4,7 +4,7 @@
 //! deopt journals reset. jit-only.
 #![cfg(feature = "jit")]
 use super::callbacks::CallbackRefs;
-use super::emit::{deopt_code, deopt_code_with_constant, DeoptReason};
+use super::emit::{deopt_code, deopt_code_with_constant, read_out_slot, DeoptReason};
 use super::*;
 use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_FLOAT, TAG_INT};
 use cranelift_codegen::ir::{
@@ -287,18 +287,6 @@ pub(super) struct EntryContext<'a> {
     pub(super) out_slot: StackSlot,
     pub(super) pointer_type: Type,
     pub(super) deopt: cranelift_codegen::ir::Block,
-}
-
-/// Read the 3 words a callback wrote into `out_slot`.
-fn read_out_slot(b: &mut FunctionBuilder, out_slot: StackSlot) -> (SsaValue, SsaValue, SsaValue) {
-    let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-    (w0, w1, w2)
 }
 
 /// Resolve every planned hoist once, here in the entry block (which dominates every loop

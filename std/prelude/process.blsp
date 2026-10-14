@@ -6,31 +6,22 @@
 ;; docs/decisions.md). Note `(self)` inside `expr` is the *child's* pid: to hand the
 ;; parent's pid in, capture it first — `(let (me (self)) (spawn (work me)))`.
 ;; `spawn` has two shapes:
-;;   (spawn expr)          → anonymous; always creates a fresh process.
-;;   (spawn name expr)     → **named & idempotent**. If a process is already
-;;                            registered under `name` (a keyword/symbol) and
-;;                            is still alive, the call is a no-op and returns
-;;                            the existing pid; `expr` is never evaluated.
-;;                            Otherwise spawns fresh and registers the new
-;;                            pid under `name`.
+;;   (spawn expr)          → (%spawn (fn () expr)) — anonymous; always a fresh process.
+;;   (spawn name expr)     → (%spawn-named name (fn () expr)) — **named & idempotent**.
+;;                            If a process is already registered under `name` (a
+;;                            keyword/symbol) and is still alive, the call is a no-op
+;;                            and returns the existing pid; `expr` is never evaluated.
+;;                            Otherwise spawns fresh and registers the new pid.
 ;;
-;; The named form is the hot-reload-safe way to start a long-lived worker
-;; (ADR-039). A file containing
+;; The named form is the hot-reload-safe way to start a long-lived worker, replacing
+;; the `defonce *worker* (spawn …)` pattern (ADR-039). A file containing
 ;; `(spawn :worker (worker))` reloaded by a hot-reload supervisor sees the
 ;; name is alive and does nothing — the running worker keeps going with its
 ;; current state, picking up the new code via the next global lookup of
 ;; `worker`. When the process dies, its registered name is reaped automatically
 ;; (`process::deregister` calls `dist::unregister_dead_pid`), so a fresh
 ;; reload spawns again — no stale entries.
-;; spawn — two shapes via arity dispatch:
-;;   (spawn expr)         → (%spawn (fn () expr))             — anonymous
-;;   (spawn name expr)    → (%spawn-named name (fn () expr))  — idempotent on name
-;; The named form replaces the `defonce *worker* (spawn …)` hot-reload
-;; pattern (ADR-039). The reloaded file sees the name is alive and the
-;; second `(spawn :worker …)` is a no-op — the running worker keeps going,
-;; picking up the new code via the next global lookup. When the process
-;; dies, its registered name is reaped (`process::deregister` →
-;; `dist::unregister_dead_pid`), so a later reload re-spawns cleanly.
+;;
 ;; A literal zero-arg lambda `(fn () …)` is *already* a process thunk. Re-wrapping
 ;; it (`(fn () (fn () …))`) would make the process merely build a closure and
 ;; discard it — a silent no-op. So pass such a form through unwrapped:
@@ -38,10 +29,8 @@
 ;; a bare function *name* like `(spawn worker)`, which would yield the closure and
 ;; exit — is handled by `%spawn-body-thunk` below, which wraps a symbol as a *call*.)
 (defn- %spawn-thunk-form? (form)
-  (and (list? form)
-    (not (empty? form))
-    (= (first form) 'fn)
-    (let (params (second form)) (and (list? params) (empty? params)))))
+  ;; `(fn)`/`(fn () …)` only: an empty parameter list is `nil`, and a vector `[]` is not one.
+  (and (pair? form) (= (first form) 'fn) (nil? (second form))))
 
 ;; The process-body thunk a `spawn`-family macro wraps its body form in. Three cases,
 ;; each closing off a footgun so no `spawn` shape can silently do nothing:
@@ -152,8 +141,8 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 ;; ---- receive: selective, pattern-matched message receipt --------------------
 ;; (receive clause...) where each clause is (pattern [:when guard] body...), with an
 ;; optional trailing (after ms body...) timeout clause. Reuses the match compiler
-;; (%match-build-from) to build a *matcher* fn: given a message it returns the clause
-;; body as a thunk on a match, or nil on no match. The %receive primitive runs that
+;; (%match-build-chain) to build a *matcher* fn: given a message it returns which clause
+;; matched and what it bound (see below), or nil on no match. The %receive primitive runs that
 ;; over the mailbox — scanning in order, removing+running the first match, leaving
 ;; non-matching messages queued (true Erlang selective receive).
 ;;

@@ -65,15 +65,6 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
 }
 
-/// The ops of `seq` (a vector or list), or `None` for anything else.
-fn ops_of(heap: &Heap, seq: Value) -> Option<Vec<Value>> {
-    match seq.unpack() {
-        ValueRef::Vector(id) => Some(heap.vector(id).to_vec()),
-        ValueRef::Nil | ValueRef::Pair(_) => heap.list_to_vec(seq).ok(),
-        _ => None,
-    }
-}
-
 struct Tags {
     memo: value::Symbol,
     scroll_region: value::Symbol,
@@ -116,7 +107,7 @@ fn harvest_into(
         };
         if tag == tags.memo && parts.len() == 4 {
             let (key, deps, inner) = (parts[1], parts[2], parts[3]);
-            let Some(inner_ops) = ops_of(heap, inner) else {
+            let Some(inner_ops) = heap.list_or_vector_items(inner) else {
                 continue; // a marker whose ops are not a sequence paints nothing
             };
             let mut flat = Vec::with_capacity(inner_ops.len());
@@ -129,7 +120,7 @@ fn harvest_into(
             // A block op that CARRIES ops (scroll-region, cell-region): harvest inside it
             // and rebuild it around the flattened ops, so a memoised fragment works just
             // as well inside a region as outside one.
-            let Some(inner_ops) = ops_of(heap, parts[at]) else {
+            let Some(inner_ops) = heap.list_or_vector_items(parts[at]) else {
                 out.push(op);
                 continue;
             };
@@ -148,7 +139,7 @@ fn harvest_into(
 
 fn ui_harvest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let frame = arg(args, 0);
-    let Some(ops) = ops_of(heap, frame) else {
+    let Some(ops) = heap.list_or_vector_items(frame) else {
         return Err(LispError::wrong_type(
             heap,
             "%ui-harvest",

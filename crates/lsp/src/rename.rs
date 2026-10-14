@@ -28,10 +28,7 @@ pub fn prepare_rename(
     index: &LineIndex,
     offset: u32,
 ) -> Option<Range> {
-    let node = root.node_at(offset)?;
-    if node.kind != brood::syntax::cst::NodeKind::Symbol {
-        return None;
-    }
+    let node = root.symbol_at(offset)?;
     // Only offer rename when there's something to rename.
     if tree.references(root, text, offset).is_empty() {
         return None;

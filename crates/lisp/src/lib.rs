@@ -264,11 +264,8 @@ impl Interp {
     /// (`GC_BLOCK == 1`) the copying collector relocates the still-unevaluated
     /// forms, so we root them and re-fetch each via `root_at` — the `forms` Vec's
     /// own handles go stale across a collection; positions are plain data and
-    /// don't move. Between forms the eval stack is empty and only the discarded
-    /// intermediate result is live (globals live in PRELUDE/RUNTIME), so that
-    /// garbage is reclaimed before the next form: by GC when the collector is on,
-    /// else by the ADR-016 per-form arena reset (a move would invalidate the
-    /// checkpoint, so the reset is skipped whenever GC is enabled). The
+    /// don't move. Between forms the discarded intermediate result is reclaimed by
+    /// the collector; there is no per-form arena reset (KI-12, see the loop). The
     /// `roots_len`/`truncate_roots` pairing and the namespace restore both run
     /// exactly once, on every path.
     fn eval_forms(
@@ -296,8 +293,6 @@ impl Interp {
         // run; reach it via `scope.heap()`.
         let mut scope = eval::macros::NsLoadScope::enter(&mut self.heap, &form_vals);
         let heap = scope.heap();
-        let cp = heap.checkpoint();
-        let gc = heap.gc_enabled();
         let mut result = Value::nil();
         let n = forms.len();
         let roots_base = heap.roots_len();
@@ -341,7 +336,7 @@ impl Interp {
                 }
             }
             // NO per-form arena reset (KI-12). ADR-016's reset was the no-GC
-            // reclamation path, on the premise quoted above — "globals live in
+            // reclamation path, on the premise "globals live in
             // PRELUDE/RUNTIME, so the only live thing between forms is the
             // discarded result". That premise is false in the one heap where the
             // reset actually ran: a **builder** heap (`Heap::new` sets
@@ -356,10 +351,8 @@ impl Interp {
             // Dropping the reset costs the *builder* heap its boot garbage until
             // freeze (which already tolerates and skips it — see `reachable_clo`),
             // and costs every other path nothing: with the collector on, this
-            // branch never ran. `_cp`/`_gc` are kept as the record of what was
-            // tried; re-introducing a reset needs reachability from the root env,
-            // not a bare high-water mark.
-            let _ = (&cp, gc);
+            // branch never ran. Re-introducing a reset needs reachability from the
+            // root env, not a bare high-water mark.
         }
         heap.truncate_roots(roots_base);
         ret.map(|()| result)

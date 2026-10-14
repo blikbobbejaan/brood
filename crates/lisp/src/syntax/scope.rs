@@ -92,9 +92,9 @@ pub fn analyze(root: &Node, src: &str) -> ScopeTree {
 impl ScopeTree {
     /// Resolve the symbol at byte `offset` against the document `root`/`src`.
     pub fn resolve_at(&self, root: &Node, src: &str, offset: u32) -> Resolution {
-        match root.node_at(offset) {
-            Some(n) if n.kind == NodeKind::Symbol => self.resolve(offset, n.text(src)),
-            _ => Resolution::NotASymbol,
+        match root.symbol_at(offset) {
+            Some(n) => self.resolve(offset, n.text(src)),
+            None => Resolution::NotASymbol,
         }
     }
 
@@ -135,9 +135,8 @@ impl ScopeTree {
     /// free name matches its free occurrences across the document.
     pub fn references(&self, root: &Node, src: &str, offset: u32) -> Vec<Span> {
         let want = self.resolve_at(root, src, offset);
-        let name = match root.node_at(offset) {
-            Some(n) if n.kind == NodeKind::Symbol => n.text(src),
-            _ => return Vec::new(),
+        let Some(name) = root.symbol_at(offset).map(|n| n.text(src)) else {
+            return Vec::new();
         };
         if want == Resolution::NotASymbol {
             return Vec::new();
@@ -217,15 +216,6 @@ fn same_binding(a: Resolution, b: Resolution) -> bool {
     }
 }
 
-/// The head symbol of a list form, e.g. `def` in `(def x 1)`.
-fn head_sym<'s>(node: &Node, src: &'s str) -> Option<&'s str> {
-    if node.kind != NodeKind::List {
-        return None;
-    }
-    let first = node.forms().next()?;
-    (first.kind == NodeKind::Symbol).then(|| first.text(src))
-}
-
 /// Pass 1: collect definition names into the global scope. Beyond the plain
 /// `def`/`defn`/`defmacro`, this includes the definer *macros* whose name is also
 /// at index 1 — `defrecord` (the name doubles as the constructor), `defability`
@@ -277,7 +267,7 @@ pub fn global_refs_in(tree: &ScopeTree, node: &Node, src: &str) -> Vec<String> {
 }
 
 fn collect_globals(node: &Node, src: &str, out: &mut Vec<Binding>) {
-    if let Some(head) = head_sym(node, src) {
+    if let Some(head) = node.head_symbol(src) {
         // The module-private variants belong here with the rest (ADR-146): `def-`/`defn-`
         // are macros over `def`, so they bind a global exactly as their public spellings do
         // — and most definitions in a real module are private.
@@ -330,7 +320,7 @@ impl ScopeTree {
 
 /// Pass 2: descend, opening a child scope at each binding form.
 fn build(node: &Node, src: &str, current: usize, tree: &mut ScopeTree) {
-    let params_at = match head_sym(node, src) {
+    let params_at = match node.head_symbol(src) {
         Some(kw::LET) => return build_let(node, src, current, tree),
         // `letrec` makes every name visible in every init and in the body — one scope
         // over the whole form. (Without an arm here its names resolved Free, so renaming

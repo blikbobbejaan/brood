@@ -94,19 +94,18 @@ Values print through `pr-str-bounded`, not `pr-str`: this is a display protocol,
 one traced call carrying a megabyte string must not paint a megabyte to stderr. Lift
 the bound for a run with `(binding (*print-string-length* nil) …)`."
   (case (:spy entry)
-    :enter (%write-err (str (str "spy: " (pr-str-bounded (:form entry))) "\n"))
+    :enter (%write-err (str "spy: " (pr-str-bounded (:form entry)) "\n"))
     :node
-      (%write-err (str (str "  "
-                         (%spy-indent (:depth entry))
-                         (pr-str-bounded (:form entry))
-                         " => "
-                         (pr-str-bounded (:value entry)))
+      (%write-err (str "  "
+                    (%spy-indent (:depth entry))
+                    (pr-str-bounded (:form entry))
+                    " => "
+                    (pr-str-bounded (:value entry))
                     "\n"))
-    :exit (%write-err (str (str "=> " (pr-str-bounded (:value entry))) "\n"))
-    :call (%write-err (str (str "trace: " (pr-str-bounded (cons (:fn entry) (:args entry)))) "\n"))
+    :exit (%write-err (str "=> " (pr-str-bounded (:value entry)) "\n"))
+    :call (%write-err (str "trace: " (pr-str-bounded (cons (:fn entry) (:args entry))) "\n"))
     :return
-      (%write-err (str (str "trace: " (pr-str (:fn entry)) " => " (pr-str-bounded (:value entry)))
-                    "\n"))
+      (%write-err (str "trace: " (pr-str (:fn entry)) " => " (pr-str-bounded (:value entry)) "\n"))
     nil))
 (defn- %spy-emit (entry) ((or *spy-sink* %spy-default-sink) entry))
 (defn- %spy-node (form value depth)
@@ -511,11 +510,11 @@ one call site is inside `defmodule`'s template — see the note there."
       (list (list 'require-one rooted)
         (list '%refer rooted (list 'quote subset) (list 'quote exclude))))))
 
-;; All require/refer forms for the `(:use …)` clauses in a `defmodule` header
-;; (skipping the optional docstring / any non-`:use` form), flattened for splicing.
-(defn- %defmodule-use-forms (clauses)
-  (apply append
-    (map (%filter clauses (fn (c) (and (pair? c) (= (first c) :use)))) %defmodule-use-clause)))
+;; All forms for the `(head …)` clauses in a `defmodule` header — `f` turns one clause into
+;; its list of forms — skipping the optional docstring and every other clause, flattened
+;; for splicing.
+(defn- %defmodule-clause-forms (clauses head f)
+  (apply append (map (%filter clauses (fn (c) (and (pair? c) (= (first c) head)))) f)))
 
 ;; The forms for one `(:use-internals mod [:only [a b]])` clause — module privacy's
 ;; @testable seam (ADR-146): like `(:use mod)` (reflect/load + refer publics), PLUS a grant
@@ -542,11 +541,6 @@ one call site is inside `defmodule`'s template — see the note there."
         (list '%grant-internals rooted)
         (list '%refer rooted (list 'quote subset))))))
 
-(defn- %defmodule-internals-forms (clauses)
-  (apply append
-    (map (%filter clauses (fn (c) (and (pair? c) (= (first c) :use-internals))))
-      %defmodule-internals-clause)))
-
 ;; web/views/counter → counter  (a module name's last `/`-segment, as a symbol).
 (defn- %defmodule-last-segment (mod)
   (symbol (last (string/split (->string mod) "/"))))
@@ -564,10 +558,6 @@ one call site is inside `defmodule`'s template — see the note there."
         rooted (list '%root-module-name (list 'quote mod)))
     (list (list 'require-one rooted)
       (list '%alias rooted (list 'quote short)))))
-
-(defn- %defmodule-alias-forms (clauses)
-  (apply append
-    (map (%filter clauses (fn (c) (and (pair? c) (= (first c) :alias)))) %defmodule-alias-clause)))
 
 ;; A file declares itself a **module = namespace** at the top with `defmodule`
 ;; (ADR-065): each `def`/`defn`/`defmacro` defines `mod/name`, and a bare reference
@@ -591,12 +581,8 @@ one call site is inside `defmodule`'s template — see the note there."
 ;; the hazard it exists for is `%isolate`: a module first used INSIDE an isolated unit is
 ;; rolled back with it, and a bystander (the test runner's driver) that started depending
 ;; on it meanwhile dies on `unbound symbol`. `std/tool/test.blsp` declares its closure this way, and a gate pins the list.
-(defn- %defmodule-load-forms (clauses)
-  (apply append
-    (map (%filter clauses (fn (c) (and (pair? c) (= (first c) :load))))
-      (fn (c)
-        (map (rest c)
-          (fn (m) (list 'require-one (list '%root-module-name (list 'quote m)))))))))
+(defn- %defmodule-load-clause (clause)
+  (map (rest clause) (fn (m) (list 'require-one (list '%root-module-name (list 'quote m))))))
 
 ;; The only clauses the header understands; anything else is a hard error. Ignoring it
 ;; would let a misspelled `(:use-internal m)` or a Clojure-style `(:require m)` look like it
@@ -672,10 +658,10 @@ feature. Put it first. e.g. (defmodule gen \"A gen_server …\")."
        (%record-module-doc! root-key# ~doc)
        (%defmodule-provide root-key#)
        (%in-ns '~mod)
-       ~@(%defmodule-load-forms clauses)
-       ~@(%defmodule-use-forms clauses)
-       ~@(%defmodule-internals-forms clauses)
-       ~@(%defmodule-alias-forms clauses))))
+       ~@(%defmodule-clause-forms clauses :load %defmodule-load-clause)
+       ~@(%defmodule-clause-forms clauses :use %defmodule-use-clause)
+       ~@(%defmodule-clause-forms clauses :use-internals %defmodule-internals-clause)
+       ~@(%defmodule-clause-forms clauses :alias %defmodule-alias-clause))))
 
 ;; First existing <filename> across the load-path dirs, or nil.
 (defn- %require-find (filename dirs)
@@ -772,7 +758,7 @@ ran on that machine. That is the worst shape a bug can take — it works on the 
 fails in production, where no image exists.
 
 So the image may only ever make a module this binary already has FASTER to load; it can never
-add one. The same rule `%merge-require-edges!` applies to a replayed edge, for the same reason.
+add one. The same rule `%std-edges-for` applies to a replayed edge, for the same reason.
 Checked HERE rather than by filtering the index at install: the filter is O(sections) of
 `%builtin-module` on the boot path, while this is one comparison, paid only by a module that
 actually materialises."
@@ -817,8 +803,8 @@ will never consult."
 them there, else the image\'s record.
 
 Read per module rather than merged into `*require-edges*` wholesale at install, which
-would put the merge on every boot. The dep filter is the same one the merge applied and for
-the same reason: an image is keyed on the stdlib\'s CONTENT, deliberately shared by `brood`,
+would put the merge on every boot. Filtered here, at read time, rather than when the image is
+built, because the image may have been written by a different binary from the one reading it: an image is keyed on the stdlib\'s CONTENT, deliberately shared by `brood`,
 `nest` and `brood-lsp`, but those binaries do not bake in the same MODULES — a lean runtime
 has no dev-tools, and `project`\'s edges name `test`. Following an edge to a module this
 binary cannot load would fail the require outright."
@@ -890,32 +876,6 @@ resolves against an ability the runtime has never heard of."
     ;; and the writer journal (KI-136) must credit the module being materialised.
     (doseq (r regs) (%registry-update! (get r 0) :assoc (get r 1) (get r 2) key))
     (count regs)))
-
-(defn- %merge-require-edges! (edges)
-  "MERGE `edges` (feature name → [dep …]) into `*require-edges*`, keeping any edge already
-recorded for a key. Restoring a module from an image defines its bindings but evaluates
-NOTHING, so the requires its header would have run are replayed from these edges — an image
-that carries no edges restores `url` without `path`, and its first `path/join` is unbound.
-Merging rather than replacing because a project image and the stdlib image each carry their
-own, and whichever installs second must not erase the first."
-  ;; Drop a dep this binary cannot load. An image is keyed on `system/stdlib-id` — the stdlib's
-  ;; CONTENT — which is deliberately the same for `brood`, `nest` and `brood-lsp` from one
-  ;; tree, so one image is shared. But those binaries do not bake in the same MODULES: a
-  ;; lean runtime (what `nest release` and `make install INSTALL_FEATURES=RUN_FEATURES`
-  ;; produce, i.e. what ships) has no dev-tools, and `project`'s recorded edges name `test`.
-  ;; Replaying that edge would make the very next `require` die with `cannot find module
-  ;; 'test'`, so an unfiltered image breaks `require` on the shipped build.
-  ;;
-  ;; Filtered here rather than at build time on purpose: the image may have been written by
-  ;; a different binary from the one reading it, which is the whole point of sharing the key.
-  (let (have (into #{} (map (reflect/builtin-modules) ->string)))
-    (doseq (kv (%map-pairs edges))
-      (let ([k deps] kv)
-        (when (not (contains? *require-edges* k))
-          (%registry-update! '*require-edges*
-            :assoc [k]
-            (%filter deps (fn (d) (contains? have (->string d)))))))))
-  *require-edges*)
 
 ;; --- the stdlib image, from the prelude --------------------------------------
 ;;
@@ -1357,18 +1317,12 @@ waiter joining concurrently either lands before the take (and is returned here) 
 (defn- %require-release! (key)
   "Wake every process waiting on `key`'s load. MUST be called after `provide` (or after the
 marker is cleared on failure), never before — see the ordering note above."
-  (let (ws (%require-take-waiters! key))
-    (%require-notify-each ws key)))
-
-(defn- %require-notify-each (ws key)
-  (unless (empty? ws)
-    (do
-      ;; `[:load-done <ref> …]` — keyword first, ref second, which is the shape the kernel
-      ;; recognises as a reply alias. A waiter that has already given up deactivated its
-      ;; ref, so this send is dropped at delivery instead of queueing in a process that is
-      ;; back to doing application work.
-      (let ([p r] (first ws)) (send p [:load-done r key]))
-      (%require-notify-each (rest ws) key))))
+  ;; `[:load-done <ref> …]` — keyword first, ref second, which is the shape the kernel
+  ;; recognises as a reply alias. A waiter that has already given up deactivated its
+  ;; ref, so this send is dropped at delivery instead of queueing in a process that is
+  ;; back to doing application work.
+  (doseq ([p r] (%require-take-waiters! key))
+    (send p [:load-done r key])))
 
 (defn- %require-await (key)
   "Block until the process that claimed `key`'s load has finished it. Returns `key`."
@@ -2001,29 +1955,6 @@ which is meaningless for a rope, so falling through unconditionally would swap a
 
 ; ---- macros -----------------------------------------------------------------
 
-(defn- %defability-sealed-vec (specs)
-  "The vector following `:sealed` in a `defability`'s specs (its closed member set), or nil."
-  (cond
-    (empty? specs) nil
-    (= (first specs) :sealed) (second specs)
-    else (%defability-sealed-vec (rest specs))))
-
-(defn- %defability-requires-vec (specs)
-  "The vector following `:requires` in a `defability`'s specs (its prerequisite abilities), or nil."
-  (cond
-    (empty? specs) nil
-    (= (first specs) :requires) (second specs)
-    else (%defability-requires-vec (rest specs))))
-
-(defn- %defability-derive-fn (specs)
-  "The form following `:derive-record` in a `defability`'s specs — the derive recipe (an
-  inline `(fn (fields) …)` or a fn-symbol), or nil. Distinct from an op spec (whose second
-  element is a `[args]` *vector*), so it is filtered out of the op list."
-  (cond
-    (empty? specs) nil
-    (= (first specs) :derive-record) (second specs)
-    else (%defability-derive-fn (rest specs))))
-
 (defn- %ability-id-kw (m)
   "The dispatch-id keyword for an impl / sealed-member id `m`. A keyword is kept as-is
   (`:int`, `:default`); a bare record symbol is qualified against the current ns
@@ -2152,10 +2083,13 @@ which is meaningless for a rope, so falling through unconditionally would swap a
         ;; surface, and a generic function with no doc at all is a hole in `(doc …)`,
         ;; `nest doc` and the LSP alike. Surfaced by `(audit/undocumented)`.
         ability-doc (if (string? (first specs)) (first specs) nil)
-        sealed-vec (%defability-sealed-vec specs)
+        ;; The keyword clauses: `:sealed [members…]`, `:derive-record recipe` (an inline
+        ;; `(fn (fields) …)` or a fn-symbol — its second element is no `[args]` vector, so
+        ;; the op filter above skips it) and `:requires [abilities…]`.
+        sealed-vec (%form-after specs :sealed)
         sealed-ids (if sealed-vec (map sealed-vec %ability-id-kw) nil)
-        derive-fn (%defability-derive-fn specs)
-        requires-vec (%defability-requires-vec specs)
+        derive-fn (%form-after specs :derive-record)
+        requires-vec (%form-after specs :requires)
         ; pass `(reflect/current-ns)` as the owner — evaluated at load in the DEFINING module, so
         ; `*ability-owner*` records where the ability was declared (ADR-172 precedence).
         ; The specs are stored WITH their bodies so the checker can tell a provided op from

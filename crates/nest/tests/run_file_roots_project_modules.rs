@@ -20,21 +20,12 @@
 use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+mod support;
+use support::{temp_dir, TempDir};
 
 fn fixture() -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-ki129-{}-{nanos}", std::process::id()));
+    let temp = temp_dir("ki129");
+    let path = &temp.path;
     std::fs::create_dir_all(path.join("proj/src")).unwrap();
     std::fs::write(
         path.join("proj/project.blsp"),
@@ -57,7 +48,7 @@ fn fixture() -> TempDir {
          (io/puts (str \"check: \" (reflect/check-string-here \"(sig h (model -> string)) (defn h (m) 42)\")))\n",
     )
     .unwrap();
-    TempDir { path }
+    temp
 }
 
 fn nest_run(dir: &Path, file: &Path) -> String {

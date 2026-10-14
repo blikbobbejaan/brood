@@ -109,60 +109,29 @@ fi
 # ── local: the gates CI runs that `make check` does not ──────────────────────────────────
 if [ "$do_local" = 1 ]; then
   echo "== local gates (the ones \`make check\` skips) =="
-  # WHICH binary: `make release` builds RELEASE_DIR=target/release-fast; only a plain
-  # `cargo build --release` writes target/release. This gated on target/release while
-  # telling you to run `make release`, which never touches it — so it ran a binary no
-  # documented command refreshes. On 2026-08-28 that binary was 9 commits behind and
-  # reported two phantom `unbound symbol` failures (a pre-rename std/ baked into it).
-  # Prefer whichever candidate reports HEAD's sha.
-  head_sha=$(git rev-parse --short HEAD 2>/dev/null || echo '?')
-  binary_sha() { "$1" --version 2>/dev/null | sed -n 's/.*(\([0-9a-f]\{7,\}\)).*/\1/p'; }
-  nest=""
-  for cand in "$root/target/release-fast/nest" "$root/target/release/nest"; do
-    [ -x "$cand" ] || continue
-    if [ "$(binary_sha "$cand")" = "$head_sha" ]; then nest="$cand"; break; fi
-  # No sha match: keep the NEWEST candidate, not the first one that exists. A binary built
-  # from a dirty tree records its PARENT's sha, so a fixed order can hand you a genuinely old
-  # binary over a current one — which is what it did on 2026-08-29 (release-fast from
-  # adc5c775 chosen over a release built minutes earlier).
-    { [ -z "$nest" ] || [ "$cand" -nt "$nest" ]; } && nest="$cand"
-  done
-
-  # Is the binary's std/ the tree's std/?
-  #
-  # **mtime decides, not the sha.** A binary newer than every `std/`+`crates/` source baked
-  # exactly what is on disk now — stronger than any sha comparison, and the actual property
-  # this gate needs. Asking the sha first refuses correct work in a case that happens
-  # constantly here: build from a dirty tree (the binary records the sha of the HEAD it was
-  # built AT), then commit, and the sha now names the parent while the contents are current.
-  # That refused a sibling gate on 2026-08-29 — and a gate that cries wolf stops being read,
-  # which is the same trap the pre-push hook records for a stale formatter ("a stale gate that
-  # refuses correct work is worse than no gate").
-  #
-  # The sha is the RESCUE for the one case mtime cannot judge: a `git checkout` or fresh clone
-  # rewrites mtimes without changing content, so every source looks newer than a binary that
-  # is in fact current. Then, and only then, ask git whether anything it bakes in moved.
-  # `crates/*/tests/` is excluded throughout: an integration test compiles into its OWN test
-  # binary, never into `nest`, so it cannot change what the two .blsp gates below see.
-  bin_sha=$(binary_sha "$nest" 2>/dev/null)
+  # WHICH binary, and is its std/ the tree's? `scripts/lib/gate-binary.sh` answers both for
+  # every gate (KI-76's wrong-artifact class: this script once ran a `target/release` binary
+  # 9 commits behind, which reported two phantom `unbound symbol` failures). The picker
+  # prefers the candidate reporting HEAD's sha, else the NEWEST; freshness is decided by
+  # mtime, with the sha as the rescue after a checkout rewrote mtimes — see there for why.
+  ROOT=$root
+  # shellcheck source=lib/gate-binary.sh
+  . "$root/scripts/lib/gate-binary.sh"
+  head_sha=$(gate_head_sha); head_sha=${head_sha:-?}
+  nest=$(gate_pick nest)
+  [ -x "$nest" ] || nest=""
   stale=0
   equiv=""
-  newer=""
   if [ -n "$nest" ]; then
-    newer=$(find std crates \( -name '*.blsp' -o -name '*.rs' \) \
-              -not -path 'crates/*/tests/*' -newer "$nest" -print -quit 2>/dev/null)
-    if [ -n "$newer" ]; then
-      if [ -n "$bin_sha" ] && [ "$bin_sha" != "$head_sha" ] &&
-         git cat-file -e "${bin_sha}^{commit}" 2>/dev/null &&
-         [ -z "$(git diff --name-only "$bin_sha" HEAD -- std crates \
-                   ':(exclude)crates/*/tests/*' 2>/dev/null)" ] &&
-         [ -z "$(git status --porcelain -- std crates 2>/dev/null)" ]; then
-        equiv="built at $bin_sha and older than $newer, but nothing it bakes in changed (std/ and crates/, excluding test dirs)"
-      else
-        stale=1
-      fi
+    if gate_freshness "$nest"; then
+      [ "$GATE_RESCUED" = 1 ] &&
+        equiv="built at $GATE_BIN_SHA and older than $GATE_NEWER, but nothing it bakes in changed (std/ and crates/, excluding test dirs)"
+    else
+      stale=1
     fi
   fi
+  bin_sha=$GATE_BIN_SHA
+  newer=$GATE_NEWER
 
   # A stale binary's verdict is meaningless in BOTH directions, so a stale one is a FAILURE,
   # not a note: it must not be possible to read a green — or a red — off the wrong std/. The

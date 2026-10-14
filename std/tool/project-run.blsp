@@ -233,7 +233,7 @@ Returns the coverage percentage (nil when none was measured)."
 ;; different things (was a function entered vs did a line run) — in which case the
 ;; LINE percentage is what `--cover-min` gates on, being the stricter number.
 (defn- project-coverage-report (root opts)
-  (let (fn-percent (if (test/opt? :cover opts) (project-coverage-finish root) nil)
+  (let (fn-percent (if (test/opt? :cover opts) (coverage/report root) nil)
         line-percent (if (test/opt? :cover-lines opts)
                        (project-coverage-lines-finish root)
                        nil)
@@ -258,9 +258,6 @@ Returns the coverage percentage (nil when none was measured)."
 ;; std/tool/coverage.blsp).
 (defn- project-coverage-begin (root)
   (coverage/begin (project/abs-paths root *project-source-paths*)))
-
-(defn- project-coverage-finish (root)
-  (coverage/report root))
 
 ;; Enforce `--cover-min N`: a coverage floor is only useful if it can fail the
 ;; build, so falling short raises (non-zero exit) exactly like a failing test.

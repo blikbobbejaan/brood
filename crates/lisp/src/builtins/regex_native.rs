@@ -140,10 +140,9 @@ fn compiled(who: &str, pattern: &str, kind: Kind) -> Result<Arc<Regex>, LispErro
 
 /// A string argument's heap id — what the char↔byte conversions take.
 fn string_id(heap: &Heap, who: &str, v: Value) -> Result<StrId, LispError> {
-    match v {
-        Value::Str(id) => Ok(id),
-        other => Err(LispError::wrong_type(heap, who, "string", other)),
-    }
+    expect!(heap, who, v, "string",
+        Value::Str(id) => id,
+    )
 }
 
 /// A pattern argument, compiled.
@@ -341,10 +340,9 @@ fn lexer(patterns: Vec<Box<str>>) -> Result<Arc<Lexer>, LispError> {
 
 /// A vector argument's items.
 fn vector_arg(heap: &Heap, who: &str, v: Value) -> Result<Vec<Value>, LispError> {
-    match v {
-        Value::Vector(id) => Ok(heap.vector(id).to_vec()),
-        other => Err(LispError::wrong_type(heap, who, "vector", other)),
-    }
+    expect!(heap, who, v, "vector",
+        Value::Vector(id) => heap.vector(id).to_vec(),
+    )
 }
 
 /// `(%regex-tokens patterns tags s)`

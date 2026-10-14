@@ -82,10 +82,9 @@ fn as_bytes<'h>(
     who: &str,
     v: Value,
 ) -> Result<crate::core::heap::SlabRef<'h, [u8]>, LispError> {
-    match v {
-        Value::Bytes(id) => Ok(heap.bytes(id).map(|b| -> &[u8] { b.as_bytes() })),
-        _ => Err(LispError::wrong_type(heap, who, "bytes", v)),
-    }
+    expect!(heap, who, v, "bytes",
+        Value::Bytes(id) => heap.bytes(id).map(|b| -> &[u8] { b.as_bytes() }),
+    )
 }
 
 /// `(bytes 1 2 3)` or `(bytes [1 2 3])` / `(bytes (list …))` — build a bytes value

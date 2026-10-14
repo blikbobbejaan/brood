@@ -18,6 +18,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod support;
+use support::rust_files;
+
 /// The allowed reasons, so an entry has to commit to one.
 #[derive(Clone, Copy, Debug)]
 enum Reason {
@@ -126,20 +129,6 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
 
 fn source_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
-}
-
-fn rust_files(directory: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            out.push(path);
-        }
-    }
 }
 
 /// The name of the `static` declared on `line`, if it declares one.

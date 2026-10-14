@@ -512,15 +512,10 @@ const M_DOTTED: u8 = 21;
 pub(crate) fn encode_msg(w: &mut Vec<u8>, m: &Message) -> io::Result<()> {
     // A container step grows the native stack when it is near its end (see
     // `process::grow`): a message is nested as deep as the sender built it.
-    match m {
-        Message::List(..)
-        | Message::Dotted(..)
-        | Message::Vector(..)
-        | Message::Map(..)
-        | Message::Failure(..)
-        | Message::Set(..)
-        | Message::Closure(..) => crate::process::grow(|| encode_msg_inner(w, m)),
-        _ => encode_msg_inner(w, m),
+    if m.nests() {
+        crate::process::grow(|| encode_msg_inner(w, m))
+    } else {
+        encode_msg_inner(w, m)
     }
 }
 

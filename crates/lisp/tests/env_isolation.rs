@@ -26,7 +26,8 @@
 //! therefore required to be ZERO (use a constructor parameter or a per-heap setter instead,
 //! which is exactly what KI-86's fix introduced).
 
-use std::path::{Path, PathBuf};
+mod support;
+use support::{rust_files, workspace_root};
 
 /// The line, minus `//` comments and the contents of string literals — good enough to keep
 /// a *mention* of set_var in a doc comment or an error message from counting as a call.
@@ -50,27 +51,9 @@ fn code_of(line: &str) -> String {
     out
 }
 
-fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if p.is_dir() {
-            rust_files(&p, out);
-        } else if p.extension().is_some_and(|x| x == "rs") {
-            out.push(p);
-        }
-    }
-}
-
 #[test]
 fn an_env_mutating_test_lives_alone_in_its_binary() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("workspace root")
-        .to_path_buf();
+    let root = workspace_root();
 
     let mut offenders = Vec::new();
     for crate_dir in ["crates/lisp", "crates/cli", "crates/nest", "crates/lsp"] {

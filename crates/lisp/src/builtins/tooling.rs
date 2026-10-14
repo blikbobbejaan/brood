@@ -1,4 +1,4 @@
-use super::numeric::{arg, expect_string};
+use super::numeric::{arg, expect_string, expect_symbol};
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, EnvId, Value};
@@ -216,17 +216,7 @@ pub(super) fn form_pos(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResu
 /// accurately. The image-query foundation for cross-file goto-definition (ADR-031
 /// / docs/lsp.md). Takes a symbol, so quote it: `(source-location 'foo)`.
 pub(super) fn source_location(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let name = match arg(args, 0) {
-        Value::Sym(s) => s,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "reflect/source-location",
-                "symbol",
-                other,
-            ))
-        }
-    };
+    let name = expect_symbol(heap, "reflect/source-location", arg(args, 0))?;
     match heap.def_site(name) {
         Some(loc) => {
             let file = heap.alloc_string(&loc.file);
@@ -248,15 +238,26 @@ pub(super) fn source_location(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
 /// `(reflect/private? 'mod/helper)` → true when `mod` defined it with `defn-`/`def-`,
 /// `(reflect/private? 'mod/pub)` → false. An undefined name is not private.
 pub(super) fn private_p(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Sym(s) => Ok(Value::boolean(heap.is_private(s))),
-        other => Err(LispError::wrong_type(
-            heap,
-            "reflect/private?",
-            "symbol",
-            other,
-        )),
+    let name = expect_symbol(heap, "reflect/private?", arg(args, 0))?;
+    Ok(Value::boolean(heap.is_private(name)))
+}
+
+/// A name-query argument: a symbol, or a string naming an already-interned symbol.
+/// `Ok(None)` for a string never interned — it names no global.
+fn existing_name_arg(heap: &Heap, who: &str, v: Value) -> Result<Option<value::Symbol>, LispError> {
+    match v {
+        Value::Sym(s) => Ok(Some(s)),
+        Value::Str(id) => Ok(value::intern_existing(&heap.string(id))),
+        other => Err(LispError::wrong_type(heap, who, "symbol or string", other)),
     }
+}
+
+/// The global a name query means: `commands/cmd-open` is `bedit/commands/cmd-open` inside
+/// project bedit (ADR-070) — the same rooting an `(eval 'commands/cmd-open)` behind a
+/// keymap gets; a bare name resolves in the current namespace, as a def head would.
+fn rooted_name(heap: &Heap, sym: value::Symbol) -> value::Symbol {
+    heap.root_qualified_ref(sym)
+        .unwrap_or_else(|| crate::eval::macros::resolve_reference(heap, sym))
 }
 
 /// `(type-signature 'name)` — the checker's type signature for the global `name`
@@ -267,23 +268,8 @@ pub(super) fn private_p(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRes
 /// share (so they can't drift on what a name's type is). `name` may be a symbol or
 /// a string; a never-interned name names no global, so it returns `nil`.
 pub(super) fn type_signature(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        Value::Str(id) => {
-            let name = heap.string(id).to_string();
-            match value::intern_existing(&name) {
-                Some(s) => s,
-                None => return Ok(Value::nil()),
-            }
-        }
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "reflect/type-signature",
-                "symbol or string",
-                other,
-            ))
-        }
+    let Some(sym) = existing_name_arg(heap, "reflect/type-signature", arg(args, 0))? else {
+        return Ok(Value::nil());
     };
     match crate::types::check::signature_string(heap, sym) {
         Some(signature) => Ok(heap.alloc_string(&signature)),
@@ -296,30 +282,10 @@ pub(super) fn type_signature(args: &[Value], _env: EnvId, heap: &mut Heap) -> Li
 /// it (`(model any -> model)`), not the checker's expansion of it. A `deftype` alias entry
 /// (`(%type T)`) is a declaration of a type, not of a global, so it answers nil.
 pub(super) fn declared_sig(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        Value::Str(id) => {
-            let name = heap.string(id).to_string();
-            match value::intern_existing(&name) {
-                Some(s) => s,
-                None => return Ok(Value::nil()),
-            }
-        }
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "reflect/declared-signature",
-                "symbol or string",
-                other,
-            ))
-        }
+    let Some(sym) = existing_name_arg(heap, "reflect/declared-signature", arg(args, 0))? else {
+        return Ok(Value::nil());
     };
-    // `commands/cmd-open` is `bedit/commands/cmd-open` inside project bedit (ADR-070) —
-    // the same rooting an `(eval 'commands/cmd-open)` behind a keymap gets; a bare name
-    // resolves in the current namespace, as a def head would.
-    let rooted = heap
-        .root_qualified_ref(sym)
-        .unwrap_or_else(|| crate::eval::macros::resolve_reference(heap, sym));
+    let rooted = rooted_name(heap, sym);
     // The type-form alone: the properties a `(sig f T :pure)` stores beside it are
     // `%declared-sig-props`'s (ADR-351).
     let Some(form) = crate::builtins::modules::sig_type_of(heap, heap.declared_sig_value(rooted))
@@ -336,29 +302,10 @@ pub(super) fn declared_sig(args: &[Value], _env: EnvId, heap: &mut Heap) -> Lisp
 /// `(%function-effect name)` — the effect a call to the loaded global `name` reaches, or
 /// nil. See the registration's docstring for why this reports rather than certifies.
 pub(super) fn function_effect(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        Value::Str(id) => {
-            let name = heap.string(id).to_string();
-            match value::intern_existing(&name) {
-                Some(s) => s,
-                None => return Ok(Value::nil()),
-            }
-        }
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%function-effect",
-                "symbol or string",
-                other,
-            ))
-        }
+    let Some(sym) = existing_name_arg(heap, "%function-effect", arg(args, 0))? else {
+        return Ok(Value::nil());
     };
-    // Rooted like every other name query here (`%declared-sig`), so a bare reference means
-    // in the current namespace what a def head would mean.
-    let rooted = heap
-        .root_qualified_ref(sym)
-        .unwrap_or_else(|| crate::eval::macros::resolve_reference(heap, sym));
+    let rooted = rooted_name(heap, sym);
     let described = crate::types::check::effect_of(heap, rooted)
         .or_else(|| crate::types::check::effect_of(heap, sym));
     Ok(match described {
@@ -375,27 +322,10 @@ pub(super) fn function_effect(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
 /// qualified reference first, the bare symbol second — because an alias is registered
 /// under the name a def head would take.
 pub(super) fn type_alias(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    let sym = match arg(args, 0) {
-        Value::Sym(s) => s,
-        Value::Str(id) => {
-            let name = heap.string(id).to_string();
-            match value::intern_existing(&name) {
-                Some(s) => s,
-                None => return Ok(Value::nil()),
-            }
-        }
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%type-alias",
-                "symbol or string",
-                other,
-            ))
-        }
+    let Some(sym) = existing_name_arg(heap, "%type-alias", arg(args, 0))? else {
+        return Ok(Value::nil());
     };
-    let rooted = heap
-        .root_qualified_ref(sym)
-        .unwrap_or_else(|| crate::eval::macros::resolve_reference(heap, sym));
+    let rooted = rooted_name(heap, sym);
     for key in [rooted, sym] {
         if let Some(inner) = alias_form_at(heap, key) {
             return Ok(inner);
@@ -482,7 +412,7 @@ pub(super) fn references_in_source(args: &[Value], _env: EnvId, heap: &mut Heap)
     let src = expect_string(heap, "reflect/references-in-source", arg(args, 1))?;
     let root = cst::parse(&src);
     let tree = crate::syntax::scope::analyze(&root, &src);
-    let starts = line_starts(&src);
+    let starts = crate::syntax::scanner::line_starts(&src);
     let occ: Vec<Value> = tree
         .references_to_global(&root, &src, &name)
         .into_iter()
@@ -588,19 +518,12 @@ pub(super) fn source_deps(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispR
     Ok(heap.list(out))
 }
 
-/// Byte offsets of each line start in `src` (line 0 begins at 0). Built once so
-/// repeated byte→line/col lookups in one source are cheap.
-pub(super) fn line_starts(src: &str) -> Vec<usize> {
-    std::iter::once(0)
-        .chain(src.match_indices('\n').map(|(i, _)| i + 1))
-        .collect()
-}
-
-/// 1-based (line, col) of byte offset `b`, col counted in characters. `b` must
-/// be a char boundary (CST spans always are).
-pub(super) fn line_col(src: &str, starts: &[usize], b: usize) -> (u32, u32) {
-    let line = starts.partition_point(|&s| s <= b) - 1; // 0-based
-    let col = src[starts[line]..b].chars().count();
+/// 1-based (line, col) of byte offset `b`, col counted in characters, over the
+/// reader's line starts (`scanner::line_starts`, so a lone CR breaks a line here as
+/// it does in every diagnostic). `b` must be a char boundary (CST spans always are).
+fn line_col(src: &str, starts: &[u32], b: usize) -> (u32, u32) {
+    let line = starts.partition_point(|&s| s as usize <= b) - 1; // 0-based
+    let col = src[starts[line] as usize..b].chars().count();
     (line as u32 + 1, col as u32 + 1)
 }
 
@@ -804,15 +727,8 @@ pub(super) fn bound_p(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult
 /// module defines reached an owning section (KI-112): a root that is neither the prelude's
 /// nor owned is one the probe missed.
 pub(super) fn prelude_global_p(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Sym(s) => Ok(Value::boolean(heap.is_prelude_global(s))),
-        other => Err(LispError::wrong_type(
-            heap,
-            "%prelude-global?",
-            "symbol",
-            other,
-        )),
-    }
+    let name = expect_symbol(heap, "%prelude-global?", arg(args, 0))?;
+    Ok(Value::boolean(heap.is_prelude_global(name)))
 }
 
 /// `(%global-generation 'name)` — the rebinding generation of a global: a number that
@@ -820,15 +736,8 @@ pub(super) fn prelude_global_p(args: &[Value], _env: EnvId, heap: &mut Heap) -> 
 /// For code that rebinds a global TEMPORARILY and must restore it without clobbering a
 /// redefinition made in between (`debug/untrace-fn`).
 pub(super) fn global_generation(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    match arg(args, 0) {
-        Value::Sym(s) => Ok(Value::Int(heap.global_generation(s) as i64)),
-        other => Err(LispError::wrong_type(
-            heap,
-            "%global-generation",
-            "symbol",
-            other,
-        )),
-    }
+    let name = expect_symbol(heap, "%global-generation", arg(args, 0))?;
+    Ok(Value::Int(heap.global_generation(name) as i64))
 }
 
 /// `(reflect/undef 'name)` — remove a global binding (ADR-391). Policy here, the table
@@ -837,17 +746,7 @@ pub(super) fn global_generation(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 /// uncontracted alias (ADR-383) with it — the alias is bound exactly while the public
 /// name is, and a same-module caller compiled against it must miss too.
 pub(super) fn undef(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let name = match arg(args, 0) {
-        Value::Sym(s) => s,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "reflect/undef",
-                "symbol",
-                other,
-            ))
-        }
-    };
+    let name = expect_symbol(heap, "reflect/undef", arg(args, 0))?;
     let name = heap.root_qualified_ref(name).unwrap_or(name);
     if heap.is_reserved_global(name) || heap.is_prelude_global(name) {
         let shown = value::symbol_name(name);

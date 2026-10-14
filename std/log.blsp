@@ -147,13 +147,6 @@ e.g. an editor appending to its `*Messages*` buffer. Async and share-nothing."
   (apply backend (file-port path) opts))
 
 ;; ---- the logger process -----------------------------------------------------
-(defn- log-dispatch (backends rec)
-  "Hand `rec` to every backend in `backends` (a list or vector) via `backend-emit`, so
-each decides for itself whether and how to write it. Uses `fold` so it walks either —
-`:backends` defaults to a vector but `add-backend` conses."
-  (fold backends nil (fn (acc b) (backend-emit b rec) acc))
-  nil)
-
 (defserver server
   (cfg)
   "The logger process: carries `{:level :backends}` and dispatches each
@@ -161,7 +154,9 @@ each decides for itself whether and how to write it. Uses `fold` so it walks eit
   (cast [:log rec]
     (do
       (when (>= (log-rank (get rec :level)) (log-rank (get cfg :level)))
-        (log-dispatch (get cfg :backends) rec))
+        ;; every backend decides for itself whether and how to write `rec`; `:backends`
+        ;; is a vector by default and a list once `add-backend` has consed onto it
+        (each (get cfg :backends) (fn (b) (backend-emit b rec))))
       cfg))
   (cast [:add-backend b] (assoc cfg :backends (cons b (apply list (get cfg :backends)))))
   (cast [:set-level level] (assoc cfg :level level))
