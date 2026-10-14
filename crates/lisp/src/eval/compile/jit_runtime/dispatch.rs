@@ -32,7 +32,16 @@ pub(crate) fn jit_dispatch_call(
     //
     // Probing every slow call costs a thread-local read; the slow call already does far
     // more work than that, and it is the only place that can see this recursion coming.
-    let over_cap = heap.jit_native_depth >= JIT_NATIVE_DEPTH_LIMIT || !stack_headroom_ok();
+    //
+    // The two LINK branches below are the exception, and take the depth-gated probe: they
+    // enter the callee through `enter_native` from a native caller, which raises the depth
+    // for the call's duration, so a recursion of links IS counted — the same reasoning as
+    // `jit_run_fast_link`'s in-IR callers. The raw probe was most of the gap between a
+    // computed-head call and a named one. A builtin called directly can re-enter evaluation
+    // (`apply`) without counting, so it keeps the raw probe with the slow path.
+    let depth = heap.jit_native_depth;
+    let link_over_cap = depth >= JIT_NATIVE_DEPTH_LIMIT || !jit_native_headroom_ok(depth);
+    let over_cap = || link_over_cap || !stack_headroom_ok();
     let epoch = heap.global_epoch();
     // A free-global head isn't staged (`elided`): the callee is resolved via the call IC.
     // `stage_base` is where the callee frame starts — directly at the args for an elided
@@ -68,7 +77,7 @@ pub(crate) fn jit_dispatch_call(
     // `Arc::clone` (the one atomic-RMW per call the older cloning path below pays ~30M
     // times). Args are already staged at `[stage_base, stage_base+argc)`. Mirrors the
     // cloning path's frame setup + outcome handling; deopt (rare) re-probes for the arm.
-    if elided && !over_cap {
+    if elided && !link_over_cap {
         if let Some((code, nslots, callee_env, callee_bases)) =
             heap.vm_call_ic_fast_link(site, head, argc as u32, epoch)
         {
@@ -159,7 +168,7 @@ pub(crate) fn jit_dispatch_call(
                 Some((_, Some(t))) => Some(t),
                 // An arm-less IC hit: a builtin callee, or a closure the interpreter cached
                 // without its arm.
-                Some((v, None)) if !over_cap => match v.unpack() {
+                Some((v, None)) if !over_cap() => match v.unpack() {
                     // A builtin (arm-less entry, filled below on first resolve): the whole
                     // call is one arity-checked fn-pointer call.
                     ValueRef::Native(nid) => {
@@ -194,7 +203,7 @@ pub(crate) fn jit_dispatch_call(
                         // A builtin callee: fill an arm-less IC entry (so the next call
                         // takes the direct path above) and call it now. Dynamic heads are
                         // never cached (they can shadow per call) but still call direct.
-                        Some(ValueRef::Native(nid)) if !over_cap => {
+                        Some(ValueRef::Native(nid)) if !over_cap() => {
                             if !heap.is_dynamic(head) {
                                 heap.vm_call_ic_put(
                                     site,
@@ -255,7 +264,7 @@ pub(crate) fn jit_dispatch_call(
                 && arm.nslots > 0
                 && arm.noptional == 0
                 && arm.rest_slot.is_none()
-                && !over_cap
+                && !link_over_cap
                 && arm.compile_epoch.load(Acquire) == epoch
             {
                 // Build the callee frame at `stage_base`. For an elided head the args are
@@ -292,6 +301,13 @@ pub(crate) fn jit_dispatch_call(
                     &mut ret,
                 );
                 native_feedback(heap, arm.arc(), stage_base, frame_nslots, &exit);
+                // A value is finished here: `finish_nested`'s outcome 0 is this truncate, and
+                // the call cost more than it does on every computed-head call.
+                if exit.outcome == 0 {
+                    crate::perf_bump!(jit_link_done);
+                    heap.truncate_roots(stage_base);
+                    return Some(ret);
+                }
                 let frame = NestedFrame {
                     stage_base,
                     base: stage_base,
@@ -333,7 +349,7 @@ pub(crate) fn jit_dispatch_call(
     let env = heap.read_root_env(heap.jit_call_env);
     // Over the native cap: force this dispatch (and all it recurses into) onto the VM, so the
     // remaining recursion drains through the bounded heap-frame loop. Restored after.
-    let saved_force = if over_cap {
+    let saved_force = if over_cap() {
         Some(std::mem::replace(&mut heap.jit_force_vm, true))
     } else {
         None

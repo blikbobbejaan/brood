@@ -25880,6 +25880,17 @@ probe (KI-14), which an in-IR fast link for computed heads would remove. A thin-
 callback — `(fn (a x) (+ a x))`, which the dispatcher redirected to `+` by name (ADR-069)
 rather than running its body — did not reach this path at all; ADR-408 routes it here.
 
+**Amended 2026-10-14 (night):** two of the named remainders are gone without the IR change. A
+value is finished inline rather than through `finish_nested`, and the link branches take the
+depth-gated stack probe rather than the raw one — they enter through `enter_native`, which
+counts the level, so a recursion of links is bounded the way `jit_run_fast_link`'s is; the
+slow path and a builtin called directly (which can re-enter evaluation uncounted) keep the raw
+probe. A computed call 771 → 652 instructions, a capturing closure 881 → 762 (named 415 → 408).
+What is left of the gap is the Rust entry itself — the memo probe, the argument shift,
+`fill_captures`, `enter_native` — which only the in-IR link removes. Guard for the probe:
+`tests/jit_deep_recursion_test.blsp` "deep recursion through a computed-head call" (200 000
+levels complete, 2 000 000 raise `recursion too deep`, in a spawned process).
+
 ## ADR-407 — A container's memory cap sets the default limits; a large allocation ends the quantum
 
 **Status:** implemented (2026-10-14). Amends ADR-043 and ADR-399. KI-242, KI-243.

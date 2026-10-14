@@ -17463,3 +17463,12 @@ reshape ADR-403's per-element preemption contract for a few hundred instructions
 after a collection moves its closure (`jit_link_done` 992k of 1M elements). And
 `tests/lazy_load_test.blsp`'s ADR-366 case fails under a release `nest` — it calls the
 dev-tools `%vm-arm-ops`; CI's test build has it, so not a bug.
+
+**A computed-head call from native code, 771 → 652 instructions** (ADR-406 amended). The
+same inline outcome-0 finish as the fold callback, and the link branches of
+`jit_dispatch_call` probe the stack only from depth 64 (they count the level through
+`enter_native`), where the slow path and direct builtin calls still probe every call. Measured
+with live images and N 2M vs 10M — at 1M vs 3M with stale images the per-call figure wandered
+±30 instructions, larger than the step being measured. Deep recursion through a computed head
+pinned: 200 000 levels complete and 2 000 000 raise, in a spawned process, both binaries alike.
+
