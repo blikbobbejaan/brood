@@ -1066,6 +1066,13 @@ pub(crate) fn hof_apply_native(
         &mut ret,
     );
     native_feedback(heap, arm, base, nslots, &exit);
+    // A value — nearly every element — is finished here: `finish_nested`'s outcome 0 is
+    // exactly this truncate, and calling it per element cost more than the step itself.
+    if exit.outcome == 0 {
+        crate::perf_bump!(jit_link_done);
+        heap.truncate_roots(base);
+        return Some(Ok(ret));
+    }
     if exit.outcome == 1 {
         crate::perf_bump!(hof_native_deopt);
     }

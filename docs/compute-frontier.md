@@ -1313,7 +1313,18 @@ not a bug: the vecref result is a `Handle` live below the one non-tail call, and
 single-call arm reserves no spill slot.
 
 
-### 7.2 Cranelift's CLIF verifier runs on every release compile — ATTEMPTED AND REJECTED 2026-08-29
+### 7.2 Cranelift's CLIF verifier runs on every release compile — ATTEMPTED AND REJECTED 2026-08-29; LANDED 2026-10-14 on 0.135.1
+
+> **Re-attempted on cranelift 0.135.1 (2026-10-14) and landed:** the verifier is off in
+> release and stays on under `debug_assertions`. The re-check this section prescribes, with
+> one correction: the fuzz differential must run against a RELEASE binary
+> (`BROOD=target/release-fast/brood scripts/fuzz/run.sh …`) — the armed build keeps the
+> verifier on, and a codegen panic switches the JIT off with CORRECT output, so a
+> differential cannot see it anyway; stderr is the evidence. No `CODEGEN-PANICKED` in every
+> benchmark row (output identical to HEAD's), in the whole Brood suite on a release `nest`
+> (6 767 tests), or in 1 800 fuzz programs over nine generators. `make ab --floor` pinned:
+> `base64` −10.8%, `json` −11.4%; unpinned `base64` −4.5%, `json` −3.6%, `regex` −2.3%.
+
 
 > **Do not retry on this Cranelift.** `("enable_verifier", "false")` made cranelift-codegen
 > 0.133.1's own `remove_constant_phis` pass fail its internal `assert_eq!` on one of `json`'s

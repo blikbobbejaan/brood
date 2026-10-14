@@ -62,18 +62,27 @@ impl CraneliftBackend {
         // The fallback closure yields cranelift's own (large) error in its Err arm,
         // which trips `result_large_err`; it's an external type we don't control and
         // the value is discarded (`|_|`), so the size is irrelevant here.
-        // **The CLIF verifier stays ON, deliberately — do not turn it off for its small
-        // compile-thread saving.** Without it, Cranelift's `remove_constant_phis` pass hits
-        // an internal assert on this codebase's CLIF; the tiering layer catches the panic and
-        // switches the JIT off for the whole process, so the failure is a silently
-        // interpreter-only run, not a wrong answer. Re-try only on a Cranelift major bump,
-        // with the fuzz differential and every benchmark row's stderr grepped for
-        // CODEGEN-PANICKED.
+        // **The CLIF verifier is off in release and on under `debug_assertions`**, where it
+        // is the miscompile net (KI-64's class). It cost 3–4.5% of a short row's compile
+        // thread. On cranelift-codegen 0.133.1 turning it off made `remove_constant_phis`
+        // hit an internal assert on `json`'s CLIF, and the tiering layer answered the caught
+        // panic by switching the JIT off for the whole process (compute-frontier §7.2) — so
+        // after any Cranelift bump, re-check: the fuzz differential against a RELEASE binary
+        // (`BROOD=target/release-fast/brood scripts/fuzz/run.sh …` — the armed build keeps the
+        // verifier on and cannot see this) and every benchmark row's stderr grepped for
+        // CODEGEN-PANICKED. Re-verified clean on 0.135.1.
+        let verifier = if cfg!(debug_assertions) {
+            "true"
+        } else {
+            "false"
+        };
         #[allow(clippy::result_large_err)]
-        let mut builder =
-            JITBuilder::with_flags(&[("opt_level", "speed")], default_libcall_names())
-                .or_else(|_| JITBuilder::new(default_libcall_names()))
-                .expect("Cranelift JITBuilder for the host ISA");
+        let mut builder = JITBuilder::with_flags(
+            &[("opt_level", "speed"), ("enable_verifier", verifier)],
+            default_libcall_names(),
+        )
+        .or_else(|_| JITBuilder::new(default_libcall_names()))
+        .expect("Cranelift JITBuilder for the host ISA");
         builder.symbol("brood_rt_tick", brood_rt_tick as *const u8);
         builder.symbol("brood_rt_tick_n", brood_rt_tick_n as *const u8);
         builder.symbol("brood_rt_gc_safepoint", brood_rt_gc_safepoint as *const u8);

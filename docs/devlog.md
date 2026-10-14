@@ -17430,3 +17430,36 @@ read a live-bytes snapshot refreshed every 512 allocations a thread, and a 100 M
 since the last refresh was invisible to it, so a 500 MB `str` on top passed a 512 MiB limit.
 The boot path only decided whether enough allocations happened afterwards to refresh it. A
 large (≥64 KiB) or near-limit allocation now checks the exact shard sum.
+
+## 2026-10-14 (late night) — the CLIF verifier off in release; a fold's callback finishes inline
+
+**Picking the next candidate by profile, not by the menu.** A symbolized `perf` of the rows
+furthest behind their peers. Two things on `base64`/`sieve`/`primes` were not Brood: `printf`
+into a `File` from the JIT thread — cranelift-jit's `/tmp/perf-PID.map`, written only when
+`PERF_BUILDID_DIR` is set, which `perf record` exports to its child, so a profiling
+artefact (and 2 000 such files litter `/tmp`) — and Cranelift's verifier at 3–4.5%.
+
+**The verifier, re-attempted.** Compute-frontier §7.2 rejected turning it off on 0.133.1 (a
+`remove_constant_phis` assert on `json`, the JIT then off for the process) and said retry on a
+Cranelift bump; the tree is on 0.135.1. Off in release, on under `debug_assertions`. Clean on
+every check: no `CODEGEN-PANICKED` in any row (output identical to HEAD), in the whole Brood
+suite run on a release `nest`, or in 1 800 fuzz programs — run against the RELEASE binary,
+since the armed one keeps the verifier on. Pinned `base64` −10.8%, `json` −11.4%; unpinned
+−4.5% / −3.6%, `regex` −2.3%. `strings` reads +1.7% pinned (23.19 → 23.58 ms) — it compiles
+NO arm, so nothing changed is on its path, and a control build (HEAD plus a comment) read
++0.5% on the same measurement: build-to-build layout, under the regression bar, recorded.
+
+**A fold's native callback finishes inline.** A fold over a vector with a non-primitive
+callback cost ~750 instructions an element, the callback's own code ~7% of it. Two cuts:
+`hof_apply_native` finishes a value itself instead of calling `finish_nested` per element (its
+outcome 0 is one truncate), and `jit_verify_active` is one cached flag rather than two lazy
+reads through two calls on every Rust-entered native call. 746 → 617 instructions an element
+for a literal callback, 792 → 671 for a named one; `pingpong` −2.3% (its receive matcher
+takes this path), the rest of the corpus flat. A per-span "session" that installs the
+activation state once was weighed and NOT built: the corpus spends little here, and it would
+reshape ADR-403's per-element preemption contract for a few hundred instructions.
+
+**A hypothesis refuted on the way:** an allocating callback did NOT fall off the HOF fast path
+after a collection moves its closure (`jit_link_done` 992k of 1M elements). And
+`tests/lazy_load_test.blsp`'s ADR-366 case fails under a release `nest` — it calls the
+dev-tools `%vm-arm-ops`; CI's test build has it, so not a bug.
