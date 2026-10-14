@@ -24,7 +24,7 @@ devlog entries of the same dates.
   limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14, then
   KI-240..245 (dotted lists unsendable, refused threads panicking, fast allocators reaching
   the hard abort, a stuck victim shielding the rest, lost stdout exiting 0, a `receive`
-  under `reflect/eval` re-running its form).
+  under `reflect/eval` re-running its form) and KI-246 (nested sets hashed quadratically).
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
@@ -34,7 +34,9 @@ devlog entries of the same dates.
   since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
   `breakagetests`.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
-  default their limits from the cap (hard = 3/4 of it); elsewhere they stay unlimited.
+  default their limits from the cap (hard = 3/4 of it), re-read every few seconds so a
+  resized container moves them; elsewhere they stay unlimited. A table holding the memory is
+  named in the `E0043`; collecting a table when its creator dies is still a language question.
 - **Probes worth keeping:** every value walker survives data nested a million deep; a
   program in `unshare -U` with `ulimit -u N` gets an exact thread budget
   (`crates/cli/tests/thread_exhaustion.rs`); `systemd-run --user --scope -p MemoryMax=…`

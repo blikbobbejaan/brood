@@ -21,6 +21,8 @@
 //! holder IS the current process (it raises, catchably, as a runaway loop always did), and
 //! no process holds even an eighth of what the allocator counts — the memory is in tables,
 //! shared code or native buffers, and stopping a process would free nothing attributable.
+//! Then the tables are measured too, and the error names the one holding the most, if it
+//! holds an eighth: a table belongs to no process, so naming it is all the limit can do.
 //!
 //! The figures are estimates. A shared blob counts in full for every holder (each keeps it
 //! alive); a running process that has not reached a safepoint since the approach began is
@@ -61,10 +63,11 @@ struct Pressure {
     /// is within [`STOP_GRACE`] — its memory is about to go — and once past it a victim is
     /// left out of the next selection, which stops the largest holder still able to die.
     stopped: Vec<(u64, Instant)>,
-    /// When a selection last found no process worth stopping. Within a [`PERIOD`] of it
-    /// the current process raises without selecting again — a selection walks every
-    /// parked heap, and over the limit every safepoint asks.
-    unattributable: Option<Instant>,
+    /// When a selection last found no process worth stopping, and the table holding the
+    /// most then, if one held an attributable share. Within a [`PERIOD`] of it the current
+    /// process raises without selecting again — a selection walks every parked heap (and
+    /// then every table), and over the limit every safepoint asks.
+    unattributable: Option<(Instant, Option<(u64, usize)>)>,
 }
 
 static PRESSURE: Mutex<Pressure> = Mutex::new(Pressure {
@@ -95,11 +98,10 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
     {
         return None;
     }
-    if pressure
-        .unattributable
-        .is_some_and(|since| since.elapsed() < PERIOD)
-    {
-        return Some(crate::eval::memory_limit_error(live));
+    if let Some((since, table)) = pressure.unattributable {
+        if since.elapsed() < PERIOD {
+            return Some(unattributable_error(live, table));
+        }
     }
     let stuck: Vec<u64> = pressure.stopped.iter().map(|&(pid, _)| pid).collect();
     match largest_holder(&stuck) {
@@ -108,14 +110,39 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
             pressure.stopped.push((pid, Instant::now()));
             None
         }
+        // The current process holds the most — but its figure counts blobs it shares with a
+        // table it just filled (until a collection drops its own copies), so name the
+        // table too when one holds a share.
         Some((pid, held)) if held >= live / ATTRIBUTABLE => {
             debug_assert_eq!(Some(pid), me);
-            Some(crate::eval::memory_limit_error(live))
+            Some(unattributable_error(live, largest_table(live)))
         }
         _ => {
-            pressure.unattributable = Some(Instant::now());
-            Some(crate::eval::memory_limit_error(live))
+            // No process holds it: look in the tables, which belong to none.
+            let table = largest_table(live);
+            pressure.unattributable = Some((Instant::now(), table));
+            Some(unattributable_error(live, table))
         }
+    }
+}
+
+/// The table holding the most memory, if it holds an attributable share of `live`.
+fn largest_table(live: usize) -> Option<(u64, usize)> {
+    crate::core::table::largest_table().filter(|&(_, bytes)| bytes >= live / ATTRIBUTABLE)
+}
+
+/// The `E0043` raised in place — naming the table that holds the most, when one holds a
+/// share. Stopping a process frees nothing a table stores, so the error says where the
+/// memory is instead.
+fn unattributable_error(live: usize, table: Option<(u64, usize)>) -> LispError {
+    let error = crate::eval::memory_limit_error(live);
+    match table {
+        Some((id, bytes)) => error.with_hint(format!(
+            "table #{id} holds about {} MiB; a table belongs to no process, so stopping one \
+             frees nothing it stores — `table/delete` its entries or `table/drop` it",
+            bytes >> 20
+        )),
+        None => error,
     }
 }
 

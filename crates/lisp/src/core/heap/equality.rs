@@ -6,6 +6,25 @@ use super::*;
 /// at O(prefix) however long it is.
 const LIST_HASH_PREFIX: usize = 256;
 
+/// A set or map whose hash visited at least this many nodes is remembered
+/// ([`HashMemo`]). Small keys — a tuple, a set of a few ints — never are, so the common
+/// key pays one counter increment per node and nothing else.
+const HASH_MEMO_MIN_WORK: u64 = 64;
+
+/// Remembered set and map hashes for one heap, valid for one collection epoch.
+///
+/// Without it a set nested `n` deep hashed in O(n) — every level re-walks everything below
+/// it — so building `#{#{#{…}}}` one level at a time was quadratic: 15 s at depth 20 000.
+/// With it each level's hash is computed once and every level above finds it.
+#[derive(Default)]
+pub(crate) struct HashMemo {
+    /// `gc_runs` when the entries were recorded; a collection moves handles, so the
+    /// memo empties when it no longer matches.
+    epoch: u64,
+    /// Raw LOCAL handle (epoch stamp included) → the order-insensitive entry hash.
+    entries: std::collections::HashMap<u64, u64>,
+}
+
 /// Order two floats as a TOTAL order, for `value_cmp` — which is a sort key, not an
 /// IEEE predicate: `partial_cmp(...).unwrap_or(Equal)` would make `NaN` compare **equal to
 /// everything**, silently turning `sort` into a no-op (KI-75).
@@ -313,8 +332,33 @@ impl Heap {
         })
     }
 
+    /// The order-insensitive entry hash of set or map `id`, by `compute`, remembered when
+    /// it took real work ([`HashMemo`]). Only LOCAL handles: a shared region's handles move
+    /// on that region's own schedule, not this heap's collections.
+    fn collection_hash(&self, id: MapId, compute: impl FnOnce() -> u64) -> u64 {
+        if id.region() != crate::core::value::LOCAL {
+            return compute();
+        }
+        {
+            let mut memo = self.hash_memo.borrow_mut();
+            if memo.epoch != self.gc_runs {
+                memo.entries.clear();
+                memo.epoch = self.gc_runs;
+            } else if let Some(&found) = memo.entries.get(&id.0) {
+                return found;
+            }
+        }
+        let before = self.hash_work.get();
+        let acc = compute();
+        if self.hash_work.get().wrapping_sub(before) >= HASH_MEMO_MIN_WORK {
+            self.hash_memo.borrow_mut().entries.insert(id.0, acc);
+        }
+        acc
+    }
+
     fn hash_value_into_grown<H: std::hash::Hasher>(&self, v: Value, h: &mut H) {
         use std::hash::{Hash, Hasher};
+        self.hash_work.set(self.hash_work.get().wrapping_add(1));
         // A leading byte tags the variant so a `Sym(0)` and an `Int(0)` never
         // collide on the *exact* same hash by accident.
         match v.unpack() {
@@ -464,13 +508,16 @@ impl Heap {
                 // accumulator (XOR is commutative — works regardless of
                 // CHAMP trie shape). Mix in size so `{}` ≠ `{a a}` even
                 // if the per-entry hash ever conspired to 0.
-                let mut acc: u64 = 0;
                 let size = self.map_size(id);
-                self.fold_entries(id, &mut |k, vv| {
-                    let mut sub = std::collections::hash_map::DefaultHasher::new();
-                    self.hash_value_into(k, &mut sub);
-                    self.hash_value_into(vv, &mut sub);
-                    acc ^= sub.finish();
+                let acc = self.collection_hash(id, || {
+                    let mut acc: u64 = 0;
+                    self.fold_entries(id, &mut |k, vv| {
+                        let mut sub = std::collections::hash_map::DefaultHasher::new();
+                        self.hash_value_into(k, &mut sub);
+                        self.hash_value_into(vv, &mut sub);
+                        acc ^= sub.finish();
+                    });
+                    acc
                 });
                 (size as u64).hash(h);
                 acc.hash(h);
@@ -500,12 +547,15 @@ impl Heap {
                 // harmless — the two are never `equal` — but the stated invariant was
                 // false, so the set moved to the unused 18.)
                 18u8.hash(h);
-                let mut acc: u64 = 0;
                 let size = self.map_size(id);
-                self.fold_entries(id, &mut |k, _vv| {
-                    let mut sub = std::collections::hash_map::DefaultHasher::new();
-                    self.hash_value_into(k, &mut sub);
-                    acc ^= sub.finish();
+                let acc = self.collection_hash(id, || {
+                    let mut acc: u64 = 0;
+                    self.fold_entries(id, &mut |k, _vv| {
+                        let mut sub = std::collections::hash_map::DefaultHasher::new();
+                        self.hash_value_into(k, &mut sub);
+                        acc ^= sub.finish();
+                    });
+                    acc
                 });
                 (size as u64).hash(h);
                 acc.hash(h);
@@ -1035,6 +1085,46 @@ impl Heap {
             }
             _ => tag_rank(a).cmp(&tag_rank(b)),
         }
+    }
+}
+
+#[cfg(test)]
+mod hash_memo_tests {
+    use super::*;
+
+    fn nested_sets(heap: &mut Heap, depth: usize) -> Value {
+        (0..depth).fold(Value::int(0), |inner, _| heap.set_from_elems(vec![inner]))
+    }
+
+    /// Building a set of a set of a set… hashes each new element; without the memo that
+    /// re-walked every level below, so the work was quadratic in the depth (~4.5 million
+    /// nodes here), with it linear — a level re-walks only down to the nearest remembered
+    /// one, at most `HASH_MEMO_MIN_WORK` below (~33 a level measured).
+    #[test]
+    fn building_nested_sets_hashes_each_level_once() {
+        let mut heap = Heap::new();
+        let before = heap.hash_work.get();
+        let top = nested_sets(&mut heap, 3000);
+        heap.hash_value(top);
+        let work = heap.hash_work.get() - before;
+        assert!(work < 3000 * 100, "{work} hash steps for 3000 levels");
+    }
+
+    /// A remembered hash is the hash: two structurally equal nested sets, one hashed
+    /// through the memo and one fresh, agree — and after a collection moves the set to a
+    /// new handle, it still hashes the same.
+    #[test]
+    fn a_remembered_hash_matches_a_fresh_one_and_survives_a_collection() {
+        let mut heap = Heap::new();
+        let first = nested_sets(&mut heap, 200);
+        let first_hash = heap.hash_value(first);
+        let mut other = Heap::new();
+        let second = nested_sets(&mut other, 200);
+        assert_eq!(first_hash, other.hash_value(second));
+        assert!(!heap.hash_memo.borrow().entries.is_empty());
+        let mut roots = [first];
+        heap.collect(&mut roots, &mut []);
+        assert_eq!(heap.hash_value(roots[0]), first_hash);
     }
 }
 

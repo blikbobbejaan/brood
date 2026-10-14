@@ -728,6 +728,13 @@ pub struct Heap {
     gc_runs: u64,
     gc_copied: u64,
     gc_reclaimed: u64,
+    /// Remembered hashes of LOCAL sets and maps whose hash took real work
+    /// (`equality::HASH_MEMO_MIN_WORK`), so a set nested in a set nested in a set is hashed
+    /// once, not once per level above it. Stamped with `gc_runs`: a collection moves
+    /// handles, so the memo empties at the first use after one.
+    pub(crate) hash_memo: std::cell::RefCell<HashMemo>,
+    /// Nodes visited by the structural hash so far — the memo's measure of work.
+    pub(crate) hash_work: std::cell::Cell<u64>,
     /// GC **pause durations** (the observability timing tier, ROADMAP survey
     /// gap #4 — counts alone can't answer "is GC why this frame stuttered").
     /// Cumulative / max / most-recent collection wall time in nanoseconds,
@@ -1259,6 +1266,7 @@ mod env_root_layout_tests {
 
 mod env_globals;
 mod equality;
+use equality::HashMemo;
 /// Side facts — what a definition RECORDS about a name rather than binds to it (ADR-320).
 mod facts;
 mod features_audit;
@@ -1514,6 +1522,8 @@ impl Heap {
             gc_runs: 0,
             gc_copied: 0,
             gc_reclaimed: 0,
+            hash_memo: Default::default(),
+            hash_work: Default::default(),
             gc_ns_total: 0,
             gc_ns_max: 0,
             gc_ns_last: 0,
@@ -1607,6 +1617,8 @@ impl Heap {
             gc_runs: 0,
             gc_copied: 0,
             gc_reclaimed: 0,
+            hash_memo: Default::default(),
+            hash_work: Default::default(),
             gc_ns_total: 0,
             gc_ns_max: 0,
             gc_ns_last: 0,

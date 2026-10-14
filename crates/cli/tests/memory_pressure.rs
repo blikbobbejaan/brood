@@ -160,6 +160,23 @@ fn a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder() {
     );
 }
 
+/// Memory held in a table belongs to no process, so stopping one frees none of it, and the
+/// `E0043` used to say nothing about where the memory was. It names the table now.
+#[test]
+fn a_table_holding_the_memory_is_named() {
+    let (_, stderr) = run_limited(
+        "table",
+        r#"
+(def t (table/new))
+(defn fill (i) (table/put t i (string/repeat "x" 1000000)) (fill (inc i)))
+(fill 0)"#,
+    );
+    assert!(
+        stderr.contains("memory limit exceeded") && stderr.contains("hint: table #"),
+        "the error did not name the table:\n{stderr}"
+    );
+}
+
 /// One allocation past the hard limit cannot be stopped gracefully — no safepoint runs
 /// inside it — so the runtime aborts. It used to say only `memory allocation of N bytes
 /// failed`, naming neither the limit nor that one was set. (The soft limit sits just under

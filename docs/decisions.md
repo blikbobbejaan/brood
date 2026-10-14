@@ -25872,9 +25872,8 @@ closure 943 → 706, capturing 1 058 → 817, a global function passed as a valu
 (named heads unchanged at 415). What remains of the gap to a named call is the frame and exit
 handling (`fill_captures`, `finish_nested`, `native_feedback`) and the unconditional stack
 probe (KI-14), which an in-IR fast link for computed heads would remove. A thin-wrapper
-callback — `(fn (a x) (+ a x))`, which the dispatcher redirects to `+` by name (ADR-69)
-rather than running its body — does not reach this path at all and still costs ~1 900
-instructions a call from native code; see the handoff.
+callback — `(fn (a x) (+ a x))`, which the dispatcher redirected to `+` by name (ADR-069)
+rather than running its body — did not reach this path at all; ADR-408 routes it here.
 
 ## ADR-407 — A container's memory cap sets the default limits; a large allocation ends the quantum
 
@@ -25913,10 +25912,13 @@ in a native call kept the selector from stopping anyone else (KI-243).
 - Near the soft limit, a process making large allocations ends its quantum at most once per
   1/64 of the limit allocated (a yield only if a process is waiting, ADR-401); with no soft
   limit set the hook is one comparison of the allocation size.
-- The cap is read once, at startup. A container resized while running keeps the old limits.
-
-callback — `(fn (a x) (+ a x))`, which the dispatcher redirected to `+` by name (ADR-069)
-rather than running its body — did not reach this path at all; ADR-408 routes it here.
+- The cap is re-read while running, at most every 5 s — from the once-per-quantum checks, a
+  native loop's fresh quantum, and a park — so a container resized in place (a pod's
+  in-place resize) moves the limits with it; under a `systemd-run` scope cut from 2 GB to
+  600 MB, the hard limit followed to 450 MiB within seconds. Only when no env var set them.
+- When no process holds an attributable share, or the one that does is the current process,
+  the `E0043` names the table holding the most (a hint: `table #N holds about M MiB`). A
+  table belongs to no process (ADR-107), so stopping one frees nothing it stores.
 
 ## ADR-408 — Native code runs a thin wrapper's compiled body instead of redirecting
 

@@ -1340,6 +1340,9 @@ fn receive_match_timed(
                 if crate::core::alloc::near_soft_limit_approx() {
                     super::pressure::near_soft_limit(heap);
                 }
+                // A process that mostly waits reaches few quantum boundaries; a resized
+                // container's cap is re-read here too (at most every few seconds).
+                crate::core::alloc::refresh_container_limits();
                 // State-capture path (ADR-100 §8): a clean no-match in a green process
                 // (`in_capture_run`) becomes a *suspend control signal* returned to the
                 // scheduler instead of blocking the worker. Record the scan position (so
