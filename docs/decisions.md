@@ -25713,7 +25713,12 @@ folds (behind `fold`/`reduce`/`map`/`reverse`) called the reducer from one nativ
   restarted), since a yield would re-queue it and pick it straight back up.
 - **Folds walk in spans.** `fold` over a vector or a range is a Brood loop over
   `%vector-fold-span` / `%range-fold-span`, each of which folds up to `%fold-span` (4 096)
-  elements natively and returns `[acc next]` — `next` nil when the collection is done. The
+  elements natively and returns the accumulator itself when the collection is done, or
+  `(:%fold-more acc . next)` when the span stopped short (2026-10-13 (later): the first cut
+  returned `[acc next]`, a vector allocated per fold even though most folds are one span). A
+  reducer that returns a list headed by that internal keyword on purpose could pass for a
+  continuation; nothing does by accident, and no Brood value is unforgeable (a private prelude
+  name is reachable too), so the tag is chosen for being cheap to test. The
   process yields at the loop's back edge like any loop's. A span ends early, between two
   elements, when a reducer's own run left a preemption owed (`stop_between_elements`, once per
   debt: where nothing can capture the debt stays owed for the next point that can, and only a
@@ -25726,9 +25731,12 @@ folds (behind `fold`/`reduce`/`map`/`reverse`) called the reducer from one nativ
 **Consequences.** A fold yields within one reducer call (or one primitive span) of its quantum
 ending. A single long reducer call still runs to its end, and its debt is paid at once. Cost
 against the resumable version, instructions: `reduce` +4% and `nqueens` +5% (a span result
-allocated per fold), `json` −4%. Guards: four fold shapes in `preemption_shapes.rs`
-(`stop_between_elements` and the span charge each sabotage-verified), and
-`preemption.rs` (a hog preempted while a responder waits, which must reply first).
+allocated per fold), `json` −4%; the allocation-free result won back ~1.3% of `nqueens`
+(devlog 2026-10-13 (later)). Guards: four fold shapes in `preemption_shapes.rs`
+(`stop_between_elements` and the span charge each sabotage-verified),
+`preemption.rs` (a hog preempted while a responder waits, which must reply first), and two
+multi-span folds in `tests/sequence_test.blsp` (one across concurrent workers, which catches a
+mid-span stop that skips an element; both sabotage-verified).
 
 ## ADR-403 — `:long-schedule` in the system monitor
 

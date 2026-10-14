@@ -16892,3 +16892,43 @@ Everything `make test` does not cover, run on purpose after the simplification:
   is its Elixir agent leaving the `dbg` header in place on this machine's Elixir 1.21-dev, which
   wraps the header in ANSI colour. `make wasm-test` needs wasm-bindgen-cli 0.2.128 (0.2.100 is
   installed here); the wasm32 build itself is clean.
+
+## 2026-10-13 (later) — the fold span result stops allocating; a comment moves instruction counts 2%
+
+Handoff item B. `%vector-fold-span` / `%range-fold-span` returned `[acc next]`, a vector
+allocated on every fold although almost every fold is one span. A span that finishes now
+returns the accumulator itself; one that stops short (4 096 elements, or a preemption owed
+between two elements) returns `(:%fold-more acc . next)`, and `fold` tests `pair?` then the
+tag. The walk helpers take that continuation directly. `reverse`'s vector branch called
+`%vector-fold` with the old signature and now goes through `fold`. ADR-402 updated.
+
+- **The tag.** The first cut tagged with the span native itself, read in Rust by a global
+  lookup: `env_get` per stopped span, and `%eq` on two natives runs the structural `equal`
+  (~95 instructions). A keyword is an immediate compare. Neither is unforgeable — a private
+  prelude def is reachable by name (`%fold-span` reads 4096 from user code) — so the bar is
+  "no accidental collision", which an internal keyword meets.
+- **Numbers** (`instructions:u`, stdimage live on both arms): `nqueens` 1 204.1M → 1 188.9M
+  (−1.3%); a micro of 2M one-span folds −2.7% (~145 instructions a fold); `reduce`, and a
+  200M-element range, flat. The stopped-short path costs ~150 instructions more per span than
+  the vector did (two pairs, and three `first`/`rest` that are runtime callbacks in this arm —
+  it calls a native, so no pair bases are hoisted), once per 4 096 elements.
+- **Smaller than the handoff's 5%.** That figure was against the resumable version, which had
+  no Brood walk at all; the vector was only part of it. `Reducer::resolve` per span
+  (`reduce_prim_op`: `select_arm`, the passthrough map clone, `env_get`, the native-name match)
+  is the next per-fold cost, but it did not register in a sampled `nqueens` profile, where the
+  JIT arms, `hof_apply_step` and `fill_captures` dominate — item A's territory. Left alone.
+- **Measurement lesson.** A control build — HEAD plus one comment line in `core.blsp` — moved
+  `nqueens`-class rows by up to 2.3% and boot by 0.7M instructions against HEAD, with no
+  semantic change; the same full-source boot agreed to 0.06%. Instruction counts are not
+  layout-proof across builds (hashing, allocation addresses, the image's own hash). A delta of
+  a few percent between two builds needs a control build of its own before it means anything;
+  per-operation costs measured inside one build (an amplified row such as `%fold-span` rebound
+  to 1) are the reliable figures.
+- **Tests:** `tests/sequence_test.blsp` gains a multi-span fold (vector, range, negative step,
+  an accumulator shaped like the continuation but untagged) and a concurrent one (eight workers
+  folding 30 000 elements with a closure, so spans stop mid-way under preemption). Sabotage:
+  dropping the continuation reds both; a mid-span stop that skips one element reds the
+  concurrent test 3/3. A fold program at `BROOD_TIER=0|1|2`, with and without
+  `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, `BROOD_REDUCTIONS=100` and `%fold-span` rebound to 3
+  (ranges to `i64::MAX`, negative steps, BigInt promotion): identical output on all six and
+  equal to HEAD's. `preemption_shapes.rs`/`preemption.rs` 10/10.

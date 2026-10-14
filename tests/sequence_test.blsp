@@ -521,6 +521,29 @@
     ;; 50k elements: the generic walk would allocate 50k cons cells here.
     (let (v (into [] (range 50000)))
       (assert= (fold v 0 +) (math/quot (* 49999 50000) 2))))
+  (test "a fold longer than one span goes on where the span stopped"
+    ;; `fold` walks in spans of `%fold-span` (4 096) elements; a span that stops short hands
+    ;; back `(:%fold-more acc . next)` and the walk resumes from `next`. A builder records
+    ;; the visit order, so a skipped, repeated or reordered element shows here.
+    (let (v (into [] (range 10000)))
+      (assert= (fold v nil %flip-cons) (reverse (range 10000)))
+      (assert= (fold (range 10000) nil %flip-cons) (reverse (range 10000)))
+      (assert= (fold (range 10000 -10000 -3) 0 (fn (a x) (+ a x))) 6667)
+      ;; an accumulator shaped like the continuation, but not tagged with it, is just a value
+      (assert= (fold v (cons :fold-more (cons 1 2)) (fn (a _) a)) (cons :fold-more (cons 1 2)))
+      (assert= (fold (range 10000) [nil 0] (fn (a _) a)) [nil 0])))
+  (test "across processes: concurrent long folds, preempted mid-span, agree"
+    ;; Many workers each fold far more than one quantum's worth with a closure reducer, so
+    ;; with peers waiting a span stops between elements and the walk resumes from there.
+    (let (me (self) v (into [] (range 30000)))
+      (doseq (k (range 1 9))
+        (spawn (send me
+                 [:r k (fold v (* k 1000) (fn (a x) (+ a x))) (fold (range 30000) nil %flip-cons)])))
+      (doseq (_ (range 1 9))
+        (receive
+          ([:r k total xs] (assert= total (+ (* k 1000) (math/quot (* 29999 30000) 2)))
+            (assert= (count xs) 30000)
+            (assert= (first xs) 29999))))))
   (test "across processes: each folds its own copy of a vector"
     (let (me (self))
       (doseq (k (range 1 9))

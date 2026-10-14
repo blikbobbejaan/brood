@@ -1,9 +1,10 @@
 use super::numeric::{arg, expect_int, expect_rope_ref, two};
 use super::realize_seqview;
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{self, EnvId, Symbol, Value};
 use crate::error::{LispError, LispResult};
 use crate::eval::apply;
+use std::sync::LazyLock;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -795,12 +796,14 @@ pub(super) fn seqview_pred(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispRe
 // ---- The native folds behind `fold` (ADR-402) ----
 //
 // `fold` walks a vector or a range in spans: each `%…-fold-span` call folds up to `n`
-// elements in a native loop and returns `[acc next]` — the accumulator, and where to go on
-// (nil when the collection is done). The walk around them is Brood (`std/prelude/core.blsp`),
-// so the process yields at its back edge like any loop's. A span ends early, between two
-// elements, when the quantum owes a preemption that a reducer's own run could not pay
-// (`stop_between_elements`): so a fold yields within one reducer call of its quantum
-// ending. A primitive reducer (`+`, `*`), inlined here, runs the whole span and charges the
+// elements in a native loop and returns the accumulator when the collection is done — most
+// folds are one span, so the common case allocates nothing — or, when the span stopped short,
+// `(:%fold-more acc . next)`, `next` where to go on (only a reducer returning a list headed by
+// that internal keyword on purpose could pass for one). The walk around them is Brood
+// (`std/prelude/core.blsp`), so the process yields at its back edge like any loop's. A span
+// ends early, between two elements, when the quantum owes a preemption that a reducer's own
+// run could not pay (`stop_between_elements`): so a fold yields within one reducer call of
+// its quantum ending. A primitive reducer (`+`, `*`), inlined here, runs the whole span and charges the
 // quantum for it (one reduction per `ELEMENTS_PER_REDUCTION`).
 
 const ELEMENTS_PER_REDUCTION: usize = 8;
@@ -810,10 +813,17 @@ fn charge_folded(elements: usize) {
     crate::process::charge_reductions((elements / ELEMENTS_PER_REDUCTION) as u32);
 }
 
-/// `[acc next]` — a span's result.
+/// The tag of a span that stopped short — see the section comment.
+static FOLD_MORE: LazyLock<Symbol> = LazyLock::new(|| value::intern("%fold-more"));
+
+/// A span's result: `acc` when the collection is done, else `(:%fold-more acc . next)`.
+/// Allocation never collects, so `acc` needs no root across the two cells.
 fn span_result(heap: &mut Heap, acc: Value, next: Option<i64>) -> LispResult {
-    let next = next.map_or(Value::nil(), Value::int);
-    Ok(heap.alloc_vector2(acc, next))
+    let Some(next) = next else {
+        return Ok(acc);
+    };
+    let rest = heap.alloc_pair(acc, Value::int(next));
+    Ok(heap.alloc_pair(Value::keyword(*FOLD_MORE), rest))
 }
 
 /// How a span calls its reducer, resolved once per span: the inlined primitive, or — for a
@@ -867,14 +877,14 @@ impl Reducer {
 }
 
 /// `(%vector-fold-span f acc v from n)` — fold up to `n` elements of `v` from index `from`
-/// (nil: the start) with `(f acc item)`: `[acc next]`, `next` the index to go on from, or
-/// nil when `v` is done. See the section comment.
+/// (nil: the start) with `(f acc item)`: the accumulator, or `(:%fold-more acc . next)` with `next`
+/// the index to go on from when the span stopped short. See the section comment.
 pub(super) fn vector_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let f = arg(args, 0);
     let init = arg(args, 1);
     let vid = match arg(args, 2) {
         Value::Vector(id) => id,
-        Value::Nil => return span_result(heap, init, None),
+        Value::Nil => return Ok(init),
         v => {
             return Err(LispError::wrong_type(
                 heap,
@@ -968,14 +978,15 @@ fn fold_ints(
 }
 
 /// `(%range-fold-span f acc rng from n)` — fold up to `n` elements of a range from the element
-/// `from` (nil: the start) with `(f acc item)`, **without materialising** it: `[acc next]`,
-/// `next` the element to go on from, or nil when the range is done. See the section comment.
+/// `from` (nil: the start) with `(f acc item)`, **without materialising** it: the accumulator,
+/// or `(:%fold-more acc . next)` with `next` the element to go on from when the span stopped
+/// short. See the section comment.
 pub(super) fn range_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let f = arg(args, 0);
     let init = arg(args, 1);
     let (lo, hi, step) = match arg(args, 2) {
         Value::Range(id) => heap.range_parts(id),
-        Value::Nil => return span_result(heap, init, None), // empty range
+        Value::Nil => return Ok(init), // empty range
         v => return Err(LispError::wrong_type(heap, "%range-fold-span", "range", v)),
     };
     let from = arg(args, 3).as_int().unwrap_or(lo);

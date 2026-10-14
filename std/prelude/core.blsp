@@ -258,15 +258,17 @@ this by implementing the `Display` ability, which takes over this name below.
 ;; ADR-402: `fold` over a vector or a range is preemptible like any loop — a 40-element fold
 ;; whose reducer ran 10 ms used to be one quantum, because the whole walk was one native
 ;; call. The walk is these loops: each `%…-fold-span` folds up to `%fold-span` elements in a
-;; native loop and hands back `[acc next]`, ending a span early between two elements when the
-;; quantum owes a preemption; the process yields at the loops' back edge.
+;; native loop, ending a span early between two elements when the quantum owes a preemption;
+;; the process yields at the loops' back edge. A span that finished hands back the accumulator
+;; itself, so the common one-span fold allocates nothing for its result; one that stopped
+;; short hands back `(:%fold-more acc . next)`, which the walk goes on from.
 (def- %fold-span 4096)
-(defn- %vector-fold (f acc v from)
-  (let (s (%vector-fold-span f acc v from %fold-span) next (%vector-ref s 1))
-    (if (%eq next nil) (%vector-ref s 0) (%vector-fold f (%vector-ref s 0) v next))))
-(defn- %range-fold (f acc r from)
-  (let (s (%range-fold-span f acc r from %fold-span) next (%vector-ref s 1))
-    (if (%eq next nil) (%vector-ref s 0) (%range-fold f (%vector-ref s 0) r next))))
+(defn- %vector-fold (f more v)
+  (let (r (rest more) s (%vector-fold-span f (first r) v (rest r) %fold-span))
+    (if (pair? s) (if (%eq (first s) :%fold-more) (%vector-fold f s v) s) s)))
+(defn- %range-fold (f more rng)
+  (let (r (rest more) s (%range-fold-span f (first r) rng (rest r) %fold-span))
+    (if (pair? s) (if (%eq (first s) :%fold-more) (%range-fold f s rng) s) s)))
 ;; The public entry coerces once via `seq`; the inner `%fold-loop` then stays in
 ;; list form for the recursion, so a map costs one extra `%map-pairs` pass total
 ;; rather than O(n) per step.
@@ -284,11 +286,11 @@ this by implementing the `Display` ability, which takes over this name below.
   ;; The first span is called here, not through the walk: most folds are one span, and a
   ;; call per fold showed on `nqueens`.
   (if (vector? coll)
-    (let (s (%vector-fold-span f acc coll nil %fold-span) next (%vector-ref s 1))
-      (if (%eq next nil) (%vector-ref s 0) (%vector-fold f (%vector-ref s 0) coll next)))
+    (let (s (%vector-fold-span f acc coll nil %fold-span))
+      (if (pair? s) (if (%eq (first s) :%fold-more) (%vector-fold f s coll) s) s))
     (if (range? coll)
-      (let (s (%range-fold-span f acc coll nil %fold-span) next (%vector-ref s 1))
-        (if (%eq next nil) (%vector-ref s 0) (%range-fold f (%vector-ref s 0) coll next)))
+      (let (s (%range-fold-span f acc coll nil %fold-span))
+        (if (pair? s) (if (%eq (first s) :%fold-more) (%range-fold f s coll) s) s))
       (if (seqview? coll)
         ;; Fuse: `(xform f)` is the wrapped reducer; fold it over the source (a
         ;; range → counted loop, a list → %fold-loop, a nested view → fuses again).
@@ -339,7 +341,7 @@ A string is not a sequence here — reverse its `string/->list` if you need that
   ;; reverses at the end.
   (let (t (type-of coll))
     (if (vector? coll)
-      (%vector-fold %flip-cons nil coll nil)
+      (fold coll nil %flip-cons)
       (if (if (%eq t :pair) (if (range? coll) false (if (seqview? coll) false true)) false)
         (%reverse-acc coll nil)
         (%reverse-acc (seq coll) nil)))))
