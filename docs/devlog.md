@@ -17321,6 +17321,11 @@ Four follow-ups to the merge.
   passed, which is how it shipped green. Two threads is the budget that means "no worker" on
   every tier and boot path (probed: all six combinations). Still a guard: with the runtime's
   `live == 0` exit disabled it hangs to the 60 s kill and fails.
+- **`interp_teardown` gave the reap two seconds.** It failed once in a `test-both` tree-walker
+  run at 2.655 s — its 2 s polling deadline plus setup — and passed 50/50 on demand (20 under
+  full load). The reap of a dropped runtime's parked processes is asynchronous; the deadline is
+  now 30 s, which a pass never waits for. `process_floor` also went red at `ae4e69a3`: the
+  other line's KI-246 hash memo, fixed by its own `d6c3db0a` (8 bytes a process, not 72).
 - **The renumbering commit stripped zero-padding** (`a279e76c`): its regex re-printed every
   matched number as an integer, so `ADR-073` became `ADR-73` in the 53 files it touched — 1 254
   lines, already pushed. The check that commit ran normalised numbers before comparing, so it

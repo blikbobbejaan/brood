@@ -5,10 +5,13 @@
 
 use brood::Interp;
 
-/// Poll until `cond` or ~2 s. The scheduler parks asynchronously, so tests
-/// wait for the state rather than assuming it.
+/// Poll until `cond` or ~30 s. The scheduler parks and reaps asynchronously, so tests
+/// wait for the state rather than assuming it. The deadline is generous on purpose: a pass
+/// returns as soon as the state holds, and ~2 s (the old figure) was overrun once by a
+/// loaded debug-build tree-walker run of `make test-both` — the reap was still in progress
+/// when the test gave up (failed at 2.655 s; 50/50 green on demand, 20 of them under load).
 fn wait_until(mut cond: impl FnMut() -> bool) -> bool {
-    for _ in 0..400 {
+    for _ in 0..6000 {
         if cond() {
             return true;
         }
