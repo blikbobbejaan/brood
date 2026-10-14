@@ -1039,6 +1039,23 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; int an `after` clause accepts — a dynamic is otherwise unknown to the checker.
 (sig *test-wait-ms* int)
 
+(defn- eventually-loop (what probe deadline)
+  (let (value (probe))
+    (cond
+      value value
+      (> (os/now) deadline)
+        (error (str "eventually: " what " did not happen within " *test-wait-ms* " ms"))
+      else (do (sleep 2) (eventually-loop what probe deadline)))))
+
+(defn eventually (what probe)
+  "Poll `probe`, a zero-argument function, until it returns a truthy value, and return that value; raise naming `what` if it has not within `*test-wait-ms*`. The handshake for a condition no message announces — a process parking, a count settling — in place of a `sleep` that guesses how long the other side takes, which a loaded machine outsleeps."
+  (eventually-loop what probe (+ (os/now) *test-wait-ms*)))
+
+(defn await-parked (pid)
+  "Wait until `pid` is parked (waiting in a `receive` or a `sleep`), then return `:ok`; raise if it is not within `*test-wait-ms*`. For a test whose point is a message reaching a process that is already blocked."
+  (eventually (str (pr-str pid) " parking")
+    (fn () (when (= :waiting (get (proc/info pid) :status)) :ok))))
+
 ;; When set, print `▶ group › name` as each test STARTS — live progress so you can
 ;; see which test is running (and spot the slow/hung one) before it finishes. Off by
 ;; default, and never set by `run-tests-structured` / the `--test` path, so machine-
@@ -1115,21 +1132,61 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
     (fn (a w)
       (if (includes? reported (first w))
         a
-        (do
+        ;; Read the hung processes BEFORE the kill: afterwards there is nothing left to say
+        ;; what the test was stuck on.
+        (let (report (hung-report (first w)))
           (exit (first w) :kill)
-          (append (timeout-unit-results (second w)) a))))))
+          (append (timeout-unit-results (second w) report) a))))))
+
+;; One line on what a hung process was doing when its test ran out of time. The three
+;; answers point at three different bugs: a computation that never ends, a reply whose
+;; shape no `receive` clause matches, and a message that was never sent (its sender died
+;; or never got that far — KI-127's shape).
+(defn- hung-process-line (label info)
+  (let (queued (:mailbox info))
+    (str label
+      " "
+      (:pid info)
+      ": "
+      (cond
+        (= (:status info) :running)
+          (str "running, " (:reductions info) " reductions — computing, not waiting")
+        (> queued 0) (str "waiting, " queued " message(s) queued that its receive does not match")
+        else "waiting, nothing queued — the message it waits for never arrived"))))
+
+;; Does the process whose parent is `parent-id` descend from `ancestor-id`? `by-id` maps
+;; each live process id to its info; a dead link in the chain ends the walk.
+(defn- descends-from? (parent-id ancestor-id by-id depth)
+  (cond
+    (nil? parent-id) false
+    (= parent-id ancestor-id) true
+    (> depth 64) false
+    else (descends-from? (get (get by-id parent-id) :parent) ancestor-id by-id (inc depth))))
+
+;; What the hung `worker` and the live processes it spawned were doing, as failure detail
+;; lines (at most eight descendants).
+(defn- hung-report (worker)
+  (let (info (proc/info worker))
+    (if (nil? info)
+      (list "the worker had already exited")
+      (let (infos (seq/reject (map (proc/list) proc/info) nil?)
+            by-id (into {} (map infos (fn (i) [(:id i) i])))
+            spawned (seq/filter infos (fn (i) (descends-from? (:parent i) (:id info) by-id 0))))
+        (cons (hung-process-line "worker" info)
+          (map (take spawned 8) (fn (i) (hung-process-line "  spawned" i))))))))
 
 ;; A timeout failure per test in a hung unit — same shape as `dead-unit-results`:
-;; `(group name fails ms)`, `fails` = `((loc detail-lines))`.
-(defn- timeout-unit-results (unit)
+;; `(group name fails ms)`, `fails` = `((loc detail-lines))`; `report` is `hung-report`'s.
+(defn- timeout-unit-results (unit report)
   (map (third unit)
     (fn (t)
       (list (second unit)
         (first t)
         (list (list nil
-                (list (str "test timed out after "
+                (cons (str "test timed out after "
                         (math/quot *test-timeout-ms* 1000)
-                        "s — hard-killed (raise *test-timeout-ms* if legitimately slow)"))))
+                        "s — hard-killed (raise *test-timeout-ms* if legitimately slow)")
+                  report)))
         *test-timeout-ms*))))
 
 ;; Tags that buy a batch the raised budget. `:slow` says it directly; `:conformance`

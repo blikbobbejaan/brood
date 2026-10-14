@@ -6,6 +6,20 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.** `tcp/close` on a socket with unread input no longer resets the connection: the
+close shuts the write half after the last queued byte and drains until the peer's EOF (at
+most 5 s), so a server that answers before reading the whole request no longer truncates
+its response (KI-228); a closed socket's descriptor is now held until then. A listener that
+runs out of file descriptors accepts its backlog once descriptors free up, instead of waiting
+for a new connection (KI-227). Two runtimes in one process (embedders) no longer share the
+module resolver's not-found memo or image kind index (KI-226).
+
+**Added.** `eventually` and `await-parked` in the `test` module — waits for a condition no
+message announces, in place of a `sleep`. A test that times out now reports what it was
+stuck on: the hung worker and the processes it spawned, each as running, waiting with
+unmatched messages, or waiting with nothing queued. `make runtime-soak` and a nightly soak
+job.
+
 ## v0.38.0 — a whole-project cleanup: one engine knob, Brood-only tooling, a silent tcp/close, devirtualization on
 
 A whole-project cleanup: latent bugs fixed, dead switches and duplicated code removed, and

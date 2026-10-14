@@ -114,15 +114,21 @@ const INBOUND_LOW_WATER: usize = 256 * 1024;
 /// could queue a million messages under a one-megabyte byte budget.
 const MESSAGE_COST_OVERHEAD: usize = 256;
 
-/// How long a closing socket may keep flushing queued outbound bytes before
-/// the reactor gives up and drops it. Bounds `tcp-close` after a large
-/// `tcp-send` to a slow peer.
+/// How long a closing socket may keep flushing queued outbound bytes, and then wait for
+/// the peer's EOF with its write half shut (the lingering close, KI-228), before the
+/// reactor gives up and drops it. Bounds `tcp-close` after a large `tcp-send` to a slow
+/// peer, and the descriptor a peer that never closes its side would otherwise pin.
 const LINGER: Duration = Duration::from_secs(5);
 
 /// The reactor's poll timeout — the cadence of reaper/linger housekeeping when
 /// no IO is happening. Purely a housekeeping tick: IO readiness wakes the poll
 /// immediately, commands wake it via the `Waker`.
 const TICK: Duration = Duration::from_millis(1000);
+
+/// How often a listener whose accept failed (fd exhaustion: `EMFILE`/`ENFILE`) is retried.
+/// The registration is edge-triggered, so without a retry the connections already in its
+/// backlog wait for some later arrival to wake it — forever, if none comes (KI-227).
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 const WAKER_TOKEN: Token = Token(0);
 
@@ -593,6 +599,11 @@ struct PlainConn {
     accepted_at: Option<Instant>,
     /// `Some(deadline)` once `Close` arrived: flush until then, then drop.
     closing: Option<Instant>,
+    /// The write half was shut down after the close's last queued byte: the peer has its
+    /// FIN, and the reactor reads and discards until the peer's EOF (or the deadline).
+    /// Dropping the socket with input still unread would send a RESET instead, and a reset
+    /// makes the peer's kernel discard the response it has not read yet (KI-228).
+    write_shut: bool,
     registered: bool,
     /// Opt-in idle bound (`tcp-set-idle-timeout`, default off). When `Some`, the
     /// reactor drops the connection if no bytes move in either direction for this
@@ -684,9 +695,16 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
     // event handler can't insert into `conns` while it holds a `conns` borrow)
     // and inserted + announced right after.
     let mut accepted: Vec<Accepted> = Vec::new();
+    // Listeners whose accept drain stopped on an error (fd exhaustion), each with the time
+    // of its next retry; `starved` collects this pass's stops (KI-227).
+    let mut accept_retries: HashMap<u64, Instant> = HashMap::new();
+    let mut starved: Vec<(u64, std::io::Error)> = Vec::new();
 
     loop {
-        if let Err(e) = poll.poll(&mut events, Some(TICK)) {
+        let timeout = accept_retries.values().min().map_or(TICK, |next| {
+            next.saturating_duration_since(Instant::now()).min(TICK)
+        });
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
@@ -704,19 +722,65 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
             let readable = event.is_readable();
             let writable = event.is_writable();
             let remove = match conns.get_mut(&id) {
-                Some(rx) => drive(id, rx, readable, writable, &registry, &mut accepted),
+                Some(rx) => drive(
+                    id,
+                    rx,
+                    readable,
+                    writable,
+                    &registry,
+                    &mut accepted,
+                    &mut starved,
+                ),
                 None => false,
             };
             if remove {
                 teardown(id, &mut conns, &registry);
             }
-            // Park the staged accepts, then announce them — the entry must be
-            // in place before the owner can react to `[:tcp-accept …]`.
-            for staged in accepted.drain(..) {
-                conns.insert(staged.id, staged.entry);
-                staged
-                    .listener_owner
-                    .emit(tcp_accept_msg(staged.listener_id, staged.id));
+            announce_accepted(&mut conns, &mut accepted);
+        }
+
+        // Retry every starved listener that is due, as if it were readable again: the
+        // backlog it could not drain has no new edge coming.
+        let now = Instant::now();
+        let due: Vec<u64> = accept_retries
+            .iter()
+            .filter(|(_, next)| **next <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            if let Some(rx) = conns.get_mut(&id) {
+                drive(id, rx, true, false, &registry, &mut accepted, &mut starved);
+                announce_accepted(&mut conns, &mut accepted);
+            }
+            if !starved.iter().any(|(starved_id, _)| *starved_id == id) {
+                accept_retries.remove(&id);
+                if conns.contains_key(&id) {
+                    eprintln!("net: listener {id} is accepting again");
+                }
+            }
+        }
+        // Out of descriptors: the lingering closes hold some, and accepting the backlog is
+        // worth more than sparing a peer a reset on a connection already answered.
+        if !starved.is_empty() {
+            let lingering: Vec<u64> = conns
+                .iter()
+                .filter(|(_, rx)| matches!(rx, Rx::Plain(connection) if connection.write_shut))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in lingering {
+                teardown(id, &mut conns, &registry);
+            }
+        }
+        for (id, error) in starved.drain(..) {
+            // Said once per episode, not once per retry.
+            if accept_retries
+                .insert(id, Instant::now() + ACCEPT_RETRY)
+                .is_none()
+            {
+                eprintln!(
+                    "net: listener {id} cannot accept ({error}); retrying every {} ms",
+                    ACCEPT_RETRY.as_millis()
+                );
             }
         }
 
@@ -730,7 +794,19 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
     }
 }
 
-/// Drive one socket's readiness. Returns true when the entry must be removed.
+/// Park the staged accepts, then announce them — the entry must be in place before the
+/// owner can react to `[:tcp-accept …]`.
+fn announce_accepted(conns: &mut HashMap<u64, Rx>, accepted: &mut Vec<Accepted>) {
+    for staged in accepted.drain(..) {
+        conns.insert(staged.id, staged.entry);
+        staged
+            .listener_owner
+            .emit(tcp_accept_msg(staged.listener_id, staged.id));
+    }
+}
+
+/// Drive one socket's readiness. Returns true when the entry must be removed. A listener
+/// whose drain stopped on an error is pushed onto `starved` for the reactor to retry.
 fn drive(
     id: u64,
     rx: &mut Rx,
@@ -738,6 +814,7 @@ fn drive(
     writable: bool,
     registry: &mio::Registry,
     accepted: &mut Vec<Accepted>,
+    starved: &mut Vec<(u64, std::io::Error)>,
 ) -> bool {
     match rx {
         Rx::Listener { listener, owner } => {
@@ -746,7 +823,9 @@ fn drive(
                 return true; // `close` shut it; its `Cmd::Close` removes the entry too
             };
             if readable {
-                accept_ready(id, listener, owner, None, accepted);
+                if let Some(error) = accept_ready(id, listener, owner, None, accepted) {
+                    starved.push((id, error));
+                }
             }
             false
         }
@@ -760,7 +839,11 @@ fn drive(
                 return true;
             };
             if readable {
-                accept_ready(id, listener, owner, Some(config.clone()), accepted);
+                if let Some(error) =
+                    accept_ready(id, listener, owner, Some(config.clone()), accepted)
+                {
+                    starved.push((id, error));
+                }
             }
             false
         }
@@ -781,13 +864,14 @@ struct Accepted {
 
 /// Accept every waiting connection on a ready listener; new sockets are
 /// registered control-side and announced, then parked passive in the reactor.
+/// Returns the error that stopped the drain before the backlog was empty, if one did.
 fn accept_ready(
     lid: u64,
     listener: &mut MioListener,
     listener_owner: &Arc<SocketOwner>,
     tls: Option<Arc<ServerConfig>>,
     out: &mut Vec<Accepted>,
-) {
+) -> Option<std::io::Error> {
     // The mode every socket accepted here starts in, read once per readiness rather than
     // per connection. An accepted socket is already reading by the time its owner gets
     // `[:tcp-accept …]`, so `tcp-set-binary` on the *stream* cannot close the window: a
@@ -846,6 +930,7 @@ fn accept_ready(
                         read_done: false,
                         accepted_at: Some(Instant::now()),
                         closing: None,
+                        write_shut: false,
                         registered: false,
                         idle: None,
                         last_activity: Instant::now(),
@@ -858,7 +943,7 @@ fn accept_ready(
                     listener_owner: listener_owner.clone(),
                 });
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return None,
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // A connection that died between the readiness event and `accept` — the peer
             // reset it, or the kernel refused it. That is a fact about ONE connection, not
@@ -866,16 +951,11 @@ fn accept_ready(
             // edge-triggered, so breaking here would strand every connection still queued
             // in the backlog until some *later* arrival happened to re-arm us. Silently.
             Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionAborted => continue,
-            Err(e) => {
-                // Anything else ends this drain (a genuinely broken listener, or fd
-                // exhaustion where continuing would spin). Say so — the old code returned
-                // here with no trace at all, so a listener that had stopped accepting was
-                // indistinguishable from one nobody was connecting to. Rate-limiting is
-                // unnecessary: reaching this breaks the loop, so it prints at most once per
-                // readiness event.
-                eprintln!("net: accept on listener {lid} failed ({e}); drain stopped");
-                break;
-            }
+            // Anything else ends this drain — fd exhaustion, where continuing would spin, or
+            // a broken listener. The caller retries it on `ACCEPT_RETRY`: the registration
+            // is edge-triggered, so the connections still queued in the backlog would
+            // otherwise wait for some later arrival to re-arm us (KI-227).
+            Err(e) => return Some(e),
         }
     }
 }
@@ -884,7 +964,8 @@ fn accept_ready(
 fn plain_interests(c: &PlainConn) -> Option<Interest> {
     // A paused socket (inbound backpressure) drops read interest; `Cmd::Resume` re-reads
     // it explicitly, since the edge that would have announced buffered data is spent.
-    let want_read = c.reading && !c.read_done && !c.flow.is_paused();
+    // A lingering close (write half shut) reads to discard, paused or not.
+    let want_read = !c.read_done && (c.write_shut || (c.reading && !c.flow.is_paused()));
     let want_write = !c.out.is_empty();
     match (want_read, want_write) {
         (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
@@ -923,6 +1004,15 @@ fn drive_plain(
     writable: bool,
     registry: &mio::Registry,
 ) -> bool {
+    if c.write_shut {
+        // Lingering close: the peer has our FIN; read and drop what it still sends until
+        // its EOF, so the socket closes without a reset.
+        if discard_until_blocked(&mut c.stream) {
+            return true;
+        }
+        sync_plain_registration(id, c, registry);
+        return false;
+    }
     if writable || !c.out.is_empty() {
         let before = c.out.total;
         match c.out.flush_into(&mut c.stream) {
@@ -941,11 +1031,7 @@ fn drive_plain(
             c.last_activity = Instant::now();
         }
         if c.out.is_empty() && c.closing.is_some() {
-            if c.reading && !c.read_done {
-                c.owner.emit(tcp_closed_msg(id));
-                c.read_done = true;
-            }
-            return true;
+            return begin_linger(id, c, registry);
         }
     }
     if readable && c.reading && !c.read_done && !c.flow.is_paused() {
@@ -992,6 +1078,42 @@ fn drive_plain(
     }
     sync_plain_registration(id, c, registry);
     false
+}
+
+/// The close's last queued byte is out: shut the write half (the peer gets every byte,
+/// then EOF) and linger, discarding input, until the peer's EOF or the close deadline.
+/// Returns true when the socket can go at once — the peer already sent EOF, or the
+/// shutdown or a read failed.
+fn begin_linger(id: u64, c: &mut PlainConn, registry: &mio::Registry) -> bool {
+    if c.read_done {
+        return true; // the peer's EOF was read: nothing unread can provoke a reset
+    }
+    if c.reading {
+        c.owner.emit(tcp_closed_msg(id));
+    }
+    if c.stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return true;
+    }
+    c.write_shut = true;
+    if discard_until_blocked(&mut c.stream) {
+        return true;
+    }
+    sync_plain_registration(id, c, registry);
+    false
+}
+
+/// Read and drop everything the peer has sent. True at its EOF or on a read error.
+fn discard_until_blocked(stream: &mut MioStream) -> bool {
+    let mut buffer = [0u8; 65536];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(_) => continue,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return true,
+        }
+    }
 }
 
 fn tls_interests(c: &TlsConn) -> Option<Interest> {
@@ -1236,6 +1358,7 @@ fn start_stream(
         read_done: false,
         accepted_at: None,
         closing: None,
+        write_shut: false,
         registered: false,
         idle: None,
         last_activity: Instant::now(),
@@ -1447,10 +1570,10 @@ fn set_idle(id: u64, ms: u64, conns: &mut HashMap<u64, Rx>) {
 fn close_connection(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     let remove = match conns.get_mut(&id) {
         Some(Rx::Plain(connection)) => {
+            connection.closing = Some(Instant::now() + LINGER);
             if connection.out.is_empty() {
-                true
+                begin_linger(id, connection, registry)
             } else {
-                connection.closing = Some(Instant::now() + LINGER);
                 drive_plain(id, connection, false, true, registry)
             }
         }

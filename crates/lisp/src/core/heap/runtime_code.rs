@@ -480,6 +480,16 @@ pub struct RuntimeCode {
     /// another runtime in the same process may index a rebuilt file at the same path. Dropped
     /// with the runtime, so its descriptors close with it.
     pub(super) image_files: Mutex<HashMap<String, Arc<Mutex<std::fs::File>>>>,
+    /// The kind index of the images this runtime has indexed (ADR-335, KI-226): the modules
+    /// they hold, and which of those modules' names are macros. Additive — a stdlib and a
+    /// project image both register. Per runtime because another runtime in the same process
+    /// may have opened a different image, or none: trusting its index defers a module whose
+    /// name is a macro here past expansion.
+    pub(super) image_modules: RwLock<HashSet<Symbol>>,
+    pub(super) image_macros: RwLock<HashSet<Symbol>>,
+    /// Modules a `require` has failed to FIND, with nothing loaded since (KI-226). Whether a
+    /// module can be found depends on `*load-path*`, a global of this runtime.
+    pub(super) absent_modules: RwLock<HashSet<Symbol>>,
     /// **RUNTIME collector — Stage 3b (cooperative drain coordination, ADR-091).**
     /// When an aged-out generation is being reclaimed, each of the runtime's
     /// processes cooperatively reports — at its safepoint / before parking —
@@ -723,6 +733,9 @@ impl Default for RuntimeCode {
             declared_sigs: RwLock::new(SymbolMap::default()),
             declared_sigs_version: AtomicU64::new(0),
             image_files: Mutex::new(HashMap::new()),
+            image_modules: RwLock::new(HashSet::new()),
+            image_macros: RwLock::new(HashSet::new()),
+            absent_modules: RwLock::new(HashSet::new()),
             drain_active: AtomicBool::new(false),
             rt_dirty: AtomicBool::new(true),
             drain_gen: AtomicUsize::new(0),
@@ -868,6 +881,9 @@ impl RuntimeCode {
             declared_sigs: RwLock::new(SymbolMap::default()),
             declared_sigs_version: AtomicU64::new(0),
             image_files: Mutex::new(HashMap::new()),
+            image_modules: RwLock::new(HashSet::new()),
+            image_macros: RwLock::new(HashSet::new()),
+            absent_modules: RwLock::new(HashSet::new()),
             drain_active: AtomicBool::new(false),
             rt_dirty: AtomicBool::new(true),
             drain_gen: AtomicUsize::new(0),

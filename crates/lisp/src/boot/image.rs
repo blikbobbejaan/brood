@@ -727,7 +727,7 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             }
         }
     }
-    crate::eval::derive::register_image_kinds(&section_names, &macro_names);
+    crate::eval::derive::register_image_kinds(heap, &section_names, &macro_names);
     // v7 (ADR-370): the signature index — handed over as the footer's remaining BYTES and
     // decoded by the first check that asks, so a run that never checks never pays for it.
     let position = directory.position() as usize;

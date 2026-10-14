@@ -340,8 +340,11 @@
     (detach-all)
     (start)
     (last-value :vproc [:runtime :vitals] :processes)
+    (let (me (self))
+      (attach :vitals-seen [:runtime :vitals] (fn (e m md) (send me :vitals-sampled))))
     (let (w (watch-vitals 15))
-      (sleep 70)
+      (assert= :sampled (receive (:vitals-sampled :sampled) (after *test-wait-ms* :timeout)))
+      ;; the sample's whole dispatch, the gauge fold included, has run
       (sync)
       (stop-watch-vitals w)
       (let (g (metric :vproc))
@@ -360,16 +363,20 @@
     (reset-metrics)
     (detach-all)
     (start)
-    (let (cap (table/new))
-      (attach :remote-cap [:remote :hits] (fn (e m md) (table/put cap :got {:m m :md md})))
+    (let (me (self))
+      (attach :remote-cap [:remote :hits] (fn (e m md) (send me [:remote-hit m md])))
       (let (agent (spawn (telemetry/telemetry-serve-loop nil))
             watcher (telemetry/telemetry-subscribe-to agent [:app :hit] [:remote :hits]))
-        (sleep 30)
+        ;; the forwarder is installed once a probe emit comes back through it
+        (eventually "the forwarder to be attached"
+          (fn ()
+            (emit [:app :hit] {:probe true} {})
+            (receive ([:remote-hit {:probe _} _] true) (after 20 false))))
         ;; a target-side emit rides the forwarder to the subscriber, which re-emits locally
         (emit [:app :hit] {:count 1} {:path "/x"})
-        (sleep 30)
-        (sync)
-        (let (got (table/get cap :got))
+        (let (got (receive
+                    ([:remote-hit (and m {:count _}) md] {:m m :md md})
+                    (after *test-wait-ms* {})))
           (assert= {:count 1} (get got :m))
           (assert= "/x" (get (get got :md) :path))
           ;; the origin event is tagged into the re-emitted metadata

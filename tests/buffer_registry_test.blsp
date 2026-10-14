@@ -53,18 +53,14 @@
       (registry-watch reg (self))
       (let (a (registry-share reg "x" "text" {}))
         (exit a :kill)
-        ;; the registry learns of the death through its monitor (a third process), so
-        ;; this is the one place that polls — bounded, not a guessed delay
-        (let (gone (fn (tries)
-                     (cond
-                       (empty? (registry-entries reg)) true
-                       (= tries 0) false
-                       else (do (sleep 10) (gone (dec tries))))))
-          (is (gone 200)))
+        ;; the registry learns of the death through its monitor (a third process) and
+        ;; announces the drop to its watchers
+        (assert= :died (receive ([:registry-removed "x" why] why) (after *test-wait-ms* :timeout)))
+        (assert= (registry-entries reg) [])
         (let (b (registry-share reg "x" "text again" {}))
           (is (not (= a b)))
           (assert= (buffer-query b buffer-text) "text again")
-          (assert= (drain '()) (list [:added "x" {}] [:removed "x" :died] [:added "x" {}]))))
+          (assert= (drain '()) (list [:added "x" {}] [:added "x" {}]))))
       (registry-stop reg)))
   (test "registry-stop ends every process and answers the count"
     (let (reg (registry-start)
@@ -81,13 +77,10 @@
       ;; kill, and re-share as soon as the process is GONE: `exit` is a signal (the victim
       ;; dies at its next reduction tick), so wait for that — bounded — rather than racing
       ;; it; the registry's own [:down] for the death may still be queued, which is the case
-      (exit a :kill)
-      (let (dead (fn (tries)
-                   (cond
-                     (nil? (proc/info a)) true
-                     (= tries 0) false
-                     else (do (sleep 5) (dead (dec tries))))))
-        (is (dead 400)))
+      (let (a-monitor (monitor a))
+        (exit a :kill)
+        (receive ([:down ^a-monitor ^a _] :ok) (after *test-wait-ms* :timeout)))
+      (is (nil? (proc/info a)))
       (let (b (registry-share reg "x" "again" {}))
         (is (not (= a b)))
         (is (not (nil? (proc/info b))))

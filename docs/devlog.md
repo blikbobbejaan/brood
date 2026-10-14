@@ -16870,3 +16870,54 @@ tree-walker booting from source outslept one; they are ordered by handshakes now
   reads bare, failed their zero-warning gate. The lint now also asks `*ability-owner*` whether
   the module declared that name (`modules_and_imports::an_only_import_of_the_modules_ability_is_not_named`,
   red before; another module's ability is still named).
+
+## 2026-10-13 — a runtime-stability pass: per-runtime state, timed tests, a soak, and running out of descriptors
+
+With nothing open in `known-issues.md`, the pass went after the classes behind recent reds
+instead of single bugs. Four lines of work, three new known issues found and fixed.
+
+**Per-runtime state (KI-226).** KI-224 moved three process-wide statics onto `RuntimeCode`;
+an audit of the rest found two more holding one runtime's facts. The module resolver's
+"failed to find" memo depends on `*load-path*`, so a miss in one runtime made another — whose
+load path had the module — report it unbound; and the image kind index let one runtime's
+image tell another that a macro was a function, so the macro call compiled as a call. Both
+are `RuntimeCode` fields now, and the stdlib image's kinds ride the `SharedBundle` into each
+runtime (the install runs once, in the shared boot; without the seed every runtime lost lazy
+loading — `curated_names_load_nothing` caught that). `crates/lisp/tests/process_wide_statics.rs`
+makes the choice explicit from now on: every lock-holding `static` in `crates/lisp/src` (50)
+is listed with its reason — pid-keyed, one per machine, a fact of the binary, a pure cache, a
+diagnostic, a speed heuristic — and an unlisted one fails the build.
+
+**Tests that waited on time.** A read of all 121 `(sleep N)` in `tests/` found 55 that stood
+in for "wait until the other side has done X" — 28 of them able to fail outright under load,
+four able to hang (an unbounded `receive` behind the sleep). Each is a handshake now: a
+message, a monitor's `[:down]`, a synchronous call as a barrier, or the two new `test`
+helpers, `eventually` and `await-parked`. Every rewritten HIGH site was checked by delaying
+the other side 1.5 s: the new version passes, and the original failed where that was cheap
+to show. `debug_test`'s own poll gave up after a fixed second (200 × 5 ms) and ten of its
+`receive`s had no deadline; the poll is `eventually` now and every `receive` has one — with
+the first park delayed 1.5 s the old file fails and the new one passes. The runner also says
+what a timed-out test was stuck on — the worker and every live
+process it spawned, as *running*, *waiting with N unmatched messages* or *waiting with
+nothing queued* — read before the kill.
+
+**A soak for the two never-root-caused hangs.** `make runtime-soak` / the nightly's new
+30-minute job boots `stress/runtime_soak.blsp` fresh round after round: 240 processes racing
+first module loads (KI-127's shape), warm spawn bursts (KI-88's), link churn, large copies,
+cycling tiers, one worker and the GC verifier, failing on a lost process, a hang or any
+watchdog line, and keeping a record of every round. A loom model of the park handshake was
+considered and not built: every park is timed (10 ms with work queued), so a lost wakeup there
+costs milliseconds, not KI-88's seconds.
+
+**Running out of descriptors.** Probing under `ulimit -n`: an outbound connect, `file/spit`,
+`os/cmd` and `os/run-process` all raise a catchable error naming `EMFILE` and recover. A
+listener did not (KI-227): its edge-triggered drain stopped on `EMFILE` and the backlog waited
+for a new connection to re-arm it, forever if none came; it is retried every 100 ms now and
+logs once per episode. And removing the sleep from `tcp_test`'s closing peer exposed KI-228:
+a close with unread input sent a RESET, so a client that read after a pause lost 72 KB of a
+200 KB response. The close now shuts the write half and drains until the peer's EOF (bounded
+by `LINGER`); a listener starved for descriptors releases lingering sockets at once.
+
+**Left as a decision.** An unbounded program with no `BROOD_MEM_LIMIT` under a real memory cap
+still ends in a bare Rust allocation abort (or the OS's kill) with nothing naming the process
+that grew; the test runners set a default, `brood`/`nest run` do not.

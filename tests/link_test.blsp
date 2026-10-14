@@ -41,9 +41,10 @@
 
   (test "linking an already-dead pid notifies immediately with :noproc"
     (proc/trap-exit true)
-    (let (p (spawn :ok))
-      ; let it finish
-      (sleep 30)
+    (let (p (spawn :ok)
+          pm (monitor p))
+      ; wait for it to finish
+      (receive ([:down ^pm ^p _] :ok) (after *test-wait-ms* :timeout))
       (link p)
       (assert= :noproc
         (receive ([:EXIT ^p r] r))))
@@ -72,10 +73,13 @@
   (test "a propagated death cascades its reason down a link chain"
     ;; a --link-- b --link-- c: a crashes with R; b dies with R (propagated),
     ;; and b's death propagates R again to c — the whole chain reports R.
-    (let (c (spawn (do (proc/trap-exit false) (lk-park)))
+    (let (me (self)
+          c (spawn (do (proc/trap-exit false) (lk-park)))
           cm (monitor c))
-      (let (b (spawn (do (proc/trap-exit false) (link c) (lk-park))))
-        (spawn (do (link b) (sleep 30) (error "chain root")))
+      (let (b (spawn (do (proc/trap-exit false) (link c) (send me [:linked (self)]) (lk-park))))
+        ; b has linked c
+        (receive ([:linked ^b] :ok) (after *test-wait-ms* :timeout))
+        (spawn (do (link b) (error "chain root")))
         (let (reason (receive ([:down ^cm ^c r] r) (after *test-wait-ms* :timeout)))
           (assert= :error (first reason))
           (assert= "chain root" (get (first (rest reason)) :message))))))
@@ -88,9 +92,12 @@
                        ; atomic spawn-link: c is linked before it runs, so its instant
                        ; :normal exit reaches us as :normal (not a racy :noproc that would
                        ; wrongly take down this non-trapping peer).
-                       (let (_c (spawn-link :ok))
+                       (let (child (spawn-link :ok)
+                             child-monitor (monitor child))
                          ; outlive the child's normal exit
-                         (sleep 80)
+                         (receive
+                           ([:down ^child-monitor ^child _] :ok)
+                           (after *test-wait-ms* :timeout))
                          (send me [:alive (self)])
                          (receive (:stop :ok))))))
       (assert= true
@@ -110,14 +117,15 @@
   :isolated (test "killing the head of a linked chain takes the whole chain down"
     ;; a — b — c linked in a chain (each links the next). Kill a → b dies
     ;; (propagation) → c dies. We monitor c and watch it fall.
-    (let (_me (self)
+    (let (me (self)
           c (spawn (do (proc/trap-exit false) (lk-park)))
-          b (spawn (do (proc/trap-exit false) (link c) (lk-park)))
-          a (spawn (do (proc/trap-exit false) (link b) (lk-park)))
+          b (spawn (do (proc/trap-exit false) (link c) (send me [:linked (self)]) (lk-park)))
+          a (spawn (do (proc/trap-exit false) (link b) (send me [:linked (self)]) (lk-park)))
           cm (monitor c))
-      ; let the chain wire up
-      (sleep 40)
+      ; both links are in place
+      (receive ([:linked ^a] :ok) (after *test-wait-ms* :timeout))
+      (receive ([:linked ^b] :ok) (after *test-wait-ms* :timeout))
       ; abnormal (≠ :normal) → propagates b→c
       (exit a :stop)
       (assert= :chain-down
-        (receive ([:down ^cm ^c _] :chain-down))))))
+        (receive ([:down ^cm ^c _] :chain-down) (after *test-wait-ms* :timeout))))))

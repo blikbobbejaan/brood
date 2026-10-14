@@ -731,9 +731,9 @@
                ([:tcp-accept ^ls s] s)
                (after *test-wait-ms* (error "chatty-peer: nobody connected")))
           writable (keep-writing cs)
-          ;; Let the closed end read what is in flight, so its final close is a FIN, not
-          ;; a reset that could discard the tail of what it sent.
-          _ (sleep 50)
+          ;; The chatter is left unread at the closed end; its close still ends in a FIN,
+          ;; not a reset that would discard the tail of what it sent, because a close
+          ;; lingers — write half shut, input discarded — until this end's EOF (KI-228).
           outcome (if writable (read-to-eof cs) :gone))
       (tcp/close cs)
       (tcp/close ls)

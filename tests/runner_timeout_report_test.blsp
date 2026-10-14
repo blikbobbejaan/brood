@@ -1,0 +1,44 @@
+;; Runner timeout report: a test that runs out of time says what it was stuck on.
+;;
+;; A hung test used to fail with "test timed out after Ns" and nothing else, and the three
+;; ways a test hangs need three different fixes: a computation that never ends, a reply
+;; whose shape no `receive` clause matches, and a message that never came because its
+;; sender died or never got that far (KI-127's 48-minute hang was the last of these). The
+;; runner reads the hung worker, and every live process it spawned, before the kill.
+
+(defmodule runner-timeout-report-test (:use test))
+
+;; The failure detail lines of a one-test unit whose thunk is `body`, run under a short
+;; budget so the collector times it out.
+(defn- timeout-lines (body)
+  (binding (*test-timeout-ms* 400)
+    (let (results (collect-units (spawn-units (list (list :parallel
+                                                      "hang-grp"
+                                                      (list (list "hang" body))))
+                                   (self))
+                    nil))
+      (second (first (third (first results)))))))
+
+(defn- mentions? (lines text) (any? lines (fn (line) (includes? line text))))
+
+(describe "a timed-out test reports what it was stuck on"
+  :isolated (test "a receive that nothing answers"
+    (let (lines (timeout-lines (fn () (receive ([:never-sent] nil)))))
+      (is (mentions? lines "timed out after"))
+      (is (mentions? lines "waiting, nothing queued"))))
+
+  :isolated (test "a receive whose clauses do not match what arrived"
+    (let (lines (timeout-lines (fn () (send (self) [:wrong-shape 1]) (receive ([:never-sent] nil)))))
+      (is (mentions? lines "waiting, 1 message(s) queued"))))
+
+  :isolated (test "a computation that never ends"
+    (let (lines (timeout-lines (fn () (letrec (spin (fn (i) (spin (inc i)))) (spin 0)))))
+      (is (mentions? lines "running,"))))
+
+  :isolated (test "the processes the test spawned are reported with it"
+    ;; The child ends itself after the report is taken, so nothing leaks past the file.
+    (let (lines (timeout-lines (fn ()
+                                 (spawn (receive ([:never-sent] nil) (after 3000 nil)))
+                                 (receive ([:never-sent] nil)))))
+      (is (mentions? lines "worker "))
+      (is (mentions? lines "  spawned ")))))

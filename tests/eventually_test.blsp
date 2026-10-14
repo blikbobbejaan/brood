@@ -1,0 +1,23 @@
+;; `eventually` and `await-parked`: the test library's handshakes for a condition no message
+;; announces, in place of a `sleep` that guesses how long the other side takes.
+
+(defmodule eventually-test (:use test))
+
+(describe "eventually"
+  (test "returns the probe's first truthy value"
+    (let (p (spawn (receive ([:go] nil))))
+      (assert= :ok (await-parked p))
+      (send p [:go])
+      (assert= true (eventually "the child exiting" (fn () (not (proc/alive? p)))))))
+
+  (test "raises, naming what never happened, once the wait is spent"
+    (let (message (binding (*test-wait-ms* 50)
+                    (try (eventually "the impossible" (fn () nil)) (catch e (error-message e)))))
+      (is (includes? message "the impossible did not happen within 50 ms")))))
+
+(describe "await-parked"
+  (test "waits for many processes parking at once"
+    (let (pids (map (range 50) (fn (_) (spawn (receive ([:go] nil))))))
+      (is (every? pids (fn (p) (= :ok (await-parked p)))))
+      (map pids (fn (p) (send p [:go])))
+      (is (eventually "every child exiting" (fn () (not (any? pids proc/alive?))))))))

@@ -142,6 +142,9 @@ impl Interp {
         ));
         let mut heap = Heap::with_regions(Arc::clone(&SHARED.code), runtime);
         heap.set_global(EnvId::GLOBAL);
+        // The stdlib image the shared boot installed is this runtime's too: its kind index.
+        let (image_modules, image_macros) = &SHARED.image_kinds;
+        heap.register_image_kinds(image_modules.iter().copied(), image_macros.iter().copied());
         // Abilities + the Display protocol are core — defined in the shared prelude
         // (`*show*` is wired on there), so nothing to load per runtime here.
         //

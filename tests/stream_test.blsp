@@ -293,9 +293,9 @@ full budget still yields the failing value, while a merely slow one is forgiven.
           (stream/->vector (stream/chunk (stream/list-> [1 2]) 3)) ; partial chunk
           (stream-test-consume-batch (- k 1))))
       (stream-test-consume-batch 150)
-      (sleep 80)
       ;; after the fix: ~0. before it, each batch leaked ~4 producers → ~600 parked.
-      (is (< (stream-test-parked-children me) 25)))))
+      (is (eventually "the exhausted producers to exit"
+            (fn () (< (stream-test-parked-children me) 25)))))))
 
 ;; ---- a producer that is GONE ------------------------------------------------
 ;; Since KI-33 an exhausted source answers `:stream-done` once and then EXITS, so a
@@ -317,8 +317,8 @@ full budget still yields the failing value, while a merely slow one is forgiven.
       (assert= :err (first (stepped (stream/next p))))))
 
   (test "a producer that already exited answers :done"
-    (let (p (spawn :nothing))
-      (sleep 30)
+    (let ([p ref] (spawn-monitor :nothing))
+      (assert= :down (receive ([:down ^ref _ _] :down) (after *test-wait-ms* :timeout)))
       (assert= :done (stream/next p))))
 
   (test "timeout-ms bounds a producer that is alive but never answers"

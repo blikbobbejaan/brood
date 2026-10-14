@@ -25,19 +25,17 @@
     ([:system _ _ _] (sysmon-drain-until kind subject))
     (after *test-wait-ms* :timeout)))
 
-(defn- sysmon-wait-disarm (n)
-  "Poll until the kernel monitor reads back as nil (the async death-disarm), or
-`n` attempts run out. Returns the final config (nil on success)."
-  (if (or (nil? (proc/system-monitor)) (= n 0))
-    (proc/system-monitor)
-    (do (sleep 20) (sysmon-wait-disarm (- n 1)))))
+(defn- sysmon-wait-disarm ()
+  "Wait until the kernel monitor reads back as nil (the async death-disarm).
+Returns the final config (nil on success)."
+  (eventually "the monitor disarming" (fn () (nil? (proc/system-monitor))))
+  (proc/system-monitor))
 
-(defn- sysmon-wait-empty (n)
-  "Poll until no subscription remains (the async death-disarm), or `n` attempts
-run out. Returns the final `:all` listing ([] on success)."
-  (if (or (empty? (proc/system-monitor :all)) (= n 0))
-    (proc/system-monitor :all)
-    (do (sleep 20) (sysmon-wait-empty (- n 1)))))
+(defn- sysmon-wait-empty ()
+  "Wait until no subscription remains (the async death-disarm). Returns the final
+`:all` listing ([] on success)."
+  (eventually "every subscription clearing" (fn () (empty? (proc/system-monitor :all))))
+  (proc/system-monitor :all))
 
 ;; `:quiet` unless a :gc event ABOUT `subject` arrives within `ms`; events about any
 ;; other process are consumed and ignored (they are stragglers from an earlier,
@@ -93,7 +91,7 @@ worker's mailbox so it can't satisfy a later test's receive."
       (assert= :armed (receive (:armed :armed) (after *test-wait-ms* :timeout)))
       (assert= [quiet] (mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
       (send quiet :go)
-      (assert= [] (sysmon-wait-empty 100))))
+      (assert= [] (sysmon-wait-empty))))
 
   ;; A subscription on a corpse is never delivered and never removed — and one selecting
   ;; :exit-abnormal stood the kernel's own crash line down for every later crash.
@@ -157,22 +155,26 @@ worker's mailbox so it can't satisfy a later test's receive."
   (test "no self-reporting, and the monitor's death disarms the stream"
     ;; a watcher process arms itself, then dies — the kernel must clear the
     ;; config rather than keep charging every event site
-    (let (watcher (spawn (do (proc/system-monitor (self)) (receive (:never nil)))))
-      ; let it arm
-      (sleep 50)
+    (let (me (self)
+          watcher (spawn (do
+                           (proc/system-monitor (self))
+                           (send me [:armed (self)])
+                           (receive (:never nil)))))
+      (receive ([:armed ^watcher] :ok) (after *test-wait-ms* :timeout))
       ;; the read form is the CALLER's subscription — the watcher's shows under :all
       (assert= nil (proc/system-monitor))
       (assert= [watcher] (mapv (proc/system-monitor :all) (fn (c) (get c :pid))))
       (exit watcher :kill)
-      (assert= [] (sysmon-wait-empty 100))))
+      (assert= [] (sysmon-wait-empty))))
 
   (test "one subscription per subscriber pid: two coexist, each selecting its own kinds"
     (let (me (self)
           other (spawn (do
                          (proc/system-monitor (self) {:spawn true})
+                         (send me [:armed (self)])
                          (receive ([:system :spawn p _] (send me [:other-saw p])))
                          (receive (:never nil)))))
-      (sleep 50)
+      (receive ([:armed ^other] :ok) (after *test-wait-ms* :timeout))
       (proc/system-monitor me {:exit true})
       (assert= 2 (count (proc/system-monitor :all)))
       (let (child (spawn :done))
@@ -251,7 +253,7 @@ worker's mailbox so it can't satisfy a later test's receive."
           (assert= child (receive ([:saw :exit p] p) (after *test-wait-ms* :timeout))))
         (telemetry/stop-watch-runtime watcher)
         ;; stopping the watcher disarms the kernel monitor
-        (assert= nil (sysmon-wait-disarm 100)))
+        (assert= nil (sysmon-wait-disarm)))
       (telemetry/detach :t-spawn)
       (telemetry/detach :t-exit)
       (telemetry/stop))))

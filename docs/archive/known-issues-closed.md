@@ -13161,3 +13161,80 @@ quantum with a hard kill pending retires the process. P15 uses `spawn-link`. **G
 a linked crash, a trapping root, `:normal`, `(exit child :kill)` on a computing child), each
 with a deadline; removing the publish, the backstop, the preemption check or the tier-0 change
 each turns its tests red.
+
+## KI-226 — two runtimes in one OS process shared the module resolver's memos ✅ FIXED 2026-10-13
+
+**Symptom.** With two `Interp`s in one process, (1) `(kiabsent/probe)` in a runtime whose
+`*load-path*` held `kiabsent.blsp` raised `unbound symbol: kiabsent/probe` once ANOTHER
+runtime had failed to find `kiabsent`; (2) `(kikind/quoted hello)`, a macro call in a runtime
+loading `kikind` from source, raised `unbound symbol: hello` once another runtime had opened
+an image whose `kikind/quoted` was a function — the call compiled as a function call.
+**Cause.** Two memos of `eval/derive.rs` were process-wide statics. `ABSENT_MODULES` records
+modules a `require` failed to find, but whether a module can be found depends on
+`*load-path*`, a global of one runtime. `ImageKinds` records which modules an opened image
+holds and which of their names are macros, so a head into one of them can wait for its first
+call (ADR-335); another runtime's image vouched for a module this runtime loads from source.
+**Why it survived.** nextest runs each test in its own process, and the per-runtime audit
+after KI-224 had looked at the three states that failed rather than at every table. Both
+memos were written so that a wrong answer looks like an ordinary `unbound symbol`.
+**Fix.** `RuntimeCode::absent_modules`, `image_modules` and `image_macros`, reached through
+`Heap`. The stdlib image is installed once, in the shared boot heap, and the install never
+re-runs in a live runtime, so the boot's kind index travels in the `SharedBundle` and
+`Interp::new` seeds it (without the seed every runtime lost lazy loading of std modules).
+**Guard.** `crates/lisp/tests/module_resolution_per_runtime.rs` — two runtimes on their own
+threads, sequenced over channels; both tests were red before the fix with the messages above.
+`curated_names_load_nothing` went red ("every probe module is already loaded in a fresh
+process") while the seeding was missing. `crates/lisp/tests/process_wide_statics.rs` lists
+every `static` in `crates/lisp/src` that holds a lock or a shared vector, with the reason it
+is process-wide; an unlisted one fails the build (sabotage: re-adding the old `KINDS` static
+named `eval/derive.rs KINDS`).
+
+## KI-227 — a TCP listener out of file descriptors never accepted its backlog once they freed up ✅ FIXED 2026-10-13
+
+**Symptom.** A server under `ulimit -n 40`, with a separate client process holding 50
+connections, accepted 31 of them and printed `net: accept on listener 1 failed (Too many open
+files (os error 24)); drain stopped` once per readiness event. After it closed everything it
+had accepted, it accepted 0 of the remaining 19 within 3 s: they waited for some later
+connection to arrive, and with none coming, forever. **Cause.** The reactor registers a
+listener edge-triggered and drains `accept` until `WouldBlock`. Any other error ended the
+drain — rightly, since retrying `EMFILE` in a tight loop spins — but nothing ever resumed
+it, and an edge-triggered registration produces no new event for connections that were
+already queued. The code already made the same argument for `ConnectionAborted` (skip and
+keep draining, or the backlog strands), but not for exhaustion. **Why it survived.** No test
+ran anything out of descriptors; the log line made the stop visible but not its
+consequence. **Fix.** `accept_ready` returns the error that stopped it; the reactor keeps a
+retry time per starved listener, re-drives it every `ACCEPT_RETRY` (100 ms, and wakes the
+poll for it), and logs once when a listener starts starving and once when it accepts again.
+Also probed and found sound: an outbound `tcp/connect`, `file/spit`, `os/cmd` and
+`os/run-process` under `EMFILE` each raise a catchable error naming it, and work again once
+descriptors are free. **Guard.** `crates/cli/tests/accept_starvation.rs`, the probe above as
+two `brood` processes (the server under `ulimit -n 40`), asserting both that the server did
+run out (so the run proves something) and that all 50 were accepted; red with the retry
+filter forced false, green three runs in three restored.
+
+## KI-228 — `tcp/close` with unread input reset the connection and truncated the peer's response ✅ FIXED 2026-10-13
+
+**Symptom.** A Brood server that accepted, sent a 200 000-byte response without reading the
+request, and called `tcp/close`: a client that sent 50 000 bytes, waited 500 ms and then read
+to EOF received 128 000 bytes, three runs in three. **Cause.** When a closing socket's
+outbound queue drained, the reactor dropped the stream. Closing a TCP socket whose receive
+buffer still holds unread bytes makes the kernel send a RESET rather than a FIN, and the
+peer's kernel discards everything it has received but the peer has not yet read — the tail of
+the response. A close with nothing queued dropped the socket at once, the same way. This is
+the "lingering close" every HTTP server has to do; any handler that answers before reading
+the whole request (an error, a `413`, a redirect) hits it. **Why it survived.** Every test
+client was Brood, and the Brood reactor reads eagerly into the owner's mailbox, so the
+response was already out of the kernel buffer when the reset arrived. `tcp_test`'s
+`chatty-peer` slept 50 ms before closing so its close would be a FIN — the sleep was hiding
+this; the sleep-removal pass found it (the 50 ms itself turned out not to be what avoided the
+reset there). **Fix.** `begin_linger`: after the close's last queued byte, `shutdown(Write)` —
+the peer gets every byte and then EOF — and read-and-discard until the peer's EOF, a read
+error, or the `LINGER` deadline (5 s, which already bounded the flush). A lingering socket
+wants READABLE whether or not its inbound flow was paused. Deliberate trade-off: a lingering
+socket holds its descriptor until the peer closes, so while any listener is starved for
+descriptors (KI-227) the reactor tears lingering sockets down at once. TLS closes are
+unchanged. **Guard.** `crates/cli/tests/tcp_close_linger.rs` — a Rust `std::net` client
+against a Brood server, three connections, each must read all 200 000 bytes and a clean EOF;
+red with `begin_linger` returning at once. `accept_starvation.rs` went red when the linger
+landed without the starvation release (the client never closes, so the descriptors stayed
+pinned past its window) and is the guard for it.

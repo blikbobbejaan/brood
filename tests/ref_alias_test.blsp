@@ -135,10 +135,11 @@
               (let (outcome (try
                               (gen/call-timeout srv [:slow 250] 30)
                               (catch e :timed-out)))
-                ;; well past the server's reply, so it has certainly been sent
-                (sleep 400)
+                ;; a second call is a barrier: the server is serial and its replies to
+                ;; this process arrive in order, so the late reply has been posted
+                (gen/call-timeout srv [:slow 0] *test-wait-ms*)
                 (send me [:probe outcome (proc/mailbox-size (self))]))))
-      (assert= (receive ([:probe outcome n] [outcome n]) (after 8000 :no-report))
+      (assert= (receive ([:probe outcome n] [outcome n]) (after *test-wait-ms* :no-report))
         [:timed-out 0])
       (gen/stop srv)))
 

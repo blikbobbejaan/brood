@@ -13,7 +13,8 @@ devlog entries of the same dates.
 ## State (2026-10-13)
 
 - **Released:** v0.38.0 (`CHANGELOG.md`). `known-issues.md` lists **no open or watching
-  entry** — KI-223 (found and fixed while turning devirtualization on) is the newest.
+  entry** — KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the
+  lingering TCP close) were found and fixed in the 2026-10-13 stability pass (devlog).
 - **The cleanup is finished** (devlog entries 2026-10-09 and both of 2026-10-12): the dead
   `BROOD_*` flags and aliases are gone — `BROOD_TIER=0|1|2` is the only tier knob — `nest
   mcp` is Brood, every Python script is gone, closed known-issue bodies live in
@@ -52,6 +53,11 @@ A one-in-N race passes N-1 runs; repetition is the evidence. The tools:
 - `scripts/fuzz/run.sh <generator> [count] [seed]` — the engine differential (tree-walker, VM,
   JIT, GC-stress) over generated programs; `make stress` for the program fuzzer, the reader
   fuzzer and the property/race corpus (nightly runs it).
+- `make runtime-soak [SOAK_SECONDS=600]` — boots `stress/runtime_soak.blsp` fresh round after
+  round (first module loads raced across a 240-process fan, warm spawn bursts, link churn,
+  large copies), cycling tiers, one worker and the GC verifier; stops at the first lost
+  process, hang or watchdog line. The hunt for KI-88 and KI-127, whose causes were never
+  found; the nightly runs it for 30 minutes and keeps every round's record.
 - The nightly workflow (`.github/workflows/nightly.yml`) runs the suite three times, the stress
   suite, ASAN, TSAN + loom, and a `perf-stats` build.
 - A flake hunt keeps its logs on success too: a loop that deletes them when green cannot be
@@ -61,4 +67,8 @@ A one-in-N race passes N-1 runs; repetition is the evidence. The tools:
   and unread (`dns_test` failed its first try in four of six runs before anyone looked).
 - Several runtimes in one process is a real configuration (embedders, `cargo test` threads,
   the nightly sanitizer jobs): state that belongs to a runtime lives on `RuntimeCode`, never
-  in a `static` (KI-224).
+  in a `static` (KI-224, KI-226). `crates/lisp/tests/process_wide_statics.rs` makes every
+  lock-holding `static` in `crates/lisp/src` state why it is process-wide.
+- A test that times out names what it was stuck on: the runner reads the hung worker and the
+  processes it spawned before the kill (running / waiting with N unmatched messages / waiting
+  with nothing queued).

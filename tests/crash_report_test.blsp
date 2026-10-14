@@ -191,12 +191,15 @@ passes. A report that does not match belongs to another test — drop it and kee
       (crash-report-drain)
       (start {:sink (crash-report-collect me)})
       (telemetry/start)
-      (let (watcher (telemetry/watch-runtime {:spawn true}))
+      (let (watcher (telemetry/watch-runtime {:spawn true})
+            watcher-ref (monitor watcher))
         (assert= 2 (count (proc/system-monitor :all)))
         (spawn (crash-report-boom :under-watch))
         (is (includes? (crash-report-next-saying "under-watch") "under-watch"))
         (telemetry/stop-watch-runtime watcher)
-        (sleep 50)
+        ;; the watcher has disarmed and exited
+        (assert= :down
+          (receive ([:down ^watcher-ref _ _] :down) (after *test-wait-ms* :timeout)))
         ;; the watcher leaving does not take the reporter with it
         (is (running?))
         (assert= 1 (count (proc/system-monitor :all))))

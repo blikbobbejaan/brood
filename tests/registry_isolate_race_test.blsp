@@ -19,13 +19,15 @@
 ;; documented ancestry gap misses). Registers ids that point at a bound global
 ;; (`identity`) so a scheduling tail can never leave the shared registry with an
 ;; orphan id even momentarily confusing another file's assertions.
-(defn- ki89-hammer (stop i)
+;; Tells `owner` once its first registration has landed.
+(defn- ki89-hammer (stop i owner)
   (if (table/get stop :stop)
     nil
     (do
       (%record-register (keyword (str "ki89-race/k" (math/mod i 8))) 'identity)
       (table/incr stop :n 1)
-      (ki89-hammer stop (+ i 1)))))
+      (when (= i 0) (send owner [:hammering (self)]))
+      (ki89-hammer stop (+ i 1) owner))))
 
 ;; One cycle: register a probe id inside an isolate — the restore must remove it.
 (defn- ki89-cycle-once ()
@@ -48,15 +50,18 @@
 (describe "registry update vs isolate restore (KI-89)"
   :isolated (test "a concurrent registry RMW cannot resurrect rolled-back registrations"
     (let (stop (table/new)
-          _h (spawn (ki89-hammer stop 0))
+          me (self)
+          hammer (spawn (ki89-hammer stop 0 me))
+          hammer-monitor (monitor hammer)
           ;; Head start: the hammer's first iteration autoloads `table`, and the
           ;; cycles below are fast enough to finish before it registers anything.
-          _w (sleep 50)
+          _ (receive ([:hammering ^hammer] :ok) (after *test-wait-ms* :timeout))
           resurrected (fold (range 2000)
                         0
                         (fn (acc _) (if (ki89-cycle-once) (+ acc 1) acc))))
       (table/put stop :stop true)
-      (sleep 20)
+      ; the hammer has stopped registering
+      (receive ([:down ^hammer-monitor ^hammer _] :ok) (after *test-wait-ms* :timeout))
       (ki89-cleanup)
       ;; Liveness first: the hammer must actually have been registering, or the case
       ;; is vacuous (it once died silently on a renamed builtin and "passed").
@@ -88,13 +93,11 @@
 (defn- ki89-orphan-middle (stop out)
   (table/put out :grandchild (spawn (ki89-orphan-loop stop))))
 
-;; Wait (bounded, tail-recursive) until the grandchild exists and its parent is gone, so
-;; the case tests the broken-chain shape rather than winning a race by accident.
-(defn- ki89-orphan-ready (out mid n)
-  (cond
-    (>= n 200) nil
-    (and (table/get out :grandchild) (not (proc/alive? mid))) true
-    else (do (sleep 5) (ki89-orphan-ready out mid (+ n 1)))))
+;; Wait until the grandchild exists and its parent is gone, so the case tests the
+;; broken-chain shape rather than winning a race by accident.
+(defn- ki89-orphan-ready (out mid)
+  (eventually "the grandchild outliving its parent"
+    (fn () (and (table/get out :grandchild) (not (proc/alive? mid))))))
 
 (describe "isolate reaps what it spawned, by stamp not by ancestry (KI-89)"
   :isolated (test "a grandchild whose parent already exited is still reaped"
@@ -102,7 +105,7 @@
           out (table/new)
           ready (%isolate (fn ()
                             (let (mid (spawn (ki89-orphan-middle stop out)))
-                              (ki89-orphan-ready out mid 0))))
+                              (ki89-orphan-ready out mid))))
           gc (table/get out :grandchild))
       ;; Liveness: without these the case passes vacuously on a build where the middle
       ;; never ran, or where it outlived the wait and the chain was never broken.

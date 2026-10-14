@@ -117,13 +117,11 @@
   (test "an info clause receives the [:down …] of a monitored process"
     (let (s (start inbox nil) w (start inbox nil))
       (cast s [:watch w])
-      ; s monitors w
-      (sleep 20)
-      ; let the :watch cast arm the monitor first
+      ; s monitors w; a call after the cast returns once the monitor is armed
+      (assert= (call s :last) nil)
       (stop w)
       ; w exits normally → [:down ref w :normal]
-      (sleep 30)
-      (assert= (call s :last) :normal))))
+      (assert= (eventually "s to record w's down" (fn () (call s :last))) :normal))))
 
 (describe "gen: init runs once"
   :isolated (defserver doubler
@@ -167,9 +165,9 @@
         :timed-out)))
 
   (test "call raises promptly when the server is already dead"
-    (let (s (start silent nil))
+    (let (s (start silent nil) server-ref (monitor s))
       (stop s)
-      (sleep 20)
+      (assert= :down (receive ([:down ^server-ref _ _] :down) (after *test-wait-ms* :timeout)))
       ;; the monitor on a dead pid fires [:down … :noproc] at once — no 2 s wait
       (assert= (try (call-timeout s :anything 2000) (catch e :died))
         :died)))
@@ -184,14 +182,18 @@
       (assert= (try (call-timeout s :anything 20) (catch e :timed-out))
         :timed-out)
       ;; the server dies AFTER we gave up: a still-armed monitor would deliver a
-      ;; [:down] here that nothing would ever consume
-      (stop s)
-      (sleep 60)
+      ;; [:down] here that nothing would ever consume. Our own monitor's down marks
+      ;; the death; it is consumed, so it does not count.
+      (let (server-ref (monitor s))
+        (stop s)
+        (assert= :down
+          (receive ([:down ^server-ref _ _] :down) (after *test-wait-ms* :timeout))))
       (assert= before (proc/mailbox-size (self)))))
 
   (defserver double-replier
     (s)
-    (defer :twice (do (gen/reply reply :first) (gen/reply reply :second) s)))
+    (defer :twice (do (gen/reply reply :first) (gen/reply reply :second) s))
+    (query :ping :pong))
 
   (test "a deferred call answered twice delivers only the first reply"
     ;; the second reply is addressed to a ref the caller already consumed; it must be
@@ -200,7 +202,8 @@
           before (proc/mailbox-size (self)))
       (assert= (call s :twice) :first)
       (call s :twice)
-      (sleep 60)
+      ;; a barrier: its reply follows every :second the server sent
+      (assert= (call s :ping) :pong)
       (assert= (proc/mailbox-size (self)) before)))
 
   (test "a timed-out call does not poison the NEXT call on the same server"

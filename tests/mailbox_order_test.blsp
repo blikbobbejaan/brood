@@ -86,7 +86,7 @@
       ;; waiting. That is what makes the scan RESUME at index 4 and take that candidate
       ;; on the optimistic-pop path — a scan starting at 0 pops the head instead, and
       ;; re-inserting the head is trivially in order.
-      (spawn (do (sleep 150) (send me [:go])))
+      (spawn (do (await-parked me) (send me [:go])))
       ;; Wrapped in `try` on purpose: a native-nested receive keeps its scan index across
       ;; the wait, where a plain top-level green receive re-enters from index 0 on every
       ;; wake. That index is what the re-insert used to get wrong.

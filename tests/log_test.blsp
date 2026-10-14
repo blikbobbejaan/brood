@@ -121,9 +121,12 @@
         (is (includes? line "after-add")))))
 
   (test "with no logger running, log falls back and never throws"
-    (stop-logger)
-    (sleep 80)
-    ; let any prior logger's name clear from the registry
+    (let (running (logger))
+      (when running
+        ; wait for any prior logger to exit, and so leave the registry
+        (let (watch (monitor running))
+          (stop-logger)
+          (assert= (receive ([:down ^watch _ _] :down) (after *test-wait-ms* :timeout)) :down))))
     (is (nil? (logger)))
     ;; fallback path writes to stderr; the call must still return nil cleanly
     (assert= (info "nowhere") nil)))

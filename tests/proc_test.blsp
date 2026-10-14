@@ -170,12 +170,14 @@
   ;; handle) and the case fails with `:wrote`.
   (test "an exited owner's subprocess handle is closed and its child reaped"
     (let (me (self)
-          _owner (spawn (send me [:handle (os/spawn "cat" [])])))
+          [_owner watch] (spawn-monitor (send me [:handle (os/spawn "cat" [])])))
       (let (p (receive ([:handle h] h) (after *test-wait-ms* :NO-HANDLE)))
-        ;; The owner exited right after the send; give retirement a moment to land.
-        (sleep 300)
+        ;; the owner's exit, then its retirement closing the handle
+        (assert= (receive ([:down ^watch _ _] :down) (after *test-wait-ms* :timeout)) :down)
         ;; The handle must be dead: a write to it errors ("no such subprocess").
-        (assert= (try (do (os/write p "x") :wrote) (catch e :closed)) :closed)))))
+        (assert= (eventually "the dead owner's handle closing"
+                   (fn () (try (do (os/write p "x") nil) (catch e :closed))))
+          :closed)))))
 
 ;; ---- pseudo-terminals --------------------------------------------------------
 ;; The difference a pty makes is not cosmetic: a program that asks `isatty` and is
@@ -245,6 +247,12 @@
 ;; destructure the registry entry as `Proc { child, .. }`, which dropped the master fd on
 ;; the floor — it is a bare integer with no `Drop` — so every REPL opened cost one fd for
 ;; the life of the editor.
+(defn- await-closed (p)
+  "Wait for `p`'s final `[:proc-closed …]` — its handle has finished."
+  (receive
+    ([:proc-closed ^p _] nil)
+    (after *test-wait-ms* (error "await-closed: no [:proc-closed] for " p))))
+
 (describe "proc: a pty session gives its descriptors back"
   :isolated (test "opening and closing many sessions does not accumulate fds"
     (let (count-fds (fn ()
@@ -261,19 +269,21 @@
                               (let (p (os/spawn-pty "sh" ["-c" "exit 0"]))
                                 (sleep 30)
                                 (os/close p)
+                                (await-closed p)
                                 (warm (dec n))))))
               (warm 3))
-          _ (sleep 200)
           before (count-fds)
           _ (letrec (churn (fn (n)
                              (when (> n 0)
                                (let (p (os/spawn-pty "sh" ["-c" "exit 0"]))
                                  (sleep 30)
                                  (os/close p)
+                                 (await-closed p)
                                  (churn (dec n))))))
               (churn 12))
-          _ (sleep 400)
-          after (count-fds))
+          ;; reader threads may still be winding down after the last close
+          after (eventually "the fd count settling"
+                  (fn () (let (now (count-fds)) (when (< (- now before) 6) now)))))
       ;; twelve sessions leaked twelve fds before the fix; a couple of descriptors of
       ;; slack absorbs reader threads still winding down
       (is (< (- after before) 6)))))

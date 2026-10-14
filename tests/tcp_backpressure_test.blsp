@@ -47,7 +47,7 @@
 (defn- queued-while-idle (sock)
   "Let the reactor deliver all it will to an owner that is not reading, then take the
   chunks that are sitting in the mailbox. Returns `[byte-count chunks]`."
-  (sleep 400)
+  (await-paused)
   (let (chunks (take-chunks sock (queued-count) nil))
     [(reduce chunks 0 (fn (sum chunk) (+ sum (bytes/length chunk)))) chunks]))
 
@@ -60,6 +60,18 @@
 (defn- queued-count ()
   "How many messages sit in this process's mailbox."
   (or (proc/mailbox-size (self)) 0))
+
+(defn- await-paused ()
+  "Wait until this process's mailbox holds chunks and has stopped growing — the reactor
+  has reached the budget and paused the socket. Returns the queued count."
+  (eventually "the socket pausing on its budget"
+    (fn ()
+      (let (first-count (queued-count))
+        (sleep 25)
+        (let (second-count (queued-count))
+          (sleep 25)
+          (when (and (> first-count 0) (= first-count second-count (queued-count)))
+            first-count))))))
 
 (defn- accept-binary (ls)
   (let (s (receive ([:tcp-accept ^ls cs] cs) (after 20000 (error "no accept"))))
@@ -97,8 +109,8 @@
           sender (spawn (send-then-hold me port payload))
           s (accept-binary ls))
       (receive ([:queued ^sender] nil) (after 60000 (error "sender never queued")))
-      ;; The socket is paused by now; read-n's own receives are what must resume it.
-      (sleep 400)
+      ;; Once the socket is paused, read-n's own receives are what must resume it.
+      (await-paused)
       (let ([data surplus] (read-n s total {:timeout-ms 20000}))
         (send sender [:close])
         (let (closed (receive ([:tcp-closed ^s] :closed) (after 20000 :timeout)))
@@ -137,8 +149,7 @@
           sender (spawn (send-then-hold me port payload))
           s (accept-binary ls))
       (receive ([:queued ^sender] nil) (after 60000 (error "sender never queued")))
-      (sleep 400)
-      (let (held (queued-count)
+      (let (held (await-paused)
             heir (spawn (let (rest (receive ([:go] (drain s)) (after 60000 nil)))
                           (send me [:rest rest]))))
         (tcp/controlling-process s heir)

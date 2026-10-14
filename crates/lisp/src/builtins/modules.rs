@@ -1096,8 +1096,8 @@ pub(super) fn load_edge_skipped(_: &[Value], _: EnvId, _: &mut Heap) -> LispResu
 }
 
 /// `(%forget-absent-modules!)` — see the registration.
-pub(super) fn forget_absent_modules(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
-    crate::eval::derive::clear_absent_modules();
+pub(super) fn forget_absent_modules(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::eval::derive::clear_absent_modules(heap);
     Ok(Value::nil())
 }
 

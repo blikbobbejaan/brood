@@ -1355,6 +1355,13 @@ counterexample it fails with the value + seed:
 (check-property 100 (fn (s) (rand/int s 1000)) (fn (x) (and (>= x 0) (< x 1000))))
 ```
 
+Testing processes: **never `sleep` to wait for another process** — a loaded machine
+outsleeps any guess. Wait for the event: a message the other side sends, a monitor's
+`[:down …]`, or, when nothing announces it, `(eventually "what" probe)` (polls a
+zero-argument fn until truthy) / `(await-parked pid)`. Bound a wait for an expected
+message with `(receive … (after *test-wait-ms* :timeout))`; a test that hangs anyway is
+killed and its report says what it was stuck on.
+
 `nest test` runs each test in its own green process. `nest run` invokes the
 `main/main` entry by default (override in `project.blsp` via `:main`; e.g.
 `:main app` runs `app/main`, `:main (app start)` runs `app/start`). The manifest

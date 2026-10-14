@@ -39,14 +39,14 @@
       (timer/cancel t))))
 (describe "timer/send-interval"
   (test "ticks repeatedly until cancelled"
-    (let (me (self) t (timer/send-interval 20 me :beat))
+    (let (me (self) t (timer/send-interval 20 me :beat) timer-ref (monitor t))
       ;; collect three beats, then cancel
       (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
       (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
       (assert= :beat (receive (:beat :beat) (after *test-wait-ms* :timeout)))
       (timer/cancel t)
-      ;; drain any in-flight beat, then confirm silence
-      (sleep 60)
+      ;; the timer is gone, so every beat it sent is already here: drain, then confirm silence
+      (assert= :down (receive ([:down ^timer-ref _ _] :down) (after *test-wait-ms* :timeout)))
       (letrec (drain (fn () (receive (:beat (drain)) (after 0 nil)))) (drain))
       (assert= :quiet (receive (:beat :STILL-TICKING) (after 100 :quiet)))))
 

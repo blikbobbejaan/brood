@@ -27,6 +27,10 @@ pub(crate) struct SharedBundle {
     /// `private` is: each live runtime owns its own dynamic set (KI-224) and the
     /// prelude's `defdyn`s never re-run there.
     pub(crate) dynamics: Vec<Symbol>,
+    /// The kind index (modules, macro names) of the stdlib image the builder heap installed.
+    /// Each live runtime owns its index (KI-226), and the boot's install never re-runs
+    /// there, so it is seeded from this.
+    pub(crate) image_kinds: (Vec<Symbol>, Vec<Symbol>),
     /// The prelude's stability metadata (ADR-283) — the `(meta …)` facts recorded in the
     /// builder heap. Carried for the same reason `private` is: the prelude is inserted
     /// into each live runtime rather than re-evaluated, so nothing re-runs
@@ -223,6 +227,7 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     core::value::gensym_floor(gensym_floor);
     let private = heap.private_names_snapshot();
     let dynamics = heap.dynamic_names();
+    let image_kinds = heap.image_kinds_snapshot();
     let name_meta = heap.name_meta_snapshot();
     let before_freeze = started.elapsed();
     let (code, bindings) = heap.freeze_as_shared_code(root);
@@ -240,6 +245,7 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
         bindings,
         private,
         dynamics,
+        image_kinds,
         meta: name_meta,
     })
 }
@@ -302,6 +308,7 @@ fn boot_from_source() -> SharedBundle {
     let t_mark = web_time::Instant::now();
     let private = heap.private_names_snapshot();
     let dynamics = heap.dynamic_names();
+    let image_kinds = heap.image_kinds_snapshot();
     let name_meta = heap.name_meta_snapshot();
     // ADR-314: write the prelude image before the freeze consumes the builder heap. The
     // cold boot is allowed to be slow — it runs once per binary build — so this is pure
@@ -343,6 +350,7 @@ fn boot_from_source() -> SharedBundle {
         bindings,
         private,
         dynamics,
+        image_kinds,
         meta: name_meta,
     }
 }

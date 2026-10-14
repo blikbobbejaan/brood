@@ -87,15 +87,15 @@
   :isolated (test "an L1-delivered nil message does not alias a free slot"
     (let (me (self)
           v (spawn (slot-victim me)))
-      ;; Each sleep lets the victim (re-)park, so each send finds it parked and takes
+      ;; Each wait lets the victim (re-)park, so each send finds it parked and takes
       ;; the L1 path — the slot table under test. (If a send races the park and falls
       ;; back to the wire path the assertion still holds on correct code; the sabotage
       ;; run is what proves the case actually reaches the slot table.)
-      (sleep 100)
+      (await-parked v)
       (send v nil)
-      (sleep 100)
+      (await-parked v)
       (send v [:a 1])
-      (sleep 100)
+      (await-parked v)
       (send v [:go])
       ;; Arrival order, exactly once: nil first, then [:a 1].
       (assert= (receive ([:result m1 m2] [m1 m2]) (after *test-wait-ms* :NO-REPLY))
