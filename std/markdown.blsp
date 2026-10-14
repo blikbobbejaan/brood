@@ -154,9 +154,6 @@
         [(str "<" tag ">" (md-run content) "</" tag ">")
           (string/substring text (+ close width) end)]))))
 
-;; Inline Markdown for one text run.
-(defn- md-inline (text) (md-run text))
-
 ;; ---- blocks ------------------------------------------------------------------------
 ;; The block state is `{:out :mode :buf :start}`: `out` the HTML so far, `mode` the open
 ;; block (`:none`, `:para`, `:list`, `:ordered`, `:quote`, `:code`), `buf` its lines
@@ -164,19 +161,17 @@
 ;; a code block keeps counting: `<ol start="2">`), `indent` the column a code fence opened
 ;; at (a fence inside a list item is indented with the item, and its lines shed that much).
 
+;; Close the open block: append `html` to the output and return to `:none`.
+(defn- md-emit (state html) (assoc state :out (str (get state :out) html) :mode :none :buf nil))
+
+(defn- md-pre (lines) (str "<pre><code>" (md-escape (string/join lines "\n")) "</code></pre>"))
+
 ;; The code block that was buffered, its lines shed of the fence's own indentation — no more
 ;; than that, so a further-indented line inside the block keeps its shape.
 (defn- md-close-code (state)
   (let (indent (or (get state :indent) 0)
         shed (fn (l) (string/substring l (math/min indent (string/span l 0 " ")) (string/length l))))
-    (assoc state
-      :out
-        (str (get state :out)
-          "<pre><code>"
-          (md-escape (string/join (map (reverse (get state :buf)) shed) "\n"))
-          "</code></pre>")
-      :mode :none
-      :buf nil)))
+    (md-emit state (md-pre (map (reverse (get state :buf)) shed)))))
 
 ;; An indented code block, closed: trailing blank lines dropped, every line shed of the
 ;; block's common indentation, so an example indented for the docstring it sits in renders
@@ -188,14 +183,7 @@
                  (fn (least l)
                    (if (= (string/trim l) "") least (math/min least (string/span l 0 " \t")))))
         shed (fn (l) (string/substring l (math/min indent (string/length l)) (string/length l))))
-    (assoc state
-      :out
-        (str (get state :out)
-          "<pre><code>"
-          (md-escape (string/join (map lines shed) "\n"))
-          "</code></pre>")
-      :mode :none
-      :buf nil)))
+    (md-emit state (md-pre (map lines shed)))))
 
 ;; Does `line` open (or continue) an indented code block? A tab, or at least the
 ;; renderer's `:code-indent` spaces — four by default (CommonMark), one for a docstring,
@@ -203,38 +191,20 @@
 (defn- md-indented? (state line)
   (or (string/starts-with? line "\t") (>= (string/span line 0 " ") (get state :code-indent 4))))
 
-(defn- md-items (buf)
-  (apply str (map (reverse buf) (fn (l) (str "<li>" (md-inline l) "</li>")))))
-
 ;; Emit a buffered block when it ends; a no-op for `:none`.
 (defn- md-flush (state)
-  (let (mode (get state :mode) buf (get state :buf) out (get state :out))
+  (let (mode (get state :mode)
+        buf (reverse (get state :buf))
+        start (get state :start)
+        items (fn () (apply str (map buf (fn (l) (str "<li>" (md-run l) "</li>")))))
+        prose (fn () (md-run (string/join buf " "))))
     (cond
-      (= mode :para)
-        (assoc state
-          :out (str out "<p>" (md-inline (string/join (reverse buf) " ")) "</p>")
-          :mode :none
-          :buf nil)
-      (= mode :list) (assoc state :out (str out "<ul>" (md-items buf) "</ul>") :mode :none :buf nil)
+      (= mode :para) (md-emit state (str "<p>" (prose) "</p>"))
+      (= mode :list) (md-emit state (str "<ul>" (items) "</ul>"))
       (= mode :ordered)
-        (let (start (get state :start))
-          (assoc state
-            :out
-              (str out
-                (if (= start 1) "<ol>" (str "<ol start=\"" start "\">"))
-                (md-items buf)
-                "</ol>")
-            :mode :none
-            :buf nil))
-      (= mode :quote)
-        (assoc state
-          :out
-            (str out
-              "<blockquote><p>"
-              (md-inline (string/join (reverse buf) " "))
-              "</p></blockquote>")
-          :mode :none
-          :buf nil)
+        (md-emit state
+          (str (if (= start 1) "<ol>" (str "<ol start=\"" start "\">")) (items) "</ol>"))
+      (= mode :quote) (md-emit state (str "<blockquote><p>" (prose) "</p></blockquote>"))
       ;; an unclosed ``` fence at end-of-input: emit what was buffered rather than drop it
       (= mode :code) (md-close-code state)
       (= mode :indented) (md-close-indented state)
@@ -250,8 +220,7 @@
       0)))
 
 (defn- md-heading (state level text)
-  (let (s (md-flush state) tag (str "h" level))
-    (assoc s :out (str (get s :out) "<" tag ">" (md-inline text) "</" tag ">"))))
+  (md-emit (md-flush state) (str "<h" level ">" (md-run text) "</h" level ">")))
 
 ;; A line that continues the item before it: indented, while a list is open. Lazy
 ;; continuation (an unindented wrapped line) is not honoured — it reads as a paragraph
@@ -290,8 +259,7 @@
       (string/starts-with? t "### ") (md-heading state 3 (string/substring t 4 end))
       (string/starts-with? t "## ") (md-heading state 2 (string/substring t 3 end))
       (string/starts-with? t "# ") (md-heading state 1 (string/substring t 2 end))
-      (or (= t "---") (= t "***") (= t "___"))
-        (let (s (md-flush state)) (assoc s :out (str (get s :out) "<hr>")))
+      (or (= t "---") (= t "***") (= t "___")) (md-emit (md-flush state) "<hr>")
       (md-continues-item? state line t) (md-continue-item state t)
       (or (string/starts-with? t "- ") (string/starts-with? t "* "))
         (let (s (if (= mode :list) state (md-flush state)))

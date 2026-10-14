@@ -88,19 +88,17 @@ RUN_FEATURES := --no-default-features $(GUI_FEATURES) $(GUI_GPU_FEATURES) $(AUDI
 # these dev binaries — the embedded runtime stays lean, the tools you run don't.
 INSTALL_FEATURES := $(RUN_FEATURES) --features brood/dev-tools
 
-# Copy the three binaries from $(1) into $(PREFIX)/bin — no rebuild, no cargo install.
-define install_binaries
-	@mkdir -p $(PREFIX)/bin
-	install -m755 $(1)/brood     $(PREFIX)/bin/brood
-	install -m755 $(1)/nest      $(PREFIX)/bin/nest
-	install -m755 $(1)/brood-lsp $(PREFIX)/bin/brood-lsp
-endef
+# The binaries `install` copies into $(PREFIX)/bin and `uninstall` removes.
+BINARIES := brood nest brood-lsp
 
 # The address-space cap every test-running step sits behind (CLAUDE.md "Build uncapped, run
 # capped"): one runaway dies in seconds with its panic site named instead of eating the box.
 # 16 GB, not less — the runtime reserves ~3 GB before doing any work. Put it in front of the
 # RUN step only, never a build: the linker inherits it and dies with `LLVM ERROR: out of memory`.
 RUN_CAP := ulimit -v 16000000;
+
+# The first recipe line of every target that runs the suite through cargo-nextest.
+REQUIRE_NEXTEST := @command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest' (or install from https://nexte.st)"; exit 1; }
 
 # The profiling builds get their OWN profiles, so neither overwrites $(RELEASE_DIR)/brood —
 # the binary `make ab` and every timing compares against. Both inherit `release-fast`, so the
@@ -109,7 +107,7 @@ PERF_DIR    := target/$(TARGET_SUBDIR)release-perf
 SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
 
 .DEFAULT_GOAL := help
-.PHONY: help build release perf-brood perf-symbols test test-light test-both breakagetests check-examples check-stress smoke-bedit ensure-nextest bench benchmark quickbench suite repl configure install uninstall fmt clippy check clean
+.PHONY: help build release perf-brood perf-symbols test test-light test-both breakagetests check-examples check-stress smoke-bedit ensure-nextest benchmark quickbench suite repl configure install uninstall fmt clippy check clean
 
 help: ## Show this help
 	@echo "Brood — available make targets:"
@@ -125,7 +123,7 @@ test: ## Run Rust tests + the in-language suite via cargo-nextest (each test cas
 	# 2-min per-case cap (and a SIGSEGV — Brood's stack-overflow failure mode — is
 	# contained to that case instead of aborting the whole binary). `--no-fail-fast`
 	# surfaces every result. Install: `make ensure-nextest` (or see https://nexte.st).
-	@command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest' (or install from https://nexte.st)"; exit 1; }
+	$(REQUIRE_NEXTEST)
 	# Grammars are out of `default` (the kernel ships no language-specific parser),
 	# so the suite opts into `treesit-grammars` to exercise the ruby/elixir tests.
 	# The .blsp grammar tests also self-skip when absent, so a bare `cargo nextest`
@@ -159,7 +157,7 @@ test-light: ## Like `make test` but capped + de-prioritized so it won't saturate
 	# (`cpu_bound_process_does_not_starve_peers_on_one_worker`) and reddens them — see
 	# `worker_count` in crates/lisp/src/process/scheduler.rs. Set it by hand for an ad-hoc run
 	# if you know you're not touching those, but it can't be a default here.
-	@command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest' (or install from https://nexte.st)"; exit 1; }
+	$(REQUIRE_NEXTEST)
 	nice -n 19 env CARGO_BUILD_JOBS=$(LIGHT_JOBS) \
 		cargo nextest run --no-run --features brood/treesit-grammars
 	$(RUN_CAP) nice -n 19 \
@@ -170,7 +168,7 @@ test-both: ## Run the whole suite through BOTH engines (tree-walker + VM) — th
 	# The VM (+ JIT) is the default; this also runs the tree-walker (BROOD_TIER=0) so a
 	# regression in either is caught. `differential.rs` additionally checks per-expression
 	# engine agreement within one run.
-	@command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest'"; exit 1; }
+	$(REQUIRE_NEXTEST)
 	# BOTH halves run whatever the first one does, and the target fails at the end if
 	# either did — a gate that stops before the thing it exists to check is no gate.
 	cargo nextest run --no-run
@@ -302,8 +300,6 @@ ensure-nextest: ## Install cargo-nextest into ~/.local/bin (prebuilt binary) if 
 		curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C $(HOME)/.local/bin; \
 		echo "installed: $$(cargo nextest --version)"; }
 
-bench: benchmark ## Alias for `benchmark`
-
 benchmark: ## Run benchmarks; archive results to docs/benchmarks/<timestamp>.md
 	./scripts/bench.sh $(ARGS)
 
@@ -393,8 +389,12 @@ runtime-soak: ## Boot the concurrency soak fresh, round after round, for SOAK_SE
 fuzz: ## Run one libFuzzer target briefly: make fuzz T=wire SECS=60 (targets: reader eval json wire bundle)
 	cd crates/lisp && ASAN_OPTIONS=symbolize=0 cargo +nightly fuzz run $(or $(T),reader) -- -max_total_time=$(or $(SECS),60) -rss_limit_mb=4096
 
+# What both sanitizer targets run under their own RUSTFLAGS: an instrumented std, and the system
+# allocator so the sanitizer sees allocations mimalloc would hide in its un-instrumented arena.
+SANITIZER_TEST := cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p brood --release --features brood/system-alloc
+
 tsan: ## ThreadSanitizer over the concurrency-sensitive Rust tests (needs nightly + rust-src; system-alloc feature so mimalloc's un-instrumented internals don't report phantom races)
-	RUSTFLAGS="-Zsanitizer=thread" cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p brood --release --features brood/system-alloc --test table_tsan --test concurrency_race --test preemption --test live_migration --test local_send_race --test gc
+	RUSTFLAGS="-Zsanitizer=thread" $(SANITIZER_TEST) --test table_tsan --test concurrency_race --test preemption --test live_migration --test local_send_race --test gc
 
 loom: ## Loom model-check of the dense-table migration protocol (exhaustive interleavings of a faithful model)
 	cargo test -p brood --release --features brood/loom-model --test loom_table_protocol
@@ -405,7 +405,7 @@ asan: ## AddressSanitizer over the kernel-exercising Rust tests (needs nightly +
 	# 16 768 736 bytes against the ordinary 16 MiB stack. Raise the stack, never
 	# BROOD_STACK_BUDGET: a budget larger than the stack disables the stale-base backstop.
 	# No $(RUN_CAP) here or on tsan: the sanitizers reserve terabytes of shadow address space.
-	RUSTFLAGS="-Zsanitizer=address --cfg brood_asan" cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p brood --release --features brood/system-alloc --tests
+	RUSTFLAGS="-Zsanitizer=address --cfg brood_asan" $(SANITIZER_TEST) --tests
 
 repl: ## Start the REPL
 	$(CLI)
@@ -471,7 +471,8 @@ release: release-brood ## Build optimized `brood`, `nest` and `brood-lsp` into $
 	RUSTFLAGS="$(PERF_RUSTFLAGS)" cargo build --profile release-fast -p cli $(INSTALL_FEATURES) $(CARGO_TARGET)
 
 install: release ## Build (per ./configure) + install `brood`, `nest`, `brood-lsp` into $(PREFIX)/bin
-	$(call install_binaries,$(RELEASE_DIR))
+	@mkdir -p $(PREFIX)/bin
+	for binary in $(BINARIES); do install -m755 $(RELEASE_DIR)/$$binary $(PREFIX)/bin/$$binary || exit 1; done
 	# Build the standard-library startup image for the binaries just installed (ADR-218).
 	# Without it every `require` of a std module re-evaluates its embedded source — `format`
 	# alone is ~77 ms — and a program pulling http+json+format+datetime pays ~124 ms instead
@@ -484,7 +485,7 @@ install: release ## Build (per ./configure) + install `brood`, `nest`, `brood-ls
 uninstall: ## Remove the installed binaries from $(PREFIX)/bin (leaves the local $(RELEASE_DIR) build intact)
 	# Removes only what `install` placed on the system — the local release build
 	# in $(RELEASE_DIR) is left alone (use `make clean` to remove that).
-	rm -f $(PREFIX)/bin/brood $(PREFIX)/bin/nest $(PREFIX)/bin/brood-lsp
+	rm -f $(addprefix $(PREFIX)/bin/,$(BINARIES))
 
 fmt: ## Format all Rust code
 	cargo fmt

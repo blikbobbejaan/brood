@@ -22,6 +22,7 @@
 //! Like the `gui` backend, the builtin is always registered; without the feature
 //! it returns a runtime error telling you to rebuild with `--features treesit`.
 
+#[cfg(feature = "treesit")]
 use crate::core::value::Value;
 use crate::error::{LispError, LispResult};
 
@@ -552,13 +553,8 @@ pub fn load_grammar(_path: &str, lang: &str) -> LispResult {
 /// `treesit-<lang>` feature — the kernel ships no grammar by default (a `treesit`
 /// build with no grammar feature has zero arms and reports every language as not
 /// built in). One cfg'd arm per language is the single place a grammar plugs in
-/// (plus its `Cargo.toml` dep). The unused-var `allow` covers the no-grammar
-/// build, where `lang` is only echoed in the error.
+/// (plus its `Cargo.toml` dep).
 #[cfg(feature = "treesit")]
-#[cfg_attr(
-    not(any(feature = "treesit-ruby", feature = "treesit-elixir")),
-    allow(unused_variables)
-)]
 fn language_for(lang: &str) -> Result<tree_sitter::Language, LispError> {
     // A grammar loaded at runtime wins over a bundled one of the same name: loading one is a
     // deliberate act, and the reason to do it is usually that the bundled grammar is behind.
@@ -701,7 +697,6 @@ fn node_to_positioned(heap: &mut Heap, node: tree_sitter::Node, src: &str, b2c: 
 /// calling it without the parser built in gives a clear rebuild hint.
 #[cfg(not(feature = "treesit"))]
 pub fn parse(_heap: &mut crate::core::heap::Heap, _src: &str, lang: &str) -> LispResult {
-    let _ = Value::nil();
     Err(LispError::runtime(format!(
         "%tree-sitter-parse::{lang}: this runtime was built without tree-sitter \
          (rebuild with --features treesit)"

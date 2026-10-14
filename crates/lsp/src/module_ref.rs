@@ -10,7 +10,7 @@
 //! in the language — a module loads only via `(:use)`/`(:alias)`/`(:implements)`
 //! or a qualified `mod/name` reference.)
 
-use brood::syntax::cst::{Node, NodeKind};
+use brood::syntax::cst::Node;
 
 /// What the symbol under the cursor names inside a `defmodule` clause.
 pub enum ClauseRef<'s> {
@@ -27,18 +27,15 @@ pub enum ClauseRef<'s> {
 /// keyword (`foo` in `(:use foo …)`); a `:use … :only [a b]` import name, or the
 /// keyword itself, is not a clause target and falls through to the normal paths.
 pub fn clause_ref_at<'s>(root: &Node, src: &'s str, offset: u32) -> Option<ClauseRef<'s>> {
-    let node = root.node_at(offset)?;
-    if node.kind != NodeKind::Symbol {
-        return None;
-    }
-    // The innermost enclosing clause list (`(:use …)` etc.) containing the cursor.
+    let node = root.symbol_at(offset)?;
+    // The innermost enclosing navigable clause list (`(:use …)` / `(:alias …)` /
+    // `(:implements …)`) containing the cursor.
     let mut chain = Vec::new();
     chain_to(root, offset, &mut chain);
-    let clause = chain
-        .iter()
-        .rev()
-        .find_map(|n| clause_keyword(n, src).map(|kw| (*n, kw)));
-    let (clause, kw) = clause?;
+    let (clause, kw) = chain.iter().rev().find_map(|n| {
+        let kw = n.head_keyword(src)?;
+        matches!(kw, ":use" | ":alias" | ":implements").then_some((*n, kw))
+    })?;
     // The target is the clause's second form; only navigate when it *is* the
     // symbol under the cursor (not a later `:only`/`:as` operand).
     let target = clause.forms().nth(1)?;
@@ -53,7 +50,7 @@ pub fn clause_ref_at<'s>(root: &Node, src: &'s str, offset: u32) -> Option<Claus
 }
 
 /// The chain of nodes from `root` down to the innermost one containing `offset`.
-fn chain_to<'a>(node: &'a Node, offset: u32, out: &mut Vec<&'a Node>) {
+pub(crate) fn chain_to<'a>(node: &'a Node, offset: u32, out: &mut Vec<&'a Node>) {
     out.push(node);
     for child in &node.children {
         if child.span.start <= offset && offset < child.span.end {
@@ -61,19 +58,6 @@ fn chain_to<'a>(node: &'a Node, offset: u32, out: &mut Vec<&'a Node>) {
             break; // children don't overlap — at most one contains the offset
         }
     }
-}
-
-/// If `node` is a clause list whose head is one of the navigable clause keywords
-/// (`:use` / `:alias` / `:implements`), its keyword text; else `None`.
-fn clause_keyword<'s>(node: &Node, src: &'s str) -> Option<&'s str> {
-    if node.kind != NodeKind::List {
-        return None;
-    }
-    let head = node.forms().next()?;
-    if head.kind != NodeKind::Keyword {
-        return None;
-    }
-    matches!(head.text(src), ":use" | ":alias" | ":implements").then(|| head.text(src))
 }
 
 #[cfg(test)]

@@ -154,7 +154,7 @@ fn walk(
 ) {
     match node.kind {
         NodeKind::List => {
-            let head = head_sym(node, src);
+            let head = node.head_symbol(src);
             let doc_i = doc_string_index(node, head);
             let mut form_i = 0usize;
             for child in &node.children {
@@ -167,7 +167,9 @@ fn walk(
                     1 => match head {
                         Some("defrecord") => Role::RecordName,
                         Some("defability") => Role::AbilityName,
-                        Some(h) if is_def_head(h) => Role::DefName,
+                        // Any `def…` operator, bare `def` included — mirrors the
+                        // indentation rule in `brood.el`.
+                        Some(h) if h.starts_with("def") => Role::DefName,
                         _ => Role::Normal,
                     },
                     i if Some(i) == doc_i => Role::Doc,
@@ -262,12 +264,6 @@ fn push_symbol(
     emit(node, src, index, ttype, tmods, out);
 }
 
-/// The head symbol's text of a `List`, or `None`.
-fn head_sym<'s>(node: &Node, src: &'s str) -> Option<&'s str> {
-    let first = node.forms().next()?;
-    (first.kind == NodeKind::Symbol).then(|| first.text(src))
-}
-
 /// The form index of the list's DOCSTRING, when the list is a doc-carrying `def…`
 /// form (`builtins::DOC_FORMS`) that actually has one: the third form — right after
 /// the name — or the fourth, when a parameter list comes between. The one thing that
@@ -295,13 +291,6 @@ fn doc_string_index(node: &Node, head: Option<&str>) -> Option<usize> {
         return None;
     }
     Some(i)
-}
-
-/// Whether `head` introduces a named definition (so its second form is a name).
-/// Any `def…` operator longer than `def` itself, plus bare `def` — mirrors the
-/// indentation rule in `brood.el`.
-fn is_def_head(head: &str) -> bool {
-    head == "def" || head.starts_with("def")
 }
 
 /// Emit a token for `node`'s span, split so no token crosses a line (the

@@ -88,7 +88,7 @@ fn branch_sites() -> &'static Mutex<BranchSites> {
 /// no `RecordLine` in it. `nest` sets it in `main`, before `Cli` dispatch.
 pub fn enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var("BROOD_COVERAGE").is_ok_and(|v| v != "0" && !v.is_empty()))
+    super::debug_flags::is_armed(&ON, "BROOD_COVERAGE")
 }
 
 /// Record that `line` of `file` executed.

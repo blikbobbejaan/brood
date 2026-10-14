@@ -8,18 +8,10 @@
 //! compares against. Each gate also asserts the rewrite **fired**, because a comparison in
 //! which nothing was rewritten is two identical dynamic runs and proves nothing (ADR-280).
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 mod support;
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root")
-        .to_path_buf()
-}
+use support::repo_root;
 
 /// What one run printed: stdout, and stderr (where `BROOD_DEVIRT_DBG` traces), and whether it
 /// exited cleanly. Every run pins its tier rather than inheriting the CI job's.

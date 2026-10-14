@@ -17,28 +17,15 @@
 //! dir and `--check`ed from inside it, so the loader finds `greet` on the default
 //! load-path (`.`) — exactly the "loose disk, not a project" shape that failed.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
+use support::{temp_dir, TempDir};
 
-/// A temp dir holding the two `.blsp` files, removed on drop.
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
+/// A temp dir holding the provider, the consumer and a runner, removed on drop.
 fn write_fixture() -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("brood-xmod-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = temp_dir("xmod");
+    let dir = &temp.path;
 
     // The provider: a loose-disk module defining an ability, a record, and an impl.
     std::fs::write(
@@ -68,7 +55,7 @@ fn write_fixture() -> TempDir {
     )
     .unwrap();
 
-    TempDir { path: dir }
+    temp
 }
 
 /// Run `brood <args>` from inside `dir` (so the default load-path `.` finds `greet`)

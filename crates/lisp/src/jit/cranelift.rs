@@ -226,7 +226,7 @@ impl CraneliftBackend {
 }
 
 /// The whole seam, in one place: the tiering glue in `eval/compile/jit_runtime.rs` reaches
-/// codegen only through these two methods, and each is a straight delegation to the
+/// codegen only through the three lowering methods, each a straight delegation to the
 /// Cranelift lowering. Nothing decides anything here — the decisions live above
 /// (`jit_lower_arm`'s pre-bail + profitability gate today; see `docs/backend-seams.md` §3).
 impl JitBackend for CraneliftBackend {

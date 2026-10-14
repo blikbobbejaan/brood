@@ -1197,9 +1197,7 @@ the tooling frameworks first (`project/setup-tooling-image`, shared with the LSP
 project's own `mcp.blsp` if it has one, which may define `mcp-tools` to extend or replace
 the catalogue; anything that prints is discarded, since stdout is the JSON-RPC channel."
   (project/load-config)
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root)
-      (error "nest mcp: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
+  (let (root (project/require-root "nest mcp"))
     (project/setup-tooling-image root)
     (let (extensions (path/join root "mcp.blsp"))
       (when (file/exists? extensions)

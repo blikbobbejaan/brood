@@ -4,7 +4,7 @@
 //! call-form path — with the rest as child modules: `shape` (the syntax-shape readers
 //! the whole checker shares), `calls` (call-site argument and callback checking),
 //! `binders` (the `fn`/`def`/`defn`/`if`/`let` checkers), `unbound` (the unbound-symbol
-//! and unrequired-module diagnostics) and `impls` (ability impl return checking).
+//! diagnostic and the `check-allow` mask) and `impls` (ability impl return checking).
 
 use super::ctx::{Ctx, PathKey};
 use super::guards::{
@@ -58,10 +58,6 @@ fn check_value_leaf(
     if let Value::Sym(s) = form {
         if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
             out.push((heap.form_pos_only(parent), unbound_msg(&name_of(s))));
-        } else if !ctx.is_suppressed(super::ctx::SUPPRESS_UNREQUIRED) {
-            if let Some(m) = unrequired_module(heap, ctx, s) {
-                out.push((heap.form_pos_only(parent), unrequired_msg(&m)));
-            }
         }
         if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED) {
             if let Some(msg) = stability_msg(heap, s) {
@@ -753,10 +749,6 @@ fn check_named_call(
     if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
         out.push((heap.form_pos_only(form), unbound_msg(&name_of(s))));
         // Still recurse into args below — they may carry their own issues.
-    } else if !ctx.is_suppressed(super::ctx::SUPPRESS_UNREQUIRED) {
-        if let Some(m) = unrequired_module(heap, ctx, s) {
-            out.push((heap.form_pos_only(form), unrequired_msg(&m)));
-        }
     }
 
     // Operand-position unbound symbols. When the head evaluates its arguments

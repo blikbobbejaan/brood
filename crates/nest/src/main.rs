@@ -34,6 +34,7 @@
 //! lives in `nest run --watch <path>` (file or directory, repeatable).
 
 use brood::cli_support::{report_error, run_on_main_stack, FullTermGuard, RawTermGuard};
+use brood::introspect::string_literal;
 use brood::Interp;
 use clap::{Parser, Subcommand};
 
@@ -129,18 +130,14 @@ enum Cmd {
 /// it. Best-effort and silent on success: a `:present` answer is the common case and costs one
 /// index read, and a failure to build is not a reason to fail the user's command — `require`
 /// simply keeps reading source, exactly as it did before images existed.
-fn ensure_stdimage(interp: &mut Interp, cmd: &Cmd) {
-    // `Stdimage` builds explicitly and reports; the rest are the commands that must stay
-    // instant, where a first-run build would BE the command's whole runtime.
-    if matches!(cmd, Cmd::Stdimage) {
+///
+/// Skipped when the image is switched OFF (`BROOD_NO_STDIMAGE=1`): there is no point
+/// spending ~1 s writing a file nothing will read, and doing it unconditionally made every
+/// `nest` command in a parallel test run pay for it.
+fn ensure_stdimage(interp: &mut Interp) {
+    if std::env::var_os("BROOD_NO_STDIMAGE").is_some() {
         return;
     }
-    ensure_stdimage_now(interp);
-}
-
-/// The unconditional half of [`ensure_stdimage`], for the Brood-routed subcommands (which
-/// have no `Cmd`).
-fn ensure_stdimage_now(interp: &mut Interp) {
     // Is there already a current image? A pure-PRELUDE probe on purpose — `%std-image-path`
     // and `%image-index` load no modules at all, where asking `stdimage` would pull that
     // module and its dependency tree into the process before the command has started.
@@ -360,11 +357,7 @@ fn arm_contracts_default(argv: &[String]) {
 
 /// Run a Brood-implemented subcommand: `(nest/main argv)` returns the exit code.
 fn run_blsp(max_parallel: Option<usize>, argv: Vec<String>) {
-    if let Some(n) = max_parallel {
-        brood::process::set_max_parallel(n);
-    }
-    brood::core::alloc::init_limits_from_env();
-    brood::cli_support::warn_nondefault_gc_env();
+    init_runtime(max_parallel);
     if argv.first().map(String::as_str) == Some("check") {
         // `nest check` resolves every `:use`d std module from THIS binary's baked-in copy,
         // so from a binary older than the tree its verdict is against the old declarations
@@ -379,8 +372,8 @@ fn run_blsp(max_parallel: Option<usize>, argv: Vec<String>) {
     // `complete` runs on a keypress: read an image if there is one, never spend the
     // keypress building it.
     let completing = argv.first().is_some_and(|c| c == "complete");
-    if std::env::var_os("BROOD_NO_STDIMAGE").is_none() && !completing {
-        ensure_stdimage_now(&mut interp);
+    if !completing {
+        ensure_stdimage(&mut interp);
     }
     let mut code = format!("(nest/main {})", blsp_string_list(&argv));
     if argv.first().is_some_and(|c| c == "mcp") {
@@ -406,14 +399,19 @@ fn run_blsp(max_parallel: Option<usize>, argv: Vec<String>) {
     }
 }
 
-fn run_main(cli: Cli) {
-    if let Some(n) = cli.max_parallel {
+/// The process-wide setup every command shares, before any interpreter exists.
+fn init_runtime(max_parallel: Option<usize>) {
+    if let Some(n) = max_parallel {
         brood::process::set_max_parallel(n);
     }
     // Honour BROOD_MEM_LIMIT for every command (ADR-043).
     brood::core::alloc::init_limits_from_env();
     // Flag a stressed/retuned heap so a benchmark can't silently measure one.
     brood::cli_support::warn_nondefault_gc_env();
+}
+
+fn run_main(cli: Cli) {
+    init_runtime(cli.max_parallel);
 
     let mut interp = Interp::new();
 
@@ -428,28 +426,26 @@ fn run_main(cli: Cli) {
     // built from one tree — so `nest` building it also speeds up `brood`, `brood-lsp` and every
     // later `nest`. Skipped for the commands where a second of silence would be the whole
     // command (`--version`, `complete`), and never for `stdimage` itself, which does its own.
-    // Skipped when the image is switched OFF (`BROOD_NO_STDIMAGE=1`): there is no point
-    // spending ~1 s writing a file nothing will read, and doing it unconditionally made
-    // every `nest` command in a parallel test run pay for it.
-    if std::env::var_os("BROOD_NO_STDIMAGE").is_none() {
-        ensure_stdimage(&mut interp, &cli.cmd);
+    if !matches!(cli.cmd, Cmd::Stdimage) {
+        ensure_stdimage(&mut interp);
     }
 
     match cli.cmd {
-        // Handled above, before the interpreter is built.
         // Nothing but the prelude is loaded when this runs — see the variant's doc for why
         // that is the whole point, and why `stdimage/build` refuses otherwise (KI-112).
-        Cmd::Stdimage => run(
-            &mut interp,
-            concat!(
-                "(require-one 'stdimage) ",
-                "(let (r (stdimage/build)) ",
-                "  (if (nil? r) ",
-                "    (io/puts \"no cache directory (set XDG_CACHE_HOME or HOME)\") ",
-                "    (io/puts (second r) \" bindings -> \" (first r) ",
-                "      \" (shared by brood, nest and brood-lsp from this tree)\")))",
-            ),
-        ),
+        Cmd::Stdimage => {
+            run_for_value(
+                &mut interp,
+                concat!(
+                    "(require-one 'stdimage) ",
+                    "(let (r (stdimage/build)) ",
+                    "  (if (nil? r) ",
+                    "    (io/puts \"no cache directory (set XDG_CACHE_HOME or HOME)\") ",
+                    "    (io/puts (second r) \" bindings -> \" (first r) ",
+                    "      \" (shared by brood, nest and brood-lsp from this tree)\")))",
+                ),
+            );
+        }
         Cmd::Release {
             output,
             runtime,
@@ -472,13 +468,6 @@ fn run_main(cli: Cli) {
 
 // ---------- subcommand handlers ----------
 
-/// `nest test [FILES...]` — project-wide if no files, otherwise just those.
-/// Single-file mode mirrors the old `brood --test` shape but with project
-/// sources pre-loaded if we're inside a project, so cross-module names work.
-/// The `nest test` selection / execution flags, lowered to the Brood option
-/// plist that `run-tests` and friends already accept. Selector *parsing* stays in
-/// Brood (`test-make-filter`) so the grammar has one definition; this only
-/// forwards argv.
 /// Read a Brood list of strings into owned `String`s, or exit naming `what` returned
 /// the bad value. Owned deliberately: the list is not rooted, so a later `eval` could
 /// collect it out from under a borrow.
@@ -504,16 +493,12 @@ fn string_list(interp: &mut Interp, what: &str, list: brood::core::value::Value)
         })
 }
 
-fn blsp_string(s: &str) -> String {
-    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
-}
-
 /// `(list "a" "b")`, or `nil` when empty — the shape `test-make-filter` expects.
 fn blsp_string_list(items: &[String]) -> String {
     if items.is_empty() {
         "nil".to_string()
     } else {
-        let quoted: Vec<String> = items.iter().map(|s| blsp_string(s)).collect();
+        let quoted: Vec<String> = items.iter().map(|s| string_literal(s)).collect();
         format!("(list {})", quoted.join(" "))
     }
 }
@@ -586,8 +571,10 @@ fn cmd_release(
         interp,
         &format!(
             "(project-release/release-plan {} {} {} {})",
-            blsp_string(&name),
-            output.map(blsp_string).unwrap_or_else(|| "nil".to_string()),
+            string_literal(&name),
+            output
+                .map(string_literal)
+                .unwrap_or_else(|| "nil".to_string()),
             blsp_string_list(targets),
             runtime.is_some(),
         ),
@@ -623,10 +610,12 @@ fn cmd_release(
             interp,
             &format!(
                 "(project-release/release-report {} {} {} {})",
-                blsp_string(&out.display().to_string()),
+                string_literal(&out.display().to_string()),
                 modules.len(),
                 size,
-                triple.map(blsp_string).unwrap_or_else(|| "nil".to_string()),
+                triple
+                    .map(string_literal)
+                    .unwrap_or_else(|| "nil".to_string()),
             ),
         );
         match line {
@@ -661,7 +650,7 @@ fn smoke_test(out: &std::path::Path, triple: Option<&str>) {
     // A cross-target binary cannot execute here. Say so — a smoke test that
     // quietly does nothing is the gate-that-cannot-fail shape (KI-68/70).
     if let Some(t) = triple {
-        if t != release::host_triple() {
+        if t != release::HOST_TRIPLE {
             println!("  smoke: skipped for {t} (not this host — run it on the target)");
             return;
         }
@@ -719,29 +708,14 @@ fn discard_unbootable(path: &std::path::Path, out: &std::path::Path) {
 
 // ---------- helpers ----------
 
-fn run(interp: &mut Interp, code: &str) {
-    let result = interp.eval_str(code);
-    // Restore the terminal on the way out — whether the program returned
-    // cleanly or threw. A `nest run` of a TUI demo that entered raw mode / the
-    // alternate screen and never reached its Brood `term-raw-leave` (because it
-    // threw, *or* because it returned without one) would otherwise leave the
-    // shell wedged. `process::exit` skips Drop, so a guard wouldn't fire —
-    // restore explicitly. The call is a no-op unless the terminal was left raw.
-    brood::builtins::restore_terminal_on_exit();
-    if let Err(e) = result {
-        report_error(&e);
-        std::process::exit(1);
-    }
-}
-
-/// Like [`run`], but returns the last value so the caller can decide whether
-/// to exit non-zero based on it. Used by `nest check` to convert a non-zero
-/// warning count into a non-zero exit without throwing a synthetic error.
+/// Evaluate `code` and return its last value, or report the error and exit 1.
 fn run_for_value(interp: &mut Interp, code: &str) -> brood::core::value::Value {
     let result = interp.eval_str(code);
-    // Restore on BOTH paths, exactly as `run` does — `nest run --for` routes a
-    // full-screen TUI app through here, and an app that returned without its own
-    // `term-raw-leave` would otherwise leave the shell wedged. No-op unless raw.
+    // Restore the terminal on the way out — whether the program returned cleanly or
+    // threw. A full-screen TUI app that entered raw mode / the alternate screen and never
+    // reached its Brood `term-raw-leave` would otherwise leave the shell wedged.
+    // `process::exit` skips Drop, so a guard wouldn't fire — restore explicitly. The call
+    // is a no-op unless the terminal was left raw.
     brood::builtins::restore_terminal_on_exit();
     match result {
         Ok(v) => v,

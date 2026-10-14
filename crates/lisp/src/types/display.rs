@@ -145,10 +145,10 @@ impl fmt::Display for Ty {
         // print the positive part alone — `vector` for a type that excludes every
         // `vector<int>` — telling the reader the opposite of the truth.
         if let Some(negs) = self.subtracted() {
-            if self.term_is_empty_for_display() {
+            if self.term_is_never() {
                 return f.write_str("never");
             }
-            let positive = self.positive_for_display();
+            let positive = self.positive();
             // `positive == any`, not `positive.is_any()`: the latter reads the tags alone,
             // and a positive part of every tag less a literal (`(not "x")`) printed as
             // `(not …)` of the subtraction only, the `"x"` silently gone.
@@ -447,12 +447,12 @@ impl fmt::Display for Ty {
                         continue;
                     }
                     // A sequence member keeps its element type beside the literals too.
-                    match self.term_elem_for_display() {
+                    match self.elem.as_deref() {
                         Some(elem) if (1u32 << bit(tag)) & SEQ_BITS != 0 => {
                             parts.push(format!(
                                 "{}<{elem}>{}",
                                 tag.name(),
-                                self.len_suffix_for(tag)
+                                self.range_suffix_for(tag)
                             ));
                         }
                         _ => parts.push(format!("{}{}", tag.name(), self.range_suffix_for(tag))),
@@ -537,7 +537,7 @@ impl fmt::Display for Ty {
                 // type: `nil | number | vector<X>` is what a recursive value type's body
                 // is, and printing `vector` there hid the reference that makes it one.
                 if (1u32 << bit(tag)) & SEQ_BITS != 0 {
-                    if let Some(elem) = self.term_elem_for_display() {
+                    if let Some(elem) = self.elem.as_deref() {
                         write!(f, "<{elem}>")?;
                     }
                 }
@@ -579,7 +579,7 @@ impl Ty {
         // An interval (ADR-350): a lone ranged int is `(int lo hi)`; a term with a length
         // is `(len <the rest> lo hi)`. A ranged int INSIDE a wider term has no spelling of
         // its own (the grammar refines the int member alone), so it declines.
-        if let Some(r) = self.int_interval_for_source() {
+        if let Some(r) = self.single().and_then(|term| term.int_range) {
             if self.is_only_ranged_int() {
                 return Some(format!("(int {} {})", range_end(r.lo), range_end(r.hi)));
             }
@@ -606,7 +606,7 @@ impl Ty {
         // strictly WIDER than the type — and ADR-271's rule is that a suggestion must
         // never claim a different type than the checker meant.
         if let Some(negs) = self.subtracted() {
-            if self.term_is_empty_for_display() {
+            if self.term_is_never() {
                 return Some("never".to_string());
             }
             let inner = if negs.len() == 1 {
@@ -616,7 +616,7 @@ impl Ty {
                     negs.iter().map(Ty::to_source).collect::<Option<Vec<_>>>()?;
                 format!("(or {})", parts.join(" "))
             };
-            let positive = self.positive_for_display();
+            let positive = self.positive();
             // `== ANY`, not `is_any()`: the latter reads the tags alone, so a positive part
             // of every tag less a literal (`(not "x")`) wrote the subtraction only and
             // silently dropped the `"x"` — a wider type than the one shown.

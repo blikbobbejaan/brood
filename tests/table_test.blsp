@@ -20,8 +20,6 @@
 ;; Put i -> (* i i) for i in [0,n) (fold is tail-recursive in the kernel).
 (defn tt-fill (t n) (fold (range n) nil (fn (_ i) (table/put t i (* i i)))))
 
-(defn threw? (thunk) (try (do (thunk) false) (catch e true)))
-
 ;; ---- basic ------------------------------------------------------------------
 (describe "table: basic put/get"
   (test "get returns a stored value; default when absent"
@@ -105,20 +103,20 @@
 (describe "table: keys that could never be looked up are rejected"
   (test "a closure cannot be a key (it compares by identity)"
     (let (t (table/new))
-      (is (threw? (fn () (table/put t (fn () 1) :v))))
+      (assert-error (table/put t (fn () 1) :v))
       ;; get/has/delete reject it too (consistent, loud)
-      (is (threw? (fn () (table/get t (fn () 1)))))
-      (is (threw? (fn () (table/has? t (fn () 1)))))
-      (is (threw? (fn () (table/delete t (fn () 1)))))))
+      (assert-error (table/get t (fn () 1)))
+      (assert-error (table/has? t (fn () 1)))
+      (assert-error (table/delete t (fn () 1)))))
 
   (test "NaN cannot be a key (it never equals itself)"
     (let (t (table/new) nv (- (* 1e308 1e308) (* 1e308 1e308)))
       ; `nan` is now a reserved float literal
       ; confirm we really have a NaN
       (is (not (= nv nv)))
-      (is (threw? (fn () (table/put t nv :v))))
-      (is (threw? (fn () (table/get t nv))))
-      (is (threw? (fn () (table/incr t nv)))))))
+      (assert-error (table/put t nv :v))
+      (assert-error (table/get t nv))
+      (assert-error (table/incr t nv)))))
 
 ;; ---- has? / delete / count --------------------------------------------------
 (describe "table: has?/delete/count"
@@ -165,14 +163,14 @@
   (test "incr errors on a non-integer existing value, leaving it unchanged"
     (let (t (table/new))
       (table/put t :k "not-an-int")
-      (is (threw? (fn () (table/incr t :k))))
+      (assert-error (table/incr t :k))
       (assert= (table/get t :k) "not-an-int")))
 
   (test "incr errors (and leaves it) on an out-of-i64-range (bignum) value"
     (let (t (table/new) big (* 1000000000000 1000000000000))
       ; 1e24, beyond i64
       (table/put t :k big)
-      (is (threw? (fn () (table/incr t :k))))
+      (assert-error (table/incr t :k))
       (assert= (table/get t :k) big))))
 
 ;; ---- snapshot ---------------------------------------------------------------
@@ -238,13 +236,13 @@
   (test "every op errors on a dropped handle"
     (let (t (table/new))
       (table/drop t)
-      (is (threw? (fn () (table/get t :a))))
-      (is (threw? (fn () (table/put t :a 1))))
-      (is (threw? (fn () (table/has? t :a))))
-      (is (threw? (fn () (table/delete t :a))))
-      (is (threw? (fn () (table/incr t :a))))
-      (is (threw? (fn () (table/count t))))
-      (is (threw? (fn () (table/snapshot t)))))))
+      (assert-error (table/get t :a))
+      (assert-error (table/put t :a 1))
+      (assert-error (table/has? t :a))
+      (assert-error (table/delete t :a))
+      (assert-error (table/incr t :a))
+      (assert-error (table/count t))
+      (assert-error (table/snapshot t)))))
 
 ;; ---- independence + values --------------------------------------------------
 (describe "table: independence and value round-trip"
@@ -281,7 +279,7 @@
 
   (test "an unsendable value (an unrealised lazy seq-view) is rejected as a value"
     (let (t (table/new))
-      (is (threw? (fn () (table/put t :k (seq/lmap [1 2 3] inc))))))))
+      (assert-error (table/put t :k (seq/lmap [1 2 3] inc))))))
 
 ;; ---- scale ------------------------------------------------------------------
 (describe "table: scale"

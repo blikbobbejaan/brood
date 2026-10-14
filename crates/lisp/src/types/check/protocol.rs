@@ -19,7 +19,7 @@ use crate::core::value::{self, Value};
 use crate::error::Pos;
 
 use super::deps::obs_registry;
-use super::walk::list_items;
+use super::walk::{head_name, is_fn_head, list_items, unquote};
 use crate::core::registries as reg;
 
 /// One declared op: its name, its fixed arity (params before any `&`), and whether it
@@ -353,7 +353,7 @@ fn collect_arity_inner(heap: &Heap, form: Value, out: &mut HashMap<String, Optio
     if value::symbol_is(head, "def") {
         if let Some(&Value::Sym(name)) = items.get(1) {
             let arity = items.get(2).and_then(|&v| fn_arity(heap, v));
-            out.insert(bare_name(name), arity);
+            out.insert(head_name(name), arity);
         }
     }
     for &item in items.get(1..).unwrap_or(&[]) {
@@ -361,12 +361,11 @@ fn collect_arity_inner(heap: &Heap, form: Value, out: &mut HashMap<String, Optio
     }
 }
 
-/// The fixed arity of a `(fn …)`/`(lambda …)` value form, or `None` for a non-`fn`,
-/// a variadic (`&` rest), or a multi-arity fn.
+/// The fixed arity of a `(fn …)` value form, or `None` for a non-`fn`, a variadic
+/// (`&` rest), or a multi-arity fn.
 fn fn_arity(heap: &Heap, v: Value) -> Option<usize> {
     let items = list_items(heap, v)?;
-    let is_fn = matches!(items.first(),
-        Some(&Value::Sym(s)) if value::symbol_is(s, "fn") || value::symbol_is(s, "lambda"));
+    let is_fn = matches!(items.first(), Some(&Value::Sym(s)) if is_fn_head(s));
     if !is_fn {
         return None;
     }
@@ -408,12 +407,6 @@ fn is_rest_marker(v: Value) -> bool {
     matches!(v, Value::Sym(s) if value::symbol_is(s, "&") || value::symbol_is(s, "&rest"))
 }
 
-/// A symbol's bare name — its last `/`-segment (`mod/render` → `render`).
-fn bare_name(name: value::Symbol) -> String {
-    let full = value::symbol_name(name);
-    full.rsplit('/').next().unwrap_or(&full).to_string()
-}
-
 // ---- ability missing-impl at call sites (Slice 3) ---------------------------
 //
 // Warn on a call to an ability op whose FIRST argument has a *statically known*
@@ -428,21 +421,10 @@ fn bare_name(name: value::Symbol) -> String {
 // (not eval'd at check time) with the runtime `*impls*` registry (cross-file
 // reachable impls), so an impl in either place suppresses the warning.
 
-/// `(quote X)` → `Some(X)`.
-fn unquote(heap: &Heap, v: Value) -> Option<Value> {
-    let items = list_items(heap, v)?;
-    if items.len() == 2 && head_is(&items, "quote") {
-        Some(items[1])
-    } else {
-        None
-    }
-}
-
-/// The last body form of `(fn ARGS BODY…)` / `(lambda …)`, or `None` for a non-fn.
+/// The last body form of `(fn ARGS BODY…)`, or `None` for a non-fn.
 fn fn_last_body(heap: &Heap, v: Value) -> Option<Value> {
     let items = list_items(heap, v)?;
-    let is_fn = matches!(items.first(),
-        Some(&Value::Sym(s)) if value::symbol_is(s, "fn") || value::symbol_is(s, "lambda"));
+    let is_fn = matches!(items.first(), Some(&Value::Sym(s)) if is_fn_head(s));
     if !is_fn {
         return None;
     }
@@ -456,10 +438,12 @@ fn find_op_key(heap: &Heap, form: Value) -> Option<(String, String)> {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         let items = list_items(heap, form)?;
         if let Some(&Value::Sym(h)) = items.first() {
-            let opkey_idx = match sym_name(Value::Sym(h)).as_deref() {
-                Some("%dispatch") => Some(2),
-                Some(kw::IMPL_FOR) => Some(1),
-                _ => None,
+            let opkey_idx = if value::symbol_is(h, "%dispatch") {
+                Some(2)
+            } else if value::symbol_is(h, kw::IMPL_FOR) {
+                Some(1)
+            } else {
+                None
             };
             if let Some(idx) = opkey_idx {
                 if let Some(Value::Vector(vid)) = items.get(idx).and_then(|&v| unquote(heap, v)) {
@@ -488,7 +472,7 @@ fn record_ctor_id(heap: &Heap, form: Value) -> Option<String> {
         });
     }
     let items = list_items(heap, form)?;
-    if !matches!(items.first(), Some(&Value::Sym(h)) if bare_name(h) == "hash-map") {
+    if !matches!(items.first(), Some(&Value::Sym(h)) if head_name(h) == "hash-map") {
         return None;
     }
     // pairs after the head: find the value following the `:__id__` key
@@ -514,7 +498,7 @@ fn collect_register_impls(
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_IMPL) {
+            if value::symbol_is(h, kw::REGISTER_IMPL) {
                 let a = items
                     .get(1)
                     .and_then(|&v| unquote(heap, v))
@@ -550,7 +534,7 @@ fn collect_derive_into(heap: &Heap, form: Value, out: &mut Vec<(String, String)>
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::DERIVE_INTO) {
+            if value::symbol_is(h, kw::DERIVE_INTO) {
                 let a = items
                     .get(1)
                     .and_then(|&v| unquote(heap, v))
@@ -977,7 +961,7 @@ fn collect_register_ability(
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_ABILITY) {
+            if value::symbol_is(h, kw::REGISTER_ABILITY) {
                 if let (Some(a), Some(ops_form)) = (
                     items
                         .get(1)
@@ -1021,7 +1005,7 @@ fn collect_register_sealed(heap: &Heap, form: Value, out: &mut HashMap<String, V
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_SEALED) {
+            if value::symbol_is(h, kw::REGISTER_SEALED) {
                 if let (Some(a), Some(&list_form)) = (
                     items
                         .get(1)
@@ -1060,7 +1044,7 @@ fn collect_register_ability_requires(
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_ABILITY_REQUIRES) {
+            if value::symbol_is(h, kw::REGISTER_ABILITY_REQUIRES) {
                 if let (Some(a), Some(&list_form)) = (
                     items
                         .get(1)
@@ -1270,7 +1254,7 @@ fn collect_record_registers(heap: &Heap, form: Value, out: &mut std::collections
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some("%record-register") {
+            if value::symbol_is(h, "%record-register") {
                 if let Some(name) = items.get(1).copied().and_then(sym_name) {
                     out.insert(name);
                 }
@@ -1795,7 +1779,7 @@ fn find_multi_name(heap: &Heap, form: Value) -> Option<String> {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         let items = list_items(heap, form)?;
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::MULTI_RESOLVE) {
+            if value::symbol_is(h, kw::MULTI_RESOLVE) {
                 if let Some(name) = items
                     .get(1)
                     .and_then(|&v| unquote(heap, v))
@@ -1822,7 +1806,7 @@ fn collect_register_methods(
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_METHOD) {
+            if value::symbol_is(h, kw::REGISTER_METHOD) {
                 if let Some(mname) = items
                     .get(1)
                     .and_then(|&v| unquote(heap, v))
@@ -1967,7 +1951,7 @@ fn collect_register_multi(
             return;
         };
         if let Some(&Value::Sym(h)) = items.first() {
-            if sym_name(Value::Sym(h)).as_deref() == Some(kw::REGISTER_MULTI) {
+            if value::symbol_is(h, kw::REGISTER_MULTI) {
                 if let Some(mname) = items
                     .get(1)
                     .and_then(|&v| unquote(heap, v))

@@ -27,8 +27,7 @@
   (os/run-process "git" (cons "-C" (cons dir git-args))))
 
 (defn- dirty-count (dir)
-  (count (seq/filter (string/split (git-out dir (list "status" "--short")) "\n")
-           (fn (line) (not (string/blank? line))))))
+  (count (seq/reject (string/split (git-out dir (list "status" "--short")) "\n") string/blank?)))
 
 (defn- ahead-count (dir)
   (let (ahead (git-out dir (list "rev-list" "--count" "@{u}..HEAD")))

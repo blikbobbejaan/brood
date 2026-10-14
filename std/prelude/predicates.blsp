@@ -209,7 +209,7 @@ current element and `acc` is the current accumulator."
 ;;      run during expansion, before any require. That is the same constraint that pinned
 ;;      `mapcat`/`mapv`/`take-while` here when the rest of the sequence library moved (see
 ;;      seq.blsp's note) — late binding does not help when the call happens at expansion.
-;;   2. `require-one` ITSELF filters. `%std-edges-for`, `%merge-require-edges!`,
+;;   2. `require-one` ITSELF filters. `%std-edges-for`,
 ;;      `%require-drop-waiter!` and `%bundle-short-collides?` are the require machinery, so
 ;;      a `seq/filter` miss there would call `require-one 'seq` from inside `require-one`,
 ;;      mid-claim (ADR-335's miss path loads at the lookup). No mechanism should have to
@@ -305,8 +305,7 @@ front of an accumulated remainder wants; a vector last is converted."
     ;; raise (ADR-253).
     (or (pair? coll) (nil? coll)) (%count-acc coll 0)
     (%impl-exact? '[Seqable ->seq] (%identity-of coll)) (count (->seq coll))
-    ;; The error names `count` and the value, not an internal of the loop below.
-    (or (pair? coll) (nil? coll)) (%count-acc coll 0)
+    ;; The error names `count` and the value, not an internal of the list loop.
     else (error (str "count: expected a collection, got " (type-of coll) " (" (pr-str coll) ")"))))
 
 (defn- %nth-list (coll i d)

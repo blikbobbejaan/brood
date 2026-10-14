@@ -317,10 +317,7 @@ pub(crate) fn jit_tier_in_frame(
                     // still be absent from every IR dump.
                     {
                         if crate::diagnostics::debug_flags::jit_bail_trace() {
-                            let name = arm
-                                .dbg_name
-                                .map(crate::core::value::symbol_name_ref)
-                                .unwrap_or("<closure>");
+                            let name = arm.dbg_label();
                             eprintln!(
                                 "[jit-ir] arm={name} adopted-shared-code nslots={} (not lowered \
                                  here, so it emits no IR dump)",
@@ -355,10 +352,7 @@ pub(crate) fn jit_tier_in_frame(
             // stays on the VM — so name it, or the arm sits on the interpreter permanently
             // with no diagnostic pointing at the reason.
             if crate::diagnostics::debug_flags::jit_bail_trace() {
-                let name = arm
-                    .dbg_name
-                    .map(crate::core::value::symbol_name_ref)
-                    .unwrap_or("<closure>");
+                let name = arm.dbg_label();
                 eprintln!("[jit-bail] arm={name} reason=chunk-ops-not-all-native");
             }
             arm.jit_code.store(crate::jit::BAILED, Release);
@@ -377,10 +371,7 @@ pub(crate) fn jit_tier_in_frame(
             if heap.global_epoch() != epoch {
                 heap.mark_arm_stale(arm);
                 if crate::diagnostics::debug_flags::trace_compile() {
-                    let name = arm
-                        .dbg_name
-                        .map(crate::core::value::symbol_name_ref)
-                        .unwrap_or("<closure>");
+                    let name = arm.dbg_label();
                     eprintln!(
                         "[compile] stale-bindings arm={name}: the tier-up pre-load loaded a module; recompiles at its next activation"
                     );
@@ -393,10 +384,7 @@ pub(crate) fn jit_tier_in_frame(
         // Refuse it here, by name, instead (`arm_hosts_receive`'s doc has the shape).
         if crate::eval::compile::arm_hosts_receive(heap, arm, heap.read_root_env(env)) {
             if crate::diagnostics::debug_flags::jit_bail_trace() {
-                let name = arm
-                    .dbg_name
-                    .map(crate::core::value::symbol_name_ref)
-                    .unwrap_or("<closure>");
+                let name = arm.dbg_label();
                 eprintln!("[jit-bail] arm={name} reason=hosts-receive");
             }
             arm.jit_code.store(crate::jit::BAILED, Release);
@@ -419,10 +407,7 @@ pub(crate) fn jit_tier_in_frame(
                     .is_some_and(|c| c.code.iter().any(|i| matches!(i, Inst::SelfCall { .. })))
             {
                 if crate::diagnostics::debug_flags::jit_bail_trace() {
-                    let name = arm
-                        .dbg_name
-                        .map(crate::core::value::symbol_name_ref)
-                        .unwrap_or("<closure>");
+                    let name = arm.dbg_label();
                     eprintln!("[jit-bail] arm={name} reason=self-loop-name-rebound");
                 }
                 arm.jit_calls.store(0, Relaxed);
@@ -554,10 +539,7 @@ pub(crate) fn jit_tier_in_frame(
                     {
                         {
                             if crate::diagnostics::debug_flags::jit_bail_trace() {
-                                let name = arm
-                                    .dbg_name
-                                    .map(crate::core::value::symbol_name_ref)
-                                    .unwrap_or("<closure>");
+                                let name = arm.dbg_label();
                                 eprintln!("[jit-ir] arm={name} adopted-inline-code-from-cache nslots={} (not lowered here, emits no IR dump)", arm.nslots);
                             }
                         }
@@ -597,10 +579,7 @@ pub(crate) fn jit_tier_in_frame(
                 }
                 {
                     if crate::diagnostics::debug_flags::jit_bail_trace() {
-                        let name = arm
-                            .dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>");
+                        let name = arm.dbg_label();
                         eprintln!(
                             "[jit-ir] arm={name} xcall-relower-installed nslots={}",
                             arm.nslots
@@ -650,10 +629,7 @@ pub(crate) fn jit_tier_in_frame(
             // than from a second read of `inline_installed` — the same rule.
             {
                 if crate::diagnostics::debug_flags::jit_bail_trace() {
-                    let name = arm
-                        .dbg_name
-                        .map(crate::core::value::symbol_name_ref)
-                        .unwrap_or("<closure>");
+                    let name = arm.dbg_label();
                     eprintln!(
                         "[jit-ir] arm={name} inline-swap-installed nslots={} inline_nslots={}",
                         arm.nslots, arm.inline_nslots

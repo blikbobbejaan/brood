@@ -141,10 +141,7 @@ pub(crate) fn native_feedback(
 /// and "this arm thrashes at instruction N, a `Call` to `vector-length`".
 #[cold]
 fn trace_deopt_site(heap: &Heap, arm: &Arc<CompiledArm>, base: usize, nslots: usize) {
-    let name = arm
-        .dbg_name
-        .map(crate::core::value::symbol_name_ref)
-        .unwrap_or("<closure>");
+    let name = arm.dbg_label();
     let reason = crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason());
     match jit_ckpt_resume(heap, arm, base, nslots) {
         Some((resume, ip, _)) => {

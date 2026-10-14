@@ -17,7 +17,7 @@ use crate::types::{Range, Ty};
 
 use super::ctx::{Ctx, PathKey};
 use super::infer::expr_ty;
-use super::walk::list_items;
+use super::walk::{list_items, unquote};
 
 /// Names that have *syntactic* meaning but aren't bound values — never flag
 /// these as unbound. Mirrors `eval::SPECIAL_NAMES` plus the macros that the
@@ -1002,28 +1002,13 @@ pub(super) fn match_coverage(heap: &Heap, throw_arg: Value, ctx: &Ctx) -> Option
     // (The context arrives as the *unevaluated* `(quote :match)` / `(quote :case)`
     // form, like the pattern list below — unwrap it, and fall back to "match" for
     // a non-keyword context, e.g. a `fn` clause's fn-name context.)
-    let surface = list_items(heap, elems[1])
-        .filter(|q| q.len() == 2 && matches!(q[0], Value::Sym(s) if value::symbol_is(s, "quote")))
-        .and_then(|q| match q[1] {
-            Value::Keyword(k) => Some(value::symbol_name_ref(k).to_string()),
-            _ => None,
-        })
-        .unwrap_or_else(|| "match".to_string());
+    let surface = match unquote(heap, elems[1]) {
+        Some(Value::Keyword(k)) => value::symbol_name_ref(k).to_string(),
+        _ => "match".to_string(),
+    };
 
     // Unwrap `(quote patterns-list)` to the raw pattern list.
-    let Some(quote_items) = list_items(heap, elems[3]) else {
-        return Some(MatchCoverage::Unknown);
-    };
-    if quote_items.len() != 2 {
-        return Some(MatchCoverage::Unknown);
-    }
-    let Value::Sym(q) = quote_items[0] else {
-        return Some(MatchCoverage::Unknown);
-    };
-    if !value::symbol_is(q, "quote") {
-        return Some(MatchCoverage::Unknown);
-    }
-    let Some(patterns) = list_items(heap, quote_items[1]) else {
+    let Some(patterns) = unquote(heap, elems[3]).and_then(|quoted| list_items(heap, quoted)) else {
         return Some(MatchCoverage::Unknown);
     };
 

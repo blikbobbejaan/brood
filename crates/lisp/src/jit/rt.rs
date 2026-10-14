@@ -161,6 +161,31 @@ unsafe fn words_to_val(w0: i64, w1: i64, w2: i64) -> crate::core::value::Value {
     std::mem::transmute::<[i64; 3], crate::core::value::Value>([w0, w1, w2])
 }
 
+/// The answering half of the fallback status protocol the inline-prim callbacks share
+/// ([`brood_rt_first`], [`brood_rt_table_has`], …): `Ok` writes `*out` and returns 0; `Err`
+/// parks the error in `jit_pending_error` and returns 2, so the arm exits via its error
+/// block. (Status 1, deopt, is each caller's own early return.)
+///
+/// # Safety
+/// `out` must be a writable `*mut Value`.
+#[inline]
+unsafe fn answer_or_park(
+    heap: &mut Heap,
+    out: *mut crate::core::value::Value,
+    result: crate::error::LispResult,
+) -> i64 {
+    match result {
+        Ok(value) => {
+            *out = value;
+            0
+        }
+        Err(error) => {
+            heap.jit_pending_error = Some(error);
+            2
+        }
+    }
+}
+
 /// `cons` two `Value`s (each by word-triple), writing the fresh pair to `*out`.
 ///
 /// # Safety
@@ -301,14 +326,7 @@ pub unsafe extern "C" fn brood_rt_first(
     let h = &mut *heap;
     match crate::builtins::first_without_eval(h, words_to_val(w0, w1, w2)) {
         None => 1,
-        Some(Ok(v)) => {
-            *out = v;
-            0
-        }
-        Some(Err(e)) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
+        Some(result) => answer_or_park(h, out, result),
     }
 }
 
@@ -327,14 +345,7 @@ pub unsafe extern "C" fn brood_rt_rest(
     let h = &mut *heap;
     match crate::builtins::rest_without_eval(h, words_to_val(w0, w1, w2)) {
         None => 1,
-        Some(Ok(v)) => {
-            *out = v;
-            0
-        }
-        Some(Err(e)) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
+        Some(result) => answer_or_park(h, out, result),
     }
 }
 
@@ -358,14 +369,7 @@ pub unsafe extern "C" fn brood_rt_is_empty(
     let h = &mut *heap;
     match crate::builtins::is_empty_without_eval(h, words_to_val(w0, w1, w2)) {
         None => 1,
-        Some(Ok(v)) => {
-            *out = v;
-            0
-        }
-        Some(Err(e)) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
+        Some(result) => answer_or_park(h, out, result),
     }
 }
 
@@ -506,20 +510,9 @@ pub unsafe extern "C" fn brood_rt_table_has(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table/has?", key) {
-        h.jit_pending_error = Some(e);
-        return 2;
-    }
-    match crate::core::table::has(h, id, key) {
-        Ok(b) => {
-            *out = Value::Bool(b);
-            0
-        }
-        Err(e) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
-    }
+    let result = crate::core::table::check_key("table/has?", key)
+        .and_then(|()| crate::core::table::has(h, id, key).map(Value::Bool));
+    answer_or_park(h, out, result)
 }
 
 /// 2-arg `(%table-get t k)` from JIT'd code (the `PrimOp::TableGet` lowering) — nil
@@ -548,20 +541,9 @@ pub unsafe extern "C" fn brood_rt_table_get2(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table/get", key) {
-        h.jit_pending_error = Some(e);
-        return 2;
-    }
-    match crate::core::table::get(h, id, key, Value::Nil) {
-        Ok(v) => {
-            *out = v;
-            0
-        }
-        Err(e) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
-    }
+    let result = crate::core::table::check_key("table/get", key)
+        .and_then(|()| crate::core::table::get(h, id, key, Value::Nil));
+    answer_or_park(h, out, result)
 }
 
 /// `(%table-put t k v)` from JIT'd code (the `PrimOp3::TablePut` lowering). Same
@@ -592,21 +574,10 @@ pub unsafe extern "C" fn brood_rt_table_put(
         return 1;
     };
     let key = words_to_val(k0, k1, k2);
-    if let Err(e) = crate::core::table::check_key("table/put", key) {
-        h.jit_pending_error = Some(e);
-        return 2;
-    }
     let val = words_to_val(v0, v1, v2);
-    match crate::core::table::put(h, id, key, val) {
-        Ok(v) => {
-            *out = v;
-            0
-        }
-        Err(e) => {
-            h.jit_pending_error = Some(e);
-            2
-        }
-    }
+    let result = crate::core::table::check_key("table/put", key)
+        .and_then(|()| crate::core::table::put(h, id, key, val));
+    answer_or_park(h, out, result)
 }
 
 /// Loop-invariant-hoist support for the JIT (matmul LICM): resolve a vector value's

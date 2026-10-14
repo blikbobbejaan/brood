@@ -56,40 +56,48 @@
       (def-anchor module-name raw)
       (def-anchor (string/substring raw 0 slash) (string/substring raw (inc slash) (count raw))))))
 
-(defn- doc-link-part (part module-name)
-  "One `[[`-split segment: its link, then whatever followed the `]]`."
+(defn- ref-part (part render)
+  "One `[[`-split segment: its rendered reference, then whatever followed the `]]`."
   (let (end (index-of part "]]"))
-    (cond
+    (if (< end 0)
       ;; An unclosed `[[` is prose, not a broken link — leave it exactly as written.
-      (< end 0) (str "[[" part)
-      else
-        (let (raw (string/substring part 0 end)
-              tail (string/substring part (inc (inc end)) (count part)))
-          ;; A name has no spaces. This is the guard that keeps DATA out: docstrings carry
-          ;; literal vectors-of-vectors (`[[hatch :path \"../hatch\"]]`, `[[pc caps]]`), and
-          ;; turning one of those into a link would both mangle the example and emit an
-          ;; anchor to nothing.
-          ;; A bare name with no module to resolve it against would build `d-nil-<name>` —
-          ;; an anchor to nothing. Leave it as written instead: a visible `[[name]]` is a
-          ;; missing renderer argument the reader can report, a dead link is not.
-          (if (or (= raw "") (includes? raw " ") (and (nil? module-name) (< (index-of raw "/") 0)))
-            (str "[[" part)
-            (str "<a class=\"doc-link\" href=\"#"
-              (escape (doc-link-target module-name raw))
-              "\"><code>"
-              (escape raw)
-              "</code></a>"
-              tail))))))
+      (str "[[" part)
+      (let (raw (string/substring part 0 end)
+            ;; A name has no spaces. This is the guard that keeps DATA out: docstrings carry
+            ;; literal vectors-of-vectors (`[[hatch :path \"../hatch\"]]`, `[[pc caps]]`),
+            ;; and rendering one of those would mangle the example.
+            shown (if (or (= raw "") (includes? raw " ")) nil (render raw)))
+        (if (nil? shown)
+          (str "[[" part)
+          (str shown (string/substring part (inc (inc end)) (count part))))))))
+
+(defn render-refs (text render)
+  "Replace each `[[name]]` cross-reference in `text` (ADR-331) with `(render name)`. A
+`[[` with no `]]`, a bracketed run with a space in it (a literal vector of vectors), and a
+name `render` returns nil for are left exactly as written. Nil `text` is returned as is.
+
+    (docsite/render-refs \"see [[map]], [[x y]]\" (fn (name) (str \"<\" name \">\")))   → \"see <map>, [[x y]]\""
+  (let (parts (if (nil? text) nil (string/split text "[[")))
+    (if (< (count parts) 2)
+      text
+      (str (first parts) (apply str (map (rest parts) (fn (p) (ref-part p render))))))))
 
 (defn- doclinks (escaped module-name)
   "Render `[[name]]` cross-references in ALREADY-ESCAPED text as links to their definition.
 Applied after escaping, like `emphasis`, so the `<a>` this emits is the only markup in the
 result and the cited name stays escaped."
-  (let (parts (string/split escaped "[["))
-    (if (< (count parts) 2)
-      escaped
-      (str (first parts)
-        (apply str (map (rest parts) (fn (p) (doc-link-part p module-name))))))))
+  (render-refs escaped
+    (fn (raw)
+      ;; A bare name with no module to resolve it against would build `d-nil-<name>` — an
+      ;; anchor to nothing. Leave it as written instead: a visible `[[name]]` is a missing
+      ;; renderer argument the reader can report, a dead link is not.
+      (if (and (nil? module-name) (< (index-of raw "/") 0))
+        nil
+        (str "<a class=\"doc-link\" href=\"#"
+          (escape (doc-link-target module-name raw))
+          "\"><code>"
+          (escape raw)
+          "</code></a>")))))
 
 ;; `[[name]]` links in rendered HTML, applied to the text BETWEEN `<code>` spans only — inside
 ;; one, `[[…]]` is something the author is writing about. The renderer emits `<code>` and

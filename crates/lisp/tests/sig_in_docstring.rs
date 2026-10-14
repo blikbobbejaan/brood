@@ -10,13 +10,8 @@
 
 use std::path::{Path, PathBuf};
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
+mod support;
+use support::workspace_root;
 
 fn blsp_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();

@@ -6,15 +6,10 @@
 //! escaping a `finally` would have rendered that way too. `LispError::from_error_map`
 //! rebuilds the error from the map; this test pins the rendering.
 
-use std::io::Write;
 use std::process::Command;
 
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-rethrow-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 fn run(path: &std::path::Path) -> (String, bool) {
     let output = Command::new(env!("CARGO_BIN_EXE_brood"))
@@ -32,7 +27,7 @@ fn run(path: &std::path::Path) -> (String, bool) {
 #[test]
 fn a_rethrown_arity_error_renders_as_an_arity_error() {
     let path = script(
-        "catch",
+        "rethrow-catch",
         "(defn f (x) x)\n(try (f 1 2) (catch e (throw e)))\n",
     );
     let (stderr, ok) = run(&path);
@@ -47,7 +42,7 @@ fn a_rethrown_arity_error_renders_as_an_arity_error() {
 #[test]
 fn an_error_escaping_a_finally_renders_as_itself_with_its_trace() {
     let path = script(
-        "finally",
+        "rethrow-finally",
         "(defn boom () (* 2 (+ 1 \"x\")))\n(try (boom) (finally nil))\n",
     );
     let (stderr, ok) = run(&path);
@@ -65,7 +60,7 @@ fn a_thrown_map_of_a_library_kind_renders_its_message() {
     // A kind no built-in error has — a library's own — still names its sentence, and
     // the map is unchanged for a `catch`: only the headline differs.
     let path = script(
-        "library-kind",
+        "rethrow-library-kind",
         "(when (not= (try (throw {:kind :my-lib :message \"m\" :n 1}) (catch e (get e :n))) 1)\n\
            (throw \"catch lost the map\"))\n\
          (throw {:kind :my-lib :message \"the widget is closed\" :widget 7})\n",
@@ -84,7 +79,7 @@ fn a_thrown_map_of_a_library_kind_renders_its_message() {
 #[test]
 fn a_contract_violation_renders_its_message() {
     let path = script(
-        "contract",
+        "rethrow-contract",
         "(sig f (int -> int))\n(defn f (x) x)\n(f \"two\")\n",
     );
     let output = Command::new(env!("CARGO_BIN_EXE_brood"))

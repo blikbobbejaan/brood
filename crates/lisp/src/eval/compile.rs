@@ -181,19 +181,15 @@ pub const NO_SITE: u32 = u32::MAX;
 
 mod ir;
 
-pub use ir::{rewrite_arm_handles, Inst};
-
+// `ArmHandle`, the process-local arm handle (KI-40), is named by `Heap`'s IC entry and
+// live-arm stack, so it is re-exported at the crate-visible `compile::` path too.
 pub use ir::{
-    Chunk, CompiledArm, CompiledClosure, ConstVal, HandleKind, Node, PrimOp, PrimOp1, PrimOp3,
+    rewrite_arm_handles, ArmHandle, Chunk, CompiledArm, CompiledClosure, ConstVal, HandleKind,
+    Inst, Node, PrimOp, PrimOp1, PrimOp3,
 };
 
-// pub(super) items from ir: explicitly imported so `use ir::*` (pub-only) doesn't miss them.
-// pub items re-exported above; these are pub(super) items needed internally:
+// The pub(super) items of `ir` this module needs internally.
 use ir::{next_arm_uid, ArmSpec, ChunkExit, Step};
-
-// The process-local arm handle (KI-40) — named by `Heap`'s IC entry and live-arm stack,
-// so it is re-exported at the crate-visible `compile::` path rather than kept private.
-pub use ir::ArmHandle;
 
 mod lower;
 pub(crate) use lower::*;
@@ -420,8 +416,8 @@ pub(crate) struct BcFrame {
 /// deadline (so the scheduler arms a timer). The operand stack and frame slots it
 /// references stay live on the owning process's `Heap::roots`; this struct only holds
 /// the *control* state. Hand it back to [`vm_run_bc`] as `resume` to replay from the
-/// suspending `%receive` call. The scheduler cutover (§8.3) stores it in place of a
-/// `Coroutine`; for now only the capture→resume unit test consumes it.
+/// suspending `%receive` call. The scheduler (`run_one`) stores it on the parked
+/// process's mailbox, or re-enqueues it on a preempt.
 pub(crate) struct Suspended {
     frames: Vec<BcFrame>,
     cur: BcFrame,

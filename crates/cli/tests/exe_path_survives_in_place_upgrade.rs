@@ -17,34 +17,14 @@
 //! the ` (deleted)` suffix in the assertion message.
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::Command;
 
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn temp_dir(tag: &str) -> TempDir {
-    let path = std::env::temp_dir().join(format!(
-        "brood-exe-path-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    TempDir { path }
-}
+mod support;
+use support::temp_dir;
 
 #[test]
 fn exe_path_is_usable_after_the_binary_is_unlinked() {
-    let dir = temp_dir("unlink");
+    let dir = temp_dir("exe-path-unlink");
     let copy = dir.path.join("brood");
     std::fs::copy(env!("CARGO_BIN_EXE_brood"), &copy).expect("copy the binary");
     #[cfg(unix)]
@@ -101,7 +81,7 @@ fn exe_path_is_usable_after_the_binary_is_unlinked() {
 /// nonsense: with the binary intact the answer is the path AND the file is there.
 #[test]
 fn exe_path_names_an_existing_file_when_the_binary_is_intact() {
-    let dir = temp_dir("intact");
+    let dir = temp_dir("exe-path-intact");
     let program = dir.path.join("where.blsp");
     std::fs::write(
         &program,

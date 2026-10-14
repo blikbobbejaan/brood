@@ -834,7 +834,7 @@ pub mod l1_stats {
     }
     pub fn enabled() -> bool {
         static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *F.get_or_init(|| std::env::var_os("BROOD_L1_STATS").is_some())
+        crate::diagnostics::debug_flags::is_set(&F, "BROOD_L1_STATS")
     }
     pub fn dump_if_requested() {
         if !enabled() {
@@ -1158,7 +1158,7 @@ fn collect_receive_tags(heap: &Heap, tags: Value, out: &mut [u32; MAX_RECEIVE_TA
 /// deliver, the hardest fault to attribute).
 fn recv_mark_enabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var_os("BROOD_NO_RECV_MARK").is_none())
+    !crate::diagnostics::debug_flags::is_set(&F, "BROOD_NO_RECV_MARK")
 }
 
 /// The leading keyword of a keyword-led vector, in the receiver's heap — the in-heap

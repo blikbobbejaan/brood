@@ -23,27 +23,10 @@
 //! directly and cheaply. This test's job is narrower and still worth having: the byte gate
 //! engages the pool at all, and the pool reports what this process reports.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    TempDir { path }
-}
+mod support;
 
 /// A project whose every module carries the same three warnings — an unbound name, a call
 /// that cannot type, and a `match` clause no value reaches — padded past
@@ -138,7 +121,7 @@ fn the_pool_and_this_process_report_the_same_warnings() {
     // must still take the pool. The byte total is asserted below, so a change to either
     // number that drops the fixture under the gate fails loudly instead of quietly
     // measuring the sequential path twice.
-    let tmp = tempdir("checkpar");
+    let tmp = support::temp_dir("checkpar");
     let root = tmp.path.join("par");
     write_project(&root, 250, 220);
     let total: u64 = std::fs::read_dir(root.join("src"))

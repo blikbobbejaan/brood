@@ -42,21 +42,9 @@
 ;; Helpers over `substring` (char-indexed, like `string-length`). Generic enough
 ;; to live in core; the module system and the project tooling build on them.
 
-;; The bootstrap `path-*` subset (path-join/path-basename/path-absolute/parent-directory):
-;; the minimal path ops tooling needs *before* any module can be required. The full
-;; path library is `std/path.blsp` (`path/dirname`/`normalize`/`relative-to`/…) — a
-;; deliberate layer on top, with its own (slightly different) contracts. Not a dup.
-;;
-;; Index of the last `/` in `s`, scanning down from `i`, or -1 if none. (Brood has
-;; no char accessor yet; paths are short, so a substring scan is fine.)
-;; A prelude `sig` is enforced by the boot sweep under `BROOD_CONTRACTS=all` (ADR-381),
-;; whichever side of the defn it sits on.
-(defn- %path-last-slash (s i)
-  (cond (< i 0) -1 (= (string/substring s i (inc i)) "/") i else (%path-last-slash s (dec i))))
-(sig %path-last-slash (string int -> int))
-
-;; The directory containing `path`: "/a/b/c" -> "/a/b", "/foo" -> "/", "rel" -> ".".
-;; A path that is its own parent ("/" or ".") is the fixed point a walk-up stops at.
+;; The bootstrap path subset: the minimal path ops tooling needs *before* any module can
+;; be required. The full path library is `std/path.blsp` (`path/dirname`/`normalize`/
+;; `relative-to`/…) — a deliberate layer on top, with its own contracts. Not a dup.
 
 ;; The loader calls this during boot, BEFORE any module can load, so a bootstrap copy has
 ;; to live here. `%`-prefixed to say so: the public spelling is `path/join`, and this one

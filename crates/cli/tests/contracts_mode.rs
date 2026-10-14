@@ -16,29 +16,10 @@
 //! `XDG_CACHE_HOME` at a fresh temp dir. Without that it passes on a broken build: the
 //! warm-cache path was green throughout the entire period the mode was unusable.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn temp_dir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).expect("create temp dir");
-    TempDir { path }
-}
+use support::temp_dir;
 
 /// The program under test: a `sig`-declared function and an ability op, each with a body
 /// that contradicts its declaration, plus the well-behaved calls beside them.

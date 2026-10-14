@@ -15,7 +15,6 @@
     (bytes/length #b\"hi\")      → 2"
   (%byte-length b))
 ;; Inferred verbatim; the pre-flight's cost, not a fact (KI-150, see `encoding`).
-;; kept for cost (KI-150)
 (sig length (bytes -> int))
 
 (defn slice (b start & more)
@@ -49,20 +48,18 @@
   "Read `n` bytes (1–8) of `bs` at `off` as a big-endian signed (two's-complement) integer.
 
     (bytes/int (bytes/int-> 258 2) 0 2)   → 258"
-  (do
-    (bytes-width-check "bytes-int" n)
-    (let (b0 (bytes/at bs off))
-      (bytes-acc-be bs (+ off 1) (+ off n) (if (>= b0 128) (- b0 256) b0)))))
+  (bytes-width-check "bytes-int" n)
+  (let (b0 (bytes/at bs off))
+    (bytes-acc-be bs (+ off 1) (+ off n) (if (>= b0 128) (- b0 256) b0))))
 (sig int (bytes int int -> int))
 
 (defn int-le (bs off n)
   "Read `n` bytes (1–8) of `bs` at `off` as a little-endian signed (two's-complement) integer.
 
     (bytes/int-le #b\"\\xff\\xff\" 0 2)   → -1"
-  (do
-    (bytes-width-check "bytes-int-le" n)
-    (let (bt (bytes/at bs (+ off (- n 1))))
-      (bytes-acc-le bs off (+ off (- n 2)) (if (>= bt 128) (- bt 256) bt)))))
+  (bytes-width-check "bytes-int-le" n)
+  (let (bt (bytes/at bs (+ off (- n 1))))
+    (bytes-acc-le bs off (+ off (- n 2)) (if (>= bt 128) (- bt 256) bt))))
 (sig int-le (bytes int int -> int))
 
 (defn uint (bs off n)

@@ -80,15 +80,8 @@ Fast path: a chunk with no ESC byte only needs its CRs dropped (a single
 
 (defn- ansi-line (lines row) (if (< row (count lines)) (nth lines row) ""))
 
-(defn- ansi-pad (s n)
-  "`s` at least `n` long, space-filled — a cursor may sit past the end of its line."
-  (if (>= (string/length s) n)
-    s
-    (str s (string/join (map (range (- n (string/length s))) (fn (_) " ")) ""))))
-(sig ansi-pad (string int -> string))
-
 (defn- ansi-truncate (s col)
-  "`s` cut at `col`. Deliberately NOT `ansi-pad` first: a cursor may sit past the end
+  "`s` cut at `col`. Deliberately NOT padded out to `col` first: a cursor may sit past the end
 of a short line, and erasing from there erases nothing — padding it out to the cursor
 would write spaces where the program asked for deletion."
   (string/substring s 0 (math/min col (string/length s))))
@@ -96,7 +89,8 @@ would write spaces where the program asked for deletion."
 
 (defn- ansi-write (lines row col text)
   "Overwrite `text` at (row, col), extending the line if it ends short."
-  (let (l (ansi-pad (ansi-line lines row) col)
+  ;; padded out to `col`: a cursor may sit past the end of its line
+  (let (l (string/pad-right (ansi-line lines row) col)
         before (string/substring l 0 col)
         after-start (math/min (string/length l) (+ col (string/length text)))
         after (string/substring l after-start (string/length l)))

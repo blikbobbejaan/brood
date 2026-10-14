@@ -14,6 +14,8 @@
 
 use std::process::Command;
 
+mod support;
+
 const PROBE: &str = "(defn s (xs) (math/quot (first xs) 2))\n(sig s ((vector int) -> int))\n";
 
 fn check_warnings(env: &[(&str, &str)]) -> usize {
@@ -21,13 +23,8 @@ fn check_warnings(env: &[(&str, &str)]) -> usize {
 }
 
 fn check_warnings_with(flags: &[&str], env: &[(&str, &str)]) -> usize {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("brood-strict-env-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create temp dir");
-    let path = dir.join("probe.blsp");
+    let dir = support::temp_dir("strict-env");
+    let path = dir.path.join("probe.blsp");
     std::fs::write(&path, PROBE).expect("write probe");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));
     cmd.arg("--check")
@@ -38,7 +35,6 @@ fn check_warnings_with(flags: &[&str], env: &[(&str, &str)]) -> usize {
         cmd.env(key, value);
     }
     let out = cmd.output().expect("run brood --check");
-    let _ = std::fs::remove_dir_all(&dir);
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

@@ -3,7 +3,7 @@
 use super::ctx::{resolve_clause_overload_ret, resolve_overload_ret, Ctx};
 use super::guards::path_of;
 use super::sigs::{declared_heap_overload, sig_of};
-use super::walk::{is_fn_head, list_items};
+use super::walk::{bindings, is_fn_head, list_items};
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, Symbol, Tag, Value};
@@ -792,7 +792,7 @@ fn control_flow_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
     // `(let (bindings) body…)` / `(letrec …)` → ty(last body form),
     // typed in a scope with each binding's RHS type threaded in (sequentially).
     if value::symbol_is(head, kw::LET) || value::symbol_is(head, kw::LETREC) {
-        let binds = let_bindings(heap, *items.get(1)?)?;
+        let binds = bindings(heap, *items.get(1)?)?;
         if binds.len() % 2 != 0 {
             return None;
         }
@@ -994,17 +994,6 @@ fn is_inferring_self_call(heap: &Heap, form: Value, ctx: &Ctx) -> bool {
     list_items(heap, form)
         .and_then(|items| items.first().copied())
         .is_some_and(|head| matches!(head, Value::Sym(s) if s == self_name))
-}
-
-/// Parse a `let`-family bindings form into a flat `[name val name val …]` vec —
-/// accepts both `(…)` lists and `[…]` vectors (the two shapes the reader emits),
-/// mirroring `walk::bindings`. `None` for any other shape.
-fn let_bindings(heap: &Heap, form: Value) -> Option<Vec<Value>> {
-    match form {
-        Value::Vector(id) => Some(heap.vector(id).to_vec()),
-        Value::Nil | Value::Pair(_) => list_items(heap, form),
-        _ => None,
-    }
 }
 
 /// Result type for the arithmetic ops the curated `(number… -> number)` sigs type

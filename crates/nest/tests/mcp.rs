@@ -7,33 +7,17 @@
 //! documents, the project bootstrap, and a clean exit.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use serde_json::{json, Value as Json};
 
-struct TempDir {
-    path: PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-mcp-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::{temp_dir, TempDir};
 
 /// A one-module project, plus `extra` files (`(relative path, contents)`).
 fn project(tag: &str, extra: &[(&str, &str)]) -> TempDir {
-    let directory = tempdir(tag);
+    let directory = temp_dir(&format!("mcp-{tag}"));
     let root = &directory.path;
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
@@ -186,7 +170,7 @@ fn end_of_input_ends_the_session_cleanly() {
 
 #[test]
 fn outside_a_project_the_server_refuses_to_start() {
-    let directory = tempdir("noproject");
+    let directory = temp_dir("mcp-noproject");
     let session = serve(&directory.path, &[request(1, "ping", json!({}))]);
     assert_eq!(session.code, Some(2));
     assert!(session.replies.is_empty());

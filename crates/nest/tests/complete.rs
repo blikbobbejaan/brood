@@ -19,6 +19,9 @@
 use std::path::Path;
 use std::process::Command;
 
+mod support;
+use support::{temp_dir, TempDir};
+
 struct Completion {
     stdout: String,
     stderr: String,
@@ -68,28 +71,9 @@ fn complete_in(dir: &Path, words: &[&str]) -> Completion {
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("brood-cmp-{tag}-{}-{n}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
-
 /// A project with two tagged test files, a source module, and one dependency.
 fn project() -> TempDir {
-    let tmp = tempdir("proj");
+    let tmp = temp_dir("cmp-proj");
     let root = tmp.path.clone();
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::create_dir_all(root.join("tests")).unwrap();
@@ -138,11 +122,11 @@ fn completion_never_fails_however_it_is_called() {
         .stderr(std::process::Stdio::null())
         .status();
     let proj = project();
-    let bare = tempdir("bare");
+    let bare = temp_dir("cmp-bare");
 
     // A manifest that does not parse: every other nest command errors loudly on
     // this, and completion must not.
-    let broken = tempdir("broken");
+    let broken = temp_dir("cmp-broken");
     std::fs::write(broken.path.join("project.blsp"), "(project :name \n").unwrap();
 
     // Deliberately small. Each case is a process spawn, and the value-position
@@ -315,7 +299,7 @@ fn doc_offers_baked_in_modules() {
 
 #[test]
 fn outside_a_project_dynamic_values_are_silent_not_wrong() {
-    let bare = tempdir("bare2");
+    let bare = temp_dir("cmp-bare2");
     for words in [
         vec!["test", ""],
         vec!["remove", ""],
@@ -336,7 +320,7 @@ fn outside_a_project_dynamic_values_are_silent_not_wrong() {
 
 #[test]
 fn a_broken_manifest_still_completes_flags() {
-    let broken = tempdir("broken2");
+    let broken = temp_dir("cmp-broken2");
     std::fs::write(broken.path.join("project.blsp"), "(project :name \n").unwrap();
     // The manifest is unparseable — every other command errors on it. Flags are
     // derived from clap, so they must be unaffected.

@@ -40,9 +40,18 @@ module's namespace-rooted globals (ADR-070) back to it."
 
 ;; The bare module title from a file path: "a/b/foo.blsp" -> "foo".
 (defn- docs-basename (path)
-  (let (i (%path-last-slash path (dec (string/length path)))
-        file (if (< i 0) path (string/substring path (inc i) (string/length path))))
-    (if (string/ends-with? file ".blsp") (string/substring file 0 (- (string/length file) 5)) file)))
+  (let (file (path/basename path))
+    (if (string/ends-with? file ".blsp") (path/stem file) file)))
+
+(defn- docs-setup-root (who)
+  "Find the project above the cwd (or raise naming `who`), set it up, and return its root."
+  (let (root (project/require-root who))
+    (setup root)
+    root))
+
+;; Every source file under `root`'s source paths, in source-path order.
+(defn- docs-source-files (root)
+  (apply append (map (project/abs-paths root *project-source-paths*) project/collect-sources)))
 
 ;; --- which names a module defines (global-table delta) -----------------------
 
@@ -59,27 +68,8 @@ module's namespace-rooted globals (ADR-070) back to it."
 ;; module can predict. So here the reference renders as the code span it is: `reject`. The
 ;; brackets never reach the reader in either surface.
 ;;
-;; Same two guards as the docsite's: a name has no spaces (docstrings carry literal vectors
-;; like `[[hatch :path "…"]]`), and an unclosed `[[` is prose.
-(defn- docs-link-part (part prefix)
-  (let (end (index-of part "]]"))
-    (cond
-      (< end 0) (str "[[" part)
-      else
-        (let (raw (string/substring part 0 end)
-              tail (string/substring part (inc (inc end)) (count part)))
-          (if (or (= raw "") (includes? raw " "))
-            (str "[[" part)
-            ;; QUALIFY a bare reference with the citing definition's own module. The docsite
-            ;; can leave `[[reject]]` reading as "reject" because it is a link on the page
-            ;; that defines it; here there is no link and no page, so the bare spelling is
-            ;; all the reader gets — and for a namespaced module the bare spelling is one
-            ;; they cannot type. `seq/filter`'s docstring citing [[reject]] must print
-            ;; `seq/reject`, not `reject`, which is unbound.
-            (str "`"
-              (if (or (nil? prefix) (>= (index-of raw "/") 0)) raw (str prefix raw))
-              "`"
-              tail))))))
+;; The scan and its guards (an unclosed `[[` is prose; a bracketed run with a space is a
+;; literal vector) are the docsite's `render-refs`; only the rendering differs.
 
 (defn- docs-module-prefix (sym)
   "The `mod/` a bare `[[name]]` in `sym`'s docstring should be read against, or nil for a
@@ -91,13 +81,15 @@ bare-surface (prelude) name, whose references are bare already."
 (defn- docs-links (text &optional prefix)
   "Render `[[name]]` cross-references in `text` as code spans, qualifying bare ones with
 `prefix` (a `mod/` string) when there is one."
-  (if (nil? text)
-    text
-    (let (parts (string/split text "[["))
-      (if (< (count parts) 2)
-        text
-        (str (first parts)
-          (apply str (map (rest parts) (fn (p) (docs-link-part p prefix)))))))))
+  (docsite/render-refs text
+    (fn (raw)
+      ;; QUALIFY a bare reference with the citing definition's own module. The docsite can
+      ;; leave `[[reject]]` reading as "reject" because it is a link on the page that
+      ;; defines it; here there is no link and no page, so the bare spelling is all the
+      ;; reader gets — and for a namespaced module the bare spelling is one they cannot
+      ;; type. `seq/filter`'s docstring citing [[reject]] must print `seq/reject`, not
+      ;; `reject`, which is unbound.
+      (str "`" (if (or (nil? prefix) (>= (index-of raw "/") 0)) raw (str prefix raw)) "`"))))
 
 ;; A value worth a full entry (signature + docstring): a function or a macro.
 (defn- docs-documentable? (v) (or (fn? v) (= (type-of v) :macro)))
@@ -267,15 +259,10 @@ bare-surface (prelude) name, whose references are bare already."
 (defn document-project ()
   "The Markdown documentation for the whole project (every source file under it), found from the cwd. Errors if not in a project."
   ; project/find-root / --collect-sources / setup
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root)
-      (error "doc: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
-    (setup root)
-    (let (dirs (project/abs-paths root *project-source-paths*)
-          files (fold dirs nil (fn (acc d) (append acc (project/collect-sources d)))))
-      ;; One join over the whole project, not a per-file recopy of everything emitted
-      ;; so far — this is the outermost of the three, so it was O(total-docs²).
-      (apply str (map files (fn (f) (str (document-file f) "\n")))))))
+  (let (files (docs-source-files (docs-setup-root "doc")))
+    ;; One join over the whole project, not a per-file recopy of everything emitted
+    ;; so far — this is the outermost of the three, so it was O(total-docs²).
+    (apply str (map files (fn (f) (str (document-file f) "\n"))))))
 
 ;; --- the complete builtin/prelude reference (`nest doc --all`) ---------------
 
@@ -386,16 +373,11 @@ bare-surface (prelude) name, whose references are bare already."
 (defn model-project ()
   "The whole-project doc model — `{:name :version :modules […]}` — found from the cwd,
   documenting every source file under it. Errors if not in a Brood project."
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root)
-      (error "docs: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
-    (setup root)
-    (let (dirs (project/abs-paths root *project-source-paths*)
-          files (fold dirs nil (fn (acc d) (append acc (project/collect-sources d)))))
-      {:name *project-name*
-       :version *project-version*
-       :guides (collect-guides root)
-       :modules (apply vector (map files model-file))})))
+  (let (root (docs-setup-root "docs"))
+    {:name *project-name*
+     :version *project-version*
+     :guides (collect-guides root)
+     :modules (apply vector (map (docs-source-files root) model-file))}))
 
 ;; The full builtin+prelude reference (for `nest docs --all`), grouped by the category
 ;; `doc-catalog` derives from each name's definition site — Math, Strings, Filesystem,
@@ -539,10 +521,7 @@ bare-surface (prelude) name, whose references are bare already."
   it equals `result`, so documentation examples can't drift from behaviour. Loads the
   project's sources, prints a line per example, and returns the failure count (0 = all
   passed). The policy behind `nest doctest`."
-  (let (root (project/find-root (file/cwd)))
-    (when (nil? root)
-      (error "doctest: not in a Brood project (no project.blsp found from " (file/cwd) ")"))
-    (setup root)
+  (let (root (docs-setup-root "doctest"))
     (project-image/load-sources-cached root)
     (doctest-report (collect-doctests (str *project-name* "/")))))
 

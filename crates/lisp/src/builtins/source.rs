@@ -257,41 +257,19 @@ pub(super) fn parse_source(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 
 pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Value {
     use cst::NodeKind::*;
-    let tag = |k: &'static str| Value::keyword(value::intern(k));
+    // A keyword is an immediate, so it survives the allocations below.
+    let tag = Value::keyword(value::intern(cst_node_kind_name(node.kind)));
     match node.kind {
         // Leaves: [kind raw-text].
         Symbol | Keyword | Int | Float | Decimal | Ratio | Str | Bool | Nil | Whitespace
         | Comment | Error => {
-            let k = match node.kind {
-                Symbol => "symbol",
-                Keyword => "keyword",
-                Int => "int",
-                Float => "float",
-                Decimal => "decimal",
-                Ratio => "ratio",
-                Str => "str",
-                Bool => "bool",
-                Nil => "nil",
-                Whitespace => "whitespace",
-                Comment => "comment",
-                Error => "error",
-                _ => unreachable!(),
-            };
             let text = heap.alloc_string(node.text(src));
-            heap.alloc_vector(vec![tag(k), text])
+            heap.alloc_vector(vec![tag, text])
         }
         // Reader-macro wrappers: [kind child]. The single structural child is
         // the wrapped form; any leading whitespace child is dropped (the wrapper
         // owns its position via its parent's children list).
         Quote | Quasi | Unquote | Splice | Pin => {
-            let k = match node.kind {
-                Quote => "quote",
-                Quasi => "quasi",
-                Unquote => "unquote",
-                Splice => "splice",
-                Pin => "pin",
-                _ => unreachable!(),
-            };
             // A reader-macro node's children are the wrapped form's parse
             // result(s) — usually a single form. Walk and pick the first
             // non-trivia child; nest the rest as following siblings would be a
@@ -301,26 +279,18 @@ pub(super) fn cst_to_value(heap: &mut Heap, node: &cst::Node, src: &str) -> Valu
                 .next()
                 .map(|c| cst_to_value(heap, c, src))
                 .unwrap_or(Value::nil());
-            heap.alloc_vector(vec![tag(k), child])
+            heap.alloc_vector(vec![tag, child])
         }
         // Containers: [kind [child …]]. Children include trivia (whitespace +
         // comments) so the formatter can preserve blank-line + comment intent.
         Root | List | Vector | Map | Set => {
-            let k = match node.kind {
-                Root => "root",
-                List => "list",
-                Vector => "vector",
-                Map => "map",
-                Set => "set",
-                _ => unreachable!(),
-            };
             let kids: Vec<Value> = node
                 .children
                 .iter()
                 .map(|c| cst_to_value(heap, c, src))
                 .collect();
             let kids_vec = heap.alloc_vector(kids);
-            heap.alloc_vector(vec![tag(k), kids_vec])
+            heap.alloc_vector(vec![tag, kids_vec])
         }
     }
 }

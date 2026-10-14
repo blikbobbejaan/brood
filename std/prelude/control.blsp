@@ -328,7 +328,7 @@ The steps after a failure never run, so a pipe does not have to end in `(if (fai
     (condp = :b :a 1 :b 2)                      → 2
     (condp string/starts-with? \"# Title\" \"#\" :heading \"-\" :item :text)   → :heading"
   (let (e (gensym "e") p (gensym "p"))
-    `(let (~e ~expr ~p ~pred) ~(%condp-clauses p e (map clauses identity)))))
+    `(let (~e ~expr ~p ~pred) ~(%condp-clauses p e clauses))))
 
 ;; ---- with: sequential match-binding with fall-through -----------------------
 ;; `with` — the FAILURE let. Bindings read exactly like `let`'s; the first value that is a

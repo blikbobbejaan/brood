@@ -38,6 +38,7 @@ use lsp_types::{
 };
 
 use crate::line_index::LineIndex;
+use crate::module_ref::chain_to;
 use crate::semantic_tokens::SPECIAL_FORMS;
 
 /// The prefix the advisory checker uses for an unbound-name finding. We key off
@@ -176,13 +177,8 @@ fn innermost_defn<'a>(root: &'a Node, src: &str, at: u32) -> Option<&'a Node> {
         if at < node.span.start || at > node.span.end {
             continue;
         }
-        if node.kind == NodeKind::List {
-            if let Some(head) = node.forms().next() {
-                let name = head.text(src);
-                if name == "defn" || name == "defn-" {
-                    found = Some(node);
-                }
-            }
+        if matches!(node.head_symbol(src), Some("defn" | "defn-")) {
+            found = Some(node);
         }
         stack.extend(node.children.iter());
     }
@@ -286,12 +282,12 @@ fn add_use_actions(
 /// like hand-written code either way.
 fn insert_use_clause(root: &Node, src: &str, module: &str) -> Option<(u32, String)> {
     let first = root.forms().next()?;
-    if !is_head(first, src, "defmodule") {
+    if first.head_symbol(src) != Some("defmodule") {
         return None;
     }
     let last_clause = first
         .forms()
-        .filter(|c| c.kind == NodeKind::List && clause_keyword(c, src).is_some())
+        .filter(|c| c.head_keyword(src).is_some())
         .last();
     if let Some(clause) = last_clause {
         let indent = line_indent(src, clause.span.start);
@@ -307,12 +303,10 @@ fn insert_use_clause(root: &Node, src: &str, module: &str) -> Option<(u32, Strin
 /// non-symbol name).
 fn header_ns(root: &Node, src: &str) -> Option<String> {
     let first = root.forms().next()?;
-    if !is_head(first, src, "defmodule") {
+    if first.head_symbol(src) != Some("defmodule") {
         return None;
     }
-    let mut forms = first.forms();
-    forms.next()?; // `defmodule`
-    let name = forms.next()?;
+    let name = first.forms().nth(1)?;
     (name.kind == NodeKind::Symbol).then(|| name.text(src).to_string())
 }
 
@@ -323,14 +317,11 @@ fn header_imported_modules(root: &Node, src: &str) -> Vec<String> {
     let Some(first) = root.forms().next() else {
         return mods;
     };
-    if !is_head(first, src, "defmodule") {
+    if first.head_symbol(src) != Some("defmodule") {
         return mods;
     }
     for clause in first.forms() {
-        if clause.kind != NodeKind::List {
-            continue;
-        }
-        let Some(kw) = clause_keyword(clause, src) else {
+        let Some(kw) = clause.head_keyword(src) else {
             continue;
         };
         if matches!(kw, ":use" | ":alias" | ":use-internals") {
@@ -344,13 +335,6 @@ fn header_imported_modules(root: &Node, src: &str) -> Vec<String> {
         }
     }
     mods
-}
-
-/// The keyword text (`:use`, …) of a header clause `(:kw …)`, or `None` when the
-/// list isn't keyword-led.
-fn clause_keyword<'s>(node: &Node, src: &'s str) -> Option<&'s str> {
-    let head = node.forms().next()?;
-    (head.kind == NodeKind::Keyword).then(|| head.text(src))
 }
 
 /// The leading whitespace (indentation) of the line containing byte `offset`.
@@ -419,26 +403,6 @@ fn call_head_argc(root: &Node, offset: u32) -> Option<usize> {
     None
 }
 
-/// The chain of nodes from `root` down to the innermost one containing `offset`.
-fn chain_to<'a>(node: &'a Node, offset: u32, out: &mut Vec<&'a Node>) {
-    out.push(node);
-    for child in &node.children {
-        if child.span.start <= offset && offset < child.span.end {
-            chain_to(child, offset, out);
-            break; // children don't overlap — at most one contains the offset
-        }
-    }
-}
-
-/// True when `node` is a `List` whose head symbol is `name` (`defmodule`, …).
-fn is_head(node: &Node, src: &str, name: &str) -> bool {
-    node.kind == NodeKind::List
-        && node
-            .forms()
-            .next()
-            .is_some_and(|h| h.kind == NodeKind::Symbol && h.text(src) == name)
-}
-
 /// The i-th generated parameter name: `a`, `b`, … `z`, then `a26`, `a27`, … so
 /// large arities stay distinct and valid.
 fn param_name(i: usize) -> String {
@@ -491,16 +455,19 @@ fn did_you_mean(uri: &Uri, diag: &Diagnostic, suggestion: &str) -> CodeActionOrC
 /// The "did you mean" names for `name`, asked of `fuzzy/nearest` (which owns the
 /// ranking). Candidates: locals in scope here, the special forms, and every global.
 fn suggestions(interp: &mut Interp, scope: &ScopeTree, offset: u32, name: &str) -> Vec<String> {
-    let quote = |text: &str| format!("\"{}\"", introspect::escape_brood_string(text));
     let locals = scope.names_in_scope(offset);
     let literal_candidates: Vec<String> = locals
         .iter()
-        .map(|binding| quote(&binding.name))
-        .chain(SPECIAL_FORMS.iter().map(|form| quote(form)))
+        .map(|binding| introspect::string_literal(&binding.name))
+        .chain(
+            SPECIAL_FORMS
+                .iter()
+                .map(|form| introspect::string_literal(form)),
+        )
         .collect();
     let form = format!(
         "(fuzzy/nearest {} (append (list {}) (map (reflect/global-names) str)))",
-        quote(name),
+        introspect::string_literal(name),
         literal_candidates.join(" ")
     );
     let checkpoint = interp.heap.checkpoint();

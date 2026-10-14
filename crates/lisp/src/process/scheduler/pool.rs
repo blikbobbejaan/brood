@@ -189,7 +189,7 @@ fn stranded_report_queue(lock: &std::sync::Mutex<VecDeque<Box<Process>>>) -> Opt
 
 pub(crate) fn sched_dbg() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_SCHED_DBG").is_some())
+    crate::diagnostics::debug_flags::is_set(&ON, "BROOD_SCHED_DBG")
 }
 
 pub(crate) fn enqueue(mut proc: Box<Process>) {

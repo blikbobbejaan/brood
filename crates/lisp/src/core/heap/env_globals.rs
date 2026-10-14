@@ -378,7 +378,42 @@ impl Heap {
         let cold = self.cold()?;
         cold.load_stages
             .iter()
-            .rposition(|st| st.bindings.contains_key(&sym))
+            .rposition(|st| st.defined.contains(&sym) && st.bindings.contains_key(&sym))
+    }
+
+    /// Rebuild every open frame's VIEW of registry `sym` — its staged binding for a registry
+    /// it registered into but did not define — as the live value with the frame's own staged
+    /// ops re-applied, outermost frame first. Called once a write reaches the live table
+    /// behind a frame's back (a nested load's publish, a live swap): a stale view would hide
+    /// that write from the loading process until its own load published.
+    fn refresh_registry_views(&mut self, sym: Symbol) {
+        let depth = self.cold().map_or(0, |c| c.load_stages.len());
+        let mut base = self.runtime.globals_read().get(&sym).copied();
+        for idx in 0..depth {
+            let stage = &self.cold().expect("open load").load_stages[idx];
+            if stage.defined.contains(&sym) || !stage.bindings.contains_key(&sym) {
+                continue;
+            }
+            let ops: Vec<LoadWrite> = stage
+                .writes
+                .iter()
+                .filter(|w| matches!(w, LoadWrite::Registry { sym: s, .. } if *s == sym))
+                .cloned()
+                .collect();
+            let mut view = base.unwrap_or(Value::nil());
+            for w in ops {
+                if let LoadWrite::Registry { op, path, val, .. } = w {
+                    if let Some(next) = self.registry_next(view, op, &path, val) {
+                        view = next;
+                    }
+                }
+            }
+            let view = self.promote(view);
+            self.cold_mut().load_stages[idx].bindings.insert(sym, view);
+            base = Some(view);
+        }
+        self.runtime.version.fetch_add(1, Ordering::Relaxed);
+        self.runtime.code_epoch.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Every value an open load of this process holds unpublished — collector roots for
@@ -536,6 +571,20 @@ impl Heap {
                     break;
                 }
             }
+        }
+        // An enclosing load that registered into one of these registries holds a view the
+        // writes just landed behind.
+        let mut registries: Vec<Symbol> = pending
+            .iter()
+            .filter_map(|(_, _, w)| match w {
+                LoadWrite::Registry { sym, .. } => Some(*sym),
+                _ => None,
+            })
+            .collect();
+        registries.sort_unstable();
+        registries.dedup();
+        for sym in registries {
+            self.refresh_registry_views(sym);
         }
         self.end_rt_collect_block();
     }
@@ -945,9 +994,16 @@ impl Heap {
         // ADR-344: a registry this process's OPEN load defined (`(defonce *reg* {})` then a
         // swap in the same module) is not on the shared table yet — the new map replaces the
         // staged binding in the frame that owns it, and publishes with the module. Written
-        // live instead, the frame's `Define` would overwrite it at publish.
+        // live instead, the frame's `Define` would overwrite it at publish. A frame that only
+        // holds a view of the registry (it registered into it) takes the swap too: the new map
+        // was computed from that view, so written live it would publish the frame's ops early.
         if self.in_journalled_load() {
-            if let Some(owner) = self.staged_frame_of(sym) {
+            let holder = self.cold().and_then(|c| {
+                c.load_stages
+                    .iter()
+                    .rposition(|st| st.bindings.contains_key(&sym))
+            });
+            if let Some(owner) = holder {
                 self.global_trace(sym, "swap->staged", Some(new));
                 let shared = self.promote(new);
                 let st = &mut self.cold_mut().load_stages[owner];
@@ -1163,6 +1219,7 @@ impl Heap {
                     let st = self.cold_mut().load_stages.last_mut().expect("open load");
                     st.writes.push(LoadWrite::Define { sym, val: shared });
                     st.removed.remove(&sym);
+                    st.defined.insert(sym);
                     st.bindings.insert(sym, shared).is_some()
                 };
                 self.forget_undefined_mark(sym);
@@ -1298,6 +1355,7 @@ impl Heap {
             // would bind it again after the inner one removed it. Every frame that holds
             // it drops it and records the removal after its own define.
             for stage in self.cold_mut().load_stages.iter_mut() {
+                stage.defined.remove(&sym);
                 if stage.bindings.remove(&sym).is_some() {
                     was_staged = true;
                     stage.writes.push(LoadWrite::Undefine { sym });
@@ -1387,15 +1445,10 @@ impl Heap {
     // ----- dynamic-variable bindings (the `binding` form) -----
 
     /// Push a dynamic binding of `sym` to `val` (the innermost wins on lookup).
-    /// Paired with [`Heap::pop_dynamic`] by the `%binding` primitive, which pops
-    /// exactly what it pushed when its body returns — even on error.
+    /// The `%binding` primitive records [`Heap::dynamics_len`] first and truncates back
+    /// to it when its body returns — even on error.
     pub fn push_dynamic(&mut self, sym: Symbol, val: Value) {
         self.dynamics.push((sym, val));
-    }
-
-    /// Pop the most recent dynamic binding (the matching unwind of `push_dynamic`).
-    pub fn pop_dynamic(&mut self) {
-        self.dynamics.pop();
     }
 
     /// How many dynamic bindings are in force — what an inline `try` records, and a bytecode

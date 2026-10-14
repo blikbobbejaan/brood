@@ -360,9 +360,9 @@ not we look, so not looking is what leaves it there forever. (That is not hypoth
 1 ms budget over 8k candidates, killing alone stranded seven replies in the caller — and the
 caller is an editor's loop, which then scans past them on every selective receive it ever
 does again.) Only then is the remainder ranked locally, so the ANSWER is whole either way."
-  (let (_ (doseq (entry (map (seq pending) second)) (exit (second entry) :kill))
+  (let (_ (doseq (entry (vals pending)) (exit (second entry) :kill))
         [left swept] (fuzzy-sweep tag pending acc))
-    (fold (map (seq left) second)
+    (fold (vals left)
       swept
       (fn (a entry) (append a (fuzzy-fold score-of (first entry) k))))))
 

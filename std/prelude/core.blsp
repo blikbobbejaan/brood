@@ -719,7 +719,7 @@ shape, a union, a tuple, another alias. Module-scoped like a `sig`: declared in 
 ;; Recognised categories: `:non-tail-recursion`, `:unreachable-clause`,
 ;; `:type-mismatch` (a `sig`-declared return/argument the body deliberately
 ;; violates — e.g. a negative test proving a `sig!` runtime contract throws),
-;; `:unbound`, `:unrequired`, `:deprecated`, and `:discarded-catch` (a
+;; `:unbound`, `:deprecated`, and `:discarded-catch` (a
 ;; `(catch e nil)` whose constant is genuinely the answer).
 ;; Wraps one or many forms (top-level defns or an inner expression).
 ;; See docs/type-annotations.md.
@@ -730,7 +730,7 @@ shape, a union, a tuple, another alias. Module-scoped like a `sig`: declared in 
   "Suppress an advisory checker lint over the wrapped forms. `category` is a
 keyword: `:non-tail-recursion`, `:unreachable-clause`, `:type-mismatch`, `:unbound`
 (globals defined at runtime — a `reflect/eval`-driven `def`, the wasm `use-native`
-binding — that the checker cannot see in source), `:unrequired`, `:deprecated`,
+binding — that the checker cannot see in source), `:deprecated`,
 `:discarded-catch`, `:duplicate-def` (a second top-level definition of a name in
 one file that is a deliberate override), `:pure` (a `ui-memo` thunk, or a `:pure`-declared
 function, that performs an effect on purpose), `:total` (a `:total`-declared function
@@ -1105,7 +1105,6 @@ load order.
 The non-list answer is load-bearing: a `(sig *name* int)` declares a VALUE's type, so `sig!`
 asks where its `->` is and must hear \"nowhere\" — calling `first` on the symbol would fail
 the module under BROOD_CONTRACTS=1."
-  (cond
-    (nil? xs) -1
-    (pair? xs) (if (%eq (first xs) x) n (%sig-pos (rest xs) x (%add n 1)))
-    else -1))
+  (if (pair? xs)
+    (if (%eq (first xs) x) n (%sig-pos (rest xs) x (%add n 1)))
+    -1))

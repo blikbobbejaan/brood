@@ -146,15 +146,10 @@ as unchanged (only when some were)."
 
 ;; --- the project test bootstrap ----------------------------------------------
 
-(defn- project-root-or-error (who)
-  "The project root above the cwd, or raise naming `who`."
-  (or (project/find-root (file/cwd))
-    (error who ": not in a Brood project (no project.blsp found from " (file/cwd) ")")))
-
 (defn- project-load-for-tests (who)
   "Find the project (or raise naming `who`), load its sources image-backed, and drop any
 test registrations a previous run left in a long-lived image. Returns the root."
-  (let (root (project-root-or-error who))
+  (let (root (project/require-root who))
     (project/setup root)
     (project-image/load-sources-cached root)
     (test/reset-units)
@@ -233,7 +228,7 @@ Returns the coverage percentage (nil when none was measured)."
 ;; different things (was a function entered vs did a line run) — in which case the
 ;; LINE percentage is what `--cover-min` gates on, being the stricter number.
 (defn- project-coverage-report (root opts)
-  (let (fn-percent (if (test/opt? :cover opts) (project-coverage-finish root) nil)
+  (let (fn-percent (if (test/opt? :cover opts) (coverage/report root) nil)
         line-percent (if (test/opt? :cover-lines opts)
                        (project-coverage-lines-finish root)
                        nil)
@@ -258,9 +253,6 @@ Returns the coverage percentage (nil when none was measured)."
 ;; std/tool/coverage.blsp).
 (defn- project-coverage-begin (root)
   (coverage/begin (project/abs-paths root *project-source-paths*)))
-
-(defn- project-coverage-finish (root)
-  (coverage/report root))
 
 ;; Enforce `--cover-min N`: a coverage floor is only useful if it can fail the
 ;; build, so falling short raises (non-zero exit) exactly like a failing test.
@@ -383,7 +375,7 @@ source paths, no such module under them, or no `:main` naming it."
 ;; no project here, or if the entry fn isn't defined or callable.
 (defn run (args &optional no-check? watching?)
   "Run the project's entry point (default module `main`, fn `main`; overridable via the manifest's `:main`), passing `args` (a list of CLI string arguments). Runs the checker over the entry point's require-closure first and REFUSES to launch over an unbound symbol (ADR-304) — other warnings print and do not block; `no-check?` (the `--no-check` flag) skips the pre-flight and launches regardless. Errors if not in a project or the entry fn is missing/uncallable. Backs `nest run`."
-  (let (root (project-root-or-error "run"))
+  (let (root (project/require-root "run"))
     (project/setup root)
     ;; A `--main` override (set via `set-project-main`) wins over the manifest's
     ;; `:main`, which `setup` just re-applied into `*project-main*`.
@@ -437,7 +429,7 @@ load, or if the entry point is missing or not callable. Backs `nest run --check-
 
 The gate between `nest check` (names resolve) and `nest test` (the suite passes): neither
 of those loads the entry point, which is where a stale dependency actually dies (KI-66)."
-  (let (root (project-root-or-error "check-boot"))
+  (let (root (project/require-root "check-boot"))
     (project/setup root)
     ;; Every inferred load is EAGER for this run (ADR-335): a qualified reference into a
     ;; std or dependency module loads on first USE under the default policy, and a boot

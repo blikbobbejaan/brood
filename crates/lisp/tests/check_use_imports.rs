@@ -18,20 +18,8 @@
 //! image's current state (ADR-123/124/125/126) — and these two warnings are
 //! mutually contradictory, so the pair must be impossible to emit together.
 
-use brood::types::check::check_file;
-use brood::Interp;
-
-/// The warnings a self-contained source draws on the single-file path: a fresh
-/// `Interp` (prelude only — no project, no pre-loaded modules) and the same
-/// `check_file` entry point `brood --check` calls.
-fn warnings(src: &str) -> Vec<String> {
-    let mut interp = Interp::new();
-    let forms = brood::syntax::reader::read_all(&mut interp.heap, src).expect("parse");
-    check_file(&mut interp.heap, &forms)
-        .into_iter()
-        .map(|(_, msg)| msg)
-        .collect()
-}
+mod support;
+use support::warnings;
 
 /// The reported bug, exactly: a bare-file check of `(:use file)` + `walk-files`.
 /// `walk-files` is `(defn walk-files (dir) …)` in `std/file.blsp` and resolves at

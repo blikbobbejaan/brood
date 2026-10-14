@@ -108,12 +108,7 @@ pub fn find_def<'s>(node: &Node, src: &'s str, name_span: Span) -> Option<Def<'s
 
 /// Read one top-level form as a definition, or `None` if it isn't one.
 fn parse_def<'s>(form: &Node, src: &'s str) -> Option<Def<'s>> {
-    if form.kind != NodeKind::List {
-        return None;
-    }
-    let mut forms = form.forms();
-    let head = forms.next()?;
-    let kind = match (head.kind == NodeKind::Symbol).then(|| head.text(src))? {
+    let kind = match form.head_symbol(src)? {
         "def" => DefKind::Var,
         "defn" => DefKind::Fn,
         "defmacro" => DefKind::Macro,
@@ -121,6 +116,7 @@ fn parse_def<'s>(form: &Node, src: &'s str) -> Option<Def<'s>> {
         "defability" => DefKind::Ability,
         _ => return None,
     };
+    let mut forms = form.forms().skip(1); // past the head
     let name = forms.next()?;
     if name.kind != NodeKind::Symbol {
         return None; // e.g. `(def (destructure) …)` — deferred, not a plain name

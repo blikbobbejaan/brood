@@ -8,15 +8,10 @@
 //! reaches — rather than calling `take-over` directly, because the handoff from the
 //! prelude shim to the module is exactly the seam under test.
 
-use std::io::Write;
 use std::process::Command;
 
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-crashrep-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 /// Run `path` and return its stderr **up to the moment `marker` appears**, or everything it
 /// wrote if it exits first. A deadline, not a window.
@@ -79,7 +74,7 @@ fn an_unsupervised_crash_is_reported_through_the_lazy_arm() {
     // The script parks for longer than any sane load needs; the harness stops it the moment
     // the report is on the pipe (see `stderr_until`), so this is a ceiling, not a cost.
     let path = script(
-        "boom",
+        "crashrep-boom",
         "(spawn (fn () (/ 1 0)))\n(sleep 15000)\n(io/puts \"done\")\n",
     );
     let err = stderr_until(&path, "[crash]", std::time::Duration::from_secs(15));
@@ -97,7 +92,7 @@ fn an_unsupervised_crash_is_reported_through_the_lazy_arm() {
 #[test]
 fn the_opt_out_still_suppresses_the_report() {
     let path = script(
-        "quiet",
+        "crashrep-quiet",
         "(spawn (fn () (/ 1 0)))\n(sleep 500)\n(io/puts \"done\")\n",
     );
     let output = Command::new(env!("CARGO_BIN_EXE_brood"))

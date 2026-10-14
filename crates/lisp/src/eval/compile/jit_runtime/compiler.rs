@@ -261,10 +261,7 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
             {
                 {
                     if crate::diagnostics::debug_flags::jit_bail_trace() {
-                        let name = arm
-                            .dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>");
+                        let name = arm.dbg_label();
                         eprintln!("[jit-ir] arm={name} adopted-shared-code-compile-now nslots={} (not lowered here, emits no IR dump)", arm.nslots);
                     }
                 }
@@ -318,22 +315,11 @@ pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) {
         super::take_mid_emit_reason().unwrap_or(("lowering-returned-none", None));
     let detail = detail.map(|d| format!(":{d}")).unwrap_or_default();
     if crate::diagnostics::debug_flags::jit_bail_trace() {
-        let name = arm
-            .dbg_name
-            .map(crate::core::value::symbol_name_ref)
-            .unwrap_or("<closure>");
-        let ops: Vec<&str> = arm
-            .chunk
-            .as_ref()
-            .map(|c| c.code.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .map(crate::eval::compile::jit_plan::codegen::inst_opcode_name)
-            .collect();
+        let name = arm.dbg_label();
         eprintln!(
             "[jit-bail] arm={name} reason={reason}{detail} inlined={inlined} nslots={} ops=[{}]",
             arm.nslots,
-            ops.join(" ")
+            arm.dbg_opcodes()
         );
     }
 }
@@ -457,10 +443,7 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     // that follows, and the only visible symptom is code mysteriously running
                     // on the VM. Announce it (once) rather than leaving it to be deduced.
                     if crate::diagnostics::debug_flags::jit_bail_trace() {
-                        let name = arm
-                            .dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>");
+                        let name = arm.dbg_label();
                         eprintln!("[jit-bail] arm={name} reason=codegen-poisoned-earlier");
                     }
                     slot.store(crate::jit::BAILED, Release);
@@ -519,9 +502,7 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     eprintln!(
                         "[lower] {:?} arm={} inlined={}",
                         t0.elapsed(),
-                        arm.dbg_name
-                            .map(crate::core::value::symbol_name_ref)
-                            .unwrap_or("<closure>"),
+                        arm.dbg_label(),
                         inlined
                     );
                 }
@@ -563,10 +544,7 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                         // is otherwise "the program got slower". A diagnostic you must have
                         // armed in advance is a diagnostic that is absent when it matters.
                         {
-                            let name = arm
-                                .dbg_name
-                                .map(crate::core::value::symbol_name_ref)
-                                .unwrap_or("<closure>");
+                            let name = arm.dbg_label();
                             eprintln!(
                                 "[jit-bail] arm={name} reason=CODEGEN-PANICKED — the JIT is now \
                                  OFF for the rest of this process (every arm queued after this \

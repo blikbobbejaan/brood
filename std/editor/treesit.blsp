@@ -265,7 +265,7 @@ want the same candidate, and neither should re-derive it."
   ;; `pos` is a line start when `ed-window-src` calls this, but normalising to one anyway
   ;; makes the answer total: an offset in the middle of a line asks about that line, and the
   ;; result is always a line start, never an offset into one.
-  (let (line-start (let (nl (string/last-index-of src "\n" pos)) (if (< nl 0) 0 (inc nl))))
+  (let (line-start (ts-line-start src pos))
     (if (ts-col0? src line-start) line-start (ts-back-to-col0 src line-start))))
 
 (defn column0-restart (src pos delimiters)
@@ -315,7 +315,7 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
   (if (<= bol 0)
     nil
     (let (nl (string/last-index-of text "\n" bol)
-          ls (if (< nl 0) 0 (let (p (string/last-index-of text "\n" nl)) (if (< p 0) 0 (inc p))))
+          ls (if (< nl 0) 0 (ts-line-start text nl))
           le (if (< nl 0) (math/max 0 (dec bol)) nl)
           l (string/substring text ls le))
       (cond
@@ -368,8 +368,6 @@ those lines as closing at all, so every `}` on its own line stopped dedenting."
       first-char
       (seq/find (ts-dedent-tokens dedent) (fn (d) (ts-opens-with? line d))))))
 
-(def- ts-closers "([{")
-
 (defn- ts-delimiter? (token)
   (and token (= 1 (string/length token)) (includes? ")]}" token)))
 
@@ -394,7 +392,7 @@ its `body_statement` while `ensure` is inside one — so it comes from the table
 
 (defn- ts-line-start (text at)
   "The offset of the start of the line containing `at`."
-  (let (nl (string/last-index-of text "\n" at)) (if (< nl 0) 0 (inc nl))))
+  (inc (string/last-index-of text "\n" at)))
 
 (defn- ts-aligns? (text open)
   "Does the bracket at offset `open` have CONTENT after it on its own line?
@@ -591,9 +589,6 @@ shape `nest format` answers for Brood, and it is checked line-for-line against r
                   (< (get k :start) point)
                   (< point (get k :end))))))
     (if (nil? hit) node (ts-enclosing hit point))))
-
-(defn- ts-root? (node root)
-  (and (= (get node :start) (get root :start)) (= (get node :end) (get root :end))))
 
 ;; Each motion is one positional query: `%tree-sitter-kids` hands over exactly the list of
 ;; siblings, so motion cost does not grow with the file as projecting the whole tree would.

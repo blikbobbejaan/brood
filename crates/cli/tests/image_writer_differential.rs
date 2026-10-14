@@ -13,13 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root")
-        .to_path_buf()
-}
+mod support;
+use support::repo_root;
 
 fn arm_cache(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("brood-image-writer-{}-{tag}", std::process::id()));
@@ -37,7 +32,7 @@ fn brood(cache: &Path) -> Command {
         .env_remove("BROOD_NO_STDIMAGE")
         .env_remove("BROOD_NO_IMAGE_SIGS")
         .env_remove("BROOD_COVERAGE")
-        .current_dir(workspace_root());
+        .current_dir(repo_root());
     cmd
 }
 

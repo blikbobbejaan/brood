@@ -28,12 +28,8 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-readline-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 /// 256 processes each block in `read-line` on a pipe nobody writes; then a wave of 200
 /// ordinary spawns must still run and be collected. `me` is bound OUTSIDE the spawn: `(self)`
@@ -61,7 +57,7 @@ const WAVE: &str = r#"
 
 #[test]
 fn processes_blocked_in_read_line_do_not_pin_the_worker_pool() {
-    let path = script("wave", WAVE);
+    let path = script("readline-wave", WAVE);
     let mut child = Command::new(env!("CARGO_BIN_EXE_brood"))
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
@@ -119,7 +115,7 @@ const DELIVERY: &str = r#"
 
 #[test]
 fn lines_are_delivered_in_order_to_root_and_spawned_callers_then_nil_at_eof() {
-    let path = script("delivery", DELIVERY);
+    let path = script("readline-delivery", DELIVERY);
     let mut child = Command::new(env!("CARGO_BIN_EXE_brood"))
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")

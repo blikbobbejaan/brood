@@ -10,16 +10,10 @@
 //! post-`--` arguments reach the program and are NOT opened as files, and pre-`--` arguments
 //! are still files (brood genuinely runs several).
 
-use std::io::Write;
 use std::process::Command;
 
-/// Write `source` to a temp file and return its path.
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-script-args-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 fn run(args: &[&str]) -> (String, String, bool) {
     let output = Command::new(env!("CARGO_BIN_EXE_brood"))
@@ -39,7 +33,7 @@ const PRINT_ARGS: &str = r#"(require-one 'system)
 
 #[test]
 fn post_double_dash_arguments_reach_the_script() {
-    let path = script("reach", PRINT_ARGS);
+    let path = script("script-args-reach", PRINT_ARGS);
     let (stdout, stderr, ok) = run(&[
         path.to_str().unwrap(),
         "--",
@@ -54,7 +48,7 @@ fn post_double_dash_arguments_reach_the_script() {
 /// The actual regression: a hyphenated argument must not be treated as a filename.
 #[test]
 fn a_flag_after_double_dash_is_not_opened_as_a_file() {
-    let path = script("notafile", PRINT_ARGS);
+    let path = script("script-args-notafile", PRINT_ARGS);
     let (_, stderr, ok) = run(&[path.to_str().unwrap(), "--", "--publish"]);
     assert!(ok, "brood failed: {stderr}");
     assert!(
@@ -65,7 +59,7 @@ fn a_flag_after_double_dash_is_not_opened_as_a_file() {
 
 #[test]
 fn a_script_with_no_arguments_sees_an_empty_vector() {
-    let path = script("empty", PRINT_ARGS);
+    let path = script("script-args-empty", PRINT_ARGS);
     let (stdout, stderr, ok) = run(&[path.to_str().unwrap()]);
     assert!(ok, "brood failed: {stderr}");
     assert_eq!(stdout.trim(), "[]");
@@ -75,8 +69,8 @@ fn a_script_with_no_arguments_sees_an_empty_vector() {
 /// `files` must not stop it.
 #[test]
 fn arguments_before_the_separator_are_still_files() {
-    let first = script("multi1", "(io/puts \"first\")\n");
-    let second = script("multi2", "(io/puts \"second\")\n");
+    let first = script("script-args-multi1", "(io/puts \"first\")\n");
+    let second = script("script-args-multi2", "(io/puts \"second\")\n");
     let (stdout, stderr, ok) = run(&[first.to_str().unwrap(), second.to_str().unwrap()]);
     assert!(ok, "brood failed: {stderr}");
     assert!(
@@ -90,7 +84,7 @@ fn arguments_before_the_separator_are_still_files() {
 #[test]
 fn argv_still_reports_the_raw_invocation() {
     let path = script(
-        "raw",
+        "script-args-raw",
         "(require-one 'system)\n(io/puts (pr-str (system/argv)))\n",
     );
     let (stdout, stderr, ok) = run(&[path.to_str().unwrap(), "--", "--flag"]);

@@ -254,8 +254,7 @@ otherwise a leading block marker plus an inline scan of the rest."
 ;; "a\nb\n", "\n", "a\n\nb" — which the equivalence test in `tests/markdown_test.blsp`
 ;; pins rather than leaving to this comment.
 (defn- md-drop-trailing-empty (lines)
-  (let (r (reverse lines))
-    (if (and (not (empty? r)) (= (first r) "")) (reverse (rest r)) lines)))
+  (if (= (last lines) "") (but-last lines) lines))
 
 (defn- md-lex-lines (lines i fence acc)
   "Tail-recursive walker over pre-split lines, threading the fenced-code `fence` state and

@@ -38,9 +38,6 @@ pub const DEFABILITY: &str = "defability";
 pub const IMPL: &str = "impl";
 pub const DEFMODULE: &str = "defmodule";
 pub const FN: &str = "fn";
-// Retired as a spelling (ADR-162) — `fn` is the only one. The constant survives
-// because the unbound-symbol hint still recognises `lambda` and names `fn`.
-pub const LAMBDA: &str = "lambda";
 pub const LET: &str = "let";
 pub const LETREC: &str = "letrec";
 pub const WHEN: &str = "when";

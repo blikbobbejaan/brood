@@ -22,29 +22,61 @@ use crate::Interp;
 /// (`reflect/global-names` sorts) — the completion candidate pool.
 pub fn global_names(interp: &mut Interp) -> Vec<String> {
     // The result is a list of *every* global (hundreds of symbols), and this
-    // runs on every completion keystroke. `eval_str` keeps its result in LOCAL,
-    // so reclaim it once we've copied the names into owned `String`s — otherwise
-    // a long server session leaks a fresh list per request. (Safe: `symbol_name`
-    // reads the interner, not LOCAL, so `names` holds no LOCAL handle.)
+    // runs on every completion keystroke — so the LOCAL reclaim in
+    // `eval_owned_list` is what keeps a long server session from leaking a
+    // fresh list per request.
+    eval_owned_list(interp, "(reflect/global-names)", symbol_spelling).unwrap_or_default()
+}
+
+/// Evaluate `expr` and copy a string result out into an owned `String`, reclaiming
+/// the eval's LOCAL allocations either way. `None` on an error or a non-string.
+fn eval_owned_string(interp: &mut Interp, expr: &str) -> Option<String> {
     let cp = interp.heap.checkpoint();
-    let names = match interp.eval_str("(reflect/global-names)") {
-        Ok(v) => interp
-            .heap
-            .list_to_vec(v)
-            .map(|items| {
-                items
-                    .into_iter()
-                    .filter_map(|x| match x {
-                        Value::Sym(s) => Some(value::symbol_name(s)),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+    let out = match interp.eval_str(expr) {
+        Ok(Value::Str(id)) => Some(interp.heap.string(id).to_string()),
+        _ => None,
     };
     interp.heap.reset_local_to(cp);
-    names
+    out
+}
+
+/// Evaluate `expr` to a list and copy out each item `item` accepts, reclaiming the
+/// eval's LOCAL allocations either way — `item` must therefore return owned data, no
+/// LOCAL handle. `None` when the eval errors or its result is not a list.
+fn eval_owned_list<T>(
+    interp: &mut Interp,
+    expr: &str,
+    item: impl Fn(&Heap, Value) -> Option<T>,
+) -> Option<Vec<T>> {
+    let cp = interp.heap.checkpoint();
+    let out = interp
+        .eval_str(expr)
+        .ok()
+        .and_then(|v| interp.heap.list_to_vec(v).ok())
+        .map(|items| {
+            items
+                .into_iter()
+                .filter_map(|x| item(&interp.heap, x))
+                .collect()
+        });
+    interp.heap.reset_local_to(cp);
+    out
+}
+
+/// A symbol item's spelling (`symbol_name` reads the interner, not LOCAL).
+fn symbol_spelling(_heap: &Heap, v: Value) -> Option<String> {
+    match v {
+        Value::Sym(s) => Some(value::symbol_name(s)),
+        _ => None,
+    }
+}
+
+/// A string item, copied out of LOCAL.
+fn string_contents(heap: &Heap, v: Value) -> Option<String> {
+    match v {
+        Value::Str(id) => Some(heap.string(id).to_string()),
+        _ => None,
+    }
 }
 
 /// The ops a protocol/behaviour `proto` declares — `(op-name, arity)` per op — read
@@ -171,21 +203,8 @@ pub fn arglist_tokens(interp: &mut Interp, name: &str) -> Option<Vec<String>> {
     // global, so it has no arglist — return `None` without evaluating. (See
     // `resolve_in_source` for the full rationale.)
     value::intern_existing(name)?;
-    let cp = interp.heap.checkpoint();
-    let out = match interp.eval_str(&format!("(arglist {name})")) {
-        Ok(v) => interp.heap.list_to_vec(v).ok().map(|items| {
-            items
-                .into_iter()
-                .filter_map(|x| match x {
-                    Value::Sym(s) => Some(value::symbol_name(s)),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        }),
-        Err(_) => None,
-    };
-    interp.heap.reset_local_to(cp);
-    out.filter(|v| !v.is_empty())
+    eval_owned_list(interp, &format!("(arglist {name})"), symbol_spelling)
+        .filter(|tokens| !tokens.is_empty())
 }
 
 /// Render an `(arglist f)` result (a list of parameter symbols, or `nil`) as a
@@ -243,20 +262,7 @@ fn ns_context_forms(heap: &mut Heap, src: &str) -> Option<Vec<Value>> {
 /// LOCAL-clean: bracketed by `checkpoint`/`reset_local_to`. The returned `String`
 /// holds no LOCAL handle (`symbol_name` reads the interner).
 pub fn resolve_in_source(interp: &mut Interp, src: &str, name: &str) -> String {
-    use crate::eval::{self, macros};
-    let cp = interp.heap.checkpoint();
-    let resolved = (|| -> Option<String> {
-        let forms = ns_context_forms(&mut interp.heap, src)?;
-        macros::file_ns(&interp.heap, &forms)?; // not namespaced → leave bare
-                                                // Mirror the loader (lib.rs eval_str/eval_source): reset, eval the header
-                                                // so its `%in-ns`/`%refer` set compile_ns + imports, resolve, restore.
-        let prev_ns = interp.heap.set_compile_ns(None);
-        let known = macros::scan_def_names(&interp.heap, &forms);
-        let prev_known = interp.heap.set_ns_known_names(known);
-        let prev_imports = interp.heap.set_imports(std::collections::HashMap::new());
-        if let Some(&header) = forms.first() {
-            let _ = eval::eval(&mut interp.heap, header, value::EnvId::GLOBAL);
-        }
+    in_file_context(interp, src, |heap| {
         // `intern_existing`, not `intern`: the LSP routes arbitrary identifier
         // strings through here (cross-file workspace queries, rename probes —
         // names that need not appear in `src` at all), and the interner never
@@ -267,17 +273,42 @@ pub fn resolve_in_source(interp: &mut Interp, src: &str, name: &str) -> String {
         // resolution target (a `ns/name` global, a scanned def head, an
         // import) interned its bare name when its defining source was read.
         // So it falls through unchanged, exactly like `resolve_reference`'s
-        // own unknown-name path. (No early `?` return: the context restores
-        // below must run either way.)
-        let out = value::intern_existing(name)
-            .map(|sym| value::symbol_name(macros::resolve_reference(&interp.heap, sym)));
+        // own unknown-name path.
+        value::intern_existing(name)
+            .map(|sym| value::symbol_name(crate::eval::macros::resolve_reference(heap, sym)))
+    })
+    .flatten()
+    .unwrap_or_else(|| name.to_string())
+}
+
+/// Run `query` in the namespace context of the file whose source is `src`, the way
+/// the loader (lib.rs `eval_forms`) establishes it: reset compile-ns, the file's def
+/// names as its forward-reference scan, empty imports — then eval the header so its
+/// `%in-ns`/`%refer` repopulate them. The caller's context is restored and LOCAL
+/// reclaimed afterwards. `None` for an unnamespaced (root) file, or when not even
+/// the header reads.
+fn in_file_context<T>(interp: &mut Interp, src: &str, query: impl FnOnce(&Heap) -> T) -> Option<T> {
+    use crate::eval::{self, macros};
+    let cp = interp.heap.checkpoint();
+    let out = (|| {
+        let forms = ns_context_forms(&mut interp.heap, src)?;
+        macros::file_ns(&interp.heap, &forms)?; // not namespaced → leave bare
+        let prev_ns = interp.heap.set_compile_ns(None);
+        let known = macros::scan_def_names(&interp.heap, &forms);
+        let prev_known = interp.heap.set_ns_known_names(known);
+        let prev_imports = interp.heap.set_imports(std::collections::HashMap::new());
+        if let Some(&header) = forms.first() {
+            let _ = eval::eval(&mut interp.heap, header, value::EnvId::GLOBAL);
+        }
+        // No early `?` from here: the context restores below must run either way.
+        let answer = query(&interp.heap);
         interp.heap.set_compile_ns(prev_ns);
         interp.heap.set_ns_known_names(prev_known);
         interp.heap.set_imports(prev_imports);
-        out
+        Some(answer)
     })();
     interp.heap.reset_local_to(cp);
-    resolved.unwrap_or_else(|| name.to_string())
+    out
 }
 
 /// The `(:use …)` imports of the file `src` as `(bare, qualified)` pairs — for the
@@ -287,31 +318,13 @@ pub fn resolve_in_source(interp: &mut Interp, src: &str, name: &str) -> String {
 /// for a root (unnamespaced) file; best-effort. Establishes + restores the file's
 /// namespace context exactly like [`resolve_in_source`].
 pub fn file_imports(interp: &mut Interp, src: &str) -> Vec<(String, String)> {
-    use crate::eval::{self, macros};
-    let cp = interp.heap.checkpoint();
-    let out = (|| -> Option<Vec<(String, String)>> {
-        let forms = ns_context_forms(&mut interp.heap, src)?;
-        macros::file_ns(&interp.heap, &forms)?;
-        let prev_ns = interp.heap.set_compile_ns(None);
-        let known = macros::scan_def_names(&interp.heap, &forms);
-        let prev_known = interp.heap.set_ns_known_names(known);
-        let prev_imports = interp.heap.set_imports(std::collections::HashMap::new());
-        if let Some(&header) = forms.first() {
-            let _ = eval::eval(&mut interp.heap, header, value::EnvId::GLOBAL);
-        }
-        let pairs = interp
-            .heap
-            .imported_pairs()
+    in_file_context(interp, src, |heap| {
+        heap.imported_pairs()
             .into_iter()
-            .map(|(b, q)| (value::symbol_name(b), value::symbol_name(q)))
-            .collect();
-        interp.heap.set_compile_ns(prev_ns);
-        interp.heap.set_ns_known_names(prev_known);
-        interp.heap.set_imports(prev_imports);
-        Some(pairs)
-    })();
-    interp.heap.reset_local_to(cp);
-    out.unwrap_or_default()
+            .map(|(bare, qualified)| (value::symbol_name(bare), value::symbol_name(qualified)))
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Where a global definition was loaded from, lifted into a Rust struct from
@@ -357,25 +370,12 @@ pub fn source_location(interp: &mut Interp, name: &str) -> Option<SourceLoc> {
 /// the cross-file reference / rename sweep (ADR-031 §Cross-file): under the flat
 /// module model these files are the whole search space for a global.
 pub fn project_files(interp: &mut Interp) -> Vec<String> {
-    let cp = interp.heap.checkpoint();
-    let out = match interp.eval_str("(project/project-all-files *project-root*)") {
-        Ok(v) => interp
-            .heap
-            .list_to_vec(v)
-            .map(|items| {
-                items
-                    .into_iter()
-                    .filter_map(|x| match x {
-                        Value::Str(id) => Some(interp.heap.string(id).to_string()),
-                        _ => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
-    };
-    interp.heap.reset_local_to(cp);
-    out
+    eval_owned_list(
+        interp,
+        "(project/project-all-files *project-root*)",
+        string_contents,
+    )
+    .unwrap_or_default()
 }
 
 /// The on-disk file a `require`able feature resolves to, found the same way
@@ -385,17 +385,11 @@ pub fn project_files(interp: &mut Interp) -> Vec<String> {
 /// std module (it has no file — it's `%builtin-module` source) or a feature not
 /// on the path. `feature` is a CST symbol token; it's escaped before embedding.
 pub fn module_file(interp: &mut Interp, feature: &str) -> Option<String> {
-    let cp = interp.heap.checkpoint();
     let expr = format!(
-        "(%require-find \"{}.blsp\" *load-path*)",
-        escape_brood_string(feature)
+        "(%require-find {} *load-path*)",
+        string_literal(&format!("{feature}.blsp"))
     );
-    let out = match interp.eval_str(&expr) {
-        Ok(Value::Str(id)) => Some(interp.heap.string(id).to_string()),
-        _ => None,
-    };
-    interp.heap.reset_local_to(cp);
-    out
+    eval_owned_string(interp, &expr)
 }
 
 /// Module names the buffer could `require` / `:use`: every already-loaded feature
@@ -405,33 +399,17 @@ pub fn module_file(interp: &mut Interp, feature: &str) -> Option<String> {
 /// once it has been loaded (the path scan is one level deep, like a directory
 /// listing), which is the common case in a bootstrapped project.
 pub fn loadable_modules(interp: &mut Interp) -> Vec<String> {
-    let cp = interp.heap.checkpoint();
-    let mut out = std::collections::BTreeSet::new();
     // 1. Loaded features — strings, including nested `dir/mod` names. `*features*`
     // is a set-shaped map (name -> true), so take its keys (ADR-216).
-    if let Ok(v) = interp.eval_str("(keys *features*)") {
-        if let Ok(items) = interp.heap.list_to_vec(v) {
-            for it in items {
-                if let Value::Str(id) = it {
-                    out.insert(interp.heap.string(id).to_string());
-                }
-            }
-        }
-    }
+    let loaded = eval_owned_list(interp, "(keys *features*)", string_contents);
     // 2. Top-level `<name>.blsp` basenames across the load-path dirs.
     let scan = "(apply append (map *load-path* (fn (d) (if (file/exists? d) (file/ls d) nil))))";
-    if let Ok(v) = interp.eval_str(scan) {
-        if let Ok(items) = interp.heap.list_to_vec(v) {
-            for it in items {
-                if let Value::Str(id) = it {
-                    if let Some(base) = interp.heap.string(id).strip_suffix(".blsp") {
-                        out.insert(base.to_string());
-                    }
-                }
-            }
-        }
-    }
-    interp.heap.reset_local_to(cp);
+    let on_path = eval_owned_list(interp, scan, |heap, v| match v {
+        Value::Str(id) => heap.string(id).strip_suffix(".blsp").map(str::to_string),
+        _ => None,
+    });
+    let out: std::collections::BTreeSet<String> =
+        loaded.into_iter().chain(on_path).flatten().collect();
     out.into_iter().collect()
 }
 
@@ -441,14 +419,8 @@ pub fn loadable_modules(interp: &mut Interp) -> Vec<String> {
 /// name string), so it answers for any module the server's `Interp` has loaded.
 /// Powers hover on the module name in a `(:use …)` / `(:alias …)` clause.
 pub fn module_doc(interp: &mut Interp, module: &str) -> Option<String> {
-    let cp = interp.heap.checkpoint();
-    let expr = format!("(get *module-docs* \"{}\")", escape_brood_string(module));
-    let out = match interp.eval_str(&expr) {
-        Ok(Value::Str(id)) => Some(interp.heap.string(id).to_string()),
-        _ => None,
-    };
-    interp.heap.reset_local_to(cp);
-    out
+    let expr = format!("(get *module-docs* {})", string_literal(module));
+    eval_owned_string(interp, &expr)
 }
 
 /// Lift the `[file line col]` vector `source-location` returns into a
@@ -488,8 +460,7 @@ fn parse_source_location(heap: &Heap, v: Value) -> Option<SourceLoc> {
 /// [`read_string`]: crate::syntax::reader
 pub fn format_source(interp: &mut Interp, src: &str) -> Result<String, String> {
     let cp = interp.heap.checkpoint();
-    let escaped = escape_brood_string(src);
-    let code = format!("(format/source \"{escaped}\")");
+    let code = call_form("format/source", &[src]);
     let result = match interp.eval_str(&code) {
         Ok(Value::Str(id)) => Ok(interp.heap.string(id).to_string()),
         Ok(_) => Err("format/source did not return a string".to_string()),
@@ -512,6 +483,13 @@ pub fn escape_brood_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
+/// `s` as a complete Brood string literal, quotes included — the form every Rust
+/// site that splices a user string into Brood source wants (`brood`'s bundle argv,
+/// `nest release`, the language server's quick-fixes, [`call_form`]).
+pub fn string_literal(s: &str) -> String {
+    format!("\"{}\"", escape_brood_string(s))
+}
+
 /// Build a Brood call form `(fn-name "a1" "a2" …)` with each argument embedded
 /// as a properly-escaped string literal. The one place the "interpolate user
 /// strings into a Brood call" pattern lives — callers in `nest` / `brood-lsp`
@@ -523,9 +501,8 @@ pub fn call_form(fn_name: &str, string_args: &[&str]) -> String {
     let mut s = String::from("(");
     s.push_str(fn_name);
     for a in string_args {
-        s.push_str(" \"");
-        s.push_str(&escape_brood_string(a));
-        s.push('"');
+        s.push(' ');
+        s.push_str(&string_literal(a));
     }
     s.push(')');
     s

@@ -23,13 +23,8 @@
 
 use brood::Interp;
 
-/// Is `sym` globally bound in this image?
-fn bound(interp: &mut Interp, sym: &str) -> bool {
-    let out = interp
-        .eval_str(&format!("(bound? '{sym})"))
-        .unwrap_or_else(|e| panic!("evaluating (bound? '{sym}) failed: {e}"));
-    interp.print(out) == "true"
-}
+mod support;
+use support::bound;
 
 #[test]
 fn requiring_complete_does_not_load_the_project_module() {

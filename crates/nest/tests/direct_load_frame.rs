@@ -67,3 +67,50 @@ fn a_directly_loaded_file_sees_its_second_defmulti_and_does_not_leak_into_the_ne
         "the scoped runner over the two files:\n{text}"
     );
 }
+
+/// 3. A module a directly loaded file requires AFTER its own `defmodule` has provided itself
+///    is a runtime-wide load, not the file's. The file's frame holds a view of `*features*`
+///    from that first provide, and the nested load's `provide` used to be routed into the
+///    frame holding any staged binding of the registry — so the file's own restore discarded
+///    it, and the next file found the module's bindings live but `*features*` not listing it
+///    (`lazy_load_test`'s macro-head case after `registry_test`, under the stdlib image).
+///    The file also sees the nested provide while it is still loading.
+#[test]
+fn a_module_required_by_a_directly_loaded_file_stays_provided_for_the_next_file() {
+    let dir =
+        std::env::temp_dir().join(format!("brood-direct-load-provide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("aa_require_test.blsp"),
+        "(defmodule aa-require-test (:use test))\n\
+         (def dlf-seen (do (require-one 'telemetry) (contains? *features* \"telemetry\")))\n\
+         (describe \"a\"\n\
+           (test \"sees the nested provide while loading\" (is dlf-seen)))\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("zz_provided_test.blsp"),
+        "(defmodule zz-provided-test (:use test))\n\
+         (describe \"b\"\n\
+           (test \"the module file a required is still provided\"\n\
+             (is (contains? *features* \"telemetry\"))))\n",
+    )
+    .unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_nest"))
+        .current_dir(&dir)
+        .env("BROOD_NO_CRASH_REPORT", "1")
+        .args(["test", "aa_require_test.blsp", "zz_provided_test.blsp"])
+        .output()
+        .expect("run nest test");
+    let _ = std::fs::remove_dir_all(&dir);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        text.contains("2 tests, 2 passed"),
+        "the scoped runner over the two files:\n{text}"
+    );
+}

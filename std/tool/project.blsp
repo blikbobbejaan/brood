@@ -223,9 +223,6 @@ identity and may override those paths. The rest of the tool is its siblings:
 than being fetched into `_deps/<name>/`."
   (and (record? x) (= (record-id x) :project/dep-path)))
 
-;; The elements of vector `entry` from index `start` onward, as a list (a plist).
-(defn- project-vec-drop (entry start) (drop entry start))
-
 ;; The keys of a flat plist (every other element from the head).
 ;; check-allow: deliberately non-tail — depth = the manifest plist's key count.
 (check-allow :non-tail-recursion
@@ -243,7 +240,7 @@ than being fetched into `_deps/<name>/`."
 
 (defn- project-parse-git-dep (name entry)
   (let (url (nth entry 2)
-        opts (project-vec-drop entry 3)
+        opts (drop entry 3)
         ref (plist-get opts :ref)
         version (plist-get opts :version))
     (when (not (string? url))
@@ -264,7 +261,7 @@ than being fetched into `_deps/<name>/`."
 
 (defn- project-parse-path-dep (name entry)
   (let (path (nth entry 2)
-        opts (project-vec-drop entry 3))
+        opts (drop entry 3))
     (when (not (string? path))
       (error "project: :path dependency " name " path must be a string, got " path))
     (project-reject-reserved-opts name opts)
@@ -272,7 +269,7 @@ than being fetched into `_deps/<name>/`."
 
 (defn- project-parse-registry-dep (name entry)
   (let (version (nth entry 2)
-        opts (project-vec-drop entry 3))
+        opts (drop entry 3))
     (when (not (string? version))
       (error "project: registry dependency " name " version must be a string, got " version))
     (project-reject-reserved-opts name opts)
@@ -280,7 +277,7 @@ than being fetched into `_deps/<name>/`."
 
 (defn- project-parse-tarball-dep (name entry)
   (let (url (nth entry 2)
-        opts (project-vec-drop entry 3)
+        opts (drop entry 3)
         sha (plist-get opts :sha256))
     (when (not (string? url))
       (error "project: :tarball dependency " name " URL must be a string, got " url))
@@ -325,7 +322,7 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
   (when (< (count entry) 3) (error "project: dependency entry is too short: " entry))
   (let (name (nth entry 0)
         kind (nth entry 1)
-        opts (project-vec-drop entry 3))
+        opts (drop entry 3))
     (when (not (symbol? name)) (error "project: dependency name must be a symbol, got " name))
     (when (not (valid-dep-name? (->string name)))
       (error "project: dependency name "
@@ -492,6 +489,12 @@ manifest is read, naming the key, not later inside whoever consumes the map."
     (= dir (path/dirname dir)) nil
     else (find-root (path/dirname dir))))
 (sig find-root (string -> (or string nil)))
+
+(defn require-root (who &optional from)
+  "The project root `find-root` finds walking up from `from` (default the cwd), or raise
+`<who>: not in a Brood project …` — the guard every project command opens with."
+  (let (dir (or from (file/cwd)))
+    (or (find-root dir) (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
 
 (defn abs-paths (root rels)
   "Resolve each relative path in `rels` against `root`, returning the list of absolute paths."

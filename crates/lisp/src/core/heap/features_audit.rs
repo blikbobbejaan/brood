@@ -26,7 +26,7 @@ use crate::core::registries as reg;
 
 fn armed() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_FEATURES_AUDIT").is_some())
+    crate::diagnostics::debug_flags::is_set(&ON, "BROOD_FEATURES_AUDIT")
 }
 
 /// Modules seen with at least one binding while listed in `*features*`.

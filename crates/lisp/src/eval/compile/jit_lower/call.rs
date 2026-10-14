@@ -6,7 +6,8 @@
 //! terminator, so the caller `break`s after it. `None` bails the whole arm to the VM.
 #![cfg(feature = "jit")]
 use super::emit::{
-    box_scalar, deopt_code, read_words, store_int, store_op, DeoptReason, Frame, Funcs, TICK_BATCH,
+    box_scalar, deopt_code, handle_from_out_slot, read_out_slot, read_words, store_int, store_op,
+    DeoptReason, Frame, Funcs, TICK_BATCH,
 };
 use super::Op;
 use super::OrBail;
@@ -158,13 +159,7 @@ pub(super) fn emit_call(
         let callee_ok = b.create_block();
         b.ins().brif(cstatus, error, &[], callee_ok, &[]);
         b.switch_to_block(callee_ok);
-        let cw0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-        let cw1 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-        let cw2 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
+        let (cw0, cw1, cw2) = read_out_slot(b, out_slot);
         Some([cw0, cw1, cw2])
     } else {
         None
@@ -271,17 +266,6 @@ pub(super) fn emit_call(
     let argc_v = b.ins().iconst(types::I32, argc as i64);
     let site_v = b.ins().iconst(types::I32, call_site as i64);
     let head_v = b.ins().iconst(types::I32, call_head as i64);
-    // Read the result `Value` (3 words) back out of `out_slot` and push it.
-    let read_out = |b: &mut FunctionBuilder| {
-        let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-        let w1 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-        let w2 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-        (w0, w1, w2)
-    };
     // The shared slow-dispatch tail: call `brood_rt_call_slow`, re-fetch the roots base
     // (the callee may have relocated `roots`), and branch to `error` on a nonzero status
     // or `cont` on success. Used as the only path (icall off / computed head) and as the
@@ -648,15 +632,13 @@ pub(super) fn emit_call(
         fill_call_error(b);
 
         b.switch_to_block(cont);
-        let (w0, w1, w2) = read_out(b);
-        stack.push(Op::Handle(w0, w1, w2));
+        stack.push(handle_from_out_slot(b, out_slot));
     } else {
         let cont = b.create_block();
         emit_call_slow(b, cont);
         fill_call_error(b);
         b.switch_to_block(cont);
-        let (w0, w1, w2) = read_out(b);
-        stack.push(Op::Handle(w0, w1, w2));
+        stack.push(handle_from_out_slot(b, out_slot));
     }
     Some(Flow::Fall)
 }

@@ -321,20 +321,9 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
   x)
 ;; `zero?` lives in tools.blsp now, beside `defability` — it dispatches on TYPE, and the
 ;; ability machinery does not exist this early in the prelude. See the `Zero` ability.
-;; `nan` is a reader-level float literal, so the language could *produce* a NaN
-;; long before it could TEST for one: `=` reports NaN as equal to nothing (the
-;; IEEE rule), which is simultaneously the only way to detect it. Naming that
-;; removes the puzzle.
 ;; `nan?` / `infinite?` live in `math/` — float-domain questions belong with `math/even?`
 ;; and `math/positive?`, and must not answer `false` for a string, a nil, a vector. See
-;; the `Numeric` ability (ADR-254).
-;; (math/quot a b) — truncated integer division (toward zero), the quotient partner to
-;; `rem`. (a - (math/rem a b)) is exactly divisible by b, so `/` returns an exact int
-;; (no float round-trip — correct even for large i64, unlike (math/floor (/ a b))).
-;; Euclidean modulo: the result is always non-negative and lies in
-;; [0, (abs b)). Brood over the `rem` primitive (truncated remainder), nudged
-;; back into range when `rem` comes out negative. (÷0 raises via `rem`.)
-;; Note this is *not* floored modulo: `(mod 7 -3)` is 1, not -2.
+;; the `Numeric` ability (ADR-254). `quot`/`mod` live there too.
 ;; `hash-map` stays core: the quasiquote lowering (eval/macros.rs) emits it as the
 ;; call head for a `{…}` map literal inside a template, so every macro that builds a
 ;; map depends on the bare name existing.

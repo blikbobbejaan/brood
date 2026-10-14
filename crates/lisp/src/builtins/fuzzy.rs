@@ -153,15 +153,6 @@ fn score_candidate(query: &[char], clow: &[char], cand: &[char]) -> Option<i64> 
     }
 }
 
-/// The candidates of `seq` (a vector or list) as raw values.
-fn candidates_of(heap: &Heap, seq: Value) -> Option<Vec<Value>> {
-    match seq.unpack() {
-        ValueRef::Vector(id) => Some(heap.vector(id).to_vec()),
-        ValueRef::Nil | ValueRef::Pair(_) => heap.list_to_vec(seq).ok(),
-        _ => None,
-    }
-}
-
 /// `(%fuzzy-top query cands &optional limit)` — see the registration.
 fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let who = "%fuzzy-top";
@@ -170,7 +161,7 @@ fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         .map(lower_char)
         .collect();
     let cands_value = super::numeric::arg(args, 1);
-    let Some(cands) = candidates_of(heap, cands_value) else {
+    let Some(cands) = heap.list_or_vector_items(cands_value) else {
         return Err(LispError::wrong_type(
             heap,
             who,

@@ -458,10 +458,7 @@ pub(crate) fn jit_dispatch_tail(
     // over a huge count. And `root_at`'s panic names neither the arm nor the frame sizes, so
     // the original report could say only "index 9, len 8" and nothing about why.
     if top >= n {
-        let name = arm
-            .dbg_name
-            .map(crate::core::value::symbol_name_ref)
-            .unwrap_or("<closure>");
+        let name = arm.dbg_label();
         panic!(
             "KI-48: jit_dispatch_tail staged-area desync — arm={name} base={base} \
              frame_nslots={frame_nslots} (nslots={} inline_nslots={} inline_installed={}) \

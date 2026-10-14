@@ -1099,11 +1099,6 @@ fn recovered_literal_arms(
     fn_form: Value,
     ctx: &Ctx,
 ) -> Option<Vec<(Vec<Value>, Value)>> {
-    let quoted_of = |v: Value| -> Option<Value> {
-        let q = list_items(heap, v)?;
-        (q.len() == 2 && matches!(q[0], Value::Sym(s) if value::symbol_is(s, kw::QUOTE)))
-            .then(|| q[1])
-    };
     let mut work = vec![fn_form];
     while let Some(v) = work.pop() {
         match v {
@@ -1112,11 +1107,11 @@ fn recovered_literal_arms(
                 let is_match_error = matches!(elems.first(), Some(&Value::Keyword(k))
                     if value::symbol_name_ref(k) == "match-error")
                     && elems.len() == 4
-                    && quoted_of(elems[1]).is_some_and(
+                    && super::walk::unquote(heap, elems[1]).is_some_and(
                         |t| matches!(t, Value::Keyword(k) if value::symbol_name_ref(k) == "fn"),
                     );
                 if is_match_error {
-                    if let Some(heads) = quoted_of(elems[3]) {
+                    if let Some(heads) = super::walk::unquote(heap, elems[3]) {
                         let key = crate::syntax::printer::print(heap, heads);
                         return ctx.fn_literal_clauses(&key).cloned();
                     }

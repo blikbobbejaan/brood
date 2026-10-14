@@ -193,6 +193,32 @@ pub(crate) fn message_bytes(message: &Message) -> usize {
     total
 }
 
+impl Message {
+    /// The `Message::Pid` of a process `id` that lives on **this** runtime.
+    pub(crate) fn local_pid(id: u64) -> Message {
+        Message::Pid {
+            node: crate::dist::local_node(),
+            id,
+        }
+    }
+
+    /// A container (or a shipped closure, whose arms and captures are nested messages):
+    /// a recursive walk over it takes its step under [`grow`], since a message is nested
+    /// as deep as the sender built it. A leaf pays nothing.
+    pub(crate) fn nests(&self) -> bool {
+        matches!(
+            self,
+            Message::List(..)
+                | Message::Dotted(..)
+                | Message::Vector(..)
+                | Message::Map(..)
+                | Message::Failure(..)
+                | Message::Set(..)
+                | Message::Closure(..)
+        )
+    }
+}
+
 impl Clone for Message {
     fn clone(&self) -> Self {
         match self {
@@ -1269,15 +1295,10 @@ pub fn from_message(heap: &mut Heap, m: &Message) -> Value {
 }
 
 fn from_message_timed(heap: &mut Heap, m: &Message) -> Value {
-    match m {
-        Message::List(..)
-        | Message::Dotted(..)
-        | Message::Vector(..)
-        | Message::Map(..)
-        | Message::Failure(..)
-        | Message::Set(..)
-        | Message::Closure(..) => grow(|| from_message_inner(heap, m)),
-        _ => from_message_inner(heap, m),
+    if m.nests() {
+        grow(|| from_message_inner(heap, m))
+    } else {
+        from_message_inner(heap, m)
     }
 }
 
@@ -1721,7 +1742,7 @@ fn parse_l1_budget(raw: Option<&str>) -> i64 {
 /// implicated in a fault. Read once and cached.
 fn share_fn_enabled() -> bool {
     static F: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *F.get_or_init(|| std::env::var_os("BROOD_NO_SHARE_FN").is_none())
+    !crate::diagnostics::debug_flags::is_set(&F, "BROOD_NO_SHARE_FN")
 }
 
 /// The L1 copy's decline: the caller falls back to the `Message` path, which produces the

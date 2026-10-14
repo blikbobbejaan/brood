@@ -20,6 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::annot;
+use super::walk::list_items;
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, Value};
@@ -147,14 +148,6 @@ fn every_symbol_is_a_type_word(heap: &Heap, form: Value) -> bool {
     true
 }
 
-fn list_items(heap: &Heap, v: Value) -> Option<Vec<Value>> {
-    match v {
-        Value::Nil => Some(Vec::new()),
-        Value::Pair(_) => heap.seq_items(v).ok(),
-        _ => None,
-    }
-}
-
 /// Walk one top-level form of module `key`: descend a `defmodule`, `check-allow` or `do`
 /// wrapper; record a `defn`/`defn-` (or a `def` of a `fn`) with its arity; record a `sig`.
 fn collect(
@@ -214,7 +207,7 @@ fn collect(
             let Some(params) = list_items(heap, params) else {
                 return;
             };
-            let (min, max) = count_params(heap, &params);
+            let (min, max) = count_params(&params);
             let max = if max == NO_MAX { NO_MAX } else { max + 1 };
             fns.push((name, (min + 1, max), false));
         }
@@ -256,7 +249,7 @@ fn fn_arity(heap: &Heap, tail: &[Value]) -> Option<(u32, u32)> {
     let first_items = list_items(heap, first)?;
     let is_clause = matches!(first_items.first(), Some(Value::Pair(_) | Value::Nil));
     if !is_clause {
-        return Some(count_params(heap, &first_items));
+        return Some(count_params(&first_items));
     }
     let mut min = u32::MAX;
     let mut max = 0u32;
@@ -271,7 +264,7 @@ fn fn_arity(heap: &Heap, tail: &[Value]) -> Option<(u32, u32)> {
         let Some(params) = list_items(heap, params) else {
             continue;
         };
-        let (lo, hi) = count_params(heap, &params);
+        let (lo, hi) = count_params(&params);
         min = min.min(lo);
         max = if hi == NO_MAX || max == NO_MAX {
             NO_MAX
@@ -285,7 +278,7 @@ fn fn_arity(heap: &Heap, tail: &[Value]) -> Option<(u32, u32)> {
 
 /// `(a b &optional (c 1) & rest)` → `(2, NO_MAX)`; the evaluator's grammar
 /// (`eval::parse_params`), counted rather than bound.
-fn count_params(_heap: &Heap, params: &[Value]) -> (u32, u32) {
+fn count_params(params: &[Value]) -> (u32, u32) {
     let mut required = 0u32;
     let mut optional = 0u32;
     let mut in_optional = false;

@@ -28,10 +28,7 @@ pub fn run(source: &str) -> String {
     #[cfg(target_arch = "wasm32")]
     let result = interp.run_program_repr(source);
     #[cfg(not(target_arch = "wasm32"))]
-    let result = match interp.eval_source(source) {
-        Ok(value) => Ok(interp.print(value)),
-        Err(error) => Err(error),
-    };
+    let result = interp.eval_source(source).map(|value| interp.print(value));
     let captured = brood::builtins::take_captured_stdout().unwrap_or_default();
     match result {
         Ok(printed) => {

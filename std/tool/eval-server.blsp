@@ -709,9 +709,8 @@ never as a dead server.
     (try
       (evsrv-run-tests id (or (get req :specs) []))
       (catch e
-        (do
-          (evsrv-clear-sinks)
-          {:id id :ok false :error (str "test run failed: " (error-message e))})))))
+        (evsrv-clear-sinks)
+        {:id id :ok false :error (str "test run failed: " (error-message e))}))))
 
 ;; ---- the server loop ----------------------------------------------------------
 

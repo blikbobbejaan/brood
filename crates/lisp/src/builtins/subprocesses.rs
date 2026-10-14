@@ -87,30 +87,53 @@ pub(super) fn expect_subprocess(heap: &Heap, who: &str, v: Value) -> Result<u64,
     )
 }
 
-pub(super) fn proc_spawn(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let prog = expect_string(heap, "os/spawn", arg(args, 0))?;
+/// What both spawn primitives read from `(prog args opts)`: the program, its string
+/// arguments, and the `:cwd` / `:env {"K" "V" …}` of the optional options map.
+struct SpawnSpec {
+    prog: String,
+    argv: Vec<String>,
+    cwd: Option<String>,
+    env: Vec<(String, String)>,
+}
+
+fn spawn_spec(heap: &Heap, who: &str, args: &[Value]) -> Result<SpawnSpec, LispError> {
+    let prog = expect_string(heap, who, arg(args, 0))?;
     let mut argv = Vec::new();
     for a in heap.seq_items(arg(args, 1))? {
-        argv.push(expect_string(heap, "os/spawn", a)?);
+        argv.push(expect_string(heap, who, a)?);
     }
-    // Optional 3rd argument: an options map `{:cwd "dir" :env {"K" "V" …}}`.
     let mut cwd: Option<String> = None;
     let mut env: Vec<(String, String)> = Vec::new();
     if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, Value::keyword(value::intern("cwd"))) {
+        if let Some(v) = heap.map_get(opts, value::kw("cwd")) {
             if !matches!(v, Value::Nil) {
-                cwd = Some(expect_string(heap, "os/spawn :cwd", v)?);
+                cwd = Some(expect_string(heap, &format!("{} :cwd", who), v)?);
             }
         }
-        if let Some(Value::Map(e)) = heap.map_get(opts, Value::keyword(value::intern("env"))) {
+        if let Some(Value::Map(e)) = heap.map_get(opts, value::kw("env")) {
             for (k, v) in heap.map_entries(e) {
                 env.push((
-                    expect_string(heap, "os/spawn :env key", k)?,
-                    expect_string(heap, "os/spawn :env value", v)?,
+                    expect_string(heap, &format!("{} :env key", who), k)?,
+                    expect_string(heap, &format!("{} :env value", who), v)?,
                 ));
             }
         }
     }
+    Ok(SpawnSpec {
+        prog,
+        argv,
+        cwd,
+        env,
+    })
+}
+
+pub(super) fn proc_spawn(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let SpawnSpec {
+        prog,
+        argv,
+        cwd,
+        env,
+    } = spawn_spec(heap, "os/spawn", args)?;
     let owner = crate::process::self_pid();
     match crate::host::subprocess::spawn(&prog, &argv, cwd.as_deref(), &env, owner) {
         Ok(id) => Ok(Value::subprocess(id)),
@@ -123,35 +146,21 @@ pub(super) fn proc_spawn(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 /// pseudo-terminal, so it behaves the way it does in a terminal instead of the way it
 /// does on a pipe. Same options plus `:cols` / `:rows` (default 80×24).
 pub(super) fn pty_spawn(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let prog = expect_string(heap, "os/spawn-pty", arg(args, 0))?;
-    let mut argv = Vec::new();
-    for a in heap.seq_items(arg(args, 1))? {
-        argv.push(expect_string(heap, "os/spawn-pty", a)?);
-    }
-    let mut cwd: Option<String> = None;
-    let mut env: Vec<(String, String)> = Vec::new();
+    let SpawnSpec {
+        prog,
+        argv,
+        cwd,
+        env,
+    } = spawn_spec(heap, "os/spawn-pty", args)?;
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, Value::keyword(value::intern("cwd"))) {
-            if !matches!(v, Value::Nil) {
-                cwd = Some(expect_string(heap, "os/spawn-pty :cwd", v)?);
-            }
-        }
-        if let Some(Value::Map(e)) = heap.map_get(opts, Value::keyword(value::intern("env"))) {
-            for (k, v) in heap.map_entries(e) {
-                env.push((
-                    expect_string(heap, "os/spawn-pty :env key", k)?,
-                    expect_string(heap, "os/spawn-pty :env value", v)?,
-                ));
-            }
-        }
-        if let Some(v) = heap.map_get(opts, Value::keyword(value::intern("cols"))) {
+        if let Some(v) = heap.map_get(opts, value::kw("cols")) {
             if !matches!(v, Value::Nil) {
                 cols = expect_int(heap, "os/spawn-pty :cols", v)?.clamp(1, 10_000) as u16;
             }
         }
-        if let Some(v) = heap.map_get(opts, Value::keyword(value::intern("rows"))) {
+        if let Some(v) = heap.map_get(opts, value::kw("rows")) {
             if !matches!(v, Value::Nil) {
                 rows = expect_int(heap, "os/spawn-pty :rows", v)?.clamp(1, 10_000) as u16;
             }
@@ -195,10 +204,9 @@ pub(super) fn proc_set_binary(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 
 pub(super) fn proc_signal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_subprocess(heap, "os/signal", arg(args, 0))?;
-    let sig = match arg(args, 1) {
+    let sig = expect!(heap, "os/signal", arg(args, 1), "keyword",
         Value::Keyword(k) => value::symbol_name_ref(k),
-        other => return Err(LispError::wrong_type(heap, "os/signal", "keyword", other)),
-    };
+    )?;
     crate::host::subprocess::signal(id, sig)
         .map_err(|e| LispError::runtime(format!("proc-signal: {}", e)))?;
     Ok(Value::nil())

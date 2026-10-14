@@ -142,10 +142,6 @@ address the child by a stable name even though its pid changes across restarts."
   "Every child record in **start order**, reconstructed from each record's `:seq`."
   (sort-by (vals children) (fn (c) (get c :seq))))
 
-(defn- supervisor-find (children pid)
-  "The child record whose `:pid` is `pid`, or `nil`."
-  (get children pid))
-
 (defn- supervisor-find-by-key (children ids key)
   "Find a child by its `:pid` *or* its `:id` — the runtime child API
 (`terminate-child`/`restart-child`) accepts either. `nil` if neither matches.
@@ -397,7 +393,7 @@ abnormal (`:killed`) — leaving unaffected children running. Bounded by intensi
       (supervisor-terminate-many (supervisor-ordered (get state :children)))
     ; returns nil → we exit :normal
     else
-      (let (child (supervisor-find (get state :children) pid))
+      (let (child (get (get state :children) pid))
         (cond
           (nil? child) (supervisor-loop state)
           (not (supervisor-restartable? (get child :restart :permanent) reason))

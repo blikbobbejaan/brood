@@ -14,27 +14,8 @@
 use std::path::Path;
 use std::process::Command;
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn tempdir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "brood-stale-binary-{tag}-{}-{nanos}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::temp_dir;
 
 /// One clean project file to check, so a run that is NOT refused has something to say.
 fn project_with_a_clean_file(root: &Path) {
@@ -100,7 +81,7 @@ fn assert_refused(out: &Out, command: &str) {
 
 #[test]
 fn nest_check_refuses_inside_a_checkout_whose_std_it_did_not_bake_in() {
-    let dir = tempdir("nest");
+    let dir = temp_dir("stale-binary-nest");
     project_with_a_clean_file(&dir.path);
     // Control first: outside any checkout the same project checks clean.
     let fresh = run(env!("CARGO_BIN_EXE_nest"), &dir.path, &["check"]);
@@ -120,7 +101,7 @@ fn nest_check_refuses_inside_a_checkout_whose_std_it_did_not_bake_in() {
 #[test]
 fn a_stale_checkout_is_found_from_a_subdirectory_too() {
     // `repo_root` walks up, the way a developer runs `nest check` from anywhere in a tree.
-    let dir = tempdir("nested");
+    let dir = temp_dir("stale-binary-nested");
     make_a_stale_checkout(&dir.path);
     let inner = dir.path.join("examples/deep");
     std::fs::create_dir_all(&inner).unwrap();
@@ -131,7 +112,7 @@ fn a_stale_checkout_is_found_from_a_subdirectory_too() {
 
 #[test]
 fn brood_check_refuses_the_same_way() {
-    let dir = tempdir("brood");
+    let dir = temp_dir("stale-binary-brood");
     project_with_a_clean_file(&dir.path);
     let brood = Path::new(env!("CARGO_BIN_EXE_nest"))
         .with_file_name("brood")
@@ -159,7 +140,7 @@ fn nest_test_still_warns_rather_than_refuses() {
     // The test runner's result from an older binary is usually still right, so it keeps
     // the warning (and its exit code); only the checker's verdict is refused. Pinned so the
     // two policies cannot silently become one.
-    let dir = tempdir("test");
+    let dir = temp_dir("stale-binary-test");
     project_with_a_clean_file(&dir.path);
     std::fs::create_dir_all(dir.path.join("tests")).unwrap();
     std::fs::write(

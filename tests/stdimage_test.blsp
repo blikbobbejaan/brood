@@ -123,10 +123,14 @@
   ;; load made the very next `require` die with `cannot find module 'test'`, i.e. installing
   ;; the image BROKE `require` on the shipped build — so its 4-33x win was never available
   ;; there. `require format` measured 62 ms from source against 12.8 ms restored.
+  ;; Asserted on `%std-edges-for`, the reader `require` actually consults for an image's
+  ;; edges. The fake record is ADDED to whatever image record is installed (and the original
+  ;; put back), so a concurrent require still sees every real edge meanwhile.
   :isolated (test "a replayed edge naming a module this binary lacks does not break require"
-    (let (fake {"somemod" ['definitely-not-a-real-module 'string]}
-          _ (%merge-require-edges! fake)
-          deps (get *require-edges* "somemod"))
+    (let (saved *std-require-edges*
+          _ (%set-std-require-edges! (assoc (or saved {})
+                                       "somemod" ['definitely-not-a-real-module 'string]))
+          deps (try (%std-edges-for "somemod") (finally (%set-std-require-edges! saved))))
       ;; the unloadable dep is dropped, the real one kept
       (is (nil? (seq/find deps (fn (d) (= (->string d) "definitely-not-a-real-module")))))
       (is (not (nil? (seq/find deps (fn (d) (= (->string d) "string"))))))

@@ -1,7 +1,7 @@
 // OS / environment / subprocess builtins — extracted from io.rs (file-organization split).
 use super::numeric::{arg, expect_int, expect_string};
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{self, kw, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
@@ -274,13 +274,12 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let mut stdin_text: Option<String> = None;
     let mut timeout: Option<std::time::Duration> = None;
     if let Value::Map(opts) = arg(args, 2) {
-        let key = |k: &'static str| Value::keyword(value::intern(k));
-        if let Some(v) = heap.map_get(opts, key("cwd")) {
+        if let Some(v) = heap.map_get(opts, kw("cwd")) {
             if !matches!(v, Value::Nil) {
                 cmd.current_dir(expect_string(heap, "os/cmd :cwd", v)?);
             }
         }
-        if let Some(Value::Map(e)) = heap.map_get(opts, key("env")) {
+        if let Some(Value::Map(e)) = heap.map_get(opts, kw("env")) {
             for (k, v) in heap.map_entries(e) {
                 let name = expect_string(heap, "os/cmd :env key", k)?;
                 if matches!(v, Value::Nil) {
@@ -290,12 +289,12 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
                 }
             }
         }
-        if let Some(v) = heap.map_get(opts, key("stdin")) {
+        if let Some(v) = heap.map_get(opts, kw("stdin")) {
             if !matches!(v, Value::Nil) {
-                stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?.to_string());
+                stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?);
             }
         }
-        if let Some(v) = heap.map_get(opts, key("timeout-ms")) {
+        if let Some(v) = heap.map_get(opts, kw("timeout-ms")) {
             if !matches!(v, Value::Nil) {
                 let ms = expect_int(heap, "os/cmd :timeout-ms", v)?;
                 timeout = Some(std::time::Duration::from_millis(ms.max(0) as u64));
@@ -324,7 +323,6 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let stdout = heap.alloc_string(&String::from_utf8_lossy(&stdout_bytes));
     let stderr = heap.alloc_string(&String::from_utf8_lossy(&stderr_bytes));
     let exit_code = status.code().unwrap_or(-1) as i64;
-    let kw = |k: &'static str| Value::keyword(value::intern(k));
     let mut pairs = vec![
         (kw("stdout"), stdout),
         (kw("stderr"), stderr),
@@ -704,18 +702,7 @@ pub(super) fn interrupt_taken(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult
 /// takes an INFILE and uses `/dev/null` when it is nil. A genuinely interactive child
 /// needs a different primitive (one that does not run on a worker), not this one.
 pub(super) fn run_process(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let pv = arg(args, 0);
-    let prog = match pv {
-        Value::Str(id) => heap.string(id).to_string(),
-        _ => {
-            return Err(LispError::wrong_type(
-                heap,
-                "os/run-process",
-                "string program",
-                pv,
-            ))
-        }
-    };
+    let prog = expect_string(heap, "os/run-process", arg(args, 0))?;
     let mut argv = Vec::new();
     for a in heap.seq_items(arg(args, 1))? {
         match a {

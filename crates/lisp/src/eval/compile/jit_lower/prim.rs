@@ -7,8 +7,9 @@
 #![cfg(feature = "jit")]
 use super::emit::{
     as_f64_guarded, as_f64_pair, as_int, call_handle, cmp_dispatch, deopt_code, emit_arith,
-    emit_float_arith, eq_dispatch, inline_vec_ref, load_slot_int, op_is_float, op_maybe_float,
-    read_words, slot_untyped, table_prim, vector_ref, DeoptReason, Frame, Funcs,
+    emit_float_arith, eq_dispatch, handle_from_out_slot, inline_vec_ref, load_slot_int,
+    op_is_float, op_maybe_float, read_out_slot, read_words, slot_untyped, table_prim, vector_ref,
+    DeoptReason, Frame, Funcs,
 };
 use super::Op;
 use super::OrBail;
@@ -105,21 +106,7 @@ pub(super) fn emit_prim1(
                     &[BlockArg::Value(deopt_reason)],
                 );
                 b.switch_to_block(ok);
-                let o0 = b
-                    .ins()
-                    .stack_load(types::I64, types::I64, funcs.out_slot, 0);
-                let o1 = b.ins().stack_load(
-                    types::I64,
-                    types::I64,
-                    funcs.out_slot,
-                    PAYLOAD_OFFSET as i32,
-                );
-                let o2 = b.ins().stack_load(
-                    types::I64,
-                    types::I64,
-                    funcs.out_slot,
-                    PAYLOAD_OFFSET as i32 + 8,
-                );
+                let (o0, o1, o2) = read_out_slot(b, funcs.out_slot);
                 b.ins().jump(merge, &[o0.into(), o1.into(), o2.into()]);
             }
             b.switch_to_block(cont);
@@ -521,14 +508,7 @@ pub(super) fn emit_make_vector(
                 off + PAYLOAD_OFFSET as i32 + 8,
             );
         }
-        let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-        let w1 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-        let w2 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-        stack.push(Op::Handle(w0, w1, w2));
+        stack.push(handle_from_out_slot(b, out_slot));
     } else {
         // Variadic `[e0 … e{n-1}]` (nbody's `[vx vy vz]` / 7-body rebuild). Pop the `n`
         // operands (pushed in source order: e0 deepest, e{n-1} on top), box each to a
@@ -560,14 +540,7 @@ pub(super) fn emit_make_vector(
         let n_val = b.ins().iconst(types::I64, n as i64);
         b.ins()
             .call(funcs.makevecn, &[heap, out_addr, stage_addr, n_val]);
-        let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-        let w1 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-        let w2 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-        stack.push(Op::Handle(w0, w1, w2));
+        stack.push(handle_from_out_slot(b, out_slot));
     }
     Some(())
 }
@@ -613,14 +586,7 @@ pub(super) fn emit_make_map(
     let n_val = b.ins().iconst(types::I64, npairs as i64);
     b.ins()
         .call(funcs.makemapn, &[heap, out_addr, stage_addr, n_val]);
-    let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-    let w1 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-    let w2 = b
-        .ins()
-        .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-    stack.push(Op::Handle(w0, w1, w2));
+    stack.push(handle_from_out_slot(b, out_slot));
     Some(())
 }
 
@@ -666,22 +632,7 @@ pub(super) fn emit_prim3_callback(
         &[BlockArg::Value(deopt_reason)],
     );
     b.switch_to_block(cont);
-    let w0 = b
-        .ins()
-        .stack_load(types::I64, types::I64, funcs.out_slot, 0);
-    let w1 = b.ins().stack_load(
-        types::I64,
-        types::I64,
-        funcs.out_slot,
-        PAYLOAD_OFFSET as i32,
-    );
-    let w2 = b.ins().stack_load(
-        types::I64,
-        types::I64,
-        funcs.out_slot,
-        PAYLOAD_OFFSET as i32 + 8,
-    );
-    stack.push(Op::Handle(w0, w1, w2));
+    stack.push(handle_from_out_slot(b, funcs.out_slot));
     Some(())
 }
 
@@ -858,14 +809,7 @@ pub(super) fn emit_prim3_table_put(
         b.ins()
             .brif(is_err, error, &[], deopt, &[BlockArg::Value(deopt_reason)]);
         b.switch_to_block(cont);
-        let w0 = b.ins().stack_load(types::I64, types::I64, out_slot, 0);
-        let w1 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32);
-        let w2 = b
-            .ins()
-            .stack_load(types::I64, types::I64, out_slot, PAYLOAD_OFFSET as i32 + 8);
-        stack.push(Op::Handle(w0, w1, w2));
+        stack.push(handle_from_out_slot(b, out_slot));
     }
     Some(())
 }

@@ -101,7 +101,7 @@
   (test "folds a map's [k v] pairs"
     (assert= 6 (reduce-while {:a 1 :b 2 :c 3} 0 (fn (a [k v]) [:cont (+ a v)]))))
   (test "errors on a return that is neither [:cont acc] nor [:halt acc]"
-    (is (try (do (reduce-while [1] 0 (fn (a x) 42)) false) (catch _ true))))
+    (assert-error (reduce-while [1] 0 (fn (a x) 42))))
   (test "across processes: the reduced value round-trips through send"
     :isolated (let (me (self)
           n 6

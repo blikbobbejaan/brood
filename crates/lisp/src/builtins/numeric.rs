@@ -392,7 +392,7 @@ pub(super) fn expect_number(heap: &Heap, who: &str, v: Value) -> Result<f64, Lis
 /// Require a string, returned **owned** so the `heap` borrow is released before
 /// the builtin reads or allocates further (most callers go on to touch
 /// `&mut heap`). The string analogue of [`expect_int`]/[`expect_number`].
-pub(super) fn expect_string(heap: &Heap, who: &str, v: Value) -> Result<String, LispError> {
+pub(crate) fn expect_string(heap: &Heap, who: &str, v: Value) -> Result<String, LispError> {
     expect!(heap, who, v, "string",
         Value::Str(id) => heap.string(id).to_string(),
     )

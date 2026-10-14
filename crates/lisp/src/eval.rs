@@ -198,9 +198,7 @@ fn eval_tail_loop(
     #[cfg(debug_assertions)]
     {
         static EVAL_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        if *EVAL_TRACE.get_or_init(|| {
-            std::env::var("BROOD_EVAL_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
-        }) {
+        if crate::diagnostics::debug_flags::is_armed(&EVAL_TRACE, "BROOD_EVAL_TRACE") {
             eprintln!("[eval-trace] {}", crate::syntax::printer::print(heap, expr));
         }
     }
@@ -2476,11 +2474,10 @@ pub(crate) fn scheme_binding_error(heap: &Heap, who: &str, binds: &[Value]) -> L
     let looks_nested = !binds.is_empty()
         && binds.iter().all(|&b| {
             matches!(b.unpack(), ValueRef::Pair(_))
-                && heap.seq_items(b).map(|it| it.len() == 2).unwrap_or(false)
-                && matches!(
-                    heap.seq_items(b).ok().and_then(|it| it.first().copied()),
-                    Some(v) if matches!(v.unpack(), ValueRef::Sym(_))
-                )
+                && heap
+                    .seq_items(b)
+                    .map(|it| it.len() == 2 && matches!(it[0].unpack(), ValueRef::Sym(_)))
+                    .unwrap_or(false)
         });
     let e = LispError::runtime(format!("{who}: bindings must be name/value pairs"));
     if looks_nested {
@@ -2503,12 +2500,6 @@ fn uncons(heap: &Heap, v: Value) -> (Value, Value) {
     }
 }
 
-/// Evaluate all-but-last of the forms in the cons-list `body` for effect; return
-/// the last form (or `None` if empty). Walks the spine directly, so a `do`/`let`
-/// body costs no intermediate `Vec`. Errors on an improper list. Each non-tail
-/// form's source position is attached to any error it raises (innermost wins),
-/// so a `do`-body failure points at the failing form's line, not the enclosing
-/// `do`'s.
 /// Evaluate `let`/`letrec` binding RHSs in `scope`, defining each `name`. Each
 /// RHS eval can collect at ANY depth (ADR-061), so `scope`, the binding forms,
 /// and the trailing `body` are kept on the operand stack across the evals;
@@ -2561,6 +2552,12 @@ fn bind_sequential(
     })
 }
 
+/// Evaluate all-but-last of the forms in the cons-list `body` for effect; return
+/// the last form with the (relocated) `env`, or `None` if empty. Walks the spine
+/// directly, so a `do`/`let` body costs no intermediate `Vec`. Errors on an improper
+/// list. Each non-tail form's source position is attached to any error it raises
+/// (innermost wins), so a `do`-body failure points at the failing form's line, not
+/// the enclosing `do`'s.
 fn tail_of_cons(
     heap: &mut Heap,
     body: Value,
@@ -2637,9 +2634,7 @@ fn value_arity(heap: &Heap, v: Value) -> Option<value::Arity> {
 /// default stays on, so an accidental reload mismatch is still surfaced.
 fn reload_diagnostics_enabled(heap: &Heap, root: EnvId) -> bool {
     static ENV_ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let env_on = *ENV_ON.get_or_init(|| {
-        !std::env::var("BROOD_NO_RELOAD_DIAG").is_ok_and(|v| v != "0" && !v.is_empty())
-    });
+    let env_on = !crate::diagnostics::debug_flags::is_armed(&ENV_ON, "BROOD_NO_RELOAD_DIAG");
     if !env_on {
         return false;
     }

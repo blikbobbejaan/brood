@@ -59,18 +59,11 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// text — handy for tests and the REPL). Returns the instance token. The calling
 /// process owns the instance: it is closed when that process exits.
 pub(super) fn wasm_load(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let bytes: Vec<u8> = match arg(args, 0) {
+    let bytes: Vec<u8> = expect!(heap, "%wasm-load", arg(args, 0),
+        "bytes (a compiled .wasm component) or string (WAT source)",
         Value::Bytes(id) => heap.bytes(id).as_bytes().to_vec(),
         Value::Str(id) => heap.string(id).as_bytes().to_vec(),
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%wasm-load",
-                "bytes (a compiled .wasm component) or string (WAT source)",
-                other,
-            ))
-        }
-    };
+    )?;
     crate::host::wasm::load(&bytes, crate::process::self_pid()).map(|id| Value::Int(id as i64))
 }
 
@@ -78,19 +71,11 @@ pub(super) fn wasm_load(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// `args` (a vector), marshalled by the export's WIT types. Fuel-metered.
 pub(super) fn wasm_call(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_int(heap, "%wasm-call", arg(args, 0))? as u64;
-    let name = expect_string(heap, "%wasm-call", arg(args, 1))?.to_string();
-    let call_args: Vec<Value> = match arg(args, 2) {
+    let name = expect_string(heap, "%wasm-call", arg(args, 1))?;
+    let call_args: Vec<Value> = expect!(heap, "%wasm-call", arg(args, 2), "vector of arguments",
         Value::Vector(vid) => heap.vector(vid).to_vec(),
         Value::Nil => Vec::new(),
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%wasm-call",
-                "vector of arguments",
-                other,
-            ))
-        }
-    };
+    )?;
     crate::host::wasm::call(heap, id, &name, &call_args)
 }
 

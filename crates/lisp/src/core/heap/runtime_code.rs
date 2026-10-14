@@ -122,6 +122,12 @@ pub(crate) struct LoadStage {
     /// exactly as it reads its own staged defines ahead of the table. A later define in
     /// the same frame takes the name back out.
     pub(crate) removed: std::collections::HashSet<Symbol>,
+    /// Names this load DEFINED (`def`/`defonce`), as opposed to names it only staged a
+    /// registry op on. A registry op made in a nested load belongs to the frame that defined
+    /// the registry, if any; a frame that merely registered into it (a test file's
+    /// `defmodule` providing itself into `*features*`) does not own the module loads nested
+    /// inside it — routing their `provide`s there discarded them with the file.
+    pub(crate) defined: std::collections::HashSet<Symbol>,
     /// The frame is a DIRECT `load` of a module file (KI-170), not a `require`: its
     /// publish is journalled like any load so a bystander's restore replays it whole, but
     /// the loading isolate's OWN restore discards it — the file was loaded for that

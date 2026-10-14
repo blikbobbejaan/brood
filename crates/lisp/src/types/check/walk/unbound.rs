@@ -1,6 +1,6 @@
 //! The unbound-symbol diagnostic and its neighbours: what counts as bound (Step 4), the
-//! unrequired-module hint, the stability note a deprecated name carries, the file's own
-//! `def` names, and the `check-allow` mask.
+//! stability note a deprecated name carries, the file's own `def` names, and the
+//! `check-allow` mask.
 
 use super::*;
 
@@ -90,8 +90,6 @@ pub(super) fn lint_allow_mask(category: Option<Value>) -> u16 {
         crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH
     } else if value::symbol_is(k, "unbound") {
         crate::types::check::ctx::SUPPRESS_UNBOUND
-    } else if value::symbol_is(k, "unrequired") {
-        crate::types::check::ctx::SUPPRESS_UNREQUIRED
     } else if value::symbol_is(k, "deprecated") {
         crate::types::check::ctx::SUPPRESS_DEPRECATED
     } else if value::symbol_is(k, "total") {
@@ -152,35 +150,6 @@ pub(in crate::types::check) fn is_unbound(heap: &Heap, ctx: &Ctx, s: Symbol) -> 
         }
     }
     true
-}
-
-/// **KI-17** — a *user-written* qualified reference `mod/name` that resolves in the
-/// loaded image but whose module `mod` the file never `require`s/`:use`s. It works only
-/// by load-order luck (another file pulled `mod` in first); reorder or drop that file and
-/// it raises `unbound symbol: mod/name` at runtime. Returns `Some(math/mod)` to warn.
-///
-/// Silent unless the file's reachability set is known ([`Ctx::required_mods`], whole-
-/// project mode), the symbol is genuinely *bound* (an unbound one is [`is_unbound`]'s
-/// job — the two are mutually exclusive), and the exact reference is *user-written*
-/// ([`Ctx::raw_qualified_has`] — never a macro-injected reference to a module the file
-/// doesn't mention). Each guard removes a false-positive class, keeping the lint sound.
-pub(super) fn unrequired_module(_heap: &Heap, ctx: &Ctx, s: Symbol) -> Option<String> {
-    // OBSOLETE since the ADR-227 follow-up: a qualified reference `mod/name` now *infers*
-    // `(require 'mod)` — the reference itself loads the module (a qualified macro/call
-    // head during macroexpand, any other qualified reference before eval). So a
-    // "reference to an unrequired module" can no longer occur: there is no unrequired
-    // module to reference. The lint is a permanent no-op. Its reachability scaffolding
-    // (`required_mods` / `raw_qualified`) is retained for now — still touched here so it
-    // stays wired if ever repurposed — and can be pruned in a later cleanup.
-    let _ = (ctx.required_mods(), ctx.raw_qualified_has(&name_of(s)));
-    None
-}
-
-/// The KI-17 reachability diagnostic text for a reference to unrequired `module`.
-pub(super) fn unrequired_msg(module: &str) -> String {
-    format!(
-        "qualified reference to unrequired module: {module} (add (require '{module}) to this file)"
-    )
 }
 
 /// True when call head `s` resolves to a **macro the checker did not expand** — a

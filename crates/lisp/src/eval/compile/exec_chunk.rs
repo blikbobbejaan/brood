@@ -79,9 +79,7 @@ pub(crate) fn exec_chunk(
         #[cfg(debug_assertions)]
         {
             static VM_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *VM_TRACE.get_or_init(|| {
-                std::env::var("BROOD_VM_TRACE").is_ok_and(|v| v != "0" && !v.is_empty())
-            }) {
+            if crate::diagnostics::debug_flags::is_armed(&VM_TRACE, "BROOD_VM_TRACE") {
                 eprintln!("[vm-trace ip={}] {}", *ip - 1, inst.trace_name());
             }
         }

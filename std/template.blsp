@@ -52,12 +52,9 @@ tried. Unknown keys render as empty string. Nested `{{` are not supported.
 A substituted value is rendered with `->string` (the `Display` protocol), so a record
 substitutes as the string its type defines — a money record as `$10.50`, a datetime as
 its ISO form — rather than as its field map."
-  (let (v (get data key))
-    (cond
-      (not (nil? v)) (->string v)
-      else
-        (let (kv (get data (keyword key)))
-          (if (nil? kv) "" (->string kv))))))
+  (let (v (get data key)
+        v (if (nil? v) (get data (keyword key)) v))
+    (if (nil? v) "" (->string v))))
 
 ;; ---- render-all -------------------------------------------------------------
 

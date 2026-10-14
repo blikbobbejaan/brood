@@ -27,15 +27,10 @@
 //! own last line until the retire has actually happened — the very thing under test orders
 //! the output, and no sleep is involved.
 
-use std::io::Write;
 use std::process::Command;
 
-fn script(name: &str, source: &str) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("brood-qtail-{name}.blsp"));
-    let mut file = std::fs::File::create(&path).expect("create script");
-    file.write_all(source.as_bytes()).expect("write script");
-    path
-}
+mod support;
+use support::script;
 
 fn run(path: &std::path::Path, fault_at: Option<u32>) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));
@@ -99,7 +94,7 @@ const WORKLOAD: &str = r#"
 /// as sound, so a failure in the injected run cannot be blamed on a flaky program.
 #[test]
 fn the_workload_completes_with_no_fault_injected() {
-    let path = script("control", WORKLOAD);
+    let path = script("qtail-control", WORKLOAD);
     let (stdout, stderr, ok) = run(&path, None);
     assert!(
         ok,
@@ -123,7 +118,7 @@ fn the_workload_completes_with_no_fault_injected() {
 /// `receive` burns its full 30 s and reports `NO-DOWN`.
 #[test]
 fn a_quantum_tail_panic_retires_the_process_and_spares_the_runtime() {
-    let path = script("fault", WORKLOAD);
+    let path = script("qtail-fault", WORKLOAD);
     let (stdout, stderr, ok) = run(&path, Some(20));
 
     // Sanity: the fault must actually have been injected, or the test proves nothing.

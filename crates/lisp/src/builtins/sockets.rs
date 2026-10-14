@@ -172,7 +172,7 @@ pub(super) fn tls_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
 }
 
 pub(super) fn tls_self_signed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let host = expect_string(heap, "%tls-self-signed", arg(args, 0))?.to_string();
+    let host = expect_string(heap, "%tls-self-signed", arg(args, 0))?;
     match crate::host::net::tls_self_signed(vec![host]) {
         Ok((cert, key)) => {
             let c = heap.alloc_string(&cert);
@@ -184,7 +184,7 @@ pub(super) fn tls_self_signed(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 }
 
 pub(super) fn tls_request(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let host = expect_string(heap, "%tls-request", arg(args, 0))?.to_string();
+    let host = expect_string(heap, "%tls-request", arg(args, 0))?;
     let port = socket_port(
         "%tls-request",
         expect_int(heap, "%tls-request", arg(args, 1))?,
@@ -196,9 +196,7 @@ pub(super) fn tls_request(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // Optional 4th arg: a PEM trust anchor replacing the Mozilla roots for
     // this request (private CAs, tls-self-signed dev servers).
     let ca = match args.get(3) {
-        Some(v) if !matches!(v, Value::Nil) => {
-            Some(expect_string(heap, "%tls-request", *v)?.to_string())
-        }
+        Some(v) if !matches!(v, Value::Nil) => Some(expect_string(heap, "%tls-request", *v)?),
         _ => None,
     };
     // Optional 5th arg: start the response in binary mode (see `net::tls_request`).
@@ -239,17 +237,9 @@ pub(super) fn tcp_set_idle_timeout(args: &[Value], _: EnvId, heap: &mut Heap) ->
 
 pub(super) fn tcp_controlling_process(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_socket(heap, "%tcp-controlling-process", arg(args, 0))?;
-    let pid = match arg(args, 1) {
+    let pid = expect!(heap, "%tcp-controlling-process", arg(args, 1), "pid",
         Value::Pid { id, .. } => id,
-        other => {
-            return Err(LispError::wrong_type(
-                heap,
-                "%tcp-controlling-process",
-                "pid",
-                other,
-            ))
-        }
-    };
+    )?;
     crate::host::net::controlling_process(id, pid)
         .map_err(|e| LispError::runtime(format!("tcp-controlling-process: {}", e)))?;
     Ok(Value::nil())

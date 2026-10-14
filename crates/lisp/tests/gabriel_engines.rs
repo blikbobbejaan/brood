@@ -17,17 +17,11 @@
 //! *and* both are held to upstream's number, so a shared bug in both engines still fails.
 
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
 
-use brood::eval::compile::{set_forced_ceiling, Tier};
-use brood::Interp;
+use brood::eval::compile::Tier;
 
-static MEM_GUARD: LazyLock<()> = LazyLock::new(|| {
-    brood::core::alloc::init_limits_with_default(
-        brood::core::alloc::TEST_DEFAULT_HARD,
-        brood::core::alloc::TEST_DEFAULT_SOFT,
-    );
-});
+mod support;
+use support::eval_on;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -51,19 +45,6 @@ fn driver(module: &str, input: &str, expr: &str) -> String {
         support = support.to_str().expect("utf-8 path"),
         input_path = input_path.to_str().expect("utf-8 path"),
     )
-}
-
-/// Evaluate in a fresh interpreter pinned to one engine.
-fn eval_on(src: &str, ceiling: Tier) -> Result<String, String> {
-    LazyLock::force(&MEM_GUARD);
-    set_forced_ceiling(Some(ceiling));
-    let mut interp = Interp::new();
-    let out = match interp.eval_str(src) {
-        Ok(v) => Ok(interp.print(v)),
-        Err(e) => Err(e.message.clone()),
-    };
-    set_forced_ceiling(None);
-    out
 }
 
 /// Assert the program agrees with upstream at **every** ceiling. Iterates [`Tier::ALL`], so a new

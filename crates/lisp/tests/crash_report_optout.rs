@@ -9,13 +9,8 @@
 
 use brood::Interp;
 
-/// Is `sym` globally bound in this image?
-fn bound(interp: &mut Interp, sym: &str) -> bool {
-    let out = interp
-        .eval_str(&format!("(bound? '{sym})"))
-        .unwrap_or_else(|e| panic!("evaluating (bound? '{sym}) failed: {e}"));
-    interp.print(out) == "true"
-}
+mod support;
+use support::bound;
 
 /// A name only `crash-report` defines.
 const REPORTER_ONLY_NAME: &str = "crash-report/render";

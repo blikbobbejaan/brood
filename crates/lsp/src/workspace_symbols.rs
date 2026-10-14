@@ -70,15 +70,10 @@ pub fn workspace_symbols(
 /// substrate the rest of the LSP uses, no evaluation.
 fn file_namespace<'s>(root: &Node, text: &'s str) -> Option<&'s str> {
     for form in root.forms() {
-        if form.kind != NodeKind::List {
+        if form.head_symbol(text) != Some("defmodule") {
             continue;
         }
-        let mut forms = form.forms();
-        let Some(head) = forms.next() else { continue };
-        if head.kind != NodeKind::Symbol || head.text(text) != "defmodule" {
-            continue;
-        }
-        if let Some(name) = forms.next() {
+        if let Some(name) = form.forms().nth(1) {
             if name.kind == NodeKind::Symbol {
                 return Some(name.text(text));
             }

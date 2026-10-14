@@ -81,7 +81,7 @@ pub fn link(a: u64, b: u64) {
     // `b` already dead — notify the linker via the same trap-or-propagate path.
     deliver_exit_to(
         a,
-        local_pid_msg(b),
+        Message::local_pid(b),
         Message::Keyword(value::intern(pk::NOPROC)),
     );
 }
@@ -122,7 +122,7 @@ pub(super) fn notify_peers(dead: u64, reason: &Message) {
         }
         peers
     };
-    let dead_msg = local_pid_msg(dead);
+    let dead_msg = Message::local_pid(dead);
     for q in local_peers {
         deliver_exit_to(q, dead_msg.clone(), reason.clone());
     }
@@ -168,14 +168,6 @@ fn exit_message(dead_msg: Message, reason: Message) -> Message {
         dead_msg,
         reason,
     ])
-}
-
-/// The `Message::Pid` of a local process `id`.
-fn local_pid_msg(id: u64) -> Message {
-    Message::Pid {
-        node: crate::dist::local_node(),
-        id,
-    }
 }
 
 /// How many *local* peers `pid` is linked to (0 for a dead/unlinked pid).

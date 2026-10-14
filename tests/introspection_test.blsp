@@ -583,3 +583,11 @@
   (test "it answers where bound? cannot"
     (is (reflect/resolves? 'uuid/v4))
     (is (not (reflect/resolves? 'uuid/no-such-function)))))
+
+;; `references-in-source` reports lines the way the reader counts them: a lone CR breaks a
+;; line (as in every diagnostic), CRLF is one break. It once counted only `\n`, so a file
+;; with bare CRs had its callers reported lines too early.
+(describe "references-in-source line numbers"
+  (test "a lone CR and a CRLF each break exactly one line"
+    (assert= (list [1 2] [2 2] [3 2])
+      (reflect/references-in-source 'inc "(inc 1)\r(inc 2)\r\n(inc 3)"))))

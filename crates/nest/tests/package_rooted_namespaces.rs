@@ -15,27 +15,9 @@
 //! leaking into the flat namespace.
 
 use std::path::Path;
-use std::process::Command;
 
-struct TempDir {
-    path: std::path::PathBuf,
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-fn parent_dir(tag: &str) -> TempDir {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path =
-        std::env::temp_dir().join(format!("brood-rooted-{tag}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&path).unwrap();
-    TempDir { path }
-}
+mod support;
+use support::{nest, temp_dir};
 
 /// A dependency project `name` whose `parser` module's `parse` prepends `label`.
 fn write_dep(parent: &Path, name: &str, label: &str) {
@@ -53,25 +35,9 @@ fn write_dep(parent: &Path, name: &str, label: &str) {
     .unwrap();
 }
 
-fn nest(dir: &Path, args: &[&str]) -> (String, bool) {
-    let out = Command::new(env!("CARGO_BIN_EXE_nest"))
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("run nest");
-    (
-        format!(
-            "{}{}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        ),
-        out.status.success(),
-    )
-}
-
 #[test]
 fn two_deps_with_the_same_module_name_coexist_rooted() {
-    let parent = parent_dir("coexist");
+    let parent = temp_dir("rooted-coexist");
     // Two deps that, pre-rooting, both declared `(defmodule parser)` — a hard collision.
     write_dep(&parent.path, "liba", "liba");
     write_dep(&parent.path, "libb", "libb");
@@ -130,7 +96,7 @@ fn intra_package_use_roots_to_the_dependency() {
     // must have those refs rooted to `dep/util` at load — intra-package refs stay short
     // in source, root at load (ADR-070). Proven by a dep `libc` whose `api` module
     // `(:use util)`s a sibling `util` module and the app calling through it.
-    let parent = parent_dir("intra");
+    let parent = temp_dir("rooted-intra");
     let dep = parent.path.join("libc");
     std::fs::create_dir_all(dep.join("src")).unwrap();
     std::fs::write(
@@ -190,7 +156,7 @@ fn the_root_project_roots_its_own_modules_under_its_name() {
     // global `myapp/greeter`, and an intra-project `(:use greeter)` stays short in source
     // but roots at load. Verified through `nest test` end to end, and that `nest check`
     // stays clean (the checker roots the same way the loader does).
-    let parent = parent_dir("rootproj");
+    let parent = temp_dir("rooted-rootproj");
     let app = parent.path.join("myapp");
     std::fs::create_dir_all(app.join("src")).unwrap();
     std::fs::create_dir_all(app.join("tests")).unwrap();

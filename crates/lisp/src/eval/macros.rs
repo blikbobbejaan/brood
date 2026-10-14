@@ -494,7 +494,7 @@ fn hyg_let(
     if hyg_is_unquote(heap, binds_form) {
         return hyg_generic(heap, form, items, scope);
     }
-    let binds = match form_items(heap, binds_form) {
+    let binds = match heap.list_or_vector_items(binds_form) {
         Some(b) if b.len() % 2 == 0 => b,
         _ => return hyg_generic(heap, form, items, scope),
     };
@@ -586,7 +586,7 @@ fn hyg_param_list(heap: &mut Heap, params: Value, inner: &mut HygScope) -> Value
     if hyg_is_unquote(heap, params) {
         return params; // `(fn ~params …)` — binders not visible
     }
-    let elems = match form_items(heap, params) {
+    let elems = match heap.list_or_vector_items(params) {
         Some(e) => e,
         None => return params,
     };
@@ -626,7 +626,7 @@ fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
                 if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
                     let binds_form = items.get(1).copied().unwrap_or(Value::nil());
                     if !hyg_is_unquote(heap, binds_form) {
-                        if let Some(binds) = form_items(heap, binds_form) {
+                        if let Some(binds) = heap.list_or_vector_items(binds_form) {
                             if binds.iter().step_by(2).any(hyg_binder_renamable) {
                                 return true;
                             }
@@ -685,7 +685,8 @@ fn param_list_has_renamable(heap: &Heap, params: Value) -> bool {
     if hyg_is_unquote(heap, params) {
         return false;
     }
-    form_items(heap, params).is_some_and(|elems| elems.iter().any(hyg_binder_renamable))
+    heap.list_or_vector_items(params)
+        .is_some_and(|elems| elems.iter().any(hyg_binder_renamable))
 }
 
 // ============================================================================
@@ -1484,7 +1485,8 @@ fn is_root_escape(s: value::Symbol) -> bool {
 /// resolved, at the call site.
 fn skips_as_data(heap: &Heap, form: Value) -> bool {
     matches!(form.unpack(), ValueRef::Pair(_))
-        && form_items(heap, form)
+        && heap
+            .list_or_vector_items(form)
             .and_then(|items| items.first().map(|h| h.unpack()))
             .map(|h| match h {
                 ValueRef::Sym(s) => {
@@ -1502,7 +1504,8 @@ fn has_root_escape(heap: &Heap, form: Value) -> bool {
         }
         match form.unpack() {
             ValueRef::Sym(s) => is_root_escape(s),
-            ValueRef::Pair(_) | ValueRef::Vector(_) => form_items(heap, form)
+            ValueRef::Pair(_) | ValueRef::Vector(_) => heap
+                .list_or_vector_items(form)
                 .map(|items| items.iter().any(|v| has_root_escape(heap, *v)))
                 .unwrap_or(false),
             _ => false,
@@ -1519,7 +1522,7 @@ fn rewrite_root_escapes(heap: &mut Heap, form: Value) -> Value {
             ValueRef::Sym(s) if is_root_escape(s) => {
                 Value::symbol(value::intern(&value::symbol_name(s)[1..]))
             }
-            ValueRef::Pair(_) | ValueRef::Vector(_) => match form_items(heap, form) {
+            ValueRef::Pair(_) | ValueRef::Vector(_) => match heap.list_or_vector_items(form) {
                 Some(items) => {
                     let out: Vec<Value> = items
                         .into_iter()
@@ -1743,7 +1746,7 @@ fn resolve_let(
     locals: &[value::Symbol],
 ) -> Value {
     let letrec = matches!(items.first().map(|v| v.unpack()), Some(ValueRef::Sym(h)) if value::symbol_is(h, kw::LETREC));
-    let binds = match items.get(1).and_then(|&b| form_items(heap, b)) {
+    let binds = match items.get(1).and_then(|&b| heap.list_or_vector_items(b)) {
         Some(b) if b.len() % 2 == 0 => b,
         _ => return generic_resolve(heap, form, items, ns_name, locals),
     };
@@ -1850,7 +1853,7 @@ fn resolve_param_defaults(
     ns_name: &str,
     locals: &[value::Symbol],
 ) -> Value {
-    let items = match form_items(heap, params) {
+    let items = match heap.list_or_vector_items(params) {
         Some(i) => i,
         None => return params,
     };
@@ -1860,7 +1863,7 @@ fn resolve_param_defaults(
         match item.unpack() {
             // `(name default…)` — the binder stays, the defaults resolve.
             ValueRef::Pair(_) => {
-                let parts = form_items(heap, item).unwrap_or_default();
+                let parts = heap.list_or_vector_items(item).unwrap_or_default();
                 match parts.first().map(|v| v.unpack()) {
                     Some(ValueRef::Sym(binder)) => {
                         let mut rebuilt = Vec::with_capacity(parts.len());
@@ -1893,7 +1896,7 @@ fn resolve_param_defaults(
 /// `parse_params`): plain symbols, `(name default)` optionals' names; skips the
 /// `&`/`&optional`/`&rest` markers. Appends to `out`.
 fn collect_param_syms(heap: &Heap, params: Value, out: &mut Vec<value::Symbol>) {
-    let items = match form_items(heap, params) {
+    let items = match heap.list_or_vector_items(params) {
         Some(i) => i,
         None => return,
     };
@@ -1910,7 +1913,7 @@ fn collect_param_syms(heap: &Heap, params: Value, out: &mut Vec<value::Symbol>) 
             }
             ValueRef::Pair(_) | ValueRef::Vector(_) => {
                 // `(name default)` — the binder is the first element.
-                let inner = form_items(heap, item).unwrap_or_default();
+                let inner = heap.list_or_vector_items(item).unwrap_or_default();
                 if let Some(ValueRef::Sym(s)) = inner.first().map(|v| v.unpack()) {
                     out.push(s);
                 }
@@ -2249,7 +2252,7 @@ fn plain_fn_literal(heap: &Heap, form: Value) -> Option<(Vec<value::Symbol>, Vec
         return None;
     }
     let mut params = Vec::new();
-    for &pv in &form_items(heap, items[1])? {
+    for &pv in &heap.list_or_vector_items(items[1])? {
         match pv.unpack() {
             ValueRef::Sym(s)
                 if !value::symbol_is(s, kw::AMP) && !value::symbol_is(s, kw::AMP_OPTIONAL) =>
@@ -2381,8 +2384,15 @@ fn peel_stages(heap: &Heap, form: Value) -> Option<(Value, Vec<Stage>)> {
     Some((cur, stages))
 }
 
-/// Does `form` hold a stage chain under a `fold`/`reduce`? The cheap pre-check.
-fn form_has_pipeline(heap: &Heap, form: Value, depth: usize) -> bool {
+/// Is there a combination anywhere in `form`, outside quoted data, whose head symbol and
+/// items satisfy `is_target`? The shared cheap pre-check of the fold rewrites. A form too
+/// deep to walk answers no, which leaves it unrewritten.
+fn form_has_call(
+    heap: &Heap,
+    form: Value,
+    depth: usize,
+    is_target: &dyn Fn(value::Symbol, &[Value]) -> bool,
+) -> bool {
     if depth > 256 {
         return false;
     }
@@ -2393,16 +2403,22 @@ fn form_has_pipeline(heap: &Heap, form: Value, depth: usize) -> bool {
         if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
             return false;
         }
-        if (value::symbol_is(h, "fold") || value::symbol_is(h, "reduce"))
-            && items.len() == 4
-            && peel_stages(heap, items[1]).is_some()
-        {
+        if is_target(h, &items) {
             return true;
         }
     }
     items
         .iter()
-        .any(|&it| form_has_pipeline(heap, it, depth + 1))
+        .any(|&it| form_has_call(heap, it, depth + 1, is_target))
+}
+
+/// Does `form` hold a stage chain under a `fold`/`reduce`? The cheap pre-check.
+fn form_has_pipeline(heap: &Heap, form: Value) -> bool {
+    form_has_call(heap, form, 0, &|head, items| {
+        (value::symbol_is(head, "fold") || value::symbol_is(head, "reduce"))
+            && items.len() == 4
+            && peel_stages(heap, items[1]).is_some()
+    })
 }
 
 /// Rewrite every `(fold|reduce <stage chain over C> INIT RF)` in `form` into
@@ -2412,7 +2428,7 @@ fn pipeline_fuse_rewrite(heap: &mut Heap, form: Value) -> Value {
     if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
         return form;
     }
-    if !form_has_pipeline(heap, form, 0) || form_binds_any(heap, form, &pipeline_names(), 0) {
+    if !form_has_pipeline(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
         return form;
     }
     pipeline_walk(heap, form, 0, &|heap, form, items| {
@@ -2592,7 +2608,7 @@ fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
         return form;
     }
-    if !form_has_range_fold(heap, form, 0) || form_binds_any(heap, form, &pipeline_names(), 0) {
+    if !form_has_range_fold(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
         return form;
     }
     pipeline_walk(heap, form, 0, &|heap, form, items| {
@@ -2600,27 +2616,12 @@ fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     })
 }
 
-fn form_has_range_fold(heap: &Heap, form: Value, depth: usize) -> bool {
-    if depth > 256 {
-        return false;
-    }
-    let Ok(items) = heap.list_to_vec(form) else {
-        return false;
-    };
-    if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
-        if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
-            return false;
-        }
-        if is_fold_head(h)
+fn form_has_range_fold(heap: &Heap, form: Value) -> bool {
+    form_has_call(heap, form, 0, &|head, items| {
+        is_fold_head(head)
             && items.len() == 4
             && plain_fn_literal(heap, items[3]).is_some_and(|(p, _)| p.len() == 2)
-        {
-            return true;
-        }
-    }
-    items
-        .iter()
-        .any(|&it| form_has_range_fold(heap, it, depth + 1))
+    })
 }
 
 /// The counted `letrec` loop over the range bound to `r`, folding `body` (which reads the
@@ -2955,7 +2956,7 @@ fn macroexpand_all_depth_step_inner(
                     // shares, so both the VM and tree-walker report it) with the
                     // flatten hint. The literal-value guard keeps a genuine bare-list
                     // destructure like `(let ((a b) '(1 2)) …)` untouched.
-                    if let Some(binds) = items.get(1).and_then(|&b| form_items(heap, b)) {
+                    if let Some(binds) = items.get(1).and_then(|&b| heap.list_or_vector_items(b)) {
                         if crate::eval::even_bindings_look_scheme(heap, &binds) {
                             return Err(crate::eval::scheme_binding_error(heap, "let", &binds));
                         }
@@ -3194,7 +3195,7 @@ fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value> {
         return None;
     }
     let param_form = fn_items[1];
-    let param_vals = form_items(heap, param_form)?;
+    let param_vals = heap.list_or_vector_items(param_form)?;
     let mut params: Vec<value::Symbol> = Vec::with_capacity(param_vals.len());
     for &pv in &param_vals {
         match pv.unpack() {
@@ -3314,7 +3315,7 @@ fn form_binds_any(heap: &Heap, form: Value, names: &[value::Symbol], depth: usiz
             return false;
         }
         if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
-            if let Some(bs) = items.get(1).and_then(|&b| form_items(heap, b)) {
+            if let Some(bs) = items.get(1).and_then(|&b| heap.list_or_vector_items(b)) {
                 if bs.iter().step_by(2).any(|&b| binds(b)) {
                     return true;
                 }
@@ -3324,13 +3325,16 @@ fn form_binds_any(heap: &Heap, form: Value, names: &[value::Symbol], depth: usiz
             let clauses: Vec<Value> = if fn_is_arity_multi_clause(heap, &items) {
                 items[1..]
                     .iter()
-                    .filter_map(|&c| form_items(heap, c).and_then(|v| v.first().copied()))
+                    .filter_map(|&c| {
+                        heap.list_or_vector_items(c)
+                            .and_then(|v| v.first().copied())
+                    })
                     .collect()
             } else {
                 items.get(1).copied().into_iter().collect()
             };
             for c in clauses {
-                if let Some(ps) = form_items(heap, c) {
+                if let Some(ps) = heap.list_or_vector_items(c) {
                     if ps.iter().any(|&p| binds(p)) {
                         return true;
                     }
@@ -3363,7 +3367,7 @@ fn form_binds_any(heap: &Heap, form: Value, names: &[value::Symbol], depth: usiz
 /// has the shape (its accumulator's ops are table ops, which the probe treats as escapes).
 fn linmap_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     let names: Vec<value::Symbol> = LINMAP_FOLD_HEADS.iter().map(|n| value::intern(n)).collect();
-    if !form_has_fold_literal(heap, form, 0) || form_binds_any(heap, form, &names, 0) {
+    if !form_has_fold_literal(heap, form) || form_binds_any(heap, form, &names, 0) {
         return form;
     }
     linmap_fold_walk(heap, form, 0)
@@ -3371,28 +3375,13 @@ fn linmap_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
 
 /// Is there a `(fold … (fn …))` / `reduce` anywhere in `form`? The cheap pre-check that
 /// keeps the binder scan and the rebuilding walk off every ordinary top-level form.
-fn form_has_fold_literal(heap: &Heap, form: Value, depth: usize) -> bool {
-    if depth > 256 {
-        return false;
-    }
-    let Ok(items) = heap.list_to_vec(form) else {
-        return false;
-    };
-    if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
-        if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
-            return false;
-        }
-        if (value::symbol_is(h, "fold") || value::symbol_is(h, "reduce"))
+fn form_has_fold_literal(heap: &Heap, form: Value) -> bool {
+    form_has_call(heap, form, 0, &|head, items| {
+        (value::symbol_is(head, "fold") || value::symbol_is(head, "reduce"))
             && items.len() == 4
             && matches!(heap.list_to_vec(items[3]).ok().and_then(|f| f.first().map(|v| v.unpack())),
                 Some(ValueRef::Sym(f)) if value::symbol_is(f, kw::FN))
-        {
-            return true;
-        }
-    }
-    items
-        .iter()
-        .any(|&it| form_has_fold_literal(heap, it, depth + 1))
+    })
 }
 
 fn linmap_fold_walk(heap: &mut Heap, form: Value, depth: usize) -> Value {
@@ -3443,7 +3432,7 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
         return None;
     }
     let param_form = fn_items[1];
-    let param_vals = form_items(heap, param_form)?;
+    let param_vals = heap.list_or_vector_items(param_form)?;
     let mut params: Vec<value::Symbol> = Vec::with_capacity(param_vals.len());
     for &pv in &param_vals {
         match pv.unpack() {
@@ -3763,7 +3752,7 @@ fn expand_fn_clauses(
         i = 2;
     }
     for &clause in &items[i..] {
-        match form_items(heap, clause) {
+        match heap.list_or_vector_items(clause) {
             Some(parts) if !parts.is_empty() => {
                 let mut co = vec![parts[0]]; // param list: opaque
                 for &b in &parts[1..] {
@@ -3789,7 +3778,7 @@ fn expand_let(
     let Some(bindings) = items.get(1).copied() else {
         return Ok(rebuild_list(heap, original, items.to_vec()));
     };
-    let new_bindings = match form_items(heap, bindings) {
+    let new_bindings = match heap.list_or_vector_items(bindings) {
         Some(binds) => {
             let mut nb = Vec::with_capacity(binds.len());
             for (i, &x) in binds.iter().enumerate() {
@@ -3815,16 +3804,6 @@ fn expand_let(
 }
 
 // ---- pattern-binder lowering (the compile pass desugars these to `match*`) ----
-
-/// List/vector/`()` -> its element forms; anything else isn't a binding/param list.
-fn form_items(heap: &Heap, v: Value) -> Option<Vec<Value>> {
-    match v.unpack() {
-        ValueRef::Nil => Some(Vec::new()),
-        ValueRef::Pair(_) => heap.list_to_vec(v).ok(),
-        ValueRef::Vector(id) => Some(heap.vector(id).to_vec()),
-        _ => None,
-    }
-}
 
 fn is_sym(v: Value) -> bool {
     matches!(v.unpack(), ValueRef::Sym(_))
@@ -3859,7 +3838,7 @@ fn refutable_bind(
 /// previous). Returns `None` for an all-symbol or malformed `let` (left as-is).
 fn lower_let(heap: &mut Heap, items: &[Value]) -> Option<Value> {
     let bindings = *items.get(1)?;
-    let binds = form_items(heap, bindings)?;
+    let binds = heap.list_or_vector_items(bindings)?;
     if binds.len() % 2 != 0 {
         return None; // malformed: let eval report it
     }
@@ -3915,7 +3894,7 @@ fn is_clause_shaped(heap: &Heap, f: Value) -> bool {
 /// combine (`&optional` controls arity, patterns control shape), so mixing them in
 /// one `fn` is rejected rather than reinterpreted.
 fn head_has_amp_marker(heap: &Heap, head: Value) -> bool {
-    form_items(heap, head).is_some_and(|items| {
+    heap.list_or_vector_items(head).is_some_and(|items| {
         items.iter().any(|&p| {
             matches!(p.unpack(), ValueRef::Sym(s)
                 if value::symbol_is(s, kw::AMP_OPTIONAL) || value::symbol_is(s, kw::AMP))
@@ -3940,7 +3919,7 @@ fn has_vector_clause_head(heap: &Heap, clauses: &[Value]) -> bool {
 /// (`ClosureArm`, cheap — direct bind); a clause with any non-symbol parameter is
 /// a *pattern* clause and must go through the `match*` engine instead.
 pub(crate) fn is_arity_param_list(heap: &Heap, param_form: Value) -> bool {
-    match form_items(heap, param_form) {
+    match heap.list_or_vector_items(param_form) {
         Some(items) => items.iter().all(|&p| is_sym(p)),
         None => false,
     }
@@ -4002,7 +3981,7 @@ pub(crate) fn fn_needs_lowering(heap: &Heap, fn_form: Value) -> bool {
             || forms.iter().any(|&f| clause_has_when_guard(heap, f));
     }
     // single-clause: a pattern in a required slot (before &optional / & rest)?
-    let params = match form_items(heap, forms[0]) {
+    let params = match heap.list_or_vector_items(forms[0]) {
         Some(p) => p,
         None => return false,
     };
@@ -4104,7 +4083,7 @@ fn lower_fn(heap: &mut Heap, items: &[Value]) -> Result<Option<Value>, LispError
         return Err(crate::eval::vector_binding_container_error("fn"));
     }
     let body = &forms[1..];
-    let params = match form_items(heap, param_form) {
+    let params = match heap.list_or_vector_items(param_form) {
         Some(p) => p,
         None => return Ok(None),
     };

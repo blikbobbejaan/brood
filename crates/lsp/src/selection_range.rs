@@ -8,6 +8,7 @@ use brood::syntax::cst::Node;
 use lsp_types::{Position, Range, SelectionRange};
 
 use crate::line_index::LineIndex;
+use crate::module_ref::chain_to;
 
 /// One [`SelectionRange`] chain per input position (the LSP contract: the result
 /// list is positional with `positions`).
@@ -39,7 +40,7 @@ fn selection_at(
     pos: Position,
 ) -> SelectionRange {
     let mut chain = Vec::new();
-    node_chain(root, offset, &mut chain);
+    chain_to(root, offset, &mut chain);
 
     let mut sel: Option<SelectionRange> = None;
     let mut last: Option<Range> = None;
@@ -60,18 +61,6 @@ fn selection_at(
         range: Range::new(pos, pos),
         parent: None,
     })
-}
-
-/// The path of nodes from `root` down to the innermost one containing `offset`
-/// (root first). Mirrors `Node::node_at` but keeps every ancestor on the way.
-fn node_chain<'a>(node: &'a Node, offset: u32, out: &mut Vec<&'a Node>) {
-    out.push(node);
-    for child in &node.children {
-        if child.span.start <= offset && offset < child.span.end {
-            node_chain(child, offset, out);
-            break; // children don't overlap — at most one contains the offset
-        }
-    }
 }
 
 #[cfg(test)]

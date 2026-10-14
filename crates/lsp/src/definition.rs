@@ -58,10 +58,7 @@ pub fn definition(
         // (`observe` in a `(:use observer)` file) or a qualified `observer/observe`
         // both reach the right def site. `None` if it has no recorded site.
         Resolution::Free => {
-            let node = root.node_at(offset)?;
-            if node.kind != NodeKind::Symbol {
-                return None;
-            }
+            let node = root.symbol_at(offset)?;
             let resolved = introspect::resolve_in_source(interp, text, node.text(text));
             let loc = introspect::source_location(interp, &resolved)?;
             cross_file_location(&loc)
@@ -91,14 +88,8 @@ fn behaviour_in_files(files: &[String], name: &str) -> Option<Location> {
         };
         let root = brood::syntax::cst::parse(&text);
         for form in root.forms() {
-            if form.kind != NodeKind::List {
-                continue;
-            }
-            let mut head = form.forms();
-            let is_iface = head.next().is_some_and(|h| {
-                h.kind == NodeKind::Symbol && matches!(h.text(&text), "defbehaviour" | "defability")
-            });
-            let name_node = head.next();
+            let is_iface = matches!(form.head_symbol(&text), Some("defbehaviour" | "defability"));
+            let name_node = form.forms().nth(1);
             let matches_name =
                 name_node.is_some_and(|n| n.kind == NodeKind::Symbol && n.text(&text) == name);
             if is_iface && matches_name {

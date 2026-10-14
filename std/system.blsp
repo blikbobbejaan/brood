@@ -66,7 +66,7 @@ to degrade rather than fail asks the build."
 ;; so it belongs here rather than bare.
 ;;
 ;; `reflect/builtin-modules` and `reserved-package-name?` deliberately did NOT come along: they are
-;; called from `%merge-require-edges!` and `%require-force-package` — the module-LOADING
+;; called from `%std-edges-for` and `%require-force-package` — the module-LOADING
 ;; path itself — so moving them here would mean loading `system` requires `system`.
 
 (defn module-doc (mod)

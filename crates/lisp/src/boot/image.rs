@@ -39,7 +39,7 @@
 
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use crate::builtins::numeric::arg;
+use crate::builtins::numeric::{arg, expect_string};
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::dist::wire::{decode_msg, encode_msg};
@@ -146,25 +146,14 @@ const KIND_DEF_SITE: u8 = 5;
 /// question for making this faster is how much of the cost is the tree versus the bytes.
 /// Cheap to keep: one cached bool.
 fn trace() -> bool {
-    use std::sync::OnceLock;
-    static T: OnceLock<bool> = OnceLock::new();
-    *T.get_or_init(|| std::env::var_os("BROOD_IMAGE_TRACE").is_some())
-}
-
-/// A string argument, or a type error naming `who`.
-fn need_str(heap: &Heap, v: Value, who: &str) -> Result<String, LispError> {
-    match v {
-        Value::Str(id) => Ok(heap.string(id).to_string()),
-        _ => Err(LispError::wrong_type(heap, who, "string", v)),
-    }
+    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    crate::diagnostics::debug_flags::is_set(&T, "BROOD_IMAGE_TRACE")
 }
 
 /// A list or a vector — callers naturally write `['a 'b]`.
 fn seq_items(heap: &Heap, v: Value) -> Result<Vec<Value>, LispError> {
-    match v.unpack() {
-        value::ValueRef::Vector(id) => Ok(heap.vector(id).to_vec()),
-        _ => heap.list_to_vec(v),
-    }
+    heap.list_or_vector_items(v)
+        .ok_or_else(|| LispError::type_err("improper list"))
 }
 
 fn put_u32(w: &mut Vec<u8>, n: u32) {
@@ -396,9 +385,9 @@ fn encode_section(
 /// holds. Declared sigs are added to the root section automatically. Returns the total
 /// number of entries written.
 pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let path = need_str(heap, arg(args, 0), "%image-write")?;
+    let path = expect_string(heap, "%image-write", arg(args, 0))?;
     let sections = seq_items(heap, arg(args, 1))?;
-    let fingerprint = need_str(heap, arg(args, 2), "%image-write")?;
+    let fingerprint = expect_string(heap, "%image-write", arg(args, 2))?;
 
     let (mut ns_to_msg, mut ns_encode) = (0u64, 0u64);
 
@@ -423,7 +412,7 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
                 "%image-write: each section must be [name syms]",
             ));
         }
-        let name = need_str(heap, pair[0], "%image-write")?;
+        let name = expect_string(heap, "%image-write", pair[0])?;
         let syms = seq_items(heap, pair[1])?;
         for nv in &syms {
             if let value::ValueRef::Sym(s) = nv.unpack() {
@@ -580,8 +569,7 @@ fn read_at(file: &std::sync::Mutex<std::fs::File>, off: u64, len: usize) -> Opti
 /// A keyword rather than a string because it is a closed set the caller matches on, and
 /// because every other "which state is this artifact in" answer in this area
 /// (`stdimage/status`'s `:live`/`:stale`/`:absent`) already reads that way.
-pub(crate) fn boot_source_prim(_args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let _ = heap;
+pub(crate) fn boot_source_prim(_args: &[Value], _: EnvId, _heap: &mut Heap) -> LispResult {
     Ok(Value::Keyword(crate::core::value::intern(
         crate::boot::boot_source(),
     )))
@@ -620,8 +608,8 @@ pub(crate) fn decode_sig_index(bytes: Vec<u8>) -> Vec<(String, String, u32, u32)
 /// Reads the header and the directory only — never the payload — so opening a large image
 /// costs a few kilobytes of I/O.
 pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let path = need_str(heap, arg(args, 0), "%image-index")?;
-    let want = need_str(heap, arg(args, 1), "%image-index")?;
+    let path = expect_string(heap, "%image-index", arg(args, 0))?;
+    let want = expect_string(heap, "%image-index", arg(args, 1))?;
 
     // Open ONCE and hold the handle (see `open_image`): the header, the footer, the
     // directory and — later, per module — every section are read from this same file, so a
@@ -817,7 +805,7 @@ fn define_image_entry_inner(
 /// evaluates no `def`, so the caller passes it, because only the caller knows whether this
 /// section is an embedded module (reserved) or a project's own (not).
 pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let path = need_str(heap, arg(args, 0), "%image-load-section")?;
+    let path = expect_string(heap, "%image-load-section", arg(args, 0))?;
     let off = match arg(args, 1) {
         Value::Int(n) if n >= 0 => n as u64,
         v => return Err(LispError::wrong_type(heap, "%image-load-section", "int", v)),
@@ -849,7 +837,7 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
     // trap `set_form_pos_in_file` documents for the expander. Restored below.
     let section_file = match arg(args, 4) {
         Value::Nil => None,
-        v => need_str(heap, v, "%image-load-section")
+        v => expect_string(heap, "%image-load-section", v)
             .ok()
             .and_then(|key| crate::builtins::modules::embedded_module_path(&key)),
     };

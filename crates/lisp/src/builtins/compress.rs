@@ -110,15 +110,17 @@ fn level_arg(name: &str, args: &[Value], heap: &Heap) -> Result<Compression, Lis
 }
 
 /// Feed `data` through a write-adapter encoder `enc` and return the compressed bytes.
-fn encode<W: Write + FinishBytes>(
+/// `finish` is the encoder's own `finish` (each flate2 write-encoder has one, but no
+/// shared trait).
+fn encode<W: Write>(
     name: &str,
     mut enc: W,
     data: &[u8],
+    finish: fn(W) -> std::io::Result<Vec<u8>>,
 ) -> Result<Vec<u8>, LispError> {
     enc.write_all(data)
         .map_err(|e| LispError::runtime(format!("{name}: {e}")))?;
-    enc.finish_bytes()
-        .map_err(|e| LispError::runtime(format!("{name}: {e}")))
+    finish(enc).map_err(|e| LispError::runtime(format!("{name}: {e}")))
 }
 
 /// The most a decoder prim will produce when the caller names no `max-bytes`. A few
@@ -160,32 +162,17 @@ fn decode<R: Read>(name: &str, dec: R, limit: usize) -> Result<Vec<u8>, LispErro
     Ok(out)
 }
 
-/// `finish()` differs per flate2 write-encoder; unify them behind one trait.
-trait FinishBytes {
-    fn finish_bytes(self) -> std::io::Result<Vec<u8>>;
-}
-impl FinishBytes for GzEncoder<Vec<u8>> {
-    fn finish_bytes(self) -> std::io::Result<Vec<u8>> {
-        self.finish()
-    }
-}
-impl FinishBytes for ZlibEncoder<Vec<u8>> {
-    fn finish_bytes(self) -> std::io::Result<Vec<u8>> {
-        self.finish()
-    }
-}
-impl FinishBytes for DeflateEncoder<Vec<u8>> {
-    fn finish_bytes(self) -> std::io::Result<Vec<u8>> {
-        self.finish()
-    }
-}
-
 /// `(%gzip bytes [level])` — gzip-compress a byte sequence at optional `level`
 /// (0-9, default 6), returned as `bytes`.
 pub(super) fn gzip(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let level = level_arg("%gzip", args, heap)?;
     let data = collect_bytes("%gzip", arg(args, 0), heap)?;
-    let out = encode("%gzip", GzEncoder::new(Vec::new(), level), &data)?;
+    let out = encode(
+        "%gzip",
+        GzEncoder::new(Vec::new(), level),
+        &data,
+        GzEncoder::finish,
+    )?;
     Ok(bytes_to_value(&out, heap))
 }
 
@@ -202,7 +189,12 @@ pub(super) fn gunzip(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 pub(super) fn zlib_compress(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let level = level_arg("%zlib-compress", args, heap)?;
     let data = collect_bytes("%zlib-compress", arg(args, 0), heap)?;
-    let out = encode("%zlib-compress", ZlibEncoder::new(Vec::new(), level), &data)?;
+    let out = encode(
+        "%zlib-compress",
+        ZlibEncoder::new(Vec::new(), level),
+        &data,
+        ZlibEncoder::finish,
+    )?;
     Ok(bytes_to_value(&out, heap))
 }
 
@@ -219,7 +211,12 @@ pub(super) fn zlib_uncompress(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 pub(super) fn deflate(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let level = level_arg("%deflate", args, heap)?;
     let data = collect_bytes("%deflate", arg(args, 0), heap)?;
-    let out = encode("%deflate", DeflateEncoder::new(Vec::new(), level), &data)?;
+    let out = encode(
+        "%deflate",
+        DeflateEncoder::new(Vec::new(), level),
+        &data,
+        DeflateEncoder::finish,
+    )?;
     Ok(bytes_to_value(&out, heap))
 }
 

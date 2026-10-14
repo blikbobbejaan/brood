@@ -6,7 +6,7 @@
 //! the prelude source, and the `brood-task` prompt. They reach the server as the dynamic
 //! `*mcp-documents*`, bound around the dispatcher call.
 
-use brood::introspect::escape_brood_string;
+use brood::introspect::string_literal;
 
 /// `(name text)` for every document the server serves, keyed as `std/tool/mcp.blsp`'s
 /// resource table and `prompts/get` name them.
@@ -40,7 +40,7 @@ const DOCUMENTS: &[(&str, &str)] = &[
 pub fn with_embedded_documents(call: &str) -> String {
     let entries: Vec<String> = DOCUMENTS
         .iter()
-        .map(|(name, text)| format!("\"{name}\" \"{}\"", escape_brood_string(text)))
+        .map(|(name, text)| format!("\"{name}\" {}", string_literal(text)))
         .collect();
     format!(
         "(do (require-one 'mcp) (binding (*mcp-documents* {{{}}}) {call}))",

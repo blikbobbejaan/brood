@@ -20,6 +20,8 @@
 use std::collections::BTreeSet;
 use std::process::Command;
 
+mod support;
+
 fn load_clause_modules(source: &str) -> BTreeSet<String> {
     let start = source
         .find("(:load ")
@@ -41,16 +43,8 @@ fn the_test_frameworks_load_clause_is_its_eager_closure() {
     .expect("read std/tool/test.blsp");
     let declared = load_clause_modules(&source);
 
-    let dir = std::env::temp_dir().join(format!(
-        "brood-test-closure-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let program = dir.join("closure.blsp");
+    let dir = support::temp_dir("test-closure");
+    let program = dir.path.join("closure.blsp");
     // `fs` is captured BEFORE the `io/puts` form compiles (forms compile one at a time), so
     // the probe's own `io` reference cannot add to the measurement — `io` is in the closure
     // regardless, but the measurement must not depend on that.
@@ -66,10 +60,9 @@ fn the_test_frameworks_load_clause_is_its_eager_closure() {
         .arg(&program)
         .env("BROOD_NO_STDIMAGE", "1")
         .env("BROOD_NO_LAZY_LOAD", "1")
-        .env("XDG_CACHE_HOME", &dir)
+        .env("XDG_CACHE_HOME", &dir.path)
         .output()
         .expect("run brood");
-    let _ = std::fs::remove_dir_all(&dir);
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     if stderr.contains("cannot find module 'test'") {
