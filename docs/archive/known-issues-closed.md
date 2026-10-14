@@ -13395,6 +13395,32 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-247 — a holder that had just died left the next safepoint to raise in a bystander ✅ FIXED 2026-10-14
+
+**Symptom.** `cli::memory_pressure::a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder`
+failed about one run in ten under `BROOD_TIER=0` (1/15 at `8539f335`, 2/15 with that night's
+changes): `the leak beside the stuck victim was not stopped`, the main process ending with
+`main.blsp:16:16: runtime error: memory limit exceeded: … exceeds the 402653184-byte soft limit`
+at its `receive`. **Cause.** Traced with a temporary print of each selection: the hoarder (pid
+4) is stopped and stays stuck in `os/cmd`, as designed; at the next crossing the leak (pid 5) is
+the largest holder that can die and is the current process, so it raises `E0043` in itself and
+dies — correct. The main process then wakes for the leak's `:down` and reaches a safepoint with
+`live` still 444 MiB: the leak's memory is not off the count yet, the hoarder is excluded as
+stuck, nobody holds an eighth, and the unattributable branch raised in the main process. The
+grace that exists for exactly this ("its memory is about to go") did not cover it twice over:
+`stopped.retain(is_alive)` dropped a victim the moment it died, and a self-raise was never
+recorded at all. **Why it survived.** Only the tree-walker's timing opens the window often
+enough to see; the default-ceiling half is green, and the tier-0 half failed one run in ten.
+**Fix.** A stopped victim stays in `stopped` until its `STOP_GRACE` runs out even once dead, and
+a self-raise records `Pressure::raised`, inside whose grace every OTHER process carries on — the
+raiser is not held back, since it may have caught the error and kept allocating. 40/40 at tier
+0 after, and the other five `memory_pressure` cases green six times on both tiers. **Guard.**
+`process::pressure::tests::a_holder_that_just_died_keeps_the_next_safepoint_from_raising` calls
+the selector directly (with a control: no recent stop raises). Sabotage-verified: restoring
+`retain(is_alive)` reds it with "a victim stopped a moment ago and already dead still holds the
+others back"; skipping the `raised` check reds it with "another process that just raised in
+itself holds the others back".
+
 ## KI-246 — building nested sets took quadratic time ✅ FIXED 2026-10-14
 
 **Symptom.** `(fold (range n) 0 (fn (acc _) #{acc}))` took 0.9 s at depth 5 000, 3.5 s at

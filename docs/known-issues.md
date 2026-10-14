@@ -66,7 +66,24 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## Open and watching
 
-None. (An open entry's `## KI-N` section goes here until it is resolved.)
+## KI-248 — at tier 0 an imaged boot builds a value past the hard memory limit that a source boot aborts on ⚠️ OPEN 2026-10-14
+
+**Symptom.** `cli::memory_pressure::one_allocation_past_the_hard_limit_names_the_limit` fails
+under `BROOD_TIER=0` on every run that boots from the stdlib image, and passes on a source boot
+(the first run after a rebuild, ~2 s against ~0.4 s): `(str quarter quarter quarter quarter
+quarter)` over a 100 MB string is built — 606 MB allocated process-wide, past the 512 MiB hard
+limit — and the run ends with the SOFT limit's catchable error at the next `io/puts`
+(`std/io.blsp:184:3: runtime error: memory limit exceeded: 606080833 bytes …`) instead of the
+hard limit's abort naming `BROOD_MEM_LIMIT` and "one value this large". **Reproduced at
+`8539f335`** (the baseline worktree's own test build: 1 pass then 8 failures in a row), so it
+predates the 2026-10-14 (night) changes. **Cause.** Not found. Tier 0 only, and only from the
+image — so the `str` the image hands the tree-walker reaches an allocation path the hard-limit
+check does not cover, or measures differently. **Why it survived.** The suite's tier-0 half
+usually source-boots this test (the image is rebuilt by nextest's setup script and the first
+run pays the source boot), so `make test-both` passed it 2026-10-14. **Next.** Compare
+`BROOD_IMAGE_TRACE` and the allocation path of `str` imaged vs source under `BROOD_TIER=0`;
+repro `BROOD_TIER=0 cargo nextest run -p cli --test memory_pressure -E 'test(one_allocation)'`
+run twice (the second run is the imaged one).
 
 ## Index — status per issue
 
@@ -74,6 +91,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-248 | **at tier 0 an imaged boot builds a 500 MB `str` past the 512 MiB hard limit that a source boot aborts on** — `memory_pressure::one_allocation_past_the_hard_limit_names_the_limit` red on every imaged run under `BROOD_TIER=0`, green on a source boot; reproduced at `8539f335` | ⚠️ **OPEN 2026-10-14** — cause not found; repro in the section |
+| KI-247 | **a holder that had just died left the next safepoint to raise the soft limit's error in a bystander** — `memory_pressure::a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder` red ~1 run in 10 under `BROOD_TIER=0` (1/15 at `8539f335`): the leak raised `E0043` in itself and died, its memory was still on the count when the main process woke for its `:down`, and with nobody left holding an eighth the main process raised | ✅ **FIXED 2026-10-14** — a stopped victim that has died keeps its `STOP_GRACE`, and a self-raise opens the same grace for every other process (`Pressure::raised`). 40/40 at tier 0 after. Guard: `process::pressure::tests::a_holder_that_just_died_keeps_the_next_safepoint_from_raising` (each half sabotage-verified) |
 | KI-246 | **building a set nested in a set nested in a set took quadratic time: every structural hash re-walked everything below it** — `#{#{#{…}}}` one level at a time, 15 s at depth 20 000 (a map or set used as a key inside another is the same shape) | ✅ **FIXED 2026-10-14** — a LOCAL set's or map's hash is remembered when computing it took at least 64 steps (`HashMemo`, emptied at each collection, which moves handles); small keys pay one counter increment. Depth 20 000 in 0.2 s, 100 000 in under a second. Guard: `hash_memo_tests::building_nested_sets_hashes_each_level_once` (counts hash steps: ~100 000 for 3 000 levels, 4.5 million with the memo off) |
 | KI-245 | **a `receive` inside a form run by `reflect/eval` re-ran everything before it in that form each time it waited** — the `os/spawn` doctest (spawn, then wait for the child's exit) spawned 484 children in one run and exhausted the test's address space; `(reflect/eval '(do (effect) (receive …)))` ran the effect twice | ✅ **FIXED 2026-10-14** — `compile::run` (every native entry to a top-level form: `reflect/eval`, `eval-string`, the loader) clears the capture flag, so the `receive` blocks as a native-nested one must instead of suspending to the body driver, which captured at the call into the native and re-ran it. Guard: `tests/receive_effect_once_test.blsp` (directly, in `try`, in a `map` callback, spawn-then-receive; all red without the guard) |
 | KI-244 | **output that could not be written was dropped and the run exited 0: `brood report.blsp > out.txt` on a full disk left a truncated file and reported success** — every stdout write error other than a broken pipe was discarded by `write_stdout` | ✅ **FIXED 2026-10-14** — a failed stdout write raises a catchable `cannot write to stdout: …` where it happened (uncaught, the run exits non-zero); the CLI's own stdout sink exits 1 with the cause. Stderr stays best-effort. Guard: `crates/cli/tests/stdout_full.rs`, stdout on `/dev/full` (red with the error dropped again) |

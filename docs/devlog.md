@@ -17370,3 +17370,57 @@ spawn pays for the `Heap` struct. The memo is now a `OnceCell<Box<…>>`, alloca
 time a hash is worth remembering (8 B inline), and the work counter is a thread-local. The
 floor test had not been in the targeted set run before the push; it belongs there for any
 change to `Heap`'s fields.
+
+## 2026-10-14 (night) — a named wrapper links from native code; `reduce` takes the counted loop; `range` is multi-arity
+
+`perf_event_paranoid` is 1 on this box tonight, so the session started from `perf stat` /
+`perf record` on the row furthest behind its peers (`nqueens`, 89 ms against Elixir's 11) and
+on microbenchmarks that isolate one call shape each, differenced between two N so startup
+cancels.
+
+**A thin wrapper called by name from native code never linked** (ADR-408, amended). One
+native loop calling a helper, instructions per call: `(defn add (a x) (%add a x))` 29
+(inlined), `(defn add (a x) (+ (+ a x) 0))` 424 (linked), `(defn add (a x) (+ a x))` **2 139**.
+`BROOD_PERF_STATS`: `jit_link_done` 0, one `vm_apply` and six `env_get`s per call. The caller
+runs interpreted until it tiers, and the interpreter caches a thin wrapper on the call IC with
+no arm (it redirects to the inner head instead); `jit_dispatch_call` took an arm-less hit for a
+builtin and returned nothing for a closure, so the IC kept hitting and the miss branch that
+attaches the arm — the only place a link is published from — never ran. ADR-408 had measured
+the wrapper passed as a value, which is the computed-head path. Now 420 a call. The corpus does
+not call named wrappers from native loops, so no row moves; user code does constantly.
+
+**`reduce` over a range with a literal** was not the counted loop. ADR-360 §7 rewrites `(fold
+(range …) INIT (fn (acc x) …))` into a `letrec` loop the JIT runs native, and a fused pipeline
+under `reduce`, but not a plain `(reduce (range n) 0 (fn …))` — which is what the docs teach
+and `nqueens` writes. Found by swapping the word in the benchmark: 1 206M → 936M instructions.
+`reduce`'s three-argument form is `(fold coll init f)`, so the rewrite takes either head.
+`nqueens` **113 → 90 ms** (`make ab --floor`, 0.0% floor, −21.8% instructions); every other
+row flat by instruction count. std writes `fold` 344 times and `reduce` 17, so boot pays
+nothing measurable for the extra body copy.
+
+**`range` is three fixed-arity clauses** instead of `(a & more)` + `cond`: no rest list, and
+each clause is one `%range` call. −1% on `nqueens`. `(range 1 2 3 4)` used to drop the
+fourth argument silently; it is an arity error now, and `nest check` says so. A multi-arity
+function has no single inferred parameter signature, so the checker lost "the bounds are
+ints" (`inference_precision::get_in_with_a_literal_path_reads_the_declared_shape` caught it);
+`range` declares what the variadic definition inferred, `(sig range (int &optional any any
+-> list))` — typing every bound `int` flagged `(range 1 (+ n 1))` over an untyped `n` in
+`tests/resolver_test.blsp`, a tightening that does not belong in a perf change.
+
+What is left on `nqueens`: ~49% native (`safe?`'s list walk is the real work), and `solve`
+itself interpreted (~25%) — it builds the loop's closure, `MakeClosure` keeps it out of the JIT
+subset, and the gate would refuse it anyway (`call-mediated-boxed`, compute-frontier §7.1).
+One trap re-learned: after a `std/` edit the `release-fast` `nest` must be rebuilt before
+`nest stdimage`, or it writes an image under the OLD id and every run source-boots (1.63G
+instructions on `nqueens` instead of 0.94G) — `(stdimage/status)` says `:stale`.
+
+**Two memory-limit findings from the tier-0 half of `make test-both`**, both reproduced at
+`8539f335`, so neither is from tonight's changes. KI-247, fixed: a holder that raised in itself
+and died left its memory on the count for a moment, and the main process, waking for its
+`:down`, raised in its place — `stopped.retain(is_alive)` dropped a dead victim at once, and a
+self-raise was never recorded, so the grace that exists for "its memory is about to go" did not
+apply. KI-248, open: at tier 0 an imaged boot builds a 500 MB `str` past the hard limit that a
+source boot aborts on; the suite usually source-boots that test, which is why it read green.
+Attributing these took one discipline worth repeating: a test needing a dev-tools primitive
+(`%gc-collect`) cannot be reproduced with a release binary at all — compare the baseline
+worktree's own test build, not a release-fast A/B.

@@ -18,7 +18,11 @@ devlog entries of the same dates.
   and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
   memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
   it carry the old ones — the map is in the devlog entry "merged origin/main".
-- `known-issues.md` lists **no open or watching entry**. KI-239 (a dist test's peer exited before
+- `known-issues.md` lists **one open entry, KI-248** (tier 0, imaged boot: a 500 MB `str`
+  passes the hard memory limit that a source boot aborts on — reproduced at `8539f335`, cause
+  not found; `memory_pressure::one_allocation_past_the_hard_limit_names_the_limit` is red under
+  `BROOD_TIER=0` whenever it boots imaged). KI-247 (a bystander raising after a holder died) is
+  fixed. KI-239 (a dist test's peer exited before
   its client booted) is fixed — the test gave the peer a fixed six-second life. KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
   TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the soft memory
   limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14, then
