@@ -458,7 +458,7 @@
     (let (w (spawn (receive ([:work _] :done))))
       (send w :a)
       (send w :b)
-      (sleep 20)
+      (await-parked w)
       (let (info (proc/info w))
         (is (map? info))
         (assert= (get info :status) :waiting)

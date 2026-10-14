@@ -51,7 +51,7 @@ jobs:
       # Identical to CI's `test` step on purpose. A nightly that runs a DIFFERENT command
       # from the per-push gate cannot tell a flake from a configuration difference.
       - name: Test (nextest)
-        run: cargo nextest run --no-fail-fast --features brood/treesit-grammars
+        run: scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars
 
   # `make gcstress` runs nowhere else: GC_STRESS collects at every safepoint, so a handle
   # held across a collection is caught every time rather than when a threshold collection
@@ -109,6 +109,34 @@ jobs:
         with:
           name: stress-fuzz-seeds
           path: stress/fuzz_out/
+          if-no-files-found: warn
+
+  # KI-88 (a spawn never scheduled) and KI-127 (an autoload fan hung) were never root-caused
+  # and sit behind watchdogs. This boots the concurrency soak fresh for 30 minutes — first
+  # module loads raced across a fan, warm spawn bursts, link churn — cycling tiers, one
+  # worker and the GC verifier, and fails on a lost process or any watchdog line.
+  runtime-soak:
+    name: runtime soak (spawn bursts, module-load races, 30 min)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build (release, debug-assertions armed)
+        run: RUSTFLAGS="-C debug-assertions=on" cargo build --release -p cli
+
+      - name: Soak
+        run: ./stress/runtime_soak.sh 1800
+
+      - name: Upload the soak logs (always — a clean hunt is evidence too)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-soak-logs
+          path: target/runtime-soak/
           if-no-files-found: warn
 
   # The `perf-stats` feature compiles counter increments into the VM/JIT hot paths

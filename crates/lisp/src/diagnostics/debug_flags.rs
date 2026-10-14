@@ -227,14 +227,9 @@ pub const FLAGS: &[DebugFlag] = &[
         "opt OUT of the hot re-lowering / inline fast-frame call path (§7.5, default ON): a hot arm's body is recompiled on the deferred queue with the Brood-to-Brood call ceremony emitted inline (bintree -10.6%, -19% at 2x run length; short runs unaffected). The A/B and bisect lever",
     ),
     f(
-        "BROOD_MONO",
+        "BROOD_DEVIRT_DBG",
         OPTOUT,
-        "opt IN to ability-dispatch monomorphization: a literal or record-constructor first arg skips `identity-of` (off by default). Sound (ADR-294): resolution still goes through the epoch-stamped `%dispatch` cache, so a re-registered impl is seen",
-    ),
-    f(
-        "BROOD_MONO_DBG",
-        OPTOUT,
-        "trace each BROOD_MONO devirtualization",
+        "trace each ability call the compiler devirtualizes (ADR-182: a literal or record-constructor first arg skips `%identity-of`)",
     ),
     // ---- GC / memory ----
     f(

@@ -667,9 +667,9 @@
       (stop-buffer bp)))
 
   (test "stop-buffer on an already-dead process returns :no-reply, not a hang"
-    (let (bp (spawn-buffer (make-buffer "x")))
+    (let (bp (spawn-buffer (make-buffer "x")) watch (monitor bp))
       (exit bp :kill)
-      (sleep 50)
+      (assert= (receive ([:down ^watch _ reason] reason) (after *test-wait-ms* :timeout)) :killed)
       (assert= (stop-buffer bp) :no-reply)))
 
   ;; :write is a structured splice: subscribers get the O(line) DELTA, not their

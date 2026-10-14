@@ -3,34 +3,24 @@
 use super::*;
 use crate::core::registries as reg;
 
-// ===================== ability-dispatch monomorphization (BROOD_MONO, ADR-182) ==========
+// ===================== ability-dispatch devirtualization (ADR-182) ========================
 //
-// Tier 1, **off by default**. When `BROOD_MONO` is set, an ability op call whose first
-// argument is a compile-time **literal** (a `Node::Const`) has its dispatch identity proven
-// at compile time — so the call is rewritten to a *direct* call to the resolved impl fn,
-// skipping the op body's `identity-of` + `impl-for` (two CHAMP lookups + a branch). Every
-// uncertainty (arg not literal, head not an ability op, no impl for the id) → **no rewrite**:
-// the dynamic op call is left exactly as-is. Soundness over completeness.
+// Always on, at every compiled tier (the tree-walker never rewrites). An ability op call
+// whose first argument's dispatch identity is provable at compile time — a non-map literal,
+// or a direct record-constructor call — skips the op's `%identity-of` and its frame. Every
+// uncertainty → **no rewrite**: the dynamic op call is left exactly as-is.
 //
-// **What is proven is the identity, not the impl** (ADR-294). The rewrite emits
-// `((%dispatch *impls* '[ability op] :id) args…)`: the `identity-of` call is gone, because
-// the id is known at compile time, but resolution still goes through `%dispatch` — the
-// per-op inline cache, which is stamped with `global_epoch()` and therefore invalidated by
-// any `impl`/`%unimpl`. Late binding is fully preserved and there is no stale-impl window.
-// (Baking the resolved impl fn as a constant is unsound: a body is compiled before it runs,
-// so `(do (impl Display rec …) (->string (rec 7)))` would capture the impl that existed
-// before its own `impl` line executed.)
+// **What is proven is the identity, not the impl** (ADR-294): the impl is still resolved at
+// run time through `%dispatch`'s epoch-stamped cache, so an `impl`/`%unimpl` — even one
+// earlier in the same compiled body — is seen. And the proof itself is re-checked on every
+// call: `%dispatch-proven` answers the op's CURRENT binding, which then dispatches exactly as
+// the dynamic call does, whenever the op or the receiver's constructor has been rebound since
+// compile time, or the id has no impl (so the op raises its own `%no-impl`).
 //
-// Records (a map literal carrying `:__id__`) are conservatively **excluded** — Tier 1
-// targets built-in-kind literals only; the nominal-record case is the direct-ctor path.
-
-/// Is compile-time ability devirtualization enabled? Off by default; `BROOD_MONO` opts in.
-/// Cached once (Rust-side), like the JIT levers.
-pub(crate) fn mono_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_MONO").is_some())
-}
-
+// Declined, because the dynamic call would differ: a call any of whose arguments can run user
+// code (it could register an impl after the rewrite has resolved one), a head bound to
+// anything but the op `defability` emits (a rebound name, a contract shim), an arity the op
+// rejects, and any run with contracts armed (the op checks its declared return there).
 /// ADR-368: the LAST Node pass — `(get m k default)` and `(assoc m k v)` calls whose head
 /// `resolve_prim3` recognises become `Node::Prim3` here, after the linear-map rewrite and
 /// its probe have matched them as calls (`LinIdiom` reads `Node::Call` shapes: a body that
@@ -75,12 +65,20 @@ fn global_map(heap: &Heap, name: &str) -> Option<MapId> {
     }
 }
 
+/// A first argument whose dispatch identity the compiler proved: the `id`, and for a
+/// constructor call the constructor's global and the closure it was bound to at compile time
+/// — what `%dispatch-proven` re-checks on every call.
+struct ProvenReceiver {
+    id: Value,
+    constructor: Option<(Symbol, Value)>,
+}
+
 /// The statically-provable dispatch identity of a call's first-argument `Node`, or `None`
 /// when it isn't certain. Defers to [`Heap::dispatch_identity`] for the literal case rather
 /// than re-deriving it: a non-record literal → its `type-of` kind;
 /// a direct record-constructor call → the record's baked `:module/name` id. Every other
 /// shape (a variable, a non-record call, a map literal that *could* be a record) → `None`.
-fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<Value> {
+fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<ProvenReceiver> {
     match arg {
         // A literal constant. A folded map literal could be a record (`{:__id__ …}`), whose
         // identity is nominal — exclude every map (the direct-ctor path covers real records).
@@ -89,13 +87,10 @@ fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<Value> {
             if matches!(v.unpack(), ValueRef::Map(_)) {
                 return None;
             }
-            // The shared definition (`Heap::dispatch_identity`), not a local re-derivation.
-            // For a non-map this is exactly the old `keyword(tag(v))`, so nothing changes
-            // here yet; what changes is that there is now one function to keep honest
-            // instead of a comment claiming two agree. The map exclusion above stays for
-            // now — `dispatch_identity` answers a record literal correctly, so lifting it
-            // is a behaviour change and belongs with the speculation work, not here.
-            Some(heap.dispatch_identity(v))
+            Some(ProvenReceiver {
+                id: heap.dispatch_identity(v),
+                constructor: None,
+            })
         }
         // A direct constructor call `(circle 2)`. Its baked id is `:<qualified-ctor-name>`,
         // i.e. `keyword(ctor)`. It is a record constructor iff that id is registered in
@@ -108,8 +103,18 @@ fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<Value> {
         // a silently wrong impl, not a slow path (docs/dispatch-speculation.md). So the
         // name is necessary, not sufficient: the constructor must still be BOUND, and the
         // registry's recorded name must still be this one. An unbound id is exactly the
-        // orphan shape, and it is refused here rather than devirtualized.
-        Node::Call { callee, .. } => {
+        // orphan shape, and it is refused here rather than devirtualized. A rebinding AFTER
+        // compile time is `%dispatch-proven`'s to catch, so the binding is carried along.
+        Node::Call {
+            callee,
+            args: constructor_args,
+            ..
+        } => {
+            // The constructor runs after the rewrite has resolved the impl, so nothing it
+            // evaluates may be able to register one.
+            if constructor_args.iter().any(node_runs_user_code) {
+                return None;
+            }
             let ctor = match &**callee {
                 Node::Global(s) | Node::GlobalIc { sym: s, .. } => *s,
                 _ => return None,
@@ -136,7 +141,12 @@ fn mono_arg_identity(heap: &Heap, arg: &Node) -> Option<Value> {
             // `impl`s for this id are written for, whatever its name.
             let bound = heap.env_get(heap.global(), ctor)?;
             match bound.unpack() {
-                ValueRef::Fn(cid) if closure_constructs_record(heap, cid, id) => Some(id),
+                ValueRef::Fn(cid) if closure_constructs_record(heap, cid, id) => {
+                    Some(ProvenReceiver {
+                        id,
+                        constructor: Some((ctor, bound)),
+                    })
+                }
                 _ => None,
             }
         }
@@ -169,89 +179,143 @@ fn closure_constructs_record(heap: &Heap, cid: ClosureId, id: Value) -> bool {
     }
 }
 
-/// If call head `op` is an ability op AND `args[0]` has a statically-provable dispatch
-/// identity with a concrete impl, return the callee `(%dispatch *impls* '[ability op] :id)`
-/// — the op's own resolution with its `identity-of` step constant-folded away. `None`
-/// (leave the dynamic call alone) on ANY uncertainty.
+/// Is `v` the symbol `name`, bare or root-qualified (`/name`)?
+fn is_symbol_named(v: Value, name: &str) -> bool {
+    matches!(v, Value::Sym(s) if value::symbol_name(s).strip_prefix('/').unwrap_or(&value::symbol_name(s)) == name)
+}
+
+/// The `[ability op]` key closure `cid` dispatches on, iff it is the op `defability` emitted
+/// and it accepts `argc` arguments: one arm whose one body form is
+/// `(let (id (%identity-of <first param>) impl (%dispatch *impls* '[ability op] id)) …)`.
+/// The key is read from that body, so the rewrite hands `%dispatch` exactly what the op
+/// would. Anything else bound to an op's name — a rebound plain fn, a contract shim — is
+/// `None`: its call is not the op's dispatch, and must not be rewritten into it.
+fn ability_op_key(heap: &Heap, cid: ClosureId, argc: usize) -> Option<Value> {
+    let arms = heap.closure(cid).arms.clone();
+    let [arm] = &arms[..] else {
+        return None;
+    };
+    let accepts = arm.params.len() == argc || (arm.rest.is_some() && argc >= arm.params.len());
+    if !accepts || !arm.optionals.is_empty() || arm.body.len() != 1 {
+        return None;
+    }
+    let first_param = *arm.params.first()?;
+    let form = heap.list_to_vec(arm.body[0]).ok()?;
+    let [head, bindings, _] = &form[..] else {
+        return None;
+    };
+    if !is_symbol_named(*head, "let") {
+        return None;
+    }
+    let bindings = heap.seq_items(*bindings).ok()?;
+    let [id_local, identity_call, _, dispatch_call] = &bindings[..] else {
+        return None;
+    };
+    let identity_call = heap.list_to_vec(*identity_call).ok()?;
+    let [identity_head, Value::Sym(receiver)] = &identity_call[..] else {
+        return None;
+    };
+    if !is_symbol_named(*identity_head, "%identity-of") || *receiver != first_param {
+        return None;
+    }
+    let dispatch_call = heap.list_to_vec(*dispatch_call).ok()?;
+    let [dispatch_head, impls, quoted_key, id_argument] = &dispatch_call[..] else {
+        return None;
+    };
+    if !is_symbol_named(*dispatch_head, "%dispatch")
+        || !is_symbol_named(*impls, reg::IMPLS)
+        || !matches!((id_argument, id_local), (Value::Sym(a), Value::Sym(b)) if a == b)
+    {
+        return None;
+    }
+    let quoted_key = heap.list_to_vec(*quoted_key).ok()?;
+    let [quote, key @ Value::Vector(_)] = &quoted_key[..] else {
+        return None;
+    };
+    is_symbol_named(*quote, "quote").then_some(*key)
+}
+
+/// If call head `op` is bound to an ability op AND `args[0]` has a statically-provable
+/// dispatch identity, return the callee
+/// `(%dispatch-proven op <op> *impls* '[ability op] :id [ctor <ctor>])` — the op's own
+/// resolution with its `%identity-of` step constant-folded away, guarded on every call by
+/// the bindings the proof rests on. `None` (leave the dynamic call alone) on ANY
+/// uncertainty.
 ///
-/// Mirrors the runtime dispatch (`identity-of` → `impl-for`) exactly. Two proven arg shapes
-/// (ADR-182, mirroring the checker's `arg_identity`):
-///   - a **literal** `Node::Const` (non-record) → identity is its `type-of` kind
-///     (`value::tag(v).keyword()`, byte-identical to the `type-of` builtin);
+/// Two proven arg shapes (ADR-182, mirroring the checker's `arg_identity`):
+///   - a **literal** `Node::Const` (non-map) → identity is its `type-of` kind;
 ///   - a **direct record-constructor call** `(circle 2)` → identity is the record's baked
-///     `:module/circle` id. Sound because the id keyword's symbol *is* the qualified
-///     constructor name, and membership in `*record-ids*` (populated by `defrecord`) proves
-///     the head is a genuine record constructor — a same-named non-record fn is rejected.
-/// The impl set is `*impls*[[ability op]]` resolved by that id then `:default` — the order
-/// `impl-for` uses.
+///     `:module/circle` id, proven structurally from the constructor's body.
 pub(super) fn mono_devirtualize(
     heap: &Heap,
     scope: &mut Scope,
     op: Symbol,
     args: &[Node],
 ) -> Option<Node> {
+    // Armed contracts check an op's declared return inside the op (KI-182); keep that.
+    if crate::builtins::contracts::contracts_armed() {
+        return None;
+    }
     // The dispatch identity of arg0, if statically certain.
-    let id_kw = mono_arg_identity(heap, args.first()?)?;
-    // The head global must be a registered ability op → its ability name symbol.
+    let receiver = mono_arg_identity(heap, args.first()?)?;
+    // The rewrite resolves the impl BEFORE the arguments run, where the op resolves it
+    // after: equivalent only while no argument can run code that registers one.
+    if args[1..].iter().any(node_runs_user_code) {
+        return None;
+    }
+    // A registered op name (a cheap filter) bound to the op `defability` emitted.
     let op_ability = global_map(heap, reg::OP_ABILITY)?;
-    let ability = match heap.map_get(op_ability, Value::Sym(op)) {
-        Some(Value::Sym(a)) => a,
-        _ => return None,
+    heap.map_get(op_ability, Value::Sym(op))?;
+    let op_closure = heap.env_get(heap.global(), op)?;
+    let ValueRef::Fn(op_cid) = op_closure.unpack() else {
+        return None;
     };
-    // `*impls*` keys on `[ability op]` where `op` is the op name AS WRITTEN in `defability`
-    // (a quoted literal, never ns-qualified) — i.e. the bare last segment of the op global.
-    let op_bare = value::intern(value::symbol_name(op).rsplit('/').next().unwrap_or(""));
-    let default_kw = Value::keyword(value::intern("default"));
-    // Find the `[ability op]` method set, then resolve the id (then `:default`), as
-    // `impl-for` does. Iterate rather than build a key — compile-time, not hot; and it
-    // avoids depending on freshly-built-vector CHAMP equality.
-    let impls = global_map(heap, reg::IMPLS)?;
-    let mut found = None;
-    for (key, methods) in heap.map_entries(impls) {
-        if let (Value::Vector(vid), Value::Map(mid)) = (key, methods) {
-            let v = heap.vector(vid);
-            if matches!((v.first(), v.get(1)),
-                (Some(&Value::Sym(a)), Some(&Value::Sym(o))) if a == ability && o == op_bare)
-            {
-                // Keep the registry's OWN key vector: it is what `%dispatch` will be handed,
-                // so reusing it avoids rebuilding a vector whose CHAMP equality we would then
-                // have to rely on.
-                found = Some((key, mid));
-                break;
-            }
-        }
-    }
-    let (op_key, methods_map) = found?;
-    // Exact id wins, else `:default` — `impl-for`'s exact order. Keyword keys need no alloc.
-    let impl_fn = heap
-        .map_get(methods_map, id_kw)
-        .or_else(|| heap.map_get(methods_map, default_kw))?;
-    // Only a real fn value is safe to dispatch to. Resolving it here is not what gets
-    // emitted — it is the PROOF that this id has an impl at all, so the rewrite does not
-    // turn a would-be `%no-impl` into a "not callable".
-    if !matches!(impl_fn.unpack(), ValueRef::Fn(_)) {
+    let op_key = ability_op_key(heap, op_cid, args.len())?;
+    // Every constant is baked into the chunk, where a LOCAL handle would go stale at the
+    // next collection. Globals and their bodies are RUNTIME/PRELUDE; this is belt-and-braces.
+    let constructor_movable =
+        matches!(receiver.constructor, Some((_, c)) if crate::core::heap::is_movable(c));
+    if crate::core::heap::is_movable(op_key)
+        || crate::core::heap::is_movable(op_closure)
+        || constructor_movable
+    {
         return None;
     }
-    // Both constants must be immovable: they are baked into the chunk, and a LOCAL handle
-    // would go stale at the next collection. `*impls*` is RUNTIME-promoted, so its key
-    // vector holds; keywords are not heap values at all. Belt-and-braces, as in the IC.
-    if crate::core::heap::is_movable(op_key) {
-        return None;
-    }
-    if std::env::var_os("BROOD_MONO_DBG").is_some() {
+    if std::env::var_os("BROOD_DEVIRT_DBG").is_some() {
+        let ValueRef::Vector(key_vector) = op_key.unpack() else {
+            unreachable!("ability_op_key answers a vector");
+        };
+        let name = |index: usize| match heap.vector(key_vector).get(index) {
+            Some(&Value::Sym(s)) => value::symbol_name(s).to_string(),
+            _ => String::from("?"),
+        };
         eprintln!(
-            "[mono] devirtualized {}/{} for :{} → constant-id dispatch",
-            value::symbol_name(ability),
-            value::symbol_name(op_bare),
-            value::symbol_name(match id_kw {
-                Value::Keyword(s) => s,
-                _ => op_bare,
-            }),
+            "[devirt] {}/{} for {}",
+            name(0),
+            name(1),
+            match receiver.id {
+                Value::Keyword(s) => format!(":{}", value::symbol_name(s)),
+                _ => String::from("?"),
+            },
         );
     }
-    // `((%dispatch *impls* '[ability op] :id) …)` — the id is constant-folded, the
-    // resolution stays behind the epoch-guarded cache.
-    //
+    let mut guard_args = vec![
+        Node::GlobalIc {
+            sym: op,
+            site: scope.gsite_alloc(),
+        },
+        Node::Const(ConstVal::new(op_closure)),
+        Node::Global(value::intern(reg::IMPLS)),
+        Node::Const(ConstVal::new(op_key)),
+        Node::Const(ConstVal::new(receiver.id)),
+    ];
+    if let Some((constructor, bound)) = receiver.constructor {
+        guard_args.push(Node::GlobalIc {
+            sym: constructor,
+            site: scope.gsite_alloc(),
+        });
+        guard_args.push(Node::Const(ConstVal::new(bound)));
+    }
     // **The site is not optional.** `emit_node` sets `head = Some(sym)` for a `Node::Global`
     // callee and then does NOT push the callee — `Inst::Call` resolves it from `head`,
     // through the call-site IC keyed on `site`. `head = Some` paired with `NO_SITE` is a
@@ -263,12 +327,8 @@ pub(super) fn mono_devirtualize(
     // consumed.
     let dispatch_site = scope.site_alloc();
     Some(Node::Call {
-        callee: Box::new(Node::Global(value::intern("%dispatch"))),
-        args: Box::new([
-            Node::Global(value::intern(reg::IMPLS)),
-            Node::Const(ConstVal::new(op_key)),
-            Node::Const(ConstVal::new(id_kw)),
-        ]),
+        callee: Box::new(Node::Global(value::intern("%dispatch-proven"))),
+        args: guard_args.into_boxed_slice(),
         tail: false,
         pos: None,
         file: None,

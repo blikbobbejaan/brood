@@ -94,6 +94,7 @@ fn write_project(root: &Path) {
          \x20\x20(report \"own:\" (fn () (lies 1)))\n\
          \x20\x20(report \"inside:\" (fn () (inside 1)))\n\
          \x20\x20(report \"std:\" (fn () (check-allow :type-mismatch (string/pad-left 5 \"x\"))))\n\
+         \x20\x20(report \"honest:\" (fn () (node/monitor :ghost-node)))\n\
          \x20\x20(io/puts \"image:\" (get (stdimage/status) :installed)))\n",
     )
     .unwrap();
@@ -144,6 +145,13 @@ fn nest_run_enforces_own_and_std_contracts_by_default() {
         ran.out
             .contains("std: RAISED blame=:caller :: string/pad-left: argument 1 expected string"),
         "a std declaration must be enforced too, blaming the caller:\n{}",
+        ran.out
+    );
+    // A std function honest about its result passes its own contract. `node/monitor`
+    // declared `ref` while returning the node keyword, so every call raised under `nest run`.
+    assert!(
+        ran.out.contains("honest: :ghost-node"),
+        "a correctly declared std function must pass its contract:\n{}",
         ran.out
     );
     // …and it was enforced on a module the IMAGE materialised, not one loaded from source.

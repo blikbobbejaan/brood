@@ -9281,7 +9281,10 @@ machines), joined by a command channel + waker.
   and returns; the reactor flushes as the peer accepts bytes. `tcp-close`
   **drains the queue first** (bounded by a 5 s linger), so send-then-close can
   never truncate a response — the old blocking-write model's documented
-  footgun (hatch audit #1), now structurally gone. A slow/stuck reader is
+  footgun (hatch audit #1), now structurally gone. The drain is invisible to
+  the owner: once `tcp-close` returns, no new message for the socket reaches
+  any mailbox (inbound bytes are discarded, no `[:tcp-closed]` follows; ADR-398
+  follow-up 2026-10-12). A slow/stuck reader is
   bounded by a 16 MiB per-socket queue cap (past it the connection drops);
   write failures surface as `[:tcp-closed …]`. Callers that could be told
   synchronously (unknown socket, a listener, an unclaimed TLS stream) still
@@ -12362,7 +12365,11 @@ ADR-11 (sealed-only, defer the open case), the 2026-07-29 devlog entry.
 
 ## ADR-182 — Ability-dispatch monomorphization (`BROOD_MONO`, Tier 1)
 
-**Status:** accepted + shipped (Tier 1, **off by default**). The runtime companion to
+**Status:** accepted + shipped (Tier 1). **Always on since ADR-398** — the `BROOD_MONO` flag
+is gone, the rewritten head is the guarded `%dispatch-proven` (a rebound op or constructor,
+or a missing impl, falls back to the op), and an argument that can run user code or armed
+contracts decline it; see [ability-monomorphization.md](ability-monomorphization.md). The
+flag-off/flag-on guarantees below are history. The runtime companion to
 ADR-180/181's checker work — where the checker *proves* a dispatch identity, the compiler
 can *use* it. See [ability-monomorphization.md](ability-monomorphization.md) for the full
 design.
@@ -25555,6 +25562,45 @@ reader has to learn and a code path a change has to keep working.
 
 **Consequences.** Fewer names and paths; a bisect into an old default now needs a build of an
 older commit rather than an env var. The removed list is in the 2026-10-09 devlog entry.
+
+## ADR-399 — The soft memory limit stops the process holding the most memory
+
+**Status:** implemented (2026-10-14). Amends ADR-043's soft limit. KI-229.
+
+**Context.** ADR-043's soft limit is a process-wide byte count raised as `E0043` at the eval
+safepoint, in whichever process gets there first. With one runaway that is the right process.
+With several processes it is close to arbitrary, and biased the wrong way: a busy process
+reaches safepoints constantly, while one that accumulates in short bursts between receives
+rarely does. A leak beside a busy worker killed the worker every time. That also blocked
+giving `brood`/`nest run` a default ceiling, since a default would make every leak kill its
+bystanders first.
+
+**Decision.** Crossing the soft limit stops the local process that holds the most memory — its
+heap (`Heap::footprint`: slab capacity of both generations plus what the entries own, a
+shared blob counting in full for each holder) plus its queued messages. It is stopped by a
+hard exit whose reason is the `E0043` error map, so monitors, links and supervisors see why,
+and one stderr line names it. Nobody else is interrupted, and nobody else is stopped until it
+is gone. Only a process may walk its own heap while it runs, so measuring starts in the last
+eighth of the limit: each process measures itself at most every 50 ms, at its quantum
+safepoint or when it parks, and the selector measures parked processes itself under their
+mailbox lock. The selection happens at the crossing, with the figures it has, because a fast
+runaway covers the remaining quarter to the hard limit in milliseconds. The old behaviour
+remains in two cases: the largest holder is the current process (it raises in place,
+catchably), or no process holds an eighth of the count (the memory is in tables, shared code
+or native buffers; stopping a process would free nothing attributable).
+
+**Consequences.**
+- A leak or a flooded mailbox is stopped where it is, and its supervisor can restart it.
+- The stopped process cannot catch the error: the exit is hard, like any other kill. A
+  process that wants to shed load before that sets `(proc/flag :max-heap n)`, which raises
+  in that process, catchably.
+- The figures are estimates: a process waiting in a run queue is compared by the figure it
+  last published, and blobs shared by many processes count in each. Broadcasting one large
+  blob to many processes could stop several of them in turn before memory falls. The hard
+  limit is still the backstop.
+- Near the limit, each process walks its slab entries every 50 ms: O(entries) per period,
+  only while live memory is within an eighth of the limit. With no limit set, the check is
+  one load of a zero, as before.
 
 ## ADR-400 — `try` bodies run in the bytecode driver, not a nested evaluation
 

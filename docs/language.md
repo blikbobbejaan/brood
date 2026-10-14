@@ -1813,6 +1813,12 @@ bindings (consistent with share-nothing: data isn't shared, and neither is
 dynamic scope). If a child needs a value, send it explicitly. A process that
 crashes mid-`binding` takes its binding stack down with it and disturbs no one.
 
+**The declaration is per-runtime.** Which names are dynamic is a fact of the
+runtime, shared by all of its processes — a `defdyn` in one process is visible to
+its siblings — but not by separate runtimes (nodes, or several embedded
+interpreters in one OS process), each of which starts from the prelude's marks.
+`%isolate` rolls back a mark made inside its thunk along with the binding.
+
 `defdyn`/`binding` are Brood macros over a tiny kernel (`%declare-dynamic`,
 `%binding`, `reflect/dynamic?`) — no new special form, the `try`/`catch` precedent.
 
@@ -2326,6 +2332,13 @@ monitors anywhere in the fallen tree report the root cause — not a blanket
 `:kill`. Links are what `supervisor`'s trapping supervisor loop is built
 on; remote (cross-node) links deliver the same shapes, plus `:noconnection` on
 a net-split.
+
+The program a `brood file.blsp` / `nest run` runs is itself a process, and an exit
+signal kills it like any other — sleeping, receiving or computing. An abnormal
+reason ends the program at once with exit status 1 and
+`runtime error: killed by an exit signal: <reason>`; a `:normal` one (`(exit root
+:normal)`) ends it with status 0. Trapping exits turns link signals into
+`[:EXIT pid reason]` messages here too.
 
 #### `spawn-link` — spawn and link atomically
 

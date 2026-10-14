@@ -791,14 +791,10 @@ response); the root process counts."
         head (request-head method u headers)
         ;; Binary mode before the request goes out (both transports): the peer
         ;; cannot respond before it has our request, so every response chunk
-        ;; arrives as byte-faithful `bytes`.
+        ;; arrives as byte-faithful `bytes`. TLS sends the request itself, so
+        ;; the mode goes in with it.
         sock (if (= (/get u :scheme) "https")
-               (let (s (tls/request (/get u :host)
-                         (/get u :port)
-                         [head body-bytes]
-                         (/get opts :ca)))
-                 (tcp/set-binary s true)
-                 s)
+               (tls/request (/get u :host) (/get u :port) [head body-bytes] (/get opts :ca) true)
                (let (s (tcp/connect (/get u :host) (/get u :port)))
                  (tcp/set-binary s true)
                  (tcp/send s [head body-bytes])

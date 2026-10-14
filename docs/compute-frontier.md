@@ -2,9 +2,11 @@
 
 > **Removed levers.** The A/B and experiment flags this file's measurements cite —
 > `BROOD_XADMIT`, `BROOD_MKCLO`, `BROOD_XCALL`, `BROOD_FLOAT_VETO`, `BROOD_NO_INLINE`,
-> `BROOD_NO_LEAF_INLINE`, `BROOD_NO_PARTIAL_LEAF`, `BROOD_NO_FLOAT_GLOBAL` and others — were
-> removed 2026-10-09; what they defaulted to is now unconditional. `brood --debug-flags` lists
-> what exists. The measurements stand as the record of what was decided and why.
+> `BROOD_NO_LEAF_INLINE`, `BROOD_NO_PARTIAL_LEAF`, `BROOD_NO_FLOAT_GLOBAL`,
+> `BROOD_XADMIT_MAX_NSLOTS`, `BROOD_VM`, `BROOD_NO_JIT` and others — were removed 2026-10-09;
+> what they defaulted to is now unconditional. The exception is `BROOD_MONO`: ability
+> devirtualization, opt-in when this file was written, is now always on (KI-223). The engine
+> knob is `BROOD_TIER=0|1|2`; `brood --debug-flags` lists what exists. The measurements stand as the record of what was decided and why.
 
 > **Note on the background docs cited below.** `jit-tier2.md`, `jit-stage1.md`,
 > `value-repr.md` and `frame-representation.md` were trimmed in `fdce5400` once the work

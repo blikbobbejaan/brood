@@ -16748,6 +16748,45 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
   generators, zero divergences), the network files 90× across tiers and boot paths, both
   checker gates at zero, and bedit's three gates.
 
+## 2026-10-12 — the cleanup's last four: tcp/close silence, one copy walker, devirtualization on, a derived doc catalogue
+
+- **`tcp/close` silences the socket at once.** A closing stream lingers up to 5 s to flush
+  queued output, and during that time the old owner could still receive inbound data and a
+  late `[:tcp-closed]`. Each socket now has one owner record; every delivery goes through it
+  under its lock, and `close` clears it under the same lock before returning, so nothing new
+  for the socket reaches any mailbox once `tcp/close` returns. Queued output still flushes
+  (send-then-close never truncates); bytes read meanwhile are discarded and their flow
+  credit returned. The rule covers TLS streams, listener accepts, failed dials and the
+  reactor-death sweep; `close` itself sends nothing. Guards: `tests/tcp_test.blsp` (8 MiB
+  linger, 6 rounds; nothing queued, 30 rounds) and `tests/tls_test.blsp` (mid-request close)
+  — the linger and TLS guards sabotage-verified.
+- **One message-copy walker.** `to_message_rec` (Value → `Message`) and
+  `copy_cross_heap_rec` (the L1 parked-receiver copy) were the same traversal written twice.
+  They are `copy_value<T: CopyTarget>`, monomorphised over `IntoMessage` and `IntoHeap`;
+  every difference (budget charging, up-front size checks, refusal as an error vs a silent
+  decline, failures, closures by handle, builtins in image mode, list positions) is an
+  `#[inline]` trait method, and refusals build their error lazily, so each path compiles to
+  its own walker with no runtime mode test. The L1 vector arm no longer copies the element
+  array. New `decline_tests` pin each asymmetry; the depth limit had no test before.
+- **Ability devirtualization is always on; `BROOD_MONO` is gone (ADR-182/398).** Turning
+  it on found five ways the opt-in rewrite disagreed with the op's own dispatch (KI-223).
+  The rewritten head is `%dispatch-proven`, which re-checks the op's and constructor's
+  definitions on every call and falls back to the op itself; calls with user-code
+  arguments, rebound or wrapped op names, rejected arities and contract-armed runs are not
+  rewritten. `crates/cli/tests/devirt_differential.rs` compares tiers 1 and 2 with the
+  tree-walker. The trace is `BROOD_DEVIRT_DBG`. Tier 2 stays deferred; the performance
+  effect is unmeasured here (a rewritten call trades the op's frame and `%identity-of` for
+  one primitive with two cached reads).
+- **The doc catalogue derives categories.** `std/tool/doc-catalog.blsp` no longer lists
+  ~600 names by hand (695 → ~205 lines). A qualified name takes its module's category, a
+  bare prelude name the category of the `;; ---- section ----` header above its definition,
+  a kernel primitive a small table; 3 exceptions remain. `tests/doc_catalog_test.blsp`
+  replaces the hand-list gates: every public name gets a category, every section key
+  matches exactly one header, an exception must disagree with its section. Five names moved
+  (`any?`, `every?`, `includes?`, `vec` → collections; `contains?` → maps). The prelude's
+  source copy falls back to the temp dir when the cache dir is read-only, since categories
+  now depend on its definition sites.
+
 ## 2026-10-12 — preemption reaches every shape of running code; nine latency and stability defects closed (ADR-400..405, KI-230..238)
 
 The brief: "latency and stability is more important than pure performance — it has to be as
@@ -16814,6 +16853,140 @@ attributed. Gates: `make test-both` 1829/1829 on both engines, `make gcstress` c
 13 generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy
 `--all-features` clean.
 
+## 2026-10-13 — the v0.38.0 release run: an https response mangled into text
+
+The release commit's tree-walker job went red twice on two network tests, and the cause was
+older than the cleanup. `tls/request` sends its request from the reactor, without the
+caller, so the response can arrive before the caller's `tcp/set-binary` lands; under load
+(the whole suite on the tree-walker) the first chunk of a binary https body was decoded as
+UTF-8, every byte over 0x7F becoming U+FFFD. `http/request`'s comment claimed the mode was
+set "before the request goes out" — true for plain TCP only. `%tls-request` takes an
+optional fifth argument, `binary`, the response's starting mode, and `tls/request`,
+`http/request` and the TLS tests pass it instead of switching afterwards. Guard:
+`tests/tls_test.blsp` "a binary-mode TLS response is byte-faithful bytes" no longer calls
+`set-binary`; with the argument ignored it reads `#b"\0\xef\xbf\xbd\xef\xbf\xbdA"`, and
+`http_test`'s https binary case goes red with it.
+
+**The second failure was the suite's one recurring flake, and it was not a timeout.**
+`dns_test`'s "a well-formed reply decodes its A record" had failed the in-language suite's
+FIRST try in four of the six CI and nightly runs since the cleanup, every one green through
+nextest's retry, which only prints `FLAKY 2/2`. Its fake resolver sent the reply on accept,
+without waiting for the query; `tcp/connect` returns with reads already started, so the reply
+could land before `dns/ask` switched its socket to binary, decode as text, and fail to parse.
+A real resolver answers only after the query, which `ask` sends after the switch. The fake
+now waits for the query. Proven with a 200 ms `sleep` put between `ask`'s connect and its
+`set-binary`: the old fake fails at exactly CI's line, the new one passes. (My first fix, a
+longer client timeout, treated a symptom and is reverted.)
+
+**Flakes now fail CI.** `scripts/nextest-no-flakes.sh` runs nextest and fails the job if any
+test passed only on a retry, naming it; CI's test and tree-walker steps and the nightly suite
+use it. Retries stay — "failed once" and "always fails" are still told apart — but a flaky
+pass is no longer green.
+
+**KI-224: the nightly sanitizer job's two failures were real.** Plain `cargo test` runs the
+lib tests as threads of one process, so it is the one place two runtimes share a process, and
+three process-wide states that belong to a runtime showed it: the held image file
+(`OPEN_IMAGES`, KI-119's fix — a second runtime's index re-pointed the first's directory at a
+rebuilt file), the `defdyn` marks (`value::DYNAMICS`, which `%isolate` restores wholesale over
+the other runtime's marks; `stdimage/build` then refused on `*fuzzy-workers*`), and the image
+temp file named by pid alone. Both now live on `RuntimeCode` (`image_files`, `dynamics`), and
+temp names add a counter. The dist listener test read the process's first listener instead of
+its own. Guards: two-runtime tests for the image handle and for the marks, each red with the
+process-wide state put back; the threaded repro 0 in 15 after, 2 in 5 before.
+
+**Also:** the wasm32 build broke on `tls_request`'s new argument (its stub `net_wasm.rs` was
+not updated) — CI's wasm job caught it; two wasm-only dead-code warnings are gone, and two
+doc comments in `scheduler.rs` that had been run together are on their own functions again.
+
+**KI-225 — an exit signal killing the root program hung `brood file.blsp`.** The next CI run
+went red in the breakage suite: `chaos2_process_links.blsp`'s P15 spawned a child and linked
+it separately, and a child that had already finished made the link a `:noproc` exit signal to
+the untrapping root. Reproducing it showed something worse than a racy test: the root killed
+by an exit signal never exits — in `sleep`, `receive … after` or a compute loop, in 0.35 too.
+The program runs as one green process and the main thread waits for it to publish an outcome,
+which it did only on finishing or on a form error. Every scheduler death now goes through
+`Process::retire`, which publishes for the root (`:normal` → exit 0, otherwise exit 1 "killed
+by an exit signal: <reason>"), with a drop-time backstop. A related bug: a hard kill never
+stopped a JIT'd loop, because native preemption skipped the VM's kill check; preemption now
+honours it. P15 uses `spawn-link`. Guard: `crates/cli/tests/root_exit_signal.rs`, 9 shapes ×
+3 tiers, each fix sabotage-verified. Its scripts first ordered steps by sleeping, and CI's
+tree-walker booting from source outslept one; they are ordered by handshakes now.
+
+**Three bugs the downstream update round found** (bringing ~25 projects to 0.38):
+- *A project's format rules never reached `nest format`.* `project/setup` ran
+  `(def *format-headers-extra* …)` inside the `project` module, and unless `format` had already
+  loaded and marked the name dynamic, that bound `project/*format-headers-extra*`, which
+  nothing reads — Hatch's `deflive`/`on`/`tick` shapes were ignored in every project, and
+  hatch-demo's `nest format --check` failed on 11 correctly formatted files. `format` owns a
+  setter now (`format/use-headers`). The unit tests asserted on the helper that computes the
+  table; `crates/nest/tests/format_project_headers.rs` asserts on the file `nest format` writes
+  (red before).
+- *`node/monitor` failed its own contract.* Both its `sig` and the primitive's declared a `ref`
+  result; it returns the node keyword, so under `nest run`/`nest test` every call raised —
+  `reconnect`, `editor/serve` and the observer all call it. Every test of it ran through
+  `brood`, which arms no contracts; `contracts_default.rs` now calls it under `nest run` (red
+  before).
+- *A private prelude name was reported as shadowed.* `(:use hatch/web/live)` warned that hatch's
+  public `*live-registries*` shadowed the prelude's — a `def-`, unreachable from user code. The
+  import check skips private names (`crates/cli/tests/import_shadow_warning.rs`, red before; a
+  public name still warns).
+- *`(:use m :only [Ability])` was "defines no public".* The checker's unknown-`:only` lint
+  counted globals, and an ability is not one — `defability` registers its bare name in
+  `*ability-owner*`. mail-local and mail-mailjet, which import `Adapter` so `(impl Adapter …)`
+  reads bare, failed their zero-warning gate. The lint now also asks `*ability-owner*` whether
+  the module declared that name (`modules_and_imports::an_only_import_of_the_modules_ability_is_not_named`,
+  red before; another module's ability is still named).
+
+## 2026-10-13 — a runtime-stability pass: per-runtime state, timed tests, a soak, and running out of descriptors
+
+With nothing open in `known-issues.md`, the pass went after the classes behind recent reds
+instead of single bugs. Four lines of work, three new known issues found and fixed.
+
+**Per-runtime state (KI-226).** KI-224 moved three process-wide statics onto `RuntimeCode`;
+an audit of the rest found two more holding one runtime's facts. The module resolver's
+"failed to find" memo depends on `*load-path*`, so a miss in one runtime made another — whose
+load path had the module — report it unbound; and the image kind index let one runtime's
+image tell another that a macro was a function, so the macro call compiled as a call. Both
+are `RuntimeCode` fields now, and the stdlib image's kinds ride the `SharedBundle` into each
+runtime (the install runs once, in the shared boot; without the seed every runtime lost lazy
+loading — `curated_names_load_nothing` caught that). `crates/lisp/tests/process_wide_statics.rs`
+makes the choice explicit from now on: every lock-holding `static` in `crates/lisp/src` (50)
+is listed with its reason — pid-keyed, one per machine, a fact of the binary, a pure cache, a
+diagnostic, a speed heuristic — and an unlisted one fails the build.
+
+**Tests that waited on time.** A read of all 121 `(sleep N)` in `tests/` found 55 that stood
+in for "wait until the other side has done X" — 28 of them able to fail outright under load,
+four able to hang (an unbounded `receive` behind the sleep). Each is a handshake now: a
+message, a monitor's `[:down]`, a synchronous call as a barrier, or the two new `test`
+helpers, `eventually` and `await-parked`. Every rewritten HIGH site was checked by delaying
+the other side 1.5 s: the new version passes, and the original failed where that was cheap
+to show. `debug_test`'s own poll gave up after a fixed second (200 × 5 ms) and ten of its
+`receive`s had no deadline; the poll is `eventually` now and every `receive` has one — with
+the first park delayed 1.5 s the old file fails and the new one passes. The runner also says
+what a timed-out test was stuck on — the worker and every live
+process it spawned, as *running*, *waiting with N unmatched messages* or *waiting with
+nothing queued* — read before the kill.
+
+**A soak for the two never-root-caused hangs.** `make runtime-soak` / the nightly's new
+30-minute job boots `stress/runtime_soak.blsp` fresh round after round: 240 processes racing
+first module loads (KI-127's shape), warm spawn bursts (KI-88's), link churn, large copies,
+cycling tiers, one worker and the GC verifier, failing on a lost process, a hang or any
+watchdog line, and keeping a record of every round. A loom model of the park handshake was
+considered and not built: every park is timed (10 ms with work queued), so a lost wakeup there
+costs milliseconds, not KI-88's seconds.
+
+**Running out of descriptors.** Probing under `ulimit -n`: an outbound connect, `file/spit`,
+`os/cmd` and `os/run-process` all raise a catchable error naming `EMFILE` and recover. A
+listener did not (KI-227): its edge-triggered drain stopped on `EMFILE` and the backlog waited
+for a new connection to re-arm it, forever if none came; it is retried every 100 ms now and
+logs once per episode. And removing the sleep from `tcp_test`'s closing peer exposed KI-228:
+a close with unread input sent a RESET, so a client that read after a pause lost 72 KB of a
+200 KB response. The close now shuts the write half and drains until the peer's EOF (bounded
+by `LINGER`); a listener starved for descriptors releases lingering sockets at once.
+
+**Left as a decision.** An unbounded program with no `BROOD_MEM_LIMIT` under a real memory cap
+still ends in a bare Rust allocation abort (or the OS's kill) with nothing naming the process
+that grew; the test runners set a default, `brood`/`nest run` do not.
 
 ## 2026-10-13 — the preemption work, simplified: one native entry, one quantum module, folds walked in spans
 
@@ -16933,6 +17106,41 @@ tag. The walk helpers take that continuation directly. `reverse`'s vector branch
   (ranges to `i64::MAX`, negative steps, BigInt promotion): identical output on all six and
   equal to HEAD's. `preemption_shapes.rs`/`preemption.rs` 10/10.
 
+## 2026-10-14 — the soft memory limit stops the process holding the memory (KI-229)
+
+Looking at whether `brood`/`nest run` should default a memory ceiling, the first question was
+what a ceiling does to a program with more than one process. Under `BROOD_MEM_LIMIT=1G`, a
+process keeping a 1 MB string every few milliseconds beside a busy worker that allocated only
+garbage: the busy worker died with `E0043`, three runs in three, and the leak kept going. The
+soft limit counts the whole allocator and raised in whichever process reached a safepoint
+first, and a busy process reaches one far more often than a process that accumulates in short
+bursts between receives. A default ceiling on top of that would make every leak kill its
+bystanders first.
+
+ADR-399: the crossing stops the largest holder. `Heap::footprint` measures what a heap holds
+— both generations' slab capacity plus what entries own: spilled vectors, map and frame
+arrays, string text, shared blobs, ropes (the existing `local_bytes` counts only slab slots,
+and misses a 1 MB string entirely). Only a process may walk its own heap while it runs, so in
+the last eighth of the limit each process measures itself at most every 50 ms, at its quantum
+safepoint or when it parks; at the crossing the selector measures parked processes under
+their mailbox lock, adds each mailbox's queued wire messages, and stops the largest with a
+hard exit whose reason is the `E0043` error map, plus one stderr line naming it. On the leak
+probe it measured 738 MiB for a process holding about 740 MB.
+
+Two first attempts failed in instructive ways. Collecting fresh figures in a 20 ms window
+after the crossing let a mailbox flood cover the remaining quarter to the hard limit inside
+the window — an allocation abort. And without a measurement at park, the leaking process
+(which runs for microseconds between `receive`s and never reaches the once-per-quantum
+safepoint) published nothing, so the selector found no holder worth stopping and fell back to
+raising in the busy worker — one run in three.
+
+Guard: `crates/cli/tests/memory_pressure.rs` — a leak beside a busy worker and a flooded sink
+beside a ticker, each asserting the culprit's `[:down …]` carries `E0043` and the bystander
+is alive; ten runs green, and both red with the old raise-in-place restored.
+
+The default-ceiling question is still open, but it is now a question about the number, not
+about whether a ceiling would do harm.
+
 ## 2026-10-14 — native code memoises calls to a closure value (ADR-406); KI-239 filed
 
 Handoff item A. A computed-head call from native code — `(f acc x)`, every callback a
@@ -16979,3 +17187,15 @@ stale memo. ADR-406.
   fail try 1: A's `node/connect` was refused right after `wait_until_listening` had reached B.
   KI-99's test, a new mechanism. 40/40 on demand (20 with all cores busy); the test's failure
   message now says whether B was alive and still listening once A finished.
+
+## 2026-10-14 (later) — merged origin/main; this branch's KI and ADR numbers moved
+
+This branch (preemption, the native-entry refactor, the gate sweep, handoff items A and B) and
+`origin/main` (v0.38.0 and its stability pass) were developed apart from `40d07ec0`, and both
+minted KI-223 onward and ADR-399. Origin's keep their numbers; this branch's moved after them,
+in one renumbering commit before the merge: **KI-223..232 → KI-230..239, ADR-399..405 →
+ADR-400..406**. The commit messages written before it (`67a540e1` "ADR-399..404, KI-223..231",
+`95c8b749`, `39710846`, `1869e297` "ADR-405; KI-232") carry the OLD numbers — read them through
+this map. Conflicts were mechanical: both sides appended to the docs; origin made `is_dynamic`
+per-runtime (`heap.is_dynamic`) where this branch had factored `push_bindings`; this branch had
+moved the reduction ticks into `scheduler/quantum.rs` where origin edited their neighbours.

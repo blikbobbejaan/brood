@@ -397,10 +397,10 @@ bare-surface (prelude) name, whose references are bare already."
        :guides (collect-guides root)
        :modules (apply vector (map files model-file))})))
 
-;; The full builtin+prelude reference (for `nest docs --all`), grouped by function
-;; category via the shared `doc-catalog` — Math, Strings, Filesystem, Processes, … — so
-;; the CLI reference and hive's hosted `/reference` present the language identically. A
-;; name the catalogue doesn't know falls into the `:other` group.
+;; The full builtin+prelude reference (for `nest docs --all`), grouped by the category
+;; `doc-catalog` derives from each name's definition site — Math, Strings, Filesystem,
+;; Processes, … — so the CLI reference and hive's hosted `/reference` present the language
+;; identically.
 (defn- model-all ()
   ;; The language surface is the builtins and prelude — NOT the tooling modules
   ;; (`docs`/`project`/…) loaded to run this command. Those are namespaced (`docs/foo`);
@@ -409,17 +409,15 @@ bare-surface (prelude) name, whose references are bare already."
   ;; module binding has no def-site, ADR-218.)
   (let (namespaced? (fn (nm) (let (i (index-of nm "/")) (and i (> i 0))))
         language? (fn (s) (and (docs-public? s) (not (namespaced? (->string s)))))
-        syms (seq/filter (reflect/global-names) language?)
-        category-of (fn (s) (doc-catalog/category-of (docs-bare s))))
+        by-category (seq/group-by (seq/filter (reflect/global-names) language?)
+                      (fn (s) (doc-catalog/category-of (docs-bare s)))))
     {:name "Brood"
      :version (try (system/brood-version) (catch _ nil))
      :modules (apply vector
                 (seq/filter (map doc-catalog/*category-order*
                               (fn (pair)
                                 (let ([key title] pair)
-                                  (docs-module-model title
-                                    nil
-                                    (seq/filter syms (fn (s) (= (category-of s) key)))))))
+                                  (docs-module-model title nil (get by-category key)))))
                   (fn (group) (not (empty? (get group :defs))))))}))
 
 (defn- write-site (out-dir model title)

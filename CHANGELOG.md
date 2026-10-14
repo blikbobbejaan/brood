@@ -6,6 +6,97 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.** `tcp/close` on a socket with unread input no longer resets the connection: the
+close shuts the write half after the last queued byte and drains until the peer's EOF (at
+most 5 s), so a server that answers before reading the whole request no longer truncates
+its response (KI-228); a closed socket's descriptor is now held until then. A listener that
+runs out of file descriptors accepts its backlog once descriptors free up, instead of waiting
+for a new connection (KI-227). Two runtimes in one process (embedders) no longer share the
+module resolver's not-found memo or image kind index (KI-226).
+
+**Changed.** Crossing the soft memory limit (`BROOD_MEM_LIMIT`) stops the process holding the
+most memory — its heap plus its queued messages — and names it on stderr, instead of raising
+in whichever process happened to run next, which was usually a busy bystander (KI-229,
+ADR-399). The stopped process exits with the `E0043` error as its reason, so its supervisor
+sees why. When the process that crossed the limit is itself the largest, it still gets a
+catchable `E0043`.
+
+**Changed — scheduling.** Long-running code no longer holds its worker: a loop inside `try`
+or `binding` (every `http/serve` handler runs in a `try`), a `reduce`/`fold`/`map` over a vector
+or range, and warm native code called from native code are all preempted at the quantum like
+any other code, and a `receive` inside a `try` or `binding` body parks instead of blocking its
+worker (KI-230..234, ADR-400..403). The benchmark `latency` row (open-loop requests, some
+holding a worker ~500 µs) runs 47% faster with a tighter tail. `spawn` of a closure that
+captures locals copies the captured values into the child instead of promoting the closure
+into the region all processes share, which removed 100–300 µs stalls under a spawn stream
+(KI-236, ADR-405). Calling a closure value from native code — every callback a higher-order
+function calls — is ~240 instructions cheaper (ADR-406).
+
+**Fixed — runtime.** A function containing a set literal, a ratio or a decimal no longer runs
+on the tree-walker for good (KI-237); a native caller no longer keeps a stale inlined copy of a
+redefined function (KI-235); a run-check verdict recorded without the stdlib image no longer
+replays its module loads on every later boot (KI-238).
+
+**Added.** The system monitor's `:long-schedule` event names a process whose quantum ran past
+a threshold (ADR-404); `make latency-gate` checks the request tail.
+
+**Added.** `eventually` and `await-parked` in the `test` module — waits for a condition no
+message announces, in place of a `sleep`. A test that times out now reports what it was
+stuck on: the hung worker and the processes it spawned, each as running, waiting with
+unmatched messages, or waiting with nothing queued. `make runtime-soak` and a nightly soak
+job.
+
+## v0.38.0 — a whole-project cleanup: one engine knob, Brood-only tooling, a silent tcp/close, devirtualization on
+
+A whole-project cleanup: latent bugs fixed, dead switches and duplicated code removed, and
+the tooling moved into Brood. Every fix carries a sabotage-verified regression test. The
+narrative is the devlog's 2026-10-09 and 2026-10-12 entries.
+
+**Breaking.** `BROOD_TIER=0|1|2` is the only engine knob: `BROOD_VM` and `BROOD_NO_JIT` are
+gone, as are eighteen other tuning and bisect flags and `BROOD_MONO` (`brood --debug-flags`
+lists what remains). `seq/vector-ref` and `seq/vector-length` are removed in favour of `nth`
+and `count` (in the rename ledger, so `nest check --fix-renames` rewrites them).
+`project-collect-tests` is `collect-tests`; `package/bump-version` takes `(root level)`;
+`lineedit-init` is `(prompt history &optional opts)`. The primitives `%append-two`,
+`%random-token`, `%print`, `%coverage-reset`, `%scope-live-pids` and `%mcp-progress` and the
+per-process eval deadline are gone. Once `tcp/close` returns, no new message for that socket
+reaches any mailbox — no late data and no `[:tcp-closed]`; queued output still flushes, so
+send-then-close never truncates. Closing a listener takes effect before `close` returns.
+
+**Faster by construction.** Ability calls on a value whose type the compiler can prove are
+devirtualized on every tier above the tree-walker (the opt-in path this replaces disagreed
+with the op's own dispatch in five ways, KI-223; the new `%dispatch-proven` re-checks the op
+and constructor on every call). `tcp/connect` resolves and dials off the scheduler. A process
+exit sweeps only what that process owned.
+
+**Fixes.** An `https://` response could arrive mangled into text (every byte over 0x7F a
+U+FFFD): `tls/request` sends the request itself, so the first chunk could land before the
+caller's `tcp/set-binary`. `tls/request` takes an optional `binary` argument that sets the
+mode before anything is sent, and `http/request` uses it. Two runtimes in one OS process
+(an embedder with several interpreters) could read each other's stdlib image file and lose
+each other's `defdyn` declarations; both are per runtime now (KI-224). A program whose top
+level was killed by an exit signal (a link to a dead pid, a linked crash, `(exit root …)`)
+hung instead of exiting; it now exits 1 with "killed by an exit signal: <reason>", and a hard
+kill stops a JIT-compiled loop (KI-225). A project's `:format-headers` and its
+`:format-plugins`' rules never reached `nest format` (Hatch's `deflive`/`on`/`tick` among
+them). `node/monitor` declared a `ref` result while returning the node keyword, so every call
+failed its contract under `nest run`/`nest test`. Importing a name that matches a private
+prelude definition no longer warns that it shadows it. The checker could fail to
+terminate on recursive types, and a bare `(fn)`
+argument in a `:pure` function panicked it. `format` followed symlinks into cycles;
+`dns/lookup` leaked its socket on every failure; `csv` dropped a final `""` row and bare
+`\r` inside fields; `gen/call-timeout` could deliver a second reply; `string/blank?` was
+quadratic. `nest publish` shipped `tests/` and the lock file and published after a failed
+git commit; `nest ws` always exited 0; `nest run FILE -h` printed nest's usage; `nest test`
+and MCP `run-tests` found different tests. A node listening on `:0` advertised port 0.
+`%untar-gz` accepted absolute, `..` and link members. A corrupt release bundle ran as plain
+`brood`. The LSP dropped checker findings that had no position.
+
+**Tooling.** `nest mcp` is written in Brood, and a raise inside an MCP tool reports its file,
+line, column and trace (new primitive `%try-described`). The doc reference derives each
+name's category from where it is defined. Python is gone from the repo: the fuzz generators
+are Brood. `CLAUDE.md` is a third of its size; `brood --debug-flags` is the flag reference.
+
 ## v0.37.0 — a whole-project review: forty-six defects fixed, inbound flow control, and every known issue closed
 
 A whole-project review: every finding reproduced, fixed, and guarded by a sabotage-verified

@@ -12,18 +12,35 @@ devlog entries of the same dates.
 
 ## State (2026-10-14)
 
-- **Released:** v0.37.0. Unreleased on `main`, **not pushed** (check `git log origin/main..`):
-  `67a540e1` preemption reaches every shape of running code (ADR-400..405, KI-230..238);
-  `95c8b749` one native entry (`jit_runtime/entry.rs`), one quantum module
-  (`process/scheduler/quantum.rs`), folds walked in spans; `4f0fa07f` / `3ec72080` the gate
-  sweep; then handoff item B (the fold span result stops allocating) and item A (ADR-406, the
-  computed-call memo). Devlog entries of 2026-10-12 … 2026-10-14 carry the narrative and numbers.
+- **Released:** v0.38.0 (`CHANGELOG.md`). On `main` since, merged 2026-10-14 from a branch
+  developed apart from the release: preemption reaches every shape of running code (ADR-400..405,
+  KI-230..238), one native entry and one quantum module, folds walked in spans, the gate sweep,
+  and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
+  memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
+  it carry the old ones — the map is in the devlog entry "merged origin/main".
 - `known-issues.md` has one **watching** entry, KI-239 (a dist test node's connect refused right
   after its peer was seen listening; retry-absorbed, not reproducible on demand, diagnostic
-  armed). Gates run green for items A and B: `make test-both`, `make gcstress`, fuzz
-  (`tier_transition`, `metamorphic`, `pipeline`, plus `numeric`/`arithmetic` for B), clippy
-  `--all-features`, the `--no-default-features` checks, `tier-audit`. Not re-run since
-  2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`, `breakagetests`.
+  armed). KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
+  TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the soft memory
+  limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14.
+- **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
+  `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
+  clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
+  `process_floor`/`doc_refs` Rust tests, and the pre-push steps (`nest check` and `--strict` at
+  zero, the 45 test files the merge touches). `make prepush` itself stops at `nest format
+  --check` on `stress/fuzz_out/fuzz_6.blsp`, a git-ignored fuzz output CI never sees. Not run
+  since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
+  `breakagetests`.
+- **Open decision:** whether `brood`/`nest run` default a memory ceiling (only the test
+  runners do). Without one, a growing program under a container cap dies by allocation
+  abort or the OS's kill, naming nothing; with one, ADR-399 stops and names the holder.
+- **The cleanup is finished** (devlog entries 2026-10-09 and both of 2026-10-12): the dead
+  `BROOD_*` flags and aliases are gone — `BROOD_TIER=0|1|2` is the only tier knob — `nest
+  mcp` is Brood, every Python script is gone, closed known-issue bodies live in
+  [`archive/known-issues-closed.md`](archive/known-issues-closed.md). Its last four items
+  landed too: `tcp/close` silences the socket at once, the two message-copy walkers are one,
+  ability devirtualization is always on (`BROOD_MONO` deleted), and the doc catalogue
+  derives its categories. Nothing from it is deferred.
 - **Before pushing:** `make prepush`, and `git merge --ff-only origin/main` first if it moved.
 - **Is the tree green?** Answer with `make green`, never by reading the run list. On this
   machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`).
@@ -96,7 +113,22 @@ A one-in-N race passes N-1 runs; repetition is the evidence. The tools:
 - `scripts/fuzz/run.sh <generator> [count] [seed]` — the engine differential (tree-walker, VM,
   JIT, GC-stress) over generated programs; `make stress` for the program fuzzer, the reader
   fuzzer and the property/race corpus (nightly runs it).
+- `make runtime-soak [SOAK_SECONDS=600]` — boots `stress/runtime_soak.blsp` fresh round after
+  round (first module loads raced across a 240-process fan, warm spawn bursts, link churn,
+  large copies), cycling tiers, one worker and the GC verifier; stops at the first lost
+  process, hang or watchdog line. The hunt for KI-88 and KI-127, whose causes were never
+  found; the nightly runs it for 30 minutes and keeps every round's record.
 - The nightly workflow (`.github/workflows/nightly.yml`) runs the suite three times, the stress
   suite, ASAN, TSAN + loom, and a `perf-stats` build.
 - A flake hunt keeps its logs on success too: a loop that deletes them when green cannot be
   believed afterwards.
+- CI and the nightly run the suite through `scripts/nextest-no-flakes.sh`, so a test that
+  passes only on nextest's retry fails the job and is named. Before it, `FLAKY 2/2` was green
+  and unread (`dns_test` failed its first try in four of six runs before anyone looked).
+- Several runtimes in one process is a real configuration (embedders, `cargo test` threads,
+  the nightly sanitizer jobs): state that belongs to a runtime lives on `RuntimeCode`, never
+  in a `static` (KI-224, KI-226). `crates/lisp/tests/process_wide_statics.rs` makes every
+  lock-holding `static` in `crates/lisp/src` state why it is process-wide.
+- A test that times out names what it was stuck on: the runner reads the hung worker and the
+  processes it spawned before the kill (running / waiting with N unmatched messages / waiting
+  with nothing queued).

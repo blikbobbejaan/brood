@@ -39,10 +39,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         tcp_listen);
     primitives.def(
         "%tls-request",
-        Arity::range(3, 4),
+        Arity::range(3, 5),
         Sig::variadic(any, socket_ty),
-        &["host", "port", "request", "ca-pem"],
-        "Make one HTTPS request to host:port (TLS): the response arrives at the calling process as [:tcp sock data] … [:tcp-closed sock] messages (or [:tcp-error sock msg]). request is any iolist (a string, bytes, or nested tree — ADR-141); the socket honors tcp-set-binary for the response. Optional ca-pem (a PEM certificate) replaces the Mozilla roots as the trust anchor — for private CAs and tls-self-signed dev servers. Returns a socket id; pair with tcp-drain. Low-level — prefer http-get.",
+        &["host", "port", "request", "ca-pem", "binary"],
+        "Make one HTTPS request to host:port (TLS): the response arrives at the calling process as [:tcp sock data] … [:tcp-closed sock] messages (or [:tcp-error sock msg]). request is any iolist (a string, bytes, or nested tree — ADR-141). A truthy binary starts the response in binary mode; a later tcp-set-binary can lose the race with the first response chunk, because the request goes out without the caller. Optional ca-pem (a PEM certificate) replaces the Mozilla roots as the trust anchor — for private CAs and tls-self-signed dev servers. Returns a socket id; pair with tcp-drain. Low-level — prefer http-get.",
         tls_request);
     primitives.def(
         "%tls-listen",
@@ -93,7 +93,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![socket_ty], nil_ty),
         &["sock"],
-        "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Idempotent; returns nil.",
+        "Close sock (a stream or listener), releasing its fd / stopping its accept loop. Once this returns, no new message for sock reaches any mailbox; a stream's queued output still flushes to the peer (5 s linger) and bytes it sends meanwhile are discarded. Idempotent; returns nil.",
         tcp_close);
     primitives.def(
         "%tcp-local-port",
@@ -201,8 +201,10 @@ pub(super) fn tls_request(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         }
         _ => None,
     };
+    // Optional 5th arg: start the response in binary mode (see `net::tls_request`).
+    let binary = args.get(4).is_some_and(|value| crate::eval::truthy(*value));
     let owner = crate::process::self_pid();
-    let id = crate::host::net::tls_request(&host, port, request, ca, owner)
+    let id = crate::host::net::tls_request(&host, port, request, ca, binary, owner)
         .map_err(|e| LispError::runtime(format!("tls-request: {}", e)))?;
     Ok(Value::socket(id))
 }

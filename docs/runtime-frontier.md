@@ -157,6 +157,9 @@ trips / 400 000 messages, payload 0 (≈1.3 µs per message at baseline):
 | `BROOD_NO_HOF=1` | 1574 ms | **the HOF matcher fast path is worth 3.0×** — likewise shipped |
 | `BROOD_NO_JIT=1` | 528 ms | the JIT is **neutral** here; this path is not compute |
 
+(`BROOD_NO_HANDOFF` and `BROOD_NO_JIT` have since been removed; direct handoff is
+unconditional and the JIT is switched off with `BROOD_TIER=1`.)
+
 Both of the large levers on this path have already been taken. What is left is the
 irreducible-looking remainder: one mailbox `Mutex` acquisition, `wake_parked`, a
 re-enqueue, worker pickup, and one matcher activation per candidate.
@@ -203,7 +206,7 @@ re-enqueue, worker pickup, and one matcher activation per candidate.
   ~50%.
 
 **Methodology note, learned the hard way twice now:** size these microbenchmarks so JIT
-compilation amortizes. At 20 000 round trips `BROOD_NO_JIT=1` looked *18% faster*, which
+compilation amortizes. At 20 000 round trips the JIT-off arm (then `BROOD_NO_JIT=1`, now `BROOD_TIER=1`) looked *18% faster*, which
 is pure non-amortized compile cost — the same artefact that produced the phantom `collatz`
 regression under `make ab`'s single-core pin. At 200 000 it is a dead heat, and on the
 real `ring` row the JIT is 7% **faster**. Always cross-check a micro against the
@@ -238,10 +241,10 @@ benchmark row before believing it.
   is inline in `Box<Process>` where bytes run ~2:1 into RSS through mimalloc size classes.
   `Option<Box<Vec<Value>>>` at 8 bytes put `spawn` back to flat.
 
-  Ongoing cost to watch: `copy_cross_heap` must mirror `to_message`'s value coverage, or a
-  newly-carryable value quietly takes the slow route; and the copy now runs while holding
-  the target's mailbox mutex, which is a real contention change for a many-senders-to-one
-  fan-in.
+  Ongoing cost to watch: the copy runs while holding the target's mailbox mutex, which is
+  a real contention change for a many-senders-to-one fan-in. (`copy_cross_heap` once had to
+  mirror `to_message`'s value coverage by hand; both now drive the one walker in
+  `process/message.rs`, `copy_value<T: CopyTarget>`, so they cannot drift.)
 
 - [ ] **L2 — heap fragments for running receivers** (BEAM's other half): copy into a
   fragment the receiver adopts at its next safepoint, removing the `Message` hop when the

@@ -1276,7 +1276,8 @@ mechanism/policy split: kernel primitive, Brood policy.
   (`gensym_floor`) so runtime gensyms can't collide with cached expansions.
   Per-form print→read→print fixpoint check gates writing (an unprintable form
   poisons the cache and the source boot just runs); any read/eval failure
-  deletes the file and falls back. `BROOD_NO_BOOT_CACHE=1` opts out.
+  deletes the file and falls back. (`BROOD_NO_BOOT_CACHE=1` opted out; the text cache
+  and its flag were deleted 2026-09-12.)
 
   **Completed 2026-09-02 (ADR-314): the binary snapshot this entry called
   "unnecessary" is now the default**, and the line above about freeze being only
@@ -1286,8 +1287,8 @@ mechanism/policy split: kernel primitive, Brood policy.
   the differential a binary format would have needed. So the cold boot now also
   writes the prelude's *bindings*, and a warm boot materialises them rather than
   reading and evaluating 544 forms: **boot 9.36 → 5.32 ms, a whole empty run
-  13.5 → 8.3 ms**. ADR-138's text cache stays as the fallback beneath it;
-  `BROOD_NO_PRELUDE_IMAGE=1` opts out. Guarded by
+  13.5 → 8.3 ms**. ADR-138's text cache stayed as the fallback beneath it until it
+  was deleted 2026-09-12; `BROOD_NO_PRELUDE_IMAGE=1` opts out (full source boot). Guarded by
   `prelude_image_matches_source.rs`, a two-process differential.
   **[kernel]**
 - 🟡 **Observability: timing tier + trace pipeline + profiler.** Slice 1
@@ -1791,7 +1792,7 @@ all, and `BROOD_JIT_DUMP_IR=1` lists its arms reaching the JIT — the env var g
 closure (the same function at top level via `brood file.blsp` interprets correctly, 0 JIT
 arms, ~10× slower). So `make test-both`'s tree-walker leg does **not** exercise the ~3400
 in-language cases the way its comment implies; real per-expression engine agreement comes
-from `differential.rs`, which pins the engine with `set_forced_engine` rather than the env
+from `differential.rs`, which pins the engine with `set_forced_ceiling` rather than the env
 var. Hence this corpus ships a Rust runner too (`crates/lisp/tests/gabriel_engines.rs`) on
 that same mechanism. Worth deciding whether the framework should honour a forced engine for
 test bodies — it would widen the gate considerably, at a real wall-clock cost (measured
@@ -1844,7 +1845,7 @@ than in any library.
 **Not a corpus — the technique that actually finds JIT bugs.** ⬜ **EMI /
 equivalence-modulo-inputs** (Le & Su, PLDI'14 — Orion/Athena): mutate provably-dead
 paths in a program; the output must not change. We are unusually well set up for it
-— three engines that must agree (`BROOD_VM=0` tree-walker, the bytecode VM, the JIT)
+— three engines that must agree (`BROOD_TIER=0` tree-walker, `=1` the bytecode VM, `=2` the JIT)
 give a free three-way oracle, and `fuzz/differential.rs` + `fuzz/jit.rs` are already
 the seed. Nothing downloadable finds an optimizer miscompile; this does. Related
 prior art worth reading before extending the fuzzers: **Fuzzilli**'s IL + mutator
@@ -2166,9 +2167,9 @@ Runtime housekeeping (both items landed):
   diverging shape resurfaces, it belongs in the differential fuzzer corpus.
 - ✅ **Native higher-order callbacks route through the VM** (`try`/`binding`/
   `apply`/`isolate`) — done. Each dispatches its Brood callback through the shared
-  `apply_engine` selector (`crates/lisp/src/eval/compile/mod.rs`), which runs the
+  `apply_engine` selector (`crates/lisp/src/eval/compile.rs`), which runs the
   callback compiled on the VM when it's the active engine and on the tree-walker
-  only under `BROOD_VM=0` — the once-per-call analog of the `use_vm`/`apply_value`
+  only under `BROOD_TIER=0` — the once-per-call analog of the `use_vm`/`apply_value`
   branch `%range-reduce` uses per element. Call sites: `%try`/handler
   (`builtins/system.rs` `try_catch`), `%binding` thunk (`binding`), `%isolate`
   thunk (`isolate`), and the `apply` builtin's target (`apply_builtin`). The
@@ -2199,7 +2200,8 @@ Runtime housekeeping (both items landed):
   (a JIT'd RUNTIME-handle arm stays correct across a real relocation; green under
   `GC_STRESS`+`GC_VERIFY`+`JIT_VERIFY`).
 - ✅ **Leaf-callee inlining** (the real call-heavy lever) — **implemented 2026-07-19;
-  DEFAULT ON since the same evening (`BROOD_NO_LEAF_INLINE=1` opts out)** after the
+  DEFAULT ON since the same evening; unconditional since 2026-10-09, when the
+  `BROOD_NO_LEAF_INLINE` opt-out was removed** after the
   gating measurements came back flat everywhere they had to (boot / 100×-hello
   batch, `require`-heavy loads incl. editor/buffer+sexp+json+regex, `nest check`
   over std/, the in-language suite wall, every benchmark row) and the wins held:
@@ -2228,7 +2230,7 @@ Runtime housekeeping (both items landed):
   ⬜ Next: closure arms (needs a fast-link invalidation story without a defn
   name) — the expansion/`require` measurement + default-flip are done.
 - ✅ **Partial leaf splicing** — **implemented 2026-08-03, DEFAULT ON**
-  (`BROOD_NO_PARTIAL_LEAF=1` opts out); ADR-210. Lifts the zero-residual-call
+  (unconditional; its `BROOD_NO_PARTIAL_LEAF` opt-out was removed 2026-10-09); ADR-210. Lifts the zero-residual-call
   restriction above, so **one un-spliceable callee no longer blocks inlining of every
   small callee beside it** — `mandelbrot`'s `row-sum` splices `->float` with the
   recursive `esc` still a real call. The blocker was not the checkpoint *layout* (the
@@ -2690,11 +2692,13 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   of the tree through a symlinked directory is now rejected, not just the
   lexical cases (`crates/lisp/tests/mcp_sandbox.rs`). ✅ **the streaming /
   progress-notification tier** shipped 2026-07-23: a `tools/call` carrying an
-  MCP `_meta.progressToken` arms a sink so a handler's `(mcp-progress progress
+  MCP `_meta.progressToken` arms a sink so a handler's `(mcp/progress progress
   total message)` streams `notifications/progress` to the client *during* the
-  synchronous call (via the reentrant stdout lock); the core `check` tool
-  reports per-file, and `%mcp-progress` is a no-op elsewhere so any handler
-  can call it safely (tests in `mcp.rs`). ✅ **GC/process *traces* exposed**
+  call (the handler runs in its own process and sends each report to the
+  dispatcher, which forwards it); the core `check` tool reports per-file, and
+  `mcp/progress` is a no-op elsewhere so any handler can call it safely (tests in
+  `tests/mcp_test.blsp` and `crates/nest/tests/mcp.rs`). Now all Brood, in
+  `std/tool/mcp.blsp`; the `%mcp-progress` primitive is gone. ✅ **GC/process *traces* exposed**
   (shipped 2026-07-24): a new `watch-runtime` MCP tool arms the kernel
   `system-monitor` on the handler process for a bounded window (`:ms`, capped
   5 s, with an optional `:filter` kind selector), then returns the collected

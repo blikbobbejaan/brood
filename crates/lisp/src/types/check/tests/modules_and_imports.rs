@@ -24,6 +24,30 @@ fn an_only_import_the_module_does_not_define_is_named() {
     );
 }
 
+/// An ability is not a global: `defability` registers its name, bare, in `*ability-owner*`
+/// against the namespace that declared it. `(:use mail :only [Adapter])` — the import an
+/// adapter package writes so `(impl Adapter …)` reads bare — was named "defines no public"
+/// because only globals were counted, and failed every such package's zero-warning gate.
+#[test]
+fn an_only_import_of_the_modules_ability_is_not_named() {
+    let ws = file_warnings(
+        "(defmodule test/only-ability (:use math :only [max Numeric]))\n\
+         (defn f (x) (max x 1))",
+    );
+    let only: Vec<&String> = ws.iter().filter(|w| w.contains(":only")).collect();
+    assert!(only.is_empty(), "math declares Numeric: {ws:?}");
+    // Owned by ANOTHER module, it is still a name this one does not define.
+    let ws = file_warnings(
+        "(defmodule test/only-ability (:use math :only [max Temporal]))\n\
+         (defn f (x) (max x 1))",
+    );
+    assert!(
+        ws.iter()
+            .any(|w| w.contains("math defines no public `Temporal`")),
+        "datetime's ability is not math's: {ws:?}"
+    );
+}
+
 // ---- unused :use import lint ----
 
 #[test]

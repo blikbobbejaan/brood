@@ -461,11 +461,11 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // The `defdyn` marks (which globals are dynamic vars). They live *after* the directory but
     // still before the footer, so they sit inside the `[directory_offset, footer)` span `%image-index`
     // reads whole — the image restores them when opened, no payload read. Written last (at
-    // image-build time the whole runtime is loaded, so `DYNAMICS` is complete).
-    let dyn_names = value::dynamic_names();
-    put_u32(&mut body, dyn_names.len() as u32);
-    for name in &dyn_names {
-        put_str(&mut body, name);
+    // image-build time the whole runtime is loaded, so its dynamic set is complete).
+    let dynamic_names = heap.dynamic_names();
+    put_u32(&mut body, dynamic_names.len() as u32);
+    for &name in &dynamic_names {
+        put_str(&mut body, value::symbol_name_ref(name));
     }
     // v6: the macro names (ADR-335's kind index), same region, same reason — read at open,
     // never from the payload.
@@ -500,11 +500,12 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // once. `rename` within a directory is atomic on POSIX and replaces on Windows,
     // so a reader observes either the old complete image or the new one, never half.
     //
-    // The temp name carries the pid so two concurrent builders do not collide with
-    // each other either; last rename wins. Two builds of one tree are NOT byte-identical,
-    // so a rename moves every section offset, and a process that indexed the previous
-    // file must keep reading THAT file: `OPEN_IMAGES` holds the handle open (KI-119).
-    let tmp = format!("{path}.{}.tmp", std::process::id());
+    // The temp name is unique per write (`temp_suffix`) so two concurrent builders do not
+    // collide with each other either; last rename wins. Two builds of one tree are NOT
+    // byte-identical, so a rename moves every section offset, and a process that indexed the
+    // previous file must keep reading THAT file: the runtime holds the handle open
+    // (KI-119/224).
+    let tmp = format!("{path}.{}.tmp", temp_suffix());
     std::fs::write(&tmp, &body)
         .map_err(|e| LispError::runtime(format!("%image-write: {tmp}: {e}")))?;
     if let Err(e) = std::fs::rename(&tmp, &path) {
@@ -525,52 +526,41 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     Ok(Value::int(total as i64))
 }
 
-/// The image files this process has indexed, **held open** for as long as it runs — one
-/// handle per path, replaced whenever the same path is indexed again.
-///
-/// This is what makes a section read agree with the directory it came from (KI-119). A
-/// directory is read once, at `%image-index`; the sections it names are read LATER, on
-/// each module's first `require`, seconds or minutes after — and in between the file at
-/// that path can be replaced (`nest` rebuilds a stale image, and two builds of the SAME
-/// tree are not byte-identical, so every rebuild moves every offset). Reading by path
-/// would apply the old offsets to the new file and decode some *other* module's bytes.
-///
-/// An open descriptor pins the inode: the atomic rename the writer does leaves an old
-/// reader on the old, complete file for as long as it holds the handle, so a directory and
-/// the bytes it indexes cannot come from two different builds. Bounded: one handle per
-/// indexed image path, and a process indexes a handful.
-static OPEN_IMAGES: std::sync::LazyLock<
-    std::sync::Mutex<
-        std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
-    >,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+// The image files a RUNTIME has indexed are **held open** (`Heap::image_files`) — one handle
+// per path, replaced whenever that runtime indexes the same path again.
+//
+// This is what makes a section read agree with the directory it came from (KI-119). A
+// directory is read once, at `%image-index`; the sections it names are read LATER, on each
+// module's first `require`, seconds or minutes after — and in between the file at that path
+// can be replaced (`nest` rebuilds a stale image, and two builds of the SAME tree are not
+// byte-identical, so every rebuild moves every offset). Reading by path would apply the old
+// offsets to the new file and decode some *other* module's bytes.
+//
+// An open descriptor pins the inode: the atomic rename the writer does leaves an old reader
+// on the old, complete file for as long as it holds the handle. The handles are per runtime,
+// not per process (KI-224): two runtimes in one process may index the same path across a
+// rebuild, and a process-wide handle let the second's index re-point the first's directory
+// at the new file.
 
-fn open_images() -> std::sync::MutexGuard<
-    'static,
-    std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<std::fs::File>>>,
-> {
-    OPEN_IMAGES.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Open `path` and make it THE file this process reads `path`'s sections from, replacing any
+/// Open `path` and make it THE file this runtime reads `path`'s sections from, replacing any
 /// earlier handle for the same path — an index deliberately adopts whatever is on disk now.
-fn open_image(path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
-    let f = std::sync::Arc::new(std::sync::Mutex::new(std::fs::File::open(path).ok()?));
-    open_images().insert(path.to_string(), f.clone());
-    Some(f)
+fn open_image(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
+    let file = std::sync::Arc::new(std::sync::Mutex::new(std::fs::File::open(path).ok()?));
+    heap.image_files().insert(path.to_string(), file.clone());
+    Some(file)
 }
 
-/// The held handle for `path`, opening (and holding) it if this process has not indexed it.
+/// The held handle for `path`, opening (and holding) it if this runtime has not indexed it.
 /// The miss path exists for a caller that got its directory from somewhere other than this
-/// process's own `%image-index` — it is exactly as safe as the old read-by-path was, no more.
-fn image_file(path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
-    // Take the hit out from under the registry lock BEFORE the miss path re-locks it in
-    // `open_image` — `std::sync::Mutex` is not reentrant, and an `if let` on the guard would
-    // keep it alive across that call.
-    let held = open_images().get(path).cloned();
+/// runtime's own `%image-index` — it is exactly as safe as a read by path, no more.
+fn image_file(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
+    // Take the hit out from under the lock BEFORE the miss path re-locks it in `open_image` —
+    // `std::sync::Mutex` is not reentrant, and an `if let` on the guard would keep it alive
+    // across that call.
+    let held = heap.image_files().get(path).cloned();
     match held {
-        Some(f) => Some(f),
-        None => open_image(path),
+        Some(file) => Some(file),
+        None => open_image(heap, path),
     }
 }
 
@@ -633,11 +623,11 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let path = need_str(heap, arg(args, 0), "%image-index")?;
     let want = need_str(heap, arg(args, 1), "%image-index")?;
 
-    // Open ONCE and hold the handle (see `OPEN_IMAGES`): the header, the footer, the
+    // Open ONCE and hold the handle (see `open_image`): the header, the footer, the
     // directory and — later, per module — every section are read from this same file, so a
     // rebuild that replaces the path between now and a section load cannot move the bytes
     // the directory points at out from under us.
-    let Some(file) = open_image(&path) else {
+    let Some(file) = open_image(heap, &path) else {
         return Ok(Value::Nil);
     };
     let Ok(size) = file
@@ -718,7 +708,7 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     if let Some(dynamic_count) = get_u32(&mut directory) {
         for _ in 0..dynamic_count {
             match get_str(&mut directory) {
-                Some(name) => value::mark_dynamic(value::intern(&name)),
+                Some(name) => heap.mark_dynamic(value::intern(&name)),
                 None => break,
             }
         }
@@ -737,7 +727,7 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             }
         }
     }
-    crate::eval::derive::register_image_kinds(&section_names, &macro_names);
+    crate::eval::derive::register_image_kinds(heap, &section_names, &macro_names);
     // v7 (ADR-370): the signature index — handed over as the footer's remaining BYTES and
     // decoded by the first check that asks, so a run that never checks never pays for it.
     let position = directory.position() as usize;
@@ -838,8 +828,8 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
     };
     let reserve = crate::eval::truthy(arg(args, 3));
     // From the handle `%image-index` opened for this path — never a fresh open by path, which
-    // would read whatever a concurrent rebuild has since put there (KI-119, `OPEN_IMAGES`).
-    let Some(file) = image_file(&path) else {
+    // would read whatever a concurrent rebuild has since put there (KI-119/224).
+    let Some(file) = image_file(heap, &path) else {
         return Ok(Value::Nil);
     };
     let Some(bytes) = read_at(&file, off, len) else {
@@ -1185,10 +1175,19 @@ pub(crate) fn write_prelude_image(
     std::fs::create_dir_all(dir).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
     // Temp + rename, so a concurrently booting process never reads a torn file — the same
     // write-then-rename discipline, and it matters here (many nextest processes boot at once).
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let tmp = path.with_extension(format!("tmp.{}", temp_suffix()));
     std::fs::write(&tmp, &out).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
     std::fs::rename(&tmp, path).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
     Ok(())
+}
+
+/// A temp-file suffix unique to one write: the pid separates processes, the counter separates
+/// runtimes (and threads) inside one process — a pid alone let two runtimes building at once
+/// write the same temp file and rename each other's half-written bytes into place (KI-224).
+fn temp_suffix() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let write = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{write}", std::process::id())
 }
 
 /// v3: the header carries the gensym floor.
@@ -1294,5 +1293,52 @@ mod prelude_header_tests {
         write_prelude_header(&mut out, "build-abc", 7);
         let mut r = Cursor::new(out);
         assert_eq!(read_prelude_header(&mut r, "build-xyz"), None);
+    }
+}
+
+#[cfg(test)]
+mod per_runtime_handle_tests {
+    /// KI-224: two runtimes in ONE process index the same image path, with a rebuild
+    /// between them. The first runtime's directory must keep reading the file it indexed —
+    /// with a process-wide handle the second index re-pointed it at the rebuilt file, and
+    /// the section read decoded the wrong bytes (`cargo test` threads and the ASan job hit
+    /// it as a module that loaded without its declared signatures).
+    #[test]
+    fn a_rebuild_indexed_by_another_runtime_does_not_move_this_runtimes_sections() {
+        let path = std::env::temp_dir().join(format!(
+            "brood-per-runtime-image-{}.bin",
+            std::process::id()
+        ));
+        let path = path.to_string_lossy().into_owned();
+        let mut first = crate::Interp::new();
+        let mut second = crate::Interp::new();
+        let section = first
+            .eval_str(&format!(
+                "(do (def pinned 7)
+                     (%image-write {path:?} [[\"\" ['pinned]]] \"fp\")
+                     (get (%image-index {path:?} \"fp\") \"\"))"
+            ))
+            .expect("write and index the first image");
+        let section = first.print(section);
+        // The rebuild lands, and ANOTHER runtime indexes it.
+        second
+            .eval_str(&format!(
+                "(do (%image-write {path:?} [] \"fp\") (%image-index {path:?} \"fp\"))"
+            ))
+            .expect("rebuild and index in the second runtime");
+        let restored = first
+            .eval_str(&format!(
+                "(let (section '{section})
+                   (def pinned :clobbered)
+                   (%image-load-section {path:?} (first section) (second section))
+                   pinned)"
+            ))
+            .expect("load the first runtime's section");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            first.print(restored),
+            "7",
+            "the first runtime's section was read from the file the second runtime indexed"
+        );
     }
 }

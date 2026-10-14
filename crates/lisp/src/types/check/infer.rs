@@ -40,7 +40,7 @@ pub(super) fn global_value_ty(heap: &Heap, s: Symbol) -> Option<Ty> {
     // its load-time default would false-positive on every use once it is reassigned
     // (`(path-join *project-root* …)` after a `(when (nil? *project-root*) (throw))`
     // guard reads the default `nil`, not the string it actually holds).
-    if value::is_dynamic(s) || is_earmuffed(s) {
+    if heap.is_dynamic(s) || is_earmuffed(s) {
         return None;
     }
     let v = super::deps::obs_global(heap, s)?;

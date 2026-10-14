@@ -71,7 +71,7 @@ pub(crate) fn exec_call(
                             break 'resolve;
                         }
                     };
-                    if !value::is_dynamic(*sym) {
+                    if !heap.is_dynamic(*sym) {
                         let arm = match v.unpack() {
                             // Cache the VM fast path only for a callee
                             // `dispatch` would run on the VM directly: a

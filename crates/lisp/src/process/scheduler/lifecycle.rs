@@ -13,7 +13,7 @@ use crate::process::scheduler::pool::wake_a_parked_peer;
 /// Read the name *before* `deregister` clears it. Used only on the cold death
 /// path, so the `name_for_pid` scan is fine. (Keyword and symbol registrations
 /// share the interner, so the name prints without a leading `:`.)
-pub(super) fn proc_descr(pid: u64) -> String {
+pub(in crate::process) fn proc_descr(pid: u64) -> String {
     match crate::dist::name_for_pid(pid) {
         Some(name) => format!("{} (pid {})", value::symbol_name(name), pid),
         None => pid.to_string(),
@@ -182,14 +182,20 @@ pub(super) fn retire_root_ctx(pid: u64) {
 pub fn pending_kill_phrase(pid: u64) -> Option<String> {
     let mailbox = REGISTRY.get(pid)?;
     let reason = crate::core::sync::lock(&mailbox.state).kill.clone()?;
-    Some(match reason {
+    Some(exit_reason_phrase(&reason))
+}
+
+/// A short phrase naming an exit `reason` — `:noproc`, `[:error …]` — for the
+/// "killed by an exit signal: …" message.
+pub(crate) fn exit_reason_phrase(reason: &Message) -> String {
+    match *reason {
         Message::Keyword(k) => format!(":{}", value::symbol_name(k)),
         Message::Vector(ref items) => match items.first() {
             Some(Message::Keyword(k)) => format!("[:{} …]", value::symbol_name(*k)),
             _ => "an exit signal".to_string(),
         },
         _ => "an exit signal".to_string(),
-    })
+    }
 }
 
 /// The untrappable hard-kill reason — Erlang's `exit(pid, kill)`. A `:kill` exit

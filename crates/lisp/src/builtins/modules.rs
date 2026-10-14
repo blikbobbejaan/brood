@@ -1096,8 +1096,8 @@ pub(super) fn load_edge_skipped(_: &[Value], _: EnvId, _: &mut Heap) -> LispResu
 }
 
 /// `(%forget-absent-modules!)` — see the registration.
-pub(super) fn forget_absent_modules(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
-    crate::eval::derive::clear_absent_modules();
+pub(super) fn forget_absent_modules(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::eval::derive::clear_absent_modules(heap);
     Ok(Value::nil())
 }
 
@@ -1367,7 +1367,7 @@ fn refer_add(
     // check short-circuits before it ever consults the import table — so an import for
     // one is inert, and it can neither clash nor shadow. Skip it: no entry, no error, no
     // warning (a dynamic knob like `*width*` shared by two modules must not read as one).
-    if value::is_dynamic(bare) {
+    if heap.is_dynamic(bare) {
         return Ok(());
     }
     // Clash → ambiguous, not an error (ADR-235). A `One` from a different module or an
@@ -1384,7 +1384,10 @@ fn refer_add(
         heap.mark_import_ambiguous(bare, qualified);
         return Ok(());
     }
+    // A PRIVATE root name (a prelude `def-`) is unreachable outside its module, so an import
+    // spelled the same shadows nothing a program could have referred to.
     if heap.env_get(value::EnvId::GLOBAL, bare).is_some()
+        && !heap.is_private(bare)
         && std::env::var_os("BROOD_NO_SHADOW_WARN").is_none()
     {
         let b = value::symbol_name(bare);

@@ -15,12 +15,12 @@
 
 (defmodule spawn-monitor-test (:use test))
 
-;; The gap that breaks the two-step form: one scheduler yield, which is all a loaded box or
-;; a boundary-trace wrapper amounts to. It MUST be `sleep`, not `(receive (after 5 nil))` —
-;; an empty clause list matches anything, so a bare timed receive eats the very `[:down …]`
-;; the test is waiting for, and every case then reads `:lost`. `sleep` exists for exactly
-;; this (std/prelude/process.blsp).
-(defn- yield-once () (sleep 5))
+;; The gap that breaks the two-step form, widened until the child has certainly exited:
+;; a loaded box or a boundary-trace wrapper amounts to the same yield. `eventually` polls
+;; with `sleep`, never `(receive (after 5 nil))` — an empty clause list matches anything,
+;; so a bare timed receive would eat the very `[:down …]` the test is waiting for.
+(defn- await-exit (pid)
+  (eventually "the child exiting" (fn () (not (proc/alive? pid)))))
 
 (describe "spawn-monitor: the reason survives the gap"
 
@@ -29,13 +29,12 @@
       (is (= (type-of p) :pid))
       (is (= (type-of r) :ref))
       ;; drain, so the DOWN doesn't outlive the test into a sibling's mailbox
-      (receive ([:down ^r _ _] nil) (after 500 nil))))
+      (receive ([:down ^r _ _] nil) (after *test-wait-ms* nil))))
 
   (test "a crash reports its REAL reason, not :noproc, across a yield"
-    ;; The child has certainly exited before the receive: the yield guarantees it.
     (let ([p r] (spawn-monitor (error "i fell over")))
-      (yield-once)
-      (let (reason (receive ([:down ^r ^p reason] reason) (after 1000 :lost)))
+      (await-exit p)
+      (let (reason (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))
         ;; The shape is `[:error {:message … :kind … :trace …}]`. Asserting the TAG is what
         ;; matters here — `:noproc` is a bare keyword, so `(first reason)` raising or
         ;; yielding anything but `:error` is exactly the regression.
@@ -46,18 +45,18 @@
     ;; This is the case that silently misleads a supervisor: `:noproc` is not `:normal`,
     ;; so a `:transient` child's clean exit reads as abnormal and gets restarted.
     (let ([p r] (spawn-monitor :ok))
-      (yield-once)
+      (await-exit p)
       (assert= :normal
-        (receive ([:down ^r ^p reason] reason) (after 1000 :lost)))))
+        (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))))
 
   (test "the DOWN names the pid that was spawned"
     (let ([p r] (spawn-monitor :ok))
-      (assert= p (receive ([:down ^r pid _] pid) (after 1000 :lost)))))
+      (assert= p (receive ([:down ^r pid _] pid) (after *test-wait-ms* :lost)))))
 
   (test "a zero-arg lambda body is passed through, not re-wrapped"
     ;; Same contract as `spawn`/`spawn-link`: `(fn () …)` is the thunk, not a value to wrap.
     (let ([p r] (spawn-monitor (fn () (error "from a lambda"))))
-      (let (reason (receive ([:down ^r _ reason] reason) (after 1000 :lost)))
+      (let (reason (receive ([:down ^r _ reason] reason) (after *test-wait-ms* :lost)))
         (assert= :error (first reason))
         (assert= "from a lambda" (:message (second reason))))))
 
@@ -65,15 +64,16 @@
   ;; avoid — monitoring a pid that is ALREADY dead is legitimately `:noproc`, and that is
   ;; unchanged. (The link suite pins the same thing for `link`.)
   (test "monitoring an already-dead pid is still :noproc"
-    (let (p (spawn :ok))
-      (sleep 30)
+    (let ([p first-ref] (spawn-monitor :ok))
+      ; p is dead once its first DOWN has arrived
+      (receive ([:down ^first-ref ^p _] :ok) (after *test-wait-ms* :timeout))
       (let (r (monitor p))
         (assert= :noproc
-          (receive ([:down ^r ^p reason] reason) (after 1000 :lost)))))))
+          (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost)))))))
 
 (describe "spawn-monitor: across processes"
   :isolated (test "every child's reason arrives intact under a concurrent fan-out"
-    ;; The single-process cases above each yield once. This one puts real contention behind
+    ;; The single-process cases above each wait out one child. This one puts real contention behind
     ;; the gap: N watchers, each spawn-monitoring a crasher and reporting what it saw. A
     ;; regression here shows up as `:noproc` in place of the reason, so the assertion is on
     ;; the reasons themselves, not on the count of DOWNs.
@@ -81,8 +81,9 @@
           n 24
           watcher (fn ()
                     (let ([p r] (spawn-monitor (error "fell")))
-                      (yield-once)
-                      (send me [:saw (receive ([:down ^r _ reason] reason) (after 2000 :lost))]))))
+                      (await-exit p)
+                      (send me
+                        [:saw (receive ([:down ^r _ reason] reason) (after *test-wait-ms* :lost))]))))
       (dotimes (_ n) (spawn (watcher)))
       (let (collect (fn (collect i bad)
                       (if (>= i n)
@@ -97,7 +98,7 @@
                               (if (and (vector? reason) (= (first reason) :error))
                                 bad
                                 (cons reason bad))))
-                          (after 5000 (cons :timeout bad))))))
+                          (after *test-wait-ms* (cons :timeout bad))))))
         ;; Name what went wrong rather than just a count — a `:noproc` here and a `:lost`
         ;; here mean different bugs.
         (assert= '() (collect collect 0 '()))))))

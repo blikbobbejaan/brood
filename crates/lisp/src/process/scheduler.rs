@@ -58,11 +58,12 @@ use guards::{gc_block_set, macro_block_set, stack_base_set};
 // scheduling state stays in the root, reached from there via `use super::*`.
 // Re-export the public surface so `scheduler::…`/`process::…` paths are unchanged.
 mod lifecycle;
-pub(crate) use lifecycle::exit_propagate;
-use lifecycle::{deregister, proc_descr, retire_root_ctx};
+pub(super) use lifecycle::proc_descr;
+use lifecycle::{deregister, retire_root_ctx};
 pub use lifecycle::{
     exit, pending_kill_phrase, spawn, spawn_linked, spawn_monitored, spawn_root_program,
 };
+pub(crate) use lifecycle::{exit_propagate, exit_reason_phrase};
 
 // The worker pool + run-queue execution loop lives in a child module; shared
 // scheduling state stays in the root (reached via `use super::*`). Re-export the
@@ -784,11 +785,32 @@ fn worker_count() -> usize {
 static TEST_NO_WORKERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Process {
+    /// Everything this process's heap holds ([`Heap::footprint`]). Called on a parked
+    /// process by the memory-pressure selector, under its mailbox lock.
+    pub(super) fn footprint(&self) -> usize {
+        self.heap.footprint()
+    }
+
     /// Mutable access to this process's heap. Used by the L1 local-send fast path, which
     /// holds the process exclusively (taken out of `MailboxState::waiter` under the lock)
     /// while it copies a message straight in.
     pub(super) fn heap_mut(&mut self) -> &mut Heap {
         &mut self.heap
+    }
+
+    /// Retire this process with `reason` — the one death path for a process the
+    /// scheduler holds. Fires its links and monitors (`deregister`), and for the root
+    /// program process also tells the thread blocked on the program's outcome, which
+    /// otherwise waits forever when an exit signal kills it mid-run (KI-225).
+    pub(super) fn retire(self: Box<Self>, reason: Message) {
+        let outcome = self
+            .program
+            .as_ref()
+            .map(|_| crate::eval::compile::ProgramState::retire_outcome(&reason));
+        deregister(self.pid, reason, Some(&self.heap));
+        if let (Some(program), Some(outcome)) = (&self.program, outcome) {
+            program.retired(outcome);
+        }
     }
 
     /// Drive the body one quantum: run fresh, or resume the parked continuation
@@ -900,6 +922,12 @@ pub fn current_pid() -> Option<u64> {
     CURRENT.with(|c| c.borrow().as_ref().map(|ctx| ctx.pid))
 }
 
+/// Run `f` on the current process's mailbox, without the registry lock — `None` on a
+/// thread with no process context. For a per-safepoint probe (`process/pressure.rs`).
+pub(super) fn with_current_mailbox<T>(f: impl FnOnce(&Mailbox) -> T) -> Option<T> {
+    CURRENT.with(|c| c.borrow().as_ref().map(|ctx| f(&ctx.mailbox)))
+}
+
 /// A snapshot of every live local process's pid — the [`REGISTRY`] keys. This is
 /// the live set the RUNTIME-drain union queries (ADR-91 Stage 3c). It is
 /// **complete** for the drain's purposes: `spawn` registers a child (before it can
@@ -935,11 +963,7 @@ pub fn shutdown_runtime_parked(runtime: &Arc<crate::core::heap::RuntimeCode>) ->
             }
         };
         if let Some(p) = taken {
-            deregister(
-                pid,
-                Message::Keyword(crate::core::value::intern(pk::KILLED)),
-                Some(&p.heap),
-            );
+            p.retire(Message::Keyword(crate::core::value::intern(pk::KILLED)));
             reaped += 1;
         }
     }

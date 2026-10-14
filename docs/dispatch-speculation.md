@@ -265,7 +265,8 @@ thing profiling structurally cannot do, and it is the strongest argument for the
 
 ## Sequencing
 
-**A `MapGet` prim first** — ✅ shipped 2026-08-29 as ADR-296, opt-in behind `BROOD_MAPGET=1`.
+**A `MapGet` prim first** — ✅ shipped 2026-08-29 as ADR-296 (opt-in then; now default-on, `BROOD_NO_MAPGET=1` opts
+out).
 A field-reading body is now leaf-inlinable, which no `defrecord` accessor or ability impl ever
 was. Next: measure whether the deopt-on-decline path costs anything real, then decide the
 default — and only then reconsider whether any of `0 → 1 → 2 → 3` is still worth doing, since

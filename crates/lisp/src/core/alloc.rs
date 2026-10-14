@@ -26,12 +26,12 @@
 //!   the whole brood process. Ungraceful (kills every green process) but it is
 //!   the backstop that guarantees the *host* survives any allocation pattern,
 //!   including a single huge allocation between eval safepoints.
-//! - **Soft limit** ([`soft_limit_hit`]): *not* enforced here — checked at the
-//!   eval safepoint (`eval.rs`), which raises a clean, catchable `LispError`
-//!   (`E0043`). Set below the hard limit so a runaway *loop* fails gracefully
-//!   (only the offending process dies / `try`-`catch` can recover) long before
-//!   the hard abort fires. The single-shot giant allocation is the only case
-//!   that reaches the hard limit.
+//! - **Soft limit** ([`soft_limit_state`]): *not* enforced here — checked at the
+//!   eval safepoint (`eval.rs`). Crossing it stops the process holding the most
+//!   memory with `E0043` — raised in place, catchably, when that is the process
+//!   that noticed (`process/pressure.rs`, ADR-399). Set below the hard limit so a
+//!   runaway fails gracefully long before the hard abort fires. The single-shot
+//!   giant allocation is the only case that reaches the hard limit.
 //!
 //! Normal `brood file.blsp` runs and the REPL stay unlimited unless
 //! `BROOD_MEM_LIMIT` is set ([`init_limits_from_env`]); the test runners default
@@ -266,6 +266,43 @@ pub fn soft_limit_hit() -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Where live memory stands against the soft ceiling, for the eval safepoint.
+pub enum SoftLimit {
+    /// Below 7/8 of it, or no ceiling set.
+    Clear,
+    /// Within the last eighth: processes measure themselves, so the choice of whom to stop
+    /// at the crossing has current figures (`process/pressure.rs`).
+    Near,
+    /// Crossed, with the live byte count.
+    Over(usize),
+}
+
+/// [`soft_limit_hit`] with the approach reported too. Cheap when no ceiling is set: one
+/// relaxed load of a zero.
+#[inline]
+pub fn soft_limit_state() -> SoftLimit {
+    let limit = SOFT_LIMIT.load(Ordering::Relaxed);
+    if limit == 0 {
+        return SoftLimit::Clear;
+    }
+    let live = live_bytes();
+    if live > limit {
+        SoftLimit::Over(live)
+    } else if live > limit - limit / 8 {
+        SoftLimit::Near
+    } else {
+        SoftLimit::Clear
+    }
+}
+
+/// Is live memory within the last eighth of the soft ceiling, by the sampled figure? Two
+/// relaxed loads, for a hot path ([`soft_limit_state`] sums every shard).
+#[inline]
+pub fn near_soft_limit_approx() -> bool {
+    let limit = SOFT_LIMIT.load(Ordering::Relaxed);
+    limit != 0 && APPROX_LIVE.load(Ordering::Relaxed) > limit - limit / 8
 }
 
 /// Parse a human size: a plain byte count (`1048576`) or a number with a binary

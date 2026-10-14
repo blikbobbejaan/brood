@@ -105,6 +105,12 @@ pub(super) struct Mailbox {
     /// for `process-info`'s `:memory`; bump-allocated, so it reflects allocation
     /// since the last arena reset / collection, not a tracing-GC live set.
     pub(super) mem: AtomicUsize,
+    /// The owning process's whole heap ([`Heap::footprint`]) as it last measured it near
+    /// the soft memory limit, in measuring period `footprint_period` — the figure the
+    /// pressure selector compares a *running* process by, since only the process itself
+    /// may walk its heap (`process/pressure.rs`). A parked process is measured directly.
+    pub(super) footprint: AtomicUsize,
+    pub(super) footprint_period: AtomicU64,
     /// The owning process's cumulative GC-collection count (`Heap::gc_counters().0`),
     /// republished alongside `mem` when it parks in `receive`. Lets the observer flag a
     /// process that's churning memory (many collections) vs. a quiet one. Backs
@@ -501,6 +507,8 @@ impl Mailbox {
             // spawned green is set RUNNABLE by `enqueue` immediately after.
             status: AtomicU8::new(ST_RUNNING),
             mem: AtomicUsize::new(0),
+            footprint: AtomicUsize::new(0),
+            footprint_period: AtomicU64::new(0),
             gc_runs: AtomicU64::new(0),
             reductions: AtomicU64::new(0),
             kill_pending: AtomicBool::new(false),
@@ -1325,6 +1333,13 @@ fn receive_match_timed(
                 ctx.mailbox
                     .gc_runs
                     .store(heap.gc_counters().0, Ordering::Relaxed);
+                // Near the soft limit, measure the whole heap too: a process that runs in
+                // short bursts between receives never reaches the once-per-quantum
+                // safepoint that measures a running one, and while it waits in a run
+                // queue the pressure selector cannot measure it (`process/pressure.rs`).
+                if crate::core::alloc::near_soft_limit_approx() {
+                    super::pressure::near_soft_limit(heap);
+                }
                 // State-capture path (ADR-100 §8): a clean no-match in a green process
                 // (`in_capture_run`) becomes a *suspend control signal* returned to the
                 // scheduler instead of blocking the worker. Record the scan position (so

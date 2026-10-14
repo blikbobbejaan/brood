@@ -231,10 +231,10 @@ fi
 stdimage_state() { # $1 binary -> live|stale|absent|unreadable|unknown
   local probe out
   probe="$(mktemp --suffix=.blsp)"
-  # `io/puts`, not a kernel spelling: a renamed kernel print (`%print` went in the 2026-10
+  # `io/inspect`, not a kernel spelling: a renamed kernel print (`%print` went in the 2026-10
   # cleanup) made this probe error on every binary, which read as `unknown` on both arms
   # and silently switched the guard below off for a week.
-  printf '(io/puts (stdimage/status))\n' >"$probe"
+  printf '(io/inspect (stdimage/status))\n' >"$probe"
   out="$(timeout 30 "$1" "$probe" 2>/dev/null || true)"
   rm -f "$probe"
   case "$out" in

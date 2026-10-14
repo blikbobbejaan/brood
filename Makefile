@@ -382,6 +382,10 @@ suite: ## Run the in-language suite via the project runner (discovers tests/**/*
 stress: build ## The occasional BIG stress run (property/differential/race tests, 3 engines) — not part of CI
 	$(RUN_CAP) ./stress/run.sh
 
+runtime-soak: ## Boot the concurrency soak fresh, round after round, for SOAK_SECONDS (default 600) — the KI-88/KI-127 hunt
+	RUSTFLAGS="-C debug-assertions=on" cargo build --release -p cli
+	$(RUN_CAP) ./stress/runtime_soak.sh $(or $(SOAK_SECONDS),600)
+
 # ASAN_OPTIONS=symbolize=0 because the system llvm-symbolizer stalls ~90 s at
 # EVERY exit against the 65 MB sancov binary (found 2026-07-23 — it made the
 # loop look like 4 execs/min). A crash artifact can be re-run symbolized:

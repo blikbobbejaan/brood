@@ -14,14 +14,15 @@
 //! Ownership: `tcp-connect` makes an **active** stream — reads start at once,
 //! delivering to the connecting process. An **accepted** stream is **passive** —
 //! announced via `[:tcp-accept …]` but not read until `tcp-controlling-process`
-//! assigns it an owner. This is the Erlang `gen_tcp` handoff: no inbound bytes
-//! are lost to the acceptor before a per-connection handler takes over.
+//! assigns it an owner, so no inbound bytes are lost to the acceptor before a
+//! per-connection handler takes over.
 //!
 //! **Writes are queued** (ADR-143): `tcp-send` lowers its iolist to bytes,
 //! hands them to the reactor, and returns; the reactor flushes as the socket
-//! accepts them. `tcp-close` flushes what is queued (bounded by [`LINGER`])
-//! before closing, so `tcp-send` + `tcp-close` can never truncate a response —
-//! the old blocking-write model's documented footgun. A slow/stuck peer is
+//! accepts them. `tcp-close` lets what is queued flush in the background (bounded
+//! by [`LINGER`]), so `tcp-send` + `tcp-close` can never truncate a response; but
+//! from the moment it returns the owner receives nothing more for that socket
+//! ([`SocketOwner`]) — no data read while lingering, no `[:tcp-closed]`. A slow/stuck peer is
 //! bounded by [`OUT_CAP`] per socket: past it the connection is dropped rather
 //! than buffering without bound. Write failures surface as `[:tcp-closed …]`
 //! (the reactor discovers them after `tcp-send` has returned).
@@ -64,8 +65,7 @@ use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, Server
 use crate::core::value;
 use crate::host::owned::OwnedTable;
 use crate::process::{
-    chunk_flush, chunk_payload, deliver_credited, sink_pair, CreditSource, DeliveryCredit,
-    MailboxSink, Message,
+    chunk_flush, chunk_payload, deliver, deliver_credited, CreditSource, DeliveryCredit, Message,
 };
 
 // ---- tunables ----
@@ -114,15 +114,21 @@ const INBOUND_LOW_WATER: usize = 256 * 1024;
 /// could queue a million messages under a one-megabyte byte budget.
 const MESSAGE_COST_OVERHEAD: usize = 256;
 
-/// How long a closing socket may keep flushing queued outbound bytes before
-/// the reactor gives up and drops it. Bounds `tcp-close` after a large
-/// `tcp-send` to a slow peer.
+/// How long a closing socket may keep flushing queued outbound bytes, and then wait for
+/// the peer's EOF with its write half shut (the lingering close, KI-228), before the
+/// reactor gives up and drops it. Bounds `tcp-close` after a large `tcp-send` to a slow
+/// peer, and the descriptor a peer that never closes its side would otherwise pin.
 const LINGER: Duration = Duration::from_secs(5);
 
 /// The reactor's poll timeout — the cadence of reaper/linger housekeeping when
 /// no IO is happening. Purely a housekeeping tick: IO readiness wakes the poll
 /// immediately, commands wake it via the `Waker`.
 const TICK: Duration = Duration::from_millis(1000);
+
+/// How often a listener whose accept failed (fd exhaustion: `EMFILE`/`ENFILE`) is retried.
+/// The registration is edge-triggered, so without a retry the connections already in its
+/// backlog wait for some later arrival to wake it — forever, if none comes (KI-227).
+const ACCEPT_RETRY: Duration = Duration::from_millis(100);
 
 const WAKER_TOKEN: Token = Token(0);
 
@@ -143,9 +149,9 @@ struct Ctl {
     kind: Kind,
     /// Inbound decode mode (ADR-141) — shared with the reactor, read per chunk.
     binary: Arc<AtomicBool>,
-    /// Where inbound messages go — shared with the reactor's sink, retargeted
-    /// by `controlling_process`.
-    subscriber: Arc<AtomicU64>,
+    /// Where the socket's messages go — shared with the reactor, retargeted by
+    /// `controlling_process`, silenced by `close`.
+    owner: Arc<SocketOwner>,
     /// Whether reads have been started (an active connect, or a claimed accept).
     /// Gates TLS `tcp-send` (a TLS connection exists only once claimed).
     claimed: bool,
@@ -172,6 +178,62 @@ fn listener_slot(listener: MioListener) -> ListenerSlot {
 fn shut_listener(slot: &ListenerSlot, registry: &mio::Registry) {
     if let Some(mut listener) = crate::core::sync::lock(slot).take() {
         let _ = registry.deregister(&mut listener);
+    }
+}
+
+/// Where one socket's messages go: its owner's pid, or `None` once `tcp-close` has
+/// retired it. Every message for the socket — data, `[:tcp-closed]`, `[:tcp-error]`,
+/// `[:tcp-accept]`, `[:tcp-connected]` — is delivered through [`emit`](Self::emit)
+/// **while this lock is held**, and `close` clears the pid under the same lock
+/// ([`silence`](Self::silence)). So when `tcp-close` returns, every delivery that read
+/// the pid has landed, and every later one is dropped: nothing new for that socket
+/// reaches any mailbox. The reactor keeps flushing queued outbound bytes after that
+/// (bounded by [`LINGER`]); what it reads meanwhile is discarded.
+///
+/// Lock order: this, then the target's mailbox (`deliver`). Nothing takes a mailbox lock
+/// and then this one, and neither `close` nor `close_process_sockets` is called with a
+/// mailbox lock held.
+struct SocketOwner {
+    pid: Mutex<Option<u64>>,
+}
+
+impl SocketOwner {
+    fn new(pid: u64) -> Arc<SocketOwner> {
+        Arc::new(SocketOwner {
+            pid: Mutex::new(Some(pid)),
+        })
+    }
+
+    /// The current owner, `None` once silenced.
+    fn pid(&self) -> Option<u64> {
+        *crate::core::sync::lock(&self.pid)
+    }
+
+    fn emit(&self, message: Message) {
+        if let Some(pid) = *crate::core::sync::lock(&self.pid) {
+            deliver(pid, message);
+        }
+    }
+
+    /// Deliver a flow-controlled data chunk. A silenced socket drops it here, which
+    /// returns its credit at once.
+    fn emit_credited(&self, message: Message, credit: DeliveryCredit) {
+        if let Some(pid) = *crate::core::sync::lock(&self.pid) {
+            deliver_credited(pid, message, credit);
+        }
+    }
+
+    /// Hand the socket to `pid` (`tcp-controlling-process`). A silenced socket stays
+    /// silent.
+    fn retarget(&self, pid: u64) {
+        if let Some(current) = crate::core::sync::lock(&self.pid).as_mut() {
+            *current = pid;
+        }
+    }
+
+    /// Stop all delivery for good. Returns once no delivery is in flight.
+    fn silence(&self) {
+        *crate::core::sync::lock(&self.pid) = None;
     }
 }
 
@@ -231,15 +293,12 @@ fn reactor_died(panic: Option<Box<dyn std::any::Any + Send>>) {
         "brood: net reactor thread died ({why}); all sockets are being closed and \
          every subsequent tcp-*/tls-* operation will error"
     );
-    let entries: Vec<(u64, u64)> = reg()
-        .drain()
-        .into_iter()
-        .map(|(id, ctl)| (id, ctl.subscriber.load(Ordering::Acquire)))
-        .collect();
-    for (id, pid) in entries {
-        let (sink, _) = sink_pair(pid);
-        sink.emit(tcp_error_msg(id, "net reactor died"));
-        sink.emit(tcp_closed_msg(id));
+    // Emitted with the registry lock held, so a `close` racing the sweep either removed
+    // its entry first (and gets nothing) or waits until these have landed.
+    let mut registry = reg();
+    for (id, ctl) in registry.drain() {
+        ctl.owner.emit(tcp_error_msg(id, "net reactor died"));
+        ctl.owner.emit(tcp_closed_msg(id));
     }
 }
 
@@ -250,23 +309,20 @@ enum Cmd {
     Stream {
         id: u64,
         stream: MioStream,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
         binary: Arc<AtomicBool>,
     },
     /// A plaintext listener.
     Listen {
         id: u64,
         listener: ListenerSlot,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
     },
     /// A TLS listener (accepted connections become passive TLS streams).
     TlsListen {
         id: u64,
         listener: ListenerSlot,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
         config: Arc<ServerConfig>,
     },
     /// A one-shot TLS client exchange (from `tls-request`): handshake, send
@@ -274,15 +330,14 @@ enum Cmd {
     TlsClient {
         id: u64,
         stream: MioStream,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
         binary: Arc<AtomicBool>,
         server_name: ServerName<'static>,
         request: Vec<u8>,
         config: Arc<ClientConfig>,
     },
     /// Start reading a passive (accepted) stream — the claim half of
-    /// `tcp-controlling-process` (the subscriber cell is retargeted control-side).
+    /// `tcp-controlling-process` (the owner is retargeted control-side).
     Claim { id: u64 },
     /// A claimed stream changed owner (`tcp-controlling-process` again): give it a fresh
     /// [`InboundFlow`], resuming it if the old one held it paused.
@@ -472,17 +527,12 @@ impl CreditSource for InboundFlow {
 /// owner, charged against its flow.
 fn emit_data(
     id: u64,
-    subscriber: &AtomicU64,
+    owner: &SocketOwner,
     flow: &Arc<InboundFlow>,
     payload: Message,
     bytes: usize,
 ) {
-    let credit = flow.charge(bytes);
-    deliver_credited(
-        subscriber.load(Ordering::Acquire),
-        tcp_data_msg(id, payload),
-        credit,
-    );
+    owner.emit_credited(tcp_data_msg(id, payload), flow.charge(bytes));
 }
 
 // ---- the data plane: per-socket reactor state ----
@@ -533,10 +583,9 @@ impl OutQ {
 /// One plaintext stream's reactor state.
 struct PlainConn {
     stream: MioStream,
-    sink: MailboxSink,
-    /// The sink's subscriber cell — data chunks are delivered to it directly, with a
+    /// Where every message for this socket goes ([`SocketOwner`]); data chunks carry a
     /// flow-control credit ([`emit_data`]).
-    subscriber: Arc<AtomicU64>,
+    owner: Arc<SocketOwner>,
     /// Inbound backpressure: chunks delivered and not yet taken ([`InboundFlow`]).
     flow: Arc<InboundFlow>,
     binary: Arc<AtomicBool>,
@@ -550,6 +599,11 @@ struct PlainConn {
     accepted_at: Option<Instant>,
     /// `Some(deadline)` once `Close` arrived: flush until then, then drop.
     closing: Option<Instant>,
+    /// The write half was shut down after the close's last queued byte: the peer has its
+    /// FIN, and the reactor reads and discards until the peer's EOF (or the deadline).
+    /// Dropping the socket with input still unread would send a RESET instead, and a reset
+    /// makes the peer's kernel discard the response it has not read yet (KI-228).
+    write_shut: bool,
     registered: bool,
     /// Opt-in idle bound (`tcp-set-idle-timeout`, default off). When `Some`, the
     /// reactor drops the connection if no bytes move in either direction for this
@@ -567,9 +621,8 @@ struct PlainConn {
 struct TlsConn {
     stream: MioStream,
     conn: rustls::Connection,
-    sink: MailboxSink,
-    /// See [`PlainConn::subscriber`].
-    subscriber: Arc<AtomicU64>,
+    /// See [`PlainConn::owner`].
+    owner: Arc<SocketOwner>,
     /// See [`PlainConn::flow`].
     flow: Arc<InboundFlow>,
     binary: Arc<AtomicBool>,
@@ -604,8 +657,7 @@ struct TlsConn {
 struct TlsPending {
     stream: MioStream,
     config: Arc<ServerConfig>,
-    sink: MailboxSink,
-    subscriber: Arc<AtomicU64>,
+    owner: Arc<SocketOwner>,
     binary: Arc<AtomicBool>,
     accepted_at: Instant,
 }
@@ -621,13 +673,11 @@ enum Rx {
     TlsPending(TlsPending),
     Listener {
         listener: ListenerSlot,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
     },
     TlsListener {
         listener: ListenerSlot,
-        sink: MailboxSink,
-        subscriber: Arc<AtomicU64>,
+        owner: Arc<SocketOwner>,
         config: Arc<ServerConfig>,
     },
 }
@@ -644,10 +694,17 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
     // Accepted connections are staged here during event handling (a listener's
     // event handler can't insert into `conns` while it holds a `conns` borrow)
     // and inserted + announced right after.
-    let mut accepted: Vec<(u64, Rx, Message, MailboxSink)> = Vec::new();
+    let mut accepted: Vec<Accepted> = Vec::new();
+    // Listeners whose accept drain stopped on an error (fd exhaustion), each with the time
+    // of its next retry; `starved` collects this pass's stops (KI-227).
+    let mut accept_retries: HashMap<u64, Instant> = HashMap::new();
+    let mut starved: Vec<(u64, std::io::Error)> = Vec::new();
 
     loop {
-        if let Err(e) = poll.poll(&mut events, Some(TICK)) {
+        let timeout = accept_retries.values().min().map_or(TICK, |next| {
+            next.saturating_duration_since(Instant::now()).min(TICK)
+        });
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
             if e.kind() == std::io::ErrorKind::Interrupted {
                 continue;
             }
@@ -665,17 +722,65 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
             let readable = event.is_readable();
             let writable = event.is_writable();
             let remove = match conns.get_mut(&id) {
-                Some(rx) => drive(id, rx, readable, writable, &registry, &mut accepted),
+                Some(rx) => drive(
+                    id,
+                    rx,
+                    readable,
+                    writable,
+                    &registry,
+                    &mut accepted,
+                    &mut starved,
+                ),
                 None => false,
             };
             if remove {
                 teardown(id, &mut conns, &registry);
             }
-            // Park the staged accepts, then announce them — the entry must be
-            // in place before the owner can react to `[:tcp-accept …]`.
-            for (cid, entry, msg, lsink) in accepted.drain(..) {
-                conns.insert(cid, entry);
-                lsink.emit(msg);
+            announce_accepted(&mut conns, &mut accepted);
+        }
+
+        // Retry every starved listener that is due, as if it were readable again: the
+        // backlog it could not drain has no new edge coming.
+        let now = Instant::now();
+        let due: Vec<u64> = accept_retries
+            .iter()
+            .filter(|(_, next)| **next <= now)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            if let Some(rx) = conns.get_mut(&id) {
+                drive(id, rx, true, false, &registry, &mut accepted, &mut starved);
+                announce_accepted(&mut conns, &mut accepted);
+            }
+            if !starved.iter().any(|(starved_id, _)| *starved_id == id) {
+                accept_retries.remove(&id);
+                if conns.contains_key(&id) {
+                    eprintln!("net: listener {id} is accepting again");
+                }
+            }
+        }
+        // Out of descriptors: the lingering closes hold some, and accepting the backlog is
+        // worth more than sparing a peer a reset on a connection already answered.
+        if !starved.is_empty() {
+            let lingering: Vec<u64> = conns
+                .iter()
+                .filter(|(_, rx)| matches!(rx, Rx::Plain(connection) if connection.write_shut))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in lingering {
+                teardown(id, &mut conns, &registry);
+            }
+        }
+        for (id, error) in starved.drain(..) {
+            // Said once per episode, not once per retry.
+            if accept_retries
+                .insert(id, Instant::now() + ACCEPT_RETRY)
+                .is_none()
+            {
+                eprintln!(
+                    "net: listener {id} cannot accept ({error}); retrying every {} ms",
+                    ACCEPT_RETRY.as_millis()
+                );
             }
         }
 
@@ -689,34 +794,44 @@ fn reactor_loop(mut poll: Poll, rx: Receiver<Cmd>) {
     }
 }
 
-/// Drive one socket's readiness. Returns true when the entry must be removed.
+/// Park the staged accepts, then announce them — the entry must be in place before the
+/// owner can react to `[:tcp-accept …]`.
+fn announce_accepted(conns: &mut HashMap<u64, Rx>, accepted: &mut Vec<Accepted>) {
+    for staged in accepted.drain(..) {
+        conns.insert(staged.id, staged.entry);
+        staged
+            .listener_owner
+            .emit(tcp_accept_msg(staged.listener_id, staged.id));
+    }
+}
+
+/// Drive one socket's readiness. Returns true when the entry must be removed. A listener
+/// whose drain stopped on an error is pushed onto `starved` for the reactor to retry.
 fn drive(
     id: u64,
     rx: &mut Rx,
     readable: bool,
     writable: bool,
     registry: &mio::Registry,
-    accepted: &mut Vec<(u64, Rx, Message, MailboxSink)>,
+    accepted: &mut Vec<Accepted>,
+    starved: &mut Vec<(u64, std::io::Error)>,
 ) -> bool {
     match rx {
-        Rx::Listener {
-            listener,
-            sink,
-            subscriber,
-        } => {
+        Rx::Listener { listener, owner } => {
             let mut slot = crate::core::sync::lock(listener);
             let Some(listener) = slot.as_mut() else {
                 return true; // `close` shut it; its `Cmd::Close` removes the entry too
             };
             if readable {
-                accept_ready(id, listener, sink, subscriber, None, accepted);
+                if let Some(error) = accept_ready(id, listener, owner, None, accepted) {
+                    starved.push((id, error));
+                }
             }
             false
         }
         Rx::TlsListener {
             listener,
-            sink,
-            subscriber,
+            owner,
             config,
         } => {
             let mut slot = crate::core::sync::lock(listener);
@@ -724,14 +839,11 @@ fn drive(
                 return true;
             };
             if readable {
-                accept_ready(
-                    id,
-                    listener,
-                    sink,
-                    subscriber,
-                    Some(config.clone()),
-                    accepted,
-                );
+                if let Some(error) =
+                    accept_ready(id, listener, owner, Some(config.clone()), accepted)
+                {
+                    starved.push((id, error));
+                }
             }
             false
         }
@@ -741,23 +853,32 @@ fn drive(
     }
 }
 
+/// A connection accepted during event handling, staged until the reactor can park it
+/// and announce it to the listener's owner.
+struct Accepted {
+    id: u64,
+    entry: Rx,
+    listener_id: u64,
+    listener_owner: Arc<SocketOwner>,
+}
+
 /// Accept every waiting connection on a ready listener; new sockets are
 /// registered control-side and announced, then parked passive in the reactor.
+/// Returns the error that stopped the drain before the backlog was empty, if one did.
 fn accept_ready(
     lid: u64,
     listener: &mut MioListener,
-    sink: &MailboxSink,
-    subscriber: &Arc<AtomicU64>,
+    listener_owner: &Arc<SocketOwner>,
     tls: Option<Arc<ServerConfig>>,
-    out: &mut Vec<(u64, Rx, Message, MailboxSink)>,
-) {
+    out: &mut Vec<Accepted>,
+) -> Option<std::io::Error> {
     // The mode every socket accepted here starts in, read once per readiness rather than
     // per connection. An accepted socket is already reading by the time its owner gets
     // `[:tcp-accept …]`, so `tcp-set-binary` on the *stream* cannot close the window: a
     // client that sends immediately can have its first chunk decoded as text before the
     // call lands, and raw bytes then come back as U+FFFD-riddled UTF-8 (KI-102). Setting
     // the mode on the LISTENER has no window, because it is fixed before any connection
-    // exists — the shape `gen_tcp:listen(Port, [binary])` has in Erlang.
+    // exists.
     let inherited = reg()
         .get(&lid)
         .map(|c| c.binary.load(Ordering::Acquire))
@@ -765,14 +886,18 @@ fn accept_ready(
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                // A listener silenced by `close` (whose fd `close` is about to shut)
+                // announces nothing more: drop the connection.
+                let Some(owner_pid) = listener_owner.pid() else {
+                    continue;
+                };
                 let cid = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-                let owner = subscriber.load(Ordering::Acquire);
                 let binary = Arc::new(AtomicBool::new(inherited));
-                let (csink, ccell) = sink_pair(owner);
+                let owner = SocketOwner::new(owner_pid);
                 let port = stream.local_addr().ok().map(|a| a.port());
                 reg().insert(
                     cid,
-                    owner,
+                    owner_pid,
                     Ctl {
                         kind: if tls.is_some() {
                             Kind::TlsStream
@@ -780,7 +905,7 @@ fn accept_ready(
                             Kind::Stream
                         },
                         binary: binary.clone(),
-                        subscriber: ccell.clone(),
+                        owner: owner.clone(),
                         claimed: false,
                         port,
                         listener: None,
@@ -790,15 +915,13 @@ fn accept_ready(
                     Some(config) => Rx::TlsPending(TlsPending {
                         stream,
                         config: config.clone(),
-                        sink: csink,
-                        subscriber: ccell,
+                        owner,
                         binary,
                         accepted_at: Instant::now(),
                     }),
                     None => Rx::Plain(PlainConn {
                         stream,
-                        sink: csink,
-                        subscriber: ccell,
+                        owner,
                         flow: InboundFlow::new(cid),
                         binary,
                         carry: Vec::new(),
@@ -807,14 +930,20 @@ fn accept_ready(
                         read_done: false,
                         accepted_at: Some(Instant::now()),
                         closing: None,
+                        write_shut: false,
                         registered: false,
                         idle: None,
                         last_activity: Instant::now(),
                     }),
                 };
-                out.push((cid, entry, tcp_accept_msg(lid, cid), sink.clone()));
+                out.push(Accepted {
+                    id: cid,
+                    entry,
+                    listener_id: lid,
+                    listener_owner: listener_owner.clone(),
+                });
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return None,
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // A connection that died between the readiness event and `accept` — the peer
             // reset it, or the kernel refused it. That is a fact about ONE connection, not
@@ -822,16 +951,11 @@ fn accept_ready(
             // edge-triggered, so breaking here would strand every connection still queued
             // in the backlog until some *later* arrival happened to re-arm us. Silently.
             Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionAborted => continue,
-            Err(e) => {
-                // Anything else ends this drain (a genuinely broken listener, or fd
-                // exhaustion where continuing would spin). Say so — the old code returned
-                // here with no trace at all, so a listener that had stopped accepting was
-                // indistinguishable from one nobody was connecting to. Rate-limiting is
-                // unnecessary: reaching this breaks the loop, so it prints at most once per
-                // readiness event.
-                eprintln!("net: accept on listener {lid} failed ({e}); drain stopped");
-                break;
-            }
+            // Anything else ends this drain — fd exhaustion, where continuing would spin, or
+            // a broken listener. The caller retries it on `ACCEPT_RETRY`: the registration
+            // is edge-triggered, so the connections still queued in the backlog would
+            // otherwise wait for some later arrival to re-arm us (KI-227).
+            Err(e) => return Some(e),
         }
     }
 }
@@ -840,7 +964,8 @@ fn accept_ready(
 fn plain_interests(c: &PlainConn) -> Option<Interest> {
     // A paused socket (inbound backpressure) drops read interest; `Cmd::Resume` re-reads
     // it explicitly, since the edge that would have announced buffered data is spent.
-    let want_read = c.reading && !c.read_done && !c.flow.is_paused();
+    // A lingering close (write half shut) reads to discard, paused or not.
+    let want_read = !c.read_done && (c.write_shut || (c.reading && !c.flow.is_paused()));
     let want_write = !c.out.is_empty();
     match (want_read, want_write) {
         (true, true) => Some(Interest::READABLE.add(Interest::WRITABLE)),
@@ -879,13 +1004,22 @@ fn drive_plain(
     writable: bool,
     registry: &mio::Registry,
 ) -> bool {
+    if c.write_shut {
+        // Lingering close: the peer has our FIN; read and drop what it still sends until
+        // its EOF, so the socket closes without a reset.
+        if discard_until_blocked(&mut c.stream) {
+            return true;
+        }
+        sync_plain_registration(id, c, registry);
+        return false;
+    }
     if writable || !c.out.is_empty() {
         let before = c.out.total;
         match c.out.flush_into(&mut c.stream) {
             Ok(_) => {}
             Err(_) => {
                 if c.reading && !c.read_done {
-                    c.sink.emit(tcp_closed_msg(id));
+                    c.owner.emit(tcp_closed_msg(id));
                     c.read_done = true;
                 }
                 return true;
@@ -897,11 +1031,7 @@ fn drive_plain(
             c.last_activity = Instant::now();
         }
         if c.out.is_empty() && c.closing.is_some() {
-            if c.reading && !c.read_done {
-                c.sink.emit(tcp_closed_msg(id));
-                c.read_done = true;
-            }
-            return true;
+            return begin_linger(id, c, registry);
         }
     }
     if readable && c.reading && !c.read_done && !c.flow.is_paused() {
@@ -910,9 +1040,9 @@ fn drive_plain(
             match c.stream.read(&mut buf) {
                 Ok(0) => {
                     if let Some(p) = chunk_flush(&mut c.carry) {
-                        c.sink.emit(tcp_data_msg(id, p));
+                        c.owner.emit(tcp_data_msg(id, p));
                     }
-                    c.sink.emit(tcp_closed_msg(id));
+                    c.owner.emit(tcp_closed_msg(id));
                     c.read_done = true;
                     break;
                 }
@@ -920,7 +1050,7 @@ fn drive_plain(
                     c.last_activity = Instant::now();
                     let bin = c.binary.load(Ordering::Acquire);
                     if let Some(p) = chunk_payload(&mut c.carry, &buf[..n], bin) {
-                        emit_data(id, &c.subscriber, &c.flow, p, n);
+                        emit_data(id, &c.owner, &c.flow, p, n);
                         // Inbound backpressure: stop before WouldBlock. Whatever is left
                         // stays in the kernel buffer (and then the peer's), and
                         // `Cmd::Resume` reads it — in order, EOF included — later.
@@ -932,7 +1062,7 @@ fn drive_plain(
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => {
-                    c.sink.emit(tcp_closed_msg(id));
+                    c.owner.emit(tcp_closed_msg(id));
                     c.read_done = true;
                     break;
                 }
@@ -940,14 +1070,50 @@ fn drive_plain(
         }
     }
     // NOTE deliberately no auto-teardown on read EOF: a peer half-close leaves
-    // the write side usable (Erlang semantics — the request-then-FIN client
-    // still gets its response). The entry lives until an explicit `Close`, a
+    // the write side usable (the request-then-FIN client still gets its
+    // response). The entry lives until an explicit `Close`, a
     // write failure, the OUT_CAP breach, the linger deadline, or owner death.
     if c.read_done && c.out.is_empty() && c.closing.is_some() {
         return true;
     }
     sync_plain_registration(id, c, registry);
     false
+}
+
+/// The close's last queued byte is out: shut the write half (the peer gets every byte,
+/// then EOF) and linger, discarding input, until the peer's EOF or the close deadline.
+/// Returns true when the socket can go at once — the peer already sent EOF, or the
+/// shutdown or a read failed.
+fn begin_linger(id: u64, c: &mut PlainConn, registry: &mio::Registry) -> bool {
+    if c.read_done {
+        return true; // the peer's EOF was read: nothing unread can provoke a reset
+    }
+    if c.reading {
+        c.owner.emit(tcp_closed_msg(id));
+    }
+    if c.stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return true;
+    }
+    c.write_shut = true;
+    if discard_until_blocked(&mut c.stream) {
+        return true;
+    }
+    sync_plain_registration(id, c, registry);
+    false
+}
+
+/// Read and drop everything the peer has sent. True at its EOF or on a read error.
+fn discard_until_blocked(stream: &mut MioStream) -> bool {
+    let mut buffer = [0u8; 65536];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => return true,
+            Ok(_) => continue,
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => return false,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return true,
+        }
+    }
 }
 
 fn tls_interests(c: &TlsConn) -> Option<Interest> {
@@ -986,12 +1152,12 @@ fn sync_tls_registration(id: u64, c: &mut TlsConn, registry: &mio::Registry) {
 /// Finish a TLS connection: emit the right terminal message once. Returns true.
 fn tls_finish(id: u64, c: &mut TlsConn, error: Option<String>) -> bool {
     if let Some(p) = chunk_flush(&mut c.carry) {
-        c.sink.emit(tcp_data_msg(id, p));
+        c.owner.emit(tcp_data_msg(id, p));
     }
     if !c.read_done {
         match error {
-            Some(msg) if c.one_shot => c.sink.emit(tcp_error_msg(id, &msg)),
-            _ => c.sink.emit(tcp_closed_msg(id)),
+            Some(msg) if c.one_shot => c.owner.emit(tcp_error_msg(id, &msg)),
+            _ => c.owner.emit(tcp_closed_msg(id)),
         }
         c.read_done = true;
     }
@@ -1064,7 +1230,7 @@ fn drive_tls(
                                 c.last_activity = Instant::now();
                                 let bin = c.binary.load(Ordering::Acquire);
                                 if let Some(p) = chunk_payload(&mut c.carry, &buf[..got], bin) {
-                                    emit_data(id, &c.subscriber, &c.flow, p, got);
+                                    emit_data(id, &c.owner, &c.flow, p, got);
                                 }
                             }
                         }
@@ -1108,31 +1274,21 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
         Cmd::Stream {
             id,
             stream,
-            sink,
-            subscriber,
+            owner,
             binary,
-        } => start_stream(id, stream, sink, subscriber, binary, conns, registry),
+        } => start_stream(id, stream, owner, binary, conns, registry),
         Cmd::Listen {
             id,
             listener,
-            sink,
-            subscriber,
+            owner,
         } => {
             register_listener(id, &listener, registry);
-            conns.insert(
-                id,
-                Rx::Listener {
-                    listener,
-                    sink,
-                    subscriber,
-                },
-            );
+            conns.insert(id, Rx::Listener { listener, owner });
         }
         Cmd::TlsListen {
             id,
             listener,
-            sink,
-            subscriber,
+            owner,
             config,
         } => {
             register_listener(id, &listener, registry);
@@ -1140,8 +1296,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
                 id,
                 Rx::TlsListener {
                     listener,
-                    sink,
-                    subscriber,
+                    owner,
                     config,
                 },
             );
@@ -1149,8 +1304,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
         Cmd::TlsClient {
             id,
             stream,
-            sink,
-            subscriber,
+            owner,
             binary,
             server_name,
             request,
@@ -1159,8 +1313,7 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
             id,
             TlsClientStart {
                 stream,
-                sink,
-                subscriber,
+                owner,
                 binary,
                 server_name,
                 request,
@@ -1184,21 +1337,19 @@ fn handle_cmd(cmd: Cmd, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) 
 /// Emitting `[:tcp-connected]` here, on the reactor, is what makes the announcement
 /// mean "established": every command the owner issues after seeing it (a send, a
 /// close, an idle timeout) is queued behind this one, and it reaches the owner's
-/// mailbox ahead of any `[:tcp …]` data because the same sink carries both.
+/// mailbox ahead of any `[:tcp …]` data because this thread delivers both.
 fn start_stream(
     id: u64,
     stream: MioStream,
-    sink: MailboxSink,
-    subscriber: Arc<AtomicU64>,
+    owner: Arc<SocketOwner>,
     binary: Arc<AtomicBool>,
     conns: &mut HashMap<u64, Rx>,
     registry: &mio::Registry,
 ) {
-    sink.emit(tcp_connected_msg(id));
+    owner.emit(tcp_connected_msg(id));
     let mut connection = PlainConn {
         stream,
-        sink,
-        subscriber,
+        owner,
         flow: InboundFlow::new(id),
         binary,
         carry: Vec::new(),
@@ -1207,6 +1358,7 @@ fn start_stream(
         read_done: false,
         accepted_at: None,
         closing: None,
+        write_shut: false,
         registered: false,
         idle: None,
         last_activity: Instant::now(),
@@ -1225,8 +1377,7 @@ fn register_listener(id: u64, listener: &ListenerSlot, registry: &mio::Registry)
 /// The parts of a `Cmd::TlsClient` that become the connection.
 struct TlsClientStart {
     stream: MioStream,
-    sink: MailboxSink,
-    subscriber: Arc<AtomicU64>,
+    owner: Arc<SocketOwner>,
     binary: Arc<AtomicBool>,
     server_name: ServerName<'static>,
     request: Vec<u8>,
@@ -1251,8 +1402,7 @@ fn start_tls_client(
             let mut connection = TlsConn {
                 stream: start.stream,
                 conn: rustls::Connection::Client(tls),
-                sink: start.sink,
-                subscriber: start.subscriber,
+                owner: start.owner,
                 flow: InboundFlow::new(id),
                 binary: start.binary,
                 carry: Vec::new(),
@@ -1269,7 +1419,9 @@ fn start_tls_client(
             conns.insert(id, Rx::Tls(connection));
         }
         Err(error) => {
-            start.sink.emit(tcp_error_msg(id, &format!("tls: {error}")));
+            start
+                .owner
+                .emit(tcp_error_msg(id, &format!("tls: {error}")));
             reg().remove(&id);
         }
     }
@@ -1297,8 +1449,7 @@ fn claim(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
                 let mut connection = TlsConn {
                     stream: pending.stream,
                     conn: rustls::Connection::Server(tls),
-                    sink: pending.sink,
-                    subscriber: pending.subscriber,
+                    owner: pending.owner,
                     flow: InboundFlow::new(id),
                     binary: pending.binary,
                     carry: Vec::new(),
@@ -1316,7 +1467,7 @@ fn claim(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
             }
             Err(error) => {
                 pending
-                    .sink
+                    .owner
                     .emit(tcp_error_msg(id, &format!("tls: {error}")));
                 reg().remove(&id);
             }
@@ -1360,7 +1511,7 @@ fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &
                 // started — an unclaimed accepted socket write-bombed here would otherwise
                 // drop silently.
                 if !connection.read_done {
-                    connection.sink.emit(tcp_closed_msg(id));
+                    connection.owner.emit(tcp_closed_msg(id));
                     connection.read_done = true;
                 }
                 true
@@ -1377,10 +1528,10 @@ fn queue_send(id: u64, bytes: Vec<u8>, conns: &mut HashMap<u64, Rx>, registry: &
                 if !connection.read_done {
                     if connection.one_shot {
                         connection
-                            .sink
+                            .owner
                             .emit(tcp_error_msg(id, "tls: outbound buffer overflow"));
                     } else {
-                        connection.sink.emit(tcp_closed_msg(id));
+                        connection.owner.emit(tcp_closed_msg(id));
                     }
                     connection.read_done = true;
                 }
@@ -1413,14 +1564,16 @@ fn set_idle(id: u64, ms: u64, conns: &mut HashMap<u64, Rx>) {
     *last_activity = Instant::now();
 }
 
-/// Flush queued outbound (bounded by [`LINGER`]) and close.
+/// Flush queued outbound (bounded by [`LINGER`]) and close. The socket's owner was
+/// silenced before this command was queued (`retire`), so the terminal messages the
+/// paths below emit, and whatever is read while lingering, reach nobody.
 fn close_connection(id: u64, conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     let remove = match conns.get_mut(&id) {
         Some(Rx::Plain(connection)) => {
+            connection.closing = Some(Instant::now() + LINGER);
             if connection.out.is_empty() {
-                true
+                begin_linger(id, connection, registry)
             } else {
-                connection.closing = Some(Instant::now() + LINGER);
                 drive_plain(id, connection, false, true, registry)
             }
         }
@@ -1590,7 +1743,7 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
         match conns.get_mut(&id) {
             Some(Rx::Plain(c)) => {
                 if !c.read_done {
-                    c.sink.emit(tcp_closed_msg(id));
+                    c.owner.emit(tcp_closed_msg(id));
                     c.read_done = true;
                 }
             }
@@ -1685,14 +1838,14 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     reactor_up()?;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     let binary = Arc::new(AtomicBool::new(false));
-    let (sink, cell) = sink_pair(subscriber);
+    let owner = SocketOwner::new(subscriber);
     reg().insert(
         id,
         subscriber,
         Ctl {
             kind: Kind::Stream,
             binary: binary.clone(),
-            subscriber: cell.clone(),
+            owner: owner.clone(),
             claimed: true,
             port: None,
             listener: None,
@@ -1725,19 +1878,25 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
                 hand_off_if_registered(id, || Cmd::Stream {
                     id,
                     stream,
-                    sink,
-                    subscriber: cell,
+                    owner,
                     binary,
                 });
             }
-            Err(error) => {
-                if reg().remove(&id).is_some() {
-                    sink.emit(tcp_error_msg(id, &error.to_string()));
-                }
-            }
+            Err(error) => fail_dial(id, &owner, &error.to_string()),
         }
     })?;
     Ok(id)
+}
+
+/// A dial that never produced a stream: withdraw the socket and tell its owner — unless
+/// `close` withdrew it first. Delivered with the registry lock held, so a `close`
+/// racing this either finds the entry gone and returns after the error has landed, or
+/// removed it first and the error is never sent.
+fn fail_dial(id: u64, owner: &SocketOwner, message: &str) {
+    let mut registry = reg();
+    if registry.remove(&id).is_some() {
+        owner.emit(tcp_error_msg(id, message));
+    }
 }
 
 /// `(tcp-listen host port)` — bind; connections are announced as
@@ -1749,14 +1908,14 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     std_listener.set_nonblocking(true)?;
     let listener = listener_slot(MioListener::from_std(std_listener));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let (sink, cell) = sink_pair(subscriber);
+    let owner = SocketOwner::new(subscriber);
     reg().insert(
         id,
         subscriber,
         Ctl {
             kind: Kind::Listener,
             binary: Arc::new(AtomicBool::new(false)),
-            subscriber: cell.clone(),
+            owner: owner.clone(),
             claimed: true,
             port: Some(local),
             listener: Some(listener.clone()),
@@ -1765,8 +1924,7 @@ pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     reactor().cmd(Cmd::Listen {
         id,
         listener,
-        sink,
-        subscriber: cell,
+        owner,
     });
     // See `connect` — closes the race with `reactor_died`'s sweep.
     if REACTOR_DOWN.load(Ordering::SeqCst) {
@@ -1784,7 +1942,7 @@ pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
         let mut registry = reg();
         match registry.get_mut(&id) {
             Some(ctl) if matches!(ctl.kind, Kind::Stream | Kind::TlsStream) => {
-                ctl.subscriber.store(pid, Ordering::Release);
+                ctl.owner.retarget(pid);
                 let was_claimed = ctl.claimed;
                 ctl.claimed = true;
                 registry.set_owner(id, pid);
@@ -1820,7 +1978,7 @@ pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
 ///
 /// On a **listener** it sets the mode every socket that listener accepts *starts* in, which
 /// has no such window — the listener's mode is fixed before any connection exists. This is
-/// the reliable way to run a binary server, and mirrors `gen_tcp:listen(Port, [binary])`.
+/// the reliable way to run a binary server.
 /// A stream may still switch mode afterwards; inheritance only decides where it starts.
 pub fn set_binary(id: u64, on: bool) -> std::io::Result<()> {
     let registry = reg();
@@ -1889,9 +2047,18 @@ pub fn send(id: u64, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// `(tcp-close sock)` — flush queued outbound (bounded by [`LINGER`]), then
-/// close. A listener's fd is closed before this returns, so a connect issued after it
-/// is refused. Idempotent.
+/// `(tcp-close sock)` — close a stream or listener. Idempotent; sends nothing.
+///
+/// Guaranteed when it returns:
+/// - **no new message for `sock` reaches any mailbox** — no `[:tcp …]` data, no
+///   `[:tcp-closed]`, `[:tcp-error]`, `[:tcp-accept]` or `[:tcp-connected]`
+///   ([`SocketOwner::silence`]). Messages already delivered stay in the mailbox;
+///   there is no terminal `[:tcp-closed]` for a socket you closed yourself.
+/// - a listener's fd is shut, so a connect issued after it is refused.
+///
+/// A stream's already-queued outbound bytes keep flushing in the background (bounded by
+/// [`LINGER`]), so `tcp-send` then `tcp-close` never truncates; inbound bytes read
+/// meanwhile are discarded.
 pub fn close(id: u64) {
     let removed = reg().remove(&id);
     if let Some(ctl) = removed {
@@ -1910,8 +2077,10 @@ pub fn close_process_sockets(pid: u64) {
 
 /// Close a socket whose control-plane entry the caller has just removed (outside the
 /// registry lock: the reactor takes a listener's slot before the registry). A stream's
-/// flush-then-close stays on the reactor; a listener's fd is shut here and now.
+/// flush-then-close stays on the reactor; its owner is silenced and a listener's fd is
+/// shut here and now.
 fn retire(id: u64, ctl: Ctl) {
+    ctl.owner.silence();
     let reactor = reactor();
     if let Some(listener) = &ctl.listener {
         shut_listener(listener, &reactor.registry);
@@ -1970,19 +2139,21 @@ fn tls_config_with_ca(ca_pem: &str) -> std::io::Result<Arc<ClientConfig>> {
 /// registry entry and request buffer for the kernel's multi-minute SYN timeout.
 const TLS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `(tls-request host port request [ca-pem])` — one HTTPS exchange: handshake,
+/// `(tls-request host port request [ca-pem [binary]])` — one HTTPS exchange: handshake,
 /// send `request` (already-flattened iolist bytes), stream the response as
 /// `[:tcp id data]` … `[:tcp-closed id]` (or `[:tcp-error id msg]`). Returns
 /// the id immediately; the blocking name-resolution + connect happens on a
-/// short-lived helper thread, then the exchange rides the reactor. The socket
-/// honors `tcp-set-binary` like any other (set it right after this returns —
-/// nothing can arrive before the request is sent). `ca_pem` (private CAs, dev
-/// certs) replaces the Mozilla roots as the trust anchor for this request.
+/// short-lived helper thread, then the exchange rides the reactor. `binary` is the
+/// response's starting mode: the request goes out without the caller's help, so a
+/// response can arrive before a later `tcp-set-binary` lands and its first chunk
+/// would decode as text. `ca_pem` (private CAs, dev certs) replaces the Mozilla roots
+/// as the trust anchor for this request.
 pub fn tls_request(
     host: &str,
     port: u16,
     request: Vec<u8>,
     ca_pem: Option<String>,
+    binary: bool,
     subscriber: u64,
 ) -> std::io::Result<u64> {
     reactor_up()?;
@@ -1991,15 +2162,15 @@ pub fn tls_request(
         None => tls_config(),
     };
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let binary = Arc::new(AtomicBool::new(false));
-    let (sink, cell) = sink_pair(subscriber);
+    let binary = Arc::new(AtomicBool::new(binary));
+    let owner = SocketOwner::new(subscriber);
     reg().insert(
         id,
         subscriber,
         Ctl {
             kind: Kind::TlsStream,
             binary: binary.clone(),
-            subscriber: cell.clone(),
+            owner: owner.clone(),
             claimed: true,
             port: None,
             listener: None,
@@ -2014,12 +2185,7 @@ pub fn tls_request(
     spawn_dialler(id, "brood-tls-connect", move || {
         let server_name = match ServerName::try_from(host.clone()) {
             Ok(name) => name,
-            Err(_) => {
-                if reg().remove(&id).is_some() {
-                    sink.emit(tcp_error_msg(id, "tls: invalid server name"));
-                }
-                return;
-            }
+            Err(_) => return fail_dial(id, &owner, "tls: invalid server name"),
         };
         let connected = dial(&host, port, TLS_CONNECT_TIMEOUT).and_then(|stream| {
             prepare_dialled(&stream)?;
@@ -2035,19 +2201,14 @@ pub fn tls_request(
                 hand_off_if_registered(id, || Cmd::TlsClient {
                     id,
                     stream,
-                    sink,
-                    subscriber: cell,
+                    owner,
                     binary,
                     server_name,
                     request,
                     config,
                 });
             }
-            Err(error) => {
-                if reg().remove(&id).is_some() {
-                    sink.emit(tcp_error_msg(id, &error.to_string()));
-                }
-            }
+            Err(error) => fail_dial(id, &owner, &error.to_string()),
         }
     })?;
     Ok(id)
@@ -2101,14 +2262,14 @@ pub fn tls_listen(
     std_listener.set_nonblocking(true)?;
     let listener = listener_slot(MioListener::from_std(std_listener));
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let (sink, cell) = sink_pair(subscriber);
+    let owner = SocketOwner::new(subscriber);
     reg().insert(
         id,
         subscriber,
         Ctl {
             kind: Kind::TlsListener,
             binary: Arc::new(AtomicBool::new(false)),
-            subscriber: cell.clone(),
+            owner: owner.clone(),
             claimed: true,
             port: Some(local),
             listener: Some(listener.clone()),
@@ -2117,8 +2278,7 @@ pub fn tls_listen(
     reactor().cmd(Cmd::TlsListen {
         id,
         listener,
-        sink,
-        subscriber: cell,
+        owner,
         config,
     });
     // See `connect` — closes the race with `reactor_died`'s sweep.

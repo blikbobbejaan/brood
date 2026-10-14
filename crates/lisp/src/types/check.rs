@@ -427,10 +427,10 @@ fn collect_qualified_names(heap: &Heap, form: Value, out: &mut HashSet<Symbol>) 
 /// as a file-global in pass 2). A name the file doesn't define (an imported/prelude
 /// name), an already-`ns/`-qualified name, or an ambient `*earmuffed*` name is left
 /// as written, so it still matches the bare/qualified head the call resolves to.
-fn qualify_decl_name(ctx: &Ctx, file_ns: Option<&str>, name: Symbol) -> Symbol {
+fn qualify_decl_name(heap: &Heap, ctx: &Ctx, file_ns: Option<&str>, name: Symbol) -> Symbol {
     match file_ns {
         Some(ns) => {
-            let qualified = crate::eval::macros::qualify_name(ns, name);
+            let qualified = crate::eval::macros::qualify_name(heap, ns, name);
             if ctx.is_file_global(qualified) {
                 qualified
             } else {
@@ -450,28 +450,28 @@ fn register_declared_sig(heap: &Heap, ctx: &mut Ctx, file_ns: Option<&str>, form
     // The property keywords — `:pure`, `:total` — of any sig shape (ADR-351).
     if let Some((name, _, props)) = annot::sig_decl_head(heap, form) {
         if !props.is_empty() {
-            let qn = qualify_decl_name(ctx, file_ns, name);
+            let qn = qualify_decl_name(heap, ctx, file_ns, name);
             ctx.add_declared_props(qn, &props);
         }
     }
     if let Some((name, sig)) = annot::parse_sig_decl(heap, form) {
-        let qn = qualify_decl_name(ctx, file_ns, name);
+        let qn = qualify_decl_name(heap, ctx, file_ns, name);
         ctx.add_declared_sig(qn, sig);
     }
     if let Some((name, sv)) = annot::parse_sig_decl_with_vars(heap, form) {
-        let qn = qualify_decl_name(ctx, file_ns, name);
+        let qn = qualify_decl_name(heap, ctx, file_ns, name);
         ctx.add_declared_sig_with_vars(qn, sv);
     }
     // An overloaded sig — `(and (int -> int) (bool -> bool))` — has no single `Sig`,
     // so `parse_sig_decl` above yields nothing for it; record it separately (ADR-116).
     if let Some((name, sigs)) = annot::parse_sig_decl_overload(heap, form) {
-        let qn = qualify_decl_name(ctx, file_ns, name);
+        let qn = qualify_decl_name(heap, ctx, file_ns, name);
         ctx.add_declared_overload(qn, sigs);
     }
     // Non-arrow `(sig x T)` value-type declarations — consumed by the gradual-
     // assignment check on `(def x …)` (the first `GradualTy` consumer).
     if let Some((name, ty)) = annot::parse_value_sig_decl(heap, form) {
-        let qn = qualify_decl_name(ctx, file_ns, name);
+        let qn = qualify_decl_name(heap, ctx, file_ns, name);
         ctx.add_declared_value_ty(qn, ty);
     }
 }
@@ -975,7 +975,7 @@ fn check_sig_declarations(
             out.push((pos, format!("sig {spelling}: {problem}")));
             continue; // the rest reads the parsed sig, which doesn't exist
         }
-        let qualified = qualify_decl_name(ctx, file_ns, name);
+        let qualified = qualify_decl_name(heap, ctx, file_ns, name);
         // 2. Does it annotate anything? A sig for a name this file never defines (and
         //    that isn't bound anywhere in the image) annotates nothing — usually a
         //    rename that moved the `defn` and left the declaration behind.
@@ -1498,7 +1498,8 @@ fn setup_check_imports(heap: &mut Heap, header: Value) -> ImportScope {
                             }
                             let defined = exports.contains(&bare)
                                 || sigs::is_globally_bound(heap, qual)
-                                || crate::eval::derive::image_sig_arity(heap, qual).is_some();
+                                || crate::eval::derive::image_sig_arity(heap, qual).is_some()
+                                || protocol::ability_declared_by(heap, bare, &mod_name);
                             if !defined && !exports.is_empty() {
                                 scope.unknown_only.push((
                                     pos,
@@ -2347,7 +2348,7 @@ fn register_declarations(
             let Some((name, sig)) = annot::parse_sig_decl(heap, form) else {
                 continue;
             };
-            let id = value::symbol_name(qualify_decl_name(ctx, file_ns_name, name));
+            let id = value::symbol_name(qualify_decl_name(heap, ctx, file_ns_name, name));
             if let Some(fields) = sig.ret.record_fields() {
                 field_types.entry(id).or_insert_with(|| fields.clone());
             }
@@ -2395,7 +2396,7 @@ fn infer_global_value_types(heap: &Heap, expanded: &[Value], ctx: &mut Ctx) {
         if value::is_gensym(name)
             || def_count.get(&name) != Some(&1)
             || ctx.is_file_macro(name)
-            || value::is_dynamic(name)
+            || heap.is_dynamic(name)
             || infer::is_earmuffed(name)
         {
             continue;
@@ -2427,7 +2428,7 @@ fn inference_candidates(heap: &Heap, expanded: &[Value], ctx: &Ctx) -> Vec<(Symb
             let (name, rhs) = def_name_and_value(heap, form)?;
             (def_count.get(&name) == Some(&1)
                 && !ctx.is_file_macro(name)
-                && !value::is_dynamic(name)
+                && !heap.is_dynamic(name)
                 && !value::is_gensym(name)
                 && ctx.declared_sig(name).is_none())
             .then_some((name, rhs))
@@ -2468,7 +2469,7 @@ fn infer_same_file_functions(
     let mut clause_defs: Vec<(Symbol, Vec<Value>)> = Vec::new();
     for &form in forms {
         if let Some((name, clauses)) = defn_clauses(heap, form) {
-            let qualified = qualify_decl_name(ctx, file_ns_name, name);
+            let qualified = qualify_decl_name(heap, ctx, file_ns_name, name);
             if let Some(arms) = sigs::infer_overload_from_clauses(heap, &clauses, ctx) {
                 ctx.add_inferred_overload(qualified, arms);
             }

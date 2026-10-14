@@ -8,9 +8,9 @@
 //! moved between scheduler threads — and it gives us one place to do GC.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use smallvec::SmallVec;
 
@@ -218,83 +218,6 @@ pub fn symbol_first_char(sym: Symbol) -> Option<char> {
         .expect("interned symbol id")
         .chars()
         .next()
-}
-
-// ----- dynamic-variable registry ---------------------------------------------
-//
-// Which symbols are *dynamic variables* (declared by `defdyn`). A monotonic,
-// process-wide declaration fact — like interning, not per-runtime state — so it
-// lives in a `static` rather than the runtime's global table. Reads never touch
-// this set (a dynamic value resolves through the per-process binding stack in
-// `Heap`); it exists only so `binding` can reject an undeclared var and so
-// `reflect/dynamic?` can report. See `docs/language.md` (Dynamic variables).
-
-static DYNAMICS: LazyLock<RwLock<HashSet<Symbol>>> = LazyLock::new(|| RwLock::new(HashSet::new()));
-
-/// Mark `sym` as a dynamic variable (idempotent). Called by `defdyn`.
-pub fn mark_dynamic(sym: Symbol) {
-    DYNAMICS
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(sym);
-}
-
-/// Drop `sym`'s dynamic mark — `reflect/undef` removing a `defdyn` global (ADR-391). A
-/// mark left on an unbound name is not cosmetic: it keeps the name ambient for namespace
-/// resolution and exempt from the reserved-name check (see [`dynamic_syms`]).
-pub fn unmark_dynamic(sym: Symbol) {
-    DYNAMICS
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&sym);
-}
-
-/// Has `sym` been declared dynamic with `defdyn`?
-pub fn is_dynamic(sym: Symbol) -> bool {
-    DYNAMICS
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&sym)
-}
-
-/// The spelling of every symbol currently marked dynamic, sorted (a deterministic image).
-///
-/// The startup image needs these: an imaged start restores a `defdyn` global's *value* but
-/// skips the module load that ran the `defdyn`, so the mark is missing and `binding` would
-/// reject the var (`docs/language.md` Dynamic variables). The image writes this list and
-/// re-`mark_dynamic`s each on restore — the dynamic-var counterpart of the registry/`defonce`
-/// imaged-start fixes.
-pub fn dynamic_names() -> Vec<String> {
-    let set = DYNAMICS.read().unwrap_or_else(|e| e.into_inner());
-    let mut names: Vec<String> = set.iter().map(|&s| symbol_name(s)).collect();
-    names.sort();
-    names
-}
-
-/// Every symbol currently marked dynamic — the snapshot half of the pair
-/// [`restore_dynamics`] completes.
-///
-/// `%isolate` exists to run a thunk and then put the image back the way it was, but it
-/// swaps back only the global *binding* table. `DYNAMICS` is a process-wide static
-/// beside it, so without this `(%isolate (fn () (defdyn *q* 9)))` would leave `*q*`
-/// marked dynamic while unbound — and that mark is not cosmetic: it makes the name permanently
-/// *ambient* for later namespace resolution (`macros::is_ambient`, so a later module's
-/// `(def *q* …)` stays bare instead of being qualified) and permanently exempt from the
-/// reserved-name check (`heap::is_sealed` excludes dynamics).
-pub fn dynamic_syms() -> Vec<Symbol> {
-    DYNAMICS
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .copied()
-        .collect()
-}
-
-/// Replace the dynamic-mark set wholesale with `syms` — the restore half of
-/// [`dynamic_syms`]. Replaces rather than unions, so a mark *added* inside an isolate is
-/// dropped, which is the point.
-pub fn restore_dynamics(syms: Vec<Symbol>) {
-    *DYNAMICS.write().unwrap_or_else(|e| e.into_inner()) = syms.into_iter().collect();
 }
 
 // ----- handles into the Heap -----

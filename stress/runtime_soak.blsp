@@ -1,0 +1,103 @@
+;; One round of the runtime soak (stress/runtime_soak.sh): the concurrency shapes behind the
+;; two bugs whose cause was never found, run hard enough and often enough that they might
+;; recur where someone is looking.
+;;
+;; - KI-88: one spawn of a warm burst created, registered — and never scheduled. Bursts of
+;;   monitored spawns, each child replying; a burst that misses a reply names the pid.
+;; - KI-127: a fan of processes racing the first load of a module hung silently. Every round
+;;   boots fresh, so each module below is loaded for the first time by many processes at once.
+;; - Link and monitor churn, and large values crossing heaps, keep the death and copy paths
+;;   busy underneath.
+;;
+;; Every wait is bounded and every child monitored, so a lost process FAILS the round with
+;; what was missing instead of hanging it. Exits nonzero on any failure; prints one summary
+;; line on success. The driver also fails the round on the scheduler's stranded-work report.
+
+;; The modules raced: each child compiles a call into one of them at run time, so the
+;; first reference — and the load — happens in many processes at once.
+(def *race-calls*
+  ["(json/encode [1 2 3])"
+    "(csv/encode [[1 2]])" "(set/union #{1} #{2})" "(stats/mean [1 2 3])"
+    "(version/valid? \"1.2.3\")" "(url/percent-encode \"a b\")" "(path/basename \"/a/b.c\")"
+    "(humanize/byte-size 2048)" "(uuid/valid? \"x\")" "(hash/string \"abc\")"
+    "(diff/lines \"a\" \"b\")" "(multimap/empty)" "(pq/empty)" "(queue/empty)"
+    "(template/render \"x\" {})"])
+
+(def *wait-ms* 30000)
+
+;; Collect one reply per pid in `pending` (a set) — `[:reply pid value]` — failing on an
+;; abnormal death or on silence, naming who is missing.
+(defn- collect (what pending acc)
+  (if (empty? pending)
+    acc
+    (receive
+      ([:reply pid value] (collect what (disj pending pid) (conj acc value)))
+      ([:down _ pid reason] :when
+        (not (= reason :normal))
+        (error (str what ": " pid " died before replying: " (pr-str reason))))
+      (after *wait-ms*
+        (error (str what
+                 ": no reply and no death for "
+                 *wait-ms*
+                 " ms from "
+                 (count pending)
+                 " process(es): "
+                 (pr-str (vec pending))
+                 " — if one never ran, this is KI-88's signature"))))))
+
+;; Spawn `n` monitored children running `work`, each replying `[:reply pid value]`.
+(defn- fan (what n work)
+  (let (root (self)
+        pids (map (range n)
+               (fn (i)
+                 (first (spawn-monitor (send root [:reply (self) (work i)]))))))
+    (collect what (into #{} pids) [])))
+
+(defn- race-module-loads ()
+  (fan "module race"
+    240
+    (fn (i) (reflect/eval-string (nth *race-calls* (math/mod i (count *race-calls*)))))))
+
+(defn- warm-bursts (rounds)
+  (fold (range rounds)
+    0
+    (fn (total _) (+ total (count (fan "spawn burst" 50 (fn (i) (* i i))))))))
+
+;; A chain of linked processes; killing its head must take the rest down, and the
+;; trapping root must hear about the head.
+(defn- link-chain-dies ()
+  (proc/trap-exit true)
+  (let (root (self)
+        head (spawn-link (do
+                           (spawn-link (do
+                                         (spawn-link (receive ([:never] nil)))
+                                         (receive ([:never] nil))))
+                           (send root [:linked (self)])
+                           (receive ([:never] nil)))))
+    (receive ([:linked ^head] nil) (after *wait-ms* (error "link chain: head never started")))
+    (exit head :kill)
+    (receive
+      ([:EXIT ^head _] :ok)
+      (after *wait-ms* (error "link chain: no exit signal from the killed head")))))
+
+(defn- large-values-cross ()
+  (let (value (into {} (map (range 2000) (fn (i) [i (str "v" i)]))))
+    (fan "large values" 8 (fn (_) (count (into {} value))))))
+
+(defn main ()
+  (let (started (os/now)
+        loaded (count (race-module-loads))
+        spawned (warm-bursts 20)
+        _ (dotimes (_ 10) (link-chain-dies))
+        copied (count (large-values-cross)))
+    (io/puts (str "soak round ok: "
+               loaded
+               " racing loads, "
+               spawned
+               " burst spawns, "
+               copied
+               " large copies, "
+               (- (os/now) started)
+               " ms"))))
+
+(main)

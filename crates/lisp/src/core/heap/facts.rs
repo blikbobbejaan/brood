@@ -71,8 +71,8 @@ fact_kinds! {
     /// global that loading MUTATES rather than creates, so the `global-names` diff an
     /// image is built from cannot see it, and one left out is lost with no error (KI-106).
     RegistryName,
-    /// `defdyn`-ness, which lives in a process-global set (`value::DYNAMICS`) rather than
-    /// in the binding — so restoring the VALUE of `*require-parent*` without its mark
+    /// `defdyn`-ness, which lives in the runtime's dynamic set (`RuntimeCode::dynamics`)
+    /// rather than in the binding — so restoring the VALUE of `*require-parent*` without its mark
     /// leaves `binding`, and therefore every `require`, rejecting it.
     Dynamic,
 }
@@ -113,6 +113,37 @@ impl Fact {
 }
 
 impl Heap {
+    /// Has `sym` been declared dynamic with `defdyn` in this runtime? Per runtime, not per
+    /// OS process (KI-224): see `RuntimeCode::dynamics`. Read on the global-IC fill paths —
+    /// one read lock on the runtime's set, no allocation.
+    #[inline]
+    pub fn is_dynamic(&self, sym: Symbol) -> bool {
+        self.runtime.is_dynamic(sym)
+    }
+
+    /// Mark `sym` as a dynamic variable (idempotent). Called by `defdyn`.
+    pub fn mark_dynamic(&self, sym: Symbol) {
+        self.runtime.mark_dynamic(sym);
+    }
+
+    /// Every symbol marked dynamic in this runtime, sorted by spelling (a deterministic
+    /// image). The snapshot half of [`Heap::restore_dynamic_names`].
+    ///
+    /// A mark is not cosmetic, which is why `%isolate` restores it with the bindings: it
+    /// makes a name *ambient* for namespace resolution (`macros::is_ambient`) and exempt
+    /// from the reserved-name check (`RuntimeCode::is_sealed`).
+    pub fn dynamic_names(&self) -> Vec<Symbol> {
+        let mut names = self.runtime.dynamics_snapshot();
+        names.sort_by_cached_key(|&sym| value::symbol_name(sym));
+        names
+    }
+
+    /// Replace this runtime's dynamic set wholesale — the `%isolate` restore. Replaces
+    /// rather than unions, so a mark *added* inside an isolate is dropped.
+    pub fn restore_dynamic_names(&self, names: Vec<Symbol>) {
+        self.runtime.restore_dynamics(names);
+    }
+
     /// Every side fact this runtime has recorded, in [`FactKind::ALL`] order.
     ///
     /// **This is the function a new fact kind must not be able to skip**, and the match
@@ -164,11 +195,7 @@ impl Heap {
                     out.extend(self.registry_names().into_iter().map(Fact::RegistryName));
                 }
                 FactKind::Dynamic => {
-                    out.extend(
-                        value::dynamic_names()
-                            .into_iter()
-                            .map(|n| Fact::Dynamic(value::intern(&n))),
-                    );
+                    out.extend(self.dynamic_names().into_iter().map(Fact::Dynamic));
                 }
             }
         }
@@ -184,7 +211,7 @@ impl Heap {
             Fact::Meta(sym, meta) => self.set_name_meta(*sym, meta.clone()),
             Fact::DefSite(sym, loc) => self.set_def_site(*sym, loc.clone()),
             Fact::RegistryName(sym) => self.mark_registry_names(&[*sym]),
-            Fact::Dynamic(sym) => value::mark_dynamic(*sym),
+            Fact::Dynamic(sym) => self.mark_dynamic(*sym),
         }
     }
 
@@ -213,7 +240,7 @@ impl Heap {
                         .unwrap_or_else(|e| e.into_inner())
                         .retain(|(registry, _), _| *registry != sym);
                 }
-                FactKind::Dynamic => value::unmark_dynamic(sym),
+                FactKind::Dynamic => self.runtime.unmark_dynamic(sym),
             }
         }
     }

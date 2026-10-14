@@ -346,9 +346,16 @@ impl LispError {
         // an exit signal that killed a `brood file` run printed `runtime error:` with
         // nothing after the colon. Naming the reason costs a peek at the mailbox on a
         // path that only runs when the process is already dying.
+        LispError::killed_by(crate::process::pending_kill_phrase(
+            crate::process::self_pid(),
+        ))
+    }
+
+    /// The [`Control::Kill`] signal naming its exit reason (`reason_phrase`, e.g.
+    /// `:noproc`) — also what a root program killed by an exit signal publishes (KI-225).
+    pub fn killed_by(reason_phrase: Option<String>) -> Self {
         let mut e = LispError::control(Control::Kill);
-        let pid = crate::process::self_pid();
-        e.message = match crate::process::pending_kill_phrase(pid) {
+        e.message = match reason_phrase {
             Some(reason) => format!("killed by an exit signal: {reason}"),
             None => "killed by an exit signal".to_string(),
         };

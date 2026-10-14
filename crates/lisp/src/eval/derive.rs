@@ -81,40 +81,25 @@ pub fn take_skip_next_edge() -> bool {
     SKIP_NEXT_EDGE.with(|skip| skip.replace(false))
 }
 
-/// Modules a require has already failed to FIND, with nothing loaded since — see
-/// [`ensure_required`], which is the only reader. Process-wide rather than per-process
-/// because module resolution reads the filesystem and the load path, both of which are
-/// too; a `RwLock` because the common access is the read on the miss path.
-static ABSENT_MODULES: std::sync::OnceLock<std::sync::RwLock<std::collections::HashSet<Symbol>>> =
-    std::sync::OnceLock::new();
+// Modules a require has already failed to FIND, with nothing loaded since — see
+// [`ensure_required`], which is the only reader. Shared by the runtime's processes
+// (`Heap::absent_modules`), never by two runtimes: whether a module can be found depends on
+// `*load-path*`, a global of one runtime (KI-226).
 
-fn absent_modules() -> &'static std::sync::RwLock<std::collections::HashSet<Symbol>> {
-    ABSENT_MODULES.get_or_init(Default::default)
+fn module_known_absent(heap: &Heap, module: Symbol) -> bool {
+    crate::core::sync::read(heap.absent_modules()).contains(&module)
 }
 
-fn module_known_absent(module: Symbol) -> bool {
-    absent_modules()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(&module)
-}
-
-fn note_module_absent(module: Symbol) {
-    absent_modules()
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(module);
+fn note_module_absent(heap: &Heap, module: Symbol) {
+    crate::core::sync::write(heap.absent_modules()).insert(module);
 }
 
 /// Forget every recorded absence. Called when the inputs to module resolution change: a
 /// successful load (in [`ensure_required`]) and a load-path change (`reflect/set-load-path`).
 /// Clearing wholesale rather than per-module is deliberate — a new load path can make any
 /// number of previously-absent modules resolvable, and the set is small.
-pub fn clear_absent_modules() {
-    absent_modules()
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
+pub fn clear_absent_modules(heap: &Heap) {
+    crate::core::sync::write(heap.absent_modules()).clear();
 }
 
 /// The module a qualified reference `s` should auto-require, if any. `None` for a bare
@@ -167,7 +152,7 @@ pub fn require_qualified_head(heap: &mut Heap, env: EnvId, s: Symbol) -> LispRes
     // Lazy policy (ADR-335): a head an image vouches is a FUNCTION waits for its first call
     // — the miss path (`global_miss`) loads it then. Only a macro, or a head into a module
     // no image describes, must load before expansion.
-    if lazy_loads() && image_says_function(module, rooted) {
+    if lazy_loads() && heap.image_says_function(module, rooted) {
         return Ok(Value::nil());
     }
     ensure_required(heap, env, module)?;
@@ -419,7 +404,7 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
     // The memo is not permanent because a module absent now may exist later (ADR-335):
     // any successful load clears it (below), as does a load-path change
     // ([`clear_absent_modules`], called from `set-load-path`).
-    if module_known_absent(module) {
+    if module_known_absent(heap, module) {
         return Ok(Value::nil());
     }
     let root = heap.env_root(env);
@@ -436,7 +421,7 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
         Ok(value) => {
             // Something loaded, so the module set changed: a name that could not be found
             // before may be reachable now (the loaded module may add to the load path).
-            clear_absent_modules();
+            clear_absent_modules(heap);
             Ok(value)
         }
         // Best-effort: inferring a require must not turn a reference into a compile error.
@@ -445,7 +430,7 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
         // ordinary `unbound symbol: mod/name`. A real error *inside* a found module still
         // propagates, so a broken module is never silently hidden behind "unbound".
         Err(error) if error.message.contains("cannot find module") => {
-            note_module_absent(module);
+            note_module_absent(heap, module);
             Ok(Value::nil())
         }
         // A transitive cycle: a module we auto-require refers back (qualified) into one
@@ -614,36 +599,20 @@ pub(crate) fn global_miss_in_arm(
 // so a head into an imaged module whose name is not a recorded macro is a FUNCTION and may
 // wait for its first call. A head into an un-imaged module, or to a recorded macro, loads
 // eagerly as it always has. An image is fingerprint-rejected before it reaches this, so a
-// stale kind cannot be registered.
-
-struct ImageKinds {
-    modules: std::collections::HashSet<Symbol>,
-    macros: std::collections::HashSet<Symbol>,
-}
-
-fn image_kinds() -> &'static std::sync::RwLock<ImageKinds> {
-    static KINDS: std::sync::OnceLock<std::sync::RwLock<ImageKinds>> = std::sync::OnceLock::new();
-    KINDS.get_or_init(|| {
-        std::sync::RwLock::new(ImageKinds {
-            modules: Default::default(),
-            macros: Default::default(),
-        })
-    })
-}
+// stale kind cannot be registered. The index is the RUNTIME's (`Heap::register_image_kinds`):
+// another runtime in the process may have opened a different image, or none (KI-226).
 
 /// Record the modules (section names) and macro names an opened image holds. Additive: the
 /// stdlib image and a project image both register, and nothing un-registers — a module that
 /// later loads from source is simply bound, which every check here tests first.
-pub fn register_image_kinds(modules: &[String], macros: &[String]) {
-    let mut kinds = image_kinds().write().unwrap_or_else(|e| e.into_inner());
-    for module in modules {
-        if !module.is_empty() {
-            kinds.modules.insert(value::intern(module));
-        }
-    }
-    for name in macros {
-        kinds.macros.insert(value::intern(name));
-    }
+pub fn register_image_kinds(heap: &Heap, modules: &[String], macros: &[String]) {
+    heap.register_image_kinds(
+        modules
+            .iter()
+            .filter(|module| !module.is_empty())
+            .map(|module| value::intern(module)),
+        macros.iter().map(|name| value::intern(name)),
+    );
 }
 
 // ===== The image's signature index (ADR-370) ===============================================
@@ -848,11 +817,4 @@ pub fn image_sig_entries(heap: &Heap) -> Vec<(String, String, u32, u32)> {
         .collect();
     out.sort();
     out
-}
-
-/// Does an opened image vouch that `qualified` (in `module`) is NOT a macro? True only for
-/// a module some image holds whose recorded macros do not include the name.
-pub fn image_says_function(module: Symbol, qualified: Symbol) -> bool {
-    let kinds = image_kinds().read().unwrap_or_else(|e| e.into_inner());
-    kinds.modules.contains(&module) && !kinds.macros.contains(&qualified)
 }

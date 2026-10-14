@@ -74,9 +74,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         // A node name may be a symbol OR a keyword — `node-name`/`connect` return
         // the authoritative `:name@host` as a keyword, so monitoring it must not
         // warn (matches `register`/`proc/whereis`; `expect_node_name` accepts both).
-        Sig::new(vec![sym.union(kw)], ref_ty),
+        Sig::new(vec![sym.union(kw)], kw),
         &["name"],
-        "Get [:nodedown name] when the link to node `name` goes down (heartbeat timeout or close).",
+        "Get [:nodedown name] when the link to node `name` goes down (heartbeat timeout or close). Returns the node's name as a keyword.",
         monitor_node,
     );
     primitives.def(

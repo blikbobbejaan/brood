@@ -146,9 +146,9 @@ slower.
 
 So the tree-walker leg of `make test-both` does not exercise the ~3400-case in-language
 suite the way the Makefile comment implies; per-expression engine agreement comes from
-`crates/lisp/tests/differential.rs`, which pins the engine with `set_forced_engine` rather
+`crates/lisp/tests/differential.rs`, which pins the engine with `set_forced_ceiling` rather
 than the env var. That is why this corpus has a Rust runner as well as a `.blsp` one:
-`gabriel_engines.rs` uses the same `set_forced_engine` mechanism, so these programs really
+`gabriel_engines.rs` uses the same `set_forced_ceiling` mechanism, so these programs really
 do run on both engines.
 
 **No divergences, and no wrong answers.** All eight ports match upstream on the tree-walker
@@ -166,4 +166,4 @@ big integers. Two engine-specific limits were measured and are worth recording:
 That a 40-year-old theorem prover, a CPS benchmark and a big-integer π series all landed on
 upstream's exact numbers on the first run of both engines is a real result for the
 evaluator — and the finding above is the argument for running them through
-`set_forced_engine` rather than trusting an env var.
+`set_forced_ceiling` rather than trusting an env var.

@@ -13,13 +13,14 @@
 ;;; ---- P15: :normal exit does NOT propagate through links ----
 (io/puts "=== P15: :normal exit does not cascade ===")
 (let (me (self))
-  (let (d (spawn
+  ;; `spawn-link`, not `spawn` then `link`: D can finish before a separate `link` runs, and
+  ;; linking a dead pid is a `:noproc` exit signal, which kills this untrapping process (it
+  ;; surfaced in P16, the next form to run, in CI on 2026-10-13).
+  (let (d (spawn-link
             ;; D does its work and exits normally
             (do
               (send me [:d-done (self)])
               :normal)))
-    ;; A links to D
-    (link d)
     ;; Wait for D to announce itself then finish
     (receive ([:d-done _] :ok) (after 2000 :timeout))
     ;; D exits :normal — A should NOT die; we're still here

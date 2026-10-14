@@ -1,16 +1,21 @@
 # Ability dispatch monomorphization — design note
 
-> Status: **Tier 1 shipped in full** (ADR-182, 2026-07-29), off by default behind
-> `BROOD_MONO`. Both syntactic shapes are devirtualized at the `compile_node` seam
-> (`eval/compile/inline.rs::mono_devirtualize`): a **literal** first arg (identity = its
+> Status: **Tier 1 is always on** (ADR-182; the `BROOD_MONO` opt-in is gone, ADR-398), at
+> every compiled tier — the tree-walker (`BROOD_TIER=0`) never runs a rewritten call and is
+> the differential reference. Both syntactic shapes are devirtualized at the `compile_node`
+> seam (`eval/compile/inline.rs::mono_devirtualize`): a **literal** first arg (identity = its
 > `type-of` kind) and a **direct record-constructor call** (identity = the record's baked
-> `:module/name` id, proven via the `*record-ids*` registry `defrecord` populates — a
-> same-named non-record fn is rejected). Every uncertainty declines the rewrite. Flag-off is
-> provably inert (one cached bool); flag-on is byte-identical across all dispatch shapes and
-> GC-safe under stress (the baked impl fn is a promoted RUNTIME handle). `BROOD_MONO_DBG=1`
+> `:module/name` id, proven structurally from the constructor's body). The rewritten head is
+> `(%dispatch-proven op <op> *impls* '[A op] :id [ctor <ctor>])`: the impl is resolved through
+> the epoch-stamped `%dispatch` cache (ADR-294), and the op's CURRENT binding is called
+> instead whenever the op or the constructor has been rebound since compile time or the id
+> has no impl — so the answer is always the op's own. Declined outright: an argument that can
+> run user code, a head that is not the op `defability` emitted (a rebound name, a contract
+> shim), an arity the op rejects, and any run with contracts armed. `BROOD_DEVIRT_DBG=1`
 > traces each devirtualization. **Tier 2** (inferred-*variable* devirtualization — the
-> checker→compiler channel, the real hot-loop win and the real miscompile surface) remains
-> deferred. Picking it up: read this note, then the anchors in [§Anchors](#anchors).
+> checker→compiler channel) is deferred: it was only ever a plan (`BROOD_MONO=2` in
+> perf-handoff Task 5, never built), and that task found no workload with a site. Picking it
+> up: read this note, then the anchors in [§Anchors](#anchors).
 
 ## The problem
 
@@ -62,46 +67,43 @@ The compiler lowers each macroexpanded form into a `Node` IR via `compile_node`
 `Node::Global(op)` (`compile.rs:984-1015`). There is already a Node→Node optimizer
 seam — `eval/compile/inline.rs` (linear-map rewrite, self/leaf inlining;
 `call_head_sym` at `inline.rs:26` extracts a call's resolved global symbol and is
-directly reusable). **The rewrite belongs here**: when the flag is on and the target is
-proven, rewrite `Node::Call{callee: Global(op), …}` into a direct call to the resolved
-impl, bypassing the `identity-of`/`impl-for` body.
+directly reusable). **The rewrite lives here**: when the target is proven, the
+`Node::Call{callee: Global(op), …}`'s head becomes the guarded `%dispatch-proven` call,
+bypassing the op's `%identity-of`.
 
 Recognizing an op fn in the compiler: read the `*abilities*` registry
 (`std/ability.blsp:43`, `ability name → op specs`) from the heap — the compiler has heap
 access — to know which global names are ability ops; or match the op body's fingerprint
 shape. `*impls*` (`ability.blsp:46`) gives the id → fn value to inline.
 
-> **Superseded in part by ADR-294 (2026-08-29).** The trade-off described in the next section
-> is no longer taken: Tier 1 proves the *identity* and leaves resolution behind the
-> epoch-guarded dispatch cache, so late binding is preserved and there is no stale window. The
-> section is kept because it is the reasoning Tier 2 will have to answer for itself. What
-> forced the change: the "stale if later re-registered" framing understated the window, which
-> opens before the FIRST registration — a body is compiled before it runs, so a module that
-> registers an impl and then uses it in the same body called the wrong one. And nothing had
-> ever run with the flag on, so the suite had been catching it, unread, from the day it was
-> written. `crates/cli/tests/mono_differential.rs` is now the gate.
+## Late binding: why the rewrite proves an identity, never an impl
 
-## The late-binding trade-off (why it's flag-gated)
+Impls are open and late — registered and retracted from any module, any time, and names are
+rebound by hot reload. A rewrite that baked the resolved impl fn into the chunk would be
+stale, and the window opens before the FIRST registration: a body is compiled before it
+runs, so `(do (impl Show rec …) (render (rec 7)))` would capture the impl from before its own
+`impl` line (ADR-294). So the rewrite proves only what syntax can prove — the receiver's
+identity — and everything that can change at run time is re-checked on every call:
 
-Impls are open and late — re-registered from any module, any time (drivers-as-values,
-hot reload). A compile-time devirt captures the impl fn **value** at compile time; if
-that id's impl is later re-registered, the devirtualized call is **stale** (still calls
-the old fn). This is the coherence-vs-late-binding tension.
+| What can change after compile time | What the rewritten call does |
+|---|---|
+| an impl registered / retracted | resolves through `%dispatch`, whose cache is epoch-stamped |
+| the id loses its impl | calls the op, which raises its own `%no-impl` |
+| the op name is rebound (`def` wins) | `%dispatch-proven` sees a different binding, calls it |
+| the constructor is rebound (KI-90) | same, on the constructor's binding |
 
-Gating behind `BROOD_MONO` **off by default** resolves it cleanly: default builds keep
-100% dynamic semantics (full late binding); opt-in trades that for speed, exactly like
-`-O2` assuming no UB. Document the caveat. (A partial rewrite that keeps `impl-for` live
-— skipping only `identity-of` — would preserve late binding but wins little; not worth a
-separate tier.)
+What cannot be re-checked cheaply is declined at compile time: an argument that can run user
+code (it could register an impl after the rewrite resolved one), a head bound to anything
+but the op `defability` emitted, an arity the op rejects, and armed contracts (the op checks
+its declared return there). `crates/cli/tests/devirt_differential.rs` holds a case for each
+row, at every tier, against the tree-walker.
 
-## The two tiers (the open scope decision)
+## The two tiers
 
-**Tier 1 — syntactic devirtualization. Low risk, self-contained, little hot-loop payoff.**
+**Tier 1 — syntactic devirtualization (shipped, always on).**
 The compiler proves the id *itself* from syntax when the first arg is a literal
 (`(size 5)`) or a direct constructor call (`(area (circle 2))`) — mirroring
-`arg_identity`'s syntactic cases, **no checker integration**. Rewrite those to a direct
-impl call. Lands the `BROOD_MONO` flag plumbing, op-recognition, the rewrite, and the
-validation harness. **Weakness:** does almost nothing for the case that actually costs —
+`arg_identity`'s syntactic cases, **no checker integration**. **Weakness:** does almost nothing for the case that actually costs —
 a variable in a hot loop (`(map area shapes)`), where the arg isn't syntactically known.
 
 > **Scoped differently since 2026-08-29 — see [dispatch-speculation.md](dispatch-speculation.md).**
@@ -113,57 +115,32 @@ a variable in a hot loop (`(map area shapes)`), where the arg isn't syntacticall
 **Tier 2 — inferred-variable devirtualization. The real win, the real risk.** Where the
 4.1× loop cost lives. Requires building the checker→compiler channel so a call on a
 `sig`-typed / inferred variable can be devirtualized. This is the miscompile surface:
-a wrong devirt silently calls the wrong impl. The off-by-default flag contains it, but
-it's a materially bigger, riskier build (getting inferred types to the compiler without
-duplicating the whole `Ctx`-threading inference walk is the crux — running the checker's
-inference at compile time, or emitting a checker-produced side-table the loader consumes).
+a wrong devirt silently calls the wrong impl. It's a materially bigger, riskier build
+(getting inferred types to the compiler without duplicating the whole `Ctx`-threading
+inference walk is the crux — running the checker's inference at compile time, or emitting
+a checker-produced side-table the loader consumes). **Deferred:** perf-handoff Task 5
+(2026-09-17) measured the ceiling and found no benchmark row or real program with a site.
 
-**Recommendation (as of writing):** build Tier 1 first as a vertical slice (proves the
-flag + mechanism + validation end-to-end, matching how the rest of brood was built),
-then decide on Tier 2 once the mechanism is proven — with eyes open that Tier 1 alone
-won't move hot-loop benchmarks. *Decision pending — the user is returning to this.*
+## Validation
 
-## Flag pattern
-
-Off-by-default, cached, Rust-side — copy `hof_fast_enabled` (`eval/compile.rs:1710`):
-
-```rust
-fn mono_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("BROOD_MONO").is_some())
-}
-```
-
-Closest precedent for a *type-driven* off-by-default gate: `BROOD_CONTRACTS`
-(the `sig` macro in `std/prelude/core.blsp`), which gates `(sig …)` runtime enforcement.
-
-## Validation plan
-
-- Flag **off**: full suites green, zero behaviour change (the pass is inert). This is the
-  safety guarantee — default builds are untouched.
-- Flag **on**: full suites green (correctness of the rewrite) — ✅ wired 2026-08-29 as
-  `crates/cli/tests/mono_differential.rs`, and it must also assert the rewrite FIRED, since a
-  differential in which nothing was rewritten is two identical dynamic runs (ADR-280). Full
-  in-language suite measured 5170/5170 with the flag on. Plus a microbenchmark
-  showing the dispatch-cost win on the covered call shapes. Run the whole broodlang
-  fleet (hatch 750, brood-chat, hatch-demo, store-postgres, willem, mylife, mitch) with
-  the flag on to catch any real-program miscompile.
-- A targeted test: an ability with a `:default` and a specific impl, devirtualized call
-  vs. dynamic call must return identical results; a re-registered impl under the flag is
-  the documented stale case (assert the caveat, don't "fix" it).
+`crates/cli/tests/devirt_differential.rs`: the ability suite at tiers 1 and 2 against the
+tree-walker, byte-identical; one fixture per row of the late-binding table above, at every
+tier, against a literal expected answer; an argument that registers an impl; and a hot loop
+that tiers to native. Every gate also asserts the rewrite FIRED (or, for armed contracts,
+that it declined), since a differential in which nothing was rewritten is two identical
+dynamic runs (ADR-280).
 
 ## Anchors
 
 - Pipeline dispatch: `crates/lisp/src/lib.rs:463-483`
-- VM overview + `BROOD_VM`: `crates/lisp/src/eval/compile.rs:1-24`, `57-77`
+- VM overview + engine selection (`BROOD_TIER`): `crates/lisp/src/eval/compile.rs` module doc
 - AST→IR call lowering + call-site IC: `eval/compile.rs:736`, `984-1015`
-- Node→Node optimizer seam (rewrite home): `eval/compile/inline.rs:1-33`
+- Node→Node optimizer seam (rewrite home): `eval/compile/inline.rs` (`mono_devirtualize`,
+  `ability_op_key`); the per-call guard: `%dispatch-proven` in `builtins/sequences.rs`
 - Runtime call dispatch: `eval/compile/dispatch.rs:185`
 - Ability op expansion (the dispatch to monomorphize): `std/ability.blsp:171-212`
 - `impl-for` / `*impls*` / anonymous impl fns: `std/ability.blsp:124-128`, `214-238`
 - Static proof already computed by the checker: `types/check/protocol.rs:529`
   (`arg_identity`), `818-838` (`check_ability_call_inferred`), `559-610` (`AbilityInfo`)
-- Flag patterns: `eval/compile.rs:1710` (`BROOD_NO_HOF`), the `sig` macro in `std/prelude/core.blsp`
-  (`BROOD_CONTRACTS`)
 - Related: [protocol-dispatch-design.md](protocol-dispatch-design.md) (the facility this
   optimizes), [language.md §Polymorphism](language.md) (reference docs).

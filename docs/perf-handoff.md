@@ -57,7 +57,7 @@ JIT compilation. Right for judging generated-code quality, wrong for any change 
    the direction that erases a HEAD slowdown — and produced a confident *retraction* of a true
    finding. `ab-bench` refuses this (`stdimage MISMATCH`) and was right three times that day;
    hand-rolling around it reintroduced the bias. Probe each binary with
-   `(%print (stdimage/status))` and refuse the run unless every arm says `:live`.
+   `(io/inspect (stdimage/status))` and refuse the run unless every arm says `:live`.
 6. **`stdimage`'s `prune` keeps `max-keep 4`** (`std/tool/stdimage.blsp`), so at most **4
    baselines + HEAD** can be compared imaged in one session. Building a fifth image silently
    evicts the earliest arm into a source boot — which is trap 5, arriving without a warning.
@@ -139,7 +139,7 @@ dev box; check that first.
 > | `->float` lowers | `BROOD_JIT_DUMP_IR=1` | **lowered** (1 arm) |
 > | `esc` lowers | `BROOD_JIT_DUMP_IR=1` | **lowered** (1 arm) |
 > | the KI-109 signature | `BROOD_JIT_BAIL_TRACE=1 \| grep deopt-thrash-latched \| sort -u` | **zero arms, anywhere** |
-> | native path carries the work | default vs `BROOD_NO_JIT=1`, 3 runs each | **0.21 s vs ~2.0 s (~9.5x)** |
+> | native path carries the work | default vs `BROOD_NO_JIT=1` (now `BROOD_TIER=1`), 3 runs each | **0.21 s vs ~2.0 s (~9.5x)** |
 >
 > So `as_f64_pair` still licenses `->float`'s promotion, the arm stays native, and nothing
 > thrash-latches. **KI-109's closure holds.** The 9.5x is quoted because a *large ratio* is
@@ -370,7 +370,7 @@ checked. This is hygiene, not a suspicion.
 > Indistinguishable, and both at the parallel ideal — the backoff costs this shape nothing.
 >
 > **Sabotage, because a flat result is only worth having if the probe could show a delay.**
-> With `BROOD_NO_STEAL_WAKE=1` the spread grows to 8 ms (backoff ON) and 2-10 ms (OFF): the
+> With `BROOD_NO_STEAL_WAKE=1` (since removed) the spread grows to 8 ms (backoff ON) and 2-10 ms (OFF): the
 > probe does resolve steal latency, and even with the spawn-time wake gone a thief finds the
 > work on its ordinary 10 ms re-probe, never the 500 ms backstop. So the shape is protected
 > **structurally** — the `enqueue` that makes a timer-woken process runnable wakes a parked
@@ -434,7 +434,7 @@ benchmark row and no real program dispatches an ability op in a hot loop on a li
 constructor call — and Tier 2's variable-receiver sites are the same ops in the same
 programs. There is no row for a channel to move. **Closed: the number is recorded, the
 channel is not built.** Reopen only when a workload appears whose profile shows
-`%identity-of`/`%dispatch`; the microbenchmark above is the probe to re-run then.
+`%identity-of`/`%dispatch`; the microbenchmark above is the probe to re-run then (with `BROOD_DEVIRT_DBG=1` to count sites; the rewrite is always on).
 
 **What (2) found on the way — KI-161, fixed.** Tier 1 had NEVER fired on a record constructor
 inside a `defmodule`, i.e. in any real code: the KI-90 guard compared the registry's BARE
@@ -452,7 +452,13 @@ spellings, and the sabotage (the name comparison back) reds it both ways.
 Filed 2026-09-17 when the type-system review's last two items were decided (item 5,
 return-type dispatch, was declined — ADR-361; this is item 7, which is a perf item).
 
-**What it is.** ADR-182's Tier 1 (`BROOD_MONO=1`, off by default) devirtualizes an
+> **Since ADR-398 Tier 1 is always on and `BROOD_MONO` is gone** — the `BROOD_MONO=1`
+> measurements below are of the then-opt-in rewrite; `BROOD_DEVIRT_DBG=1` is the trace now,
+> and the `BROOD_MONO=2` lever below was never built (Tier 2 stays deferred). The always-on
+> rewrite's head is the guarded `%dispatch-proven`, a slightly different call from the one
+> measured; its effect on the rows is unmeasured.
+
+**What it is.** ADR-182's Tier 1 (then `BROOD_MONO=1`, off by default) devirtualizes an
 ability-op call whose first argument is a LITERAL or a direct record-constructor call —
 `(area (circle 2))` — to a direct impl call, the identity proven at compile time and the
 resolution left behind the epoch-guarded cache (ADR-294, so a re-registered impl still
@@ -473,10 +479,10 @@ so the number to take first is whether devirtualizing ability calls moves anythi
 **What to measure, in order.**
 
 1. **The dispatch cost itself**, one process, warm: a hot loop over `(area s)` on a record
-   with `BROOD_MONO=1` on a *literal* receiver (Tier 1, the ceiling any Tier 2 can reach)
+   on a *literal* receiver (Tier 1, always on now; the ceiling any Tier 2 can reach)
    against the dynamic call. If Tier 1's ceiling is under ~10% of the loop, stop — Tier 2
    cannot beat its own ceiling and the channel is not worth building.
-2. **Whether Tier 1 is even on the path**: `BROOD_MONO_DBG=1` on the rows that use
+2. **Whether Tier 1 is even on the path**: `BROOD_DEVIRT_DBG=1` on the rows that use
    abilities (`std/editor/*` under bedit, `format`, `stream`) — count devirtualizations.
    Tier 1 has never been measured on a real workload either (it was turned on for the
    first time on 2026-08-29 and found its own miscompile, ADR-294).
@@ -485,7 +491,7 @@ so the number to take first is whether devirtualizing ability calls moves anythi
    types) and the compiler READS under `BROOD_MONO=2`, measure `make ab --floor --all`
    plus the bedit-derived rows, and gate it with the Tier 1 differential extended to
    inferred receivers (a wrong inference must deopt to the dynamic call, never miscompile:
-   the id is a GUARD, the way a float-global guess is — `BROOD_NO_FLOAT_GLOBAL`).
+   the id is a GUARD, the way a float-global guess is).
 
 **A pass looks like:** a compute row with ability calls in its hot loop moves by more than
 its floor under `BROOD_MONO=2`, `make ab --floor --all` reads noise everywhere else, and the

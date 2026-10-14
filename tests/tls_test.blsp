@@ -44,8 +44,7 @@
     (let (pc (tls-serve-one (bytes 0 255 128 65))
           port (first (exchanged pc))
           cert (second (exchanged pc)))
-      (let (s (tls/request "localhost" port "gimme bytes" cert))
-        (tcp/set-binary s true)
+      (let (s (tls/request "localhost" port "gimme bytes" cert true))
         (assert= (drain s) (bytes 0 255 128 65)))))
   (test "an iolist request (with a bytes leaf) reaches the server byte-faithfully"
     (let (me (self))
@@ -95,3 +94,56 @@
                     ([:tcp-closed ^s] :closed)
                     (after *test-wait-ms* :timeout)))
           (assert= (first (exchanged out)) :error))))))
+
+;; ---- tcp/close silences a TLS stream ----------------------------------------------
+;; The TLS twin of tcp_test's "nothing reaches the owner after tcp/close": the server
+;; closes while the client's request is still arriving and its own reply is still
+;; queued. Nothing more for the socket may reach the server — no rest of the request,
+;; no `[:tcp-closed]` — and the client must still get the whole reply.
+
+(defn- late-messages (sock wait-ms seen)
+  "`seen` plus the messages for `sock` that arrive, each within `wait-ms` of the last."
+  (receive
+    ([:tcp ^sock _] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-closed ^sock] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-error ^sock _] (late-messages sock wait-ms (inc seen)))
+    (after wait-ms seen)))
+
+(defn- tls-close-mid-request (ls cert request reply)
+  "One round on listener `ls`: a client sends `request`; on its first chunk, send `reply`
+  and close. Returns `[late received]` — the messages for the socket that arrived after
+  the ones queued at the close were taken, and how many bytes the client read."
+  (let (me (self)
+        port (or (tcp/local-port ls) (error "the TLS listener reported no local port"))
+        client (spawn (let (s (tls/request "localhost" port request cert true))
+                        (send me [:received (self) (bytes/length (drain s))])))
+        s (receive ([:tcp-accept ^ls cs] cs) (after *test-wait-ms* (error "no TLS accept"))))
+    (tcp/controlling-process s (self))
+    (receive ([:tcp ^s _] nil) (after *test-wait-ms* (error "the TLS client never wrote")))
+    (tcp/send s reply)
+    (tcp/close s)
+    (late-messages s 0 0)
+    (let (late (late-messages s 100 0))
+      [late (receive ([:received ^client n] n) (after *test-wait-ms* :timeout))])))
+
+(defn- first-noisy-tls-close (ls cert request reply remaining)
+  "Run `tls-close-mid-request` `remaining` times; the first round whose result is not
+  `[0 reply-length]`, as `[remaining result]`, or nil."
+  (if (= remaining 0)
+    nil
+    (let (result (tls-close-mid-request ls cert request reply))
+      (if (= result [0 (string/length reply)])
+        (first-noisy-tls-close ls cert request reply (dec remaining))
+        [remaining result]))))
+
+(describe "tls: nothing reaches the owner after tcp/close"
+  :isolated (test "a TLS stream closed mid-request delivers nothing more, and the reply arrives whole"
+    (let (ck (tls/self-signed "localhost")
+          ls (tls/listen "127.0.0.1" 0 (first ck) (second ck))
+          outcome (first-noisy-tls-close ls
+                    (first ck)
+                    (string/repeat "q" (* 256 1024))
+                    (string/repeat "r" (* 2 1024 1024))
+                    6))
+      (tcp/close ls)
+      (assert= outcome nil))))

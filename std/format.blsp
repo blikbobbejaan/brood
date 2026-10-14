@@ -167,6 +167,16 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ;; project or when no rules are declared. Entries here win over the built-ins.
 (defdyn *format-headers-extra* {})
 
+(defn use-headers (table)
+  "Install `table` (symbol → header count) as the project/plugin rules `nest format`, the
+  LSP and `nest mcp` format with, replacing any earlier project's. `project/setup` calls it;
+  the `def` must happen here, where `*format-headers-extra*` is known to be dynamic — a
+  `def` of the same name inside another module before this one loaded would bind a global of
+  THAT module's that nothing reads."
+  (def *format-headers-extra* table)
+  nil)
+(sig use-headers ((map symbol int) -> nil))
+
 (defn head-header-count (head-node)
   "How many args after this head stay on the first line of a broken list. -1 means
 not a known body form (defaults to call-style — every arg breaks). Consults the

@@ -1293,8 +1293,8 @@ mod slabs;
 mod small_map;
 pub use self::slabs::SlabRef;
 use self::slabs::{
-    park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count, CodeSlabs,
-    Slabs, PARK_TRIM_GROWTH_SLOTS,
+    owned_bytes, park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
+    CodeSlabs, Slabs, PARK_TRIM_GROWTH_SLOTS,
 };
 pub(crate) use self::slabs::{VecStore, INLINE_VEC_CAP};
 pub(crate) use self::small_map::SmallMap;
@@ -1675,6 +1675,51 @@ impl Heap {
     /// process shares this runtime, and therefore whether a RUNTIME handle may cross to it.
     pub(crate) fn runtime_tag(&self) -> u64 {
         self.runtime.runtime_tag
+    }
+
+    /// This runtime's held image files by path (see `RuntimeCode::image_files`).
+    pub(crate) fn image_files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<std::fs::File>>>> {
+        crate::core::sync::lock(&self.runtime.image_files)
+    }
+
+    /// Record the modules an indexed image holds and the macro names among them (see
+    /// `RuntimeCode::image_modules`).
+    pub(crate) fn register_image_kinds(
+        &self,
+        modules: impl IntoIterator<Item = Symbol>,
+        macros: impl IntoIterator<Item = Symbol>,
+    ) {
+        crate::core::sync::write(&self.runtime.image_modules).extend(modules);
+        crate::core::sync::write(&self.runtime.image_macros).extend(macros);
+    }
+
+    /// The kind index as `(modules, macros)` — what the shared boot carries into each runtime.
+    pub(crate) fn image_kinds_snapshot(&self) -> (Vec<Symbol>, Vec<Symbol>) {
+        (
+            crate::core::sync::read(&self.runtime.image_modules)
+                .iter()
+                .copied()
+                .collect(),
+            crate::core::sync::read(&self.runtime.image_macros)
+                .iter()
+                .copied()
+                .collect(),
+        )
+    }
+
+    /// Does an image this runtime indexed vouch that `qualified` (in `module`) is NOT a
+    /// macro? True only for a module such an image holds whose macros do not include the name.
+    pub(crate) fn image_says_function(&self, module: Symbol, qualified: Symbol) -> bool {
+        crate::core::sync::read(&self.runtime.image_modules).contains(&module)
+            && !crate::core::sync::read(&self.runtime.image_macros).contains(&qualified)
+    }
+
+    /// This runtime's memo of modules a `require` failed to find (see
+    /// `RuntimeCode::absent_modules`).
+    pub(crate) fn absent_modules(&self) -> &RwLock<HashSet<Symbol>> {
+        &self.runtime.absent_modules
     }
 
     pub fn runtime_arc(&self) -> Arc<RuntimeCode> {

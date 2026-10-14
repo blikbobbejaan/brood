@@ -23,6 +23,14 @@ pub(crate) struct SharedBundle {
     /// since the prelude is inserted (not re-evaluated) and clean names can't be
     /// re-derived. Parallel to `bindings`.
     pub(crate) private: Vec<Symbol>,
+    /// The prelude's `defdyn` marks, captured from the builder heap for the reason
+    /// `private` is: each live runtime owns its own dynamic set (KI-224) and the
+    /// prelude's `defdyn`s never re-run there.
+    pub(crate) dynamics: Vec<Symbol>,
+    /// The kind index (modules, macro names) of the stdlib image the builder heap installed.
+    /// Each live runtime owns its index (KI-226), and the boot's install never re-runs
+    /// there, so it is seeded from this.
+    pub(crate) image_kinds: (Vec<Symbol>, Vec<Symbol>),
     /// The prelude's stability metadata (ADR-283) — the `(meta …)` facts recorded in the
     /// builder heap. Carried for the same reason `private` is: the prelude is inserted
     /// into each live runtime rather than re-evaluated, so nothing re-runs
@@ -218,6 +226,8 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     // baked one. The image carries the floor in its header.
     core::value::gensym_floor(gensym_floor);
     let private = heap.private_names_snapshot();
+    let dynamics = heap.dynamic_names();
+    let image_kinds = heap.image_kinds_snapshot();
     let name_meta = heap.name_meta_snapshot();
     let before_freeze = started.elapsed();
     let (code, bindings) = heap.freeze_as_shared_code(root);
@@ -234,6 +244,8 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
         code: Arc::new(code),
         bindings,
         private,
+        dynamics,
+        image_kinds,
         meta: name_meta,
     })
 }
@@ -295,6 +307,8 @@ fn boot_from_source() -> SharedBundle {
     let t_eval = t_mark.elapsed();
     let t_mark = web_time::Instant::now();
     let private = heap.private_names_snapshot();
+    let dynamics = heap.dynamic_names();
+    let image_kinds = heap.image_kinds_snapshot();
     let name_meta = heap.name_meta_snapshot();
     // ADR-314: write the prelude image before the freeze consumes the builder heap. The
     // cold boot is allowed to be slow — it runs once per binary build — so this is pure
@@ -335,6 +349,8 @@ fn boot_from_source() -> SharedBundle {
         code: Arc::new(code),
         bindings,
         private,
+        dynamics,
+        image_kinds,
         meta: name_meta,
     }
 }
@@ -398,16 +414,35 @@ pub fn is_prelude_source(file: &str) -> bool {
 /// when missing or stale (a new build ships a different prelude). Editing it
 /// has no effect — it's a navigation artefact, not a load path.
 ///
-/// Returns `None` if no cache dir can be determined or the write fails; the
-/// caller treats that as "stdlib navigation unavailable" and carries on.
+/// A cache dir that cannot be written (a read-only `HOME` in a container) falls
+/// back to the system temp dir: the doc catalogue derives categories from these
+/// definition sites, so a missing file would empty the reference, not just
+/// navigation. Returns `None` only if neither can be written; the caller treats
+/// that as "stdlib navigation unavailable" and carries on.
 pub(crate) fn prelude_source_path() -> Option<String> {
     use std::path::PathBuf;
-    let base = std::env::var_os("XDG_CACHE_HOME")
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    let dir = base.join("brood");
-    std::fs::create_dir_all(&dir).ok()?;
+        .filter(|path| path.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
+    cache_base
+        .and_then(|base| write_prelude_copy(&base.join("brood")))
+        .or_else(temp_dir_prelude_copy)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn temp_dir_prelude_copy() -> Option<String> {
+    write_prelude_copy(&std::env::temp_dir().join("brood"))
+}
+
+/// The browser playground has no filesystem, and `std::env::temp_dir` panics there.
+#[cfg(target_arch = "wasm32")]
+fn temp_dir_prelude_copy() -> Option<String> {
+    None
+}
+
+fn write_prelude_copy(dir: &std::path::Path) -> Option<String> {
+    std::fs::create_dir_all(dir).ok()?;
     let path = dir.join("prelude.blsp");
     // Rewrite only when the on-disk copy is absent or differs from this build's
     // embedded prelude — keeps the file stable across runs and across versions.

@@ -1215,7 +1215,7 @@ fn scan_def_form(
             // before evaluation, so the runtime mark isn't set yet), or the name was
             // already declared dynamic elsewhere — e.g. `(def *load-path* …)` in a
             // module, rebinding the prelude's knob.
-            if hn == kw::DEFDYN || value::is_dynamic(name) {
+            if hn == kw::DEFDYN || heap.is_dynamic(name) {
                 ambient.insert(name);
             } else if !value::symbol_name_ref(name).contains('/') {
                 // Only bare names get pre-recorded; an already-qualified def head
@@ -1312,16 +1312,16 @@ pub fn resolve_reference(heap: &Heap, s: value::Symbol) -> value::Symbol {
 /// reads them as one), but they do not change scoping: an
 /// undeclared `(def *width* 10)` inside a module is `mod/*width*`, like every other
 /// definition.
-pub(crate) fn is_ambient(sym: value::Symbol) -> bool {
-    value::is_dynamic(sym)
+pub(crate) fn is_ambient(heap: &Heap, sym: value::Symbol) -> bool {
+    heap.is_dynamic(sym)
 }
 
 /// Qualify a definition head: `bar` -> `ns/bar`; an already-`/`-qualified name, or
 /// an ambient (`defdyn`-declared) name, is taken as-is. Shared with
 /// `Heap::def_form_name` so def-site keys match.
-pub fn qualify_name(ns_name: &str, name: value::Symbol) -> value::Symbol {
+pub fn qualify_name(heap: &Heap, ns_name: &str, name: value::Symbol) -> value::Symbol {
     let spelling = value::symbol_name_ref(name);
-    if spelling.contains('/') || is_ambient(name) {
+    if spelling.contains('/') || is_ambient(heap, name) {
         name
     } else {
         value::intern(&format!("{}/{}", ns_name, spelling))
@@ -1416,7 +1416,7 @@ fn resolve_sym(
         crate::eval::derive::record_qualified(name, ns_name);
         return s; // already qualified, no alias
     }
-    if is_ambient(s) {
+    if is_ambient(heap, s) {
         return s; // declared with `defdyn` — ambient/root, never namespaced
     }
     // Own namespace first (a same-named local def shadows an import), then a
@@ -1649,10 +1649,10 @@ fn resolve_def(
             // …but never for an ambient (`defdyn`-declared) name: it stays bare, so
             // registering it would qualify the rest of the file's references to a
             // namespace-local name that is never defined.
-            if !value::symbol_name_ref(name).contains('/') && !is_ambient(name) {
+            if !value::symbol_name_ref(name).contains('/') && !is_ambient(heap, name) {
                 heap.add_ns_known_name(name);
             }
-            out.push(Value::symbol(qualify_name(ns_name, name)));
+            out.push(Value::symbol(qualify_name(heap, ns_name, name)));
         }
         Some(other) => out.push(other), // not a symbol — leave (eval will complain)
         None => return rebuild_list(heap, form, out),

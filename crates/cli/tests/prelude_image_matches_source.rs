@@ -7,7 +7,7 @@
 //! ADR-314 turned up three such omissions in a row, each silent and each found only by a
 //! broad wave of unrelated test failures:
 //!
-//! - the **`defdyn` marks** (`value::DYNAMICS`) were not carried, so `binding` rejected
+//! - the **`defdyn` marks** (the runtime's dynamic set) were not carried, so `binding` rejected
 //!   `*require-parent*` and every `require` in the language died;
 //! - **`*out*`** vanished, because the write filtered out bindings whose *value* was a
 //!   native — but a prelude `def` can bind a primitive under a name `builtins::register`

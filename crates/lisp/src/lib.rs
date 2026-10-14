@@ -57,7 +57,7 @@ pub mod eval; // the tree-walking evaluator + its macro / compile pass
 pub mod syntax; // surface: reader (text to Value) + printer (Value to text)
 pub mod types; // the advisory type lattice + checker (nothing gates on it)
 
-pub mod boot; // how a runtime comes to hold the prelude: image / text cache / source (ADR-138/314)
+pub mod boot; // how a runtime comes to hold the prelude: prelude image / source (ADR-314)
 pub mod builtins; // the primitive kernel (Rust mechanism; policy lives in std/*.blsp)
 pub mod bundle; // single-binary app release: append-to-binary bundling (ADR-038)
 pub mod cli_support; // tiny mechanism the `brood` and `nest` binaries share
@@ -137,10 +137,14 @@ impl Interp {
         let runtime = Arc::new(RuntimeCode::seeded(
             &SHARED.bindings,
             &SHARED.private,
+            &SHARED.dynamics,
             &SHARED.meta,
         ));
         let mut heap = Heap::with_regions(Arc::clone(&SHARED.code), runtime);
         heap.set_global(EnvId::GLOBAL);
+        // The stdlib image the shared boot installed is this runtime's too: its kind index.
+        let (image_modules, image_macros) = &SHARED.image_kinds;
+        heap.register_image_kinds(image_modules.iter().copied(), image_macros.iter().copied());
         // Abilities + the Display protocol are core — defined in the shared prelude
         // (`*show*` is wired on there), so nothing to load per runtime here.
         //

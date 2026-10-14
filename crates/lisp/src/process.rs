@@ -43,6 +43,8 @@ mod mailbox;
 pub use mailbox::l1_stats;
 pub(crate) mod message;
 pub(crate) mod monitor;
+mod pressure;
+pub(crate) use pressure::{near_soft_limit, soft_limit_crossed};
 mod scheduler;
 /// The system monitor (kernel runtime events → one subscriber's mailbox).
 /// `pub` so the GC (`core/heap.rs`) and VM (`eval/compile`) emit sites and the
@@ -59,6 +61,7 @@ pub use mailbox::{
 };
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub use message::{from_message, to_message, ClosureArmMsg, ClosureMsg, Message};
+pub(crate) use scheduler::exit_reason_phrase;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.

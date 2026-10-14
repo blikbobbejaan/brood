@@ -11,6 +11,11 @@
 ;; nothing) and return `[answer client-end]` — what `ask` returned, and whether it closed its
 ;; end of the connection (`:closed`/`:open`). The client stays alive until then, so a socket
 ;; closed by its owner exiting cannot pass for one `ask` closed.
+;;
+;; The reply waits for the query, as a real resolver's does. Sent on accept, it could reach the
+;; client before `ask` switched its socket to binary — `tcp/connect` returns with reads already
+;; started — and the reply decoded as text (every byte over 0x7F a U+FFFD) failed to parse:
+;; the suite's one recurring first-try failure.
 (defn- ask-fake (reply)
   (let (listener (tcp/listen "127.0.0.1" 0)
         port (tcp/local-port listener)
@@ -21,7 +26,9 @@
         sock (receive ([:tcp-accept ^listener s] s))
         _ (tcp/controlling-process sock (self))
         _ (tcp/set-binary sock true)
-        _ (when reply (tcp/send sock reply))
+        _ (when reply
+            (receive ([:tcp ^sock _query] nil) (after *test-wait-ms* nil))
+            (tcp/send sock reply))
         answer (receive ([:answer a] a) (after *test-wait-ms* :timeout))
         client-end (wait-closed sock))
     (send client :done)

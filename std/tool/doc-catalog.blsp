@@ -1,9 +1,19 @@
 (defmodule doc-catalog
-  "The Brood function catalogue: every public builtin and prelude function mapped to a
-  functional category (math, strings, filesystem, processes, and so on), plus the category
-  order and display titles. Shared by nest docs --all and hive's hosted /reference so both
-  present the language reference identically. Regenerate when the builtin/prelude surface
-  changes; a name absent from the catalog categorises as :other.")
+  "The language reference's categories (math, strings, filesystem, processes, and so on),
+  their order and display titles, and `category-of` — the category of any name, DERIVED
+  from where the name is defined rather than listed per name. Shared by nest docs --all
+  and hive's hosted /reference so both present the language identically.
+
+  The derivation, first match wins:
+  - a qualified `mod/name` takes its module's category (`*module-categories*`);
+  - a bare prelude name takes the category of the prelude SECTION it is defined in — the
+    `;; ---- title ----` header above its definition (`*section-categories*`), so moving a
+    definition to another section is how its category changes;
+  - a kernel primitive has no Brood definition, so it is placed by `*kernel-categories*`;
+  - `*exceptions*` names the few prelude definitions that sit in a section of another
+    domain.
+  A name none of these place is `:other`; `tests/doc_catalog_test.blsp` keeps that drawer empty
+  and checks every table entry still names a real module, section or primitive.")
 
 (def *category-order*
   [[:math "Math and numbers"]
@@ -25,671 +35,173 @@
     [:system "System and environment"]
     [:other "Other"]])
 
-(def *catalog*
-  {"*" :math
-   "string/->bytes" :convert
-   "string/->number" :convert
-   "string/->symbol" :convert
-   "math/abs" :math
-   "path/abbreviate" :filesystem
-   "path/absolute" :filesystem
-   "path/absolute?" :predicates
-   "math/acos" :math
-   "system/argv" :system
-   "math/asin" :math
-   "math/atan" :math
-   "math/atan2" :math
-   "path/basename" :filesystem
-   "string/bytes->" :convert
-   "string/number->" :convert
-   "doc-catalog/*catalog*" :meta
-   "doc-catalog/category-of" :meta
-   "doc-catalog/*category-order*" :meta
-   "math/ceil" :math
-   "reflect/check" :meta
-   "reflect/check-deps-fp" :meta
-   "reflect/check-file" :meta
-   "reflect/check-file-deps" :meta
-   "reflect/check-file-structured" :meta
-   "reflect/check-string-structured" :meta
-   "reflect/check-string-here" :meta
-   "reflect/strict-checking?" :meta
-   "seq/chunk-by" :collections
-   "seq/chunk-every" :collections
-   "math/clamp" :math
-   "math/cos" :math
-   "reflect/current-file" :meta
-   "seq/dedupe" :collections
-   "path/dirname" :filesystem
-   "seq/distinct" :collections
-   "seq/distinct-by" :collections
-   "seq/drop-last" :collections
-   "math/e" :math
-   "io/emit" :io
-   "seq/enumerate" :collections
-   "*err*" :io
-   "math/even?" :predicates
-   "math/exp" :math
-   "path/extension" :filesystem
-   "*features*" :meta
-   "io/file-port" :io
-   "io/file-port-path" :io
-   "reflect/file-signatures" :meta
-   "string/fill" :strings
-   "string/fill-prefix" :strings
-   "string/clip-cells" :strings
-   "seq/filterv" :collections
-   "seq/rejectv" :collections
-   "seq/find" :collections
-   "proc/flag" :processes
-   "seq/flatten" :collections
-   "io/fn-port" :io
-   "reflect/form-pos" :meta
-   "string/format" :strings
-   "seq/frequencies" :collections
-   "seq/group-by" :collections
-   "system/halt" :system
-   "proc/hibernate" :processes
-   "seq/index-where" :collections
-   "proc/info" :processes
-   "io/inspect" :io
-   "seq/interleave" :collections
-   "string/interp" :strings
-   "seq/interpose" :collections
-   "seq/iterate-times" :collections
-   "path/join" :filesystem
-   "seq/keep" :collections
-   "string/last-index-of" :strings
-   "proc/list" :processes
-   "file/list-dirs" :filesystem
-   "file/list-files" :filesystem
-   "math/ln" :math
-   "*load-path*" :meta
-   "math/log10" :math
-   "math/log2" :math
-   "proc/mailbox-size" :processes
-   "seq/max-by" :collections
-   "map/merge-with" :maps
-   "seq/min-by" :collections
-   "math/negative?" :predicates
-   "path/normalize" :filesystem
-   "math/odd?" :predicates
-   "reflect/parse-source" :meta
-   "reflect/parse-source-positioned" :meta
-   "math/pi" :math
-   "io/port-fn" :io
-   "io/port?" :predicates
-   "math/positive?" :predicates
-   "math/pow" :math
-   "*print-length*" :io
-   "*print-level*" :io
-   "*print-string-length*" :io
-   "io/process-port" :io
-   "io/process-port-pid" :io
-   "math/product" :math
-   "*protocols*" :meta
-   "io/puts" :io
-   "file/read-lines" :filesystem
-   "map/reduce-kv" :maps
-   "seq/reduce-while" :collections
-   "reflect/references-in-source" :meta
-   "file/regular?" :predicates
-   "path/relative-to" :filesystem
-   "path/relative?" :predicates
-   "*reload-diagnostics*" :meta
-   "seq/reject" :collections
-   "seq/remove-nth" :collections
-   "seq/repeatedly" :collections
-   "*require-edges*" :meta
-   "*require-parent*" :meta
-   "math/round" :math
-   "math/round-to" :math
-   "seq/sample" :collections
-   "seq/scan" :collections
-   "reflect/scan-form-end" :meta
-   "reflect/scan-form-start" :meta
-   "reflect/scan-form-start-2" :meta
-   "reflect/scan-source-extract" :meta
-   "reflect/scan-tokens" :meta
-   "system/script-args" :system
-   "map/select-keys" :maps
-   "seq/shuffle" :collections
-   "math/sin" :math
-   "reflect/source-deps" :meta
-   "reflect/resolves?" :meta
-   "reflect/source-location" :meta
-   "reflect/source-signatures" :meta
-   "file/spit-bytes-append" :filesystem
-   "path/split" :filesystem
-   "seq/split-at" :collections
-   "*spy-sink*" :io
-   "*out*" :io
-   "*show*" :meta
-   "+" :math
-   "-" :math
-   "->" :control
-   "decimal/number->" :convert
-   "->float" :convert
-   "conj-onto" :meta
-   "lookup-get" :meta
-   "lookup-keys" :meta
-   "/" :math
-   "<" :math
-   "<=" :math
-   "=" :math
-   ">" :math
-   ">=" :math
-   "%ability-id-kw" :meta
-   "%ability-qualify-op" :meta
-   "reflect/add-load-path" :meta
-   "and" :control
-   "any?" :predicates
-   "append" :collections
-   "%append-empty?" :predicates
-   "%append-onto" :collections
-   "apply" :functions
-   "apropos" :meta
+;; The kernel-namespaced families of the core reference. Other std modules are documented
+;; per module (`nest doc <module>`) and have no category.
+(def *module-categories*
+  {"bit" :math
+   "decimal" :math
+   "file" :filesystem
+   "fuzzy" :strings
+   "io" :io
+   "map" :maps
+   "math" :math
+   "num" :math
+   "path" :filesystem
+   "proc" :processes
+   "reflect" :meta
+   "seq" :collections
+   "string" :strings
+   "system" :system})
+
+;; Prelude section -> category. A key is the start of a section header's title (the text
+;; after `;; ---- `) and must match exactly one header.
+(def *section-categories*
+  {"bootstrap:" :control
+   "logic" :predicates
+   "universal list view" :collections
+   "folding" :collections
+   "arithmetic" :math
+   "comparison & equality" :math
+   "control-flow macros" :control
+   "checker suppression" :control
+   "macro expansion" :meta
+   "`type-matches?`" :predicates
+   "type predicates" :predicates
+   "derived predicates" :predicates
+   "sequence operations" :collections
+   "list accessors" :collections
+   "map operations" :maps
+   "map: merge" :maps
+   "I/O" :io
+   "embedding a file's text" :filesystem
+   "threading macros" :control
+   "conditional threading" :control
+   "binding-conditionals" :control
+   "with:" :control
+   "side-effecting iteration" :control
+   "error handling" :errors
+   "dynamic variables" :meta
+   "case:" :control
+   "bytes patterns" :patterns
+   "spawn:" :processes
+   "receive:" :processes
+   "dirty-native offload" :processes
+   "sequence library" :collections
+   "kept in the prelude" :collections
+   "comprehensions" :control
+   "records:" :maps
+   "lazy / fusing seq-views" :functions
+   "bounded printing" :io
+   "discovery / introspection" :meta
+   "spy:" :meta
+   "the general registry update" :meta
+   "deprecation" :meta
+   "the stdlib image, from the prelude" :meta
+   "waiting for someone else's in-flight load" :meta
+   "library names the PRELUDE itself references" :meta
+   "record identity and library-value predicates" :predicates
+   "ability impl registration and dispatch" :meta
+   ;; The last tools.blsp header also covers what follows it: contracts.blsp and protocol.blsp.
+   "boot-time stdlib image install" :meta})
+
+;; Kernel primitives (and two `defn`s nested in a `let`), which record no definition site.
+(def *kernel-categories*
+  {"apply" :functions
    "arglist" :meta
-   "as->" :control
-   "assoc" :maps
    "assoc-in" :maps
-   "%assoc-map-pairs" :maps
-   "%assoc-vec-pairs" :maps
-   "binding" :meta
-   "%binding-names" :meta
-   "%binding-vals" :meta
-   "bit/and" :math
-   "bit/count" :math
-   "bit/not" :math
-   "bit/or" :math
-   "bit/positions" :math
-   "bit/shift-left" :math
-   "bit/shift-right" :math
-   "math/sqrt" :math
-   "io/standard-port" :io
-   "io/standard-port-label" :io
-   "io/standard-port-write" :io
-   "io/stderr-port" :io
-   "io/stdout-port" :io
-   "path/stem" :filesystem
-   "seq/subvec" :collections
-   "math/sum" :math
-   "seq/take-last" :collections
-   "math/tan" :math
-   "path/temp" :filesystem
-   "seq/times" :collections
-   "seq/transduce" :collections
-   "reflect/type-signature" :meta
-   "reflect/declared-signature" :meta
-   "reflect/type-aliases" :meta
-   "map/update-keys" :maps
-   "map/update-vals" :maps
-   "file/walk-files" :filesystem
-   "io/with-err" :io
-   "path/with-extension" :filesystem
-   "io/with-out" :io
-   "io/write" :io
-   "file/write-lines" :filesystem
-   "bit/xor" :math
-   "bit/->float" :convert
-   "string/blank?" :predicates
-   "bool?" :predicates
-   ;; The `std/datetime` record predicates. They live in the PRELUDE (identity checks on a
-   ;; record id, so they cost nothing and need no module load) while the types they test
-   ;; live in `std/datetime` — which is exactly why they are easy to miss here.
-   "date?" :predicates
-   "datetime?" :predicates
-   "time-of-day?" :predicates
    "bound?" :meta
-   "system/brood-version" :meta
-   "system/build-id" :meta
-   "system/build-time" :meta
-   "reflect/expr-type" :meta
-   "reflect/builtin-modules" :meta
    "bytes" :bytes
-   "bytes?" :predicates
-   "string/capitalize" :strings
-   "case" :control
-   "%case-check-test" :control
-   "%case-clauses" :control
-   "%chain?" :predicates
-   "string/char->int" :strings
-   "string/char-at" :strings
-   "check-allow" :meta
-   "%cmp-ge" :math
-   "%cmp-gt" :math
-   "%cmp-le" :math
-   "string/codepoints->" :strings
-   "comment" :control
-   "comp" :functions
-   "%comp-compose" :functions
    "compare" :math
-   "compare-to" :meta
-   "complement" :functions
-   "cond" :control
-   "cond->" :control
-   "%cond-orphan" :control
-   "%cond-thread-build" :control
-   "conj" :collections
-   "%conj-one" :collections
    "cons" :collections
-   "constantly" :functions
-   "contains?" :predicates
-   "file/cp" :filesystem
-   "count" :collections
-   "%count-acc" :collections
-   "reflect/current-ns" :meta
-   "file/cwd" :filesystem
-   "dec" :math
-   "decimal/of" :convert
-   "decimal/->float" :convert
-   "decimal/->string" :convert
-   "decimal?" :predicates
-   "def-" :control
-   "defability" :meta
-   "%defability-derive-fn" :meta
-   "%defability-op-body" :meta
-   "%defability-op-call" :meta
-   "%defability-requires-vec" :meta
-   "%defability-sealed-vec" :meta
-   "defdyn" :meta
-   "defmacro" :control
-   "defmethod" :meta
-   "defmodule" :meta
-   "%defmodule-alias-clause" :meta
-   "%defmodule-alias-forms" :meta
-   "%defmodule-check-clause" :meta
-   "%defmodule-internals-clause" :meta
-   "%defmodule-internals-forms" :meta
-   "%defmodule-last-segment" :meta
-   "%defmodule-provide" :meta
-   "%defmodule-use-clause" :meta
-   "%defmodule-use-forms" :meta
-   "defmulti" :meta
-   "defn" :control
-   "defn-" :control
-   "defonce" :control
-   "defrecord" :maps
-   "%defrecord-acc-sym" :maps
-   "%defrecord-derives" :maps
-   "%defrecord-fname" :maps
-   "%defrecord-ftype" :maps
-   "%defrecord-qualify" :maps
-   "file/rmdir" :filesystem
-   "file/rm" :filesystem
    "demonitor" :processes
-   "math/denominator" :math
-   "file/dir?" :filesystem
-   "disj" :collections
-   "string/display-width" :strings
-   "string/width->index" :strings
-   "string/expand-tabs" :strings
-   "dissoc" :maps
+   "dissoc-in" :maps
    "doc" :meta
-   "reflect/doc-forms" :meta
-   "doc-search" :meta
-   "%doc-search-terms" :meta
-   "dolist" :control
-   "%dolist-loop" :control
-   "doseq" :control
-   "dotimes" :control
-   "%dotimes-loop" :control
-   "doto" :control
-   "drop" :collections
-   "reflect/dynamic?" :meta
    "empty?" :predicates
-   "string/ends-with?" :predicates
-   "error" :errors
-   "failure" :errors
-   "failure?" :predicates
-   "error-message" :errors
-   "reflect/eval" :meta
-   "reflect/eval-string" :meta
-   "reflect/undef" :meta
-   "every?" :predicates
    "exit" :processes
-   "system/feature?" :predicates
-   "system/features" :meta
-   "fields" :maps
-   "file/exists?" :filesystem
-   "file/mtime" :filesystem
-   "file/size" :filesystem
-   "file/stat" :filesystem
-   "seq/filter" :collections
    "first" :collections
-   "bit/float->" :convert
-   "float?" :predicates
-   "math/floor" :math
-   "fn?" :predicates
-   "fold" :collections
-   "%fold-loop" :collections
-   "for" :control
-   "%for-check-binds" :control
-   "%for-fold" :control
    "gensym" :meta
-   "get" :maps
-   "get-in" :maps
-   "%get-in-walk" :maps
-   "%get-unanswerable" :maps
-   "reflect/global-names" :meta
-   "string/grapheme-at" :strings
-   "string/grapheme-count" :strings
-   "identity" :functions
-   "if-let" :control
-   "impl" :meta
-   "%impl-app?" :predicates
-   "%impl-fn-arity" :meta
-   "%impl-id-owner" :meta
-   "%impl-substrate?" :predicates
-   "inc" :math
-   "includes?" :predicates
-   "index-of" :collections
-   "%index-of-seq-from" :collections
-   "math/infinite?" :predicates
-   "inspect" :io
-   "string/int->char" :strings
-   "int?" :predicates
-   "into" :collections
-   "seq/lfilter" :collections
-   "seq/lkeep" :collections
-   "seq/lmap" :collections
-   "seq/lreject" :collections
-   "string/join" :strings
-   "keys" :maps
    "keyword" :convert
-   "keyword?" :predicates
-   "last" :collections
    "link" :processes
-   "list" :collections
-   "string/list->" :strings
-   "file/ls" :filesystem
-   "list?" :predicates
-   "reflect/load" :meta
-   "string/lower" :strings
-   "macroexpand" :meta
-   "multi-return-type" :meta
    "macroexpand-1" :meta
-   "%macroexpand-loop" :meta
-   "file/mkdir" :filesystem
-   "map" :collections
-   "%map-assoc" :maps
-   "%map-count" :maps
-   "%map-dissoc" :maps
-   "%map-get" :maps
-   "%map-int-add" :maps
-   "%map-pairs" :maps
-   "map?" :predicates
-   "match" :patterns
-   "match*" :patterns
-   "math/max" :math
-   "merge" :maps
-   "%merge-acc" :collections
-   "%merge-runs" :collections
-   "%merge-sort-n" :collections
-   "math/min" :math
-   "math/mod" :math
-   "system/module-doc" :meta
    "monitor" :processes
-   "math/nan?" :predicates
    "nil?" :predicates
-   "not" :predicates
-   "not=" :math
-   "nth" :collections
-   "%nth-bad-index" :collections
-   "%nth-seq-or-fail" :collections
-   "num/add" :meta
-   "num/div" :math
-   "num/mul" :meta
-   "num/sub" :meta
-   "number?" :predicates
-   "math/numerator" :math
-   "or" :control
-   "%ord-compare" :meta
-   "string/pad-left" :strings
-   "string/pad-right" :strings
-   "string/pad-right-cells" :strings
    "pair?" :predicates
-   "partial" :functions
-   "%partition-acc" :collections
-   "%path-last-slash" :filesystem
-   "%pattern-vars" :patterns
-   "pid?" :predicates
-   "%pr-bounded" :io
-   "%pr-bounded-map" :io
-   "%pr-bounded-seq" :io
-   "%pr-bounded-text" :io
-   "%pr-elide" :io
-   "%pr-limit" :io
-   "%pr-safely" :io
    "pr-str" :io
-   "pr-str-bounded" :io
-   "reflect/private?" :meta
-   "provide" :meta
-   "math/quot" :math
-   "range" :collections
    "range?" :predicates
-   "ratio?" :predicates
-   "math/rational" :convert
-   "reflect/read-all" :io
-   "reflect/read-first" :io
    "read-line" :io
-   "reflect/read-string" :io
-   "receive" :processes
-   "%receive-binds" :processes
-   "%receive-body-code" :processes
-   "%receive-check-after" :processes
-   "%receive-clause-vars" :processes
-   "%receive-dedupe" :processes
-   "%receive-dispatch" :processes
-   "%receive-pin" :processes
-   "%receive-pinned-in" :processes
-   "%receive-prep" :processes
-   "%receive-result-clause" :processes
-   "%receive-split" :processes
-   "%receive-tags" :processes
-   "record-id" :maps
-   "%record-register" :maps
-   "record?" :predicates
-   "reduce" :collections
    "ref" :processes
-   "ref?" :predicates
-   "proc/register" :processes
-   "proc/unregister" :processes
-   "proc/alive?" :processes
-   "%register-impl-check-arity" :meta
-   "%register-method-derive" :meta
-   "%register-method-store" :meta
-   "system/reload-defs" :meta
-   "math/rem" :math
-   "file/rename" :filesystem
-   "%repeat-acc" :collections
-   "string/replace" :strings
-   "%require-await" :meta
-   "%require-find" :meta
-   "%require-force" :meta
-   "%require-force-package" :meta
-   "require-one" :meta
    "rest" :collections
-   "reverse" :collections
-   "%reverse-acc" :collections
-   "rope?" :predicates
-   "each" :control
-   "satisfies?" :meta
-   "second" :collections
-   "third" :collections
    "self" :processes
    "send" :processes
-   "seq" :collections
    "seqview?" :predicates
-   "reflect/set-load-path" :meta
-   "set?" :predicates
-   "%show-print-hook" :meta
+   "str" :strings
+   "symbol" :convert
+   "throw" :errors
+   "type-of" :convert
+   "unlink" :processes
+   "vector" :collections})
+
+;; Prelude definitions that sit in a section of another domain. Kept short: the gate
+;; rejects an entry that agrees with its section, and moving the definition (or giving it
+;; a section of its own) retires an entry.
+(def *exceptions*
+  {"check-allow" :meta
+   "deftype" :meta
    "meta" :meta
    "sig" :meta
-   "deftype" :meta
-   "sig!" :meta
-   "%sig-pos" :meta
-   "sleep" :processes
-   "file/slurp" :filesystem
-   "file/slurp-bytes" :filesystem
-   "ok->" :control
-   "%ok-thread-build" :control
-   "with" :control
-   "%with-build" :control
-   "sort" :collections
-   "spawn" :processes
-   "%spawn-body-thunk" :processes
-   "spawn-link" :processes
-   "spawn-monitor" :processes
-   "%spawn-thunk-form?" :predicates
-   "reflect/special-forms" :meta
-   "file/spit" :filesystem
-   "file/spit-append" :filesystem
-   "file/spit-bytes" :filesystem
-   "file/spit-private" :filesystem
-   "%split-at-acc" :collections
-   "spy" :meta
-   "%spy-default-sink" :meta
-   "%spy-emit" :meta
-   "%spy-indent" :meta
-   "%spy-node" :meta
-   "%spy-run" :meta
-   "%spy-walk" :meta
-   "%spy-walk-binds" :meta
-   "%spy-walk-call" :meta
-   "%spy-walk-if" :meta
-   "%spy-walk-let" :meta
-   "%spy-walk-seq" :meta
-   "string/starts-with?" :predicates
-   "str" :strings
-   "string/->codepoints" :strings
-   "string/->graphemes" :strings
-   "string/->list" :strings
-   "string/length" :strings
-   "string/normalize" :strings
-   "string/repeat" :strings
-   "string/span" :strings
-   "string/span-until" :strings
-   "string/split" :strings
-   "string/fields" :strings
-   "string?" :predicates
-   "string/substring" :strings
-   "string/substring-graphemes" :strings
-   "symbol" :convert
-   "symbol?" :predicates
-   "proc/system-monitor" :meta
-   "table?" :predicates
-   "take" :collections
-   "%take-acc" :collections
-   "%take-while-acc" :collections
-   "throw" :errors
-   "math/->fixed" :strings
-   "->seq" :meta
+   "->float" :convert
    "->string" :convert
-   "proc/trap-exit" :processes
-   "string/trim" :strings
-   "string/triml" :strings
-   "string/trimr" :strings
-   "try" :errors
-   "%try-class-catch?" :predicates
-   "type-matches?" :predicates
-   "type-of" :convert
-   "%unimpl-do" :meta
-   "unless" :control
-   "unlink" :processes
-   "update" :maps
-   "update-in" :maps
-   "string/upper" :strings
-   "vals" :maps
-   "vec" :convert
-   "vector" :collections
-   "vector?" :predicates
-   "when" :control
-   "when-let" :control
-   "proc/whereis" :processes
-   "with-err-str" :io
-   "with-out-str" :io
-   ;; Case folding for COMPARISON — one character per character, so an index into the
-   ;; result indexes the original. Catalogued with the strings, which is where someone
-   ;; looking for "compare these ignoring case" will look.
-   "string/fold-case" :strings
-   "string/has-upper?" :strings
-   ;; Reads a file, but at EXPANSION time, and what it leaves behind is a string
-   ;; literal — so it is catalogued with the file surface it draws on rather than
-   ;; with the macros, which is where someone looking for "how do I ship this file
-   ;; with my program" will look for it.
-   "include-str" :filesystem
-   "math/zero?" :predicates
-   "%zip-acc" :collections
-   "hash-map" :maps
-   "dissoc-in" :maps
-   "seq/xfilter" :collections
-   "seq/xkeep" :collections
-   "seq/xmap" :collections
-   "seq/xreject" :collections
-   "seq/zip-with" :collections
-   "map/zipmap" :maps
-   "system/stdlib-id" :meta
-   ;; ---- back in the prelude: used at macro-expansion time, so they cannot live in seq/
-   "but-last" :collections
-   "drop-while" :collections
-   "mapcat" :collections
-   "mapv" :collections
-   "partition" :collections
+   "identity" :functions
+   "last" :collections
    "repeat" :collections
-   "sort-by" :collections
-   "take-while" :collections
-   "seq/zip" :collections
-   ;; ---- added so nothing falls into :other (every core name has a home) ----
-   ;; (`gen`'s client API — call / cast / stop / start / defserver — is NOT
-   ;; here: `gen` is an ordinary module, so those names are `gen/…` and catalogued
-   ;; with the module, exactly like `supervisor`'s and `agent`'s.)
-   "defbehaviour" :meta
-   "date?" :predicates
-   "datetime?" :predicates
-   "multimap?" :predicates
-   "offload" :processes
-   "reflect/behaviour-ops" :meta
-   "pq?" :predicates
-   "queue?" :predicates
-   "time-of-day?" :predicates
-   "%register-protocol" :meta
-   "reserved-package-name?" :meta
-   "tap" :control
-   ;; `fuzzy`'s knobs are `defdyn`s, so they are bare while the module's functions are
-   ;; `fuzzy/…`. `*fuzzy-scorer*` holds a FUNCTION, which brings it into the catalogue.
-   ;; (A bare key loads no module in `docs_test`'s resolvability check; the `fuzzy/…`
-   ;; keys are what load it.)
-   "fuzzy/match" :strings
-   "fuzzy/scorer" :strings
-   "fuzzy/top" :strings
-   "fuzzy/filter" :strings
-   "*fuzzy-scorer*" :strings
-   "fuzzy/rank-async" :strings
-   "fuzzy/ranker" :strings
-   "fuzzy/ranker-candidates" :strings
-   "fuzzy/ranker-stop" :strings
-   "fuzzy/edit-distance" :strings
-   "fuzzy/nearest" :strings
-   ;; ADR-376/377/378: early-terminating transduce, `for`'s `:into`, small library gaps.
-   "seq/reduced" :collections
-   "seq/reduced?" :collections
-   "seq/%reduced" :collections
-   "seq/%reduced-value" :collections
-   "seq/xtake-while" :collections
-   "seq/cycle" :collections
-   "seq/pmap" :collections
-   "seq/prewalk" :collections
-   "seq/postwalk" :collections
-   "fold-for" :control
-   "condp" :control
-   "if-some" :control
-   "when-some" :control
-   "juxt" :functions
-   "fnil" :functions
-   "memoize" :functions
-   "then" :control})
+   "inspect" :io
+   "fields" :maps
+   "record-id" :maps})
 
-(defn category-of (function-name)
-  "The category keyword for a bare function name, or :other if uncatalogued."
-  (get *catalog* function-name :other))
+;; `;; ---- title ----`; a bare `;; -----` rule under a file's opening comment is not one.
+(defn- header-line? (line)
+  (and (string/starts-with? line ";; ---")
+    (not (= (string/trim (string/replace line "-" "")) ";;"))))
+
+(defn- header-key? (header key) (includes? header (str "- " key)))
+
+(defn prelude-file ()
+  "The path every prelude definition site names, or nil when the image records none."
+  (first (%source-location 'defn)))
+
+;; `[line-number header-line]` for every section header of the prelude source, in order.
+;; Read once when the module loads: the prelude cannot change under a running image.
+(def prelude-headers
+  (let (path (prelude-file))
+    (when path
+      (seq/keep (seq/enumerate (string/split (file/slurp path) "\n"))
+        (fn (pair)
+          (let ([index line] pair)
+            (when (header-line? line) [(inc index) line])))))))
+
+(defn section-of (name)
+  "The prelude section header line above bare `name`'s definition, or nil if `name` is not
+  defined in the prelude source."
+  (let (site (%source-location (string/->symbol name)) file (prelude-file))
+    (when (and site file (= (first site) file))
+      (fold prelude-headers
+        nil
+        (fn (found entry) (if (<= (first entry) (second site)) (second entry) found))))))
+
+(defn- section-category (header)
+  (when header
+    (fold *section-categories*
+      nil
+      (fn (found pair) (if (header-key? header (first pair)) (second pair) found)))))
+
+(defn derived-category (name)
+  "The category `name`'s definition site gives it, ignoring `*exceptions*`, or nil."
+  (let (slash (string/last-index-of name "/"))
+    (if (> slash 0)
+      (get *module-categories* (string/substring name 0 slash))
+      (or (section-category (section-of name)) (get *kernel-categories* name)))))
+
+(defn category-of (name)
+  "The category keyword for a function name (a string, bare or `mod/name`), or :other when
+  nothing places it."
+  (or (get *exceptions* name) (derived-category name) :other))

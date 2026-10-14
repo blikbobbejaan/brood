@@ -1675,7 +1675,7 @@ it waits for that load to finish (a half-evaluated module is never observable)."
   "The abilities `aname` requires (a list of names), or nil."
   (get *ability-requires* aname))
 
-; ---- dispatch identity ------------------------------------------------------
+;; ---- record identity and library-value predicates -----------------------------
 
 (defn %identity-of (x)
   "The dispatch identity of `x`: its nominal record id (a `module/name` keyword) if it
@@ -1758,7 +1758,7 @@ it waits for that load to finish (a half-evaluated module is never observable)."
     (time-of-day? 42)   → false"
   (%eq (record-id x) :datetime/time-of-day))
 
-; ---- registration -----------------------------------------------------------
+;; ---- ability impl registration and dispatch -----------------------------------
 
 ; The owning module of a record id keyword `:mod/name` (as a string), or nil for a
 ; built-in id (`:int`, `:default` — no `/`). The record NAME is the final `/`-segment, so

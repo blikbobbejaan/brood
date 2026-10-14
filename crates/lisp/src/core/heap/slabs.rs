@@ -322,6 +322,62 @@ pub(super) fn slab_capacity_bytes(s: &Slabs) -> usize {
         + s.envs.capacity() * size_of::<EnvFrame>()
 }
 
+/// Everything a slab set holds, in bytes: [`slab_capacity_bytes`] plus what the entries
+/// own outside the slabs — spilled vector buffers, map and frame arrays, string text and
+/// shared blobs, ropes. A shared blob counts in full in every heap that holds it, since
+/// each holder keeps it alive. **O(entries)**, so it is for a rare question — which
+/// process to stop under memory pressure ([`crate::process::pressure`]) — never a hot path.
+pub(super) fn owned_bytes(s: &Slabs) -> usize {
+    use std::mem::size_of;
+    let vectors: usize = s
+        .vectors
+        .iter()
+        .map(|store| match store {
+            VecStore::Spill { vec, .. } => vec.capacity() * size_of::<Value>(),
+            VecStore::Inline { .. } => 0,
+        })
+        .sum();
+    let maps: usize = s
+        .maps
+        .iter()
+        .map(|node| {
+            let data = if node.data.spilled() {
+                node.data.capacity() * size_of::<(Value, Value)>()
+            } else {
+                0
+            };
+            let children = if node.children.spilled() {
+                node.children.capacity() * size_of::<MapId>()
+            } else {
+                0
+            };
+            data + children
+        })
+        .sum();
+    let strings: usize = s
+        .strings
+        .iter()
+        .map(|string| match &string.data {
+            StrData::Inline(text) => text.capacity(),
+            StrData::Shared(blob) => blob.len(),
+        })
+        .sum();
+    let bytes: usize = s.bytes.iter().map(|blob| blob.len()).sum();
+    let ropes: usize = s.ropes.iter().map(|rope| rope.len_bytes()).sum();
+    let envs: usize = s
+        .envs
+        .iter()
+        .map(|frame| {
+            if frame.vars.spilled() {
+                frame.vars.capacity() * size_of::<(Symbol, Value)>()
+            } else {
+                0
+            }
+        })
+        .sum();
+    slab_capacity_bytes(s) + vectors + maps + strings + bytes + ropes + envs
+}
+
 /// A **cheap** stand-in for retained capacity, in slab elements, for the park-time gate.
 ///
 /// [`slab_capacity_bytes`] sums eleven `capacity()` fields per generation and multiplies each

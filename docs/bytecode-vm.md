@@ -14,7 +14,7 @@
 > runs on the VM; anything else transparently defers to the tree-walker per-form, so
 > the language is unchanged. **Differential test mode (done):**
 > `crates/lisp/tests/differential.rs` runs a corpus through *both* engines in one
-> process (via `compile::set_forced_engine`) and asserts identical results; `make
+> process (via `compile::set_forced_engine`, now `set_forced_ceiling`) and asserts identical results; `make
 > test-both` runs the whole suite under each. (It already caught one divergence — a
 > non-function call worded differently by `apply` vs the evaluator; now unified.)
 > **Variadic arms (done):** `&rest` and nil-default `&optional` arms VM-compile

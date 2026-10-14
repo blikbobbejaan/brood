@@ -339,28 +339,23 @@
             (tcp/close c)
             (is (includes? resp "200 OK"))
             (is (includes? resp "<h1>brood</h1>")))))))
-  (test "a truncated request head (no blank line, peer drops) doesn't kill the server"
+  (test "a truncated request head (no blank line, peer drops) reads as nil, not a raise"
     ;; Regression: http-read-raw did (subbytes head 0 -1) on a head with no
     ;; terminator, which threw and killed the connection's worker process
-    ;; (leaking the fd) — a remotely-triggerable crash. Now the malformed
-    ;; request is closed cleanly and the server keeps serving.
-    (let (me (self))
-      (spawn (do
-               (let (ls (listen 0))
-                 (send me [:port (tcp/local-port ls)])
-                 (serve-loop ls (fn (req) (ok "ok"))))))
-      (let (port (receive ([:port p] p) (after *test-wait-ms* :timeout)))
-        ;; a partial head, then close — the worker must not crash
-        (let (bad (tcp/connect "127.0.0.1" port))
-          (tcp/send bad "GET / HTTP/1.0\r\nHost: x")
-          (tcp/close bad))
-        (sleep 200)
-        ;; the server is still alive and serves a normal request
-        (let (c (tcp/connect "127.0.0.1" port))
-          (tcp/send c "GET / HTTP/1.0\r\n\r\n")
-          (let (resp (string/bytes-> (drain c)))
-            (tcp/close c)
-            (is (includes? resp "200 OK"))))))))
+    ;; — a remotely-triggerable crash. The worker is not linked to the accept
+    ;; loop, so its death is not visible from the server: read the request here,
+    ;; as the worker does, and assert the malformed head comes back as nil.
+    (let (ls (listen 0)
+          bad (tcp/connect "127.0.0.1"
+                (or (tcp/local-port ls) (error "http-test: the listener reported no local port"))))
+      (tcp/send bad "GET / HTTP/1.0\r\nHost: x")
+      (tcp/close bad)
+      (let (c (receive ([:tcp-accept ^ls c] c) (after *test-wait-ms* :timeout)))
+        (tcp/set-binary c true)
+        (tcp/controlling-process c (self))
+        (assert= (read-request c) nil)
+        (tcp/close c)
+        (tcp/close ls)))))
 
 (describe "http: a binary request body survives byte-faithfully"
   ;; read-request reads in binary mode, so a POST body containing bytes that

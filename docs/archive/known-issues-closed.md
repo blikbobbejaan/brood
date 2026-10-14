@@ -8148,11 +8148,11 @@ is refused rather than devirtualized — and the registry's recorded name must s
 constructor. Either check failing leaves the call on the dynamic path, which is the correct
 conservative answer: the rewrite declines on any uncertainty (ADR-182).
 
-**Guarded by** `crates/cli/tests/mono_differential.rs`
-`a_stale_record_id_is_not_devirtualized_to_whatever_the_name_means_now` — a `defrecord`
-named `shape` is rebound to a plain fn returning a bare map while its id stays registered,
-and `BROOD_MONO=1` must answer byte-identically to the dynamic path. A differential rather
-than a pinned string, so it cannot pass by agreeing with a wrong expectation.
+**Guarded by** `crates/cli/tests/devirt_differential.rs`
+`every_way_the_proof_lapses_answers_what_the_op_answers` (the two "stale record id" cases
+and "a constructor rebound after the caller compiled") — a `defrecord` named `shape` is
+rebound to a plain fn returning a bare map while its id stays registered, and every tier
+must answer what the tree-walker answers, with the record call seen to devirtualize.
 
 **Residual.** This closes the reachable path (a stale id, or a name rebound to something
 else). It does not make the registry itself self-cleaning — that is KI-89, still open.
@@ -13091,6 +13091,184 @@ with `--profile tree-walker`; the VM jobs keep the 15-minute kill. **Guard.** Th
 runs' tree-walker suite line should read `PASS` on the first try — a `TRY 1 TMT` there is
 this entry again.
 
+## KI-223 — the opt-in ability devirtualization disagreed with the op's own dispatch ✅ FIXED 2026-10-12
+
+**Symptom.** Under `BROOD_MONO=1`, five programs answered differently from the default:
+an armed op contract was skipped (`42` where the contract should have raised); an op
+redefined after its caller compiled was ignored; a record constructor redefined after its
+caller compiled was ignored (the record's impl answered instead of `DEFAULT`, KI-90 class);
+an impl registered by a later argument of the same call was missed; and removing the impl
+of an op with no `:default` gave "cannot call non-function: nil" instead of the op's "no
+impl" error. **Cause.** The rewrite resolved the impl at compile time (or before the
+arguments ran) and called it directly, bypassing the op's body — its contract, its current
+definition and its `%no-impl` fallback. **Why it survived.** The flag was opt-in and no
+program set it; the old differential compared it only on the ability suite. **Fix.** Found
+while making devirtualization the default (the flag is gone). The rewritten head is
+`%dispatch-proven`, which returns the impl only while the op and constructor are still what
+the compiler saw and an impl exists, and otherwise the op itself. Calls whose later
+arguments can run user code, rebound or wrapped op names, rejected arities and
+contract-armed runs are not rewritten. **Guard.** `crates/cli/tests/devirt_differential.rs`:
+tiers 1 and 2 against the tree-walker on the ability suite and on one fixture per case,
+each asserting the rewrite fired (or was skipped); every guard sabotage-verified.
+
+## KI-224 — two runtimes in one OS process corrupted each other's image reads and `defdyn` marks ✅ FIXED 2026-10-13
+
+**Symptom.** The nightly AddressSanitizer job, which runs the lib tests with plain `cargo
+test` (threads of one process), failed `image_sigs::every_type_the_image_carries_…` with
+"tempo/->iso: carried a type, but the loaded module declares none" and
+`dist::tests::a_wildcard_listener_advertises_the_node_host` with another test's
+`tcp:127.0.0.1:…` address. Reproduced locally by running the `image_sigs` lib tests threaded
+with `XDG_CACHE_HOME` pointing at an empty dir: 2 failures in 5, a different module named
+each time, and a third shape — `stdimage/build` refusing with "root global(s) belong to no
+module … *fuzzy-workers*". **Cause.** Three pieces of state were process-wide but meant per
+runtime. (1) `OPEN_IMAGES`, the held image file per path (KI-119): a second runtime indexing
+a rebuilt image replaced the handle the first runtime's directory relied on, so its section
+reads decoded the new file at the old offsets. (2) `value::DYNAMICS`, the `defdyn` mark set,
+which `%isolate` snapshots and restores wholesale: one runtime's restore dropped the marks
+another runtime had just added, so its `stdimage/build` probe could not attribute those
+globals. (3) The image writer's temp file was named by pid, so two runtimes building at once
+wrote the same file. The dist test was its own bug: it read `advertised_addr()`, the
+process's FIRST listener, while a sibling test thread had started another. **Why it
+survived.** nextest gives every test its own process, and the nightly's sanitizer job was
+the only place that ran runtimes side by side. **Fix.** `RuntimeCode::image_files` and
+`RuntimeCode::dynamics` (seeded from the prelude's marks, like `private`), dropped with the
+runtime; a pid-plus-counter temp suffix; `start_listener` returns the address it recorded
+and the tests assert on that. **Guard.** `boot::image::per_runtime_handle_tests` (a rebuild
+indexed by another runtime does not move this runtime's sections) and
+`crates/lisp/tests/dynamic_marks_per_runtime.rs` (both directions across an isolate), each
+red with the process-wide state restored; the threaded repro 0 failures in 15.
+
+## KI-225 — an exit signal killing the root program hung `brood file.blsp` ✅ FIXED 2026-10-13
+
+**Symptom.** `(let (d (spawn :done)) (sleep 100) (link d) …)` at the top level of a program
+printed what came before the kill and then never exited — in a `sleep`, a `receive … after`,
+or a pure compute loop; the released 0.35 binary did the same. The same code in a spawned
+process died correctly. Found from a red CI breakage run: `chaos2_process_links.blsp`'s P15
+spawned a child that exits `:normal` and then linked it separately, so a child that finished
+first made the link a `:noproc` exit signal to the untrapping root (that run happened to die
+with the message rather than hang). **Cause.** `brood file.blsp` runs the program as one green
+process, and the main thread waits for it to publish an outcome — which it did only on
+finishing or on a form's error. A death by exit signal retired the process without
+publishing, so the main thread waited forever. Separately, a hard kill never stopped a JIT'd
+loop at tier 2 in any process: the native loop's preemption hands straight back to the
+scheduler, skipping the VM's kill check, and the process was re-queued for ever. **Fix.**
+Every scheduler death goes through `Process::retire(reason)`, which publishes the root
+program's outcome (`:normal` exits 0; anything else exits 1 with "killed by an exit signal:
+<reason>"), with a `Drop` backstop on the program state for a scheduler panic; a preempted
+quantum with a hard kill pending retires the process. P15 uses `spawn-link`. **Guard.**
+`crates/cli/tests/root_exit_signal.rs` runs the binary at tiers 0, 1 and 2 on each shape
+(link to a dead pid while sleeping, a linked exit during `receive`/compute, `(exit root …)`,
+a linked crash, a trapping root, `:normal`, `(exit child :kill)` on a computing child), each
+with a deadline; removing the publish, the backstop, the preemption check or the tier-0 change
+each turns its tests red.
+
+## KI-226 — two runtimes in one OS process shared the module resolver's memos ✅ FIXED 2026-10-13
+
+**Symptom.** With two `Interp`s in one process, (1) `(kiabsent/probe)` in a runtime whose
+`*load-path*` held `kiabsent.blsp` raised `unbound symbol: kiabsent/probe` once ANOTHER
+runtime had failed to find `kiabsent`; (2) `(kikind/quoted hello)`, a macro call in a runtime
+loading `kikind` from source, raised `unbound symbol: hello` once another runtime had opened
+an image whose `kikind/quoted` was a function — the call compiled as a function call.
+**Cause.** Two memos of `eval/derive.rs` were process-wide statics. `ABSENT_MODULES` records
+modules a `require` failed to find, but whether a module can be found depends on
+`*load-path*`, a global of one runtime. `ImageKinds` records which modules an opened image
+holds and which of their names are macros, so a head into one of them can wait for its first
+call (ADR-335); another runtime's image vouched for a module this runtime loads from source.
+**Why it survived.** nextest runs each test in its own process, and the per-runtime audit
+after KI-224 had looked at the three states that failed rather than at every table. Both
+memos were written so that a wrong answer looks like an ordinary `unbound symbol`.
+**Fix.** `RuntimeCode::absent_modules`, `image_modules` and `image_macros`, reached through
+`Heap`. The stdlib image is installed once, in the shared boot heap, and the install never
+re-runs in a live runtime, so the boot's kind index travels in the `SharedBundle` and
+`Interp::new` seeds it (without the seed every runtime lost lazy loading of std modules).
+**Guard.** `crates/lisp/tests/module_resolution_per_runtime.rs` — two runtimes on their own
+threads, sequenced over channels; both tests were red before the fix with the messages above.
+`curated_names_load_nothing` went red ("every probe module is already loaded in a fresh
+process") while the seeding was missing. `crates/lisp/tests/process_wide_statics.rs` lists
+every `static` in `crates/lisp/src` that holds a lock or a shared vector, with the reason it
+is process-wide; an unlisted one fails the build (sabotage: re-adding the old `KINDS` static
+named `eval/derive.rs KINDS`).
+
+## KI-227 — a TCP listener out of file descriptors never accepted its backlog once they freed up ✅ FIXED 2026-10-13
+
+**Symptom.** A server under `ulimit -n 40`, with a separate client process holding 50
+connections, accepted 31 of them and printed `net: accept on listener 1 failed (Too many open
+files (os error 24)); drain stopped` once per readiness event. After it closed everything it
+had accepted, it accepted 0 of the remaining 19 within 3 s: they waited for some later
+connection to arrive, and with none coming, forever. **Cause.** The reactor registers a
+listener edge-triggered and drains `accept` until `WouldBlock`. Any other error ended the
+drain — rightly, since retrying `EMFILE` in a tight loop spins — but nothing ever resumed
+it, and an edge-triggered registration produces no new event for connections that were
+already queued. The code already made the same argument for `ConnectionAborted` (skip and
+keep draining, or the backlog strands), but not for exhaustion. **Why it survived.** No test
+ran anything out of descriptors; the log line made the stop visible but not its
+consequence. **Fix.** `accept_ready` returns the error that stopped it; the reactor keeps a
+retry time per starved listener, re-drives it every `ACCEPT_RETRY` (100 ms, and wakes the
+poll for it), and logs once when a listener starts starving and once when it accepts again.
+Also probed and found sound: an outbound `tcp/connect`, `file/spit`, `os/cmd` and
+`os/run-process` under `EMFILE` each raise a catchable error naming it, and work again once
+descriptors are free. **Guard.** `crates/cli/tests/accept_starvation.rs`, the probe above as
+two `brood` processes (the server under `ulimit -n 40`), asserting both that the server did
+run out (so the run proves something) and that all 50 were accepted; red with the retry
+filter forced false, green three runs in three restored.
+
+## KI-228 — `tcp/close` with unread input reset the connection and truncated the peer's response ✅ FIXED 2026-10-13
+
+**Symptom.** A Brood server that accepted, sent a 200 000-byte response without reading the
+request, and called `tcp/close`: a client that sent 50 000 bytes, waited 500 ms and then read
+to EOF received 128 000 bytes, three runs in three. **Cause.** When a closing socket's
+outbound queue drained, the reactor dropped the stream. Closing a TCP socket whose receive
+buffer still holds unread bytes makes the kernel send a RESET rather than a FIN, and the
+peer's kernel discards everything it has received but the peer has not yet read — the tail of
+the response. A close with nothing queued dropped the socket at once, the same way. This is
+the "lingering close" every HTTP server has to do; any handler that answers before reading
+the whole request (an error, a `413`, a redirect) hits it. **Why it survived.** Every test
+client was Brood, and the Brood reactor reads eagerly into the owner's mailbox, so the
+response was already out of the kernel buffer when the reset arrived. `tcp_test`'s
+`chatty-peer` slept 50 ms before closing so its close would be a FIN — the sleep was hiding
+this; the sleep-removal pass found it (the 50 ms itself turned out not to be what avoided the
+reset there). **Fix.** `begin_linger`: after the close's last queued byte, `shutdown(Write)` —
+the peer gets every byte and then EOF — and read-and-discard until the peer's EOF, a read
+error, or the `LINGER` deadline (5 s, which already bounded the flush). A lingering socket
+wants READABLE whether or not its inbound flow was paused. Deliberate trade-off: a lingering
+socket holds its descriptor until the peer closes, so while any listener is starved for
+descriptors (KI-227) the reactor tears lingering sockets down at once. TLS closes are
+unchanged. **Guard.** `crates/cli/tests/tcp_close_linger.rs` — a Rust `std::net` client
+against a Brood server, three connections, each must read all 200 000 bytes and a clean EOF;
+red with `begin_linger` returning at once. `accept_starvation.rs` went red when the linger
+landed without the starvation release (the client never closes, so the descriptors stayed
+pinned past its window) and is the guard for it.
+
+## KI-229 — the soft memory limit stopped a bystander instead of the process holding the memory ✅ FIXED 2026-10-14
+
+**Symptom.** Under `BROOD_MEM_LIMIT=1G`, a process keeping a 1 MB string every few
+milliseconds beside a busy worker that allocated only garbage: when live memory crossed the
+soft limit, the busy worker died with `E0043` and the leak kept going — three runs in three.
+**Cause.** The soft limit (ADR-043) is a count of every byte the allocator holds, checked at
+the eval safepoint, and the error was raised in whichever process reached a safepoint first
+after the crossing. A busy process reaches one constantly; a process that accumulates in short
+bursts between `receive`s rarely does. The count says the runtime holds too much, not which
+process. **Why it survived.** The memory-limit tests all ran one runaway in one process, where
+the process that notices is the process to blame; the test runners' default ceiling is a
+host-survival backstop nothing legitimate reaches. Found while deciding whether `brood` and
+`nest run` should default a ceiling: with this behaviour a default would make a leak kill its
+bystanders first. **Fix.** `process/pressure.rs` (ADR-399). `Heap::footprint` measures what a
+heap holds: both generations' slab capacity plus what the entries own — spilled vectors, map
+and frame arrays, string text, shared blobs, ropes. Within the last eighth of the soft limit
+every process measures itself at most once per 50 ms (at the quantum safepoint, or when it
+parks), and at the crossing the selector measures each parked process under its mailbox lock,
+adds its queued wire messages, and stops the largest with a hard exit whose reason is the
+`E0043` error map, printing one line naming it. Nobody else is interrupted. If the largest
+holder is the current process it raises in place, catchably, as before; if no process holds an
+eighth of the allocator's count, the current process raises (the memory is in tables, code or
+native buffers). A first version collected figures in a 20 ms window after the crossing; a
+mailbox flood crossed the remaining quarter to the hard limit inside the window and aborted
+the runtime, so measuring now starts before the crossing. **Guard.**
+`crates/cli/tests/memory_pressure.rs` — a leak beside a busy worker, and a never-receiving sink
+flooded with 100 KB messages beside a ticker; each asserts the culprit's `[:down …]` carries
+`E0043`, the bystander is alive, and stderr names the stopped process. Both are red with the
+old raise-in-place restored (the flood case also reached the hard abort).
+
 ## KI-230 — every `try` body ran as one quantum; a `receive` in one blocked its worker ✅ FIXED 2026-10-12
 
 **Symptom.** A 50 ms loop inside `(try … (catch e nil))` in a spawned process ran in 1
@@ -13210,4 +13388,3 @@ next `nest` run is exactly when a developer measures, and the stale entry outliv
 **Fix.** The key includes whether this process installed the stdlib image
 (`*std-image-installed*`). **Guard.** `cli_support::run_check_cache_tests` — red with the bit
 left out of the hash.
-

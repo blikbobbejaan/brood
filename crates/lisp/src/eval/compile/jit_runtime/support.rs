@@ -102,7 +102,7 @@ pub(crate) fn jit_resolve_global_ic(heap: &mut Heap, sym: Symbol, site: u32) -> 
         crate::perf_bump!(global_ic_miss);
         match heap.env_get(env, sym) {
             Some(v) => {
-                if !value::is_dynamic(sym) {
+                if !heap.is_dynamic(sym) {
                     heap.vm_global_ic_put(site, sym, epoch, v);
                 }
                 Some(v)
