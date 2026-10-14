@@ -2119,8 +2119,8 @@ pub fn macroexpand_all(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
     // because each reads names by spelling and must know no binder in the form shadows
     // them, and only the whole form can say so. In order: a `seq/l*` stage chain under a
     // `fold`/`reduce` fuses into one literal (§7); a tally through a `fold`/`reduce` literal
-    // builds in place (ADR-360 §6); a `fold` over a literal `(range …)` with a literal `fn`
-    // becomes a counted `letrec` loop (§7).
+    // builds in place (ADR-360 §6); a `fold`/`reduce` over a literal `(range …)` with a
+    // literal `fn` becomes a counted `letrec` loop (§7).
     let fused = pipeline_fuse_rewrite(heap, expanded);
     let tallied = linmap_fold_rewrite(heap, fused);
     Ok(range_fold_rewrite(heap, tallied))
@@ -2594,9 +2594,16 @@ fn pipeline_fuse_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<V
     ))
 }
 
-/// Rewrite every `(fold (range …) INIT (fn (acc x) BODY…))` in `form` into a counted
-/// `letrec` loop over the range's bounds, with the ordinary `fold` kept for a non-range
-/// (an empty range is nil). See the section comment.
+/// A head the counted loop replaces: `fold`, or `reduce`, whose three-argument form
+/// `(reduce COLL INIT f)` is `(fold COLL INIT f)`. (Its two-argument form never has the
+/// four items the callers require.)
+fn is_fold_head(h: value::Symbol) -> bool {
+    value::symbol_is(h, "fold") || value::symbol_is(h, "reduce")
+}
+
+/// Rewrite every `(fold (range …) INIT (fn (acc x) BODY…))` in `form` — or the same
+/// `reduce` — into a counted `letrec` loop over the range's bounds, with the ordinary
+/// `fold` kept for a non-range (an empty range is nil). See the section comment.
 fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
         return form;
@@ -2611,7 +2618,7 @@ fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
 
 fn form_has_range_fold(heap: &Heap, form: Value) -> bool {
     form_has_call(heap, form, 0, &|head, items| {
-        value::symbol_is(head, "fold")
+        is_fold_head(head)
             && items.len() == 4
             && plain_fn_literal(heap, items[3]).is_some_and(|(p, _)| p.len() == 2)
     })
@@ -2817,7 +2824,7 @@ fn range_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Valu
     let ValueRef::Sym(h) = items[0].unpack() else {
         return None;
     };
-    if !value::symbol_is(h, "fold") || items.len() != 4 {
+    if !is_fold_head(h) || items.len() != 4 {
         return None;
     }
     let (params, body) = plain_fn_literal(heap, items[3])?;

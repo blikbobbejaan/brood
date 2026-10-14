@@ -18,13 +18,9 @@ devlog entries of the same dates.
   and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
   memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
   it carry the old ones — the map is in the devlog entry "merged origin/main".
-- `known-issues.md` lists **no open or watching entry**. KI-239 (a dist test's peer exited before
-  its client booted) is fixed — the test gave the peer a fixed six-second life. KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
-  TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the soft memory
-  limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14, then
-  KI-240..245 (dotted lists unsendable, refused threads panicking, fast allocators reaching
-  the hard abort, a stuck victim shielding the rest, lost stdout exiting 0, a `receive`
-  under `reflect/eval` re-running its form) and KI-246 (nested sets hashed quadratically).
+- `known-issues.md` lists **no open or watching entry**. KI-247 (a bystander raising after a
+  holder died) and KI-248 (a large allocation passing the hard limit when the live snapshot
+  had not seen an earlier large block) were found and fixed 2026-10-14 (night).
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
@@ -86,6 +82,16 @@ one-span folds ~145 instructions cheaper each, `reduce` flat. Two leftovers, nei
 stopped-short path's `first`/`rest` are runtime callbacks (~150 instructions a span, once per
 4 096 elements). **Read the devlog's measurement lesson before trusting a few-percent
 instruction delta between two builds:** a comment-only prelude edit moved rows by up to 2.3%.
+
+**D. DONE (2026-10-14, night).** `reduce` takes the counted range loop (`nqueens` 113 → 90
+ms); a named thin wrapper links from native code (~2 100 → ~420 instructions a call); the
+CLIF verifier is off in release (`base64`/`json` −11% pinned); a fold's native callback
+finishes inline (746 → 617 instructions an element). Leads left, measured: the fold callback
+is still ~617 instructions an element against ~412 for a native→native call by name — the
+remaining Rust entry ceremony (`enter_native`, frame nil-fill, captures), whose amortisation
+would reshape ADR-403's per-element preemption; and a computed-head call from native code is
+~771 against 412 by name (A's in-IR fast link for computed heads). `nqueens`' `solve` stays
+interpreted (it builds its loop closure; §7.1).
 
 ### Older threads
 

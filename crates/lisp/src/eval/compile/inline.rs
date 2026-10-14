@@ -1136,9 +1136,15 @@ pub(crate) fn build_inlined_body(
 /// each staged arg's type for calls to `<fn>` — a value-level corruption the handle scan
 /// cannot see).
 #[cfg(feature = "jit")]
+#[inline]
 pub(crate) fn jit_verify_active() -> bool {
-    crate::diagnostics::debug_flags::jit_verify()
-        || crate::diagnostics::debug_flags::jit_verify_function().is_some()
+    // Read on every native call a Rust caller makes (a fold's every element): one cached
+    // flag, not two lazy-init reads through two calls.
+    static ACTIVE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ACTIVE.get_or_init(|| {
+        crate::diagnostics::debug_flags::jit_verify()
+            || crate::diagnostics::debug_flags::jit_verify_function().is_some()
+    })
 }
 
 /// A one-word type tag for a `Value`, for the `BROOD_JIT_VERIFY_FN` arg log.

@@ -94,6 +94,24 @@
     (def cc-inner (fn (a x) (+ a (* 2 x))))
     (assert= (* 2 (tri 2000)) (fold-with via-inner 2000 0))))
 
+;; The same wrapper called BY NAME from a native loop. The interpreter caches it on the
+;; call IC without its arm (it redirects instead), so the native caller has to attach the
+;; arm to link to it — and the link must still see a redefinition of either function.
+(def bn-inner (fn (a x) (+ a x)))
+(defn- bn-wrap (a x) (bn-inner a x))
+(defn- sum-by-name (i acc) (if (= i 0) acc (sum-by-name (- i 1) (bn-wrap acc i))))
+
+(describe "a thin wrapper called by name from native code"
+  (test "sees a redefinition of its inner function and of itself"
+    (when (%native-tier?)
+      (assert= :native (settle sum-by-name 2 (fn () (sum-by-name 500 0)) 500))
+      (assert= :native (settle bn-wrap 2 (fn () (sum-by-name 500 0)) 500)))
+    (assert= (tri 2000) (sum-by-name 2000 0))
+    (def bn-inner (fn (a x) (+ a (* 2 x))))
+    (assert= (* 2 (tri 2000)) (sum-by-name 2000 0))
+    (defn- bn-wrap (a x) (bn-inner a (* 3 x)))
+    (assert= (* 6 (tri 2000)) (sum-by-name 2000 0))))
+
 (describe "across processes: computed calls in many processes at once"
   :isolated (test "eight workers alternating closures over their own captures agree"
     (let (me (self)

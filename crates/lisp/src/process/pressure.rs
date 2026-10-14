@@ -59,10 +59,18 @@ fn period() -> u64 {
 const STOP_GRACE: Duration = Duration::from_millis(250);
 
 struct Pressure {
-    /// The processes stopped and not yet gone, with when. Nobody else is stopped while one
-    /// is within [`STOP_GRACE`] — its memory is about to go — and once past it a victim is
-    /// left out of the next selection, which stops the largest holder still able to die.
+    /// The processes stopped, with when. Nobody else is stopped while one is within
+    /// [`STOP_GRACE`] — its memory is about to go — and once past it a victim still alive is
+    /// left out of the next selection, which stops the largest holder still able to die. A
+    /// victim that has died stays until its grace runs out: its memory can still be on the
+    /// count when the next process reaches a safepoint, and with it gone nobody holds an
+    /// attributable share, so that process raised in its place (KI-247).
     stopped: Vec<(u64, Instant)>,
+    /// The process that last raised the error in itself as the largest holder, and when.
+    /// Within [`STOP_GRACE`] of it every OTHER process carries on, as for a stopped one —
+    /// it is dying or has just died, and its memory is about to go. The raiser itself is
+    /// not held back: it may have caught the error and kept allocating.
+    raised: Option<(u64, Instant)>,
     /// When a selection last found no process worth stopping, and the table holding the
     /// most then, if one held an attributable share. Within a [`PERIOD`] of it the current
     /// process raises without selecting again — a selection walks every parked heap (and
@@ -72,6 +80,7 @@ struct Pressure {
 
 static PRESSURE: Mutex<Pressure> = Mutex::new(Pressure {
     stopped: Vec::new(),
+    raised: None,
     unattributable: None,
 });
 
@@ -90,13 +99,20 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
     let Ok(mut pressure) = PRESSURE.try_lock() else {
         return None;
     };
-    pressure.stopped.retain(|&(pid, _)| is_alive(pid));
+    pressure
+        .stopped
+        .retain(|&(pid, since)| is_alive(pid) || since.elapsed() < STOP_GRACE);
     if pressure
         .stopped
         .iter()
         .any(|&(_, since)| since.elapsed() < STOP_GRACE)
     {
         return None;
+    }
+    if let Some((pid, since)) = pressure.raised {
+        if since.elapsed() < STOP_GRACE && Some(pid) != me {
+            return None;
+        }
     }
     if let Some((since, table)) = pressure.unattributable {
         if since.elapsed() < PERIOD {
@@ -115,6 +131,7 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
         // table too when one holds a share.
         Some((pid, held)) if held >= live / ATTRIBUTABLE => {
             debug_assert_eq!(Some(pid), me);
+            pressure.raised = Some((pid, Instant::now()));
             Some(unattributable_error(live, largest_table(live)))
         }
         _ => {
@@ -196,4 +213,63 @@ fn stop(pid: u64, held: usize, live: usize) {
         held >> 20
     );
     scheduler::exit_propagate(pid, super::error_reason(&error));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pid no process has: `is_alive` is false for it, as for a victim that has died.
+    const GONE: u64 = u64::MAX - 7;
+
+    fn reset() {
+        let mut pressure = crate::core::sync::lock(&PRESSURE);
+        pressure.stopped.clear();
+        pressure.raised = None;
+        pressure.unattributable = None;
+    }
+
+    /// The window KI-247 hit: a holder has just died — stopped, or raising in itself — and its
+    /// memory is still on the count when the next process reaches a safepoint. That process
+    /// must carry on, not raise in the dead holder's place. Here nothing else holds memory, so
+    /// without the grace the selector raises (the control). Sabotage: drop the dead victim in
+    /// `retain` again, or skip the `raised` check, and the matching case returns the error.
+    #[test]
+    fn a_holder_that_just_died_keeps_the_next_safepoint_from_raising() {
+        let heap = Heap::new();
+        let live = 1 << 30;
+        reset();
+        assert!(
+            soft_limit_crossed(&heap, live).is_some(),
+            "control: with no recent stop, an unattributable crossing raises here"
+        );
+
+        reset();
+        crate::core::sync::lock(&PRESSURE)
+            .stopped
+            .push((GONE, Instant::now()));
+        assert!(
+            soft_limit_crossed(&heap, live).is_none(),
+            "a victim stopped a moment ago and already dead still holds the others back"
+        );
+
+        reset();
+        crate::core::sync::lock(&PRESSURE).raised = Some((GONE, Instant::now()));
+        assert!(
+            soft_limit_crossed(&heap, live).is_none(),
+            "another process that just raised in itself holds the others back"
+        );
+
+        // Past the grace, both are forgotten and the crossing is decided again.
+        reset();
+        let then = Instant::now() - STOP_GRACE * 2;
+        {
+            let mut pressure = crate::core::sync::lock(&PRESSURE);
+            pressure.stopped.push((GONE, then));
+            pressure.raised = Some((GONE, then));
+        }
+        assert!(soft_limit_crossed(&heap, live).is_some());
+        assert!(crate::core::sync::lock(&PRESSURE).stopped.is_empty());
+        reset();
+    }
 }

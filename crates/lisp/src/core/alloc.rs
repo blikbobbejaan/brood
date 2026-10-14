@@ -150,16 +150,34 @@ fn record_dealloc(size: usize) {
     SHARD_IDX.with(|&i| LIVE[i].0.fetch_sub(size, Ordering::Relaxed));
 }
 
-/// Would committing `size` more bytes cross the hard limit? Reads the lazily
-/// refreshed `APPROX_LIVE` snapshot (one relaxed load); when no limit is set (the
-/// common case) it's a single load of a zero and an early return. The snapshot
-/// lags slightly and the check races under the worker pool, but the limit is a
-/// safety backstop, not byte-exact accounting — a small overshoot is fine, and a
-/// single oversized allocation is caught by its own `size` regardless of the lag.
+/// Would committing `size` more bytes cross the hard limit? When no limit is set (the
+/// common case) it's a single load of a zero and an early return. A small allocation far
+/// from the limit is judged by the lazily refreshed `APPROX_LIVE` snapshot (one relaxed
+/// load): it lags by up to [`PEAK_SAMPLE`] allocations a thread, and an overshoot that size
+/// is fine for a backstop. A LARGE allocation, or any allocation the snapshot puts near the
+/// limit, is judged by the exact sum: the snapshot's lag is counted in allocations, not
+/// bytes, so it can miss earlier large blocks entirely — a 100 MB string made since the last
+/// sample was invisible, and a 500 MB one built on top of it passed a 512 MiB limit (KI-248).
 #[inline]
 fn would_exceed_hard(size: usize) -> bool {
     let limit = HARD_LIMIT.load(Ordering::Relaxed);
-    limit != 0 && APPROX_LIVE.load(Ordering::Relaxed).saturating_add(size) > limit
+    if limit == 0 {
+        return false;
+    }
+    let approx = APPROX_LIVE.load(Ordering::Relaxed);
+    if size < LARGE_ALLOCATION && approx.saturating_add(size) <= limit - limit / 8 {
+        return false;
+    }
+    exact_would_exceed_hard(size, limit)
+}
+
+/// [`would_exceed_hard`] against the exact sum, which it also leaves in the snapshot (so a
+/// refusal reports the true live figure). Large or near-limit allocations only.
+#[cold]
+fn exact_would_exceed_hard(size: usize, limit: usize) -> bool {
+    let live = live_bytes();
+    APPROX_LIVE.store(live, Ordering::Relaxed);
+    live.saturating_add(size) > limit
 }
 
 /// An allocation at least this large checks the soft limit itself.
@@ -651,6 +669,34 @@ mod tests {
         // A sane sum passes through untouched; a torn one keeps the previous figure.
         assert_eq!(settle_live_sum(4096, 7), 4096);
         assert_eq!(settle_live_sum(usize::MAX - 10, 7), 7);
+    }
+
+    /// KI-248: the snapshot lags by a count of allocations, so a large block made since the
+    /// last sample is invisible to it. A large allocation on top of one must still be refused.
+    /// Staged on the counters as the torn-sum test does: 100 MB live that the snapshot has
+    /// not seen, then a 500 MB request under a 512 MiB limit. Sabotage: judge every size by
+    /// the snapshot again (`would_exceed_hard`'s pre-KI-248 body) and the first assert fails.
+    #[test]
+    fn a_large_allocation_sees_the_large_blocks_the_snapshot_has_not() {
+        let unseen = 100_000_000usize;
+        let limit = 512usize << 20;
+        let stale = live_bytes();
+        LIVE[0].0.fetch_add(unseen, Ordering::Relaxed);
+        APPROX_LIVE.store(stale, Ordering::Relaxed);
+        HARD_LIMIT.store(limit, Ordering::Relaxed);
+        let large_refused = would_exceed_hard(500_000_000);
+        let small_far_allowed = !would_exceed_hard(64);
+        HARD_LIMIT.store(0, Ordering::Relaxed);
+        LIVE[0].0.fetch_sub(unseen, Ordering::Relaxed);
+        APPROX_LIVE.store(live_bytes(), Ordering::Relaxed);
+        assert!(
+            large_refused,
+            "500 MB on top of an unseen 100 MB passed a 512 MiB hard limit"
+        );
+        assert!(
+            small_far_allowed,
+            "a small allocation far from the limit was refused"
+        );
     }
 
     fn files(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

@@ -13425,6 +13425,58 @@ both ways: the old routing → `zz_provided_test.blsp:4:5: test failed: b › th
 required is still provided`; no view refresh → `aa_require_test.blsp:4: test failed: a › sees
 the nested provide while loading`.
 
+## KI-248 — a large allocation passed the hard limit when the snapshot had not seen an earlier large block ✅ FIXED 2026-10-14
+
+**Symptom.** `cli::memory_pressure::one_allocation_past_the_hard_limit_names_the_limit` failed
+under `BROOD_TIER=0` on every run that booted from the stdlib image and passed on a source
+boot: `(str quarter quarter quarter quarter quarter)` over a 100 MB string was built — 606 MB
+allocated against a 512 MiB hard limit — and the run ended with the soft limit's catchable
+error at the next `io/puts` instead of the hard limit's abort. Reproduced at `8539f335`. First
+filed as an imaged-boot difference at tier 0. **Cause.** The per-allocation hard-limit check
+read `APPROX_LIVE`, a snapshot refreshed every `PEAK_SAMPLE` (512) allocations a thread. Its
+comment's argument — "a single oversized allocation is still caught directly by its own size"
+— holds only when the snapshot already counts the earlier large blocks, and the lag is a count
+of allocations, not bytes: a source boot allocated enough after `quarter` to refresh it (the
+refusal read "on top of 66 MiB live"), an imaged boot did not, so `stale + 500 MB` passed. The
+same run at tier 2 showed the other face: a later 100 MB request refused "on top of 578 MiB
+live", the 500 MB string having gone through. **Why it survived.** The suite's tier-0 half
+usually source-boots this test (the first run after nextest's image rebuild), so `make
+test-both` read it green. **Fix.** `would_exceed_hard` judges an allocation of at least
+`LARGE_ALLOCATION` (64 KiB), or any the snapshot puts within the top eighth of the limit, by
+the exact shard sum, and leaves that sum in the snapshot so a refusal reports the true figure.
+No limit set is still one load; small allocations far from the limit still read the snapshot.
+The `memory_pressure` file: 12/12 across both tiers after (1 pass in 9 at tier 0 before).
+**Guard.** `core::alloc::tests::a_large_allocation_sees_the_large_blocks_the_snapshot_has_not`
+stages 100 MB the snapshot has not seen and asks for 500 MB under 512 MiB; sabotage (the
+snapshot-only body back) reds it with "500 MB on top of an unseen 100 MB passed a 512 MiB hard
+limit".
+
+## KI-247 — a holder that had just died left the next safepoint to raise in a bystander ✅ FIXED 2026-10-14
+
+**Symptom.** `cli::memory_pressure::a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder`
+failed about one run in ten under `BROOD_TIER=0` (1/15 at `8539f335`, 2/15 with that night's
+changes): `the leak beside the stuck victim was not stopped`, the main process ending with
+`main.blsp:16:16: runtime error: memory limit exceeded: … exceeds the 402653184-byte soft limit`
+at its `receive`. **Cause.** Traced with a temporary print of each selection: the hoarder (pid
+4) is stopped and stays stuck in `os/cmd`, as designed; at the next crossing the leak (pid 5) is
+the largest holder that can die and is the current process, so it raises `E0043` in itself and
+dies — correct. The main process then wakes for the leak's `:down` and reaches a safepoint with
+`live` still 444 MiB: the leak's memory is not off the count yet, the hoarder is excluded as
+stuck, nobody holds an eighth, and the unattributable branch raised in the main process. The
+grace that exists for exactly this ("its memory is about to go") did not cover it twice over:
+`stopped.retain(is_alive)` dropped a victim the moment it died, and a self-raise was never
+recorded at all. **Why it survived.** Only the tree-walker's timing opens the window often
+enough to see; the default-ceiling half is green, and the tier-0 half failed one run in ten.
+**Fix.** A stopped victim stays in `stopped` until its `STOP_GRACE` runs out even once dead, and
+a self-raise records `Pressure::raised`, inside whose grace every OTHER process carries on — the
+raiser is not held back, since it may have caught the error and kept allocating. 40/40 at tier
+0 after, and the other five `memory_pressure` cases green six times on both tiers. **Guard.**
+`process::pressure::tests::a_holder_that_just_died_keeps_the_next_safepoint_from_raising` calls
+the selector directly (with a control: no recent stop raises). Sabotage-verified: restoring
+`retain(is_alive)` reds it with "a victim stopped a moment ago and already dead still holds the
+others back"; skipping the `raised` check reds it with "another process that just raised in
+itself holds the others back".
+
 ## KI-246 — building nested sets took quadratic time ✅ FIXED 2026-10-14
 
 **Symptom.** `(fold (range n) 0 (fn (acc _) #{acc}))` took 0.9 s at depth 5 000, 3.5 s at

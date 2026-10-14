@@ -449,9 +449,18 @@ mod tests {
         interp: &mut crate::Interp,
         callee: value::Symbol,
     ) -> (usize, crate::core::heap::FastLink) {
+        published_mirror_running(interp, "(caller 20000 0)", callee)
+    }
+
+    /// [`published_mirror_for`] driving the pair through `run`.
+    fn published_mirror_running(
+        interp: &mut crate::Interp,
+        run: &str,
+        callee: value::Symbol,
+    ) -> (usize, crate::core::heap::FastLink) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
         while std::time::Instant::now() < deadline {
-            interp.eval_str("(caller 20000 0)").expect("run the pair");
+            interp.eval_str(run).expect("run the pair");
             if let Some(hit) = interp
                 .heap
                 .vm_fast_links_published()
@@ -541,6 +550,33 @@ mod tests {
         assert!(
             outcome.is_err(),
             "a mirror disagreeing with its entry at the same epoch must fire"
+        );
+    }
+
+    /// A thin wrapper called BY NAME from native code links like any callee. The interpreter
+    /// caches such a callee on the call IC without its arm (it runs the wrapper through the
+    /// dispatcher's redirect, ADR-069), and the caller runs interpreted until it tiers, so
+    /// the native caller's first calls find that arm-less entry. Taking it for a builtin's
+    /// left every later call on the slow path — the link is published only from an entry
+    /// that carries the arm — at ~2 100 instructions a call where a linked one is ~400.
+    /// Sabotage: return `None` for a closure in `jit_dispatch_call`'s arm-less-hit arm and
+    /// this never publishes.
+    #[test]
+    fn a_thin_wrapper_called_by_name_publishes_its_fast_link() {
+        set_forced_ceiling(Some(Tier::Native));
+        let mut interp = crate::Interp::new();
+        interp
+            .eval_str(
+                "(do (defn wrapped (a x) (+ a x)) \
+                     (defn wcaller (n acc) (if (= n 0) acc (wcaller (- n 1) (wrapped acc 1)))))",
+            )
+            .expect("define the pair");
+        let (_, mirror) =
+            published_mirror_running(&mut interp, "(wcaller 20000 0)", value::intern("wrapped"));
+        assert_eq!(mirror.argc, 2);
+        assert_eq!(
+            interp.eval_str("(wcaller 20000 5)").expect("run").as_int(),
+            Some(20005)
         );
     }
 }
