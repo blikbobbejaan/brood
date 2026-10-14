@@ -12,12 +12,28 @@ devlog entries of the same dates.
 
 ## State (2026-10-14)
 
-- **Released:** v0.38.0 (`CHANGELOG.md`). `known-issues.md` lists **no open or watching
-  entry** — KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the
-  lingering TCP close) were found and fixed in the 2026-10-13 stability pass; on 2026-10-14
-  KI-229 (the soft memory limit stopped a bystander; now it stops the largest holder,
-  ADR-399) and KI-240..243 (dotted lists unsendable, refused threads panicking, fast
-  allocators reaching the hard abort, a stuck victim shielding the rest) (devlog).
+- **Released:** v0.38.0 (`CHANGELOG.md`). On `main` since, merged 2026-10-14 from a branch
+  developed apart from the release: preemption reaches every shape of running code (ADR-400..405,
+  KI-230..238), one native entry and one quantum module, folds walked in spans, the gate sweep,
+  and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
+  memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
+  it carry the old ones — the map is in the devlog entry "merged origin/main".
+- `known-issues.md` has one **watching** entry, KI-239 (a dist test node's connect refused right
+  after its peer was seen listening; retry-absorbed, not reproducible on demand, diagnostic
+  armed). KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
+  TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the soft memory
+  limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14, then
+  KI-240..245 (dotted lists unsendable, refused threads panicking, fast allocators reaching
+  the hard abort, a stuck victim shielding the rest, lost stdout exiting 0, a `receive`
+  under `reflect/eval` re-running its form).
+- **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
+  `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
+  clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
+  `process_floor`/`doc_refs` Rust tests, and the pre-push steps (`nest check` and `--strict` at
+  zero, the 45 test files the merge touches). `make prepush` itself stops at `nest format
+  --check` on `stress/fuzz_out/fuzz_6.blsp`, a git-ignored fuzz output CI never sees. Not run
+  since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
+  `breakagetests`.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
   default their limits from the cap (hard = 3/4 of it); elsewhere they stay unlimited.
 - **Probes worth keeping:** every value walker survives data nested a million deep; a
@@ -31,11 +47,52 @@ devlog entries of the same dates.
   landed too: `tcp/close` silences the socket at once, the two message-copy walkers are one,
   ability devirtualization is always on (`BROOD_MONO` deleted), and the doc catalogue
   derives its categories. Nothing from it is deferred.
+- **Before pushing:** `make prepush`, and `git merge --ff-only origin/main` first if it moved.
 - **Is the tree green?** Answer with `make green`, never by reading the run list. On this
-  machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`); the full suite is
-  CI's and the nightly's job.
+  machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`).
+- **Not brood, noted:** bedit at CI's pin passes 2463/2464 with a grammar-enabled `nest` — its
+  Elixir agent keeps the ANSI-coloured `dbg` header Elixir 1.21-dev prints. `make wasm-test`
+  wants wasm-bindgen-cli 0.2.128 (0.2.100 is installed here). The local `../bedit` checkout is a
+  detached HEAD 88 commits behind its origin.
 
 ## Open threads, in value order
+
+### Next: performance items (A and B the user's pick, 2026-10-13; C found doing A)
+
+Measure both by **instruction count** first — `perf stat -e instructions:u` with
+`BROOD_NO_CHECK=1` (the run pre-flight walk is noise), each binary's stdlib image live (`nest
+stdimage`; `make ab` now writes both arms' images itself), the timing binary from
+`make release-brood`. Times on this box are noisy; confirm with `make ab --floor` and, for
+anything on the scheduler path, `make latency-gate`. `perf record` is capped at 1 kHz here:
+aggregate 20-40 runs, and build `make perf-symbols` for names.
+
+**A. DONE (2026-10-14, ADR-406, devlog "native code memoises calls to a closure value").**
+`jit_dispatch_call` memoises a computed-head call's arm, env and IC block per closure instance:
+~240 instructions off every such call (anonymous closure 943 → 706; named heads 415). What
+remains of the gap to a named call is `fill_captures`, `finish_nested`, `native_feedback` and the
+unconditional stack probe — an in-IR fast link for computed heads (a site id per computed call,
+the handoff's original design) is the next step there; check `staged` (KI-19) and
+`mono_devirtualize` when allocating the site.
+
+**C. A thin-wrapper callback costs ~1 900 instructions a call from native code** — named or
+not. `(fn (acc x) (+ acc x))`, the canonical reducer, is a passthrough (ADR-69): the dispatcher
+never runs its body, it redirects to `+` by NAME on every call — `passthrough_arm`, `env_get`,
+`boundary_redirect`, a second hop to `+`'s own passthrough arm, then `call_native` (profile:
+`dispatch` 35–38%, `env_get` ~6–11%). The compiled body would be one inlined `Prim2`. The redirect
+exists to spare the tree-walker and VM a frame; from native code it is the slow path. Measure
+with `MODE=passanon` in a loop like devlog 2026-10-14's before choosing between running the
+compiled arm from native code and caching the redirect target (late binding: the inner head is
+re-resolved per call today, so a cache must be epoch-stamped).
+
+**B. DONE (2026-10-13, devlog "(later) — the fold span result stops allocating").** A finished
+span returns the accumulator; a stopped one returns `(:%fold-more acc . next)`. `nqueens` −1.3%,
+one-span folds ~145 instructions cheaper each, `reduce` flat. Two leftovers, neither urgent:
+`Reducer::resolve` per span (`reduce_prim_op` re-derives `+`'s primitive every span), and the
+stopped-short path's `first`/`rest` are runtime callbacks (~150 instructions a span, once per
+4 096 elements). **Read the devlog's measurement lesson before trusting a few-percent
+instruction delta between two builds:** a comment-only prelude edit moved rows by up to 2.3%.
+
+### Older threads
 
 1. **Receive loops run interpreted.** About a quarter of `pingpong`'s instructions are
    `exec_chunk` running process bodies that a `receive` keeps off the JIT. The general lever

@@ -50,15 +50,21 @@ impl<T> OwnedTable<T> {
         self.entries.get(id).map(|slot| &slot.value)
     }
 
+    // Used by the TCP/TLS host (`net`), which a wasm32 build does not carry.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn get_mut(&mut self, id: &u64) -> Option<&mut T> {
         self.entries.get_mut(id).map(|slot| &mut slot.value)
     }
 
+    // Used by the TCP/TLS host (`net`), which a wasm32 build does not carry.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn contains_key(&self, id: &u64) -> bool {
         self.entries.contains_key(id)
     }
 
     /// Hand entry `id` to `owner`. A no-op for an unknown id.
+    // Used by the TCP/TLS host (`net`), which a wasm32 build does not carry.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn set_owner(&mut self, id: u64, owner: u64) {
         let Some(slot) = self.entries.get_mut(&id) else {
             return;
@@ -81,6 +87,8 @@ impl<T> OwnedTable<T> {
     }
 
     /// Remove and return every entry.
+    // Used by the TCP/TLS host (`net`), which a wasm32 build does not carry.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn drain(&mut self) -> Vec<(u64, T)> {
         self.by_owner.clear();
         self.entries

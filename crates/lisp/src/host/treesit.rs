@@ -120,7 +120,7 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
     // is sluggish"; reparsing from the previous tree is ~1 ms.
     let mut reuse: Option<tree_sitter::Tree> = None;
     {
-        let mut cache = TREE_CACHE.lock().expect("treesit tree cache");
+        let mut cache = crate::core::sync::lock(&TREE_CACHE);
         if let Some(i) = cache
             .iter()
             .position(|(l, s, _)| l == lang && s.as_str() == src)
@@ -149,7 +149,7 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
     let tree =
         tree.ok_or_else(|| LispError::runtime(format!("tree-sitter: {lang}: parse failed")))?;
     {
-        let mut cache = TREE_CACHE.lock().expect("treesit tree cache");
+        let mut cache = crate::core::sync::lock(&TREE_CACHE);
         // One entry per language, not four generations of the buffer being typed in:
         // the older versions can never be asked for again, and keeping them evicts the
         // other files that can.
@@ -513,26 +513,17 @@ pub fn load_grammar(path: &str, lang: &str) -> LispResult {
             ))
         })?;
     let abi = language.abi_version() as i64;
-    DYNAMIC
-        .lock()
-        .expect("treesit dynamic grammars")
-        .insert(lang.to_string(), language);
+    crate::core::sync::lock(&DYNAMIC).insert(lang.to_string(), language);
     // A re-load replaces the entry, so a grammar can be swapped without restarting; the
     // parser pool is keyed by language name and holds parsers bound to the OLD language, so
     // it is cleared for this one rather than left to hand out stale parsers.
-    PARSER_POOL
-        .lock()
-        .expect("treesit parser pool")
-        .remove(lang);
+    crate::core::sync::lock(&PARSER_POOL).remove(lang);
     // The tree cache is keyed by language name too, and holds trees SHAPED BY the old
     // grammar. An exact hit would hand one back for the new one, and an incremental
     // reparse would hand it to the new grammar's parser as the tree to edit from — which
     // is not merely stale but ill-formed, and fails the parse outright. Same reasoning as
     // the pool above; the cache simply arrived later than the comment did.
-    TREE_CACHE
-        .lock()
-        .expect("treesit tree cache")
-        .retain(|(l, _, _)| l != lang);
+    crate::core::sync::lock(&TREE_CACHE).retain(|(l, _, _)| l != lang);
     Ok(Value::int(abi))
 }
 
@@ -546,11 +537,7 @@ static DYNAMIC: LazyLock<Mutex<HashMap<String, tree_sitter::Language>>> =
 
 #[cfg(feature = "treesit")]
 fn dynamic_language(lang: &str) -> Option<tree_sitter::Language> {
-    DYNAMIC
-        .lock()
-        .expect("treesit dynamic grammars")
-        .get(lang)
-        .cloned()
+    crate::core::sync::lock(&DYNAMIC).get(lang).cloned()
 }
 
 #[cfg(not(feature = "treesit"))]
@@ -611,9 +598,7 @@ fn checkout_parser(
     lang: &str,
     language: &tree_sitter::Language,
 ) -> Result<tree_sitter::Parser, LispError> {
-    if let Some(p) = PARSER_POOL
-        .lock()
-        .expect("treesit parser pool")
+    if let Some(p) = crate::core::sync::lock(&PARSER_POOL)
         .get_mut(lang)
         .and_then(Vec::pop)
     {
@@ -628,7 +613,9 @@ fn checkout_parser(
 /// Return a parser to the pool for re-use (dropping it if the pool is full).
 #[cfg(feature = "treesit")]
 fn return_parser(lang: &str, parser: tree_sitter::Parser) {
-    let mut pool = PARSER_POOL.lock().expect("treesit parser pool");
+    // Poison-tolerant like every lock here: a parse that panicked must not make every
+    // later parse in the runtime panic too.
+    let mut pool = crate::core::sync::lock(&PARSER_POOL);
     let slot = pool.entry(lang.to_string()).or_default();
     if slot.len() < PARSER_POOL_PER_LANG {
         slot.push(parser);

@@ -19,7 +19,7 @@ use super::*;
 // only ever a whitelisted map op's first arg, the self-call threading arg, or the
 // return — exactly the "no alias analysis needed; a value is only reachable through
 // references the code creates" property `local_escapes` relies on. The observable
-// result is an ordinary immutable map (ADR-026 holds: the only mutable thing is a
+// result is an ordinary immutable map (ADR-26 holds: the only mutable thing is a
 // `Table`, never surfaced). On by default; opt out with `BROOD_LINMAP=0`.
 
 /// Compile one arm to a [`CompiledArm`], or `None` (defer this arm to the
@@ -563,7 +563,7 @@ pub(crate) fn compile_closure_timed(heap: &Heap, id: ClosureId) -> Option<Compil
 }
 
 /// A stable cache key for closure `id`, or `None` if it can't be safely cached /
-/// VM-run (ADR-076 §2c(a)). A **RUNTIME** closure (top-level / promoted) is keyed
+/// VM-run (ADR-76 §2c(a)). A **RUNTIME** closure (top-level / promoted) is keyed
 /// by its own handle `.0`, which is stable for the closure's life. A **LOCAL**
 /// closure's handle index is recycled by the collector, so it's keyed instead by
 /// the handle of its first body form — but only when that form lives in the
@@ -949,10 +949,10 @@ pub(crate) fn hof_apply_step(
 /// itself), or `None` when the arm can't be linked (not yet native / over the native-recursion cap
 /// / non-trivial shape) so the caller falls back to `vm_apply`.
 ///
-/// Mirrors the computed-head native-link block in [`jit_dispatch_call`]: same frame setup, the same
-/// `capture_value` fill (the fast frame bypasses `push_frame`, so captured lexicals must be filled
-/// here), and the same 0/3/4/deopt outcome handling. `hof_resolve` already proved the arm is
-/// fixed-arity-`argc` with no optionals/rest, so `capture_base == argc`.
+/// The entry and the outcome are every nested native entry's ([`enter_native`],
+/// [`finish_nested`]); this only builds the frame — the fast frame bypasses `push_frame`, so
+/// it fills the captures itself. `hof_resolve` already proved the arm is fixed-arity-`argc`
+/// with no optionals/rest, so `capture_base == argc`.
 #[cfg(feature = "jit")]
 pub(crate) fn hof_apply_native(
     heap: &mut Heap,
@@ -1046,165 +1046,45 @@ pub(crate) fn hof_apply_native(
         jit_verify_staged(heap, base, base + argc, dbg_sym, NO_SITE, argc);
     }
     heap.extend_roots_to_nil(base + nslots);
-    // Root the callee's captured env so a tenure inside the arm forwards it (the deopt path
-    // below re-reads the live id from this root).
-    let env_base = heap.env_roots_len();
-    let env_root = heap.root_env(cenv);
-    // Fill the capture slots from the captured env — the fast frame placed only params + nil.
-    // `capture_base == argc` (nrequired == argc, no optionals/rest). No alloc → no GC → the
-    // nil-filled body slots stay valid.
-    if !arm.capture_names.is_empty() {
-        let cenv_live = heap.read_root_env(env_root);
-        for (k, &name) in arm.capture_names.iter().enumerate() {
-            let v = heap.capture_value(cenv_live, k, name);
-            heap.set_root_at(base + argc + k, v);
-        }
-    }
-    let depth = heap.jit_native_depth;
-    let saved = std::mem::replace(&mut heap.jit_call_env, env_root);
-    let saved_fn = std::mem::replace(&mut heap.jit_dbg_fn, dbg_sym);
-    // The step's native reads its OWN IC block through the heap cursors (ADR-175).
-    let saved_bases = heap.set_ic_bases(bases);
-    heap.jit_native_depth = depth + 1;
-    // SAFETY: `code` is a finalized [`crate::jit::JitArmFn`] from `jit_lower_arm`, kept for
-    // the process in `GLOBAL_JIT`; the frame is at `roots[base..]`; validated current by the
-    // epoch check above.
-    let f: crate::jit::JitArmFn = unsafe { std::mem::transmute(code) };
+    fill_captures(heap, arm, base, cenv);
+    let native_depth = heap.jit_native_depth;
     // Destination for a Done result: this entry hands one back, so a stack local.
     let mut ret = Value::Nil;
-    heap.native_gateway_seq += 1;
-    let gw_seq = heap.native_gateway_seq;
-    let saved_gw = std::mem::replace(&mut heap.cur_native_gateway, gw_seq);
-    let ctx = crate::jit::JitCallCtx::from_heap(heap);
-    let outcome = f(heap as *mut Heap, base as i64, &mut ret as *mut Value, &ctx);
-    heap.cur_native_gateway = saved_gw;
-    heap.jit_native_depth = depth;
-    heap.set_ic_bases(saved_bases);
-    heap.jit_call_env = saved;
-    heap.jit_dbg_fn = saved_fn;
-    // Suspend-host latch (see `jit_latch_suspend_host` / `Heap::blocked_under_gateway`):
-    // a HOF step arm can enclose a parking receive too.
-    if heap.blocked_under_gateway == gw_seq {
-        heap.blocked_under_gateway = 0;
-        jit_runtime::jit_latch_suspend_host(arm);
-    }
-    // Deopt feedback (see `jit_deopt_feedback`): the HOF step arm is the canonical
-    // watched shape (nqueens' reduce closure).
-    if outcome == 1 {
+    // A builtin calling back: never an unwindable entry (ADR-401) — the builtin's own Rust
+    // frame is between this and any driver.
+    let exit = enter_native(
+        heap,
+        NativeEntry {
+            code,
+            base,
+            env: cenv,
+            dbg_fn: dbg_sym,
+            ic_bases: Some(bases),
+            from: EntryFrom::Native,
+            unwind: false,
+        },
+        &mut ret,
+    );
+    native_feedback(heap, arm, base, nslots, &exit);
+    if exit.outcome == 1 {
         crate::perf_bump!(hof_native_deopt);
-        // KI-48 follow-on: name WHERE the native bailed. The deopt journal at the arm's
-        // checkpoint slot packs the resume position as `ip = p >> 16`, so this maps a deopt
-        // back to the bytecode instruction that produced it — the difference between "this
-        // arm thrashes" and "this arm thrashes at instruction N, a Call to `vector-length`".
-        if crate::diagnostics::debug_flags::jit_bail_trace() {
-            let name = arm
-                .dbg_name
-                .map(crate::core::value::symbol_name_ref)
-                .unwrap_or("<closure>");
-            let slot = arm.ckpt_slot;
-            let journal = if slot != u32::MAX {
-                match heap.root_at(base + slot as usize) {
-                    Value::Int(p) if p > 0 => Some(p),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            match journal {
-                Some(p) => {
-                    let ip = (p >> 16) as usize;
-                    let op = arm
-                        .chunk
-                        .as_ref()
-                        .and_then(|c| c.code.get(ip))
-                        .map(crate::eval::compile::jit_plan::codegen::inst_opcode_name)
-                        .unwrap_or("<out-of-range>");
-                    eprintln!(
-                        "[jit-deopt] arm={name} resume_ip={ip} op={op} reason={} (journalled)",
-                        crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
-                    );
-                }
-                None => eprintln!(
-                    "[jit-deopt] arm={name} no journal — re-runs from ip 0 (ckpt_slot={slot}) reason={}",
-                    crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
-                ),
-            }
-        }
     }
-    if outcome == 1 {
-        jit_runtime::jit_any_deopt_feedback(heap, arm);
-    }
-    if arm.deopt_watch {
-        use std::sync::atomic::Ordering::Relaxed;
-        if outcome == 1 {
-            jit_deopt_feedback(heap, arm);
-        } else if arm.jit_deopts.load(Relaxed) != 0 {
-            arm.jit_deopts.store(0, Relaxed);
-        }
-    }
-    // `f()` may have collected + relocated the captured env; re-read the live id before dropping
-    // its root (the deopt path hands it to `vm_apply`).
-    let cenv_live = heap.read_root_env(env_root);
-    heap.truncate_env_roots(env_base);
-    match outcome {
-        0 => {
-            crate::perf_bump!(jit_link_done);
-            heap.truncate_roots(base);
-            Some(Ok(ret))
-        }
-        3 => {
-            heap.truncate_roots(base);
-            Some(Err(jit_take_error(heap).unwrap_or_else(|| {
-                LispError::type_err("jit step deopt without a parked error")
-            })))
-        }
-        // Tail call (4): the callee JIT'd a tail — [callee, arg0..argN] staged above its frame at
-        // `[base+nslots, roots_len)`. Follow the chain rather than re-running via `vm_apply`.
-        4 => {
-            let staged_start = base + nslots;
-            let staged_end = heap.roots_len();
-            if staged_end > staged_start {
-                let staged_callee = heap.root_at(staged_start);
-                let staged_argc = staged_end - staged_start - 1;
-                let staged_args: SmallVec<[Value; 4]> = (1..=staged_argc)
-                    .map(|k| heap.root_at(staged_start + k))
-                    .collect();
-                heap.truncate_roots(base);
-                return Some(apply_value(
-                    heap,
-                    staged_callee,
-                    &staged_args,
-                    heap.global(),
-                ));
-            }
-            heap.truncate_roots(base);
-            Some(Err(LispError::type_err(
-                "jit step tail with no staged call",
-            )))
-        }
-        // deopt (1) / preempt (2): re-run the arm on the VM. The args survive in the param slots
-        // `[base, base+argc)` (GC-updated); re-read, drop the frame, and `vm_apply`.
-        _ => {
-            crate::perf_bump!(jit_link_rerun);
-            // Deopt-resume (see `CompiledArm::ckpt_slot`): resume AT the checkpoint,
-            // frame intact — never re-running side effects. `1 | 2` (deopt AND preempt),
-            // consistent with the other three consumers — see `jit_run_fast_link` (KI-18).
-            if matches!(outcome, 1 | 2) {
-                if let Some((resume, rip, depth)) = jit_ckpt_resume(heap, arm, base, nslots) {
-                    return Some(vm_resume_deopt(heap, resume, base, cenv_live, rip, depth));
-                }
-            }
-            let mut argv2: SmallVec<[Value; 4]> = SmallVec::with_capacity(argc);
-            for k in 0..argc {
-                argv2.push(heap.root_at(base + k));
-            }
-            heap.truncate_roots(base);
-            Some(vm_apply(
-                heap,
-                ArmHandle::new(arm.clone()),
-                &argv2,
-                cenv_live,
-            ))
-        }
-    }
+    let frame = NestedFrame {
+        stage_base: base,
+        base,
+        nslots,
+        argc,
+        native_depth,
+        unwind: false,
+    };
+    let env = exit.env;
+    Some(
+        match finish_nested(heap, exit.outcome, ret, &frame, false, |_| {
+            Some((ArmHandle::new(arm.clone()), env, true))
+        }) {
+            Nested::Done(v) => Ok(v),
+            Nested::Raised | Nested::Unresolved => Err(jit_take_error(heap)
+                .unwrap_or_else(|| LispError::type_err("a native step raised no error"))),
+        },
+    )
 }

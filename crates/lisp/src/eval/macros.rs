@@ -2627,7 +2627,7 @@ fn form_has_range_fold(heap: &Heap, form: Value, depth: usize) -> bool {
 ///     (L LO init)))
 /// ```
 ///
-/// `%range-reduce`'s loop, in Brood: `i < hi` / `i > hi` by the step's sign, `i + step` per
+/// `%range-fold-span`'s loop, in Brood: `i < hi` / `i > hi` by the step's sign, `i + step` per
 /// iteration (a `+` past i64 promotes and the compare then stops the loop, as the Rust
 /// loop's checked add did). A `letrec` loop is a `SelfCall` loop the JIT runs native.
 fn counted_range_loop(

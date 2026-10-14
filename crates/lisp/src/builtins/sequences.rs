@@ -1,9 +1,10 @@
 use super::numeric::{arg, expect_int, expect_rope_ref, two};
 use super::realize_seqview;
 use crate::core::heap::Heap;
-use crate::core::value::{self, EnvId, Value};
+use crate::core::value::{self, EnvId, Symbol, Value};
 use crate::error::{LispError, LispResult};
 use crate::eval::apply;
+use std::sync::LazyLock;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -61,7 +62,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         is_empty);
     // Lazy reducible range (ADR: reducible range). `%range` constructs it (arg
     // parsing is in the Brood `range`); the fold-family fast paths in the prelude
-    // call `range?` / `%range-reduce` / `%range-count`; everything else realises
+    // call `range?` / `%range-fold-span` / `%range-count`; everything else realises
     // via `%range->list`. A range carries `tag = Pair`, so its surface type is a
     // list — hence the `list_ty` sigs.
     primitives.def(
@@ -104,24 +105,23 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         range_to_list,
     );
     primitives.def(
-        "%range-reduce",
-        Arity::exact(3),
-        Sig::new(vec![callable, any, list_ty], any),
+        "%range-fold-span",
+        Arity::exact(5),
+        Sig::new(vec![callable, any, list_ty, any, any], any),
         &[],
         "",
-        range_reduce,
+        range_fold_span,
     );
-    // The vector counterpart of `%range-reduce`, behind the prelude `fold`'s vector
-    // branch. Same reason: fold the container in a native loop instead of paying a
-    // per-element `apply` — and, on this path specifically, resolve a passthrough
-    // reducer like `+` once rather than per element.
+    // The vector counterpart of `%range-fold-span`, behind the prelude `fold`'s vector
+    // branch: fold the container in a native loop instead of paying a per-element `apply`,
+    // with a passthrough reducer like `+` resolved once rather than per element.
     primitives.def(
-        "%vector-reduce",
-        Arity::exact(3),
-        Sig::new(vec![callable, any, any], any),
+        "%vector-fold-span",
+        Arity::exact(5),
+        Sig::new(vec![callable, any, any, any, any], any),
         &[],
         "",
-        vector_reduce,
+        vector_fold_span,
     );
     // Lazy seq-view (ADR: lazy seq-view) — the fused result of `map`/`filter`/
     // `keep`/`remove`. `%seqview` constructs it from `[source xform]`;
@@ -804,232 +804,245 @@ pub(super) fn seqview_pred(args: &[Value], _: EnvId, _heap: &mut Heap) -> LispRe
 /// the hot `first`/`rest` builtins; every other consumer realises in the prelude
 /// (via `seq`) or fuses (via `fold`).
 
-/// `(%range-reduce f acc rng)` — left-fold a range with `f` in a native counted
-/// loop, **without materialising** it: the whole point of the reducible range.
-/// `acc` and `f` are rooted across the loop because each `apply` is a safepoint
-/// that can relocate them.
-pub(super) fn range_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let f = arg(args, 0);
-    let init = arg(args, 1);
-    let (lo, hi, step) = match arg(args, 2) {
-        Value::Range(id) => heap.range_parts(id),
-        Value::Nil => return Ok(init), // empty range — acc unchanged
-        v => return Err(LispError::wrong_type(heap, "%range-reduce", "range", v)),
-    };
-    // Route the per-element callback through the VM when it's the active engine.
-    // Hoisted out of the per-element loop deliberately: the choice is read once here and the
-    // loop below branches on the resulting bool, so the ladder costs nothing per element.
-    let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
-    // Primitive-reducer fast path: when `f` is `+`/`*` (directly, or via the
-    // prelude wrapper's passthrough arm), fold with the inlined scalar op and
-    // never call back into `apply` per element.
-    let prim = crate::eval::compile::reduce_prim_op(heap, f);
+// ---- The native folds behind `fold` (ADR-403) ----
+//
+// `fold` walks a vector or a range in spans: each `%…-fold-span` call folds up to `n`
+// elements in a native loop and returns the accumulator when the collection is done — most
+// folds are one span, so the common case allocates nothing — or, when the span stopped short,
+// `(:%fold-more acc . next)`, `next` where to go on (only a reducer returning a list headed by
+// that internal keyword on purpose could pass for one). The walk around them is Brood
+// (`std/prelude/core.blsp`), so the process yields at its back edge like any loop's. A span
+// ends early, between two elements, when the quantum owes a preemption that a reducer's own
+// run could not pay (`stop_between_elements`): so a fold yields within one reducer call of
+// its quantum ending. A primitive reducer (`+`, `*`), inlined here, runs the whole span and charges the
+// quantum for it (one reduction per `ELEMENTS_PER_REDUCTION`).
 
-    // Tight i64 loop: when both prim resolves AND the accumulator is a plain i64,
-    // operate on raw integers with no Value boxing per iteration. This avoids the
-    // 24-byte-by-pointer passing overhead of `prim_apply_step` and the root
-    // machinery (integers are inline — no GC slot needed). On overflow (rare),
-    // fall through to the general path starting from the current position.
-    if let (Some(op), Some(mut int_acc)) = (prim, init.as_int()) {
-        let mut i = lo;
-        while if step > 0 { i < hi } else { i > hi } {
-            match crate::eval::compile::prim_apply_int_step(op, int_acc, i) {
-                Some(v) => int_acc = v,
-                None => {
-                    // Overflow or unsupported op — hand off the remainder to the
-                    // slow path starting from the current (i, acc) state.
-                    return range_reduce_slow(
-                        f,
-                        Value::int(int_acc),
-                        i,
-                        hi,
-                        step,
-                        use_vm,
-                        env,
-                        heap,
-                    );
-                }
-            }
-            i = match i.checked_add(step) {
-                Some(v) => v,
-                None => break,
-            };
-        }
-        return Ok(Value::int(int_acc));
-    }
+const ELEMENTS_PER_REDUCTION: usize = 8;
 
-    range_reduce_slow(f, init, lo, hi, step, use_vm, env, heap)
+/// Charge the quantum for `elements` folded by an inlined primitive step.
+fn charge_folded(elements: usize) {
+    crate::process::charge_reductions((elements / ELEMENTS_PER_REDUCTION) as u32);
 }
 
-/// `(%vector-reduce f acc v)` — left-fold a vector **by index** in a native loop.
-///
-/// The vector counterpart of [`range_reduce`], and it exists for the same reason: a
-/// Brood-level fold pays a per-element `apply` that a native loop does not. The prelude's
-/// `fold-vec` already dropped the `first`/`rest` list materialisation, but each element
-/// still round-trips through the evaluator to call `f`, and — the part that costs the most
-/// here — a reducer like `+` is a thin **passthrough wrapper**, so every element pays the
-/// wrapper's redirect. [`reduce_prim_op`] resolves that wrapper ONCE (it is what makes
-/// `(fold + 0 (range n))` fast today), but nothing on the vector path consulted it.
-///
-/// On a short-lived process folding a small vector (the `spawn-live` shape) that per-element
-/// redirect is a large share of the whole unit of work.
-///
-/// Ordering and semantics match `fold-vec` exactly: left-to-right, `(f acc item)`, and the
-/// element is re-read from the (rooted) vector each step because every `apply` is a GC
-/// safepoint that can relocate it.
-pub(super) fn vector_reduce(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+/// The tag of a span that stopped short — see the section comment.
+static FOLD_MORE: LazyLock<Symbol> = LazyLock::new(|| value::intern("%fold-more"));
+
+/// A span's result: `acc` when the collection is done, else `(:%fold-more acc . next)`.
+/// Allocation never collects, so `acc` needs no root across the two cells.
+fn span_result(heap: &mut Heap, acc: Value, next: Option<i64>) -> LispResult {
+    let Some(next) = next else {
+        return Ok(acc);
+    };
+    let rest = heap.alloc_pair(acc, Value::int(next));
+    Ok(heap.alloc_pair(Value::keyword(*FOLD_MORE), rest))
+}
+
+/// How a span calls its reducer, resolved once per span: the inlined primitive, or — for a
+/// closure on the VM — its arm, so the per-element call skips re-resolution and arity
+/// matching (`hof_resolve`).
+struct Reducer {
+    prim: Option<crate::eval::compile::PrimOp>,
+    hof: Option<crate::eval::compile::HofArm>,
+    use_vm: bool,
+}
+
+impl Reducer {
+    fn resolve(heap: &Heap, f: Value) -> Reducer {
+        let prim = crate::eval::compile::reduce_prim_op(heap, f);
+        let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
+        let hof = if prim.is_none() && use_vm {
+            crate::eval::compile::hof_resolve(heap, f, 2)
+        } else {
+            None
+        };
+        Reducer { prim, hof, use_vm }
+    }
+
+    /// One step: the inlined primitive when it covers these operands (`true`), else a call —
+    /// through the resolved arm, the VM, or the tree-walker, whichever applies.
+    fn step(
+        &self,
+        heap: &mut Heap,
+        f: Value,
+        acc: Value,
+        x: Value,
+        env: EnvId,
+    ) -> Result<(Value, bool), LispError> {
+        if let Some(op) = self.prim {
+            if let Some(v) = crate::eval::compile::prim_apply_step(op, acc, x)? {
+                return Ok((v, true));
+            }
+        }
+        if let Some(h) = &self.hof {
+            if let Some(r) = crate::eval::compile::hof_apply_step(heap, h, f, &[acc, x]) {
+                return Ok((r?, false));
+            }
+        }
+        let v = if self.use_vm {
+            crate::eval::compile::apply_value(heap, f, &[acc, x], env)?
+        } else {
+            apply(heap, f, &[acc, x], env)?
+        };
+        Ok((v, false))
+    }
+}
+
+/// `(%vector-fold-span f acc v from n)` — fold up to `n` elements of `v` from index `from`
+/// (nil: the start) with `(f acc item)`: the accumulator, or `(:%fold-more acc . next)` with `next`
+/// the index to go on from when the span stopped short. See the section comment.
+pub(super) fn vector_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let f = arg(args, 0);
     let init = arg(args, 1);
     let vid = match arg(args, 2) {
         Value::Vector(id) => id,
         Value::Nil => return Ok(init),
-        v => return Err(LispError::wrong_type(heap, "%vector-reduce", "vector", v)),
+        v => {
+            return Err(LispError::wrong_type(
+                heap,
+                "%vector-fold-span",
+                "vector",
+                v,
+            ))
+        }
     };
-    let n = heap.vector(vid).len();
-    // Hoisted out of the per-element loop deliberately: the choice is read once here and the
-    // loop below branches on the resulting bool, so the ladder costs nothing per element.
-    let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
-    // Primitive-reducer fast path: `+`/`*` directly, or through the prelude wrapper's
-    // passthrough arm. This is the resolution the vector path never did.
-    let prim = crate::eval::compile::reduce_prim_op(heap, f);
-
-    // Tight i64 loop — no Value boxing, no root slot per element (integers are inline).
-    // Mirrors `range_reduce`'s, including handing the remainder to the general loop on
-    // overflow so a BigInt promotion stays bit-identical to the Brood fold.
-    if let (Some(op), Some(mut int_acc)) = (prim, init.as_int()) {
-        let mut i = 0usize;
-        while i < n {
+    let len = heap.vector(vid).len();
+    let start = arg(args, 3)
+        .as_int()
+        .map_or(0, |i| (i.max(0) as usize).min(len));
+    let n = arg(args, 4).as_int().map_or(len, |k| k.max(1) as usize);
+    let end = start.saturating_add(n).min(len);
+    let reducer = Reducer::resolve(heap, f);
+    let mut i = start;
+    let mut acc = init;
+    // Tight i64 loop: no Value boxing, no root slot per element (integers are inline). It
+    // stops at a non-int element or an overflow, and the boxed loop goes on from there, so a
+    // BigInt promotion stays bit-identical to the Brood fold.
+    if let (Some(op), Some(mut int_acc)) = (reducer.prim, init.as_int()) {
+        while i < end {
             let Some(x) = heap.vector(vid)[i].as_int() else {
-                break; // non-int element — finish on the general path from here
+                break;
             };
             match crate::eval::compile::prim_apply_int_step(op, int_acc, x) {
                 Some(v) => int_acc = v,
-                None => break, // overflow → general path from the current state
+                None => break,
             }
             i += 1;
         }
-        if i == n {
-            return Ok(Value::int(int_acc));
-        }
-        return vector_reduce_general(f, Value::int(int_acc), vid, i, n, prim, use_vm, env, heap);
+        charge_folded(i - start);
+        acc = Value::int(int_acc);
     }
-    vector_reduce_general(f, init, vid, 0, n, prim, use_vm, env, heap)
-}
-
-/// The boxed/general half of [`vector_reduce`]: a non-int accumulator, a non-prim reducer,
-/// or the tail of a fold that overflowed out of the i64 loop. Same three-tier step as
-/// [`range_reduce_slow`] — inlined prim, else the resolved-once HOF arm, else a full apply.
-#[allow(clippy::too_many_arguments)]
-fn vector_reduce_general(
-    f: Value,
-    init: Value,
-    vid: crate::core::value::VecId,
-    start: usize,
-    n: usize,
-    prim: Option<crate::eval::compile::PrimOp>,
-    use_vm: bool,
-    env: EnvId,
-    heap: &mut Heap,
-) -> LispResult {
-    let hof = if prim.is_none() && use_vm {
-        crate::eval::compile::hof_resolve(heap, f, 2)
-    } else {
-        None
-    };
     heap.root_scope(|heap| {
         let f_r = heap.root(f);
         let v_r = heap.root(Value::Vector(vid));
-        let mut acc_r = heap.root(init);
-        let mut i = start;
-        while i < n {
-            let f = heap.read_root(f_r);
-            let acc = heap.read_root(acc_r);
-            // Re-read the vector through its root: an `apply` below may have collected.
+        let mut acc_r = heap.root(acc);
+        while i < end {
+            // Re-read through the roots: an apply below may have collected.
             let x = match heap.read_root(v_r) {
                 Value::Vector(id) => heap.vector(id)[i],
                 _ => break,
             };
-            let step_call = |heap: &mut Heap, acc: Value| -> LispResult {
-                if let Some(h) = &hof {
-                    if let Some(r) = crate::eval::compile::hof_apply_step(heap, h, f, &[acc, x]) {
-                        return r;
-                    }
-                }
-                if use_vm {
-                    crate::eval::compile::apply_value(heap, f, &[acc, x], env)
-                } else {
-                    apply(heap, f, &[acc, x], env)
-                }
-            };
-            let next = match prim {
-                Some(op) => match crate::eval::compile::prim_apply_step(op, acc, x)? {
-                    Some(v) => v,
-                    None => step_call(heap, acc)?,
-                },
-                None => step_call(heap, acc)?,
-            };
+            let (f, acc) = (heap.read_root(f_r), heap.read_root(acc_r));
+            let (next, inlined) = reducer.step(heap, f, acc, x, env)?;
             acc_r = heap.advance_root(acc_r, next);
             i += 1;
+            if !inlined && i < end && crate::process::stop_between_elements() {
+                break;
+            }
         }
-        Ok(heap.read_root(acc_r))
+        let acc = heap.read_root(acc_r);
+        span_result(heap, acc, (i < len).then_some(i as i64))
     })
 }
 
-pub(super) fn range_reduce_slow(
-    f: Value,
-    init: Value,
-    lo: i64,
-    hi: i64,
+/// The i64 loop of [`range_fold_span`]: fold elements from `*i` while `before(*i, end)`,
+/// leaving `*i` at the first element not folded (an overflow of the accumulator stops it
+/// there, for the boxed loop to go on from; the last element of an i64-edge range leaves it
+/// at `end`). Returns how many it folded.
+#[inline(always)]
+fn fold_ints(
+    op: crate::eval::compile::PrimOp,
+    acc: &mut i64,
+    i: &mut i64,
     step: i64,
-    use_vm: bool,
-    env: EnvId,
-    heap: &mut Heap,
-) -> LispResult {
-    let prim = crate::eval::compile::reduce_prim_op(heap, f);
-    // HOF fast path (gated): resolve the step closure's arm ONCE so the per-element call skips
-    // arm re-resolution + passthrough/arity matching. Only for a non-prim reducer on the VM path.
-    let hof = if prim.is_none() && use_vm {
-        crate::eval::compile::hof_resolve(heap, f, 2)
-    } else {
-        None
+    end: i64,
+    before: impl Fn(i64, i64) -> bool,
+) -> usize {
+    // Locals, not the references, through the loop; the count is derived after it, so an
+    // element costs its step and its compare.
+    let (start, mut a, mut x) = (*i, *acc, *i);
+    while before(x, end) {
+        match crate::eval::compile::prim_apply_int_step(op, a, x) {
+            Some(v) => a = v,
+            None => break,
+        }
+        match x.checked_add(step) {
+            Some(v) => x = v,
+            None => {
+                x = end;
+                break;
+            }
+        }
+    }
+    *acc = a;
+    *i = x;
+    (x.abs_diff(start) / step.unsigned_abs().max(1)) as usize
+}
+
+/// `(%range-fold-span f acc rng from n)` — fold up to `n` elements of a range from the element
+/// `from` (nil: the start) with `(f acc item)`, **without materialising** it: the accumulator,
+/// or `(:%fold-more acc . next)` with `next` the element to go on from when the span stopped
+/// short. See the section comment.
+pub(super) fn range_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
+    let f = arg(args, 0);
+    let init = arg(args, 1);
+    let (lo, hi, step) = match arg(args, 2) {
+        Value::Range(id) => heap.range_parts(id),
+        Value::Nil => return Ok(init), // empty range
+        v => return Err(LispError::wrong_type(heap, "%range-fold-span", "range", v)),
     };
+    let from = arg(args, 3).as_int().unwrap_or(lo);
+    let in_range = |i: i64| if step > 0 { i < hi } else { i > hi };
+    // The span ends `n` elements on, or at the range's end, whichever is first — the bound the
+    // loops below compare against, so an element costs the one compare it always did.
+    let n = arg(args, 4).as_int().unwrap_or(i64::MAX).max(1);
+    let span_end = from.saturating_add(step.saturating_mul(n));
+    let span_end = if step > 0 {
+        span_end.min(hi)
+    } else {
+        span_end.max(hi)
+    };
+    let before_end = |i: i64| if step > 0 { i < span_end } else { i > span_end };
+    let reducer = Reducer::resolve(heap, f);
+    let mut i = from;
+    let mut acc = init;
+    if let (Some(op), Some(mut int_acc)) = (reducer.prim, init.as_int()) {
+        // One loop per direction, so the per-element bound is a plain compare.
+        let folded = if step > 0 {
+            fold_ints(op, &mut int_acc, &mut i, step, span_end, |i, end| i < end)
+        } else {
+            fold_ints(op, &mut int_acc, &mut i, step, span_end, |i, end| i > end)
+        };
+        charge_folded(folded);
+        acc = Value::int(int_acc);
+    }
     heap.root_scope(|heap| {
         let f_r = heap.root(f);
-        let mut acc_r = heap.root(init);
-        let mut i = lo;
-        while if step > 0 { i < hi } else { i > hi } {
-            let f = heap.read_root(f_r);
-            let acc = heap.read_root(acc_r);
-            // Non-prim step: try the cached-arm fast path (falls back if `f` late-rebound or
-            // the gate is off, i.e. `hof` is `None`).
-            let step_call = |heap: &mut Heap, acc: Value| -> LispResult {
-                if let Some(h) = &hof {
-                    if let Some(r) =
-                        crate::eval::compile::hof_apply_step(heap, h, f, &[acc, Value::int(i)])
-                    {
-                        return r;
-                    }
-                }
-                if use_vm {
-                    crate::eval::compile::apply_value(heap, f, &[acc, Value::int(i)], env)
-                } else {
-                    apply(heap, f, &[acc, Value::int(i)], env)
-                }
-            };
-            let next = match prim {
-                Some(op) => match crate::eval::compile::prim_apply_step(op, acc, Value::int(i))? {
-                    Some(v) => v,
-                    None => step_call(heap, acc)?,
-                },
-                None => step_call(heap, acc)?,
-            };
+        let mut acc_r = heap.root(acc);
+        let mut past_end = false;
+        while !past_end && before_end(i) {
+            let (f, acc) = (heap.read_root(f_r), heap.read_root(acc_r));
+            let (next, inlined) = reducer.step(heap, f, acc, Value::int(i), env)?;
             acc_r = heap.advance_root(acc_r, next);
-            i = match i.checked_add(step) {
-                Some(v) => v,
-                None => break,
-            };
+            match i.checked_add(step) {
+                Some(v) => i = v,
+                None => past_end = true,
+            }
+            if !inlined && !past_end && before_end(i) && crate::process::stop_between_elements() {
+                break;
+            }
         }
-        Ok(heap.read_root(acc_r))
+        let acc = heap.read_root(acc_r);
+        span_result(heap, acc, (!past_end && in_range(i)).then_some(i))
     })
 }
 
@@ -1174,7 +1187,7 @@ pub(super) fn vector_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// `(vector-assoc v i x)` — a fresh vector like `v` with index `i` set to `x`.
 /// The vector counterpart of `%map-assoc`; O(n) copy (vectors are flat), one
 /// allocation, no cons churn. `i` must be in `[0, len)` (append-at-end is a
-/// deferred power feature, ADR-011). No GC safepoint runs inside a builtin, so
+/// deferred power feature, ADR-11). No GC safepoint runs inside a builtin, so
 /// the cloned handles stay valid across `alloc_vector`.
 pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);

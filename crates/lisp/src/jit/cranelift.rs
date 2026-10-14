@@ -88,6 +88,10 @@ impl CraneliftBackend {
         builder.symbol("brood_rt_push", brood_rt_push as *const u8);
         builder.symbol("brood_rt_push_room", brood_rt_push_room as *const u8);
         builder.symbol(
+            "brood_rt_in_call_journal",
+            brood_rt_in_call_journal as *const u8,
+        );
+        builder.symbol(
             "brood_rt_call_native_fl",
             brood_rt_call_native_fl as *const u8,
         );

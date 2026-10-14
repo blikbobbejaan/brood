@@ -299,6 +299,7 @@ Pure — the listener turns each pair into a stderr warning. Types are the check
     (:spawn (emit [:runtime :spawn] {} {:pid pid :parent detail}))
     (:exit (emit [:runtime :exit] {} {:pid pid :reason detail}))
     (:deopt (emit [:runtime :deopt] {} {:pid pid :fn detail}))
+    (:long-schedule (emit [:runtime :long-schedule] {:us (get detail :us)} {:pid pid}))
     (_ (emit [:runtime kind] {} {:pid pid :detail detail}))))
 
 (defn- telemetry-runtime-loop ()
@@ -312,9 +313,11 @@ Pure — the listener turns each pair into a stderr warning. Types are the check
 (defn watch-runtime (&optional opts)
   "Arm the kernel system monitor and re-emit its events as telemetry events —
 `[:runtime :gc]` (measurements `{:pause-us :collections :live}`),
-`[:runtime :spawn]`, `[:runtime :exit]`, `[:runtime :deopt]` (each with the pids
-in the metadata). `opts` is passed through to `proc/system-monitor` (nil = every
-event; e.g. `{:gc true :gc-min-pause-us 1000}` = only long GCs). Returns the
+`[:runtime :spawn]`, `[:runtime :exit]`, `[:runtime :deopt]`, `[:runtime :long-schedule]`
+(measurement `{:us}` — a quantum that held its worker past the threshold) — each with the
+pids in the metadata. `opts` is passed through to `proc/system-monitor` (nil = every
+event, `:long-schedule` past 10 ms; e.g. `{:gc true :gc-min-pause-us 1000}` = only long GCs,
+`{:long-schedule-us 2000}` = only quanta past 2 ms). Returns the
 watcher pid; `stop-watch-runtime` (or killing the watcher) drops its subscription.
 Each watcher is its own kernel subscription (ADR-305), so several can coexist —
 with the default crash reporter, an MCP snapshot, or a second `watch-runtime`."

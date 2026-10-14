@@ -122,7 +122,7 @@ fn defseq_map(bencher: divan::Bencher, (eng, n): (Eng, u64)) {
 
 #[divan::bench(args = engine_grid![200_000, 1_000_000])]
 fn reduce_range(bencher: divan::Bencher, (eng, n): (Eng, u64)) {
-    // `(reduce <named-fn> 0 (range n))` — drives the `%range-reduce` native,
+    // `(reduce <named-fn> 0 (range n))` — drives the `%range-fold-span` native,
     // which calls the reducer back per element through `apply_value` when
     // `tier_ceiling` (commit `4af9d2a`). A named `defn` reducer is RUNTIME-region
     // and VM-compiles, so the Vm row shows a clear speedup over the Tw row

@@ -1,0 +1,86 @@
+;;; Guards for the computed-head call cache (`Heap::computed_calls`, 2026-10-14). Native
+;;; code calling a closure VALUE — `(f acc x)` with `f` a local — used to re-derive the
+;;; callee's compiled arm, env and IC block on every call; now it memoises them per closure
+;;; INSTANCE and argc, stamped with the global epoch, the collection count and the body
+;;; cache's write generation (`vm_cache::ComputedCallEntry`).
+;;;
+;;; A wrong hit runs another closure's code, or the right code against another instance's
+;;; captures, so each case is built for a stale entry to give a different answer: instances
+;;; of one template that differ only in what they capture, two templates through one call
+;;; site, one closure at two arities, and closures made fresh every iteration while the
+;;; collector moves them. The loop arms are driven until they SETTLE NATIVE first, so the
+;;; checks run through the cache; under a ceiling below Native there is no native caller
+;;; and the checks run on whatever engine is live.
+
+(defmodule jit-computed-call-test (:use test))
+
+;; Drive `f` until its arm settles on a tier — see `jit_int_slot_cache_test.blsp`.
+(defn- settle (f argc batch rounds)
+  (batch)
+  (let (st (get (%jit-arm-state f argc) :state))
+    (if (or (= st :native) (= st :bailed) (= rounds 0))
+      st
+      (do (if (= st :queued) (sleep 10) nil) (settle f argc batch (- rounds 1))))))
+
+(defn- make-adder (k) (fn (x) (+ x k)))
+
+;; The call head is computed per iteration: even `i` calls `f`, odd calls `g`.
+(defn- alternate (f g i acc)
+  (if (= i 0) acc (alternate f g (- i 1) (+ acc ((if (math/even? i) f g) i)))))
+
+;; One closure, called at one and at two args from the same loop.
+(defn- two-arities (h i acc)
+  (if (= i 0) acc (two-arities h (- i 1) (+ acc (h i) (h i 1000)))))
+
+;; A closure made fresh every iteration, so the collector keeps moving them and reusing
+;; their slots: the call must reach THIS iteration's capture. The maker comes in as a value
+;; too, or the compiler sees through `(make-adder i)` and the call never reaches the cache.
+(defn- fresh-each (mk i acc)
+  (if (= i 0) acc (fresh-each mk (- i 1) (let (h (mk i)) (+ acc (h i))))))
+
+;; sum of i for i in 1..n
+(defn- tri (n) (/ (* n (+ n 1)) 2))
+
+(describe "a closure called through a value from native code"
+  (test "instances of one template keep their own captures"
+    (let (one (make-adder 1) hundred (make-adder 100))
+      (when (%native-tier?)
+        (assert= :native (settle alternate 4 (fn () (alternate one hundred 500 0)) 500)))
+      ;; even i add 1, odd i add 100: 1000 of each
+      (assert= (+ (tri 2000) 1000 100000) (alternate one hundred 2000 0))))
+
+  (test "two templates through one call site each run their own code"
+    (let (double (fn (x) (* x 2)) plus3 (fn (x) (+ x 3)))
+      (when (%native-tier?)
+        (assert= :native (settle alternate 4 (fn () (alternate double plus3 500 0)) 500)))
+      ;; even i doubled, odd i plus 3: sum(even)*2 + sum(odd) + 3*1000
+      (assert= (+ (* 2 1001000) 1000000 3000) (alternate double plus3 2000 0))))
+
+  (test "one closure at two arities runs each arm"
+    (let (h (fn ((x) (* x 10)) ((x y) (+ x y))))
+      (when (%native-tier?)
+        (assert= :native (settle two-arities 3 (fn () (two-arities h 500 0)) 500)))
+      ;; 10i + (i + 1000) per i
+      (assert= (+ (* 11 (tri 2000)) 2000000) (two-arities h 2000 0))))
+
+  (test "a closure made fresh every iteration reaches its own capture"
+    (when (%native-tier?)
+      (assert= :native (settle fresh-each 3 (fn () (fresh-each make-adder 500 0)) 500)))
+    (assert= (* 2 (tri 20000)) (fresh-each make-adder 20000 0))))
+
+(describe "across processes: computed calls in many processes at once"
+  :isolated (test "eight workers alternating closures over their own captures agree"
+    (let (me (self)
+          ks (range 1 9)
+          _ (each ks
+              (fn (k)
+                (spawn (fn ()
+                         (let (a (make-adder k) b (make-adder (* k 1000)))
+                           (send me [k (alternate a b 4000 0) (fresh-each make-adder 4000 0)]))))))
+          got (map ks (fn (_) (receive ([k alt fresh] [k alt fresh]) (after 30000 :timeout)))))
+      (each got
+        (fn (r)
+          (is (vector? r))
+          (let ([k alt fresh] r)
+            (assert= (+ (tri 4000) (* 2000 k) (* 2000 k 1000)) alt)
+            (assert= (* 2 (tri 4000)) fresh)))))))

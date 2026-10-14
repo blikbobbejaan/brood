@@ -38,6 +38,81 @@ pub struct DispatchIcEntry {
     pub cursor: u8,
 }
 
+/// [`Heap::vm_cache`]: the compiled-body map, and the memo of native code's computed-head
+/// calls that is derived from it ([`ComputedCallEntry`]). The map is private to this module
+/// and [`Self::write`] — its mutable accessor — drops the memo, so no write to the map can
+/// leave a memo of an earlier lookup behind: whatever the write did (a free-epoch or
+/// stale-binding sync, a compaction, a hibernate shrink, a new body), the next call
+/// resolves from the map again. One exception, [`Self::write_derived`], for writes that
+/// change no lookup's answer. The memo is boxed and allocated at its first entry: inline,
+/// it would put ~600 B on every process, most of which never make such a call
+/// (`tests/process_floor.rs`).
+#[derive(Default)]
+pub(crate) struct VmCacheCell {
+    map: RefCell<VmCache>,
+    // A `Cell`, taken and put back, not a `RefCell`: the borrow flag would be eight more
+    // bytes on every process.
+    #[cfg(feature = "jit")]
+    calls: Cell<Option<Box<ComputedCalls>>>,
+}
+
+impl VmCacheCell {
+    pub fn borrow(&self) -> std::cell::Ref<'_, VmCache> {
+        self.map.borrow()
+    }
+
+    pub fn write(&self) -> std::cell::RefMut<'_, VmCache> {
+        #[cfg(feature = "jit")]
+        self.calls.set(None);
+        self.map.borrow_mut()
+    }
+
+    /// Mutable access that keeps the memo — for remembering what an existing entry already
+    /// implies (an arity's [`ArmHandle`](crate::eval::compile::ArmHandle), derived from the
+    /// entry's own body) and nothing else. Every caller resolves on every call, so dropping
+    /// the memo here would make each closure lookup forget every computed call.
+    pub fn write_derived(&self) -> std::cell::RefMut<'_, VmCache> {
+        self.map.borrow_mut()
+    }
+}
+
+/// Slots in the computed-call memo. A power of two (the slot is a mask of the key).
+#[cfg(feature = "jit")]
+const COMPUTED_CALL_SLOTS: usize = 8;
+
+#[cfg(feature = "jit")]
+type ComputedCalls = [Option<ComputedCallEntry>; COMPUTED_CALL_SLOTS];
+
+/// What native code's computed-head call resolved closure `closure` (a handle's raw bits)
+/// to at `argc`: the arm, the instance's env and the arm's IC block — the three lookups
+/// `jit_dispatch_call` otherwise repeats on every call (`compiled_arm_for`, `closure(id)`,
+/// `vm_arm_block`). Keyed on the INSTANCE, not its template, because the instance fixes
+/// the env too, and a higher-order loop passes one instance on every iteration. Held in
+/// [`VmCacheCell`], so any write to the body cache drops it. Beyond that, stamped:
+/// - `epoch`: a `def`, a module load, a compaction or a freed RUNTIME generation (whose
+///   slots are reused with bit-identical handles, so the same `closure` bits can come to
+///   name another closure — the free also clears the body cache, which drops the memo, but
+///   only when this process next syncs). As for the named-head IC (ADR-096).
+/// - `gc_runs`: a collection moves LOCAL closures and their envs. A moved closure's bits
+///   change (the generation stamp), but that stamp is 29 bits and wraps, so nothing derived
+///   from a LOCAL handle outlives a collection.
+#[cfg(feature = "jit")]
+pub(crate) struct ComputedCallEntry {
+    closure: u64,
+    argc: u32,
+    epoch: u64,
+    gc_runs: u64,
+    arm: Arc<crate::eval::compile::ArmHandle>,
+    env: EnvId,
+    bases: (u32, u32),
+}
+
+#[cfg(feature = "jit")]
+fn computed_call_slot(closure: u64, argc: u32) -> usize {
+    // Handle bits put the slab index low; argc separates one closure's arities.
+    ((closure ^ (closure >> 32) ^ u64::from(argc)) as usize) & (COMPUTED_CALL_SLOTS - 1)
+}
+
 /// One call-site inline-cache entry — see the [`Heap::vm_call_ics`] field doc.
 /// `callee` is always an immovable (PRELUDE/RUNTIME/atom) value: global bindings
 /// are promoted by `env_define`, so the LOCAL collector never relocates it; the
@@ -190,6 +265,58 @@ impl std::hash::Hash for VmCacheKey {
 impl Heap {
     // ===== Compiling-VM body cache and inline caches (ADR-076/096) =============
 
+    /// The memoised resolve of a computed-head call from native code to closure `callee`
+    /// with `argc` args — `None` on a miss, when the caller resolves and
+    /// [`Self::computed_call_put`]s. See [`ComputedCallEntry`] for what each stamp guards.
+    #[cfg(feature = "jit")]
+    #[inline]
+    pub fn computed_call_probe(
+        &self,
+        callee: crate::core::value::ClosureId,
+        argc: u32,
+        epoch: u64,
+    ) -> Option<(Arc<crate::eval::compile::ArmHandle>, EnvId, (u32, u32))> {
+        // A peer freeing a generation clears our body cache here, which drops the memo.
+        self.sync_free_epoch();
+        let slots = self.vm_cache.calls.take()?;
+        let hit = slots[computed_call_slot(callee.0, argc)]
+            .as_ref()
+            .filter(|e| {
+                e.closure == callee.0
+                    && e.argc == argc
+                    && e.epoch == epoch
+                    && e.gc_runs == self.gc_runs
+            })
+            .map(|e| (e.arm.clone(), e.env, e.bases));
+        self.vm_cache.calls.set(Some(slots));
+        hit
+    }
+
+    /// Remember what a computed-head call to `callee` just resolved to — after the resolve,
+    /// which may itself have written the body cache (and so dropped the memo).
+    #[cfg(feature = "jit")]
+    pub fn computed_call_put(
+        &self,
+        callee: crate::core::value::ClosureId,
+        argc: u32,
+        epoch: u64,
+        arm: &Arc<crate::eval::compile::ArmHandle>,
+        env: EnvId,
+        bases: (u32, u32),
+    ) {
+        let mut slots = self.vm_cache.calls.take().unwrap_or_default();
+        slots[computed_call_slot(callee.0, argc)] = Some(ComputedCallEntry {
+            closure: callee.0,
+            argc,
+            epoch,
+            gc_runs: self.gc_runs,
+            arm: arm.clone(),
+            env,
+            bases,
+        });
+        self.vm_cache.calls.set(Some(slots));
+    }
+
     /// **RUNTIME collector — Stage 4.** Clear this process's [`Self::vm_cache`] once
     /// if a generation was freed since it was last synced. A freed slot is reused by
     /// aging with bit-identical `(gen, index)` handles, and `vm_cache` keys on those
@@ -202,7 +329,7 @@ impl Heap {
     fn sync_free_epoch(&self) {
         let cur = self.free_epoch_now();
         if self.seen_free_epoch.get() != cur {
-            self.vm_cache.borrow_mut().clear();
+            self.vm_cache.write().clear();
             self.seen_free_epoch.set(cur);
         }
         // ADR-366: a body compiled before a module it references was lazily loaded has been
@@ -211,7 +338,7 @@ impl Heap {
         let stale = self.runtime.stale_gen.load(Ordering::Relaxed);
         if self.seen_stale_gen.get() != stale {
             self.vm_cache
-                .borrow_mut()
+                .write()
                 .retain(|_, e| !e.cc.as_ref().is_some_and(|cc| cc.stale_bindings()));
             self.seen_stale_gen.set(stale);
         }
@@ -297,7 +424,7 @@ impl Heap {
         argc: usize,
     ) -> Option<Option<Arc<crate::eval::compile::ArmHandle>>> {
         self.sync_free_epoch();
-        let mut cache = self.vm_cache.borrow_mut();
+        let mut cache = self.vm_cache.write_derived();
         let entry = cache.get_mut(&k)?;
         let argc = argc as u32;
         if let Some((_, h)) = entry.handles.iter().find(|(a, _)| *a == argc) {
@@ -386,7 +513,7 @@ impl Heap {
         k: VmCacheKey,
         v: Option<Arc<crate::eval::compile::CompiledClosure>>,
     ) {
-        self.vm_cache.borrow_mut().insert(k, VmCacheEntry::new(v));
+        self.vm_cache.write().insert(k, VmCacheEntry::new(v));
     }
 
     /// Resolve **this process's IC block** for `arm` (ADR-175 Phase A): the pair of

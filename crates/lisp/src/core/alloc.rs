@@ -480,15 +480,18 @@ pub fn container_memory_cap() -> Option<usize> {
 /// walk is testable without a container. A cap may be set on any ancestor (a systemd
 /// slice, a container runtime's parent), so every level counts and the lowest wins.
 fn cap_from_cgroups(membership: &str, read: impl Fn(&str) -> Option<String>) -> Option<usize> {
-    // v1 reports a "practically unlimited" cap as a page-rounded i64::MAX.
-    const UNLIMITED_V1: usize = 1 << 62;
+    // v1 reports a "practically unlimited" cap as a page-rounded i64::MAX. Read as `u64`
+    // (a cgroup counts in 64 bits whatever the target's `usize`); a cap this address
+    // space cannot hold is no cap for it.
+    const UNLIMITED_V1: u64 = 1 << 62;
     let tightest = |root: &str, file: &str, path: &str| {
         let mut tightest: Option<usize> = None;
         let mut level = path.trim_end_matches('/');
         loop {
             let cap = read(&format!("{root}{level}/{file}"))
-                .and_then(|text| text.trim().parse::<usize>().ok())
-                .filter(|&cap| cap < UNLIMITED_V1);
+                .and_then(|text| text.trim().parse::<u64>().ok())
+                .filter(|&cap| cap < UNLIMITED_V1)
+                .and_then(|cap| usize::try_from(cap).ok());
             if let Some(cap) = cap {
                 tightest = Some(tightest.map_or(cap, |seen| seen.min(cap)));
             }

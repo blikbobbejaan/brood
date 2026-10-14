@@ -103,7 +103,7 @@ pub(crate) fn prim_apply(op: PrimOp, x: Value, y: Value) -> Result<Option<Value>
     Ok(Some(v))
 }
 
-/// The float fast path of [`prim_apply`] (ADR-096): both operands `Int`/`Float`
+/// The float fast path of [`prim_apply`] (ADR-96): both operands `Int`/`Float`
 /// with at least one `Float` — exactly the shapes `num_bin`/`prim_lt`'s float
 /// arms handle with a plain `f64` op after an exact `i64 as f64` coercion.
 /// Everything else (`BigInt` operands, structural `=` on floats, `rem`/`quot`'s
@@ -802,5 +802,16 @@ pub(crate) fn exec_value(
                 exec_value(heap, handler, frame_base, genv)
             }
         },
+        // The evaluator twin of `BindEnter … BindExit` (ADR-402): this Rust frame restores
+        // the dynamic stack on the way out, error or not.
+        Node::Binding { names, vals, body } => {
+            let v = exec_value(heap, vals, frame_base, genv)?;
+            let items = heap.seq_items(v)?;
+            let len = heap.dynamics_len();
+            crate::builtins::push_bindings(heap, names, &items)?;
+            let result = exec_value(heap, body, frame_base, genv);
+            heap.truncate_dynamics(len);
+            result
+        }
     }
 }

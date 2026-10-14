@@ -9,11 +9,13 @@ mod paint;
 mod render;
 
 use input::*;
-pub(crate) use paint::text_px_width;
 use paint::*;
+pub(crate) use render::Renderer;
 pub use render::TextAa;
 use render::*;
-pub(crate) use render::{snap_hairline, Renderer};
+// The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
+#[cfg(feature = "gui-gpu")]
+pub(crate) use {paint::text_px_width, render::snap_hairline};
 
 use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
 

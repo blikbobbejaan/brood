@@ -80,7 +80,7 @@ use crate::eval::compile::CompiledArm;
 /// (`scripts/jit-lower-witness.sh`, `tests/jit.rs`), a conformance suite it inherits rather
 /// than reinvents.
 /// Deliberately *only* the two lowering entry points: no `name()`, no capability query, no
-/// configuration hook. Each of those is a knob with no caller today, and per ADR-011 an
+/// configuration hook. Each of those is a knob with no caller today, and per ADR-11 an
 /// additive feature costs nothing to defer — whoever adds a second backend adds the ones
 /// that turn out to be needed, with their actual uses.
 /// The ABI of a JIT-compiled arm: `(heap, base, out) -> outcome`.
@@ -104,7 +104,7 @@ pub(crate) type JitArmFn = extern "C" fn(
     *mut crate::core::heap::Heap,
     i64,
     *mut crate::core::value::Value,
-    *const JitCallCtx,
+    *mut JitCallCtx,
 ) -> i64;
 
 /// The per-activation context a native arm runs under — what the call ceremony used to
@@ -132,6 +132,21 @@ pub(crate) struct JitCallCtx {
     pub gateway: u64,
     /// The arm's name for diagnostics (`Heap::jit_dbg_fn`).
     pub dbg_fn: u32,
+    /// May THIS activation answer a spent reduction budget by preempting (ADR-401)? 1 only
+    /// when every activation between it and a top-level bytecode driver can be rebuilt as
+    /// an interpreter frame: the driver entering native code sets it, and a native→native
+    /// call passes on its caller's (unless `no_child_unwind`). Every other way in — a builtin calling
+    /// back, a nested evaluation, the tree-walker — builds the context with 0, so the
+    /// default is the safe answer. At 0 a spent budget keeps the arm running.
+    pub unwind: u8,
+    /// Set by an activation that may preempt but cannot be rebuilt mid-call — the
+    /// self-spliced layout, whose ips match no chunk — so the activations it calls may not
+    /// unwind through it. Callers initialise it to 0 and only that prologue writes it: a
+    /// copy of `unwind` into a field of its own on every activation was two of `bintree`'s
+    /// instructions per call. The runtime reads the pair as one bit (`children_may_unwind`); the
+    /// native call site of an arm that can be rebuilt passes its `unwind` on directly, and
+    /// one that cannot passes 0. The unboxed register worker reaches neither.
+    pub no_child_unwind: u8,
 }
 
 impl JitCallCtx {
@@ -147,6 +162,8 @@ impl JitCallCtx {
             depth: heap.jit_native_depth as u64,
             gateway: heap.cur_native_gateway,
             dbg_fn: heap.jit_dbg_fn,
+            unwind: 0,
+            no_child_unwind: 0,
         }
     }
 
@@ -170,6 +187,17 @@ impl JitCallCtx {
         heap.jit_native_depth = c.depth as u32;
         heap.cur_native_gateway = c.gateway;
         heap.jit_dbg_fn = c.dbg_fn;
+    }
+
+    /// May the activations a native arm calls through a runtime callback preempt by
+    /// unwinding (ADR-401)? Its own `unwind`, unless it cannot be rebuilt mid-call.
+    ///
+    /// # Safety
+    /// As [`JitCallCtx::assert_into`].
+    #[inline]
+    pub(crate) unsafe fn children_may_unwind(ctx: *const JitCallCtx) -> bool {
+        let c = &*ctx;
+        c.unwind != 0 && c.no_child_unwind == 0
     }
 
     /// The two fields a builtin that re-enters the evaluator or parks would read from the

@@ -369,6 +369,7 @@ pub(crate) fn dispatch(
                         env_root,
                         arm.nslots,
                         &mut jit_ret as *mut Value,
+                        false,
                     );
                     heap.set_ic_bases(saved_bases);
                     match jit_outcome {
@@ -575,12 +576,13 @@ pub(crate) fn dbg_check_args(args: &[Value], label: &str) {
 }
 
 /// Fill `arm`'s capture slots (`capture_base + k`) of the frame at `base` from the captured
-/// env `genv` — [`push_frame`]'s step for them, shared with the driver's in-place frame
-/// adoption (`ChunkExit::CallInPlace`). No allocation, so no collection.
+/// env `cenv` — [`push_frame`]'s step for them, shared with every frame built without it:
+/// the driver's in-place adoption (`ChunkExit::CallInPlace`) and the native entries'
+/// fast frames. Without it a callee reads its captured lexicals as nil and fails far away.
+/// No allocation, so no collection.
 #[inline]
-pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, genv: EnvRoot) {
+pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, cenv: EnvId) {
     if !arm.capture_names.is_empty() {
-        let cenv = heap.read_root_env(genv);
         let capture_base = arm.nrequired + arm.noptional + arm.rest_slot.is_some() as usize;
         for (k, &name) in arm.capture_names.iter().enumerate() {
             let v = heap.capture_value(cenv, k, name);
@@ -637,7 +639,7 @@ pub(crate) fn push_frame(
     // — the VM-built common case) and falls back to a by-name `env_get` for a chained /
     // tree-walker env, so it's correct in both engines. Filled before optional defaults so a
     // default form may reference a capture. No GC between here and the body (no alloc).
-    fill_captures(heap, arm, base, genv);
+    fill_captures(heap, arm, base, heap.read_root_env(genv));
     // Missing optionals take their default, left-to-right (so a later default sees an
     // earlier one). `None` is a nil-default — the slot is already nil. A real default
     // evaluates against the frame: earlier params/optionals are filled and rooted;

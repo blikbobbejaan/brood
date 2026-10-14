@@ -429,25 +429,25 @@ stays in "Recent" — the digest is what the rest of the file promises.
 
 **Major threads** (grep these to follow an arc end to end):
 - **GC / memory** — `GC`, `safepoint`, `use-after-GC`, `generational`, `promote`,
-  `hibernate`, `tracing`, `copying` (ADR-016/035/043/054/055/058/061/072)
+  `hibernate`, `tracing`, `copying` (ADR-16/35/43/54/55/58/61/72)
 - **Execution engine / VM** — `VM`, `bytecode`, `closure-compiling`, `dispatch`,
-  `lexical addressing` (ADR-047/057/069/076)
+  `lexical addressing` (ADR-47/57/69/76)
 - **Scheduler / processes** — `scheduler`, `spawn`, `receive`, `preemption`,
-  `links`, `trap_exit`, `exit pid` (ADR-018/027/059/063/067)
+  `links`, `trap_exit`, `exit pid` (ADR-18/27/59/63/67)
 - **Distribution / nodes** — `node`, `distributed`, `dual-listen`, `node-connect`,
-  `cookie`, `HMAC` (ADR-034/068/073/074/081)
-- **Supervision** — `supervisor`, `hatch`, `monitor` (ADR-039 reverted/044/067)
+  `cookie`, `HMAC` (ADR-34/68/73/74/81)
+- **Supervision** — `supervisor`, `hatch`, `monitor` (ADR-39 reverted/044/067)
 - **Types / checker** — `types`, `checker`, `sig`, `structured`, `arrow`
-  (ADR-023/024/078/082)
+  (ADR-23/24/78/82)
 - **Namespaces / modules** — `namespace`, `defmodule`, `require`, `:use`
-  (ADR-019/065/070/085)
-- **Maps / data** — `CHAMP`, `maps`, `blob`, `transients`, `set` (ADR-030/040/041/060)
+  (ADR-19/65/70/85)
+- **Maps / data** — `CHAMP`, `maps`, `blob`, `transients`, `set` (ADR-30/40/41/60)
 - **Packages / release** — `package manager`, `:git deps`, `nest release`,
-  `bundling` (ADR-037/038)
+  `bundling` (ADR-37/38)
 - **Editor (M2/M3) / GUI** — `rope`, `buffer`, `display`, `observe`, `GUI`,
-  `mouse`, `face`, `pane`, `keymap` (ADR-045/046/052/056/075/077/079/080)
+  `mouse`, `face`, `pane`, `keymap` (ADR-45/46/52/56/75/77/79/80)
 - **Tooling (LSP/MCP/REPL)** — `LSP`, `MCP`, `REPL`, `format`, `nest`
-  (ADR-025/028/036/048/052)
+  (ADR-25/28/36/48/52)
 
 ---
 
@@ -474,14 +474,14 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-27** — Kernel audit: drive Rust to the absolute minimum
 - **2026-05-27** — brood-lsp: signature help completes Tier 1
 - **2026-05-27** — `map-pairs`: one map enumerator; reduce-kv; docstring-on-pattern fix
-- **2026-05-27** — Design: cross-file xref via the image, not a static index (ADR-031)
+- **2026-05-27** — Design: cross-file xref via the image, not a static index (ADR-31)
 - **2026-05-27** — Dynamic variables (`defdyn` / `binding`)
 - **2026-05-27** — source-location primitive + hover documentation (stdlib & primitives)
-- **2026-05-28** — `(spawn expr)` and sendable closures (ADR-033)
-- **2026-05-28** — Distributed nodes, slice 1: connect two runtimes (ADR-034)
+- **2026-05-28** — `(spawn expr)` and sendable closures (ADR-33)
+- **2026-05-28** — Distributed nodes, slice 1: connect two runtimes (ADR-34)
 - **2026-05-28** — receive loops are now TCO'd (coroutine-stack overflow fix)
 - **2026-05-28** — Distributed nodes, slice 2: connection lifecycle + liveness
-- **2026-05-28** — Per-process tracing GC (ADR-035)
+- **2026-05-28** — Per-process tracing GC (ADR-35)
 - **2026-05-28** — Types Step 3: sigs on `NativeFn`; one-step closure inference
 - **2026-05-28** — Types Step 4: guard narrowing + let-binding tracking
 - **2026-05-28** — Types Step 4: arity + unbound-symbol diagnostics
@@ -490,7 +490,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-28** — `nest format`: a Brood-driven code formatter
 - **2026-05-28** — Source locations in errors + auto-running the checker
 - **2026-05-28** — Auto-checker polish: macroexpand walk, scope fixes, sig fixes
-- **2026-05-28** — Cross-node closure shipping (ADR-033 wire codec)
+- **2026-05-28** — Cross-node closure shipping (ADR-33 wire codec)
 - **2026-05-28** — Distribution slice 3: finish the deferred list
 - **2026-05-28** — Style: lists for code, vectors for data
 - **2026-05-28** — MCP server design + introspect layer extracted
@@ -503,13 +503,13 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-28** — Security/hardening review pass (Rust review + audit fixes)
 - **2026-05-28** — MCP step 3: `std/mcp.blsp` lights up the dispatcher
 - **2026-05-28** — MCP steps 4, 1c-{a,b,d}, 5: full v0 surface live
-- **2026-05-28** — Package-manager design (ADR-037); bundler deferred (ADR-038)
+- **2026-05-28** — Package-manager design (ADR-37); bundler deferred (ADR-38)
 - **2026-05-28** (continued) — Module splits: dist, types::check, process
 - **2026-05-28** — LLM-native bundle: incarnations + new MCP resources + externalized prompt
 - **2026-05-28** — Review pass + structured errors with codes (§4)
 - **2026-05-29** — `brood` / `nest` CLI cleanup + clap + arity-change reload diagnostic
 - **2026-05-29** — `nest repl` proper: new `crates/repl/` crate
-- **2026-05-28** — Supervised-by-default processes (ADR-039); `defonce` removed
+- **2026-05-28** — Supervised-by-default processes (ADR-39); `defonce` removed
 - **2026-05-28** — Polish round: `nest new .`, E0040 div-by-zero code, scheduler-race hint
 - **2026-05-28** — `nest new` overwrites; `brood <nest-cmd>` points at nest
 - **2026-05-28** — Specific runtime error codes (E0041–E0070) + a few more hints
@@ -523,59 +523,59 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-28** — Std style review, codified conventions, `writing-brood` skill
 - **2026-05-28** (cont.) — Review pass on the LSP + MCP code (shared core, bug fixes)
 - **2026-05-28** (cont.) — Demo-friendliness: stdlib + docs gaps from `claude-demo-findings.md`
-- **2026-05-29** — Maps: CHAMP trie (ADR-040)
+- **2026-05-29** — Maps: CHAMP trie (ADR-40)
 - **2026-05-29** (cont.) — MCP DX feedback: the two trust-breakers
 - **2026-05-29** — Test runner fails fast on a dead worker (KI-2 part 2)
 - **2026-05-29** — Macro-hygiene lint (check-time capture warning)
 - **2026-05-29** — `(format …)` printf-style helper (demo-DX item #5)
-- **2026-05-29** — Kernel supervisor stripped (ADR-039 reverted)
+- **2026-05-29** — Kernel supervisor stripped (ADR-39 reverted)
 - **2026-05-29** — Phase-1 bump-only allocator (race goes silent)
 - **2026-05-29** (afternoon) — Race fully closed; suite-test segfault bisected
 - **2026-05-29** (evening) — Phase 2: explicit `(hibernate)` primitive
 - **2026-05-29** — Stdlib ergonomics (Game-of-Life feedback pass)
 - **2026-05-29** (later) — MCP worker-panic isolation
-- **2026-05-29** (late) — Shared blob heap (ADR-041): zero-copy send of large strings
-- **2026-05-29** (later still) — Runaway-resource backstops (ADR-043) + live-editing hardening (ADR-042)
+- **2026-05-29** (late) — Shared blob heap (ADR-41): zero-copy send of large strings
+- **2026-05-29** (later still) — Runaway-resource backstops (ADR-43) + live-editing hardening (ADR-42)
 - **2026-05-29** (re-confirmation) — KI-1 scheduler race verified fixed; docs reconciled
-- **2026-05-29** (concurrency-v2 track) — userland supervisor library (ADR-044)
-- **2026-05-29** — M2 Phase 0: the text rope substrate (`Value::Rope`, ADR-045)
+- **2026-05-29** (concurrency-v2 track) — userland supervisor library (ADR-44)
+- **2026-05-29** — M2 Phase 0: the text rope substrate (`Value::Rope`, ADR-45)
 - **2026-05-29** — M2 Phase 1: the buffer framework (`std/buffer.blsp`)
 - **2026-05-29** (concurrency-v2 track) — spawn-time load balancing; work-stealing ruled out
-- **2026-05-29** — M3 Phase 0: the display/input seam + `nest observe` (ADR-046)
-- **2026-05-29** — Runaway-resource safety (real this time) + native multi-arity dispatch (ADR-047)
+- **2026-05-29** — M3 Phase 0: the display/input seam + `nest observe` (ADR-46)
+- **2026-05-29** — Runaway-resource safety (real this time) + native multi-arity dispatch (ADR-47)
 - **2026-05-29** — Three language fixes surfaced by dogfooding the editor seam
 - **2026-05-29** — std library review: `sleep` mailbox bug + dedup of clobbered globals
-- **2026-05-29** — Self-hosted REPL: the read-eval-print loop moves into Brood (ADR-048/049)
+- **2026-05-29** — Self-hosted REPL: the read-eval-print loop moves into Brood (ADR-48/49)
 - **2026-05-29** — Memory review + Stage A: hibernate the test runner
 - **2026-05-29** — Game-of-Life feedback: bitwise ops, a standard PRNG, discovery tools
-- **2026-05-29** — Richer process introspection: `(process-info pid)` + observer (ADR-051)
-- **2026-05-29** — Interactive REPL editor: highlighting, brackets, hints, completion (ADR-052)
-- **2026-05-29** — Remote attach: observe a running runtime over the node link (ADR-053)
+- **2026-05-29** — Richer process introspection: `(process-info pid)` + observer (ADR-51)
+- **2026-05-29** — Interactive REPL editor: highlighting, brackets, hints, completion (ADR-52)
+- **2026-05-29** — Remote attach: observe a running runtime over the node link (ADR-53)
 - **2026-05-29** — Tooling round 2: check-on-load, scaffold templates, non-tail lint, property tests
 - **2026-05-29** — process-info completed: `:status` enum + `:memory`, and an observer process-tree
-- **2026-05-29** — Generational handles: a use-after-GC tripwire (ADR-054)
+- **2026-05-29** — Generational handles: a use-after-GC tripwire (ADR-54)
 - **2026-05-29** — Game-of-Life retro round 2: kill the primitive-probing path
-- **2026-05-29** — REPL editor cleanups: `(special-forms)`, persistent history, C-r (ADR-052)
+- **2026-05-29** — REPL editor cleanups: `(special-forms)`, persistent history, C-r (ADR-52)
 - **2026-05-29** — std-library review: `let*` formatting fix + dedup simplification
-- **2026-05-29** — Stage B: automatic copying GC at the eval safepoint (ADR-055)
-- **2026-05-29** — GUI frontend: finish the observer's input (mouse, back-tab, docs) (ADR-056)
-- **2026-05-29** — Observer: multiple GUI windows, `(require 'observer)`, GUI-only `(observe)` (ADR-056)
+- **2026-05-29** — Stage B: automatic copying GC at the eval safepoint (ADR-55)
+- **2026-05-29** — GUI frontend: finish the observer's input (mouse, back-tab, docs) (ADR-56)
+- **2026-05-29** — Observer: multiple GUI windows, `(require 'observer)`, GUI-only `(observe)` (ADR-56)
 - **2026-05-29** — GC observability + the entry-depth memory leak (the "user must not care" fix)
-- **2026-05-29** — Package manager, Slice 0: manifest `:dependencies` + the `project` macro (ADR-037)
+- **2026-05-29** — Package manager, Slice 0: manifest `:dependencies` + the `project` macro (ADR-37)
 - **2026-05-29** — Evaluator-dispatch campaign: Steps 0 + 1
-- **2026-05-29** — Package manager, Slice 1: `:path` deps end-to-end (ADR-037)
+- **2026-05-29** — Package manager, Slice 1: `:path` deps end-to-end (ADR-37)
 - **2026-05-29** — Eval-dispatch Step 2 designed, measured, and rejected as scoped
-- **2026-05-29** — Core memory guarantee: bound every entry path, remove `(hibernate)` (ADR-058)
+- **2026-05-29** — Core memory guarantee: bound every entry path, remove `(hibernate)` (ADR-58)
 - **2026-05-29** — Does lexical addressing help code safety? Audit of unbound-ref coverage
-- **2026-05-29** — GUI input via the mailbox: blocking work never pins a worker (ADR-059)
-- **2026-05-30** — Sets as a library over maps (ADR-060)
-- **2026-05-30** — GC collects at any eval depth (ADR-061)
-- **2026-05-30** — TCP sockets on a reusable blocking-IO seam (ADR-062)
-- **2026-05-30** — `(exit pid reason)`: Erlang-style process termination (ADR-063)
+- **2026-05-29** — GUI input via the mailbox: blocking work never pins a worker (ADR-59)
+- **2026-05-30** — Sets as a library over maps (ADR-60)
+- **2026-05-30** — GC collects at any eval depth (ADR-61)
+- **2026-05-30** — TCP sockets on a reusable blocking-IO seam (ADR-62)
+- **2026-05-30** — `(exit pid reason)`: Erlang-style process termination (ADR-63)
 - **2026-05-30** — `for` comprehension: fused-fold lowering (~3× faster)
 - **2026-05-30** — Close out collect-at-any-depth: GC-safety sweep + debug tooling
-- **2026-05-30** — TLS + an HTTP client: calling GitHub over `https` (ADR-062)
-- **2026-05-30** — Shrink the GC-rooting surface: `macroexpand`→Brood + single-shot rule (ADR-064)
+- **2026-05-30** — TLS + an HTTP client: calling GitHub over `https` (ADR-62)
+- **2026-05-30** — Shrink the GC-rooting surface: `macroexpand`→Brood + single-shot rule (ADR-64)
 - **2026-05-30** — MCP tool watchdog + terminal-output isolation
 - **2026-05-30** — Observer hot-reload: where `def` lands, and a live `:bg` theme (design note, not yet built)
 - **2026-05-30** — Full kernel GC/memory-safety audit (review only)
@@ -591,27 +591,27 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-30** — Supervisor: `:shutdown` policy + nested-tree teardown cascade
 - **2026-05-30** — Supervisor: OTP-parity quick wins (reverse-order shutdown + managed `:name`)
 - **2026-05-30** — Namespaces increment 2: `(:use …)` imports + auto-require
-- **2026-05-30** — Process links + `trap_exit` (ADR-067); supervisor crash no longer orphans
+- **2026-05-30** — Process links + `trap_exit` (ADR-67); supervisor crash no longer orphans
 - **2026-05-30** — Supervisor: runtime child API (DynamicSupervisor), on top of links
 - **2026-05-30** — Namespaces: import-aware checker + first std module migrated
 - **2026-05-30** — Namespaces: the big-bang (unify `defmodule` = namespace, migrate everything, α)
 - **2026-05-30** — Merge: links/trap_exit + DynamicSupervisor onto the namespaces+generational-GC trunk
 - **2026-05-30** — Checker: operand-position unbound symbols + one unified `nest check` path
 - **2026-05-30** — Distributed links + cross-node supervision; named/reload-stable supervisors
-- **2026-05-30** — Namespaces finished: LSP ns-awareness (§6) + collision policy (ADR-070)
+- **2026-05-30** — Namespaces finished: LSP ns-awareness (§6) + collision policy (ADR-70)
 - **2026-05-30** — Namespace migration: `nest` tooling + imported-macro expansion
 - **2026-05-30** — Generational GC, operator-call elision, reductions in the observer
 - **2026-05-30** — Package manager Slices 2 & 3: `:git` deps + the `nest` verbs
-- **2026-05-30** — Node-connect ergonomics (ADR-068)
-- **2026-05-30** — Evaluator dispatch: cache the passthrough analysis + global inline cache (ADR-069)
+- **2026-05-30** — Node-connect ergonomics (ADR-68)
+- **2026-05-30** — Evaluator dispatch: cache the passthrough analysis + global inline cache (ADR-69)
 - **2026-05-30** — Namespaces fully complete: ns-aware symbols/tokens + ns-sound shadow detection
-- **2026-05-30** — Fix: eval deadline escaped the ADR-069 passthrough loop (MCP watchdog hang)
+- **2026-05-30** — Fix: eval deadline escaped the ADR-69 passthrough loop (MCP watchdog hang)
 - **2026-05-30** — GC Tier-1 finish: `gc-collect`/`gc-trace`, tunable thresholds, doc reconciliation
-- **2026-05-30** — Package namespace-collision check (ADR-070); rooting deferred
-- **2026-05-30** — Node names `name@host` (ADR-073) + synchronous `remote-spawn`
+- **2026-05-30** — Package namespace-collision check (ADR-70); rooting deferred
+- **2026-05-30** — Node names `name@host` (ADR-73) + synchronous `remote-spawn`
 - **2026-05-30** — The M2 editor app: a super-minimal GUI text editor
 - **2026-05-30** — Robustness: a print never panics, an erroring TUI never wedges the shell
-- **2026-05-30** — Dual-listen: one node, several transports (ADR-074)
+- **2026-05-30** — Dual-listen: one node, several transports (ADR-74)
 - **2026-05-30** — `with-out-str`: output capture surfaced to Brood (editor step 1/3)
 - **2026-05-30** — `with-out-str`: output capture surfaced to Brood (editor step 1/3)
 - **2026-05-30** — `read-all` + `std/eval-command`: eval-the-Lisp-I'm-editing (editor step 2/3)
@@ -624,21 +624,21 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-30** — Bytecode VM Stage 2a/2b: `let`/`letrec` + multi-arity
 - **2026-05-30** — `std/regex`: a small regex engine in Brood
 - **2026-05-30** — GUI close button: a dedicated `:close` event
-- **2026-05-30** — Mouse `:drag` + `:release` (ADR-077): the drag gesture the editor needs
-- **2026-05-31** — std/window.blsp: the tiled-window layout toolkit (ADR-077, Part 1b)
+- **2026-05-30** — Mouse `:drag` + `:release` (ADR-77): the drag gesture the editor needs
+- **2026-05-31** — std/window.blsp: the tiled-window layout toolkit (ADR-77, Part 1b)
 - **2026-05-31** — Formatter: two comment-handling bugs (shared by nest format + the LSP)
 - **2026-05-31** — Bytecode VM Stage 2c: local-capturing closures
-- **2026-05-30** — Structured types, slice 1: function arrows (ADR-078)
-- **2026-05-31** — Structured types, slice 2: vector/list element types (ADR-078)
+- **2026-05-30** — Structured types, slice 1: function arrows (ADR-78)
+- **2026-05-31** — Structured types, slice 2: vector/list element types (ADR-78)
 - **2026-05-31** — VM source positions + `make install` ships the VM
 - **2026-05-31** — Per-op font scale on the GUI `Face` (per-buffer fonts)
-- **2026-05-31** — Cursor zones: resize pointer over window dividers (ADR-080)
-- **2026-05-31** — VM is the default engine (ADR-076 Stage 3 cutover)
+- **2026-05-31** — Cursor zones: resize pointer over window dividers (ADR-80)
+- **2026-05-31** — VM is the default engine (ADR-76 Stage 3 cutover)
 - **2026-05-31** — Mouse events carry held modifiers (Ctrl+wheel zoom)
 - **2026-05-31** — VM differential harness + variadic-arm coverage
-- **2026-05-31** — Parametric HOF results: element types flow through map/filter (ADR-078)
+- **2026-05-31** — Parametric HOF results: element types flow through map/filter (ADR-78)
 - **2026-05-31** — `register`/`whereis` sigs accept keyword names; editor per-pane zoom
-- **2026-05-31** — Parametric results slice 2: reduce/fold (ADR-078)
+- **2026-05-31** — Parametric results slice 2: reduce/fold (ADR-78)
 - **2026-05-31** — `check-string-structured`: the checker over a source *string*
 - **2026-05-31** — `std/window` → `std/pane` rename; myedit line-number gutter
 - **2026-05-31** — Magic-string sweep: finish `kw`, add `process/keywords` (`pk`)
@@ -657,27 +657,27 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-05-31** — Security review of the language; pre-auth dist hardening
 - **2026-05-31** — Type system: review vs the Elixir paper, soundness oracles, opt-in `(sig …)`/`(sig! …)` contracts
 - **2026-05-31** — Close-out: closure-capturing-closure promote/send (GC's last hole) + http spawn-per-connection
-- **2026-05-31** — `nest release`: ship a Brood app as one binary (ADR-038)
+- **2026-05-31** — `nest release`: ship a Brood app as one binary (ADR-38)
 - **2026-05-31** (cont.) — lean release runtime + install-build fix
-- **2026-05-31** — Output ports + an async, safe logger (ADR-083)
+- **2026-05-31** — Output ports + an async, safe logger (ADR-83)
 - **2026-05-31** (cont.) — `nest release` with no Rust + GUI in releases
-- **2026-05-31** — Quasiquote → a compile/eval-time code transform (ADR-084); two-engine bench
+- **2026-05-31** — Quasiquote → a compile/eval-time code transform (ADR-84); two-engine bench
 - **2026-05-31** — Runtime visibility: MCP runtime tools, observer reductions/sec, LSP unused-require fix
 - **2026-05-31** — VM coverage: real-default `&optional` (#6) + match/pattern-fns via quote + literals (#5)
 - **2026-05-31** — Confirmed the `nest mcp` GC `flush_oob` was a stale binary + added a guardrail
 - **2026-05-31** — HTTP streaming responses + SSE server framing (the push seam)
 - **2026-05-31** — `std/highlight`: the shared span→runs fontify tiler
-- **2026-05-31** — Decision: `std/` is the basic-language core; frameworks become packages (ADR-085)
+- **2026-05-31** — Decision: `std/` is the basic-language core; frameworks become packages (ADR-85)
 - **2026-05-31** — std performance pass (sequence/map hot paths)
-- **2026-06-01** — Hierarchical module names (ADR-085 Move 3)
-- **2026-06-01** — std/ reorganization: frameworks namespaced, toolchain grouped-but-bare (ADR-085 Move 1)
-- **2026-06-01** — ADR-085 Move 2 (clean slice): brood-net + brood-supervisor packages
-- **2026-06-01** — Nodes form a transitive cluster mesh (ADR-088)
+- **2026-06-01** — Hierarchical module names (ADR-85 Move 3)
+- **2026-06-01** — std/ reorganization: frameworks namespaced, toolchain grouped-but-bare (ADR-85 Move 1)
+- **2026-06-01** — ADR-85 Move 2 (clean slice): brood-net + brood-supervisor packages
+- **2026-06-01** — Nodes form a transitive cluster mesh (ADR-88)
 - **2026-06-01** — Resilient `ui-run`: let-it-crash at the render loop (M3)
-- **2026-06-01** — Node-link channel encryption: a Noise-style session (ADR-089, M4)
-- **2026-06-01** — M4 daemon/serving layer: serve a ui-run app to remote frontends (ADR-090)
-- **2026-06-01** — RUNTIME-region GC, Stage 1: solidify the single-process collector (ADR-091)
-- **2026-06-01** — `nest grammar`: editor grammars generated from the language (ADR-092) + a VS Code extension
+- **2026-06-01** — Node-link channel encryption: a Noise-style session (ADR-89, M4)
+- **2026-06-01** — M4 daemon/serving layer: serve a ui-run app to remote frontends (ADR-90)
+- **2026-06-01** — RUNTIME-region GC, Stage 1: solidify the single-process collector (ADR-91)
+- **2026-06-01** — `nest grammar`: editor grammars generated from the language (ADR-92) + a VS Code extension
 - **2026-06-01** — tree-sitter-brood: a real parser grammar (+ `nest grammar tree-sitter`)
 - **2026-06-02** — GUI key fix: Shift survives Alt/Ctrl punctuation chords
 - **2026-06-02** — GUI window titles: `gui-open` title arg + `gui-title!`
@@ -701,11 +701,11 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-06-06** — whole-kernel review sweep: review everything, fix everything
 - **2026-06-06** — std/ review sweep: the Brood-language counterpart
 - **2026-06-06** — reducible lazy range (Value::Range)
-- **2026-06-06** — ADR-096: VM perf round as the JIT runway (plan)
-- **2026-06-06** — ADR-096 round 1 shipped: ICs, wider prims, rooting skip, exec split
-- **2026-06-07** — ADR-096 round 2 (item 6): direct letrec self-recursion on the VM
-- **2026-06-07** — ADR-098: shrink the core (drop `lambda`/`let*`; `defmacro` → macro)
-- **2026-06-07** — ADR-099: `proc/gen` becomes a real gen_server
+- **2026-06-06** — ADR-96: VM perf round as the JIT runway (plan)
+- **2026-06-06** — ADR-96 round 1 shipped: ICs, wider prims, rooting skip, exec split
+- **2026-06-07** — ADR-96 round 2 (item 6): direct letrec self-recursion on the VM
+- **2026-06-07** — ADR-98: shrink the core (drop `lambda`/`let*`; `defmacro` → macro)
+- **2026-06-07** — ADR-99: `proc/gen` becomes a real gen_server
 - **2026-06-07** — scheduler: sticky `:kill` + busy-aware spawn placement
 - **2026-06-07** — fix: flaky `unbound` under load was test-isolation, not a core race
 - **2026-06-07** — VM bench harness, perf-stats pass, apply-unfolding in dispatch
@@ -791,7 +791,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-06-28** — Checker: unused `let`-binding lint (conservative scan, `_`-exempt, position-gated); goals reframe — gate what's provably local/static, advisory at reload boundaries
 - **2026-06-28** — Checker: +25 `CURATED_SIGS` (equality, string conv/predicate/transform, `format`, search→int) for stdlib fns `infer_sig` can't walk
 - **2026-06-28** — GUI less-TUI polish (`gui-bg!`, `LINE_HEIGHT`, centred sub-cell remainder — vertical later re-anchored to the top; slim scrollbar) + a cooler REPL (highlighted results, `,`-meta-commands) + a true multi-line line editor (`std/editor/lineedit.blsp`)
-- **2026-06-28** — Minimize the builtin surface (ADR-006): crypto 21 prims → 2 keyword-dispatched (`%digest`/`%hmac`); tree-sitter grammars out of the default kernel (opt-in `treesit-<lang>`); removed `Value::Bitset` entirely (~287 builtins, was 320); `log2`/`log10` kept for libm exactness. KI-4 now moot.
+- **2026-06-28** — Minimize the builtin surface (ADR-6): crypto 21 prims → 2 keyword-dispatched (`%digest`/`%hmac`); tree-sitter grammars out of the default kernel (opt-in `treesit-<lang>`); removed `Value::Bitset` entirely (~287 builtins, was 320); `log2`/`log10` kept for libm exactness. KI-4 now moot.
 - **2026-06-29** — GUI: `frect` sub-cell rounded-rect op (fractional cells, AA, alpha) → a macOS-style fade-in overlay scrollbar in brood-edit
 - **2026-06-29** — Checker: fixed the `:use` / private-defn lint false positives — count unqualified + qualified refs; the private-defn check moved to a whole-project Brood pass (supersedes the 06-28 per-file Rust version)
 - **2026-06-29** — Stability hunt: 4 correctness bugs fixed (float `=` JIT miscompile, `(apply f seq-view)` use-after-GC, `inf`/`nan` reader round-trip, `max`/`min` NaN/int-float divergence) + a 700-program × 4-engine differential fuzzer, 0 divergences
@@ -869,7 +869,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-07-09** — Multigen RUNTIME GC: closed the throughput gap (two-phase self-report walk) — suite at parity
 - **2026-07-09** — JIT is now a default cargo feature (on for everything)
 - **2026-07-09** — Remove dead complexity: the inert PoisonBits tripwire + two stdlib dups
-- **2026-07-09** — Multigen RUNTIME GC is now unconditional (ADR-091) — flag + dual paths deleted
+- **2026-07-09** — Multigen RUNTIME GC is now unconditional (ADR-91) — flag + dual paths deleted
 - **2026-07-09** — brood-life feedback triage: shipped the accepted cluster + ADR-130
 - **2026-07-10** — `defrecord` implemented (ADR-130) — pure prelude sugar over maps, zero new core
 - **2026-07-10** — Checker now flags a wrong-type `sig` argument at the call site
@@ -970,7 +970,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-07-23** — "Private should be private": module privacy enforced (ADR-146)
 - **2026-07-24** — Validation pass, round 3: nested-let hint gap + client-side net leaks
 - **2026-07-24** — Reactor reap hardening: TLS handshake timeout + opt-in idle timeout
-- **2026-07-24** — First-class set kernel (`#{…}`, ADR-060)
+- **2026-07-24** — First-class set kernel (`#{…}`, ADR-60)
 - **2026-07-24** — WASM interop slice 2: bytes marshalling (`list<u8>` ↔ `bytes`)
 - **2026-07-24** — LSP tier-3: incremental document sync
 - **2026-07-24** — Telemetry metric aggregators + sampling (Elixir Telemetry.Metrics, in Brood)
@@ -1124,7 +1124,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-08-14** — The computed-head call pays no allocation: the arm handle is memoized (ADR-228)
 - **2026-08-14** — Remove the user-facing `require` form; loading is inference + an internal `require-one`
 - **2026-08-17** — The stale-bare-name sweep: a curated sig masking the unbound lint, two dead benchmark rows, and one GC walk
-- **2026-08-17** — `nest release` bundle rooting: dev/release parity for package-rooted deps (ADR-070)
+- **2026-08-17** — `nest release` bundle rooting: dev/release parity for package-rooted deps (ADR-70)
 - **2026-08-17** — Close the last two open issues: the `sqrt` call-site inline (KI-44) and the stale `examples/editor` (KI-45)
 - **2026-08-18** — KI-39 was never a flake: a coloured log, an uncovered TIMEOUT, and a keypress that loaded 2967 lines
 - **2026-08-18** — Stdlib namespacing, stage 5: the `string` library module (ADR-230)
@@ -1210,7 +1210,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-09-03** — (types) the standard library was telling the checker to forget
 - **2026-09-03** — (correction) there was no flake; I read a cancelled run's log
 - **2026-09-03** — (stability) a watchdog for the process that never ran, and a rule for the env var that leaked twice
-- **2026-09-03** — (runtime) `read-line` parks a process, not a worker: ADR-059 Phase 2, and KI-97 closes
+- **2026-09-03** — (runtime) `read-line` parks a process, not a worker: ADR-59 Phase 2, and KI-97 closes
 - **2026-09-03** — (CI) the strict gate was red all day, and the downstream smoke told two other stories
 - **2026-09-03** — (stability) the non-reproducible entries, one by one: two mechanisms were wrong, one was three bugs, one stays dormant
 - **2026-09-04** — the tree-walker→VM router is default-on (ADR-318); KI-88 archived as dormant
@@ -1288,7 +1288,7 @@ Every session, oldest first; the latest days are in "Recent" below.
 - **2026-09-17** — B6: a cap the checker hits is reported — one `checker gave up: …` note per file (`note:`, advisory, never gating) for a fixpoint that did not settle, a derivation declined over a same-file macro, the specialization fuel, the depth cap. Writing it exposed that Pass 2.8 never widened: 34 std/tests returns "still moving" after 16 rounds, each reading `any` at every caller silently; with the joint loop's widening/fold there, none. `check/tests/caps.rs`, sabotage-verified.
 - **2026-09-17** — sound first (type-system list A1/A2/A4/A5): the runtime contract checks intervals, lengths and recursive types; a declared overload is checked against its body per arm (which found `(math/pow 2.0 0)` answering the int `1` — fixed in the code); strict reports a declared return the checker cannot verify as *trusted, not verified*, 43 std sites read one by one (32 fixed at the leaf, 11 acknowledged `(check-allow :trusted …)`); four never-seeded fixpoint holes and the `(int and (not 0))` exclusion misread closed on the way.
 - **2026-09-17** — perf-handoff Task 5 (tier-2 monomorphization) ANSWERED and closed: ability dispatch costs ~370 ns per call and Tier 1 recovers ~260 of it, but no benchmark row and no real program has a site (0 devirtualizations on every row, 4 in bedit's whole suite) — no channel. KI-161 found taking the number: the KI-90 rebind guard never guarded (dead in modules, permissive without one); structural now.
-- **2026-09-17** — a `cursor-zone` inside a region is hit-tested again (ADR-080 amendment, with ADR-363): the frame's zone collector read top-level ops only, so `cell-region`/`scroll-region` swallowed every zone inside them — a zoomed pane's links lost their hand cursor the moment `cell-region` shipped. The walk recurses with the paint's own coordinate math, stores zones as grid-relative PIXEL rects (a region's cell is not the window's), and tests the pointer per pixel, not per cell.
+- **2026-09-17** — a `cursor-zone` inside a region is hit-tested again (ADR-80 amendment, with ADR-363): the frame's zone collector read top-level ops only, so `cell-region`/`scroll-region` swallowed every zone inside them — a zoomed pane's links lost their hand cursor the moment `cell-region` shipped. The walk recurses with the paint's own coordinate math, stores zones as grid-relative PIXEL rects (a region's cell is not the window's), and tests the pointer per pixel, not per cell.
 - **2026-09-17** — ADR-362: the `supervisor` row **0.88 → 0.66 s (−25%)** with no edit to the supervisor — the `receive` matcher chains clauses as an `or` (no fail thunks: five closures per message and a call per failing clause, gone), the type predicates are a prim (`vector?` 168 → 67 ns on the VM, 1 ns native), `%vector-ref`/`%vector-length` inline (the `VectorRef` entry had named the native by its pre-`seq/` spelling since the rename), and `MapGet` is default-on with a plain map's miss answered inline (hit 322 → 66 ns, miss 519 → 123).
 - **2026-09-17** — C9 closed (ADR-364): the last two joint-coverage holes ADR-262 documented, both false positives at a call. A **record is a product** over its declared keys (`record_covered_by` on ADR-289's subset rule, so `{a: int|string}` ⊆ `{a: int} | {a: string}`) with the undeclared remainder deliberately not a position — it stands for unboundedly many independent keys, so it must fit one candidate's rest, the vector argument — and a **bounded interval of ≤64 values is the literal set it denotes** (`enumerated_int_range`, int-literal rule only), so `(int 1 2)` ⊆ `1 | 2`. The neighbours that must stay false (`map<K, A|B>` vs split maps, the 2-field componentwise case) are pinned beside each; both mechanisms sabotage-verified to red their own pins alone. 585/585 types, strict 0 + the 8 advisory notes, both checker differentials agree.
 - **2026-09-17** — CI's last two reds closed (the checker's whole-tree differentials timed out in BOTH jobs — tier pin + `image_matches_source`'s budget, `669c580c`; bedit's ratchet, `03e955c6`) and the benchmark column refreshed on request at `a406f9a6` (brood-benchmarks `d2646f4`): FLAT, except `pipeline` +7.3% which is the pre-flight type check growing 131M → 144M instructions per file (the run +0.8%) — KI-150 reopened by the trigger its mitigation named. Found beside it, unexplained: `BROOD_NO_CHECK=1` runs `pipeline` at 2.8× the instructions.
@@ -2052,7 +2052,7 @@ Done as a **consolidation, not an addition** (the request was explicitly to clea
 add): the singular `package-module-name-of` was deleted once `package-module-files` and
 `package-provided-modules` moved to the new plural `package-module-names-of`, and their
 redundant `filter … nil?` guards went with it — so the tree has *fewer* file scanners than
-before the feature. `package-provided-modules` was generalized in lockstep so the ADR-070
+before the feature. `package-provided-modules` was generalized in lockstep so the ADR-70
 collision guard still rejects two files declaring the same module name (now including a
 secondary). `project-dep-module-files` gained a `distinct` (a two-module dep file otherwise
 double-counts in the image fingerprint). Observed but deliberately **not touched** (out of the
@@ -2061,7 +2061,7 @@ feature's blast radius, subtly different, and a green tree not to disturb mid-fe
 load-dedup) and twice inline in `std/tool/docs.blsp` — a worthwhile *separate* consolidation
 with its own tests.
 
-**Scope:** named (ADR-070 rooted) projects only. A nameless project skips rooting and a bare
+**Scope:** named (ADR-70 rooted) projects only. A nameless project skips rooting and a bare
 `brood file.blsp` run does no project setup; supporting either needs a new bare-key registry
 *and* a new require branch — deferred as not worth the surface for the marginal case. The
 checker needs nothing: `nest check`'s whole-project pre-flight loads every source file. The
@@ -2486,7 +2486,7 @@ hand-written `.blsp` file in `std/`, the tests, and every `../*` sibling project
 
 **A loader still exists, deliberately in Brood.** `require-one` (load-path search + cycle detection
 + feature tracking) stays as the internal loader — it can't be a Rust `%`-primitive without moving
-policy out of Brood (violating ADR-006). It is called only by the irreducible cases: the
+policy out of Brood (violating ADR-6). It is called only by the irreducible cases: the
 `:use`/`:alias`/`:use-internals` macro expansion, the genuine **project↔package mutual cycle**
 (where inference would load a half-built module mid-cycle), dynamic loads by a *computed* name
 (`docs`/`project` folding over module lists), and a handful of pure effect-loads in the Rust
@@ -2582,9 +2582,9 @@ overlapping `make test-both` runs (my error) produced three fixed-deadline failu
 clean run did not reproduce — see the KI-43 addendum. Don't run two suites on one box and read
 the result as signal.
 
-## 2026-08-17 — `nest release` bundle rooting: dev/release parity for package-rooted deps (ADR-070)
+## 2026-08-17 — `nest release` bundle rooting: dev/release parity for package-rooted deps (ADR-70)
 
-Closed the last ADR-070 follow-up. A release bundle used to embed every module by its bare
+Closed the last ADR-70 follow-up. A release bundle used to embed every module by its bare
 require-name, so two dependencies each providing a `parser` collided and `bundle-collect`
 rejected the build (`bundle-reject-duplicate-names`) — the interim SAFE stop. Now a dependency's
 modules are embedded under their **rooted** key (`foo/parser`), so two same-named dep modules
@@ -2606,7 +2606,7 @@ Three edits, mirroring the disk package-context path (`require-force-package`):
   is a no-op there; a dep loads from disk (`%builtin-module` returns nil).
 
 Full root-project bundle-rooting (the Elixir-uniform `myproj/main/main`) has no consumer and
-stays deferred (ADR-011); the reject-guard is kept as a loud backstop for a genuine key clash.
+stays deferred (ADR-11); the reject-guard is kept as a loud backstop for a genuine key clash.
 
 Coverage: `crates/cli/tests/release_bundle.rs` gains `bundled_deps_with_same_module_name_coexist_rooted`
 (end-to-end — two deps' `parser` each root their own `(:use util)`, printing `alpha:A|beta:B`);
@@ -2986,7 +2986,7 @@ every release published once the upgraded hive is live.
 ## 2026-08-19 — Release bundles: root a dependency module only when its name collides
 
 A `nest release` bundle embeds every dependency module under a package-rooted key (`store/repo`,
-ADR-070). The boot loader (`run-bundle` → `require-force-in`) then loaded each one UNDER its
+ADR-70). The boot loader (`run-bundle` → `require-force-in`) then loaded each one UNDER its
 package context, so its `(defmodule repo)` bound `store/repo/…`. But a real app references a dep
 module by its BARE name — hive's `(:alias repo)`, a bare `web/router/through-handler` — exactly as
 it does in a dev run, where a dep module is found by basename on the load-path and binds bare. So
@@ -3001,7 +3001,7 @@ Rooting exists for exactly one reason — two dependencies that ship a module of
   (`bundle-short-collides?` over the rebuilt `*package-modules-of*`). A uniquely-named dep module
   loads at ROOT and binds bare (`repo`, `pool`, `wire/bytes`) — matching dev and matching how apps
   reference it. A colliding one stays rooted, and the consumer references it qualified
-  (`alpha/parser`) — the ADR-070 guarantee, still green.
+  (`alpha/parser`) — the ADR-70 guarantee, still green.
 - **`bundle-resolve-bare` makes a bare require order-independent**: a bare `repo` / `pool` that
   isn't embedded directly resolves to the dependency's embedded rooted key, so a root module
   required before the dep whose module it uses still loads (and both names are marked provided, so
@@ -3011,7 +3011,7 @@ Rooting exists for exactly one reason — two dependencies that ship a module of
   like `store`, which is exactly the one hive tripped on) and rebuilt into `*package-modules-of*`
   at boot.
 
-Verified: the ADR-070 same-name-deps bundle test stays green, the hive bundle boots through to its
+Verified: the ADR-70 same-name-deps bundle test stays green, the hive bundle boots through to its
 DB connection (was `cannot find module`), and the full suite is 4674/4674. This is a real dev/release
 parity fix, not hive-specific — any app with a transitive or bare-referenced dependency was affected.
 
@@ -3169,7 +3169,7 @@ remaining)` out of a local listen-socket binding named `ls`.
 1.145 GB against a 1 GiB backstop; the three `adversarial_test.blsp` cases that "failed" were merely
 the ones running when the line was crossed. Raised to 2 GiB soft / 3 GiB hard, which is what that cap
 documents itself to be. Two fixes were built and discarded first — `gc-collect` (rested on a comment
-ADR-061 had made false) and `hibernate` (a real 148× on a microbenchmark, wrong scope for a
+ADR-61 had made false) and `hibernate` (a real 148× on a microbenchmark, wrong scope for a
 process-wide cap).
 
 **What this session did not resolve, and should not be read as resolving:** that cap was sized
@@ -3541,7 +3541,7 @@ kernel primitive is not a member of any module trips over:
    sections are keyed by splitting names on `/` (`project-image-section-of`) — so a
    `vector/ref` reference makes a phantom `vector` section, and `nest test` dies on
    `require: cannot find module 'vector'` for *every* project that touches a vector.
-3. Qualified-name rooting (ADR-070) treats `mod/name` as a reference into module `mod`.
+3. Qualified-name rooting (ADR-70) treats `mod/name` as a reference into module `mod`.
 
 `string/length` is the sole `/`-named primitive family and is fine **only because `string`
 is a real module** (require-one succeeds, `(:use string)` refers its real names). So the
@@ -3941,7 +3941,7 @@ is an auto-require hook on the deserialize path.
 Also found while merging: `std/net/reconnect.blsp` was calling bare `now` (moved to `os/now`) — a
 real break in shipped code, and the cause of two `cli::distribution` failures, not test rot. And
 bare **`require` is not a bound name** at all (the callable is `require-one`), despite `CLAUDE.md`
-and the ADR-065 note describing `(require 'test)`.
+and the ADR-65 note describing `(require 'test)`.
 
 The `shuffle` conflict is the one that needed judgement rather than mechanics: upstream *moved*
 `shuffle` into `seq/` while keeping the O(n²) body, and the helper it calls had been deleted by
@@ -4283,7 +4283,7 @@ epoch 13 — a handle held across a collection without being re-rooted
 `scan_mailbox` took the `receive` clauses' leading-keyword vector as a bare `Value` and decoded
 it **lazily** — the decode sits inside the scan loop, skipped on a one-message mailbox. That
 laziness is the whole bug: on any iteration after the first, the decode runs *after* a matcher
-`apply`, which can collect at any eval depth (ADR-061) and relocate the vector. Handle captured
+`apply`, which can collect at any eval depth (ADR-61) and relocate the vector. Handle captured
 before, dereferenced after.
 
 The fix was already written down eight lines above, for the value beside it. `matcher` is pushed
@@ -4398,7 +4398,7 @@ narrower the program, the likelier it lands in the window — and `--for` is doc
 CI-friendly way to exercise an app, which is exactly where a spurious red costs most.
 
 The kernel already names this race one field over. `%spawn-link`'s docstring: "atomically links
-the child to the caller before it runs (**no spawn->link :noproc race**)" (ADR-067). The link
+the child to the caller before it runs (**no spawn->link :noproc race**)" (ADR-67). The link
 half was solved; the monitor half kept the two-step form.
 
 **Reading `:noproc` as success would have been the wrong fix**, and it is worth writing down
@@ -4807,7 +4807,7 @@ One prelude helper had to move off the module: `impl-id-owner` (the tier-ladder 
 
 **The unrecorded 3.5 ms.** The warm boot read the prelude *twice*: the cached expansions, and the raw
 `PRELUDE` text positioned, purely so `note_definition` could record where each prelude `def` was
-written (`M-.` into stdlib, ADR-031). It built the whole prelude AST on the heap to produce a
+written (`M-.` into stdlib, ADR-31). It built the whole prelude AST on the heap to produce a
 `Symbol -> (file, line, col)` map. Those names are now recorded at cache-*write* time, where the raw
 forms are already in hand, and carried in the cache line (`line:col:name,... <form>`, header `v2`)
 — ADR-247. The recording goes through `note_definition_recording`, i.e. `note_definition` with an
@@ -6636,7 +6636,7 @@ the public name inside the window; every in-language observer moved the window; 
 is already bound, so there is no stub to trigger a load and nothing to wait on; and one `Interp`
 on one thread reproduces because the concurrency needed is between green processes, not runtimes.
 
-**Fix: privates first** (`std/tool/stdimage.blsp` — policy stays in Brood, ADR-006). A public name
+**Fix: privates first** (`std/tool/stdimage.blsp` — policy stays in Brood, ADR-6). A public name
 is never reachable before the privates it closes over. Sorting by definition site was tried first
 and cannot work: `reflect/source-location` returns `nil` for a `defn-`, which is exactly the half
 that matters.
@@ -6943,7 +6943,7 @@ as `0ac9ff37`; the merge came out coherent, re-verified against the merged binar
 `defrecord` already emits one in its own constructor sig. Sealed ability names have resolved
 since ADR-181; a record is the more obvious case, and ADR-259 turning unknown names into
 *reported* warnings made the gap something every user meets writing the obvious thing. I first
-declined this as a "power feature" under ADR-011, which was wrong: it is not a knob, it is an
+declined this as a "power feature" under ADR-11, which was wrong: it is not a knob, it is an
 existing type that could not be named. See the ADR-181 amendments.
 
 **3. And then the message showed the plumbing.** `expects {__id__: :t/circle, ...}, got
@@ -7281,7 +7281,7 @@ The lever the isolation pointed at, taken. `max` and `min` were single-clause `(
 arity arm "binds its params *directly* (no rest-list), so it's as cheap as a single-clause fn —
 this is how the prelude's variadic `+`/`-`/`<`/`=` stay fast and stay Brood", and `<=`'s own
 comment records the mechanism: its 2-arg body is spelled `(%le a b)` rather than
-`(not (%lt b a))` "so the ADR-069 thin-wrapper elision reaches it". `math/max`/`math/min` had
+`(not (%lt b a))` "so the ADR-69 thin-wrapper elision reaches it". `math/max`/`math/min` had
 simply never been given the treatment their prelude neighbours got. So no multi-arity dispatch had
 to be built — CLAUDE.md's prescribed lever turned out to be *already implemented and unused here*.
 
@@ -8555,7 +8555,7 @@ fast-link latch path, and the no-jit `dead_code` attr on `native_gateway_seq`.
 
 `not=` is deprecated (**ADR-300**), not removed. It buys a spelling, not a capability — its
 body *is* `(not (= a b))` — and it is the slower of the two for a structural reason worth
-keeping: `=` is a thin wrapper the ADR-069 elision collapses and `not` is a leaf the inliner
+keeping: `=` is a thin wrapper the ADR-69 elision collapses and `not` is a leaf the inliner
 splices, so the written-out form ends up call-free, while `not=`'s **nested-call** body is
 reachable by neither pass and stays a boxed `Call` whose caller never gets the inlined
 upgrade. 5M-iteration tail loop, same binary, interleaved: 218 ms vs 132 ms native, 1067 ms
@@ -8686,7 +8686,7 @@ short reads everywhere else. Bases now come from `next_ic_base`/`next_gic_base` 
 `vm_call_ic_put`/`vm_global_ic_put` grow to `abs + 1` on first publish (guarded to never
 grow past the reservation, so a stale base after a `runtime_collect` reset writes nothing
 rather than something wrong), and the counters reset in lockstep with the four
-table+registry clears — ADR-096's site-id recycling is bit-for-bit what it was.
+table+registry clears — ADR-96's site-id recycling is bit-for-bit what it was.
 
 Measured: `spawn-live` peak RSS 1796 → 1737 MB; every timed row flat at both ceilings, with
 ceiling-1 `pfib`'s +3.9% wall retracted against identical instructions (600.9 G both arms —
@@ -9129,7 +9129,7 @@ renamed to a raising mirror, `!` has to mean one thing. It meant two: **four** r
 throws") against **37** effectful ones (`gui/title!`, `run!`, `coverage/begin!`,
 `project-write-failed!`). ADR-302 takes `!` for raising and renames the rest — 38 names, 37
 files, 15 of them file-private and free. The Scheme reading was already vacuous: `!` marks
-*mutation* there, and Brood has none (ADR-026), so every effectful bang was marking "does
+*mutation* there, and Brood has none (ADR-26), so every effectful bang was marking "does
 I/O", which the name says anyway. `run!` could not simply drop its `!` — six modules define
 their own `run`, which would shadow a bare prelude one — so it is **`each`**.
 
@@ -10313,7 +10313,7 @@ no runtime off-switch for RootsBuf, so that is the only lever.
 
 ## 2026-09-01 (evening) — KI-97 item 2: two of the four worker-pinning calls closed
 
-Both are ADR-059 violations — a native blocking call on a scheduler worker, which cannot
+Both are ADR-59 violations — a native blocking call on a scheduler worker, which cannot
 be preempted mid-syscall, so the pool drains and no `try` or timeout in Brood can recover.
 
 **`run-process` inherited stdin.** `Command::status()` inherits all three streams, so a
@@ -10599,7 +10599,7 @@ worth treating as a bug report.
 subscribers were never reaped. Gated on the subscription count now. The guard asserts the
 `!armed()` precondition explicitly, so it cannot quietly stop exercising the trap.
 
-**KI-97 is now down to one item**: `read-line`'s global stdin lock, which is ADR-059 Phase 2
+**KI-97 is now down to one item**: `read-line`'s global stdin lock, which is ADR-59 Phase 2
 (terminal input on a reader thread, delivering to a mailbox) — a feature, deliberately not
 half-done.
 
@@ -11037,7 +11037,7 @@ guarded a function the comment above it says answers **-1**; and a `nil?` sat be
 `pair?` that had already excluded nil. Three live defects the checker had never had a way
 to mention. A fourth hit is a checker gap rather than a program bug and is annotated as
 one: `*repl-start-ns*` is rebound **from Rust** by `nest`, and a global's bound is taken
-from its initializer, so the checker believes it is forever nil — precisely what ADR-023
+from its initializer, so the checker believes it is forever nil — precisely what ADR-23
 says must not happen. The other 21 hits are all `(refute (pred x))` / `(is (not (pred x)))`,
 deliberate assertions that a predicate is false, and carry `check-allow`.
 
@@ -11104,7 +11104,7 @@ away in the echo row.
 where the trie answers in O(log n), and `contains?` had had the fast arm all along. On 500
 elements, 500 lookups: **29 ms vs 0.4 ms**. `includes?` dispatched on `map?` (searching a
 map's values, which is right) and let a set fall through to `index-of`; a set is not a map
-(ADR-060), so the *less* obvious of the two membership functions was the correct one to
+(ADR-60), so the *less* obvious of the two membership functions was the correct one to
 reach for, with nothing to say so.
 
 **Found downstream, which is the interesting part.** bedit's playground re-keys its
@@ -11164,9 +11164,9 @@ The reusable part is the same one as KI-104 earlier today: the obvious spelling 
 one, and no test could see it because the output was right. `mapcat` at every level of a
 recursive walk is the shape to distrust.
 
-## 2026-09-02 (later) — deleting `tree-sitter-reparse`: ADR-093 asked for a profile, and the profile said no
+## 2026-09-02 (later) — deleting `tree-sitter-reparse`: ADR-93 asked for a profile, and the profile said no
 
-ADR-093 shipped the eager whole-slice projection and named its own cost: "no **incremental
+ADR-93 shipped the eager whole-slice projection and named its own cost: "no **incremental
 reparse** … Incremental reparse / lazy node access remain available as a later optimisation
 behind the *same* Brood-facing data shape **if a large-file profile ever demands it**." The
 builtins were then written ahead of that condition and nothing ever called them.
@@ -11189,7 +11189,7 @@ and the size of the window (245 lines -> 45).
 
 So: `%tree-sitter-reparse`, `%tree-sitter-forget`, the `TREE_CACHE`, `compute_edit` and its
 soundness tests are gone — ~280 lines of `treesit.rs`, two builtins, two rows of
-`docs/primitives.md`. This is not a reversal of ADR-093; it is ADR-093's own conditional
+`docs/primitives.md`. This is not a reversal of ADR-93; it is ADR-93's own conditional
 resolving to "no", and the module now matches what that ADR described. Greenfield: deleted
 rather than kept warm. If a future consumer ever parses whole files rather than windows, the
 edit-diffing machinery is one `git show` away.
@@ -11444,13 +11444,13 @@ Also this session: 93 GB of stale debug test binaries (23 generations of each, ~
 apiece) had the root filesystem at 97%; KI-86's own entry records phantom failures from a
 full disk, so `rm -rf target/debug` before anything else. A five-minute rebuild.
 
-## 2026-09-03 (runtime) — `read-line` parks a process, not a worker: ADR-059 Phase 2, and KI-97 closes
+## 2026-09-03 (runtime) — `read-line` parks a process, not a worker: ADR-59 Phase 2, and KI-97 closes
 
 The last open item of KI-97's "untimed blocking calls on scheduler workers" was `read-line`,
 a Rust builtin that took the global stdin lock on whichever worker the caller sat on. A
 process waiting for a line that never came — a terminal nobody typed into, a pipe the parent
 never wrote — pinned that worker for good, and as many such processes as there are workers
-pinned the pool. ADR-059 predicted the fix in May ("terminal input via a reader thread") and
+pinned the pool. ADR-59 predicted the fix in May ("terminal input via a reader thread") and
 the runtime has had the seam since ADR-144: `offload` hands blocking work to another thread
 and parks the caller in a selective receive on a token.
 
@@ -11737,7 +11737,7 @@ absorbed to `pid<counter>`, so a value that might be any process carried a proto
 Then measured its reach and **reverted the whole thing**. The idiom in `std` is a wrapper
 `defn` taking the pid as an opaque parameter — `(gen/call sup [:start-child spec])` — so
 there is no start site to attach evidence to, and the refinement would fire almost nowhere.
-131 lines of speculative machinery with no consumer, which is what ADR-011 says to defer.
+131 lines of speculative machinery with no consumer, which is what ADR-11 says to defer.
 
 What *does* reach is the mechanism underneath. A `call` clause expands to
 `(nth res 0)` / `(nth res 1)`, and **`nth` carried no signature at all** — so
@@ -12529,7 +12529,7 @@ the discarded design. Deleted, with a pointer to `meta :deprecated` in its place
 **The one gap left in that story, unbuilt:** the LSP publishes a deprecation as an ordinary
 warning, but does not tag it `DiagnosticTag::Deprecated` and does not mark the completion
 item — so an editor neither strikes the name through nor discourages completing it. Small,
-additive, and gated on a real consumer (ADR-011).
+additive, and gated on a real consumer (ADR-11).
 
 **Also left standing:** `std/doc-catalog.blsp` carries `%`-prefixed and module-private names
 that `nest docs` filters out anyway.
@@ -13103,7 +13103,7 @@ Not measured here: the `latency` benchmark row, which this box does not run. Que
 no `gen` arm in `nest`'s `main.rs` — the name does not occur in the file — and `release` was
 split by ADR-322: `cmd_release` calls `project/bundle-collect` and keeps only the byte assembly
 and the boot check. Both halves of the "Do" had been answered by earlier work. Read each
-remaining Rust arm against ADR-006 (could this be written in Brood over existing primitives?)
+remaining Rust arm against ADR-6 (could this be written in Brood over existing primitives?)
 and every one is mechanism: `completions`/`complete` ARE clap's command tree, and already hand
 every project-dependent candidate to Brood's `nest/complete`; `stdimage` must stay (KI-112) and
 already delegates its policy in two lines; `mcp` is transport; `release` is the embedded
@@ -13115,7 +13115,7 @@ runtime. Item closed with that evidence rather than a port invented to match the
 The obvious rule ("no bare keyword in a test body") false-positives immediately:
 `macro_harden_test` ends three side-effect-only tests with `:ok`, which is deliberate. So the
 gate refuses only the four MODIFIER keywords, and only outside their legal position — narrow
-enough to be true, which is the ADR-011 test.
+enough to be true, which is the ADR-11 test.
 
 Written in Brood (`tests/test_modifier_placement_test.blsp`) over `reflect/read-all` and
 `file/walk-files`, not as a Rust scan like `sig_placement.rs`: the language can express it, so
@@ -13495,7 +13495,7 @@ loop on the process main thread; Wayland/X11 let you opt out and **macOS does no
 without porting and you get a binary that compiles and then dies at the first `gui-open`.
 
 The port is small because the runtime is already off the main thread. `run_on_main_stack`
-has moved the work to a spawned, explicitly-sized thread since the ADR-043 stack-budget guard
+has moved the work to a spawned, explicitly-sized thread since the ADR-43 stack-budget guard
 needed the root thread to match the workers — which means the OS main thread has spent this
 project's whole life blocked in a `join()`. It was free; it just had no way of being asked
 for. It now parks on a channel while a `brood-main-join` thread does the joining, and
@@ -13728,7 +13728,7 @@ What the reading did find, each landed with a sabotage-verified guard:
   read is the kernel flag's default now (`types::strict_checking`); every entry point reads it.
 - **KI-129 fixed** one level below its diagnosis: `spawn_root_program` — the process `brood
   FILE` and `nest run FILE` run in — never inherited the package context an ordinary `spawn`
-  has carried since ADR-070, so a script's `(:use model)` loaded the project's module a second
+  has carried since ADR-70, so a script's `(:use model)` loaded the project's module a second
   time, bare, and every `deftype` in it read as ambiguous.
 
 **Downstream, the same day.** The ADR-330 wave (`filter` → `seq/filter`, `remove` →
@@ -14140,7 +14140,7 @@ across kinds (a press between two moves changes what the later one means).
 **Two seams the editor needed for safety.** `ui-run` quit on the window's X button before
 `update` ever saw it — so no app could ask "save first?". A model with `:close-is-input?
 true` now receives `:close` like a key and quits by setting `:done` itself (the deferred
-half of ADR-011, opt-in so every other app stays closeable for free; `ui_test` pins both
+half of ADR-11, opt-in so every other app stays closeable for free; `ui_test` pins both
 paths). And `std/editor/buffer` stamps `:file-mtime` at `buffer-from-file` / `save-buffer`
 so `buffer-file-changed?` can say whether another writer touched the file since — the
 knowledge auto-revert and a save-time guard are built on (`buffer_test`).
@@ -14155,7 +14155,7 @@ shape is a second `ui-run` *process* whose pool slots link to the same buffer pr
 `registry-remove` (a kill is global). No mirror — the holders are the copies; a died
 process is announced and re-shared by whoever still has the text. `buffer_registry_test`
 pins share-once, the notifications, the died-then-reshared path and stop. The
-window-id-on-input alternative is recorded as the other half of ADR-059 and why a tag
+window-id-on-input alternative is recorded as the other half of ADR-59 and why a tag
 alone is not sound.
 
 ## 2026-09-13 — `editor/lexer`: the line-lexer shape, once (ADR-346)
@@ -15364,7 +15364,7 @@ the size), and the engine itself, **`b2d`** (`broodlang/b2d`, private): a fixed-
 loop over `(receive)` + `(after)` with bounded catch-up, a per-frame input record, sprite
 sheets, time-driven animation, a camera, AABB collision, and a demo that draws every op
 kind the seam has. A general C FFI and a break-out of `std/editor` were both considered
-and rejected (the ADR says why); the frontend-as-its-own-process over ADR-090 stays open.
+and rejected (the ADR says why); the frontend-as-its-own-process over ADR-90 stays open.
 
 **`host/gui/gpu.rs` is rewritten on wgpu 30** (from glow/glutin): the GLES 3.0 context
 the prototype asked for does not exist on macOS and needs ANGLE on Windows, both targets
@@ -15682,7 +15682,7 @@ the July table had four unnamed blocks and is now superseded). The first name on
 was the finding: `spawn` propagates the spawner's package context to its child, and
 `set_package_context` reached for `cold_mut()` to store an EMPTY one — allocating the
 328 B `ColdHeap` that M1 had moved off the worker floor, on every process ever spawned,
-since ADR-070. Three lines; `spawn-live` −380 B/process at peak. What let it sit for two
+since ADR-70. Three lines; `spawn-live` −380 B/process at peak. What let it sit for two
 months is that no gate read the per-process figure, so `process_floor.rs` now does, as a
 ratchet with a margin sized to see a 328 B step (a first bound of 4 600 let the sabotage
 through; 4 300 catches it). The tree-walker cannot be ratcheted — its `spawn` copies the
@@ -16309,7 +16309,7 @@ under GC stress. KI-207 … KI-212, ADR-395, all sabotage-verified.
 **Seen and by design:** `(error "…")` reaches `catch` as the string it built (a map with
 a trace is a runtime error's shape); a trace names `defn`s, not anonymous fns;
 `file/rmdir` is documented recursive; `reflect/eval-string` inherits and keeps the
-caller's namespace (ADR-065 — its docstring now says so); a `link` to a dead pid kills a
+caller's namespace (ADR-65 — its docstring now says so); a `link` to a dead pid kills a
 non-trapping caller; `node/monitor` of an unknown node fires `[:nodedown]` at once;
 `node/spawn` on a peer without `node/serve-spawns` is dropped with a warning; a table or
 socket cannot cross nodes. Distribution otherwise held up: 200 000-deep values, 1 M-element
@@ -16414,7 +16414,7 @@ data-first: `(zip-with a b f)`.
 `error-codes.md` were re-verified against the binary and corrected (`spawn` of a `fn` does
 run; `spawn-monitor` instead of the spawn-then-monitor race; `(doc inc)`; `:requires [A]`;
 `lambda` is retired; eight special forms; deep recursion is a catchable E0044). Thirteen
-citations of ADR-058 (GC) for mailbox-delivered window input now cite ADR-059.
+citations of ADR-58 (GC) for mailbox-delivered window input now cite ADR-59.
 
 **HEAD's CI was red, and is fixed here.** The v0.35.0 run failed two jobs. *Clippy (all
 features)*: rustc 1.98's `clone_on_copy` and `extend_with_drain` in `process/message.rs`, and
@@ -16787,6 +16787,72 @@ dated incident retellings are cut to their rules, and the perf narrative moved t
   source copy falls back to the temp dir when the cache dir is read-only, since categories
   now depend on its definition sites.
 
+## 2026-10-12 — preemption reaches every shape of running code; nine latency and stability defects closed (ADR-400..405, KI-230..238)
+
+The brief: "latency and stability is more important than pure performance — it has to be as
+stable as can be." The brood-benchmarks `latency` row (20k req/s open loop, every 20th request
+holding its worker ~500 µs) read p99 83–95 µs but p99.9 446–1 539 µs and max 2.3–4.1 ms run to
+run, against Elixir's 66 / 213 µs. `BROOD_STALL_MS=1` showed a quantum over 1 ms for nearly
+every fat request. Each finding below was reproduced, fixed and guarded in that order.
+
+- **`try` bodies ran nested (KI-230, ADR-400).** `Inst::TryCatch` evaluated the body through
+  `exec_value`, which the driver cannot capture: a loop in a `try` was one quantum at every
+  tier and a `receive` in one blocked its worker — every `http/serve` handler. `try` is now
+  bytecode in the arm's chunk (`TryEnter … TryExit`), with the catch in the driver
+  (`catch_in_driver`, out of line: inlined at the driver's ten raise sites it cost `ring` 8%
+  of its IPC).
+- **Native code was preemptible only at a back edge the driver itself entered (KI-231,
+  ADR-401).** Under a native caller a callee's preempt re-ran it on a nested interpreter: after
+  500 warm spawns a 2.5 ms loop ran as one 10 ms quantum. A preempt now unwinds the native
+  activations into interpreter frames: each caller's error path writes an in-call journal to
+  the top of `roots` (a side record — a first version used the frame's checkpoint journal and
+  gave pure self-recursive arms that area, which cost `bintree` 10%), a per-thread unwind
+  record names the activations, and the driver rebuilds them. An entry reduction poll covers
+  native recursion. Activations that cannot unwind keep running native (they used to deopt
+  into an interpreter that could not preempt either). Residual by design: the unboxed register
+  worker (demoting it costs ~45× on `fib`).
+- **Preempt only for someone.** Unwinding a native stack, or stopping and re-entering a fold,
+  is costly; with no process queued anywhere it buys no latency. Both now ask
+  `scheduler::work_waiting` (one relaxed load) and otherwise run on as a fresh quantum, the
+  `:long-schedule` timer restarted. Single-process compute rows stopped paying for preempts
+  nobody needed (`json` +5.9% → +1.5% instructions).
+- **`binding` bodies ran nested too (KI-232, ADR-402)** — inlined as `BindEnter … BindExit`,
+  restored by truncation on a catch or a driver exit.
+- **Vector/range folds were one quantum (KI-233, ADR-403)** — owed preemption, and resumable
+  `%vector-reduce` / `%range-reduce` that stop between elements. Their primitive loops run in
+  spans bounded by the inner loop's own compare: `reduce` reads 23% fewer instructions than
+  before.
+- **A process re-queued behind a long quantum waited it out (KI-234)** — at a 200-reduction
+  quantum the median request waited 2 144 µs. Bounding the quanta fixed it (15 µs). A peer
+  wake on every such enqueue was tried first and reverted: `supervisor` +12%, no latency
+  gain once quanta were bounded.
+- **A stale inlined native survived a redefinition (KI-235)** — found because `undef_test`
+  failed 10/10 on the binary from before this work: the compiler stored a lowering that
+  finished after the arm was reset, and its dedupe map stamped it with the new epoch.
+- **`spawn` promoted each closure into the shared region (KI-236, ADR-405)**: the region's
+  collector held the `promote_lock` writer for 100–300 µs; spawns now copy captured values
+  into the child and keep the code shared.
+- **A set, ratio or decimal literal put its function on the tree-walker for good (KI-237)** —
+  the crash reporter's quantum never ended because `take-over` folds into `#{}`.
+- **A run-check verdict recorded without the stdlib image replayed its loads forever
+  (KI-238)** — after a `std/` edit a trivial program booted in 148M instructions instead of
+  81M until the cache entry aged out; it read as an 8% `nqueens` regression until traced.
+- **`:long-schedule` (ADR-404)** in the system monitor, and `make latency-gate`
+  (`stress/latency_probe.blsp`, the benchmark box's tail gate).
+- The sampling profiler samples a native loop that cannot yield (it used to see it only
+  because such loops fell back to the interpreter every quantum).
+- **Base RSS +27% in the brood-benchmarks refresh was transparent huge pages**, not memory:
+  +1% with `MIMALLOC_ALLOW_THP=0` (docs/benchmarking.md §1.5).
+
+**Result** (A/B against v0.37.0, `scripts/ab-bench.sh --floor`, flagged rows re-run alone
+best-of-11): `latency` 4 789 → 2 551 ms (−47%); `make latency-gate` worst p99 115 → 80 µs;
+at a 200-reduction quantum p50 86–3 263 → 15 µs. `reduce` −10%, `loop` −6%; `fib`, `pfib`,
+`nbody`, `sort`, `supervisor` level. **Open cost:** `nqueens` +4.7%, `ring` +5.0%,
+`bintree` +3.8% — instructions +1.6%, ~+1% and +4.6%; the remainder is lower IPC, not yet
+attributed. Gates: `make test-both` 1829/1829 on both engines, `make gcstress` clean, fuzz
+13 generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy
+`--all-features` clean.
+
 ## 2026-10-13 — the v0.38.0 release run: an https response mangled into text
 
 The release commit's tree-walker job went red twice on two network tests, and the cause was
@@ -16922,6 +16988,124 @@ by `LINGER`); a listener starved for descriptors releases lingering sockets at o
 still ends in a bare Rust allocation abort (or the OS's kill) with nothing naming the process
 that grew; the test runners set a default, `brood`/`nest run` do not.
 
+## 2026-10-13 — the preemption work, simplified: one native entry, one quantum module, folds walked in spans
+
+The brief after the preemption work (`67a540e1`): "less complexity, more cohesion and less
+coupling." That work had spread two concerns across too many places, and this pass gives each
+one home without changing behaviour.
+
+- **One native entry (ADR-401).** Five Rust paths entered native code — the driver's tier-in,
+  the slow call out of native code, the fast link, a builtin's callback (`hof_apply_native`),
+  and the inline path's cold funnel — and each carried its own ceremony (env, name, IC cursors,
+  depth, gateway, context) and its own outcome handling (unwind record, error, tail chain,
+  checkpoint resume, VM re-run). They now share `jit_runtime/entry.rs`: `enter_native`,
+  `native_feedback`, `finish_nested`. Two of the old copies ran their re-entries with the
+  native depth already lowered, the KI-11 shape; the shared finish raises it for all. The
+  unwind bit is passed as an argument from the calling context
+  (`JitCallCtx::children_may_unwind`), so `Heap::jit_entry_unwind` and `Heap::jit_child_unwind`
+  are gone. Net −460 lines in the five paths, +250 for the module.
+- **One quantum module (ADR-403).** The budget, the owed preemption and every preemption
+  decision — the driver's safepoint, the eval loop's tick, a native activation's poll, a
+  fold's stop — moved into `process/scheduler/quantum.rs`; the driver's two safepoints and the
+  native poll callback now only ask it. The driver follows the rule native code already did: a
+  spent budget yields only while a process is waiting for a worker.
+- **Folds walked in spans (ADR-403).** The resumable folds left where they stopped in a
+  thread-local that the prelude read back through `%fold-resume-at` — Rust and Brood coupled
+  through hidden state. `%vector-fold-span` / `%range-fold-span` return `[acc next]` instead,
+  and `fold`'s walk is a plain Brood loop. `%fold-resume-at`, `resumable_should_stop` and the
+  `REQUESTED` flag are gone; the owed bit has three states, which is what "stop once per debt"
+  needs.
+- Two tests assumed a lone process gets preempted: `preemption.rs`' endless hog (now finite,
+  and the responder must reply BEFORE it finishes — a finite hog alone would have passed with
+  preemption broken) and `quantum_tail_panic.rs` (four spinners on `BROOD_J=1`).
+- The `reverse` vector test used `(%eq (type-of coll) :vector)`, which the checker cannot
+  narrow on; `vector?` can.
+- **`:long-schedule` across a restart (ADR-404).** A quantum that runs on because nothing is
+  waiting restarts the timer; the first cut threw the segment away, so one long `sort` in a
+  lone process went unreported (`sysmon_test` caught it). The restart now reports the segment
+  it ends if that ran long — a budget's worth of work taking past the threshold is code that
+  could not be preempted — so the latency probe counts ~10–25 long quanta a run where it
+  counted ~5–15.
+
+**Measured** (instructions, against `67a540e1`, the run pre-flight off): fib, bintree, sort,
+collatz level; json −4%; `reduce` +4% and `nqueens` +5% — a span result allocated per fold.
+Two first attempts were worse and were measured out: a Brood loop calling a closure reducer per
+element (+24% `nqueens` — a computed-head call from native code has no inline cache, so it
+resolves the arm every call where the native loop resolves it once), and a counted loop with a
+separate element counter (+26% `reduce`).
+
+**Gates:** `make test-both` 1829/1829 on both engines, `make gcstress` clean, fuzz 13
+generators × 100 (1 900 programs) 0 divergences / 0 crashes / stale=0, clippy `--all-features`
+clean, `make latency-gate` ok (worst p99 84 µs; ten interleaved runs against `67a540e1`: p99 and
+p99.9 within run-to-run noise).
+
+## 2026-10-13 (later) — a sweep of the gates that are not `make test`
+
+Everything `make test` does not cover, run on purpose after the simplification:
+
+- **`make ab`'s stdlib-image guard had been off for a week.** Its probe printed through
+  `%print`, removed in the whole-project cleanup (`25d72016`); the probe errored on every binary,
+  both arms read `unknown`, and the "image on BOTH arms" guard warned symmetrically instead of
+  stopping. Worse, the harness never wrote an image for a baseline worktree, so every baseline
+  booted from source — ~70 ms a run, which read as a 40-50% win for the working tree on every row
+  that afternoon. The probe uses `io/puts`, and the harness writes each arm's image first.
+- **`make check-stress` failed on a lean build** — `dev/gc-stats` reaches `%gc-stats`, which only
+  `dev-tools` registers, and the gate knew only absent MODULES. A primitive the tree registers
+  only under `dev-tools` is now a named skip; any other unbound name still fails (all three cases
+  checked). CI runs the gate on the full build, so this was local-only.
+- **Warnings in three feature builds**: `--no-default-features` (the preempt-unwind signal, the
+  mailbox-overflow peek and the native poll's re-exports, all `jit`-only), `gui` without
+  `gui-gpu` (the GPU target's two re-exports), and wasm32 (`OwnedTable` methods only the TCP/TLS
+  host uses). `%jit-arm-state` no longer mutates its counters under one feature.
+- Also run, all green: `check-examples`, `tier-audit` (29 rows, every hot arm native),
+  `check-imaged`, `breakagetests` (37/37), the distribution tests five times (59/59 each), and the
+  fold/preemption paths under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` at every tier with a
+  100-reduction quantum.
+- **Not brood:** bedit at CI's pin passes 2463/2464 with a grammar-enabled `nest`; the one failure
+  is its Elixir agent leaving the `dbg` header in place on this machine's Elixir 1.21-dev, which
+  wraps the header in ANSI colour. `make wasm-test` needs wasm-bindgen-cli 0.2.128 (0.2.100 is
+  installed here); the wasm32 build itself is clean.
+
+## 2026-10-13 (later) — the fold span result stops allocating; a comment moves instruction counts 2%
+
+Handoff item B. `%vector-fold-span` / `%range-fold-span` returned `[acc next]`, a vector
+allocated on every fold although almost every fold is one span. A span that finishes now
+returns the accumulator itself; one that stops short (4 096 elements, or a preemption owed
+between two elements) returns `(:%fold-more acc . next)`, and `fold` tests `pair?` then the
+tag. The walk helpers take that continuation directly. `reverse`'s vector branch called
+`%vector-fold` with the old signature and now goes through `fold`. ADR-403 updated.
+
+- **The tag.** The first cut tagged with the span native itself, read in Rust by a global
+  lookup: `env_get` per stopped span, and `%eq` on two natives runs the structural `equal`
+  (~95 instructions). A keyword is an immediate compare. Neither is unforgeable — a private
+  prelude def is reachable by name (`%fold-span` reads 4096 from user code) — so the bar is
+  "no accidental collision", which an internal keyword meets.
+- **Numbers** (`instructions:u`, stdimage live on both arms): `nqueens` 1 204.1M → 1 188.9M
+  (−1.3%); a micro of 2M one-span folds −2.7% (~145 instructions a fold); `reduce`, and a
+  200M-element range, flat. The stopped-short path costs ~150 instructions more per span than
+  the vector did (two pairs, and three `first`/`rest` that are runtime callbacks in this arm —
+  it calls a native, so no pair bases are hoisted), once per 4 096 elements.
+- **Smaller than the handoff's 5%.** That figure was against the resumable version, which had
+  no Brood walk at all; the vector was only part of it. `Reducer::resolve` per span
+  (`reduce_prim_op`: `select_arm`, the passthrough map clone, `env_get`, the native-name match)
+  is the next per-fold cost, but it did not register in a sampled `nqueens` profile, where the
+  JIT arms, `hof_apply_step` and `fill_captures` dominate — item A's territory. Left alone.
+- **Measurement lesson.** A control build — HEAD plus one comment line in `core.blsp` — moved
+  `nqueens`-class rows by up to 2.3% and boot by 0.7M instructions against HEAD, with no
+  semantic change; the same full-source boot agreed to 0.06%. Instruction counts are not
+  layout-proof across builds (hashing, allocation addresses, the image's own hash). A delta of
+  a few percent between two builds needs a control build of its own before it means anything;
+  per-operation costs measured inside one build (an amplified row such as `%fold-span` rebound
+  to 1) are the reliable figures.
+- **Tests:** `tests/sequence_test.blsp` gains a multi-span fold (vector, range, negative step,
+  an accumulator shaped like the continuation but untagged) and a concurrent one (eight workers
+  folding 30 000 elements with a closure, so spans stop mid-way under preemption). Sabotage:
+  dropping the continuation reds both; a mid-span stop that skips one element reds the
+  concurrent test 3/3. A fold program at `BROOD_TIER=0|1|2`, with and without
+  `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, `BROOD_REDUCTIONS=100` and `%fold-span` rebound to 3
+  (ranges to `i64::MAX`, negative steps, BigInt promotion): identical output on all six and
+  equal to HEAD's. `preemption_shapes.rs`/`preemption.rs` 10/10.
+
 ## 2026-10-14 — the soft memory limit stops the process holding the memory (KI-229)
 
 Looking at whether `brood`/`nest run` should default a memory ceiling, the first question was
@@ -16957,9 +17141,70 @@ is alive; ten runs green, and both red with the old raise-in-place restored.
 The default-ceiling question is still open, but it is now a question about the number, not
 about whether a ceiling would do harm.
 
+## 2026-10-14 — native code memoises calls to a closure value (ADR-406); KI-239 filed
+
+Handoff item A. A computed-head call from native code — `(f acc x)`, every callback a
+higher-order function calls — re-derived the callee's arm, env and IC block on every call.
+`jit_dispatch_call` now memoises them per closure instance and argc (eight direct-mapped
+slots), stamped with the code epoch and the collection count; the table lives inside the
+body cache's cell, whose mutable accessor drops it, so no write to the cache can leave a
+stale memo. ADR-406.
+
+- **Numbers** (`instructions:u` per call, steady state from a 1M/5M-iteration difference,
+  both binaries with their stdlib image): anonymous closure 943 → 706, capturing 1 058 →
+  817, a global function passed as a value 1 057 → 706; a named head unchanged at 415. Rows
+  against a HEAD control: `persistent-map` −3.3%, `base64` −2.4%, `primes` −1.7%, `ring`
+  −1.8%, `nqueens` −1.2%, the rest within ±1%; `spawn` read +4.8% once and is noise (six
+  runs each: 1 225–1 390M on both binaries).
+- **What a profile of the first numbers hid.** The obvious micro — `(apply-loop (fn (a x) (+ a
+  x)) …)` — cost ~1 900 instructions a call, named or not, and the profile was all `dispatch`,
+  `env_get` and `prim_add`: that body is a thin wrapper (ADR-69), which the dispatcher never
+  runs — it redirects to `+` by name on every call. The call cache never sees it. A
+  non-wrapper body is what measures item A. The wrapper cost is real and common
+  (`(fn (acc x) (+ acc x))` is the canonical reducer) and goes to the handoff.
+- **Two measurement traps hit again.** A first per-call figure of 296 was taken against a stale
+  stdlib image (std loaded from source); and the first run after a rebuild pays the boot-cache
+  rebuild, which skews a two-size difference. A HEAD worktree under `target/ab/` with its own
+  image was the control that settled both.
+- **The memory ratchet caught the first cut.** The table inline in every heap was ~600 B per
+  process (`process_floor`: 4 510 against a 4 000 bound). Boxed and allocated at first use,
+  then folded into the body-cache cell (no separate generation counter, no `RefCell` flag): 16 B
+  per process. HEAD measured 3 976–3 985, which left 4 B of a 4 000 bound against ~9 B of
+  jitter, so the bound is 4 020 with the sentence the file asks for.
+- **Tests:** `tests/jit_computed_call_test.blsp` — instances of one template alternating
+  through one call site, two templates through one site, one closure at two arities, a closure
+  made fresh every iteration (collected and moved), and eight processes doing the same at once;
+  each loop arm is settled native first. Sabotage: dropping the instance key reds four of five
+  (the arity case is guarded by the argc key: dropping THAT crashes the process — the wrong arm
+  with the wrong frame). Dropping the epoch and body-cache stamps together reds nothing and
+  changes no instruction count, even with a module loaded mid-loop (ADR-366): native entry
+  re-checks the arm's own `compile_epoch`, so a stale memo would be slow, not wrong — the
+  stamps are recorded as an argument from construction, not as tested. At `BROOD_TIER=0|1|2`
+  and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`: 5/5. `make test-both`, `make gcstress`, fuzz
+  (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean), `make tier-audit` (29
+  rows native), `frame_size_callsites` and the JIT/preemption/differential Rust tests.
+- **KI-239 (watching).** `test-both`'s VM half had `a_dropped_send_to_an_unregistered_name_warns_once`
+  fail try 1: A's `node/connect` was refused right after `wait_until_listening` had reached B.
+  KI-99's test, a new mechanism. 40/40 on demand (20 with all cores busy); the test's failure
+  message now says whether B was alive and still listening once A finished.
+
+## 2026-10-14 (later) — merged origin/main; this branch's KI and ADR numbers moved
+
+This branch (preemption, the native-entry refactor, the gate sweep, handoff items A and B) and
+`origin/main` (v0.38.0 and its stability pass) were developed apart from `40d07ec0`, and both
+minted KI-223 onward and ADR-399. Origin's keep their numbers; this branch's moved after them,
+in one renumbering commit before the merge: **KI-223..232 → KI-230..239, ADR-399..405 →
+ADR-400..406**. The commit messages written before it (`67a540e1` "ADR-399..404, KI-223..231",
+`95c8b749`, `39710846`, `1869e297` "ADR-405; KI-232") carry the OLD numbers — read them through
+this map. Conflicts were mechanical: both sides appended to the docs; origin made `is_dynamic`
+per-runtime (`heap.is_dynamic`) where this branch had factored `push_bindings`; this branch had
+moved the reduction ticks into `scheduler/quantum.rs` where origin edited their neighbours.
+
 ## 2026-10-14 (later) — deep data, refused threads, fast allocators, and a default memory ceiling
 
-Four probes, four fixes (KI-240..243), and the default ceiling (ADR-407).
+Four probes, four fixes (KI-240..243), and the default ceiling (ADR-407). Written on a branch
+from `d7625f28` as KI-230..233 and ADR-400 and renumbered past the preemption merge before
+landing; the code merged with `scheduler/quantum.rs`, where `expire_quantum` now lives.
 
 **Deep data.** Every Rust walker a value reaches — printing, equality, hashing, sort, JSON,
 send in both directions, `def`, table put and key, the collector, `postwalk`, `flatten` —
@@ -17009,3 +17254,29 @@ here now has a 15 GiB ceiling; the test runners keep their 3 GiB.
 
 Also: `nest explain`'s entry for blocking natives advertised `(proc/offload …)`, which is
 unbound; the function is the bare `offload`.
+
+**Then, after the merge** — light probes only, the machine being in use. Descriptors: under
+`ulimit -n 64`, `os/spawn`, `spawn-pty`, `os/cmd`, file reads and listens each fail with a
+catchable `Too many open files`, and 200 children, 200 failed spawns and 200 `os/cmd`s in
+sequence leak nothing. A full disk (`/dev/full`): file writes raise `No space left on
+device`, the images are written to a temporary file and renamed, but stdout dropped its
+errors and the run exited 0 (KI-244). Panics from Brood: the builtins' `expect`s are all
+behind the type checks they rely on; the tree-sitter and GUI key-name tables took their
+locks with `.lock().expect`, so one panic while holding one would have made every later
+parse panic too — they use the poison-tolerant `core::sync::lock` like everything else.
+Deep data in Brood: `json/decode` handles 100 000 levels; `json/encode` and `seq/postwalk`
+raise a catchable `recursion too deep` at a million, and stay as they are — rewriting a
+benchmarked encoder is not something to do without measuring it. The non-Unix `os/cmd`
+starts its pipe threads with `Builder::spawn` and reaps the child on a refusal; checking it
+through a `wasm32` build (also non-Unix) caught `1 << 62` in the new cgroup reader, which
+does not fit a 32-bit `usize` — it reads the cap as `u64` now. A fuzz-differential pass on
+the merged tree (`metamorphic`, `pipeline`, `tier_transition`, `trycatch`, `match`,
+`strings`; 300 programs, four engine configs each): clean.
+
+The pre-push gate on the merged tree then failed `doc_examples_test` on address space —
+1 324 threads, all belonging to 317 zombie `sh` children. A logging `sh` on `PATH` named the
+`os/spawn` example, run 484 times: a `receive` under `reflect/eval` suspended to the body
+driver, which captured at the call into the native and re-ran the whole form on resume
+(KI-245). `compile::run` was the one native entry to evaluation that left the capture flag
+set; it takes the tree-walker's guard now. The plain double run predates the merge; the
+merge's folds-in-the-driver extended it to a `map` callback, which is what the doctest hit.

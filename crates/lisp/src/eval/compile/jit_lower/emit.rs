@@ -119,6 +119,9 @@ pub(super) struct Funcs {
     /// `brood_rt_push_room(heap, n) -> *mut Value` — reserve n argument slots on `roots`
     /// and return them, so operands are stored in place rather than copied across.
     pub pushroom: FuncRef,
+    /// `brood_rt_in_call_journal(heap, packed) -> *mut Value` — an error path's in-call
+    /// journal (ADR-401): room for the operands beneath the call in flight, or null.
+    pub incall: FuncRef,
     /// `brood_rt_call_slow` — the general Brood→Brood dispatch (the fast-link miss path).
     pub callslow: FuncRef,
     /// `brood_rt_call_native_fl` — direct builtin call for a native flat-cell hit.

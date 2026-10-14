@@ -537,6 +537,180 @@ fn settle_native_frame(
     Some((ra, rip))
 }
 
+/// Rebuild the native activations a preempt unwound through (ADR-401) as interpreter
+/// frames: the thread's unwind record ([`take_unwound`]) holds them innermost first, each frame still where it ran in
+/// `roots`. The callers — every one but the innermost — are appended to `frames`, outermost
+/// first, each paused just after the call it made, its operand stack restored from the
+/// in-call journal it wrote on the way out; the innermost is returned as the current frame,
+/// settled exactly as the frame path settles a preempt.
+///
+/// A native callee's frame starts where its caller's native frame ended, but an interpreter
+/// callee's frame starts above the caller's operand stack, so every frame moves: the whole
+/// region is copied out and laid back down in interpreter order. Nothing in between
+/// allocates, so no collection can run while the values are off the root stack.
+/// The catch half of the driver's `raise!` (ADR-400), for an error that is not a control
+/// signal while this driver has an open `try`: unwind to the frame that opened the innermost
+/// one, bind the caught value and hand back where to resume — the `try`'s frame when it is a
+/// caller (`Some`, to install as the current frame; `None` when it is the current one) and
+/// its handler's ip. What the caught error carries is what the nested evaluation of the
+/// body used to give it: the trace names exactly the frames the catch pops (that
+/// evaluation's own driver), and the call in the `try`'s frame that led to the error
+/// supplies a missing position and file — the evaluator's call tagging — so a caught
+/// error's `:trace`, `:line` and `:file` are unchanged. `Err` hands the error back when the
+/// open `try` is not on this driver's stack.
+#[cold]
+#[inline(never)]
+fn catch_in_driver(
+    heap: &mut Heap,
+    frames: &mut Vec<BcFrame>,
+    cur_arm: &CompiledArm,
+    cur_base: usize,
+    mut e: crate::error::LispError,
+    callers_only: bool,
+) -> Result<(Option<BcFrame>, usize), crate::error::LispError> {
+    let Some(h) = heap.vm_handlers.last().copied() else {
+        return Err(e);
+    };
+    let depth = if h.base == cur_base {
+        Some(frames.len())
+    } else {
+        frames.iter().rposition(|f| f.base == h.base)
+    };
+    debug_assert!(
+        depth.is_some(),
+        "an open try's frame is not on this driver's stack (ADR-400): {h:?}"
+    );
+    let Some(d) = depth else {
+        return Err(e);
+    };
+    let frame = if d < frames.len() {
+        if callers_only {
+            attach_vm_trace_callers(&mut e, &frames[d + 1..]);
+        } else {
+            attach_vm_trace(&mut e, cur_arm, &frames[d + 1..]);
+        }
+        let (file, pos) = call_site(&frames[d]);
+        if let Some(p) = pos {
+            e = e.or_pos(p);
+        }
+        if let Some(f) = file {
+            e = e.or_file(f.to_string());
+        }
+        frames.truncate(d + 1);
+        Some(frames.pop().expect("the try's frame is below the error"))
+    } else {
+        // Raised by an instruction of the `try`'s own frame: it tagged the position
+        // (`tag_pos`); the file is this arm's.
+        if let Some(f) = cur_arm.src_file.as_deref() {
+            e = e.or_file(f.to_string());
+        }
+        None
+    };
+    let caught = e.caught_value(heap);
+    heap.truncate_roots(h.sp);
+    heap.truncate_env_roots(h.env_len);
+    heap.live_arm_truncate(h.arms_len);
+    heap.truncate_dynamics(h.dyn_len);
+    heap.vm_handlers.pop();
+    heap.set_root_at(h.bind, caught);
+    Ok((frame, h.ip))
+}
+
+#[cfg(feature = "jit")]
+fn rebuild_unwound_frames(heap: &mut Heap, frames: &mut Vec<BcFrame>) -> BcFrame {
+    let mut unwound = take_unwound();
+    unwound.reverse();
+    let first = unwound
+        .first()
+        .expect("an unwind with no recorded activation (ADR-401)")
+        .0
+        .base;
+    let region: Vec<Value> = (first..heap.roots_len()).map(|i| heap.root_at(i)).collect();
+    heap.truncate_roots(first);
+    let innermost = unwound.len() - 1;
+    let mut cur = None;
+    for (i, (f, journal)) in unwound.into_iter().enumerate() {
+        let rel = f.base - first;
+        let base = heap.roots_len();
+        for &v in &region[rel..rel + f.nslots] {
+            heap.push_root(v);
+        }
+        let env_base = heap.env_roots_len();
+        let env = heap.root_env(f.env);
+        if i < innermost {
+            let journal = journal.expect("an unwound caller left no in-call journal (ADR-401)");
+            let resume = jit_in_call_resume_arm(&f.arm, f.nslots)
+                .expect("a self-spliced activation was recorded mid-call (ADR-401)");
+            debug_assert_eq!(
+                resume.nslots, f.nslots,
+                "an in-call journal of another layout"
+            );
+            // The operands it held beneath the call, from where its error path left them.
+            let ops = journal.at - first;
+            for &v in &region[ops..ops + journal.depth] {
+                heap.push_root(v);
+            }
+            let ip = journal.ip;
+            let arm = ArmHandle::new(resume);
+            let arm_slot = if arm.has_runtime_handles {
+                heap.live_arm_push(arm.clone())
+            } else {
+                usize::MAX
+            };
+            frames.push(BcFrame {
+                arm,
+                ip,
+                base,
+                env,
+                env_base,
+                arm_slot,
+                ic_bases: f.bases,
+                // Resumed mid-arm: the first `SelfCall` re-checks the binding.
+                entry_epoch: u64::MAX,
+                // A caller that is itself a native loop resumes interpreted, mid-iteration;
+                // one short of the interval, its next back edge hands it straight back to
+                // the tier check instead of interpreting 256 iterations after every
+                // preempt of its callee (`collatz`'s `sweep` read +24% that way).
+                back_edges: BACKEDGE_TIER_INTERVAL - 1,
+            });
+        } else {
+            let arm = ArmHandle::new(f.arm);
+            let arm_slot = if arm.has_runtime_handles {
+                heap.live_arm_push(arm.clone())
+            } else {
+                usize::MAX
+            };
+            let inlined_active = f.nslots != arm.nslots;
+            let resume = settle_native_frame(
+                heap,
+                &arm,
+                base,
+                f.nslots,
+                inlined_active,
+                base + arm.nslots,
+                base + f.nslots,
+                Some(2),
+            );
+            let (arm, ip) = match resume {
+                Some((ra, rip)) => (ArmHandle::new(ra), rip),
+                None => (arm, 0),
+            };
+            cur = Some(BcFrame {
+                arm,
+                ip,
+                base,
+                env,
+                env_base,
+                arm_slot,
+                ic_bases: f.bases,
+                entry_epoch: u64::MAX,
+                back_edges: 0,
+            });
+        }
+    }
+    cur.expect("the innermost unwound activation")
+}
+
 pub(crate) fn vm_run_bc(
     heap: &mut Heap,
     arm0: Arc<ArmHandle>,
@@ -574,6 +748,8 @@ pub(crate) fn vm_run_bc(
     let entry_roots;
     let entry_env;
     let entry_arms;
+    let handler_floor: u32;
+    let dyn_floor: u32;
     // The currently-executing frame is held in locals (not the Vec) so a tail/self
     // loop mutates registers, not the stack — only a non-tail call pushes a `BcFrame`.
     let mut frames: Vec<BcFrame>;
@@ -600,6 +776,8 @@ pub(crate) fn vm_run_bc(
             entry_roots = s.entry_roots;
             entry_env = s.entry_env;
             entry_arms = s.entry_arms;
+            handler_floor = s.handler_floor;
+            dyn_floor = s.dyn_floor;
             frames = s.frames;
             let cur = s.cur;
             cur_arm = cur.arm;
@@ -621,6 +799,8 @@ pub(crate) fn vm_run_bc(
             entry_roots = heap.roots_len();
             entry_env = heap.env_roots_len();
             entry_arms = heap.live_arm_len();
+            handler_floor = heap.vm_handlers.len() as u32;
+            dyn_floor = heap.dynamics_len() as u32;
             frames = Vec::new();
             cur_arm = arm0;
             cur_env_base = heap.env_roots_len();
@@ -655,6 +835,8 @@ pub(crate) fn vm_run_bc(
         heap.truncate_roots(entry_roots);
         heap.truncate_env_roots(entry_env);
         heap.live_arm_truncate(entry_arms);
+        heap.vm_handlers.truncate(handler_floor as usize);
+        heap.truncate_dynamics(dyn_floor as usize);
     };
 
     // JIT tiering hook (ADR-101 1b): on a fresh arm activation whose frame is now set up
@@ -700,7 +882,62 @@ pub(crate) fn vm_run_bc(
     // either is pending. BEAM likewise charges a reduction per call, not per return.
     let mut returned_to_caller = false;
 
-    loop {
+    // Raise `e` from the current frame: if one of THIS driver's open `try`s can take it,
+    // resume at its handler (`continue` the loop, `catch_in_driver`); otherwise unwind the
+    // whole driver and return the error, as before (ADR-400).
+    macro_rules! raise {
+        ($l:lifetime, $e:expr) => {
+            raise!($l, $e, false)
+        };
+        // `callers_only`: the current frame is a native arm that already recorded itself in
+        // the error's trace (KI-117), so only the frames beneath it are named.
+        ($l:lifetime, $e:expr, $callers_only:expr) => {{
+            let e: crate::error::LispError = $e;
+            // The catch itself is out of line (`catch_in_driver`): this expands at every
+            // error site of the hottest loop in the runtime, and a `receive` parks through
+            // here on every message.
+            let caught = if e.is_control() || heap.vm_handlers.len() <= handler_floor as usize {
+                Err(e)
+            } else {
+                catch_in_driver(heap, &mut frames, &cur_arm, cur_base, e, $callers_only)
+            };
+            match caught {
+                Ok((frame, ip)) => {
+                    if let Some(f) = frame {
+                        cur_arm = f.arm;
+                        cur_base = f.base;
+                        cur_env = f.env;
+                        cur_env_base = f.env_base;
+                        cur_arm_slot = f.arm_slot;
+                        heap.set_ic_bases(f.ic_bases);
+                        cur_entry_epoch = f.entry_epoch;
+                        #[cfg(feature = "jit")]
+                        {
+                            cur_back_edges = f.back_edges;
+                        }
+                    }
+                    cur_ip = ip;
+                    #[cfg(feature = "jit")]
+                    {
+                        try_jit = false;
+                    }
+                    returned_to_caller = false;
+                    continue $l;
+                }
+                Err(mut e) => {
+                    unwind(heap);
+                    if $callers_only {
+                        attach_vm_trace_callers(&mut e, &frames);
+                    } else {
+                        attach_vm_trace(&mut e, &cur_arm, &frames);
+                    }
+                    return Err(e);
+                }
+            }
+        }};
+    }
+
+    'drive: loop {
         'safepoint: {
             if std::mem::take(&mut returned_to_caller) {
                 break 'safepoint;
@@ -730,7 +967,7 @@ pub(crate) fn vm_run_bc(
             if !crate::process::macro_block_active() && heap.gc_due() {
                 heap.collect(&mut [], &mut []);
             }
-            // RUNTIME-region collection (ADR-091): the VM-engine counterpart of the
+            // RUNTIME-region collection (ADR-91): the VM-engine counterpart of the
             // tree-walker's safepoint. Once churn crosses the threshold, compact the shared
             // code region (single-process) or — on a shared runtime with the multi-process
             // collector armed — advance the age/migrate/drain/free state machine. Every
@@ -763,7 +1000,7 @@ pub(crate) fn vm_run_bc(
                     heap.maybe_runtime_collect(&mut [], &mut []);
                 }
             }
-            // RUNTIME-drain cooperative report (ADR-091 Stage 3c): the VM-engine
+            // RUNTIME-drain cooperative report (ADR-91 Stage 3c): the VM-engine
             // counterpart of the tree-walker's safepoint report. While a generation
             // drain is armed, this process reports whether it still references the
             // draining generation. Read-only probe; the hot path is one atomic load.
@@ -774,21 +1011,20 @@ pub(crate) fn vm_run_bc(
             // the loop-top collection armed raises here — catchable, and it kills
             // just this process, with the trace showing where the data was live.
             if let Some(live) = heap.take_proc_limit_hit() {
-                unwind(heap);
                 let limit = heap.proc_mem_limit().unwrap_or(0);
-                let mut e = crate::eval::proc_memory_limit_error(live, limit);
-                attach_vm_trace(&mut e, &cur_arm, &frames);
-                return Err(e);
+                raise!('drive, crate::eval::proc_memory_limit_error(live, limit));
             }
             // Once per quantum, at the reduction rollover: the soft memory limit, the mailbox
             // bound (ADR-307) and a pending hard kill — see `loop_safepoint` in `exec_chunk`,
             // which splits the inline loop's safepoint the same way. Per frame boundary they
             // would cost twice per non-tail call.
-            if crate::process::tick_capture() {
-                if let Err(mut e) = super::quantum_checks(heap) {
-                    unwind(heap);
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+            // A quantum boundary: a spent budget, or — where this driver can capture — a
+            // preemption owed by code that could not yield itself (ADR-403).
+            if let crate::process::Safepoint::Quantum { yield_now } =
+                crate::process::driver_safepoint(capture)
+            {
+                if let Err(e) = super::quantum_checks(heap) {
+                    raise!('drive, e);
                 }
                 // A pending hard `:kill` stops now: capture mode retires the process (no
                 // capture — its heap is dropped); a nested run cannot return an outcome across
@@ -802,9 +1038,7 @@ pub(crate) fn vm_run_bc(
                     unwind(heap);
                     return Err(crate::error::LispError::kill_signal());
                 }
-                if !capture {
-                    crate::process::refill_nested_quantum();
-                } else {
+                if yield_now {
                     // State-capture preemption (ADR-100 §8.1), in place of the coroutine
                     // yield: the frame boundary is the safepoint. The spent budget captures the
                     // continuation so `run_one` re-enqueues it (on any worker — live migration).
@@ -826,6 +1060,8 @@ pub(crate) fn vm_run_bc(
                         entry_roots,
                         entry_env,
                         entry_arms,
+                        handler_floor,
+                        dyn_floor,
                         deadline: None,
                     })));
                 }
@@ -893,6 +1129,8 @@ pub(crate) fn vm_run_bc(
                     // Destination for a Done result: this entry hands one back, so it
                     // owns a stack local (see `crate::jit::JitArmFn`).
                     let mut jit_ret = Value::Nil;
+                    // ADR-401: the top-level driver's native entry is unwindable — its
+                    // callees' preempts can come back as frames to rebuild.
                     let jit_outcome = jit_tier_in_frame(
                         cur_arm.arc(),
                         heap,
@@ -900,6 +1138,7 @@ pub(crate) fn vm_run_bc(
                         cur_env,
                         frame_nslots,
                         &mut jit_ret as *mut Value,
+                        capture,
                     );
                     let resume = settle_native_frame(
                         heap,
@@ -920,14 +1159,29 @@ pub(crate) fn vm_run_bc(
                         // the pending callers — `attach_vm_trace` would name `cur_arm`,
                         // which is that same arm, a second time.
                         Some(3) => {
-                            let mut e = jit_take_error(heap)
+                            let e = jit_take_error(heap)
                                 .expect("JIT error outcome without a parked error");
-                            unwind(heap);
-                            if capture && e.is_kill_signal() {
-                                return Ok(VmOutcome::Killed);
+                            // A preempt unwound out to here (ADR-401): this frame is the
+                            // outermost activation it passed — record it with the rest.
+                            if e.is_preempt_unwind() {
+                                debug_assert!(capture, "an unwind reached a nested driver");
+                                record_unwound(UnwindFrame {
+                                    arm: cur_arm.arc().clone(),
+                                    base: cur_base,
+                                    nslots: frame_nslots,
+                                    env: heap.read_root_env(cur_env),
+                                    bases: heap.ic_bases(),
+                                });
+                                Ok(ChunkExit::Unwound {
+                                    keep_current: false,
+                                })
+                            } else {
+                                if capture && e.is_kill_signal() {
+                                    unwind(heap);
+                                    return Ok(VmOutcome::Killed);
+                                }
+                                raise!('drive, e, true);
                             }
-                            attach_vm_trace_callers(&mut e, &frames);
-                            return Err(e);
                         }
                         // A JIT'd tail call: dispatch the staged callee+args → reuse the
                         // frame (`Tail`) or a finished native callee (`Done`).
@@ -1055,10 +1309,7 @@ pub(crate) fn vm_run_bc(
                 bases,
             }) => {
                 if frames.len() + 1 > MAX_BC_FRAMES {
-                    unwind(heap);
-                    let mut e = crate::eval::bc_frame_depth_error(frames.len());
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+                    raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
                 // Suspend the caller (resume at the already-advanced `cur_ip`) and
                 // switch the registers to the callee. `exec_chunk` already dropped the
@@ -1085,10 +1336,8 @@ pub(crate) fn vm_run_bc(
                 } else {
                     usize::MAX
                 };
-                if let Err(mut e) = push_frame(heap, &cur_arm, &args, cur_env) {
-                    unwind(heap);
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+                if let Err(e) = push_frame(heap, &cur_arm, &args, cur_env) {
+                    raise!('drive, e);
                 }
                 // The callee frame is set up at `roots[cur_base..]` with `cur_ip = 0`; flag
                 // it for a tier check at the loop top (the dominant Brood→Brood path). A
@@ -1113,10 +1362,7 @@ pub(crate) fn vm_run_bc(
                 bases,
             }) => {
                 if frames.len() + 1 > MAX_BC_FRAMES {
-                    unwind(heap);
-                    let mut e = crate::eval::bc_frame_depth_error(frames.len());
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+                    raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
                 frames.push(BcFrame {
@@ -1141,7 +1387,7 @@ pub(crate) fn vm_run_bc(
                     usize::MAX
                 };
                 heap.extend_roots_to_nil(cur_base + cur_arm.nslots);
-                fill_captures(heap, &cur_arm, cur_base, cur_env);
+                fill_captures(heap, &cur_arm, cur_base, heap.read_root_env(cur_env));
                 cur_ip = 0;
                 cur_entry_epoch = SELF_UNCHECKED_EPOCH;
                 #[cfg(feature = "jit")]
@@ -1168,10 +1414,7 @@ pub(crate) fn vm_run_bc(
                 outcome,
             }) => {
                 if frames.len() + 1 > MAX_BC_FRAMES {
-                    unwind(heap);
-                    let mut e = crate::eval::bc_frame_depth_error(frames.len());
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+                    raise!('drive, crate::eval::bc_frame_depth_error(frames.len()));
                 }
                 let caller_arm = std::mem::replace(&mut cur_arm, arm);
                 frames.push(BcFrame {
@@ -1240,9 +1483,50 @@ pub(crate) fn vm_run_bc(
                         entry_roots,
                         entry_env,
                         entry_arms,
+                        handler_floor,
+                        dyn_floor,
                         deadline: None,
                     })));
                 }
+            }
+            // A native preempt unwound out to this driver (ADR-401): rebuild every activation
+            // it passed as an interpreter frame and park, exactly as a preempt of the frame
+            // path would — the innermost frame resumes at its back edge and re-tiers; each
+            // caller resumes just after the call that frame is serving.
+            #[cfg(feature = "jit")]
+            Ok(ChunkExit::Unwound { keep_current }) => {
+                debug_assert!(capture, "a native preempt unwound into a nested driver");
+                if keep_current {
+                    frames.push(BcFrame {
+                        arm: cur_arm,
+                        ip: cur_ip,
+                        base: cur_base,
+                        env: cur_env,
+                        env_base: cur_env_base,
+                        arm_slot: cur_arm_slot,
+                        ic_bases: heap.ic_bases(),
+                        entry_epoch: cur_entry_epoch,
+                        back_edges: cur_back_edges,
+                    });
+                } else {
+                    // The current frame is the outermost unwound activation and is rebuilt
+                    // with the rest: drop its own env root and arm registration first.
+                    heap.truncate_env_roots(cur_env_base);
+                    if cur_arm_slot != usize::MAX {
+                        heap.live_arm_truncate(cur_arm_slot);
+                    }
+                }
+                let cur = rebuild_unwound_frames(heap, &mut frames);
+                return Ok(VmOutcome::Preempted(Box::new(Suspended {
+                    frames,
+                    cur,
+                    entry_roots,
+                    entry_env,
+                    entry_arms,
+                    handler_floor,
+                    dyn_floor,
+                    deadline: None,
+                })));
             }
             Ok(ChunkExit::Tail {
                 arm,
@@ -1262,10 +1546,8 @@ pub(crate) fn vm_run_bc(
                 } else if arm.has_runtime_handles {
                     cur_arm_slot = heap.live_arm_push(arm.clone());
                 }
-                if let Err(mut e) = push_frame(heap, &arm, &args, cur_env) {
-                    unwind(heap);
-                    attach_vm_trace(&mut e, &cur_arm, &frames);
-                    return Err(e);
+                if let Err(e) = push_frame(heap, &arm, &args, cur_env) {
+                    raise!('drive, e);
                 }
                 cur_arm = arm;
                 cur_ip = 0;
@@ -1327,6 +1609,8 @@ pub(crate) fn vm_run_bc(
                     entry_roots,
                     entry_env,
                     entry_arms,
+                    handler_floor,
+                    dyn_floor,
                     deadline: None,
                 })));
             }
@@ -1356,11 +1640,12 @@ pub(crate) fn vm_run_bc(
                     entry_roots,
                     entry_env,
                     entry_arms,
+                    handler_floor,
+                    dyn_floor,
                     deadline,
                 })));
             }
             Err(e) => {
-                unwind(heap);
                 // A `Control::Kill` that unwound untrappably through a `try`/`%isolate`/HOF
                 // (an `(exit …)` reaching a native-nested `receive`) retires the process
                 // with its pending reason, rather than crashing it as an uncaught error.
@@ -1369,11 +1654,10 @@ pub(crate) fn vm_run_bc(
                 // outcome, so it re-raises (like `Suspend`) and the kill keeps unwinding to
                 // the top-level driver, which converts it there.
                 if capture && e.is_kill_signal() {
+                    unwind(heap);
                     return Ok(VmOutcome::Killed);
                 }
-                let mut e = e;
-                attach_vm_trace(&mut e, &cur_arm, &frames);
-                return Err(e);
+                raise!('drive, e);
             }
         }
     }

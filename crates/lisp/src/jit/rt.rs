@@ -31,29 +31,29 @@ use crate::core::heap::{FastLink, Heap};
 // Debug builds trace each callback under `BROOD_JIT_CB_TRACE=1`
 // (`debug_flags::jit_callback_trace`).
 
-/// Preemption poll (ADR-027). JIT'd loop back-edges call this; returns nonzero when the
+/// Preemption poll (ADR-27). JIT'd loop back-edges call this; returns nonzero when the
 /// process should yield. Mirrors the VM's loop-top exactly: only a **capture-mode green
 /// process** is preemptible (`tick_capture` decrements the reduction budget and yields at
 /// zero); the root/eval thread (and any non-capture run) never preempts — it just keeps
 /// going, like the VM's `tick()` else-branch. Gating here is load-bearing: without it a
 /// JIT'd loop on the root thread would yield on its first iteration and bail to the VM,
 /// so the JIT could never actually run the loop.
-/// Batched preemption poll: burn `n` reductions in one call — the back-edge's
-/// in-register countdown calls this once per batch (see `tick_capture_n`), so a
-/// tight JIT'd loop pays ~one sub+branch per iteration instead of an FFI.
-///
-/// The batched back-edge poll. `1` = preempt (the reduction budget ran out); `2` = leave
-/// the loop for the VM: a limit is waiting to be RAISED — the soft memory ceiling (E0043),
-/// a per-process heap limit, a mailbox overflow — and native code cannot raise, so the
-/// loop deopts at its back-edge (the frame holds the next iteration's arguments, the
-/// checkpoint was just reset) and the VM's own safepoint at that iteration raises it, the
-/// way the VM's self-tail path does. Without it a native consing loop under a soft limit
-/// never sees the limit at all (KI-156).
+/// A native activation's reduction poll — a loop's batched back edge (one call per batch of
+/// iterations, an in-register countdown between) or a call's entry poll. `1` = preempt by
+/// unwinding; `2` = leave for the VM: a limit is waiting to be RAISED — the soft memory
+/// ceiling (E0043), a per-process heap limit, a mailbox overflow, a hard kill — and native
+/// code cannot raise, so it deopts and the VM's own safepoint raises it (KI-156). Whether
+/// a spent budget preempts is `quantum::native_poll`'s decision (ADR-401/403).
 ///
 /// # Safety
-/// `heap` is a live heap; the limit peeks read it only.
+/// `heap` is a live heap; the limit peeks read it only. `ctx` is the running activation's
+/// context, which its caller keeps alive across the call.
 #[no_mangle]
-pub unsafe extern "C" fn brood_rt_tick_n(heap: *mut Heap, n: i64) -> u8 {
+pub unsafe extern "C" fn brood_rt_tick_n(
+    heap: *mut Heap,
+    n: i64,
+    ctx: *const crate::jit::JitCallCtx,
+) -> u8 {
     match crate::core::alloc::soft_limit_state() {
         crate::core::alloc::SoftLimit::Clear => {}
         // A native loop near the limit measures itself like an interpreted one, or the
@@ -64,10 +64,37 @@ pub unsafe extern "C" fn brood_rt_tick_n(heap: *mut Heap, n: i64) -> u8 {
     if (*heap).proc_limit_pending() || crate::process::current_mailbox_overflow_pending() {
         return 2;
     }
-    if crate::process::in_capture_run() {
-        crate::process::tick_capture_n(n as u32) as u8
-    } else {
-        0 // root / non-capture: never preempt (matches the VM)
+    use crate::process::NativePoll;
+    match crate::process::native_poll(n as u32, (*ctx).unwind != 0) {
+        NativePoll::Run => 0,
+        NativePoll::Preempt => 1,
+        NativePoll::Leave => 2,
+        NativePoll::RunOnFreshQuantum => {
+            // The sampling profiler records at interpreter frame boundaries, and this loop
+            // will not reach one until it finishes. Sample it here instead, once per
+            // profiler tick, by the running arm's name.
+            if crate::diagnostics::profile::armed() {
+                sample_native_activation(&*ctx);
+            }
+            0
+        }
+    }
+}
+
+/// One profiler sample for a native activation that cannot yield to a driver: the stack is
+/// just its own name (the frames below it are a builtin's or a nested driver's), recorded at
+/// most once per profiler tick on this thread, as a driver records once per tick.
+#[cold]
+fn sample_native_activation(ctx: &crate::jit::JitCallCtx) {
+    thread_local! {
+        static LAST: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let epoch = crate::diagnostics::profile::epoch();
+    if LAST.with(|l| l.replace(epoch)) == epoch {
+        return;
+    }
+    if ctx.dbg_fn != u32::MAX {
+        crate::diagnostics::profile::record(&[ctx.dbg_fn]);
     }
 }
 
@@ -100,7 +127,7 @@ pub extern "C" fn brood_rt_in_capture(_heap: *mut Heap) -> u8 {
 
 /// GC safepoint check. JIT'd code calls this where the interpreter would collect (a
 /// loop top / before an allocation burst): collect if due and not inside the compile
-/// pass (mirrors the eval safepoint, ADR-061).
+/// pass (mirrors the eval safepoint, ADR-61).
 ///
 /// # Safety
 /// `heap` must be the live, pinned context pointer for the current JIT'd call, with no
@@ -875,6 +902,26 @@ pub unsafe extern "C" fn brood_rt_push_room(
     (*heap).push_roots_room(n as usize)
 }
 
+/// An arm's error path, leaving while a call is in flight: `packed` is `(resume ip << 16) |
+/// operand depth`. For a preempt unwinding through (ADR-401), the room for those operands at
+/// the top of `roots`, which the caller fills at once; null for any other error. See
+/// [`crate::eval::compile::begin_in_call_journal`].
+///
+/// # Safety
+/// `heap` live. On a non-null return the caller must store `depth` valid `Value`s into the
+/// room before anything can allocate or collect — as for [`brood_rt_push_room`].
+#[no_mangle]
+pub unsafe extern "C" fn brood_rt_in_call_journal(
+    heap: *mut Heap,
+    packed: i64,
+) -> *mut crate::core::value::Value {
+    crate::eval::compile::begin_in_call_journal(
+        &mut *heap,
+        (packed >> 16) as usize,
+        (packed & 0xFFFF) as usize,
+    )
+}
+
 /// Direct builtin call from the IR fast-link path (the native flat cell): `func`
 /// is the `NativeFnPtr` bits published by `vm_fast_link_publish_native` (arity
 /// pre-validated for exactly this argc at publish), `args` the call site's staging
@@ -1317,7 +1364,8 @@ pub unsafe extern "C" fn brood_rt_call_slow(
     if crate::diagnostics::debug_flags::jit_callback_trace() {
         eprintln!("[jit-cb] brood_rt_call_slow(argc={})", argc);
     }
-    match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head) {
+    let unwind = crate::jit::JitCallCtx::children_may_unwind(ctx);
+    match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head, unwind) {
         Some(v) => {
             *out = v;
             0
@@ -1452,6 +1500,7 @@ pub unsafe extern "C" fn brood_rt_fast_frame(
         env,
         bases,
         out,
+        crate::jit::JitCallCtx::children_may_unwind(ctx),
     ) {
         FastLinkOutcome::Done => 0,
         FastLinkOutcome::Error => 1,
@@ -1526,6 +1575,7 @@ pub unsafe extern "C" fn brood_rt_xcall_cold(
         stage_base as usize,
         nslots,
         out,
+        crate::jit::JitCallCtx::children_may_unwind(ctx),
     );
     (*heap).jit_force_vm = saved_force_vm;
     r

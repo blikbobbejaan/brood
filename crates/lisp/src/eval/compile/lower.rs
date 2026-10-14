@@ -8,7 +8,7 @@ use super::*;
 // ===================== compiler (form → Node) =====================
 
 /// Compile-time lexical scope: `let`/`letrec`/param binders flattened into one
-/// activation frame (ADR-076 Stage 2a). Each in-scope name maps to a frame slot;
+/// activation frame (ADR-76 Stage 2a). Each in-scope name maps to a frame slot;
 /// `next` is the next free slot and `max` is the high-water mark (= the arm's
 /// `nslots`). Shadowing: `lookup` scans newest-first. `bind` claims a slot;
 /// `restore` pops a scope's binders (reusing their slots — safe, the bindings are
@@ -369,6 +369,10 @@ pub(crate) fn value_is_immovable(v: Value) -> bool {
         // A `SeqView` is a `VecId` too — movable when LOCAL, so it must be checked
         // (else this tripwire would wrongly pass a movable LOCAL view in a Const).
         ValueRef::SeqView(id) => id.region() != value::LOCAL,
+        // The other boxed numbers and raw bytes — movable when LOCAL, like a BigInt.
+        ValueRef::Decimal(id) => id.region() != value::LOCAL,
+        ValueRef::Ratio(id) => id.region() != value::LOCAL,
+        ValueRef::Bytes(id) => id.region() != value::LOCAL,
         // Inline scalars (Int/Float/Bool/Nil), interned Sym/Keyword, and the
         // remaining handle-free kinds carry nothing the GC relocates.
         _ => true,
@@ -383,6 +387,43 @@ pub(crate) fn value_is_immovable(v: Value) -> bool {
 /// **not** captured — they resolve live (late-bound) through the new closure's
 /// Compile `(%try (fn () body…) (fn (e) handler…))` to a `Node::TryCatch` that runs
 /// body and handler inline in the current frame, without closure allocation.
+pub(crate) fn compile_binding(heap: &Heap, items: &[Value], scope: &mut Scope) -> Option<Node> {
+    if items.len() != 4 {
+        return None;
+    }
+    // `(quote (n…))` — the names, known now. Whether each is dynamic is checked when the
+    // binding runs (a `defdyn` may come later), exactly as the native checks it.
+    let quoted = heap.list_to_vec(items[1]).ok()?;
+    if quoted.len() != 2
+        || !matches!(quoted[0].unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::QUOTE))
+    {
+        return None;
+    }
+    let names: Box<[Symbol]> = heap
+        .list_to_vec(quoted[1])
+        .ok()?
+        .into_iter()
+        .map(|v| match v.unpack() {
+            ValueRef::Sym(s) => Some(s),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let thunk_items = heap.list_to_vec(items[3]).ok()?;
+    if thunk_items.len() < 2
+        || !matches!(thunk_items[0].unpack(), ValueRef::Sym(s) if value::symbol_is(s, kw::FN))
+        || !heap.list_to_vec(thunk_items[1]).ok()?.is_empty()
+    {
+        return None;
+    }
+    let vals = compile_node(heap, items[2], scope, false)?;
+    let body = compile_body(heap, &thunk_items[2..], scope, false)?;
+    Some(Node::Binding {
+        names,
+        vals: Box::new(vals),
+        body: Box::new(body),
+    })
+}
+
 pub(crate) fn compile_try_catch(heap: &Heap, items: &[Value], scope: &mut Scope) -> Option<Node> {
     if items.len() != 3 {
         return None;
@@ -697,7 +738,7 @@ pub fn prim_apply_step(op: PrimOp, x: Value, y: Value) -> Result<Option<Value>, 
     prim_apply(op, x, y)
 }
 
-/// Tighter variant of [`prim_apply_step`] for the range-reduce hot path: both
+/// Tighter variant of [`prim_apply_step`] for the range-fold hot path: both
 /// operands are already `i64` (range element + integer accumulator), no Value
 /// boxing involved. Returns the next `i64` accumulator, or `None` on overflow
 /// (caller must fall back to the full `prim_apply_step` / `eval_apply` path).
@@ -932,8 +973,12 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
         // into the immovable RUNTIME region — load-bearing for `Value::Str` (a LOCAL
         // string baked raw into the off-GC-graph AST is the use-after-GC class; see
         // `const_node`), a no-op for the inline/interned atoms.
+        // A ratio (`1/3`) and a decimal (`1.5M`) are literals too: outside this list they were
+        // outside the VM's vocabulary, so any function containing one ran on the tree-walker.
         ValueRef::Int(_)
         | ValueRef::BigInt(_)
+        | ValueRef::Ratio(_)
+        | ValueRef::Decimal(_)
         | ValueRef::Float(_)
         | ValueRef::Bool(_)
         | ValueRef::Nil
@@ -941,7 +986,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
         | ValueRef::Keyword(_) => Some(const_node(heap, form)),
 
         // A name: a local frame slot if bound, else a global reference with a
-        // read IC (ADR-096) — through the module boundary (ADR-383).
+        // read IC (ADR-96) — through the module boundary (ADR-383).
         ValueRef::Sym(s) => match scope.lookup(s) {
             Some(slot) => Some(Node::Local(slot)),
             None => Some(Node::GlobalIc {
@@ -1022,6 +1067,14 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     }
                     // Non-canonical shape: fall through to generic call (try_catch native handles it)
                 }
+                // `(%binding '(n…) [v…] (fn () body…))` — the `binding` macro's expansion —
+                // inline (ADR-402): the body runs in this frame instead of as a thunk the
+                // `%binding` native evaluates nested.
+                if value::symbol_name_ref(h) == "%binding" {
+                    if let Some(node) = compile_binding(heap, &items, scope) {
+                        return Some(node);
+                    }
+                }
                 // `(%scope)` / `(%locals)` — the debugger locals intrinsic (ADR-174
                 // path B). Compile it straight from the live lexical-scope table into a
                 // fresh `{name → value}` map (name = the local's symbol, value read from
@@ -1066,7 +1119,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // pays per operator per iteration. Guarded by the global epoch so a
                 // redefinition of the operator cleanly falls back (see `Node::Prim2`).
                 // 1-ary sequence primitives (`first`/`rest`) inline the same way
-                // (ADR-096) — the list-iteration workhorses of every prelude
+                // (ADR-96) — the list-iteration workhorses of every prelude
                 // sequence fn.
                 if items.len() == 2 && scope.lookup(h).is_none() {
                     if let Some(op) = resolve_prim1(heap, h) {
@@ -1285,7 +1338,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     callee = direct;
                 }
             }
-            // A free-global callee gets a call-site inline-cache id (ADR-096);
+            // A free-global callee gets a call-site inline-cache id (ADR-96);
             // a local/computed callee can resolve to a different function per
             // call, so it keeps the generic path.
             let site = match callee {
@@ -1384,6 +1437,49 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 pairs.push((kn, vn));
             }
             Some(Node::Map(pairs.into_boxed_slice()))
+        }
+
+        // Set literal — like a vector literal: a constant when every element evaluates to
+        // itself, else evaluate the elements and build the set with `%set` (the literal's
+        // programmatic form: it dedups by structural equality, as the evaluator's
+        // `set_from_elems` does). A set literal used to be outside the VM's vocabulary, so
+        // any function containing one ran on the tree-walker for good — slower, never
+        // preempted, and its `receive`s blocked their worker: the default crash reporter's
+        // `#{}` kept it on a worker thread for the life of the program after its first report.
+        ValueRef::Set(id) => {
+            let items = heap.set_elems(id);
+            let mut nodes = Vec::with_capacity(items.len());
+            for &e in &items {
+                nodes.push(compile_node(heap, e, scope, false)?);
+            }
+            let self_evaluating = nodes
+                .iter()
+                .zip(items.iter())
+                .all(|(n, &src)| matches!(n, Node::Const(c) if heap.equal(c.load(), src)));
+            if self_evaluating {
+                return Some(const_node(heap, form));
+            }
+            // `%set` is a reserved kernel name — no `def` can rebind it — so the head needs
+            // no staging (see the call path above).
+            let site = scope.site_alloc();
+            let (pos, file) = match heap.form_pos(form) {
+                Some((p, f)) => (Some(p), f),
+                None => (None, None),
+            };
+            let idx = site as usize;
+            if scope.site_pos.len() <= idx {
+                scope.site_pos.resize(idx + 1, None);
+            }
+            scope.site_pos[idx] = pos.map(|p| (p, file.clone()));
+            Some(Node::Call {
+                staged: false,
+                callee: Box::new(Node::Global(value::intern("%set"))),
+                args: nodes.into_boxed_slice(),
+                tail: false,
+                pos,
+                file,
+                site,
+            })
         }
 
         // Opaque handles, etc. — outside the VM's vocabulary.

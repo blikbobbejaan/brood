@@ -110,6 +110,7 @@ pub(crate) fn jit_ckpt_resume(
     let slot = match layout {
         FrameLayout::LeafSpliced => arm.leaf.as_ref()?.resume.ckpt_slot,
         FrameLayout::Small => arm.ckpt_slot,
+        FrameLayout::SelfSpliced => return None,
     };
     if slot == u32::MAX {
         return None;
@@ -122,6 +123,7 @@ pub(crate) fn jit_ckpt_resume(
     let resume = match layout {
         FrameLayout::LeafSpliced => arm.leaf.as_ref()?.resume.clone(),
         FrameLayout::Small => arm.clone(),
+        FrameLayout::SelfSpliced => return None,
     };
     Some((resume, (p >> 16) as usize, (p & 0xFFFF) as usize))
 }
@@ -142,14 +144,23 @@ pub(super) enum FrameLayout {
     /// A leaf-callee-spliced derivation (ADR-210), whose slot range differs from the
     /// small one's.
     LeafSpliced,
+    /// The self-inlined upgrade (two-stage tiering): spliced copies of the arm's own body
+    /// in blocks above the first. It journals nothing — a deopt re-runs the small body from
+    /// ip 0 — and the small layout's journal slot index lies inside one of its blocks, a
+    /// live local there, so nothing may read that slot as a journal out of this frame.
+    SelfSpliced,
 }
 
 #[cfg(feature = "jit")]
 pub(super) fn jit_frame_layout(arm: &CompiledArm, frame_nslots: usize) -> FrameLayout {
     // A leaf derivation's frame is strictly larger than the small one (it splices extra
     // slots and then reserves blocks + journal), so the size tells them apart.
-    if arm.leaf.is_some() && arm.inline_nslots > arm.nslots && frame_nslots == arm.inline_nslots {
-        FrameLayout::LeafSpliced
+    if arm.inline_nslots > arm.nslots && frame_nslots == arm.inline_nslots {
+        if arm.leaf.is_some() {
+            FrameLayout::LeafSpliced
+        } else {
+            FrameLayout::SelfSpliced
+        }
     } else {
         FrameLayout::Small
     }
@@ -202,6 +213,8 @@ pub(crate) fn vm_resume_deopt(
         entry_roots: base,
         entry_env: env_base,
         entry_arms,
+        handler_floor: heap.vm_handlers.len() as u32,
+        dyn_floor: heap.dynamics_len() as u32,
         deadline: None,
     };
     let genv = heap.global();

@@ -20,7 +20,10 @@ thread, instead of panicking (`os/spawn` used to leave its child running), and a
 can start no scheduler worker exits naming the cause instead of hanging (KI-241). A loop that
 allocates a megabyte an iteration is stopped at the soft memory limit instead of running on
 to the hard limit's abort (KI-242). A process stopped by the soft limit inside a long native
-call no longer keeps the next holder from being stopped (KI-243).
+call no longer keeps the next holder from being stopped (KI-243). Writing to a stdout that
+fails (a full disk under `> out.txt`) raises `cannot write to stdout` instead of dropping the
+output and exiting 0 (KI-244). A `receive` inside a form evaluated with `reflect/eval` no
+longer re-runs the code before it each time it waits (KI-245).
 
 **Changed.** With no `BROOD_MEM_LIMIT` set, `brood` and `nest run` inside a memory-capped
 container take their memory limits from the cap — the hard limit at three quarters of it — so
@@ -32,6 +35,25 @@ in whichever process happened to run next, which was usually a busy bystander (K
 ADR-399). The stopped process exits with the `E0043` error as its reason, so its supervisor
 sees why. When the process that crossed the limit is itself the largest, it still gets a
 catchable `E0043`.
+
+**Changed — scheduling.** Long-running code no longer holds its worker: a loop inside `try`
+or `binding` (every `http/serve` handler runs in a `try`), a `reduce`/`fold`/`map` over a vector
+or range, and warm native code called from native code are all preempted at the quantum like
+any other code, and a `receive` inside a `try` or `binding` body parks instead of blocking its
+worker (KI-230..234, ADR-400..403). The benchmark `latency` row (open-loop requests, some
+holding a worker ~500 µs) runs 47% faster with a tighter tail. `spawn` of a closure that
+captures locals copies the captured values into the child instead of promoting the closure
+into the region all processes share, which removed 100–300 µs stalls under a spawn stream
+(KI-236, ADR-405). Calling a closure value from native code — every callback a higher-order
+function calls — is ~240 instructions cheaper (ADR-406).
+
+**Fixed — runtime.** A function containing a set literal, a ratio or a decimal no longer runs
+on the tree-walker for good (KI-237); a native caller no longer keeps a stale inlined copy of a
+redefined function (KI-235); a run-check verdict recorded without the stdlib image no longer
+replays its module loads on every later boot (KI-238).
+
+**Added.** The system monitor's `:long-schedule` event names a process whose quantum ran past
+a threshold (ADR-404); `make latency-gate` checks the request tail.
 
 **Added.** `eventually` and `await-parked` in the `test` module — waits for a condition no
 message announces, in place of a `sleep`. A test that times out now reports what it was

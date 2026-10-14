@@ -727,8 +727,8 @@ pub(super) fn apply_builtin(args: &[Value], env: EnvId, heap: &mut Heap) -> Lisp
     // LOCAL handles. So the callee `f` and the spliced middle args must be rooted
     // across the realise and re-read after, never trusted as pre-safepoint copies
     // (the re-read discipline ADR-114 requires of any Rust glue holding a LOCAL
-    // handle across a GC-capable call; mirrors `prim_eq` / `range_reduce_slow`).
-    // Today the only native caller (`%range-reduce` via `apply_value`) never passes
+    // handle across a GC-capable call; mirrors `prim_eq` / `range_reduce_general`).
+    // Today the only native caller (`%range-fold-span` via `apply_value`) never passes
     // a seq-view here, so the realise branch is latent — but the rooting keeps the
     // invariant intact for any future Rust HOF that does.
     heap.root_scope(|heap| {

@@ -61,9 +61,6 @@ pub use mailbox::{
 };
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub use message::{from_message, to_message, ClosureArmMsg, ClosureMsg, Message};
-// The overflow probe's only reader is the JIT runtime.
-#[cfg(feature = "jit")]
-pub(crate) use scheduler::current_mailbox_overflow_pending;
 pub(crate) use scheduler::exit_reason_phrase;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
@@ -107,14 +104,16 @@ pub fn parked_process_count() -> usize {
 // when to capture a continuation (vs. yield the coroutine / block the root), and by the
 // `receive` gate to tell a capturable top-level receive from a native-nested one.
 pub(crate) use scheduler::{
-    capture_hard_kill_pending, capture_top_level, charge_native, dirty_block, expire_quantum,
-    in_capture_run, refill_nested_quantum, set_capture_top_level, tick_capture,
-    tick_reporting_hard_kill, TreeWalkGuard,
+    capture_hard_kill_pending, capture_top_level, charge as charge_reductions, charge_native,
+    dirty_block, driver_safepoint, expire_quantum, in_capture_run, set_capture_top_level,
+    stop_between_elements, tick_reporting_hard_kill, Safepoint, TreeWalkGuard,
 };
-// The batched variant is called only from the JIT's runtime callback (`crate::jit`),
+// A native activation's poll is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.
 #[cfg(feature = "jit")]
-pub(crate) use scheduler::tick_capture_n;
+pub(crate) use scheduler::{
+    current_mailbox_overflow_pending, native_poll, tick_capture, NativePoll,
+};
 // Test-only: the JIT preempt unit test (`compile.rs`) drives a tiered arm as if it
 // were a capture-mode green process. That test is itself `#[cfg(feature = "jit")]`,
 // so the re-export must match — gating on bare `test` leaves it unused (and warned)
@@ -124,6 +123,8 @@ pub(crate) use scheduler::tick_capture_n;
 pub(crate) use scheduler::set_capture_run;
 #[cfg(test)]
 pub(crate) use scheduler::set_reduction_budget_for_test;
+#[cfg(test)]
+pub(crate) use scheduler::test_pretend_queued;
 
 pub(crate) use mailbox::{deliver, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is

@@ -684,7 +684,7 @@ seam is the dist inbound path that recognises a monitor DOWN frame; failing that
 tombstone consulted by `handle_node_down`. Needs a two-node test: monitor, kill target,
 receive DOWN, then drop the node — assert no second DOWN.
 
-## KI-97 — consolidated hardening gaps from the 2026-08-31 stability audit ✅ FIXED 2026-09-03 (all four items; `read-line` — ADR-059 Phase 2 — was the last)
+## KI-97 — consolidated hardening gaps from the 2026-08-31 stability audit ✅ FIXED 2026-09-03 (all four items; `read-line` — ADR-59 Phase 2 — was the last)
 
 One entry so the audit's remaining confirmed-by-reading findings have a number; none has
 been observed in the wild. Ranked. Each is independently fixable; strike through items
@@ -711,8 +711,8 @@ here as they close.
    testing: `now_millis()` counts from process start, so 0 is a legitimate timestamp in
    the first millisecond and the obvious `0` "never warned" sentinel would have swallowed
    the first warning of a flood that began at startup — the sentinel is `u64::MAX`.
-2. ~~**Untimed blocking calls on scheduler workers**~~ (ADR-059 violations) ✅ **ALL FOUR FIXED** —
-   three on 2026-09-01, the fourth (`read-line`, ADR-059 Phase 2) on 2026-09-03.
+2. ~~**Untimed blocking calls on scheduler workers**~~ (ADR-59 violations) ✅ **ALL FOUR FIXED** —
+   three on 2026-09-01, the fourth (`read-line`, ADR-59 Phase 2) on 2026-09-03.
    - ~~`os/run-process`'s `status()` with **inherited stdin**~~ ✅ **FIXED** — it now hands
      the child `/dev/null`, so a `git` credential prompt reads EOF and fails fast instead
      of pinning a worker forever with no timeout or `try` able to recover it. This matches
@@ -746,7 +746,7 @@ here as they close.
      `tests/proc_test.blsp` writes ~1.6 MB to a `sleep 30` that never reads — a **proof**
      rather than a smoke test, since a pipe buffer is ~64 KiB and a synchronous `write_all`
      of that size into a non-reading child cannot return.
-   - ~~`read-line` holding the global stdin lock~~ ✅ **FIXED 2026-09-03 — ADR-059 Phase 2.**
+   - ~~`read-line` holding the global stdin lock~~ ✅ **FIXED 2026-09-03 — ADR-59 Phase 2.**
      The kernel now has one `brood-stdin` reader thread behind `%read-line-start` (a token
      primitive, `builtins/io.rs`), and `read-line` is a prelude function that parks on the
      token in a selective receive — `offload`'s seam, applied to terminal input. A process
@@ -2041,7 +2041,7 @@ exit — so `(= :noproc :normal)` is false and a program that *succeeded* report
 
 The kernel already names this exact race, one field over: `%spawn-link`'s own docstring says it
 "atomically links the child to the caller before it runs (**no spawn->link :noproc race**)"
-(ADR-067). The link half was solved; the monitor half kept the two-step form.
+(ADR-67). The link half was solved; the monitor half kept the two-step form.
 
 **Why not just treat `:noproc` as success.** Because it is ambiguous in the direction that
 matters: a program that *crashed* before the monitor attached produces the same `:noproc`, and
@@ -2140,7 +2140,7 @@ and green on the fix**, twice each. Wired into CI's breakage job.
 `Value` and decoded it **lazily** — the decode sits *inside* the scan loop, guarded by
 `st.queue.len() > 1 && ntags.is_none()`, so it does not run on a one-message mailbox. That
 laziness is the bug: on any iteration after the first, the decode runs *after* a matcher
-`apply`, which can collect at any eval depth (ADR-061) and relocate the LOCAL vector. The
+`apply`, which can collect at any eval depth (ADR-61) and relocate the LOCAL vector. The
 handle was captured before that collection and dereferenced after it.
 
 ```
@@ -2370,7 +2370,7 @@ table, and doing that inside the walk cost 4× as much.
 
 **Related, found the same way:** bare **`require` is not a bound name** — the callable is
 `require-one` (`git log -S"defmacro require"` finds no definition in any commit). Several places
-in `CLAUDE.md` and the ADR-065 note describe writing `(require 'test)`; that guidance does not
+in `CLAUDE.md` and the ADR-65 note describe writing `(require 'test)`; that guidance does not
 work against this tree.
 
 ---
@@ -2770,7 +2770,7 @@ claimed to be testing.
 
 **`chaos_map_volcano` — a sizing question, and a self-inflicted false alarm.** Its 1 000 000
 -entry map peaks at **~3.0 GB RSS** (13 s), against the ~1 GiB soft ceiling the test runners
-default on (ADR-043) so an adversarial test cannot take the machine down. It now runs with a
+default on (ADR-43) so an adversarial test cannot take the machine down. It now runs with a
 per-file allowance in the Makefile (`BREAKAGE_ENV_map_volcano`, soft 4 GB / hard 6 GB) and
 passes; the default ceiling is untouched for every other file.
 
@@ -3589,7 +3589,7 @@ because it *was* a cold one. Only the benefit was missing.
    `set-load-path!` as the root setter for the same reason; `set-image-source!` is now its
    sibling and the installer goes through it.
 2. **`require-force` tested the branches in the wrong order.** The image branch sat after the
-   ADR-070 package-module branch, and a project roots its OWN modules — so
+   ADR-70 package-module branch, and a project roots its OWN modules — so
    `*package-module-files*` holds `demo/shapes` exactly as it holds a dependency's `foo/b`, and
    the package branch matched first for every module of every named project. The image branch
    now comes first: an image is only installed after its fingerprint matched the sources that
@@ -4505,7 +4505,7 @@ each of the 188 `n_` documents parsed fine one-per-process, and the two deep-nes
 documents parsed cleanly inside a spawned green process. It needed the framework context —
 and, it turned out, nothing about the framework except **how much code it had loaded**.
 
-**Root cause.** The ADR-091 RUNTIME two-generation collector's cooperative drain report
+**Root cause.** The ADR-91 RUNTIME two-generation collector's cooperative drain report
 (`Heap::report_gen_liveness` → `runtime_gen_referenced_private`) probes in two phases:
 Phase 1 over the process's private roots and live arms, Phase 2 over its whole LOCAL heap.
 Phase 2 already had a stale-dirty throttle (`P2_REVALIDATE_STRIDE`) added for exactly this
@@ -4928,7 +4928,7 @@ closure regardless.
 
 The bug-KI-3 class again, in a side table the KI-3 fix didn't cover. `RuntimeCode::positions`
 (source positions of RUNTIME list forms) is keyed by the pair's RUNTIME **slab index**, with a doc
-comment asserting "a RUNTIME pair never moves" — a pre-ADR-091 premise the compactor invalidated. A
+comment asserting "a RUNTIME pair never moves" — a pre-ADR-91 premise the compactor invalidated. A
 compaction relocated the pairs but not the keys, so `(form-pos …)` / source-location returned a
 stranger's position (or none) afterward. Diagnostics-only. **Fix:** `runtime_collect_with` remaps
 the keys through the same `fwd.pairs` forwarding after the evacuation walks, dropping entries whose
@@ -4995,7 +4995,7 @@ bitset path under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
 
 ## KI-3 — RUNTIME compaction strands live VM / tree-walker constants · **fixed 2026-06-01**
 
-Once the ADR-076 RUNTIME compactor made promoted code-region handles movable, two
+Once the ADR-76 RUNTIME compactor made promoted code-region handles movable, two
 sites held them as immovable: the tree-walker elided the operand-stack slot for a
 RUNTIME root (so `runtime_collect` never rewrote it), and the VM held promoted
 handles inline in `Node::Const`/`MakeClosure.fn_rest` (off the GC root graph). A
@@ -5012,7 +5012,7 @@ rewrite_arm_handles_rewrites_every_embedded_handle}` and
 Spawning green processes that touched globals crashed workers with bogus `unbound
 symbol` errors (a data race on shared global/scope state via the kernel
 supervisor's RESUME_SLOT machinery, worsened by free-list slot reuse). **Fix
-(in series):** strip the kernel supervisor (ADR-039, reverted → ADR-044); switch
+(in series):** strip the kernel supervisor (ADR-39, reverted → ADR-44); switch
 to a bump-only allocator (slots never recycle, so a stale handle can't observe a
 wrong-type value); per-worker pinned queues. **Durable invariant:** no recycled
 slots / no stale handles across a safepoint. (The per-worker *pinning* stopgap was
@@ -5035,12 +5035,12 @@ green-friendly `scheduler::yield_now`, never a thread sleep) **before** restorin
 globals. Production never wholesale-restores globals, so the language itself was
 never implicated. **Guarded by:** `tests/runner_failfast_test.blsp`.
 
-## Platform gaps — GUI display seam · **all resolved 2026-05-31 (ADR-079)**
+## Platform gaps — GUI display seam · **all resolved 2026-05-31 (ADR-79)**
 
 The GUI frontend had one font size for everything. Resolved: a `Face` carries an
 integer `:scale` (per-op/region larger text in a scale×scale cell block — also
 covers per-pane font); `gui-font!` takes an optional window id for per-window fonts;
-`std/editor/pane.blsp` (ADR-077/078) provides pane layout + clip-rects. Per-pixel
+`std/editor/pane.blsp` (ADR-77/78) provides pane layout + clip-rects. Per-pixel
 `:height` sizing stays deferred (would break the uniform grid).
 
 ## Minor (all fixed)
@@ -5416,7 +5416,7 @@ and CI run 32247618122 is green on all five jobs.
 counts process-wide allocation across every green process and the shared regions. Real effect, wrong
 scope. An earlier attempt at `gc-collect` was even further off: it rested on a stale comment in
 `std/tool/test.blsp` claiming the runner only collects at "the depth-1 eval safepoint", which
-**ADR-061 made false** — `eval/mod.rs` collects at *any* eval depth, so the collector was already
+**ADR-61 made false** — `eval/mod.rs` collects at *any* eval depth, so the collector was already
 running there.
 
 ### ✅ The open question below is ANSWERED (2026-08-20): legitimate growth, not a regression
@@ -6082,7 +6082,7 @@ an unrelated language feature:
 No error, correct arity, nothing unbound, and `nest check` says nothing.
 
 **Cause.** A macro's quasiquote template is spliced into the *caller's* file, and a bare symbol
-in it resolves against the caller's namespace before root. ADR-065's α clause auto-qualifies a
+in it resolves against the caller's namespace before root. ADR-65's α clause auto-qualifies a
 template's free references to the *defining* namespace, which fixes this for module macros — but
 the prelude's defining namespace is root, which has no prefix, so prelude templates emit bare
 names and are capturable. It is the general form of the `name` collision ADR-258 fixed for one
@@ -6793,7 +6793,7 @@ by walking the set. On 500 elements, 500 lookups cost 29 ms where `contains?` co
 
 **Cause.** `includes?` (`std/prelude/seq.blsp`) dispatched on `map?` — searching a map's
 VALUES, which is its documented behaviour — and let everything else fall through to
-`index-of`. A set is not a map (`map?` is false on `#{…}`, ADR-060), so it took the sequence
+`index-of`. A set is not a map (`map?` is false on `#{…}`, ADR-60), so it took the sequence
 path. `contains?` had the fast arm (`(if (set? m) (%set-has? m k) …)`) and `includes?` did
 not, which made the *less* obvious of the two functions the correct one to reach for.
 
@@ -9245,7 +9245,7 @@ force: `%root-module-name` roots against the AMBIENT package context, and `proje
 installs the project's. What the file's header saw was an empty context, because `nest run
 FILE` launches the file as its own green process through `spawn_root_program`, and that
 constructor built the program's heap without the package-context inheritance `spawn_impl`
-(an ordinary `spawn`) has carried since ADR-070's "which package is this code from is a
+(an ordinary `spawn`) has carried since ADR-70's "which package is this code from is a
 property of the CODE, not of the process running it". The program inherits it now, exactly
 as a spawned child does; free outside a package (an empty pair), so a plain `brood FILE` is
 unchanged. The file's location was never the variable — a file under `src/` run the same way
@@ -9416,7 +9416,7 @@ off everywhere it would be checked.
 **Fix** (rationale and the constraints it creates: **ADR-324**). The gate, plus main-thread
 hosting — which turned out to be far smaller than feared, because the runtime *already* runs
 on a spawned thread. `cli_support::run_on_main_stack`
-has always moved the work off the main thread (to size the stack for the ADR-043 budget
+has always moved the work off the main thread (to size the stack for the ADR-43 budget
 guard), leaving the main thread doing nothing but `join()`. So there was a free main thread
 the whole time; it simply had no way to be asked for.
 
@@ -11688,7 +11688,7 @@ through `n = 0` re-ran the `def`, and the source positions recorded for each re-
 form grew until `memory allocation of 5502926864 bytes failed`. The same probe with
 `(lp 1 7)` in place of `(lp (list 1) 7)` was correct.
 
-**Cause.** `Inst::SelfCall`'s hot-reload guard (ADR-013) compares the global epoch to a
+**Cause.** `Inst::SelfCall`'s hot-reload guard (ADR-13) compares the global epoch to a
 snapshot. The snapshot was a local of `exec_chunk`, taken on entry — and a frame re-enters
 `exec_chunk` after **every non-tail call** in its body. `(list 1)` is a VM call, so by the
 back-edge the snapshot had been re-read after the `def`, the epochs matched, and the loop
@@ -13352,3 +13352,165 @@ that is the current process). **Guard.**
 grows into the last eighth, blocks in `os/cmd "sleep"`, and a leak pushes past the limit; the
 hoarder must be stopped and the leak must go down with `E0043`, with no hard abort. Red with
 the grace made unbounded.
+
+## KI-244 — output that could not be written was dropped, and the run exited 0 ✅ FIXED 2026-10-14
+
+**Symptom.** With stdout on a full device (`> /dev/full`), `(io/puts "hello")` returned
+normally, a thousand more lines did too, and the run exited 0 — `brood report.blsp > out.txt`
+on a full disk leaves a truncated file and tells its caller it succeeded. **Cause.**
+`builtins::io::write_stdout` treated a broken pipe as the end of the program (correct: the
+reader went away) and dropped every other write or flush error, a leftover of the old
+`.flush().ok()`. The CLI's `cli_support::write_stdout` did the same. **Why it survived.**
+Nothing wrote to a failing stdout but a closed pipe, which is the case that was handled.
+Found by a disk-full probe: file writes (`file/spit` and kin) already raised `No space left
+on device`; only the standard stream did not. **Fix.** `write_stdout` returns the error, and
+`%write-out` raises `cannot write to stdout: …` where the write happened — catchable; uncaught,
+the run exits non-zero. The CLI's stdout sink prints the cause and exits 1. Stderr stays
+best-effort: it carries no result, and its error would be reported to the same broken stream.
+**Guard.** `crates/cli/tests/stdout_full.rs` — a run whose only output is lost must fail and
+say so, and a `try` around the write must catch it; both red with the error dropped again.
+
+## KI-245 — a `receive` under `reflect/eval` re-ran the code before it ✅ FIXED 2026-10-14
+
+**Symptom.** After merging the preemption branch, `make prepush` failed
+`doc_examples_test`: the `os/spawn` example raised `cannot start a thread for the child's
+pipes` and `stats/mode` could not reserve a table chunk — the run had exhausted its 16 GB
+address cap with 1 324 threads, every one belonging to one of 317 zombie `sh` children. A
+logging `sh` on `PATH` showed the `os/spawn` example — `(let (p (os/spawn "sh" […])) (receive
+([:proc-exit ^p c] c)))` — had run 484 times. A minimal form, `(reflect/eval '(do (effect)
+(receive …)))` in a green process, ran its effect twice; under a `map` callback too after
+the merge (before it, only directly). **Cause.** The `receive` gate captures a continuation
+only when the capture flag says no native frame sits between it and the process's body
+driver; the nested-VM driver (`vm_run_bc(…, false)`) and the tree-walker's entries clear
+the flag, but `compile::run` — how `reflect/eval`, `eval-string` and the loader run a
+top-level form, in `exec_value` — did not. So the `receive` suspended, the suspend rode up
+through the native `reflect/eval` to the body driver, which captured at the call into the
+native, and the resume evaluated the whole form again. A spawn-then-wait form spawned a new
+child on every resume and waited for *that* one. **Why it survived.** The double run of a
+plain effect is silent, and a `reflect/eval`'d `receive` that waits is rare; the doctest
+loop needed the address cap to turn it into a failure. **Fix.** `compile::run` takes the
+same `TreeWalkGuard` as the tree-walker's entries, so a `receive` under it blocks as a
+native-nested `receive` must (the §7.4 carve-out). **Guard.**
+`tests/receive_effect_once_test.blsp` — an effect before a released `receive` under
+`reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
+spawn-then-receive spawns one child; all four red with the guard removed.
+
+## KI-230 — every `try` body ran as one quantum; a `receive` in one blocked its worker ✅ FIXED 2026-10-12
+
+**Symptom.** A 50 ms loop inside `(try … (catch e nil))` in a spawned process ran in 1
+quantum at every tier (`BROOD_SCHED_DBG`: one `end … outcome=done`), where the same loop
+outside `try` took ~200. **Cause.** The compiler inlined `%try` as `Inst::TryCatch`, which ran
+the body through `exec_value` — a nested evaluation the driver cannot capture, with
+`capture_top_level` switched off so a `receive` in it dirty-blocked the worker.
+`std/net/http.blsp` runs every request handler inside `try`, so every HTTP handler was
+non-preemptible. **Why it survived.** `preemption.rs` covers one shape (a bare loop at the
+bottom of a process), the latency row's handlers were not in a `try`, and nothing timed a
+quantum. **Fix.** ADR-400. **Guard.** `crates/lisp/tests/preemption_shapes.rs` — run against
+`c7e7bae3`, every try shape failed (`a loop inside try: first message was :hog-done`) and the
+receive test hung into its 120 s cap; green now.
+
+## KI-231 — warm native code called from warm native code was never preempted ✅ FIXED 2026-10-12
+
+**Symptom.** After 500 warm spawns from one site, a 2.5 ms loop in a new process ran as one
+10.3 ms quantum (196 quanta / 4.5 ms with a cold site); the latency row's fat handlers held
+their worker 1–2 ms each, ~2 500 times a run. **Cause.** Native code was preemptible only at a
+self-tail back edge of an activation the driver had entered itself. Under a native caller the
+callee's preempt (outcome 2) re-ran it on a nested interpreter, which cannot capture — so it
+ran to the end there, slower. A native recursion has no back edge and never polled.
+**Why it survived.** Every preemption test entered native code from the driver. **Fix.**
+ADR-401 (unwind into interpreter frames; entry reduction poll; pure self-recursive arms get the
+journal area; the self-inlined layout named so its frame is never read as journalled).
+**Guard.** `preemption_shapes.rs`, one native shape per test process — red with the unwind
+start disabled (all four), and the recursion test red with the entry poll disabled. A first
+version raced several shapes in one process and passed under sabotage: a hot re-lowering ran
+the next shape's callers interpreted, through the always-preemptible VM→native path.
+
+## KI-232 — a `binding` body could not be preempted ✅ FIXED 2026-10-12
+
+**Symptom/Cause.** As KI-230: `binding` expanded to a thunk the `%binding` native ran nested.
+**Fix.** ADR-402. **Guard.** `preemption_shapes.rs` ("a loop inside binding" and
+`a_receive_inside_binding_parks_and_keeps_its_binding`), red (`:hog-done` first; the receive
+test hung) with the inlining disabled.
+
+## KI-233 — vector and range folds ran as one quantum ✅ FIXED 2026-10-12
+
+**Symptom.** `(reduce (range 40) 0 slow-reducer)` and its vector twin: 1 quantum at every
+tier; a 3 M-element `(reduce (range n) 0 +)` likewise. **Cause.** `%vector-reduce` and
+`%range-reduce` call the reducer from one native loop. **Fix.** ADR-403 (owed preemption;
+resumable folds). **Guard.** Four fold shapes in `preemption_shapes.rs`, all red with
+resumption disabled.
+
+## KI-234 — a preempted process waited behind other work while idle cores slept ✅ FIXED 2026-10-12
+
+**Symptom.** At `BROOD_REDUCTIONS=200` the latency row read p50 2 144 µs, p99 40 ms (v0.37.0:
+p50 86–3 263 µs, p99 5–117 ms across two runs).
+**Cause.** A preempted process is re-queued on its own worker (`enqueue`), which elides the
+wake syscall for the current worker and wakes no peer; the parked peers only re-probe on their
+10 ms (or longer, idle-grown) backoff. So a process re-queued behind a LONG quantum waited it
+out — and quanta were long because the row's fat handlers (a native loop under a native
+caller) could not be preempted at all.
+**Why it survived.** At the default quantum the row's handlers rarely queue behind each
+other. **Fix.** Bounding the quanta (ADR-401's native unwind, ADR-403's resumable folds): a
+queue of short quanta drains fast without any peer's help. A first fix woke a parked peer on
+every enqueue that landed behind other work; it cost `supervisor` 12% and `ring` 5%, and
+once the quanta were bounded it bought nothing (p50 15 µs without it, 14 µs with), so it was
+reverted — the `wake_a_parked_peer` doc records the same lesson from the spawn path.
+**Guard.** The latency row at `BROOD_REDUCTIONS=200`: p50 15 µs, p99 35 µs.
+
+## KI-235 — a stale inlined native survived a redefinition ✅ FIXED 2026-10-12
+
+**Symptom.** `undef_test` "defining the function again is honoured by the same caller":
+`(spin 500 0)` → 500 after `step` was redefined to add 2 — 10 of 10 runs, on the binary from
+before this work too. **Cause.** Two holes in the background compiler's publish step. A
+lowering that finished after a redefinition reset the arm was stored anyway; and the
+cross-process dedupe map stamped the result with the arm's epoch read AFTER lowering — the
+new one — and served the stale body to the re-queued copy, which swapped it in. **Why it
+survived.** The test ran in CI; this is the timing in which its warm-up stops at the first
+`:native`. **Fix.** A lowering is valid only for the epoch it started under: published only
+while the arm still holds it, re-checked after the store, and stamped with it in the map.
+**Guard.** `undef_test` 10/10 (was 0/10).
+
+## KI-236 — a stream of spawns stalled the spawner on the shared region's collector ✅ FIXED 2026-10-12
+
+**Symptom.** The latency row's dispatcher saw ~25 spawns per run over 100 µs (up to
+2.3 ms); instrumented, the time was all in `promote` (100–313 µs). **Cause.** `spawn` promoted
+each body closure — with its captured locals — into the shared RUNTIME region; the region's
+multi-process collector aged and reclaimed that churn, holding the `promote_lock` writer.
+**Fix.** ADR-405. **Guard.** The latency row (slowest spawn 0.4 ms) and the whole suite — a
+first version parented the copy's env on an unset global, a self-parented frame every free
+lookup walked forever: the latency row and a 1 000-spawn test program hung on it.
+
+## KI-237 — a set, ratio or decimal literal put its function on the tree-walker for good ✅ FIXED 2026-10-12
+
+**Symptom.** `BROOD_DEFER_DBG=1` named `crash-report/take-over` as a tree-walker defer after a
+program's first crash, and `BROOD_SCHED_DBG=1` showed the reporter's quantum never ending: its
+`receive` blocked the worker thread (the scheduler's quantum ledger said `inside pid=3 for
+366s`). Any function with `#{…}`, `1/3` or `1.5M` in it behaved the same. **Cause.**
+`lower::compile_node_inner` had no arm for a set literal, a ratio or a decimal, so the arm did
+not compile and the whole function ran on the tree-walker — which cannot capture, so its calls
+run nested and its `receive`s block. `take-over` folds its first event into `#{}`.
+**Why it survived.** Every result was right; only scheduling changed, and nothing timed a
+quantum or counted defers. **Fix.** Set literals lower like vector literals (one shared
+constant when every element evaluates to itself, else `(%set e…)`, which dedups by structural
+equality exactly as the evaluator does); ratio and decimal join the self-evaluating
+constants; `value_is_immovable` checks `Decimal`/`Ratio`/`Bytes` instead of passing them as
+handle-free. **Guard.** `preemption_shapes.rs` "a loop under a function with a set/ratio/
+decimal literal" — red (`:hog-done` first, all three) with the lowering disabled; the crash
+reporter now parks after its report.
+
+## KI-238 — a run-check verdict recorded without the stdlib image replayed its loads forever ✅ FIXED 2026-10-12
+
+**Symptom.** After a `std/` edit, `brood one.blsp` (`(io/puts 1)`) cost 148M instructions
+against 81M on the previous binary, and `BROOD_IMAGE_TRACE=1` showed it materialising `map`,
+`string`, `math`, `reflect`, `regex`, `seq` and `table` before printing — with the stdlib image
+`:live`. Every benchmark row carried the same startup, which read as a +8% `nqueens` regression
+until it was traced. **Cause.** The run pre-flight's cache (`cli_support::run_check_cache_*`)
+keys a verdict on the source, the build id, the stdlib id and the checking mode. Run before
+`nest` rebuilt the image, the walk scanned module sources and loaded `os` (and its closure)
+along the way; the entry recorded `loads io os`, and a hit replays its loads — so once the image
+existed, every run still `require`d `os` and its seven modules eagerly. **Why it survived.**
+The image is rebuilt by `nest`, never by `brood`, so the window between a `std/` edit and the
+next `nest` run is exactly when a developer measures, and the stale entry outlived it.
+**Fix.** The key includes whether this process installed the stdlib image
+(`*std-image-installed*`). **Guard.** `cli_support::run_check_cache_tests` — red with the bit
+left out of the hash.

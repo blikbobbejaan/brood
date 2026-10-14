@@ -745,6 +745,10 @@ fn sysmon_config_map(heap: &mut Heap, m: Option<crate::process::sysmon::SysMon>)
                 (value::kw("exit"), Value::boolean(m.exit)),
                 (value::kw("exit-abnormal"), Value::boolean(m.exit_abnormal)),
                 (value::kw("deopt"), Value::boolean(m.deopt)),
+                (
+                    value::kw("long-schedule-us"),
+                    Value::int(m.long_schedule_us as i64),
+                ),
             ];
             heap.map_from_pairs(pairs)
         }
@@ -815,6 +819,7 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                 exit: true,
                 exit_abnormal: true,
                 deopt: true,
+                long_schedule_us: sysmon::DEFAULT_LONG_SCHEDULE_US,
             };
             if args.len() > 1 {
                 match arg(args, 1) {
@@ -836,6 +841,12 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                                 m.gc_min_pause_us = n as u64;
                             }
                         }
+                        // Selected by its threshold: `:long-schedule-us n`, n > 0.
+                        m.long_schedule_us = match heap.map_get(opts, value::kw("long-schedule-us"))
+                        {
+                            Some(Value::Int(n)) if n > 0 => n as u64,
+                            _ => 0,
+                        };
                     }
                     Value::Nil => {}
                     other => {

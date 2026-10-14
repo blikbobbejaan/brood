@@ -124,7 +124,7 @@ fn retire_pid_tail(pid: u64, reason: Message) {
     for w in remote {
         monitor::fire_down(w, pid, reason.clone());
     }
-    // Links (ADR-067), after monitors and with no table lock held: notify every
+    // Links (ADR-67), after monitors and with no table lock held: notify every
     // linked peer — a trappable `[:EXIT pid reason]` if it traps, else an abnormal
     // reason propagates as a hard kill that cascades through *its* links. Mirrors
     // the sequential lock discipline above (never holds REGISTRY/MONITORS here).
@@ -342,15 +342,17 @@ fn spawn_impl_timed(
             .map(|ctx| ctx.capture.clone())
             .unwrap_or_default()
     });
-    // Promote the thunk into the shared RUNTIME region so its handle (and any
-    // captured local scope) is valid in the child, which shares this runtime's
-    // code via the Arcs below. A top-level function is already shared (no-op).
-    let f = heap.promote(f);
     if !matches!(f, Value::Fn(_)) {
         return Err(LispError::type_err("spawn: argument must be a function"));
     }
     let prelude = heap.prelude_arc();
     let runtime = heap.runtime_arc();
+    let mut child = Heap::with_regions(prelude, runtime);
+    // The body, valid in the child: a closure that captures locals is copied into the
+    // child's own heap, code shared and captured values copied (ADR-405); anything else is
+    // promoted into the shared RUNTIME region — a no-op for a top-level function.
+    let f = crate::process::message::copy_closure_into(heap, f, &mut child)
+        .unwrap_or_else(|| heap.promote(f));
 
     let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
     SPAWNED.fetch_add(1, Ordering::SeqCst);
@@ -394,10 +396,9 @@ fn spawn_impl_timed(
     // that defers to the tree-walker (vanishingly rare) runs tree-walked on the worker
     // with blocking `receive`s (`run_process_body`). `f` is a shared-runtime handle valid
     // in the child heap (same `runtime` Arc).
-    let mut child = Heap::with_regions(prelude, runtime);
     child.set_global(EnvId::GLOBAL);
 
-    // Package-rooted namespaces (ADR-070): the child inherits the spawner's package
+    // Package-rooted namespaces (ADR-70): the child inherits the spawner's package
     // context. "Which package is this code from?" is a property of the CODE, not of the
     // process running it — a worker spawned inside project `bedit` is still running
     // bedit's code, so its qualified intra-project references (`commands/cmd-open`) must
@@ -481,7 +482,7 @@ pub fn spawn_root_program(
     let runtime = heap.runtime_arc();
     let mut child = Heap::with_regions(prelude, runtime);
     child.set_global(EnvId::GLOBAL);
-    // Package-rooted namespaces (ADR-070): the program inherits the caller's package
+    // Package-rooted namespaces (ADR-70): the program inherits the caller's package
     // context, exactly as a spawned child does above. `nest run FILE` runs `project/setup`
     // (which installs the project's context) and then launches the file through here —
     // without this the file's `(:use model)` would load the project's module a second

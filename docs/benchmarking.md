@@ -121,6 +121,26 @@ scripts/ab-bench.sh --tier 1 --floor pfib      # the VM's call path, with a nois
 scripts/ab-bench.sh --floor fib loop collatz   # the default ceiling, single-threaded rows
 ```
 
+5. **RSS moves in 2 MiB steps — compare it with transparent huge pages off.** mimalloc
+   marks its arena for THP (`allow_thp`, default on) and a `madvise`-mode kernel backs it
+   with 2 MiB pages, so resident memory jumps by huge pages depending on where allocations
+   land and on how fragmented the machine is at that moment. A brood-benchmarks refresh read
+   base RSS 40.8 → 52.1 MiB "+27%" for a change that was +1% (19.9 → 20.1 MiB) with
+   `MIMALLOC_ALLOW_THP=0` (2026-10-12). Measure memory with that set; leave it unset for
+   timing, which is what users run.
+
+### Tail latency — `make latency-gate`
+
+Throughput rows cannot see a process that stops being preemptible: they finish in the same
+time whether one quantum ran 40 µs or 4 ms. `stress/latency_probe.blsp` is an open-loop
+request stream (20k req/s, every 20th request holding its worker ~500 µs) that reports the
+start-latency percentiles and how many quanta held a worker over 1 ms (`:long-schedule`,
+ADR-404). `make latency-gate` runs it five times and fails on more than 200 such quanta in a
+run or a worst p99 over 250 µs. After ADR-400..405 it reads 2–26 long quanta a run and p99
+74–95 µs (v0.37.0: p99 85–115 µs; it predates `:long-schedule`, but `BROOD_STALL_MS=1` saw a
+quantum over 1 ms for nearly every fat request). It is a benchmark-box gate, not a CI one: p99.9 and max are reported, not
+gated, because on an open-loop row they move 3× between runs here.
+
 ## 2. Attribution — where the VM spends work
 
 Build with the `perf-stats` cargo feature to arm process-global work counters
@@ -158,7 +178,7 @@ Reading them:
 
 ## 3. Why this exists: the bytecode-lowering / JIT gate
 
-ADR-096 gates bytecode lowering (and any codegen) on *a profile showing
+ADR-96 gates bytecode lowering (and any codegen) on *a profile showing
 interpretive dispatch — not allocation, GC, or `env_get` — is the bottleneck*.
 `perf-stats` is how we get that profile. Concretely: if a representative workload
 shows `alloc`/collections dominating and IC hit-rates already high, lowering buys

@@ -26,7 +26,7 @@ pub enum PrimOp {
     Rem,
     Div,
     Quot,
-    // `cons` (ADR-096): the list-building workhorse. Unlike the numeric ops it
+    // `cons` (ADR-96): the list-building workhorse. Unlike the numeric ops it
     // allocates, so it's handled in the exec arm (which has the heap) rather
     // than `prim_apply`; it accepts any operands, so it never defers on shape.
     Cons,
@@ -115,7 +115,7 @@ impl PrimOp3 {
     }
 }
 
-/// A core 1-ary sequence primitive the compiler inlines (ADR-096) — the list
+/// A core 1-ary sequence primitive the compiler inlines (ADR-96) — the list
 /// iteration workhorses. The `Pair`/`Nil` cases run inline (a slab read — no
 /// call frame, no dispatch); every other operand shape (vectors, ranges, the
 /// canonical type errors) defers to the real native so semantics stay
@@ -340,7 +340,7 @@ impl ConstVal {
     }
 }
 
-/// A compiled IR node (ADR-076). Stage 1 vocabulary — the core forms a top-level
+/// A compiled IR node (ADR-76). Stage 1 vocabulary — the core forms a top-level
 /// arithmetic/recursive body is built from. Anything outside this set makes the
 /// whole closure ineligible (it runs on the tree-walker instead), so there is no
 /// `Defer` node: a VM-run body is *fully* compiled, which is what lets `exec_node`
@@ -366,7 +366,7 @@ pub enum Node {
     /// compile to [`Node::GlobalIc`] instead.
     Global(Symbol),
     /// A free reference in value position, with a **global-read inline cache**
-    /// (ADR-096): when the enclosing frame resolves free names through the
+    /// (ADR-96): when the enclosing frame resolves free names through the
     /// process global, the read validates `(sym, epoch)` against the per-process
     /// [`Heap::vm_global_ics`] entry and skips the `env_get` walk; otherwise (a
     /// captured-env frame, an epoch change, a dynamic symbol) it falls back to
@@ -392,7 +392,7 @@ pub enum Node {
     /// wins, like the tree-walker's `or_form_pos`) so VM diagnostics keep line/col.
     /// `None` for a promoted RUNTIME body (whose forms carry no recorded position —
     /// neither engine tags those).
-    /// `site` is this call's **inline-cache id** (ADR-096) when the callee is a
+    /// `site` is this call's **inline-cache id** (ADR-96) when the callee is a
     /// free global reference — an index into the per-process
     /// [`Heap::vm_call_ics`] table caching the site's last resolution (callee
     /// value + compiled arm + captured env, epoch-stamped). [`NO_SITE`] for a
@@ -469,7 +469,7 @@ pub enum Node {
     /// confirmed to resolve to `op`; an [`AtomicU64`] (not a `Cell`) so the node stays
     /// `Send + Sync` and a migrating process's heap stays `Send`.
     /// `broot`: must operand `a`'s value be rooted across operand `b`'s eval
-    /// (ADR-096)? `false` when `b` is a **safepoint-free leaf** (`Const` /
+    /// (ADR-96)? `false` when `b` is a **safepoint-free leaf** (`Const` /
     /// `Local` / `Global` / `GlobalIc` — none can allocate, call, or collect),
     /// which is the overwhelmingly common shape in hot loops (`(+ acc n)`,
     /// `(< n 2)`): the whole inline path then runs with zero operand-stack
@@ -497,7 +497,7 @@ pub enum Node {
         guard: AtomicU64,
         pos: Option<Pos>,
     },
-    /// An inlined 1-ary sequence primitive (ADR-096) — `(first xs)` / `(rest xs)`.
+    /// An inlined 1-ary sequence primitive (ADR-96) — `(first xs)` / `(rest xs)`.
     /// The `Pair`/`Nil` cases run inline; any other operand shape — or a
     /// redefinition of the operator — falls back to a general call on `head`,
     /// exactly like [`Node::Prim2`]'s guard discipline.
@@ -515,6 +515,14 @@ pub enum Node {
         body: Box<Node>,
         bind_slot: usize,
         handler: Box<Node>,
+    },
+    /// `(%binding '(n…) vals (fn () body…))` desugared inline (ADR-402): `vals` builds the
+    /// vector of new values, the names are pushed on the process's dynamic stack, and
+    /// `body` runs in this frame for the extent of the binding.
+    Binding {
+        names: Box<[Symbol]>,
+        vals: Box<Node>,
+        body: Box<Node>,
     },
 }
 
@@ -662,7 +670,7 @@ pub struct CompiledArm {
     /// That link is what makes `fib` fast, but `dbg_name` is only the symbol the closure
     /// was first `def`'d under — not evidence the global still binds this closure. Alias
     /// the closure (`(def f h)`), rebind `h`, and call through the alias: the old body's
-    /// recursive `(h …)` must see the NEW `h` (late binding, ADR-013), yet the hard link
+    /// recursive `(h …)` must see the NEW `h` (late binding, ADR-13), yet the hard link
     /// kept calling the old arm — `(f 12)` gave 12 where every other engine gave 1001.
     /// Re-establishing the link on recompile does not help: the epoch bump invalidates the
     /// arm, and the recompile then bakes the same wrong callee in again.
@@ -695,7 +703,7 @@ pub struct CompiledArm {
     /// already executed are never repeated.
     pub ckpt_slot: u32,
     /// The [`Heap::global_epoch`] at which this arm was last compiled to native code —
-    /// the inline-cache epoch guard (ADR-096 §4.A) for the JIT'd arm. The lowered code
+    /// the inline-cache epoch guard (ADR-96 §4.A) for the JIT'd arm. The lowered code
     /// inlines arithmetic operators (`+`/`<`/…) as raw machine ops, valid only while
     /// those globals still resolve to their native primitives. A `def` rebinding any
     /// global bumps `global_epoch`; [`jit_tier`] compares it against this before each
@@ -770,7 +778,7 @@ pub struct CompiledArm {
     /// which is set only for inlinable recursive defns). Lets `jit_tier` label the arm in
     /// the staged-stale report so a use-after-GC names the arm holding the stale handle.
     /// NOT jit-gated, though everything around it is: the bytecode VM's `Inst::SelfCall`
-    /// hot-reload guard (ADR-013, `exec_chunk`) re-resolves this name on a global-epoch
+    /// hot-reload guard (ADR-13, `exec_chunk`) re-resolves this name on a global-epoch
     /// bump to notice a `def` of the very function a loop is running. That guard is a
     /// correctness rule, not an optimisation, so it must hold in a `--no-default-features`
     /// runtime too — which is exactly the build that stopped compiling when the VM began
@@ -1090,6 +1098,16 @@ pub(crate) enum ChunkExit {
         bases: (u32, u32),
         outcome: Option<i64>,
     },
+    /// A native preempt unwound out to the driver (ADR-401): the activations it passed
+    /// through are recorded in the thread's unwind record (`take_unwound`), their frames still in `roots`, for the
+    /// driver to rebuild as interpreter frames and park. `keep_current`: the current frame
+    /// is an interpreter frame that called the outermost of them directly (the VM→native
+    /// call) and waits for its value at the ip after that call; otherwise the current frame
+    /// IS the outermost of them (the frame path) and is rebuilt with the rest.
+    #[cfg(feature = "jit")]
+    Unwound {
+        keep_current: bool,
+    },
     /// A clean `receive` on an empty mailbox raised `Control::Suspend` through the
     /// `%receive` native (state-capture path, ADR-100 §8). `exec_chunk` rewound `ip`
     /// so re-entry re-runs the suspending `Inst::Call`, leaving the callee + args on
@@ -1192,6 +1210,10 @@ pub(super) fn rewrite_node(node: &Node, f: &mut dyn FnMut(Value) -> Value) {
             rewrite_node(body, f);
             rewrite_node(handler, f);
         }
+        Node::Binding { vals, body, .. } => {
+            rewrite_node(vals, f);
+            rewrite_node(body, f);
+        }
     }
 }
 
@@ -1236,14 +1258,6 @@ pub(super) fn rewrite_chunk(chunk: &Chunk, f: &mut dyn FnMut(Value) -> Value) {
 // *control* state (the instruction pointer), and `Call`/`Return` are explicit frame
 // push/pop, so the cross-arm call stack is data too (ADR-100 §8.4). The driver stays
 // bit-identical to the `Node` interpreter, guarded by the differential test.
-
-/// Non-owning raw pointer into a `Node` tree owned by a `CompiledArm`.
-/// Used by `Inst::TryCatch` to avoid double-rewriting: `rewrite_node(arm.body)`
-/// rewrites the pointed-to nodes in place; `rewrite_chunk` skips `Inst::TryCatch`.
-pub struct NodePtr(pub(crate) NonNull<Node>);
-// SAFETY: Node is Send+Sync (all interior mutability is through AtomicU64).
-unsafe impl Send for NodePtr {}
-unsafe impl Sync for NodePtr {}
 
 /// One bytecode instruction. A **stack machine**: each instruction pushes/pops on
 /// the operand region of `Heap::roots` that sits just above the activation frame's
@@ -1349,7 +1363,7 @@ pub enum Inst {
     /// push (`ChunkExit::Call`); a tail call/self-call reuses the frame; a native /
     /// tree-walked callee runs inline and its value is pushed.
     ///
-    /// `site`/`head` drive the **call-site inline cache** (ADR-096, Stage 5): when the
+    /// `site`/`head` drive the **call-site inline cache** (ADR-96, Stage 5): when the
     /// head is a free global (`head = Some(sym)`, `site != NO_SITE`) and the frame
     /// resolves frees through the process global, the cached `(arm, env)` for
     /// `(site, sym, argc, epoch)` is used directly — skipping `dispatch`'s
@@ -1400,14 +1414,28 @@ pub enum Inst {
         /// The built closure's contract boundary — see `Node::MakeClosure::module`.
         module: Option<Symbol>,
     },
-    /// Inline try/catch: run body via exec_value; on non-control error write
-    /// the caught value to bind_slot and run handler; push result. NodePtrs
-    /// point into arm.body — rewrite_chunk skips them; rewrite_node handles them.
-    TryCatch {
-        body: NodePtr,
-        bind_slot: usize,
-        handler: NodePtr,
-    },
+    /// Open an inline `try` (ADR-400): register a handler for THIS frame on the process's
+    /// handler stack (`Heap::vm_handlers`) — the operand-stack height here, the frame's
+    /// slot `bind_slot` the caught value lands in, and `handler`, the ip of the handler
+    /// code. The body follows inline as ordinary bytecode, so it runs in the bytecode
+    /// driver's own loop: it can be preempted, park at a `receive`, and call natively —
+    /// none of which a body run as a nested evaluation could do. A non-control error
+    /// raised anywhere above this frame unwinds the driver to it, stores the caught value
+    /// and resumes at `handler` (`vm_run_bc`'s catch).
+    TryEnter { handler: usize, bind_slot: usize },
+    /// Close the innermost `try`: the body finished normally, its value is on the
+    /// operand stack, and the handler registered by the matching [`Inst::TryEnter`]
+    /// retires. Always followed by the `Jump` over the handler code.
+    TryExit,
+    /// Open an inline `binding` (ADR-402): pop the vector of new values and push each name
+    /// with its value on the process's dynamic stack (every name must be dynamic and the
+    /// counts must match, checked before anything is pushed). The body follows inline, so
+    /// it runs in the driver's loop like a `try` body. An error leaving the body is
+    /// restored by truncation — to the length a catching `try` recorded, or to the driver's
+    /// entry length when the error leaves the driver.
+    BindEnter { names: Box<[Symbol]> },
+    /// Close the innermost inline `binding`: pop its names, the body's value on the stack.
+    BindExit(usize),
 }
 
 impl Inst {
@@ -1497,7 +1525,12 @@ impl Inst {
             ),
             Inst::SelfCall { argc } => format!("SelfCall({argc})"),
             Inst::MakeClosure { names, .. } => format!("MakeClosure(captures={})", names.len()),
-            Inst::TryCatch { .. } => "TryCatch".into(),
+            Inst::TryEnter { handler, bind_slot } => {
+                format!("TryEnter(handler={handler}, bind={bind_slot})")
+            }
+            Inst::TryExit => "TryExit".into(),
+            Inst::BindEnter { names } => format!("BindEnter(names={})", names.len()),
+            Inst::BindExit(n) => format!("BindExit({n})"),
         }
     }
 }

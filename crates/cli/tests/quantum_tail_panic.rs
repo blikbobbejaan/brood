@@ -40,7 +40,9 @@ fn script(name: &str, source: &str) -> std::path::PathBuf {
 fn run(path: &std::path::Path, fault_at: Option<u32>) -> (String, String, bool) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_brood"));
     cmd.env("BROOD_NO_CHECK", "1")
-        .env("BROOD_NO_CRASH_REPORT", "1");
+        .env("BROOD_NO_CRASH_REPORT", "1")
+        // Few workers, so the spinners queue behind each other (see `WORKLOAD`).
+        .env("BROOD_J", "1");
     if let Some(n) = fault_at {
         cmd.env("BROOD_FAULT_QUANTUM_TAIL", n.to_string());
     }
@@ -52,10 +54,12 @@ fn run(path: &std::path::Path, fault_at: Option<u32>) -> (String, String, bool) 
     )
 }
 
-/// One long-running process that is preempted many times, monitored by a main process
-/// that then parks. Because main is parked it consumes almost no quanta, so an injected
-/// fault lands on the spinner — and main is released only by the spinner's `[:down …]`,
-/// which only a real retire can send.
+/// Four long-running processes on fewer workers (`BROOD_J=1`), preempted many times
+/// because one is always waiting for a worker (a process alone is not preempted — nothing
+/// would run instead, ADR-401), monitored by a main process that then parks. Because main
+/// is parked it consumes almost no quanta, so an injected fault lands on a spinner — and
+/// main is released only by every spinner's `[:down …]`, which only a real retire can send
+/// for the struck one.
 ///
 /// The trailing wave proves the pool still schedules afterwards: pre-fix, the worker
 /// thread that took the panic is gone for good.
@@ -78,13 +82,14 @@ const WORKLOAD: &str = r#"
     (do (dotimes (i n) (spawn (worker me i)))
         (collect n 0))))
 
-(def w (spawn (spin 40000000)))
-(def m (monitor w))
-;; Blocks until the spinner is retired. Pre-fix it never is — it vanishes mid-unwind with
-;; no deregister — so this times out and reports NO-DOWN.
-(receive
-  ([:down mref _ reason] (io/puts (str "DOWN " reason)))
-  (after 30000 (io/puts "NO-DOWN")))
+(dotimes (i 4) (monitor (spawn (spin 40000000))))
+;; Blocks until each spinner is retired. Pre-fix the struck one never is — it vanishes
+;; mid-unwind with no deregister — so this times out and reports NO-DOWN.
+(defn await-down ()
+  (receive
+    ([:down mref _ reason] (io/puts (str "DOWN " reason)))
+    (after 30000 (io/puts "NO-DOWN"))))
+(dotimes (i 4) (await-down))
 (io/puts (str "WAVE " (wave 200)))
 (io/puts "ALIVE")
 "#;

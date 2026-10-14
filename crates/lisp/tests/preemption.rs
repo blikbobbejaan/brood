@@ -1,6 +1,6 @@
-//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-018): a
+//! Reduction-counted preemption (docs/scheduler.md stage 4 / ADR-18): a
 //! CPU-bound process with no `receive` must not monopolise its worker. We pin the
-//! pool to ONE worker so an infinite-loop hog and a responder must share a single
+//! pool to ONE worker so a CPU-bound hog and a responder must share a single
 //! core — only preemption lets the responder run at all.
 //!
 //! This is its own test binary, so the process-wide `set_max_parallel(1)` +
@@ -13,7 +13,10 @@
 //! (`test_drive_quanta`). The bound is then in *work units* — a starved responder is
 //! detected as "did not run within N quanta", which load cannot perturb. With a FIFO
 //! run queue + preemption: quantum 1 runs the hog (preempted after its reduction
-//! budget → re-enqueued at the back), quantum 2 runs the responder (replies + exits).
+//! budget, because the responder is waiting → re-enqueued at the back), quantum 2 runs
+//! the responder (replies + exits). The hog is long but finite: alone, a process is not
+//! preempted (nothing would run instead, ADR-401), so an endless one would hold the
+//! hand-driven worker forever once the responder is gone.
 
 use brood::{process, Interp};
 
@@ -24,14 +27,14 @@ fn cpu_bound_process_does_not_starve_peers_on_one_worker() {
     // scheduling quanta — deterministic work units — never wall-clock.
     process::set_test_no_workers(true);
     let mut interp = Interp::new();
-    // Spawn an infinite CPU hog and a responder, send :ping — but DON'T block the root
+    // Spawn a long CPU hog and a responder, send :ping — but DON'T block the root
     // (no `receive` here), so the spawner returns immediately, leaving both green
     // processes queued on worker 0 and :ping in the responder's mailbox.
     let setup = r#"
         (def me (self))
-        (defn hog () (hog))
+        (defn hog (n) (if (= n 0) :done (hog (- n 1))))
         (defn responder (parent) (receive (:ping (send parent :pong))))
-        (spawn (hog))
+        (spawn (do (hog 20000000) (send me :hog-done)))
         (def r (spawn (responder me)))
         (send r :ping)
         :ok
@@ -51,7 +54,7 @@ fn cpu_bound_process_does_not_starve_peers_on_one_worker() {
     // Non-blocking poll (`after 0`, no wall-clock wait): did the responder's :pong reach
     // the root within those quanta?
     let v = interp
-        .eval_str("(receive (:pong :alive) (after 0 :starved))")
+        .eval_str("(receive (:pong :alive) (:hog-done :starved) (after 0 :starved))")
         .expect("poll errored");
     process::set_test_no_workers(false);
     assert_eq!(
