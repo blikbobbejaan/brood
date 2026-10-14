@@ -11,6 +11,18 @@ const LIST_HASH_PREFIX: usize = 256;
 /// key pays one counter increment per node and nothing else.
 const HASH_MEMO_MIN_WORK: u64 = 64;
 
+thread_local! {
+    /// Nodes the structural hash has visited on this thread — the memo's measure of work.
+    /// Thread-local, not a heap field, so a process pays nothing for it (`process_floor`);
+    /// only differences across one hash, which runs on one thread, are read.
+    static HASH_WORK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The hash work counter's current value ([`HASH_WORK`]).
+fn hash_work() -> u64 {
+    HASH_WORK.with(|work| work.get())
+}
+
 /// Remembered set and map hashes for one heap, valid for one collection epoch.
 ///
 /// Without it a set nested `n` deep hashed in O(n) — every level re-walks everything below
@@ -339,8 +351,8 @@ impl Heap {
         if id.region() != crate::core::value::LOCAL {
             return compute();
         }
-        {
-            let mut memo = self.hash_memo.borrow_mut();
+        if let Some(memo) = self.hash_memo.get() {
+            let mut memo = memo.borrow_mut();
             if memo.epoch != self.gc_runs {
                 memo.entries.clear();
                 memo.epoch = self.gc_runs;
@@ -348,17 +360,28 @@ impl Heap {
                 return found;
             }
         }
-        let before = self.hash_work.get();
+        let before = hash_work();
         let acc = compute();
-        if self.hash_work.get().wrapping_sub(before) >= HASH_MEMO_MIN_WORK {
-            self.hash_memo.borrow_mut().entries.insert(id.0, acc);
+        if hash_work().wrapping_sub(before) >= HASH_MEMO_MIN_WORK {
+            let memo = self.hash_memo.get_or_init(|| {
+                Box::new(std::cell::RefCell::new(HashMemo {
+                    epoch: self.gc_runs,
+                    entries: Default::default(),
+                }))
+            });
+            let mut memo = memo.borrow_mut();
+            if memo.epoch != self.gc_runs {
+                memo.entries.clear();
+                memo.epoch = self.gc_runs;
+            }
+            memo.entries.insert(id.0, acc);
         }
         acc
     }
 
     fn hash_value_into_grown<H: std::hash::Hasher>(&self, v: Value, h: &mut H) {
         use std::hash::{Hash, Hasher};
-        self.hash_work.set(self.hash_work.get().wrapping_add(1));
+        HASH_WORK.with(|work| work.set(work.get().wrapping_add(1)));
         // A leading byte tags the variant so a `Sym(0)` and an `Int(0)` never
         // collide on the *exact* same hash by accident.
         match v.unpack() {
@@ -1103,10 +1126,10 @@ mod hash_memo_tests {
     #[test]
     fn building_nested_sets_hashes_each_level_once() {
         let mut heap = Heap::new();
-        let before = heap.hash_work.get();
+        let before = hash_work();
         let top = nested_sets(&mut heap, 3000);
         heap.hash_value(top);
-        let work = heap.hash_work.get() - before;
+        let work = hash_work() - before;
         assert!(work < 3000 * 100, "{work} hash steps for 3000 levels");
     }
 
@@ -1121,7 +1144,10 @@ mod hash_memo_tests {
         let mut other = Heap::new();
         let second = nested_sets(&mut other, 200);
         assert_eq!(first_hash, other.hash_value(second));
-        assert!(!heap.hash_memo.borrow().entries.is_empty());
+        assert!(heap
+            .hash_memo
+            .get()
+            .is_some_and(|memo| !memo.borrow().entries.is_empty()));
         let mut roots = [first];
         heap.collect(&mut roots, &mut []);
         assert_eq!(heap.hash_value(roots[0]), first_hash);
