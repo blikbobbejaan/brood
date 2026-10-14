@@ -13238,3 +13238,33 @@ against a Brood server, three connections, each must read all 200 000 bytes and 
 red with `begin_linger` returning at once. `accept_starvation.rs` went red when the linger
 landed without the starvation release (the client never closes, so the descriptors stayed
 pinned past its window) and is the guard for it.
+
+## KI-229 — the soft memory limit stopped a bystander instead of the process holding the memory ✅ FIXED 2026-10-14
+
+**Symptom.** Under `BROOD_MEM_LIMIT=1G`, a process keeping a 1 MB string every few
+milliseconds beside a busy worker that allocated only garbage: when live memory crossed the
+soft limit, the busy worker died with `E0043` and the leak kept going — three runs in three.
+**Cause.** The soft limit (ADR-043) is a count of every byte the allocator holds, checked at
+the eval safepoint, and the error was raised in whichever process reached a safepoint first
+after the crossing. A busy process reaches one constantly; a process that accumulates in short
+bursts between `receive`s rarely does. The count says the runtime holds too much, not which
+process. **Why it survived.** The memory-limit tests all ran one runaway in one process, where
+the process that notices is the process to blame; the test runners' default ceiling is a
+host-survival backstop nothing legitimate reaches. Found while deciding whether `brood` and
+`nest run` should default a ceiling: with this behaviour a default would make a leak kill its
+bystanders first. **Fix.** `process/pressure.rs` (ADR-399). `Heap::footprint` measures what a
+heap holds: both generations' slab capacity plus what the entries own — spilled vectors, map
+and frame arrays, string text, shared blobs, ropes. Within the last eighth of the soft limit
+every process measures itself at most once per 50 ms (at the quantum safepoint, or when it
+parks), and at the crossing the selector measures each parked process under its mailbox lock,
+adds its queued wire messages, and stops the largest with a hard exit whose reason is the
+`E0043` error map, printing one line naming it. Nobody else is interrupted. If the largest
+holder is the current process it raises in place, catchably, as before; if no process holds an
+eighth of the allocator's count, the current process raises (the memory is in tables, code or
+native buffers). A first version collected figures in a 20 ms window after the crossing; a
+mailbox flood crossed the remaining quarter to the hard limit inside the window and aborted
+the runtime, so measuring now starts before the crossing. **Guard.**
+`crates/cli/tests/memory_pressure.rs` — a leak beside a busy worker, and a never-receiving sink
+flooded with 100 KB messages beside a ticker; each asserts the culprit's `[:down …]` carries
+`E0043`, the bystander is alive, and stderr names the stopped process. Both are red with the
+old raise-in-place restored (the flood case also reached the hard abort).

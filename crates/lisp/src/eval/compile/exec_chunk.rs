@@ -1373,8 +1373,14 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
 /// too costly to make per iteration, none of which needs finer latency.
 #[inline(never)]
 pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
-    if let Some(used) = crate::core::alloc::soft_limit_hit() {
-        return Err(crate::eval::memory_limit_error(used));
+    match crate::core::alloc::soft_limit_state() {
+        crate::core::alloc::SoftLimit::Clear => {}
+        crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(heap),
+        crate::core::alloc::SoftLimit::Over(used) => {
+            if let Some(error) = crate::process::soft_limit_crossed(heap, used) {
+                return Err(error);
+            }
+        }
     }
     if let Some((len, limit)) = crate::process::take_current_mailbox_overflow() {
         return Err(crate::eval::proc_mailbox_limit_error(len, limit));

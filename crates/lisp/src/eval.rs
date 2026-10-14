@@ -376,8 +376,16 @@ fn eval_tail_loop(
         // which runs at `GC_BLOCK >= 2` and would otherwise sail past this
         // safepoint straight into the hard-limit abort. Cheap when disabled: one
         // relaxed load of a zero, early `None`.
-        if let Some(used) = crate::core::alloc::soft_limit_hit() {
-            return Err(memory_limit_error(used).or_form_pos(heap, expr));
+        // Crossing it stops the process holding the most memory, which is not necessarily
+        // this one (`process/pressure.rs`, KI-229).
+        match crate::core::alloc::soft_limit_state() {
+            crate::core::alloc::SoftLimit::Clear => {}
+            crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(heap),
+            crate::core::alloc::SoftLimit::Over(used) => {
+                if let Some(error) = crate::process::soft_limit_crossed(heap, used) {
+                    return Err(error.or_form_pos(heap, expr));
+                }
+            }
         }
         // Per-process heap limit (`(proc/flag :max-heap n)`): the sticky flag a
         // collection armed raises here, killing (catchably) just this process.
@@ -2001,6 +2009,20 @@ pub(crate) fn memory_limit_error(used: usize) -> LispError {
         crate::core::alloc::soft_limit()
     ))
     .with_code(crate::error::error_codes::MEMORY_LIMIT)
+}
+
+/// The exit reason of the process memory pressure stopped (`process/pressure.rs`): it held
+/// the most when the runtime crossed its soft limit.
+pub(crate) fn memory_holder_error(held: usize, live: usize, limit: usize) -> LispError {
+    LispError::runtime(format!(
+        "memory limit exceeded: this process held the most memory ({held} bytes) when \
+         {live} bytes allocated process-wide crossed the {limit}-byte soft limit"
+    ))
+    .with_code(crate::error::error_codes::MEMORY_LIMIT)
+    .with_hint(
+        "hold less (stream instead of accumulating), cap the process with \
+         (proc/flag :max-heap n), or raise BROOD_MEM_LIMIT",
+    )
 }
 
 /// Render an arity error — `"{who}: expected {N | N to M | at least N}

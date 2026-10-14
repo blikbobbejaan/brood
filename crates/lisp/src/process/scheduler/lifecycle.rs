@@ -13,7 +13,7 @@ use crate::process::scheduler::pool::wake_a_parked_peer;
 /// Read the name *before* `deregister` clears it. Used only on the cold death
 /// path, so the `name_for_pid` scan is fine. (Keyword and symbol registrations
 /// share the interner, so the name prints without a leading `:`.)
-pub(super) fn proc_descr(pid: u64) -> String {
+pub(in crate::process) fn proc_descr(pid: u64) -> String {
     match crate::dist::name_for_pid(pid) {
         Some(name) => format!("{} (pid {})", value::symbol_name(name), pid),
         None => pid.to_string(),

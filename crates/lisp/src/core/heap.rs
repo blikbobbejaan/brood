@@ -1262,8 +1262,8 @@ mod slabs;
 mod small_map;
 pub use self::slabs::SlabRef;
 use self::slabs::{
-    park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count, CodeSlabs,
-    Slabs, PARK_TRIM_GROWTH_SLOTS,
+    owned_bytes, park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
+    CodeSlabs, Slabs, PARK_TRIM_GROWTH_SLOTS,
 };
 pub(crate) use self::slabs::{VecStore, INLINE_VEC_CAP};
 pub(crate) use self::small_map::SmallMap;

@@ -159,6 +159,36 @@ pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, f)
 }
 
+/// The bytes a queued message holds: every node, its text, and the blobs it shares. An
+/// estimate for choosing which process to stop under memory pressure
+/// ([`crate::process::pressure`]), so a shared blob counts in full for every holder. Walks
+/// with an explicit stack, so a deeply nested message costs no native stack.
+pub(crate) fn message_bytes(message: &Message) -> usize {
+    let mut total = 0usize;
+    let mut pending = vec![message];
+    while let Some(next) = pending.pop() {
+        total += std::mem::size_of::<Message>();
+        match next {
+            Message::BigInt(text) | Message::Decimal(text) | Message::Ratio(text) => {
+                total += text.capacity()
+            }
+            Message::Str(text) => total += text.capacity(),
+            Message::StrShared(blob) | Message::Bytes(blob) => total += blob.len(),
+            Message::List(items, _) | Message::Vector(items) | Message::Set(items) => {
+                pending.extend(items.iter())
+            }
+            Message::Map(entries) | Message::Failure(entries) => {
+                for (key, value) in entries {
+                    pending.push(key);
+                    pending.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    total
+}
+
 impl Clone for Message {
     fn clone(&self) -> Self {
         match self {

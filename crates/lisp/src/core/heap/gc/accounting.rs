@@ -59,6 +59,14 @@ impl Heap {
         slab_bytes(&self.local)
     }
 
+    /// Everything this process's heap holds, in bytes — both generations, their retained
+    /// capacity, and what their entries own (vector buffers, string text, shared blobs).
+    /// O(entries): the measure memory pressure compares processes by, not an observer's
+    /// per-park figure (that is [`local_bytes`](Self::local_bytes)).
+    pub fn footprint(&self) -> usize {
+        owned_bytes(&self.local) + self.old_opt().map_or(0, owned_bytes)
+    }
+
     /// **`(hibernate)` — the opt-in deep shrink.** Unconditionally does everything
     /// [`trim_parked`](Self::trim_parked) does — collect, shrink the slabs, shrink the root
     /// vectors — and additionally **drops this process's inline-cache tables**, which the

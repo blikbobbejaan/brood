@@ -25562,3 +25562,42 @@ reader has to learn and a code path a change has to keep working.
 
 **Consequences.** Fewer names and paths; a bisect into an old default now needs a build of an
 older commit rather than an env var. The removed list is in the 2026-10-09 devlog entry.
+
+## ADR-399 — The soft memory limit stops the process holding the most memory
+
+**Status:** implemented (2026-10-14). Amends ADR-043's soft limit. KI-229.
+
+**Context.** ADR-043's soft limit is a process-wide byte count raised as `E0043` at the eval
+safepoint, in whichever process gets there first. With one runaway that is the right process.
+With several processes it is close to arbitrary, and biased the wrong way: a busy process
+reaches safepoints constantly, while one that accumulates in short bursts between receives
+rarely does. A leak beside a busy worker killed the worker every time. That also blocked
+giving `brood`/`nest run` a default ceiling, since a default would make every leak kill its
+bystanders first.
+
+**Decision.** Crossing the soft limit stops the local process that holds the most memory — its
+heap (`Heap::footprint`: slab capacity of both generations plus what the entries own, a
+shared blob counting in full for each holder) plus its queued messages. It is stopped by a
+hard exit whose reason is the `E0043` error map, so monitors, links and supervisors see why,
+and one stderr line names it. Nobody else is interrupted, and nobody else is stopped until it
+is gone. Only a process may walk its own heap while it runs, so measuring starts in the last
+eighth of the limit: each process measures itself at most every 50 ms, at its quantum
+safepoint or when it parks, and the selector measures parked processes itself under their
+mailbox lock. The selection happens at the crossing, with the figures it has, because a fast
+runaway covers the remaining quarter to the hard limit in milliseconds. The old behaviour
+remains in two cases: the largest holder is the current process (it raises in place,
+catchably), or no process holds an eighth of the count (the memory is in tables, shared code
+or native buffers; stopping a process would free nothing attributable).
+
+**Consequences.**
+- A leak or a flooded mailbox is stopped where it is, and its supervisor can restart it.
+- The stopped process cannot catch the error: the exit is hard, like any other kill. A
+  process that wants to shed load before that sets `(proc/flag :max-heap n)`, which raises
+  in that process, catchably.
+- The figures are estimates: a process waiting in a run queue is compared by the figure it
+  last published, and blobs shared by many processes count in each. Broadcasting one large
+  blob to many processes could stop several of them in turn before memory falls. The hard
+  limit is still the backstop.
+- Near the limit, each process walks its slab entries every 50 ms: O(entries) per period,
+  only while live memory is within an eighth of the limit. With no limit set, the check is
+  one load of a zero, as before.

@@ -43,6 +43,8 @@ mod mailbox;
 pub use mailbox::l1_stats;
 pub(crate) mod message;
 pub(crate) mod monitor;
+mod pressure;
+pub(crate) use pressure::{near_soft_limit, soft_limit_crossed};
 mod scheduler;
 /// The system monitor (kernel runtime events → one subscriber's mailbox).
 /// `pub` so the GC (`core/heap.rs`) and VM (`eval/compile`) emit sites and the

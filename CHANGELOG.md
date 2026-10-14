@@ -14,6 +14,13 @@ runs out of file descriptors accepts its backlog once descriptors free up, inste
 for a new connection (KI-227). Two runtimes in one process (embedders) no longer share the
 module resolver's not-found memo or image kind index (KI-226).
 
+**Changed.** Crossing the soft memory limit (`BROOD_MEM_LIMIT`) stops the process holding the
+most memory — its heap plus its queued messages — and names it on stderr, instead of raising
+in whichever process happened to run next, which was usually a busy bystander (KI-229,
+ADR-399). The stopped process exits with the `E0043` error as its reason, so its supervisor
+sees why. When the process that crossed the limit is itself the largest, it still gets a
+catchable `E0043`.
+
 **Added.** `eventually` and `await-parked` in the `test` module — waits for a condition no
 message announces, in place of a `sleep`. A test that times out now reports what it was
 stuck on: the hung worker and the processes it spawned, each as running, waiting with

@@ -16921,3 +16921,38 @@ by `LINGER`); a listener starved for descriptors releases lingering sockets at o
 **Left as a decision.** An unbounded program with no `BROOD_MEM_LIMIT` under a real memory cap
 still ends in a bare Rust allocation abort (or the OS's kill) with nothing naming the process
 that grew; the test runners set a default, `brood`/`nest run` do not.
+
+## 2026-10-14 — the soft memory limit stops the process holding the memory (KI-229)
+
+Looking at whether `brood`/`nest run` should default a memory ceiling, the first question was
+what a ceiling does to a program with more than one process. Under `BROOD_MEM_LIMIT=1G`, a
+process keeping a 1 MB string every few milliseconds beside a busy worker that allocated only
+garbage: the busy worker died with `E0043`, three runs in three, and the leak kept going. The
+soft limit counts the whole allocator and raised in whichever process reached a safepoint
+first, and a busy process reaches one far more often than a process that accumulates in short
+bursts between receives. A default ceiling on top of that would make every leak kill its
+bystanders first.
+
+ADR-399: the crossing stops the largest holder. `Heap::footprint` measures what a heap holds
+— both generations' slab capacity plus what entries own: spilled vectors, map and frame
+arrays, string text, shared blobs, ropes (the existing `local_bytes` counts only slab slots,
+and misses a 1 MB string entirely). Only a process may walk its own heap while it runs, so in
+the last eighth of the limit each process measures itself at most every 50 ms, at its quantum
+safepoint or when it parks; at the crossing the selector measures parked processes under
+their mailbox lock, adds each mailbox's queued wire messages, and stops the largest with a
+hard exit whose reason is the `E0043` error map, plus one stderr line naming it. On the leak
+probe it measured 738 MiB for a process holding about 740 MB.
+
+Two first attempts failed in instructive ways. Collecting fresh figures in a 20 ms window
+after the crossing let a mailbox flood cover the remaining quarter to the hard limit inside
+the window — an allocation abort. And without a measurement at park, the leaking process
+(which runs for microseconds between `receive`s and never reaches the once-per-quantum
+safepoint) published nothing, so the selector found no holder worth stopping and fell back to
+raising in the busy worker — one run in three.
+
+Guard: `crates/cli/tests/memory_pressure.rs` — a leak beside a busy worker and a flooded sink
+beside a ticker, each asserting the culprit's `[:down …]` carries `E0043` and the bystander
+is alive; ten runs green, and both red with the old raise-in-place restored.
+
+The default-ceiling question is still open, but it is now a question about the number, not
+about whether a ceiling would do harm.

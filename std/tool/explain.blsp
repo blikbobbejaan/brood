@@ -54,9 +54,9 @@ the `nest mcp` tools of the same names.")
             :causes "`(vector-ref v i)` / `(nth …)` / `(string/substring …)` / `(byte-at …)` with `i` ≥ length or negative."
             :fix "Bounds-check first, or use the total form: `(nth v i default)` returns the default instead of raising."
             :example "(nth v i nil)   ; nil instead of an error past the end"}
-   "E0043" {:summary "Soft memory limit crossed (ADR-043) — allocation exceeded the configured cap."
-            :causes "A runaway build (an unbounded loop accumulating data); a genuinely large workload under a low `BROOD_MEM_LIMIT`."
-            :fix "Bound the work (stream/chunk instead of materialising everything); raise `BROOD_MEM_LIMIT` if the size is legitimate. Catchable — recover and shed load."
+   "E0043" {:summary "Soft memory limit crossed (ADR-043) — allocation exceeded the configured cap, and this process held the most memory."
+            :causes "A runaway build (an unbounded loop accumulating data); a process that keeps everything it receives, or a mailbox nobody drains; a genuinely large workload under a low `BROOD_MEM_LIMIT`. The runtime stops the largest holder and names it on stderr (ADR-399)."
+            :fix "Bound the work (stream/chunk instead of materialising everything); raise `BROOD_MEM_LIMIT` if the size is legitimate. Catchable when the process that crossed the limit is itself the largest; another process stopped for it gets a hard exit — cap that one with `(proc/flag :max-heap n)` to make its limit its own, catchable error."
             :example "(reduce (range 1 1000000) 0 +)   ; folds without building a list"}
    "E0044" {:summary "Stack depth exceeded — runaway NON-tail recursion."
             :causes "A recursive call that isn't in tail position (work happens after the call), so each call grows the stack: `(defn sum (n) (+ n (sum (- n 1))))`."

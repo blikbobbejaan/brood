@@ -58,7 +58,8 @@ use guards::{gc_block_set, macro_block_set, stack_base_set};
 // scheduling state stays in the root, reached from there via `use super::*`.
 // Re-export the public surface so `scheduler::…`/`process::…` paths are unchanged.
 mod lifecycle;
-use lifecycle::{deregister, proc_descr, retire_root_ctx};
+pub(super) use lifecycle::proc_descr;
+use lifecycle::{deregister, retire_root_ctx};
 pub use lifecycle::{
     exit, pending_kill_phrase, spawn, spawn_linked, spawn_monitored, spawn_root_program,
 };
@@ -948,6 +949,12 @@ fn worker_count() -> usize {
 static TEST_NO_WORKERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 impl Process {
+    /// Everything this process's heap holds ([`Heap::footprint`]). Called on a parked
+    /// process by the memory-pressure selector, under its mailbox lock.
+    pub(super) fn footprint(&self) -> usize {
+        self.heap.footprint()
+    }
+
     /// Mutable access to this process's heap. Used by the L1 local-send fast path, which
     /// holds the process exclusively (taken out of `MailboxState::waiter` under the lock)
     /// while it copies a message straight in.
@@ -1067,6 +1074,12 @@ pub fn self_mailbox_seq() -> u64 {
 /// liveness (ADR-091 Stage 3c); a single thread-local borrow, no allocation.
 pub fn current_pid() -> Option<u64> {
     CURRENT.with(|c| c.borrow().as_ref().map(|ctx| ctx.pid))
+}
+
+/// Run `f` on the current process's mailbox, without the registry lock — `None` on a
+/// thread with no process context. For a per-safepoint probe (`process/pressure.rs`).
+pub(super) fn with_current_mailbox<T>(f: impl FnOnce(&Mailbox) -> T) -> Option<T> {
+    CURRENT.with(|c| c.borrow().as_ref().map(|ctx| f(&ctx.mailbox)))
 }
 
 /// A snapshot of every live local process's pid — the [`REGISTRY`] keys. This is

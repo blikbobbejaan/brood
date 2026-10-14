@@ -10,11 +10,16 @@ measure (and the traps) in [`benchmarking.md`](benchmarking.md). The dated secti
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-13)
+## State (2026-10-14)
 
 - **Released:** v0.38.0 (`CHANGELOG.md`). `known-issues.md` lists **no open or watching
   entry** — KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the
-  lingering TCP close) were found and fixed in the 2026-10-13 stability pass (devlog).
+  lingering TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the
+  soft memory limit stopped a bystander; now it stops the largest holder, ADR-399) on
+  2026-10-14 (devlog).
+- **Open decision:** whether `brood`/`nest run` default a memory ceiling (only the test
+  runners do). Without one, a growing program under a container cap dies by allocation
+  abort or the OS's kill, naming nothing; with one, ADR-399 stops and names the holder.
 - **The cleanup is finished** (devlog entries 2026-10-09 and both of 2026-10-12): the dead
   `BROOD_*` flags and aliases are gone — `BROOD_TIER=0|1|2` is the only tier knob — `nest
   mcp` is Brood, every Python script is gone, closed known-issue bodies live in

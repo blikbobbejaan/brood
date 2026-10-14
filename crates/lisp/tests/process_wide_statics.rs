@@ -65,6 +65,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("builtins/offload.rs", "POOL", OneMachine),
     ("builtins/io.rs", "STDIN_READER", OneMachine),
     ("builtins/filesystem.rs", "LOCK", OneMachine),
+    // The allocator's count, and so the soft memory limit, is the OS process's.
+    ("process/pressure.rs", "PRESSURE", OneMachine),
     // The node: one per OS process (ADR-033).
     ("dist.rs", "NODE", OneMachine),
     ("dist.rs", "NODES", OneMachine),
