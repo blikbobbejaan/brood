@@ -76,6 +76,8 @@ pub unsafe extern "C" fn brood_rt_tick_n(
             if crate::diagnostics::profile::armed() {
                 sample_native_activation(&*ctx);
             }
+            // The once-per-quantum checks a native loop does not reach otherwise.
+            crate::core::alloc::refresh_container_limits();
             0
         }
     }

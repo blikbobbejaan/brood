@@ -17280,3 +17280,30 @@ driver, which captured at the call into the native and re-ran the whole form on 
 (KI-245). `compile::run` was the one native entry to evaluation that left the capture flag
 set; it takes the tree-walker's guard now. The plain double run predates the merge; the
 merge's folds-in-the-driver extended it to a `map` callback, which is what the doctest hit.
+
+## 2026-10-14 (evening) — nested-set hashing, tables under the memory limit, a resized container
+
+**Quadratic hashing (KI-246).** A set or map's structural hash walked everything below it
+every time, so nesting `n` levels cost O(n²): 15 s at depth 20 000. Keeping a running hash
+per CHAMP node was the other design — it would have touched every trie operation and, for
+maps, hashed every value on every `assoc`. Instead `HashMemo` remembers the hash of a LOCAL
+set or map that took 64+ steps, stamped with `gc_runs`; small keys pay a counter increment.
+Measured by the hash's own step count, not a clock: 3 000 levels cost ~100 000 steps (each
+level re-walks at most down to the nearest remembered one), against 4 504 500 without it.
+
+**Tables.** A table belongs to no process (ADR-107), so the soft limit can stop nobody to
+free what one holds, and its `E0043` named nothing. It now measures the tables
+(`table::largest_table`, the stored entries' message sizes) and names the largest in the
+hint. Filling a table with megabyte strings first raised through the "the current process
+is the largest" branch, not the unattributable one: the filler's own heap still held its
+copies of the shared blobs until the next collection. Both branches name the table now.
+Owner-death collection of tables stays a language question.
+
+**A resized container.** The cap was read once at startup; a pod resized in place kept its
+old limits, and a lowered cap left them above it. It is re-read at most every 5 s. The first
+hook, the VM's once-per-quantum check, never ran in the probe — its loop ran native and
+otherwise waited in `receive` — so the native fresh-quantum point and the park re-read it too.
+Cutting a `systemd-run` scope from 2 GB to 600 MB while the program ran moved its hard limit
+from 1 536 to 450 MiB within seconds.
+
+KI-239 was fixed in the other session meanwhile (the peer node's fixed six-second lifetime).

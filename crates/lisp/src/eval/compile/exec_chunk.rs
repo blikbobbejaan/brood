@@ -1398,6 +1398,7 @@ fn loop_safepoint(heap: &mut Heap, capture: bool) -> Result<Option<ChunkExit>, L
 /// too costly to make per iteration, none of which needs finer latency.
 #[inline(never)]
 pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
+    crate::core::alloc::refresh_container_limits();
     match crate::core::alloc::soft_limit_state() {
         crate::core::alloc::SoftLimit::Clear => {}
         crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(heap),

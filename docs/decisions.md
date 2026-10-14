@@ -25913,4 +25913,10 @@ in a native call kept the selector from stopping anyone else (KI-243).
 - Near the soft limit, a process making large allocations ends its quantum at most once per
   1/64 of the limit allocated (a yield only if a process is waiting, ADR-401); with no soft
   limit set the hook is one comparison of the allocation size.
-- The cap is read once, at startup. A container resized while running keeps the old limits.
+- The cap is re-read while running, at most every 5 s — from the once-per-quantum checks, a
+  native loop's fresh quantum, and a park — so a container resized in place (a pod's
+  in-place resize) moves the limits with it; under a `systemd-run` scope cut from 2 GB to
+  600 MB, the hard limit followed to 450 MiB within seconds. Only when no env var set them.
+- When no process holds an attributable share, or the one that does is the current process,
+  the `E0043` names the table holding the most (a hint: `table #N holds about M MiB`). A
+  table belongs to no process (ADR-107), so stopping one frees nothing it stores.

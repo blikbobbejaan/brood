@@ -62,7 +62,7 @@ const BACKEND: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // browser/headless wasm runtime falls back to the system allocator.
 #[cfg(any(feature = "system-alloc", target_arch = "wasm32"))]
 const BACKEND: std::alloc::System = std::alloc::System;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 // Live-bytes accounting is **sharded** across cache-line-padded counters, one
 // picked per thread, so allocators on different worker threads don't contend on a
@@ -523,6 +523,58 @@ fn cap_from_cgroups(membership: &str, read: impl Fn(&str) -> Option<String>) -> 
     v1_path.and_then(|path| tightest("/sys/fs/cgroup/memory", "memory.limit_in_bytes", path))
 }
 
+/// The limits a caller's defaults and a container cap give together: the cap's limits
+/// bound the defaults, and stand in for them when there are none.
+fn limits_with_cap(defaults: Option<(usize, usize)>, cap: Option<usize>) -> Option<(usize, usize)> {
+    match (defaults, cap.map(limits_for_cap)) {
+        (Some((hard, soft)), Some((cap_hard, cap_soft))) => {
+            Some((hard.min(cap_hard), soft.min(cap_soft)))
+        }
+        (defaults, container) => defaults.or(container),
+    }
+}
+
+/// Whether the limits follow the container's cap — no env var set them.
+static FOLLOW_CONTAINER: AtomicBool = AtomicBool::new(false);
+/// The caller's default hard and soft limits (`0` = none), for re-deriving them.
+static CALLER_DEFAULTS: AtomicUsize = AtomicUsize::new(0);
+static CALLER_DEFAULT_SOFT: AtomicUsize = AtomicUsize::new(0);
+/// When the cap was last read, in milliseconds since [`CAP_CLOCK`] began.
+static CAP_READ_AT: AtomicU64 = AtomicU64::new(0);
+static CAP_CLOCK: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+/// How often a running runtime re-reads its container's cap.
+const CAP_REREAD_MS: u64 = 5000;
+
+/// Re-derive the limits from the container's cap if it changed — a container can be
+/// resized while it runs (a pod's in-place resize), and limits read once at startup would
+/// then sit above a lowered cap, where the kernel's kill comes first. Called from the
+/// once-per-quantum checks; does nothing unless the limits follow the cap, and reads the
+/// cgroup file at most every [`CAP_REREAD_MS`], one caller at a time.
+pub fn refresh_container_limits() {
+    if !FOLLOW_CONTAINER.load(Ordering::Relaxed) {
+        return;
+    }
+    let now = CAP_CLOCK.elapsed().as_millis() as u64 + CAP_REREAD_MS;
+    let last = CAP_READ_AT.load(Ordering::Relaxed);
+    if now < last + CAP_REREAD_MS
+        || CAP_READ_AT
+            .compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    let defaults = match CALLER_DEFAULTS.load(Ordering::Relaxed) {
+        0 => None,
+        hard => Some((hard, CALLER_DEFAULT_SOFT.load(Ordering::Relaxed))),
+    };
+    let (hard, soft) = limits_with_cap(defaults, container_memory_cap()).unwrap_or((0, 0));
+    if hard != HARD_LIMIT.load(Ordering::Relaxed) || soft != SOFT_LIMIT.load(Ordering::Relaxed) {
+        set_hard_limit(hard);
+        set_soft_limit(soft);
+    }
+}
+
 fn init_limits_inner(defaults: Option<(usize, usize)>) {
     let env = |k: &str| -> Option<usize> {
         match std::env::var(k) {
@@ -540,14 +592,15 @@ fn init_limits_inner(defaults: Option<(usize, usize)>) {
     let hard_env = env("BROOD_MEM_LIMIT");
     let soft_env = env("BROOD_MEM_SOFT_LIMIT");
     // Inside a capped container the cap is a ceiling the caller's defaults cannot exceed,
-    // and the default when there are none. Not consulted when the user set either limit.
+    // and the default when there are none. Not consulted when the user set either limit —
+    // and then not followed either ([`refresh_container_limits`]).
     let defaults = match (hard_env, soft_env) {
-        (None, None) => match (defaults, container_memory_cap().map(limits_for_cap)) {
-            (Some((hard, soft)), Some((cap_hard, cap_soft))) => {
-                Some((hard.min(cap_hard), soft.min(cap_soft)))
-            }
-            (defaults, container) => defaults.or(container),
-        },
+        (None, None) => {
+            CALLER_DEFAULTS.store(defaults.map_or(0, |(hard, _)| hard), Ordering::Relaxed);
+            CALLER_DEFAULT_SOFT.store(defaults.map_or(0, |(_, soft)| soft), Ordering::Relaxed);
+            FOLLOW_CONTAINER.store(true, Ordering::Relaxed);
+            limits_with_cap(defaults, container_memory_cap())
+        }
         _ => defaults,
     };
 
@@ -656,6 +709,22 @@ mod tests {
             "9223372036854771712\n",
         )]);
         assert_eq!(cap_from_cgroups(membership, read), None);
+    }
+
+    /// The cap bounds a caller's defaults and stands in for none; no cap leaves the
+    /// defaults as they were — the rule a resized container is re-derived by.
+    #[test]
+    fn a_cap_bounds_the_defaults_and_replaces_none() {
+        let gib = 1 << 30;
+        let (cap_hard, cap_soft) = limits_for_cap(gib);
+        assert_eq!(
+            limits_with_cap(Some((3 * gib, 2 * gib)), Some(gib)),
+            Some((cap_hard, cap_soft))
+        );
+        assert_eq!(limits_with_cap(Some((100, 75)), Some(gib)), Some((100, 75)));
+        assert_eq!(limits_with_cap(None, Some(gib)), Some((cap_hard, cap_soft)));
+        assert_eq!(limits_with_cap(Some((100, 75)), None), Some((100, 75)));
+        assert_eq!(limits_with_cap(None, None), None);
     }
 
     #[test]

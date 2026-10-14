@@ -480,6 +480,31 @@ impl Store {
 /// lifetime and safe to hand out as `'static`.
 static REGISTRY: LazyLock<boxcar::Vec<Store>> = LazyLock::new(boxcar::Vec::new);
 
+/// The live table holding the most memory — its id and an estimate of the bytes — for the
+/// soft memory limit's report when no process holds an attributable share
+/// (`process/pressure.rs`). A table belongs to no process, so stopping one frees nothing it
+/// stores; naming it is what the limit can do. Heavy: it walks every hashed entry of every
+/// table under that table's lock, so it runs only at such a crossing.
+pub(crate) fn largest_table() -> Option<(u64, usize)> {
+    REGISTRY
+        .iter()
+        .filter(|(_, store)| !store.dropped.load(Ordering::SeqCst))
+        .map(|(index, store)| {
+            let dense = store.dense_count.load(Ordering::Relaxed) * std::mem::size_of::<u64>();
+            let hashed: usize = lock(&store.hashed).as_ref().map_or(0, |map| {
+                map.values()
+                    .flat_map(|bucket| bucket.iter())
+                    .map(|(key, value)| {
+                        crate::process::message::message_bytes(key)
+                            + crate::process::message::message_bytes(value)
+                    })
+                    .sum()
+            });
+            (index as u64 + 1, dense + hashed)
+        })
+        .max_by_key(|&(_, bytes)| bytes)
+}
+
 /// Resolve a handle to its store, or a clean error if it was dropped / never existed.
 /// Lock-free: one `boxcar::Vec::get` (a stable ref) plus the tombstone check.
 fn lookup(id: u64) -> Result<&'static Store, LispError> {

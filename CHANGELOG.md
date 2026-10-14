@@ -23,7 +23,10 @@ to the hard limit's abort (KI-242). A process stopped by the soft limit inside a
 call no longer keeps the next holder from being stopped (KI-243). Writing to a stdout that
 fails (a full disk under `> out.txt`) raises `cannot write to stdout` instead of dropping the
 output and exiting 0 (KI-244). A `receive` inside a form evaluated with `reflect/eval` no
-longer re-runs the code before it each time it waits (KI-245).
+longer re-runs the code before it each time it waits (KI-245). Building sets nested in sets
+(or maps used as keys inside maps) is linear instead of quadratic in the depth (KI-246).
+When the soft memory limit is crossed and the memory is in a table, the `E0043` names the
+table; inside a resized container the memory limits follow the new cap within seconds.
 
 **Changed.** With no `BROOD_MEM_LIMIT` set, `brood` and `nest run` inside a memory-capped
 container take their memory limits from the cap — the hard limit at three quarters of it — so

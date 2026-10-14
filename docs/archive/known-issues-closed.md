@@ -13395,6 +13395,26 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-246 — building nested sets took quadratic time ✅ FIXED 2026-10-14
+
+**Symptom.** `(fold (range n) 0 (fn (acc _) #{acc}))` took 0.9 s at depth 5 000, 3.5 s at
+10 000 and 15 s at 20 000 — quadratic; a million levels would have run for hours. The same
+holds for any set or map used as a key inside another, level by level. **Cause.** Inserting
+an element into a set hashes it, and the structural hash of a set or map
+(`Heap::hash_value`) walks every element, recursively, with nothing remembered: each new level
+re-walked every level below it. **Why it survived.** Nested collections as keys are usually
+shallow; found by a probe running every value walker over data nested a million deep, where
+sets were the one shape that could not even be built. **Fix.** `HashMemo`: a heap remembers
+the order-insensitive entry hash of a LOCAL set or map whose hash took at least
+`HASH_MEMO_MIN_WORK` (64) steps, keyed by the raw handle and stamped with `gc_runs` — a
+collection moves handles, so the memo empties at the first use after one, and a handle
+carries its epoch, so a stale entry could never match anyway. Small keys (a tuple, a set of a
+few ints) are never remembered and pay one counter increment per node. Shared-region handles
+are not remembered. Depth 20 000 now builds in 0.2 s and 100 000 in under a second. **Guard.**
+`core::heap::equality::hash_memo_tests` — 3 000 levels must cost under 300 000 hash steps
+(~100 000 measured; 4 504 500 with the memo off), and a remembered hash must equal a fresh one
+and survive a collection.
+
 ## KI-230 — every `try` body ran as one quantum; a `receive` in one blocked its worker ✅ FIXED 2026-10-12
 
 **Symptom.** A 50 ms loop inside `(try … (catch e nil))` in a spawned process ran in 1
