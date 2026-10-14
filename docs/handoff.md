@@ -18,24 +18,25 @@ devlog entries of the same dates.
   and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
   memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
   it carry the old ones — the map is in the devlog entry "merged origin/main".
-- `known-issues.md` has one **watching** entry, KI-239 (a dist test node's connect refused right
-  after its peer was seen listening; retry-absorbed, not reproducible on demand, diagnostic
-  armed). KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
+- `known-issues.md` lists **no open or watching entry**. KI-239 (a dist test's peer exited before
+  its client booted) is fixed — the test gave the peer a fixed six-second life. KI-226..228 (per-runtime resolver memos, a listener out of descriptors, the lingering
   TCP close) were found and fixed in the 2026-10-13 stability pass, and KI-229 (the soft memory
   limit stopped a bystander; now it stops the largest holder, ADR-399) on 2026-10-14, then
   KI-240..245 (dotted lists unsendable, refused threads panicking, fast allocators reaching
   the hard abort, a stuck victim shielding the rest, lost stdout exiting 0, a `receive`
-  under `reflect/eval` re-running its form).
+  under `reflect/eval` re-running its form) and KI-246 (nested sets hashed quadratically).
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
   `process_floor`/`doc_refs` Rust tests, and the pre-push steps (`nest check` and `--strict` at
-  zero, the 45 test files the merge touches). `make prepush` itself stops at `nest format
-  --check` on `stress/fuzz_out/fuzz_6.blsp`, a git-ignored fuzz output CI never sees. Not run
+  zero, the 45 test files the merge touches). `nest format --check` no longer reads
+  git-ignored files (`make prepush` used to stop on `stress/fuzz_out/fuzz_6.blsp`). Not run
   since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
   `breakagetests`.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
-  default their limits from the cap (hard = 3/4 of it); elsewhere they stay unlimited.
+  default their limits from the cap (hard = 3/4 of it), re-read every few seconds so a
+  resized container moves them; elsewhere they stay unlimited. A table holding the memory is
+  named in the `E0043`; collecting a table when its creator dies is still a language question.
 - **Probes worth keeping:** every value walker survives data nested a million deep; a
   program in `unshare -U` with `ulimit -u N` gets an exact thread budget
   (`crates/cli/tests/thread_exhaustion.rs`); `systemd-run --user --scope -p MemoryMax=…`
@@ -74,15 +75,9 @@ unconditional stack probe — an in-IR fast link for computed heads (a site id p
 the handoff's original design) is the next step there; check `staged` (KI-19) and
 `mono_devirtualize` when allocating the site.
 
-**C. A thin-wrapper callback costs ~1 900 instructions a call from native code** — named or
-not. `(fn (acc x) (+ acc x))`, the canonical reducer, is a passthrough (ADR-69): the dispatcher
-never runs its body, it redirects to `+` by NAME on every call — `passthrough_arm`, `env_get`,
-`boundary_redirect`, a second hop to `+`'s own passthrough arm, then `call_native` (profile:
-`dispatch` 35–38%, `env_get` ~6–11%). The compiled body would be one inlined `Prim2`. The redirect
-exists to spare the tree-walker and VM a frame; from native code it is the slow path. Measure
-with `MODE=passanon` in a loop like devlog 2026-10-14's before choosing between running the
-compiled arm from native code and caching the redirect target (late binding: the inner head is
-re-resolved per call today, so a cache must be epoch-stamped).
+**C. DONE (2026-10-14, ADR-408).** Native code runs a thin wrapper's compiled arm instead of
+the dispatcher's by-name redirect, so the wrapper tiers and links natively: `(fn (acc x) (+ acc
+x))` as a callback 1 892 → 714 instructions a call. The interpreters keep the redirect.
 
 **B. DONE (2026-10-13, devlog "(later) — the fold span result stops allocating").** A finished
 span returns the accumulator; a stopped one returns `(:%fold-more acc . next)`. `nqueens` −1.3%,

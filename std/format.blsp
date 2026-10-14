@@ -1172,12 +1172,36 @@ if you are reintroducing hoisting, they are what you have to write back."
 
 (defn- format-every-blsp (root)
   ;; Every .blsp the project owns, in deterministic order: the root's own files
-  ;; plus each whitelisted tree. `distinct` because the whitelists can overlap
-  ;; (`:format-paths ["."]`, or a test path nested inside a source path).
-  (seq/distinct (append (format-root-files root)
-                  (fold (format-roots root)
-                    nil
-                    (fn (acc dir) (append (format-collect-blsp dir) acc))))))
+  ;; plus each whitelisted tree, minus what git ignores. `distinct` because the
+  ;; whitelists can overlap (`:format-paths ["."]`, or a test path nested inside a
+  ;; source path).
+  (format-drop-ignored root
+    (seq/distinct (append (format-root-files root)
+                    (fold (format-roots root)
+                      nil
+                      (fn (acc dir) (append (format-collect-blsp dir) acc)))))))
+
+;; `files` minus those git ignores. A whitelisted tree can hold generated output the
+;; project's `.gitignore` already disowns — a fuzz run writes its programs under
+;; `stress/fuzz_out/` — and judging it made `nest format --check` fail on a file no
+;; commit can contain, so the pre-push hook refused pushes CI would have passed. Git
+;; is the authority on what the tree owns, so it is asked rather than its rules
+;; re-implemented: one `git check-ignore` over the whole list. A file git TRACKS is never
+;; reported ignored, whatever the patterns say. Outside a work tree, or with no git,
+;; nothing is dropped.
+(defn- format-drop-ignored (root files)
+  (if (nil? files)
+    files
+    (let (r (check-allow :discarded-catch
+              (try
+                (os/cmd "git"
+                  ["-C" root "check-ignore" "--stdin"]
+                  {:stdin (string/join files "\n")})
+                (catch _ nil)))
+          ignored (if (and r (= (get r :exit) 0))
+                    (format-set-of (string/split (get r :stdout) "\n"))
+                    {}))
+      (seq/filter files (fn (f) (not (contains? ignored f)))))))
 
 (defn- format-require-root ()
   (let (root (project/find-root (file/cwd)))

@@ -2,7 +2,7 @@
 
 > Status: **implemented — all phases.** Green M:N on a worker pool, preemptively
 > fair, with selective `receive` + timeouts, monitors **and** links/`trap-exit`
-> (ADR-67), userland supervision (`std/proc/supervisor.blsp`), registered
+> (ADR-067), userland supervision (`std/proc/supervisor.blsp`), registered
 > names, general work-stealing + live migration (ADR-100, state capture — the
 > original coroutine substrate is gone), and full distribution (closure
 > shipping, distributed links/monitors, node-down detection). This doc is the
@@ -98,7 +98,7 @@ data. Messages are data, so they copy cleanly.
 ## Scheduling
 
 We started **cooperative** (a process yielded only at `receive`) and have since
-added **reduction-counted preemption** (ADR-27): `eval`'s loop decrements a
+added **reduction-counted preemption** (ADR-027): `eval`'s loop decrements a
 per-worker budget and the process yields at zero, so a CPU-bound process can't
 monopolise a core even on a small pool. This is the BEAM's fairness mechanism,
 done as the additive step the original design anticipated.
@@ -107,8 +107,8 @@ done as the additive step the original design anticipated.
 
 Everything v1 deliberately skipped has since landed, additively as predicted:
 supervision trees + `link` + restart strategies + registered names
-(`std/proc/supervisor.blsp`, ADR-44/63/67), distribution across nodes
-(ADR-33/34/88/89), live migration of running processes, and general
+(`std/proc/supervisor.blsp`, ADR-044/063/067), distribution across nodes
+(ADR-033/034/088/089), live migration of running processes, and general
 work-stealing (both via the state-capture scheduler, ADR-100).
 
 ## Impact on the roadmap
@@ -133,9 +133,9 @@ This is the largest *core* undertaking in the project. Two consequences:
    setting; `-j` overrides), suspending at `receive` rather than blocking. Cheap
    spawn, bounded OS threads, no `Gate` deadlock. `Send` per-process heaps let a
    process migrate between workers. (Landed on `corosensei` stackful coroutines,
-   ADR-18; the substrate was replaced 2026-06-08 by state capture — a paused
+   ADR-018; the substrate was replaced 2026-06-08 by state capture — a paused
    process is plain heap data — ADR-100.) See `docs/scheduler.md`.
-3. ✅ **Reduction-counted preemption** (ADR-27) — `eval`'s loop decrements a
+3. ✅ **Reduction-counted preemption** (ADR-027) — `eval`'s loop decrements a
    per-worker budget (≈2000) and the process yields its worker at zero (`Suspend`
    carries `Receive` vs `Preempt`), so a CPU-bound process can't monopolise a
    core. Scheduling is now preemptively fair, not cooperative-only. Native code is
@@ -144,7 +144,7 @@ This is the largest *core* undertaking in the project. Two consequences:
    another process is waiting for a worker: with none queued a yield would buy no
    latency, so the quantum goes on as a fresh one. The policy lives in one module,
    `process/scheduler/quantum.rs`.
-4. ✅ **Selective `receive`** (ADR-27) — `receive` takes pattern clauses (the
+4. ✅ **Selective `receive`** (ADR-027) — `receive` takes pattern clauses (the
    `match` grammar) + an optional `(after ms …)` timeout; it scans the mailbox,
    runs the first match, and leaves non-matching messages queued. A green process
    waiting on a timeout is woken by a dedicated timer thread. Timeouts are
@@ -156,7 +156,7 @@ This is the largest *core* undertaking in the project. Two consequences:
    that delivers `[:down mref pid reason]` to the monitoring process when `pid`
    dies (`:noproc` if already dead), in `process.rs`. The one supervision
    mechanism that needs a primitive; the rest is Brood (the `hatch` library).
-7. ✅ Links + `trap-exit` (ADR-67) — including **atomic `spawn-link`**, which links
+7. ✅ Links + `trap-exit` (ADR-067) — including **atomic `spawn-link`**, which links
    the child before it can run so its true exit reason (not a racy `:noproc`) always
    reaches the parent — userland supervision trees
    (`std/proc/supervisor.blsp` — `:one-for-one`/`:one-for-all`/`:rest-for-one`),
@@ -166,7 +166,7 @@ This is the largest *core* undertaking in the project. Two consequences:
 
 Erlang-style distribution falls out of share-nothing + copy-on-send: **the
 network is just a longer copy.** Slice 1 is **done** — two runtimes connect over
-TCP and message each other (ADR-34; full reference in
+TCP and message each other (ADR-034; full reference in
 [`distribution.md`](distribution.md)). What landed:
 
 - ✅ **Nodes** — named runtimes (`node/start`/`connect`, `name@host`) that link
@@ -180,7 +180,7 @@ TCP and message each other (ADR-34; full reference in
 - ✅ **A wire codec for `Message`** — reuses the heap-crossing deep-copy.
   **Symbols travel by name** (not by local interned id — each node has its own
   interner) and re-intern on arrival.
-- ✅ **Code distribution** — closures travel as data (ADR-33): the wire codec
+- ✅ **Code distribution** — closures travel as data (ADR-033): the wire codec
   ships a closure's code + captured locals (`M_CLOSURE`, `dist/wire.rs`), so
   `remote-spawn` works.
 - ✅ **Distributed links/monitors and node-down detection** — cross-node
@@ -197,11 +197,11 @@ links and message-passes.
 ### Current limitations
 
 The early limits are lifted — processes are cheap captured continuations (not
-OS threads), they share the runtime's live code (ADR-13, no per-spawn prelude
+OS threads), they share the runtime's live code (ADR-013, no per-spawn prelude
 reload), scheduling is preemptively fair with general work-stealing, `receive`
 is selective with timeouts, closures `send` across processes and nodes
-(ADR-33), and links + userland supervision ship (`std/proc/supervisor.blsp`;
-the kernel-level supervisor, ADR-39, was tried and **reverted**). What's
+(ADR-033), and links + userland supervision ship (`std/proc/supervisor.blsp`;
+the kernel-level supervisor, ADR-039, was tried and **reverted**). What's
 genuinely still open:
 
 - **A long-running native builtin can't be preempted mid-call** — reductions
@@ -214,7 +214,7 @@ genuinely still open:
   holds for a pure numeric recursion in the JIT's unboxed register worker, which
   keeps its whole recursion in registers and cannot be unwound (ADR-401).
 - **No mailbox bounds/backpressure and no per-process heap cap** — a runaway
-  producer or process is only caught by the global ADR-43 memory cap.
+  producer or process is only caught by the global ADR-043 memory cap.
 - **Selective-receive scan cost** — testing a candidate rebuilds it into the
   LOCAL heap; non-matching messages leave short-lived garbage (reclaimed by the
   per-process GC). Negligible when the first message matches; optimisable later

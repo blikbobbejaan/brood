@@ -8,7 +8,7 @@ use super::*;
 // ===================== compiler (form → Node) =====================
 
 /// Compile-time lexical scope: `let`/`letrec`/param binders flattened into one
-/// activation frame (ADR-76 Stage 2a). Each in-scope name maps to a frame slot;
+/// activation frame (ADR-076 Stage 2a). Each in-scope name maps to a frame slot;
 /// `next` is the next free slot and `max` is the high-water mark (= the arm's
 /// `nslots`). Shadowing: `lookup` scans newest-first. `bind` claims a slot;
 /// `restore` pops a scope's binders (reusing their slots — safe, the bindings are
@@ -986,7 +986,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
         | ValueRef::Keyword(_) => Some(const_node(heap, form)),
 
         // A name: a local frame slot if bound, else a global reference with a
-        // read IC (ADR-96) — through the module boundary (ADR-383).
+        // read IC (ADR-096) — through the module boundary (ADR-383).
         ValueRef::Sym(s) => match scope.lookup(s) {
             Some(slot) => Some(Node::Local(slot)),
             None => Some(Node::GlobalIc {
@@ -1119,7 +1119,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // pays per operator per iteration. Guarded by the global epoch so a
                 // redefinition of the operator cleanly falls back (see `Node::Prim2`).
                 // 1-ary sequence primitives (`first`/`rest`) inline the same way
-                // (ADR-96) — the list-iteration workhorses of every prelude
+                // (ADR-096) — the list-iteration workhorses of every prelude
                 // sequence fn.
                 if items.len() == 2 && scope.lookup(h).is_none() {
                     if let Some(op) = resolve_prim1(heap, h) {
@@ -1338,7 +1338,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     callee = direct;
                 }
             }
-            // A free-global callee gets a call-site inline-cache id (ADR-96);
+            // A free-global callee gets a call-site inline-cache id (ADR-096);
             // a local/computed callee can resolve to a different function per
             // call, so it keeps the generic path.
             let site = match callee {

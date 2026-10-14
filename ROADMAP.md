@@ -76,7 +76,7 @@ day: tab stops in the display seam (ADR-342), the scroll blit (ADR-343),
   173-line `.bashrc` (worktree dev build): `shell-spans` 303 → 12 ms whole-file, a 36-char
   line 2.0 → 0.11 ms, 40 YAML lines 17.8 → 5.6 ms. The native path (b) stays open behind
   the same surface if a lexer ever needs more.
-- ⬜ **The window-id half of ADR-59.** Frames chose one process per window (ADR-345), so
+- ⬜ **The window-id half of ADR-059.** Frames chose one process per window (ADR-345), so
   input routing needs nothing; a sound "two windows, one process" still needs a per-window
   mailbox, not a tag (the loop's catch-all poll arm would swallow the other window's keys).
 - ⬜ **`editor/shell` onto `editor/lexer`** — its function-name rule is contextual (a word
@@ -96,7 +96,7 @@ Three linked changes, all landed:
 - **ADR-302 — `!` means "raises", not "has effects".** Brood was spending `!` on both
   meanings at once: four raising bangs against 37 effectful ones. `!` now marks raising
   only; the Scheme reading was vacuous here anyway (it marks *mutation*, which Brood has
-  none of — ADR-26). 38 names renamed; `run!` became **`each`**, since six modules define
+  none of — ADR-026). 38 names renamed; `run!` became **`each`**, since six modules define
   their own `run`.
 - **ADR-303 — the `$` placeholder** in `->` / `->>` / `cond->`: a step naming
   `$`, at any depth and inside vector and map literals, receives the threaded value there.
@@ -147,7 +147,7 @@ full-mesh dist with remote spawn/monitor, and — since 2026-10-12 — preemptio
 shape of running code: `try`/`binding` bodies, native (JIT) code at any call depth and native
 recursion, the vector/range folds between elements (ADR-400..403), with BEAM's
 `long_schedule` in the system monitor (ADR-404) for what still cannot yield (a single long
-native builtin, the unboxed register worker). ADR-39's kernel supervisor was reverted for being
+native builtin, the unboxed register worker). ADR-039's kernel supervisor was reverted for being
 the scheduler-race surface and that call stands — **none of the items below touch the
 scheduler.** What is behind OTP is *around* supervision, and nearly all of it is Brood.
 
@@ -242,7 +242,7 @@ needs a Brood-specific form to respect an ADR.
 - ⬜ **7. `next-impl` in abilities** *(shape)*. The precedence ladder (app > type-owner >
   ability-owner > default) has the ordering but no way for the winner to call the impl it
   shadowed, so an app override copies the type-owner's body. A `(next-impl)` form valid only
-  inside an `impl` body, resolving one rung down. No `:before/:after` combination (ADR-11).
+  inside an `impl` body, resolving one rung down. No `:before/:after` combination (ADR-011).
 - ✅ **8. Accumulating comprehensions** (2026-09-20, ADR-377). A trailing `:into coll` on
   `for` collects with `conj` (the target's kind decides the result) and `(fold-for (acc init
   x xs :when p) body)` makes the body the step — both prelude macros over `for`'s one
@@ -369,7 +369,7 @@ surface feeding it — and each turned out to need a different kind of fix. Deta
       types are byte-identical; unions that cannot merge keep up to four terms, and the five
       set operations quantify over them.
 - [x] **5. `(not T)`, and complements that read as complements** (ADR-263). The lattice has
-      computed complements since ADR-23 and the grammar could not say one; `expects string,
+      computed complements since ADR-023 and the grammar could not say one; `expects string,
       got nil | bool | number | …` (twenty-two tags) now reads `(not string)`.
 - [x] **6. Declare at the leaf, derive from the call** (ADR-340, 2026-09-13). A self-recursive
       function is specialized at its call site by a joint fixpoint over parameters and result
@@ -589,7 +589,7 @@ across `jit-tier2.md` / `jit-optimizing-tier.md`.
   `ActiveBackend` is a `#[cfg]`-selected type alias, so dispatch stays static. Perf-neutral by
   construction, not by measurement: the backend's whole output is a `*const u8` and `lower_arm`
   runs once per arm on the background compiler thread behind a `Mutex`, so no execution path
-  touches it. Dropped as speculative (ADR-11): a `name()` with no caller.
+  touches it. Dropped as speculative (ADR-011): a `name()` with no caller.
   - ✅ **Amended after review:** the trait was not the whole surface — `jit_runtime.rs` reached
     around it **four times** into the Cranelift backend's unboxed-scalar submodule. Now three
     **tiering advisories** (`may_adopt_shared_code`, `declines_inline_upgrade`,
@@ -733,7 +733,7 @@ Shipped as ADRs:
   - ✅ **Super-abilities — `:requires`** ([ADR-193](docs/decisions.md), 2026-07-30) — an
     implementor of an ability must also implement its declared prerequisites (`Ord :requires
     [Eq]`, Rust's `trait Ord: Eq`), enforced by the checker. **[prelude/checker]**
-  - 📥 **Deferred ability/type abstractions** (from the loved-languages review, ADR-11 —
+  - 📥 **Deferred ability/type abstractions** (from the loved-languages review, ADR-011 —
     ship when a concrete need names them; all *sound* to skip, none a correctness gap):
     - ⬜ *low* — **Parametric / associated abilities** (`(Collection E)`, Haskell/Rust
       associated types). Highest cost, lowest value for a *dynamic gradual* language (containers
@@ -798,7 +798,7 @@ Shipped as ADRs:
       ability-owner > other**), not load order — `defability` records its owner ns,
       `register-impl` keeps the highest-tier impl per slot (a guard at registration;
       dispatch stays a plain map-get). The top **app** tier shipped via **package
-      identity** rather than waiting for full ADR-70 name-prefixing: a `defdyn
+      identity** rather than waiting for full ADR-070 name-prefixing: a `defdyn
       *ns-package*` maps each namespace to its owning package's name (static scan at
       project setup), and a ns whose package is `*project-name*` — or has no owner
       (root/REPL) — is the app. `ns-package`/`trace-with-packages` also tag stack frames
@@ -871,7 +871,7 @@ What that review consciously left OPEN, with the reasoning:
   **[kernel/JIT]**
 - ⬜ **`sig` inline signatures.** A function's name, params and types live in two
   forms with an ordering constraint that only bites under `BROOD_CONTRACTS=1`. The
-  fix — `(defn f ((x int) -> int) …)` — is an ADR-82 revision touching `defn`, the
+  fix — `(defn f ((x int) -> int) …)` — is an ADR-082 revision touching `defn`, the
   checker's `sig_of`, `defrecord`'s emitted sigs, `sig!`'s wrapping, and every `sig`
   in `std/`. Deferred with the reasoning in ADR-163, not dismissed. **[Brood]**
 - 🟡 **Re-host the seq protocol on abilities** (2026-07-29). The **read/iteration half
@@ -1035,7 +1035,7 @@ none urgent. Ranked by payoff. All **[kernel]** unless marked.
    the shared statics (the coherent "scheduling state" nucleus). Verified: compiles
    default + no-default-features; full suite 3071/3071.
 3. ✅ **Split `core/heap/gc.rs` (4520 → 2689)** — done 2026-07-24. Extracted the
-   RUNTIME shared-region collector (ADR-91 — two-generation aging, single-process
+   RUNTIME shared-region collector (ADR-091 — two-generation aging, single-process
    compaction, node-liveness drain, live-globals migration + the `RuntimeForward`/
    `flush_rt_*` helpers, ~1830 lines) to `heap/gc_runtime.rs`. The two regions were
    self-contained (no cross-calls into the LOCAL collector), so behaviour-identical.
@@ -1161,7 +1161,7 @@ encrypted-by-default dist, and OSR exceed BEAM — and cached-boot startup
    seam: `tls-request` is string-typed both ways — rides item 3.
    **[Brood + a kernel rule deletion]**
 2. ✅ **Growable read buffer — resolved by NOT building it (ADR-142,
-   2026-07-22).** A mutable buffer value is a transient (forbidden, ADR-26),
+   2026-07-22).** A mutable buffer value is a transient (forbidden, ADR-026),
    and the chunk-list + `bytes-concat`-once idiom is already O(n) in copies;
    what was still quadratic was the head reader's per-chunk rescan — fixed
    with an incremental `bytes-index-of :from` scan + a 64 KiB head cap
@@ -1177,10 +1177,10 @@ encrypted-by-default dist, and OSR exceed BEAM — and cached-boot startup
    unchanged when handed a `tls-listen` socket. **[kernel]**
 4. ✅ **Dirty-CPU offload pool — shipped 2026-07-22 (ADR-144).** `%offload`
    runs an allow-listed blocking native (git/kdf/digest/file-IO/keygen) on a
-   small OS pool via the ADR-59 copy-out → message-back seam; the prelude
+   small OS pool via the ADR-059 copy-out → message-back seam; the prelude
    `offload` wrapper parks the caller in a selective receive — a process
    waits, never a worker. The package manager's clones/ls-remotes ride it.
-   Opens the ADR-71 WASM-interop gate. Deferred: BEAM-style process
+   Opens the ADR-071 WASM-interop gate. Deferred: BEAM-style process
    *migration* to dirty schedulers (for heap-sharing natives) until a real
    consumer needs it. **[kernel mechanism, Brood policy]**
 
@@ -1188,7 +1188,7 @@ encrypted-by-default dist, and OSR exceed BEAM — and cached-boot startup
 read-buffer non-build, the socket reactor with TLS everywhere, and the
 offload pool all landed the same day.
 
-**Tier 2 — real gaps, each gated on a first consumer (ADR-11):** the cluster
+**Tier 2 — real gaps, each gated on a first consumer (ADR-011):** the cluster
 **registry** (`Registry`/via-tuples, `:global`, `pg` — "OTP deferred" below);
 **mailbox bounds / backpressure** (survey item below); the **observability
 remainder** (aggregators + node up/down done 2026-07-24; still `defevent` schemas,
@@ -1200,7 +1200,7 @@ the remote tier, `nest observe`/`nest mcp` consuming the stream — "Telemetry" 
 `unicode-segmentation` is already a dep, wired only to display-width);
 ~~**protocols/multimethods**~~ (✅ shipped as **abilities**, ADR-168 — open generic
 functions with nominal dispatch replace hand-written `type-of` cascades);
-**`&key` args** (designed — ADR-11); ⬜ **lexically-shadowable operators**
+**`&key` args** (designed — ADR-011); ⬜ **lexically-shadowable operators**
 ("Option C" — resolve operator position against local scope first, so a macro
 name like `for`/`when` stops being a reserved word; decision **deferred**, kept as
 reserved words for now, full spec + gotchas + hygiene notes in
@@ -1249,12 +1249,12 @@ mechanism/policy split: kernel primitive, Brood policy.
   previous). Mechanism: `Heap::proc_mem_limit` checked at the end of both
   collection paths against the *live* (post-GC nursery+old) footprint — a
   sticky flag the eval/VM safepoints raise as a catchable `E0045` **in that
-  process only** (uncaught → kills just the offender; the ADR-43 hard cap
+  process only** (uncaught → kills just the offender; the ADR-043 hard cap
   still aborts the whole OS process). Policy is Brood: set the flag first
   thing in the spawned fn. Tests `tests/process_limit_test.blsp` (7 cases,
   green on VM/TW/no-JIT/GC_STRESS). ⬜ Remaining lever (2): optional mailbox
   bounds — a `send` to a full mailbox drops/errors by policy (accounting
-  exists: `process-info` `:mailbox`); deferred per ADR-11 until a concrete
+  exists: `process-info` `:mailbox`); deferred per ADR-011 until a concrete
   consumer picks the policy (drop vs error vs park has real design surface,
   incl. remote delivery which can't error the sender). **[kernel mechanism,
   Brood policy]**
@@ -1418,7 +1418,7 @@ would retire the bug class at the language level. See hatch's
   onto `bytes` + bit syntax is hatch work, now unblocked. **[done]**
 - ✅ **Framed reads — the input-side twin of iolists** (shipped 2026-07-25). The
   original framing ("a transient/builder value + freeze") was **rejected** — a
-  user-facing mutable/transient buffer violates immutability (ADR-26), and the O(n²)
+  user-facing mutable/transient buffer violates immutability (ADR-026), and the O(n²)
   it was meant to cure is already gone (iolists + the cons-accumulate `tcp-drain`
   idiom). What the sites actually repeated was the *receive → accumulate → split*
   loop, so the fix is **combinators**, in Brood (`std/net/tcp.blsp`): `tcp-read-until`
@@ -1431,7 +1431,7 @@ would retire the bug class at the language level. See hatch's
   rescans. Retires the length-drain gymnastics for the socket cases. Tests:
   `tests/tcp_test.blsp` (6 loopback cases — delimiter, cross-chunk delimiter, early
   EOF, exact-n, multi-chunk-n, short-EOF). A caller-managed exposed accumulator value
-  (for the interleaved WS-gather case) stays deferred (ADR-11 — no in-repo consumer
+  (for the interleaved WS-gather case) stays deferred (ADR-011 — no in-repo consumer
   yet). **[Brood]**
 - ✅ Smaller ergonomic wins — all closed: **`mapv`/`filterv`** shipped
   2026-07-18 (prelude one-liners over `into`; `tests/sequence_test.blsp`);
@@ -1803,7 +1803,7 @@ handles it fine. See `tests/corpus/gabriel/README.md`.
 
 ### FIXED 2026-07-27 — the >100× slowdown was the RUNTIME collector, not contention
 
-Both observations below turned out to be one bug, filed as KI-14 and fixed: the ADR-91
+Both observations below turned out to be one bug, filed as KI-14 and fixed: the ADR-091
 RUNTIME collector's drain report re-walked a deep process's entire root stack at every
 reporting safepoint. `roots` is the VM operand/env stack, so the "cheap" Phase-1 probe is
 really O(recursion depth); a 100k-deep JSON parse made it enormous, and a Phase-2-dirty
@@ -1865,31 +1865,31 @@ Compressed; per-item history is in [`docs/devlog.md`](docs/devlog.md) and
   quasiquote); tree-walking evaluator with proper tail calls, lexical scope,
   closures, Lisp-1; macros (`defmacro`, quasiquote, `macroexpand`, `gensym`);
   `defn`/`&optional`/`& rest`; i64+f64 with overflow-checked arithmetic; immutable
-  maps + `{ }` literals (ADR-30); the string, math, and sequence libraries;
+  maps + `{ }` literals (ADR-030); the string, math, and sequence libraries;
   dynamic variables (`defdyn`/`binding`, per-process); pattern matching across
-  `match`/`let`/`fn` (ADR-21/22) incl. `{:keys …}`/`:or`; `case`,
+  `match`/`let`/`fn` (ADR-021/022) incl. `{:keys …}`/`:or`; `case`,
   `dotimes`/`dolist`, `letrec`; error handling (`throw`/`try`/`catch`/`error`) with
-  source locations; modules (`provide`/`require`, `foo--private`, ADR-19); the
-  project model + parallel test runner (ADR-20); reducible lazy `range` and
+  source locations; modules (`provide`/`require`, `foo--private`, ADR-019); the
+  project model + parallel test runner (ADR-020); reducible lazy `range` and
   transducers.
 - **Concurrency — green processes on all cores** (`docs/concurrency.md`).
   `spawn`/`send`/`receive`/`self` with per-process `Send` heaps and copy-on-send;
   green M:N scheduling on a worker pool (originally corosensei coroutines,
-  ADR-18; replaced 2026-06-08 by state-capture continuations with general
+  ADR-018; replaced 2026-06-08 by state-capture continuations with general
   work-stealing + live migration, ADR-100); shared code region
-  for cross-process hot reload (ADR-13/14); closures sent between processes and
-  across nodes (ADR-33); reduction-counted preemption (ADR-27); selective
+  for cross-process hot reload (ADR-013/014); closures sent between processes and
+  across nodes (ADR-033); reduction-counted preemption (ADR-027); selective
   `receive` + `(after ms …)` timeouts.
-- **Types — set-theoretic gradual typing** (ADR-78 and follow-ons). Function
+- **Types — set-theoretic gradual typing** (ADR-078 and follow-ons). Function
   arrows, element/parametric types, structural combinators, narrowing, singleton/
   literal types, map K/V, records/shapes, tuples; the sound half of local inference;
   `(sig …)` contracts + `BROOD_CONTRACTS=1`; the full-soundness-vs-hot-reload
   mechanism (re-check per reload, ADR-123/124/125). LSP tiers 0–2 + a
   dev-ergonomics pass.
 - **Execution — closure-compiling VM + tier-1 JIT.** The VM is the default engine
-  (ADR-76); a Cranelift template JIT (ADR-101) is a default cargo feature (integer
+  (ADR-076); a Cranelift template JIT (ADR-101) is a default cargo feature (integer
   arithmetic, fused Prim2, hot-reload epoch guard, in-native inline caches).
-- **M2 — editor data model.** Rope substrate (ADR-45); buffer model;
+- **M2 — editor data model.** Rope substrate (ADR-045); buffer model;
   buffers-as-values; evaluate-the-Lisp-I'm-editing; per-process memory reclamation.
   Collaboration seam (2026-07): buffer *processes* with subscriptions + versioned
   delta pushes, edit-surviving markers (presence cursors ride them, pid-keyed
@@ -1897,13 +1897,13 @@ Compressed; per-item history is in [`docs/devlog.md`](docs/devlog.md) and
   and concurrent-splice **transforms** (`splice-transform` — exact merges for
   disjoint edits, no CRDT) — what a downstream editor's multiplayer editing runs on.
 - **M3 — display protocol + native frontend.** Serialisable render-op protocol
-  (ADR-46); input events; in-process terminal frontend; per-op/per-window fonts
-  (ADR-79); `nest observe` (inline + remote, ADR-53); telemetry core
+  (ADR-046); input events; in-process terminal frontend; per-op/per-window fonts
+  (ADR-079); `nest observe` (inline + remote, ADR-053); telemetry core
   (`std/telemetry.blsp`, ADR-106); resilient `ui-run`.
-- **M4 — server / daemon mode.** TCP sockets (ADR-62); TLS *client*/HTTPS;
-  distributed nodes (`name@host`, cookies, encryption ADR-89, dual-listen, mesh
+- **M4 — server / daemon mode.** TCP sockets (ADR-062); TLS *client*/HTTPS;
+  distributed nodes (`name@host`, cookies, encryption ADR-089, dual-listen, mesh
   join); userland supervision + a real `gen_server`; an ETS-style in-memory table
-  store; `std/task`. `std/editor/serve` (ADR-90): the daemon/emacsclient seam —
+  store; `std/task`. `std/editor/serve` (ADR-090): the daemon/emacsclient seam —
   per-client and shared sessions, attach identity, async event pass-through,
   `serve-stop` — plus the exit-signal hardening it forced (ADR-132; pid identity
   across `node-start`).
@@ -1911,9 +1911,9 @@ Compressed; per-item history is in [`docs/devlog.md`](docs/devlog.md) and
 Runtime housekeeping (both items landed):
 
 - ✅ **Tracing GC for mid-eval / never-returning loops.** The per-process
-  generational semi-space copying collector (ADR-55/61/72) fires at the eval
+  generational semi-space copying collector (ADR-055/061/072) fires at the eval
   safepoint at **any** depth — roots are the explicit operand/env stacks the VM
-  reified. Superseded the ADR-16 arena-reset.
+  reified. Superseded the ADR-016 arena-reset.
 - ✅ **Work-stealing scheduler.** Landed 2026-06-08 via the state-capture
   rewrite (ADR-100): corosensei deleted, a paused process is relocatable heap
   data, stealing is general (any queued process) and live cross-worker migration
@@ -2093,7 +2093,7 @@ Runtime housekeeping (both items landed):
   (`sig_of` surfaces params even when the return defers) — so an unannotated function now flags
   a wrong caller. Plus **ability-op occurrence typing**: `(area s)` on a sealed, `:default`-free
   op derives `s : Shape`. Sound throughout (under-constrained → under-warn); whole repo
-  warning-clean. ⬜ Remaining (deferred, ADR-11): demands from *conditional* positions, per-arm
+  warning-clean. ⬜ Remaining (deferred, ADR-011): demands from *conditional* positions, per-arm
   checking of a multi-arity callee, and the merely-wider return case above.
 - ✅ **Earmuffed-global typing** (2026-07-25, companion to the above): the checker now
   types a `*earmuffed*` global as unknown (like a `defdyn`), not by its load-time
@@ -2112,14 +2112,14 @@ Runtime housekeeping (both items landed):
   (constructor + `conj`/`disj` + `union`/`intersection`/`difference`/`subset?`).
   Tests: `tests/set_test.blsp` (18, incl. cross-process), `reader_hints_test`;
   green under `GC_STRESS`+`GC_VERIFY`, differential, `nest check` zero-warnings,
-  suite 2921/2921 (ADR-60).
+  suite 2921/2921 (ADR-060).
 - ⬜ **Unbounded stream generation** (`iterate` / infinite producers) — lazy
   seq-view fusion already shipped (ADR-111); picks up when an editor feature needs it.
-- 🟡 **`std/` curation + frameworks sequencing** (ADR-85/97) — `std/` curated and
+- 🟡 **`std/` curation + frameworks sequencing** (ADR-085/097) — `std/` curated and
   hierarchical module names shipped; the model is batteries-included (frameworks ship
   in the default install, not fetched). ⬜ Next: a future GUI framework ships bundled
   too; gated on the first real consumer.
-- 🟡 **Native interop — WASM components** (ADR-71/145,
+- 🟡 **Native interop — WASM components** (ADR-071/145,
   [`docs/interop.md`](docs/interop.md)). ✅ **Slice 1 shipped 2026-07-22
   (ADR-145): the sandboxed host.** Embedded `wasmtime` (default-on `wasm`
   feature), `%wasm-load`/`%wasm-call`/`%wasm-exports`/`%wasm-close` with
@@ -2177,9 +2177,9 @@ Runtime housekeeping (both items landed):
   deliberately absent here: it amortizes cost across a tight loop and buys nothing
   for a thunk invoked once. The divergence above (since verified fixed) confirms
   the VM-routed path is behaviour-identical to the tree-walker.
-- 🛑 **JIT Stage 4 — RUNTIME compaction survival** (ADR-91) — **investigated
+- 🛑 **JIT Stage 4 — RUNTIME compaction survival** (ADR-091) — **investigated
   2026-07-24; NO-GO, near-zero real payoff.** The idea was a constant-pool
-  indirection table (ADR-96 §4.C) so `runtime_collect` could rewrite handles
+  indirection table (ADR-096 §4.C) so `runtime_collect` could rewrite handles
   without invalidating native code. Findings (verified in-code + measured):
   (1) RUNTIME **data-handle** relocation ALREADY survives in native code — the JIT
   bakes a pointer to the `ConstVal` and reads live bits via `brood_rt_const_load`;
@@ -2477,7 +2477,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
 
   **Open questions to settle before building:**
   - Does `:deprecated` gate CI? `nest check` exits nonzero on any warning today
-    (ADR-23's batch-only hard reject), which would make a single deprecation break every
+    (ADR-023's batch-only hard reject), which would make a single deprecation break every
     downstream build the day it lands. It probably needs its own severity, which is the
     unresolved half of the warning-suppression question already noted below.
   - What does a version *mean* for a std name — the Brood release, or the package
@@ -2485,7 +2485,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
     they are not, and the answer decides whether the value is a literal string or is
     resolved against the enclosing project.
   - Does metadata compose with hot reload? A `def` rebinding a name mid-run must not
-    silently keep the old name's `:deprecated` fact (the same late-binding rule ADR-13
+    silently keep the old name's `:deprecated` fact (the same late-binding rule ADR-013
     established for the code itself).
 
 - ✅ **LSP: type-directed record-field completion** — shipped 2026-07-30. Completing a
@@ -2562,7 +2562,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   (ADR-148, [`docs/coverage.md`](docs/coverage.md)): which project functions the
   suite never entered, plus `--cover-min PCT` to fail the run under a floor.
   Implemented as **pure Brood policy with zero kernel support** — `global-names` +
-  `source-location` for the denominator, `def` rebinding + late binding (ADR-13)
+  `source-location` for the denominator, `def` rebinding + late binding (ADR-013)
   as the instrumentation seam, and `Value::Table` (ADR-107) for cross-process hit
   aggregation. The shim is variadic *because* `arglist` reports only one arm of a
   multi-arm function; one new off-switch (`BROOD_NO_RELOAD_DIAG=1`) silences the
@@ -2757,7 +2757,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   target attaches a forwarder that `send`s each matching emit to the subscriber (transparent
   cross-node `send`), which re-emits it into ITS OWN telemetry stream tagged `{:remote-event
   …}`, so local handlers/aggregators consume a peer's events through the same attach seam.
-  No new wire format (ADR-53's observer pattern). Protocol tested single-runtime in
+  No new wire format (ADR-053's observer pattern). Protocol tested single-runtime in
   `tests/telemetry_metrics_test.blsp`; cross-node routing is transparent dist `send` (covered
   by the dist suite).
 
@@ -2783,16 +2783,16 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   **`remote-spawn-sync` returning the child pid** and the **`[:$stop]`
   graceful-teardown convention** (supervisor `:shutdown` policies + `defprocess`
   `terminate`) had both already shipped.
-- ⬜ **OTP deferred** (ADR-11, gated on a real consumer; **`gen_statem`, `Registry`/`pg` and
+- ⬜ **OTP deferred** (ADR-011, gated on a real consumer; **`gen_statem`, `Registry`/`pg` and
   `Application` now have concrete shapes as items D, E and B of the 2026-08-30 backlog above**): **`gen_statem`** state
   machines; an Elixir-style **`Registry`**/via-tuples + **process groups (`pg`)**; an
   **`Application`** behaviour; **synchronous, ordered, rollback-on-failure** supervisor
   startup + per-child intensity counting + child `type`/`significant`/`auto_shutdown`
   metadata.
-- ✅ **Hot-upgrade state migration — a userland `code_change`** (ADR-13/39;
+- ✅ **Hot-upgrade state migration — a userland `code_change`** (ADR-013/039;
   [`live-editing.md`](docs/live-editing.md) **Stage 6**, shipped 2026-08-06). A long-lived
   `gen`/loop kept threading its **old-shaped state** after a reload (gap #4). Fixed in Brood
-  (no kernel `code_change`, matching the ADR-39 supervision call): `defprocess` gained a
+  (no kernel `code_change`, matching the ADR-039 supervision call): `defprocess` gained a
   `(code-change old-state body…)` clause that migrates the loop's state on a `[:$code-change]`
   envelope, `(gen/code-change pid)` is the push trigger (a supervisor / `on-reload` hook calls
   it per affected child; no clause → safe no-op), and `reload/*code-version*` (bumped on each
@@ -2805,7 +2805,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   a supervision tree) stays deferred: Brood's immutable-map data removes OTP's hardest upgrade
   case (nominal schema migration — "a map has the keys it has"), leaving only loop-state drift,
   which this covers.
-- 🟡 **Dist refinements** (ADR-11): ✅ exact propagated exit reason for a
+- 🟡 **Dist refinements** (ADR-011): ✅ exact propagated exit reason for a
   *non-trapping* linked peer (fixed 2026-07-18 — hardness split from the reason,
   see the survey housekeeping item above; the shared `deliver_exit_to` covers
   remote links too). Still ⬜: a `terminate/2` hook on hard kill (**reassessed 2026-08-30 as by-design — OTP's
@@ -2815,7 +2815,7 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
 
 ### Packaging & ecosystem
 
-- ✅ **Package manager** (ADR-37/147, [`docs/packages.md`](docs/packages.md)) —
+- ✅ **Package manager** (ADR-037/147, [`docs/packages.md`](docs/packages.md)) —
   `:path` deps end-to-end, **`:git` deps** (slice 2), and **the verbs + auto-fetch**
   (slice 3: `nest fetch`/`update`/`tree`/`add`/`remove`) all shipped 2026-05-30
   (`%git-clone`/`%git-resolve-ref` in `builtins/io.rs`, policy in
@@ -2854,19 +2854,19 @@ both, but the untrusted path is necessarily thinner; document the gap. Versioned
   `:git` dep may track a `:version` range (`[foo :git URL :version "^1.2.0"]`) instead of an exact
   `:ref`; the newest matching tag is picked (via `%git-list-tags`), the resolved version is locked
   (network-free re-runs), and `nest update` advances it. Greedy per-dep (not a cross-package
-  PubGrub member) — the deferred unified-git solve is recorded with its ADR-11 reason. This was
+  PubGrub member) — the deferred unified-git solve is recorded with its ADR-011 reason. This was
   the resolver's **last** deferred algorithm item. *(Tarball-backed registry entries and
   cloned-index auto-refresh from the old list are done / moot under the hosted design; a
   client-side response TTL cache was investigated and declined — see ADR-211. Still deferred:
   semver ranges over `:git`-**tarball** sources.)*
-- ⬜ **Single-binary bundling** (ADR-38) — `nest bundle` appends a zip of
+- ⬜ **Single-binary bundling** (ADR-038) — `nest bundle` appends a zip of
   project + `_deps/` to a pre-built `brood`; deferred until the editor needs end-user
   distribution.
 - ⬜ **`nest release`** — a self-extracting filesystem for runtime data files, a
   static-musl default, and `.deb`/`cargo install` packaging of the *runtime* (open
   until a real consumer needs it).
 - 🟡 **tree-sitter grammar + GitHub recognition** — editor grammars (`nest grammar`,
-  ADR-92), the `tree-sitter-brood` parser, and `brood-vscode` all ship; ⬜ **publish
+  ADR-092), the `tree-sitter-brood` parser, and `brood-vscode` all ship; ⬜ **publish
   it** (editor bindings/CI) and file the ⬜ **`github/linguist` PR** (gated on `.blsp`
   adoption across many repos). Today a `.gitattributes` Clojure stopgap.
 
@@ -2942,9 +2942,9 @@ The bar a candidate has to clear, in order:
   `:refer-clojure :exclude` / Common Lisp `(:shadow …)` shape). Brood currently sits at
   the permissive end for module code: a `(defn get …)` silently shadows, with no signal to
   a reader. Deferred, not rejected — KI-73 removed the *breakage* that made it urgent, so
-  what remains is a legibility argument, and ADR-11 says wait for a concrete need.
+  what remains is a legibility argument, and ADR-011 says wait for a concrete need.
 - **Full free-reference macro hygiene.** Would subsume the `/name` root-escape discipline
-  that `tests/prelude_capture_test.blsp` now enforces by hand. ADR-66 rejected
+  that `tests/prelude_capture_test.blsp` now enforces by hand. ADR-066 rejected
   Scheme-style per-symbol lexical context on ship-by-name/homoiconicity/GC grounds, and
   that reasoning still holds; the gate is the cheap 90%.
 
@@ -3029,7 +3029,7 @@ excuses, and a reader sees it — but it is the only one, so there is no way to 
   it does not want, or one a dependency's generated code trips.
 
 The last is the one with teeth, because `nest check` exits nonzero on **any** warning in
-batch/CI (ADR-23/24) — so a single lint the project disagrees with currently blocks CI
+batch/CI (ADR-023/024) — so a single lint the project disagrees with currently blocks CI
 with no supported answer but editing every site.
 
 Design notes for whoever picks it up:
@@ -3057,7 +3057,7 @@ prelude macros:
 
 ## Killed directions (don't retry)
 
-- ❌ **Kernel-supervised processes** (ADR-39) — reverted 2026-05-29; it was the bulk
+- ❌ **Kernel-supervised processes** (ADR-039) — reverted 2026-05-29; it was the bulk
   of the multi-thread scheduler race surface. Userland supervision replaces it;
   named-spawn is intentionally not delivered in the kernel.
 - ❌ **JIT Stage 3, Increment 2** (in-IR frame setup + `call_indirect`) — NO-GO,
@@ -3067,12 +3067,12 @@ prelude macros:
 
 ## Out of scope (deferred, additive later)
 
-- `&key` named arguments (designed — ADR-11) and supplied-p flags
+- `&key` named arguments (designed — ADR-011) and supplied-p flags
 - Hygienic macros / `macroexpand-all`
 - Rationals (ints already auto-widen to big integers on overflow; f64 +
   decimals cover the rest)
 - True per-file **namespaces** — flat Emacs-style `provide`/`require` is in scope
-  (ADR-19); real namespace isolation stays a later, additive Brood macro layer
+  (ADR-019); real namespace isolation stays a later, additive Brood macro layer
 - Characters as a distinct type (chars are 1-char strings)
 
 ---

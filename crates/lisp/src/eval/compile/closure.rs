@@ -19,7 +19,7 @@ use super::*;
 // only ever a whitelisted map op's first arg, the self-call threading arg, or the
 // return — exactly the "no alias analysis needed; a value is only reachable through
 // references the code creates" property `local_escapes` relies on. The observable
-// result is an ordinary immutable map (ADR-26 holds: the only mutable thing is a
+// result is an ordinary immutable map (ADR-026 holds: the only mutable thing is a
 // `Table`, never surfaced). On by default; opt out with `BROOD_LINMAP=0`.
 
 /// Compile one arm to a [`CompiledArm`], or `None` (defer this arm to the
@@ -563,7 +563,7 @@ pub(crate) fn compile_closure_timed(heap: &Heap, id: ClosureId) -> Option<Compil
 }
 
 /// A stable cache key for closure `id`, or `None` if it can't be safely cached /
-/// VM-run (ADR-76 §2c(a)). A **RUNTIME** closure (top-level / promoted) is keyed
+/// VM-run (ADR-076 §2c(a)). A **RUNTIME** closure (top-level / promoted) is keyed
 /// by its own handle `.0`, which is stable for the closure's life. A **LOCAL**
 /// closure's handle index is recycled by the collector, so it's keyed instead by
 /// the handle of its first body form — but only when that form lives in the

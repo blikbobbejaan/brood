@@ -154,7 +154,7 @@ pub fn warn_nondefault_gc_env() {
         "BROOD_GC_FLOOR",
         "BROOD_GC_TENURE",
         "BROOD_GC_MAJOR",
-        // The shared-RUNTIME-region compaction floor (ADR-91) and the GC-block
+        // The shared-RUNTIME-region compaction floor (ADR-091) and the GC-block
         // trace — both retune/observe collection, so they belong on this list.
         "BROOD_RT_GC_FLOOR",
         "BROOD_TRACE_GCBLOCK",
@@ -327,7 +327,7 @@ fn write_stream(w: &mut impl std::io::Write, s: &str) {
 /// and join it. Both binaries' `main` need this: the tree-walking evaluator
 /// recurses one (heavy, in debug) Rust frame per non-tail call, and the OS
 /// default main-thread stack (~8 MiB) is too small for the stack-budget guard
-/// (ADR-43) to be *uniform* with the worker stacks — deep non-tail
+/// (ADR-043) to be *uniform* with the worker stacks — deep non-tail
 /// recursion on the root thread would overflow before the guard fires. Sizing
 /// the root thread to `WORKER_STACK_BYTES` makes the guard behave identically on
 /// the root thread and inside spawned processes.
@@ -525,7 +525,7 @@ pub fn read_source_or_exit(prog: &str, path: &Path) -> String {
 
 /// Evaluate a file's source with `(current-file)` set to its path (restored
 /// after), so runtime-error / test locations carry the file and load-time def
-/// sites are recorded for `(source-location …)` (ADR-31) — the same as the
+/// sites are recorded for `(source-location …)` (ADR-031) — the same as the
 /// `load` builtin does for `require`d modules. Shared by both binaries' file
 /// runners.
 pub fn eval_file(interp: &mut Interp, path: &str, src: &str) -> Result<(), LispError> {

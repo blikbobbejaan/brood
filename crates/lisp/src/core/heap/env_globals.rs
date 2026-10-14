@@ -147,7 +147,7 @@ impl Heap {
 
     /// The distinct lexical names bound along `env`'s frame chain, innermost-first,
     /// stopping at the global scope (whose names are runtime globals, not lexicals).
-    /// Used by the compiling VM (ADR-76 §2c): a nested `(fn …)` must snapshot the
+    /// Used by the compiling VM (ADR-076 §2c): a nested `(fn …)` must snapshot the
     /// enclosing lexical environment it closes over, so the compiler asks which
     /// names that env actually binds. The set is a static property of the closure's
     /// definition site (every instance of the same source closure binds the same
@@ -211,7 +211,7 @@ impl Heap {
             self.global_ic.borrow_mut().insert(sym, (cur, val));
             return Some(val);
         }
-        // ADR-70: an intra-package qualified reference resolves through its rooted name
+        // ADR-070: an intra-package qualified reference resolves through its rooted name
         // (`commands/cmd-open` → `bedit/commands/cmd-open`). Only on the MISS path, so an
         // ordinary hit pays nothing; `root_qualified_ref` memoizes the symbol→symbol answer, and
         // the resolved value is cached under the ORIGINAL symbol, so a hot reference costs
@@ -1145,7 +1145,7 @@ impl Heap {
             // shared RUNTIME region before binding, re-homing a value promote left in a
             // *non-current* generation (an already-RUNTIME handle passes through
             // unchanged) into the current one — so a `def` can never re-pin a draining
-            // generation through the shared globals table (ADR-91 Stage 5 soundness).
+            // generation through the shared globals table (ADR-091 Stage 5 soundness).
             //
             // Promote, re-home and the table insert all happen under ONE `promote_lock`
             // read guard: an aging flip between the re-home and the store would either
@@ -1652,7 +1652,7 @@ impl Heap {
         // Promote + re-home + store under one `promote_lock` read guard, for the same
         // reason as a global `def` (`declared_sigs` is a shared root the drain scans, so
         // a handle stored here against a generation that flipped in between would re-pin
-        // a draining generation — ADR-91 Stage 5). See `promote_rehome_publish`.
+        // a draining generation — ADR-091 Stage 5). See `promote_rehome_publish`.
         self.promote_rehome_publish(type_value, |h, shared| {
             h.runtime
                 .declared_sigs

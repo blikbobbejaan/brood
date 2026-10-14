@@ -36,7 +36,7 @@ pub struct Pos {
 /// tooling CST (`syntax::cst`) to record where every node was read. Byte
 /// offsets index `&str` directly; a `LineIndex` (in the LSP layer) projects them
 /// to editor positions. `Pos` is the line/col projection used for diagnostics;
-/// `Span` is the raw range. See `docs/lsp.md` / ADR-25.
+/// `Span` is the raw range. See `docs/lsp.md` / ADR-025.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub start: u32,
@@ -79,7 +79,7 @@ pub enum ErrorKind {
 impl ErrorKind {
     /// The stable lowercase tag name — the keyword that appears as `:kind` in a
     /// caught built-in error map (e.g. `:unbound`, `:type`). Stable across
-    /// versions so agents and Brood code can branch on it (ADR-36,
+    /// versions so agents and Brood code can branch on it (ADR-036,
     /// `docs/llm-native.md` §4).
     pub fn tag_name(self) -> &'static str {
         match self {
@@ -266,7 +266,7 @@ pub mod error_codes {
     ///
     /// [`stack_budget`]: crate::process::stack_budget
     pub const STACK_DEPTH_EXCEEDED: &str = "E0044";
-    /// Allocation crossed the configured *soft* memory limit (ADR-43). Raised
+    /// Allocation crossed the configured *soft* memory limit (ADR-043). Raised
     /// at the eval safepoint so a runaway/hostile program fails cleanly instead
     /// of exhausting host RAM. Catchable; tune via `BROOD_MEM_LIMIT`.
     pub const MEMORY_LIMIT: &str = "E0043";
@@ -274,7 +274,7 @@ pub mod error_codes {
     /// limit after a collection — the BEAM `max_heap_size` analogue. Raised at
     /// the next safepoint **in that process only** (a catchable kill: uncaught,
     /// it retires just the offender; every other process is untouched — unlike
-    /// the ADR-43 *hard* cap, which aborts the whole OS process).
+    /// the ADR-043 *hard* cap, which aborts the whole OS process).
     pub const PROC_MEMORY_LIMIT: &str = "E0045";
     /// This process's mailbox grew past its own `(proc/flag :max-mailbox n)`
     /// bound (ADR-307). Raised at the next safepoint or `receive` **in that

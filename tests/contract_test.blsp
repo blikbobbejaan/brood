@@ -648,6 +648,9 @@
 (defn named-loop (n acc) (if (= n 0) acc (named-loop (- n 1) (f n))))
 (defn as-value (xs) (map xs f))
 (defn hot (n acc) (if (= n 0) acc (hot (- n 1) (+ acc (count (f \"z\"))))))
+(defn wrap-hot (n acc) (if (= n 0) acc (wrap-hot (- n 1) (+ acc (count (wrapper \"z\"))))))
+(defn hof-drive (g n acc) (if (= n 0) acc (hof-drive g (- n 1) (+ acc (count (g \"z\"))))))
+(defn hof-hot (n) (hof-drive (fn (x) (f x)) n 0))
 (defn forced (x) (str \"forced:\" x))
 (sig! forced (int -> int))
 (defn via-forced (x) (forced x))")
@@ -664,6 +667,13 @@
     (assert= (list "f:x") (contract-boundary-fixture/as-value ["x"])))
   (test "the boundary holds once the caller has tiered up"
     (assert= 90000 (contract-boundary-fixture/hot 30000 0)))
+  ;; A thin wrapper called from native code runs its compiled arm (so it can tier up), not
+  ;; the dispatcher's redirect: the compiled arm must apply the boundary the redirect did —
+  ;; armed, a call that reached the shim would raise on the string `f` returns. (Only that:
+  ;; the reload test below may swap `f`'s body mid-loop, so the total is not fixed.)
+  (test "the boundary holds through a thin wrapper a native loop calls"
+    (refute (boundary-raises? (fn () (contract-boundary-fixture/wrap-hot 30000 0))))
+    (refute (boundary-raises? (fn () (contract-boundary-fixture/hof-hot 30000)))))
   (test "a call from outside the module is checked when contracts are armed"
     (assert= (%contracts-armed?) (boundary-raises? (fn () (contract-boundary-fixture/f "x")))))
   (test "sig! has no boundary: the module's own call is checked in every mode"

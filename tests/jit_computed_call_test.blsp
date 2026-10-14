@@ -41,6 +41,14 @@
 ;; sum of i for i in 1..n
 (defn- tri (n) (/ (* n (+ n 1)) 2))
 
+;; A reducer handed in as a value — for the thin-wrapper cases below.
+(defn- fold-with (f i acc) (if (= i 0) acc (fold-with f (- i 1) (f acc i))))
+
+;; A thin wrapper over a global: its body is just `(cc-inner a x)`, so the dispatcher could
+;; forward it by name — the late binding the native path must keep.
+(def cc-inner (fn (a x) (+ a x)))
+(defn- via-inner (a x) (cc-inner a x))
+
 (describe "a closure called through a value from native code"
   (test "instances of one template keep their own captures"
     (let (one (make-adder 1) hundred (make-adder 100))
@@ -67,6 +75,24 @@
     (when (%native-tier?)
       (assert= :native (settle fresh-each 3 (fn () (fresh-each make-adder 500 0)) 500)))
     (assert= (* 2 (tri 20000)) (fresh-each make-adder 20000 0))))
+
+;; A thin wrapper — `(fn (a x) (+ a x))`, a body that only forwards its params — used to be
+;; redirected by the dispatcher to its inner head on every call from native code (two
+;; by-name hops through `+`, ~1 900 instructions), so its own arm never ran and never tiered.
+;; Native code now runs the wrapper's compiled arm like any closure's.
+(describe "a thin-wrapper callback from native code"
+  (test "runs its own arm, which tiers up"
+    (let (add (fn (a x) (+ a x)))
+      (when (%native-tier?)
+        (assert= :native (settle add 2 (fn () (fold-with add 500 0)) 500)))
+      (assert= (tri 2000) (fold-with add 2000 0))))
+
+  (test "still reaches its inner function by name after a redefinition"
+    (when (%native-tier?)
+      (assert= :native (settle via-inner 2 (fn () (fold-with via-inner 500 0)) 500)))
+    (assert= (tri 2000) (fold-with via-inner 2000 0))
+    (def cc-inner (fn (a x) (+ a (* 2 x))))
+    (assert= (* 2 (tri 2000)) (fold-with via-inner 2000 0))))
 
 (describe "across processes: computed calls in many processes at once"
   :isolated (test "eight workers alternating closures over their own captures agree"

@@ -348,7 +348,7 @@ pub(crate) fn debug_check_fast_link_mirror(
 /// The JIT's **in-IR** fast call path (Track B / Technique A). The arm's IR has already
 /// validated this elided call site's flat-table fast-link (`site < len` && `epoch ==
 /// global_epoch` && the slot's `sym`/`argc` match this site's baked head/arity — the last
-/// guards against a call-site id reused across a `runtime_collect` clear, ADR-96) and read
+/// guards against a call-site id reused across a `runtime_collect` clear, ADR-096) and read
 /// `(code, nslots, env)` out of [`Heap::vm_fast_links`] with raw
 /// loads — so this skips the IC probe + `RefCell` borrow that [`jit_dispatch_call`]'s fast
 /// path pays (~40% of `fib`) and runs the same frame body via

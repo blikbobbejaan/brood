@@ -341,7 +341,7 @@ pub(super) fn emit_call(
         b.ins().brif(ep_ok, chk_ident, &[], miss, &[]);
 
         // chk_ident: the slot must link the *same* callee this site calls. A call-site id
-        // reused across a `runtime_collect` table clear (ADR-96) can leave a slot
+        // reused across a `runtime_collect` table clear (ADR-096) can leave a slot
         // populated by a different arm for a different callee; the epoch guard alone
         // wouldn't catch it (same epoch). Match the slot's resolved `sym`/`argc` against
         // this site's baked `head`/`argc` — exactly the validation the IC probe paths do —

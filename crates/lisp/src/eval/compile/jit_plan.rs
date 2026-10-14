@@ -599,7 +599,7 @@ pub(super) mod codegen {
     /// — `SelfCall` arg `k` is exactly `Node::Local(k)` in *every* self-call — i.e. the
     /// loop-invariant locals. The JIT hoists an invariant **vector** slot's element base
     /// out of the loop (LICM): a load whose source can't be mutated (Brood is immutable,
-    /// ADR-26) is invariant with no alias analysis. Returns `vec![false; nrequired]` when
+    /// ADR-026) is invariant with no alias analysis. Returns `vec![false; nrequired]` when
     /// the arm has no `SelfCall` (not a loop — nothing to hoist).
     pub fn invariant_param_slots(body: &Node, nrequired: usize) -> Vec<bool> {
         let mut calls = Vec::new();

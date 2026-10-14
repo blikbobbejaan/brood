@@ -970,7 +970,7 @@ pub(crate) fn exec_chunk(
                 for k in 0..*argc {
                     argv.push(heap.root_at(n - argc + k));
                 }
-                // Hot-reload guard (ADR-13). `SelfCall` is the zero-lookup loop back-edge:
+                // Hot-reload guard (ADR-013). `SelfCall` is the zero-lookup loop back-edge:
                 // it resets the frame and jumps to ip 0 without consulting the global at
                 // all, so without this guard a `def` of the very function a loop is running
                 // would never be observed — a long-lived `(defn serve (state) … (serve next))`

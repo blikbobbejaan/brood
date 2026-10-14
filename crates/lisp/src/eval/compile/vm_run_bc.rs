@@ -967,7 +967,7 @@ pub(crate) fn vm_run_bc(
             if !crate::process::macro_block_active() && heap.gc_due() {
                 heap.collect(&mut [], &mut []);
             }
-            // RUNTIME-region collection (ADR-91): the VM-engine counterpart of the
+            // RUNTIME-region collection (ADR-091): the VM-engine counterpart of the
             // tree-walker's safepoint. Once churn crosses the threshold, compact the shared
             // code region (single-process) or — on a shared runtime with the multi-process
             // collector armed — advance the age/migrate/drain/free state machine. Every
@@ -1000,7 +1000,7 @@ pub(crate) fn vm_run_bc(
                     heap.maybe_runtime_collect(&mut [], &mut []);
                 }
             }
-            // RUNTIME-drain cooperative report (ADR-91 Stage 3c): the VM-engine
+            // RUNTIME-drain cooperative report (ADR-091 Stage 3c): the VM-engine
             // counterpart of the tree-walker's safepoint report. While a generation
             // drain is armed, this process reports whether it still references the
             // draining generation. Read-only probe; the hot path is one atomic load.

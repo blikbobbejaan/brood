@@ -26,7 +26,7 @@ pub enum PrimOp {
     Rem,
     Div,
     Quot,
-    // `cons` (ADR-96): the list-building workhorse. Unlike the numeric ops it
+    // `cons` (ADR-096): the list-building workhorse. Unlike the numeric ops it
     // allocates, so it's handled in the exec arm (which has the heap) rather
     // than `prim_apply`; it accepts any operands, so it never defers on shape.
     Cons,
@@ -115,7 +115,7 @@ impl PrimOp3 {
     }
 }
 
-/// A core 1-ary sequence primitive the compiler inlines (ADR-96) — the list
+/// A core 1-ary sequence primitive the compiler inlines (ADR-096) — the list
 /// iteration workhorses. The `Pair`/`Nil` cases run inline (a slab read — no
 /// call frame, no dispatch); every other operand shape (vectors, ranges, the
 /// canonical type errors) defers to the real native so semantics stay
@@ -340,7 +340,7 @@ impl ConstVal {
     }
 }
 
-/// A compiled IR node (ADR-76). Stage 1 vocabulary — the core forms a top-level
+/// A compiled IR node (ADR-076). Stage 1 vocabulary — the core forms a top-level
 /// arithmetic/recursive body is built from. Anything outside this set makes the
 /// whole closure ineligible (it runs on the tree-walker instead), so there is no
 /// `Defer` node: a VM-run body is *fully* compiled, which is what lets `exec_node`
@@ -366,7 +366,7 @@ pub enum Node {
     /// compile to [`Node::GlobalIc`] instead.
     Global(Symbol),
     /// A free reference in value position, with a **global-read inline cache**
-    /// (ADR-96): when the enclosing frame resolves free names through the
+    /// (ADR-096): when the enclosing frame resolves free names through the
     /// process global, the read validates `(sym, epoch)` against the per-process
     /// [`Heap::vm_global_ics`] entry and skips the `env_get` walk; otherwise (a
     /// captured-env frame, an epoch change, a dynamic symbol) it falls back to
@@ -392,7 +392,7 @@ pub enum Node {
     /// wins, like the tree-walker's `or_form_pos`) so VM diagnostics keep line/col.
     /// `None` for a promoted RUNTIME body (whose forms carry no recorded position —
     /// neither engine tags those).
-    /// `site` is this call's **inline-cache id** (ADR-96) when the callee is a
+    /// `site` is this call's **inline-cache id** (ADR-096) when the callee is a
     /// free global reference — an index into the per-process
     /// [`Heap::vm_call_ics`] table caching the site's last resolution (callee
     /// value + compiled arm + captured env, epoch-stamped). [`NO_SITE`] for a
@@ -469,7 +469,7 @@ pub enum Node {
     /// confirmed to resolve to `op`; an [`AtomicU64`] (not a `Cell`) so the node stays
     /// `Send + Sync` and a migrating process's heap stays `Send`.
     /// `broot`: must operand `a`'s value be rooted across operand `b`'s eval
-    /// (ADR-96)? `false` when `b` is a **safepoint-free leaf** (`Const` /
+    /// (ADR-096)? `false` when `b` is a **safepoint-free leaf** (`Const` /
     /// `Local` / `Global` / `GlobalIc` — none can allocate, call, or collect),
     /// which is the overwhelmingly common shape in hot loops (`(+ acc n)`,
     /// `(< n 2)`): the whole inline path then runs with zero operand-stack
@@ -497,7 +497,7 @@ pub enum Node {
         guard: AtomicU64,
         pos: Option<Pos>,
     },
-    /// An inlined 1-ary sequence primitive (ADR-96) — `(first xs)` / `(rest xs)`.
+    /// An inlined 1-ary sequence primitive (ADR-096) — `(first xs)` / `(rest xs)`.
     /// The `Pair`/`Nil` cases run inline; any other operand shape — or a
     /// redefinition of the operator — falls back to a general call on `head`,
     /// exactly like [`Node::Prim2`]'s guard discipline.
@@ -670,7 +670,7 @@ pub struct CompiledArm {
     /// That link is what makes `fib` fast, but `dbg_name` is only the symbol the closure
     /// was first `def`'d under — not evidence the global still binds this closure. Alias
     /// the closure (`(def f h)`), rebind `h`, and call through the alias: the old body's
-    /// recursive `(h …)` must see the NEW `h` (late binding, ADR-13), yet the hard link
+    /// recursive `(h …)` must see the NEW `h` (late binding, ADR-013), yet the hard link
     /// kept calling the old arm — `(f 12)` gave 12 where every other engine gave 1001.
     /// Re-establishing the link on recompile does not help: the epoch bump invalidates the
     /// arm, and the recompile then bakes the same wrong callee in again.
@@ -703,7 +703,7 @@ pub struct CompiledArm {
     /// already executed are never repeated.
     pub ckpt_slot: u32,
     /// The [`Heap::global_epoch`] at which this arm was last compiled to native code —
-    /// the inline-cache epoch guard (ADR-96 §4.A) for the JIT'd arm. The lowered code
+    /// the inline-cache epoch guard (ADR-096 §4.A) for the JIT'd arm. The lowered code
     /// inlines arithmetic operators (`+`/`<`/…) as raw machine ops, valid only while
     /// those globals still resolve to their native primitives. A `def` rebinding any
     /// global bumps `global_epoch`; [`jit_tier`] compares it against this before each
@@ -778,7 +778,7 @@ pub struct CompiledArm {
     /// which is set only for inlinable recursive defns). Lets `jit_tier` label the arm in
     /// the staged-stale report so a use-after-GC names the arm holding the stale handle.
     /// NOT jit-gated, though everything around it is: the bytecode VM's `Inst::SelfCall`
-    /// hot-reload guard (ADR-13, `exec_chunk`) re-resolves this name on a global-epoch
+    /// hot-reload guard (ADR-013, `exec_chunk`) re-resolves this name on a global-epoch
     /// bump to notice a `def` of the very function a loop is running. That guard is a
     /// correctness rule, not an optimisation, so it must hold in a `--no-default-features`
     /// runtime too — which is exactly the build that stopped compiling when the VM began
@@ -1363,7 +1363,7 @@ pub enum Inst {
     /// push (`ChunkExit::Call`); a tail call/self-call reuses the frame; a native /
     /// tree-walked callee runs inline and its value is pushed.
     ///
-    /// `site`/`head` drive the **call-site inline cache** (ADR-96, Stage 5): when the
+    /// `site`/`head` drive the **call-site inline cache** (ADR-096, Stage 5): when the
     /// head is a free global (`head = Some(sym)`, `site != NO_SITE`) and the frame
     /// resolves frees through the process global, the cached `(arm, env)` for
     /// `(site, sym, argc, epoch)` is used directly — skipping `dispatch`'s

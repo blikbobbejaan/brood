@@ -1187,7 +1187,7 @@ pub(super) fn vector_length(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
 /// `(vector-assoc v i x)` — a fresh vector like `v` with index `i` set to `x`.
 /// The vector counterpart of `%map-assoc`; O(n) copy (vectors are flat), one
 /// allocation, no cons churn. `i` must be in `[0, len)` (append-at-end is a
-/// deferred power feature, ADR-11). No GC safepoint runs inside a builtin, so
+/// deferred power feature, ADR-011). No GC safepoint runs inside a builtin, so
 /// the cloned handles stay valid across `alloc_vector`.
 pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let v = arg(args, 0);
