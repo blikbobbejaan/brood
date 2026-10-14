@@ -10,18 +10,20 @@ measure (and the traps) in [`benchmarking.md`](benchmarking.md). The dated secti
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-13)
+## State (2026-10-14)
 
-- **Released:** v0.37.0. Unreleased on `main`, **not pushed** (four commits ahead of
-  `origin/main` at the time of writing — check `git log origin/main..`): `67a540e1` preemption
-  reaches every shape of running code (ADR-399..404, KI-223..231); `95c8b749` one native entry
-  (`jit_runtime/entry.rs`), one quantum module (`process/scheduler/quantum.rs`), folds walked in
-  spans; `4f0fa07f` / `3ec72080` the gate sweep (ab-bench's image guard, check-stress, feature
-  builds). Devlog entries of 2026-10-12 and 2026-10-13 carry the narrative and the numbers.
-- `known-issues.md` lists **no open entry**. Gates last run green on this tree: `make test-both`,
-  `make gcstress`, the fuzz pass (13 generators x 100), clippy `--all-features`,
-  `make latency-gate`, `check-examples`, `check-stress`, `tier-audit`, `check-imaged`,
-  `breakagetests`, the dist tests x5.
+- **Released:** v0.37.0. Unreleased on `main`, **not pushed** (check `git log origin/main..`):
+  `67a540e1` preemption reaches every shape of running code (ADR-399..404, KI-223..231);
+  `95c8b749` one native entry (`jit_runtime/entry.rs`), one quantum module
+  (`process/scheduler/quantum.rs`), folds walked in spans; `4f0fa07f` / `3ec72080` the gate
+  sweep; then handoff item B (the fold span result stops allocating) and item A (ADR-405, the
+  computed-call memo). Devlog entries of 2026-10-12 … 2026-10-14 carry the narrative and numbers.
+- `known-issues.md` has one **watching** entry, KI-232 (a dist test node's connect refused right
+  after its peer was seen listening; retry-absorbed, not reproducible on demand, diagnostic
+  armed). Gates run green for items A and B: `make test-both`, `make gcstress`, fuzz
+  (`tier_transition`, `metamorphic`, `pipeline`, plus `numeric`/`arithmetic` for B), clippy
+  `--all-features`, the `--no-default-features` checks, `tier-audit`. Not re-run since
+  2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`, `breakagetests`.
 - **Before pushing:** `make prepush`, and `git merge --ff-only origin/main` first if it moved.
 - **Is the tree green?** Answer with `make green`, never by reading the run list. On this
   machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`).
@@ -32,7 +34,7 @@ devlog entries of the same dates.
 
 ## Open threads, in value order
 
-### Next: two performance items (the user's pick, 2026-10-13)
+### Next: performance items (A and B the user's pick, 2026-10-13; C found doing A)
 
 Measure both by **instruction count** first — `perf stat -e instructions:u` with
 `BROOD_NO_CHECK=1` (the run pre-flight walk is noise), each binary's stdlib image live (`nest
@@ -41,28 +43,23 @@ stdimage`; `make ab` now writes both arms' images itself), the timing binary fro
 anything on the scheduler path, `make latency-gate`. `perf record` is capped at 1 kHz here:
 aggregate 20-40 runs, and build `make perf-symbols` for names.
 
-**A. Calling a closure value from native code has no inline cache.** A computed-head call
-(`(f acc x)` with `f` a local) is lowered with `site = NO_SITE` (`eval/compile/lower.rs`, the
-`let site = match callee` block: only a `Node::Global` head gets a call-site IC). In native code
-it becomes `brood_rt_call_slow` → `jit_dispatch_call` (`jit_runtime/dispatch.rs`), whose computed
-branch runs `compiled_arm_for(heap, id, argc)` and `vm_arm_block(&a)` on EVERY call, plus an
-unconditional `stack_headroom_ok()` probe, before `enter_native`. The in-IR fast link and the
-§7.5 inline fast frame exist only for named heads.
-- *Measured:* a Brood loop calling a closure reducer per element cost ~410 instructions more per
-  call than the native loop's `hof_resolve`-once path (`closure.rs` `HofArm`), and ~7 400 per short
-  fold — `nqueens` +24% when `fold` briefly walked per element in Brood (devlog 2026-10-13).
-- *Why it matters:* every higher-order function written in Brood (`map`, `filter`, `seq/*`,
-  user HOFs, `fold`'s own per-element walk) pays it; it is the "build the language up" fix
-  CLAUDE.md asks for, where the alternative is more Rust loops.
-- *Starting design:* give computed-head calls a site too, and cache at it the last closure
-  TEMPLATE seen (the arm identity — instances differ per closure created, the arm does not) ->
-  `(Arc<CompiledArm>, block bases)`, checked by epoch like the named-head IC (ADR-096,
-  `core/heap/vm_cache.rs`). The env comes from the instance each call. Then the hit path can
-  skip `compiled_arm_for`/`vm_arm_block`, and later take the in-IR fast link. Check the site
-  allocation's interaction with `site_pos`, `staged` (KI-19) and `mono_devirtualize`.
-- *Guards to keep green:* `crates/lisp/tests/frame_size_callsites.rs`, the JIT differential
-  (`tests/jit*`, fuzz `tier_transition`), `make tier-audit`, a hot-reload test that rebinds a
-  closure's defining fn mid-loop (the cache must miss on the epoch).
+**A. DONE (2026-10-14, ADR-405, devlog "native code memoises calls to a closure value").**
+`jit_dispatch_call` memoises a computed-head call's arm, env and IC block per closure instance:
+~240 instructions off every such call (anonymous closure 943 → 706; named heads 415). What
+remains of the gap to a named call is `fill_captures`, `finish_nested`, `native_feedback` and the
+unconditional stack probe — an in-IR fast link for computed heads (a site id per computed call,
+the handoff's original design) is the next step there; check `staged` (KI-19) and
+`mono_devirtualize` when allocating the site.
+
+**C. A thin-wrapper callback costs ~1 900 instructions a call from native code** — named or
+not. `(fn (acc x) (+ acc x))`, the canonical reducer, is a passthrough (ADR-069): the dispatcher
+never runs its body, it redirects to `+` by NAME on every call — `passthrough_arm`, `env_get`,
+`boundary_redirect`, a second hop to `+`'s own passthrough arm, then `call_native` (profile:
+`dispatch` 35–38%, `env_get` ~6–11%). The compiled body would be one inlined `Prim2`. The redirect
+exists to spare the tree-walker and VM a frame; from native code it is the slow path. Measure
+with `MODE=passanon` in a loop like devlog 2026-10-14's before choosing between running the
+compiled arm from native code and caching the redirect target (late binding: the inner head is
+re-resolved per call today, so a cache must be epoch-stamped).
 
 **B. DONE (2026-10-13, devlog "(later) — the fold span result stops allocating").** A finished
 span returns the accumulator; a stopped one returns `(:%fold-more acc . next)`. `nqueens` −1.3%,

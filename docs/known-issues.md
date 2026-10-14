@@ -66,7 +66,35 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## Open and watching
 
-None. (An open entry's `## KI-N` section goes here until it is resolved.)
+## KI-232 — a dist test node's connect was refused right after its peer was seen listening ⚠️ watching 2026-10-14
+
+**Symptom.** `cli::distribution a_dropped_send_to_an_unregistered_name_warns_once` failed
+try 1 (try 2 passed) in the VM half of a `make test-both`:
+`B should warn exactly once for the repeated inbound send (dedup)` — `left: 0, right: 1`,
+with A's stderr `std/node.blsp:211:9: runtime error: connect: Connection refused (os error
+111) at node/connect`, and B's only line the harness probe's
+`dist: incoming connection failed: failed to fill whole buffer`. KI-99's test and KI-99's
+B-side line, but a new A-side fact: A never connected at all.
+
+**Cause.** Unknown. `wait_until_listening(port_b)` had just completed a TCP connect to B's
+port (B logged that probe), and A's connect to the same port was then refused. Candidates: B's
+listener went away (B died, or closed it), or the probe reached something other than B on
+that port and B was not yet listening — though ports come from a slice no concurrent test
+shares (`free_port`, `NEXTEST_TEST_GLOBAL_SLOT`, KI-99's fix), and the run had no other test
+process on the box.
+
+**Why it survived.** A retry absorbs it, and it does not reproduce on demand: 20/20 solo and
+20/20 with all twelve cores busy (2026-10-14, on the working tree with the computed-call
+memo, ADR-405 — which runs no code on a TCP connect).
+
+**Fix.** None yet. **Diagnostic armed:** the test now records, once A has finished and before
+B is killed, whether B had exited and whether B's port still accepted a connection, and prints
+it in the failure (`--- after A finished: b_exited=… b_port_listening=… (KI-232) ---`). B gone
+or not listening points at B's listener; B listening points at a transient refusal or a
+foreign listener at probe time.
+
+**Guard.** None until the mechanism is known; the diagnostic is in the failure path only
+(rendering checked by forcing the assertion).
 
 ## Index — status per issue
 
@@ -74,6 +102,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-232 | **a dist test node's `node/connect` was refused right after `wait_until_listening` reached its peer** — `a_dropped_send_to_an_unregistered_name_warns_once` try 1 in `make test-both`, retry-absorbed; KI-99's test, but A never connected | ⚠️ watching 2026-10-14 — 40/40 on demand (20 under full load); diagnostic armed in the test's failure message |
 | KI-231 | **a run-check verdict recorded without the stdlib image replayed its extra loads forever after** — `brood file` booted a trivial program in 148M instructions instead of 81M once `nest` had built the image, and every benchmark row carried that startup | ✅ **FIXED 2026-10-12** — the run-check cache key includes whether this process installed the stdlib image |
 | KI-230 | **a function containing a set literal (`#{…}`), a ratio (`1/3`) or a decimal (`1.5M`) ran on the tree-walker for good** — slower, never preempted, and its `receive`s blocked their worker: the default crash reporter (`take-over`'s `#{}`) held a worker thread for the life of the program after its first report | ✅ **FIXED 2026-10-12** — the VM compiler lowers a set literal (a constant when self-evaluating, else `(%set e…)`), a ratio and a decimal; `value_is_immovable` checks the three handle kinds it used to wave through. Guards: three shapes in `preemption_shapes.rs`, red with the lowering disabled |
 | KI-229 | **a stream of `spawn`s stalled the spawner for 100–300 µs at a time** — every spawn of a closure capturing locals promoted it into the shared RUNTIME region; the region's multi-process collector then ran periodically, and a spawn landing in its window waited on the `promote_lock` writer | ✅ **FIXED 2026-10-12 (ADR-404)** — `spawn` copies the captured values into the child's heap and keeps the code shared (`message::copy_closure_into`), so spawns no longer grow the shared region; the latency row's slowest spawn went 0.7–2.3 ms → 0.4 ms |

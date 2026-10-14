@@ -337,7 +337,7 @@ impl Heap {
         // code baked in, so unlike a first-time `def` this must invalidate the JIT.
         self.runtime.version.fetch_add(1, Ordering::Relaxed);
         self.runtime.code_epoch.fetch_add(1, Ordering::Relaxed);
-        self.vm_cache.borrow_mut().clear();
+        self.vm_cache.write().clear();
         self.global_ic.borrow_mut().clear();
         self.vm_call_ics.borrow_mut().clear();
         self.vm_fast_links.borrow_mut().clear();
@@ -461,7 +461,7 @@ impl Heap {
         // anything.
         self.runtime.free_epoch.fetch_add(1, Ordering::Release);
         // Eagerly clear this process's caches (peers clear lazily on their next use).
-        self.vm_cache.borrow_mut().clear();
+        self.vm_cache.write().clear();
         self.seen_free_epoch
             .set(self.runtime.free_epoch.load(Ordering::Relaxed));
         self.global_ic.borrow_mut().clear();
@@ -1341,7 +1341,7 @@ impl Heap {
         // cleared `vm_cache` recompiles its node trees); a still-live arm's old site
         // id then either falls out of range (ignored) or aliases a fresh site, which
         // the probe's sym+argc+epoch validation makes harmless (ADR-096).
-        self.vm_cache.borrow_mut().clear();
+        self.vm_cache.write().clear();
         // ...and the RUNTIME-shared compiled closures (ADR-175). The live arms above were
         // rewritten because they are on this process's execution stack; a merely *cached*
         // shared arm is on no stack, so its embedded RUNTIME handles still address the

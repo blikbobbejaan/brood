@@ -213,13 +213,18 @@ pub(crate) fn jit_dispatch_call(
                 }
             }
         } else if let ValueRef::Fn(id) = heap.root_at(stage_base).unpack() {
-            // The non-elided (computed-head) resolve: no IC, so this runs per call — the
-            // handle it hands back is memoized, not freshly allocated.
-            compiled_arm_for(heap, id, argc).map(|a| {
-                let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
-                let cb = heap.vm_arm_block(&a);
-                (a, env, cb)
-            })
+            // The computed-head resolve, memoised per closure instance: a higher-order
+            // loop calls the same closure every iteration, so the hit skips the body-cache
+            // lookup, the closure read and the IC-block lookup.
+            heap.computed_call_probe(id, argc as u32, epoch)
+                .or_else(|| {
+                    compiled_arm_for(heap, id, argc).map(|a| {
+                        let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
+                        let cb = heap.vm_arm_block(&a);
+                        heap.computed_call_put(id, argc as u32, epoch, &a, env, cb);
+                        (a, env, cb)
+                    })
+                })
         } else {
             None
         };

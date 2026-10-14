@@ -25780,3 +25780,52 @@ driver has it.
 **Consequences.** Spawns no longer grow the shared region or contend on its collector. A
 captured local closure arrives as a copy (as in a message): `=` on it against the parent's is
 false, as for any function that crossed a process boundary.
+
+## ADR-405 — Native code memoises a computed-head call per closure instance
+
+**Status:** implemented (2026-10-14).
+
+**Context.** A call whose head is a value rather than a global name — `(f acc x)` with `f` a
+parameter, every callback a higher-order function calls — has no call-site inline cache
+(ADR-096 caches only free-global heads). From native code it went `brood_rt_call_slow` →
+`jit_dispatch_call`, whose computed branch ran `compiled_arm_for` (the closure read, the
+body-cache key, `sync_free_epoch`, a `SmallMap` probe, the arity scan), `closure(id)` for the
+env and `vm_arm_block` (a second map probe) on every call. Measured from a native loop: ~940
+instructions a call to an anonymous closure, ~1 060 to a capturing one, against 415 for the
+same body called by name.
+
+**Decision.** `jit_dispatch_call` memoises that resolve — the arm, the instance's env and the
+arm's IC block — in a small direct-mapped table (eight slots) keyed on the closure INSTANCE's
+handle bits and `argc`. The instance, not the template: the instance fixes the env as well,
+and a higher-order loop passes one instance on every iteration. A hit is valid while nothing
+it was derived from can have changed:
+
+- **The body cache.** The table lives inside the body cache's own cell (`VmCacheCell`), whose
+  one mutable accessor (`write`) drops it, so no write to the cache — a free-epoch or
+  stale-binding sync (ADR-366), a compaction, a hibernate shrink, a new body — can leave a
+  memo behind. The one write that keeps it (`write_derived`) only memoises an arity's handle
+  from the entry's own body. The probe syncs the free epoch first, so a peer's free reaches
+  the table before it is read.
+- **The code epoch**, as for the named-head IC: a `def`, a module load, a compaction, a freed
+  RUNTIME generation (whose slots are reused with bit-identical handles).
+- **The collection count**: a collection moves LOCAL closures and their envs; their handle
+  bits change with them, but the generation stamp in the bits is 29 bits and wraps.
+
+The table is allocated at its first entry and costs an empty process one pointer (8 B; the
+`process_floor` ratchet moved 4 000 → 4 020 for it, with the measurement).
+
+**Alternatives.** *A call site per computed call* (the handoff's starting design): the IR
+would carry a site id for every computed head, which means plumbing through lowering,
+emission, `staged` (KI-19) and `mono_devirtualize`, and gives a monomorphic cache per site.
+The per-process table gets the same hit on the dominant shape (one callback per loop) without
+touching the IR; a site is still the way to an in-IR fast link later. *Keying on the
+template* would share entries across instances but needs the env read per call anyway.
+
+**Consequences.** ~240 fewer instructions per computed call from native code: anonymous
+closure 943 → 706, capturing 1 058 → 817, a global function passed as a value 1 057 → 706
+(named heads unchanged at 415). What remains of the gap to a named call is the frame and exit
+handling (`fill_captures`, `finish_nested`, `native_feedback`) and the unconditional stack
+probe (KI-14), which an in-IR fast link for computed heads would remove. A thin-wrapper
+callback — `(fn (a x) (+ a x))`, which the dispatcher redirects to `+` by name (ADR-069)
+rather than running its body — does not reach this path at all and still costs ~1 900
+instructions a call from native code; see the handoff.

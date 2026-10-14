@@ -16932,3 +16932,50 @@ tag. The walk helpers take that continuation directly. `reverse`'s vector branch
   `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, `BROOD_REDUCTIONS=100` and `%fold-span` rebound to 3
   (ranges to `i64::MAX`, negative steps, BigInt promotion): identical output on all six and
   equal to HEAD's. `preemption_shapes.rs`/`preemption.rs` 10/10.
+
+## 2026-10-14 — native code memoises calls to a closure value (ADR-405); KI-232 filed
+
+Handoff item A. A computed-head call from native code — `(f acc x)`, every callback a
+higher-order function calls — re-derived the callee's arm, env and IC block on every call.
+`jit_dispatch_call` now memoises them per closure instance and argc (eight direct-mapped
+slots), stamped with the code epoch and the collection count; the table lives inside the
+body cache's cell, whose mutable accessor drops it, so no write to the cache can leave a
+stale memo. ADR-405.
+
+- **Numbers** (`instructions:u` per call, steady state from a 1M/5M-iteration difference,
+  both binaries with their stdlib image): anonymous closure 943 → 706, capturing 1 058 →
+  817, a global function passed as a value 1 057 → 706; a named head unchanged at 415. Rows
+  against a HEAD control: `persistent-map` −3.3%, `base64` −2.4%, `primes` −1.7%, `ring`
+  −1.8%, `nqueens` −1.2%, the rest within ±1%; `spawn` read +4.8% once and is noise (six
+  runs each: 1 225–1 390M on both binaries).
+- **What a profile of the first numbers hid.** The obvious micro — `(apply-loop (fn (a x) (+ a
+  x)) …)` — cost ~1 900 instructions a call, named or not, and the profile was all `dispatch`,
+  `env_get` and `prim_add`: that body is a thin wrapper (ADR-069), which the dispatcher never
+  runs — it redirects to `+` by name on every call. The call cache never sees it. A
+  non-wrapper body is what measures item A. The wrapper cost is real and common
+  (`(fn (acc x) (+ acc x))` is the canonical reducer) and goes to the handoff.
+- **Two measurement traps hit again.** A first per-call figure of 296 was taken against a stale
+  stdlib image (std loaded from source); and the first run after a rebuild pays the boot-cache
+  rebuild, which skews a two-size difference. A HEAD worktree under `target/ab/` with its own
+  image was the control that settled both.
+- **The memory ratchet caught the first cut.** The table inline in every heap was ~600 B per
+  process (`process_floor`: 4 510 against a 4 000 bound). Boxed and allocated at first use,
+  then folded into the body-cache cell (no separate generation counter, no `RefCell` flag): 16 B
+  per process. HEAD measured 3 976–3 985, which left 4 B of a 4 000 bound against ~9 B of
+  jitter, so the bound is 4 020 with the sentence the file asks for.
+- **Tests:** `tests/jit_computed_call_test.blsp` — instances of one template alternating
+  through one call site, two templates through one site, one closure at two arities, a closure
+  made fresh every iteration (collected and moved), and eight processes doing the same at once;
+  each loop arm is settled native first. Sabotage: dropping the instance key reds four of five
+  (the arity case is guarded by the argc key: dropping THAT crashes the process — the wrong arm
+  with the wrong frame). Dropping the epoch and body-cache stamps together reds nothing and
+  changes no instruction count, even with a module loaded mid-loop (ADR-366): native entry
+  re-checks the arm's own `compile_epoch`, so a stale memo would be slow, not wrong — the
+  stamps are recorded as an argument from construction, not as tested. At `BROOD_TIER=0|1|2`
+  and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`: 5/5. `make test-both`, `make gcstress`, fuzz
+  (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean), `make tier-audit` (29
+  rows native), `frame_size_callsites` and the JIT/preemption/differential Rust tests.
+- **KI-232 (watching).** `test-both`'s VM half had `a_dropped_send_to_an_unregistered_name_warns_once`
+  fail try 1: A's `node/connect` was refused right after `wait_until_listening` had reached B.
+  KI-99's test, a new mechanism. 40/40 on demand (20 with all cores busy); the test's failure
+  message now says whether B was alive and still listening once A finished.

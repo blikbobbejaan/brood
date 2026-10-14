@@ -111,7 +111,7 @@ impl Heap {
         // The compiled-body cache is a cache too, and by far the largest thing a
         // long-idle process can give back. Shared arms (ADR-175) are held by the runtime,
         // so dropping our reference is cheap and they re-install on the next call.
-        self.vm_cache.borrow_mut().clear();
+        self.vm_cache.write().clear();
         let after =
             slab_capacity_bytes(&self.local) + self.old_opt().map_or(0, slab_capacity_bytes);
         // Reset the auto-trim high-water: after a deliberate deep shrink, the next

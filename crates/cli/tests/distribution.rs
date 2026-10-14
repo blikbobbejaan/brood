@@ -2412,7 +2412,11 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
 "#
     );
 
-    let run = |quiet: bool| -> (String, String) {
+    // KI-232: A's `node/connect` was once refused although `wait_until_listening` had just
+    // reached B's port. What B looked like once A finished tells the candidates apart — B
+    // gone (`b_exited` set), B alive but no longer listening, or B listening (then the
+    // refusal was a transient, or the probe reached something else on the port).
+    let run = |quiet: bool| -> (String, String, String) {
         let env: Vec<(&str, &str)> = if quiet {
             vec![("BROOD_NO_DROP_WARN", "1")]
         } else {
@@ -2422,23 +2426,29 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
         wait_until_listening(port_b);
         let a = spawn_brood_env(&dir, "dw_a.blsp", &a_src, &env);
         let a_out = a.wait_with_output().expect("A finished");
+        let b_state = format!(
+            "b_exited={:?} b_port_listening={}",
+            b.try_wait().ok().flatten(),
+            std::net::TcpStream::connect(("127.0.0.1", port_b)).is_ok()
+        );
         let _ = b.kill();
         let b_out = b.wait_with_output().ok();
         let a_err = String::from_utf8_lossy(&a_out.stderr).to_string();
         let b_err = b_out
             .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
             .unwrap_or_default();
-        (a_err, b_err)
+        (a_err, b_err, b_state)
     };
 
     // --- armed (the default) ---
-    let (a_err, b_err) = run(false);
+    let (a_err, b_err, b_state) = run(false);
     let inbound = b_err
         .matches("dropped inbound message for unregistered name :ghost")
         .count();
     assert_eq!(
         inbound, 1,
         "B should warn exactly once for the repeated inbound send (dedup).\n\
+         --- after A finished: {b_state} (KI-232) ---\n\
          --- B stderr ---\n{b_err}\n--- A stderr ---\n{a_err}"
     );
     assert!(
@@ -2447,7 +2457,7 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
     );
 
     // --- opt-out: same program, silenced. This is what proves the assertions above have teeth.
-    let (a_quiet, b_quiet) = run(true);
+    let (a_quiet, b_quiet, _) = run(true);
     assert!(
         !b_quiet.contains("unregistered name") && !a_quiet.contains("unregistered name"),
         "BROOD_NO_DROP_WARN=1 must silence both sites.\n\

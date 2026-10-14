@@ -781,13 +781,7 @@ pub struct Heap {
     /// entry is simply never looked up again. Empty under `BROOD_TIER=0`. `Arc`
     /// so the trampoline can hold the compiled body across a call without borrowing
     /// the cache.
-    vm_cache: RefCell<
-        SmallMap<
-            VmCacheKey,
-            vm_cache::VmCacheEntry,
-            std::hash::BuildHasherDefault<runtime_code::SymbolHasher>,
-        >,
-    >,
+    vm_cache: vm_cache::VmCacheCell,
     /// The [`RuntimeCode::free_epoch`] this process last synced its [`Self::vm_cache`]
     /// to (ADR-091 Stage 4). When the shared free-epoch advances (a generation was
     /// freed and its slot may be reused with bit-identical handles), the `vm_cache`
@@ -1305,6 +1299,12 @@ use self::slabs::{
 pub(crate) use self::slabs::{VecStore, INLINE_VEC_CAP};
 pub(crate) use self::small_map::SmallMap;
 mod vm_cache;
+/// The per-process compiled-body cache's type — see [`Heap::vm_cache`].
+pub(crate) type VmCache = SmallMap<
+    VmCacheKey,
+    vm_cache::VmCacheEntry,
+    std::hash::BuildHasherDefault<runtime_code::SymbolHasher>,
+>;
 // `stall_guard` is used by the RUNTIME compactor (`gc_runtime`) and the GUI paint
 // path, so it's re-exported unconditionally; `stall_guard_pid` by the scheduler.
 pub(crate) use self::gc::{stall_guard, stall_guard_pid, stall_threshold_ms};
@@ -1522,7 +1522,7 @@ impl Heap {
             proc_send_errors: false,
             proc_no_break: false,
             gc_trace: gc_trace_default(),
-            vm_cache: RefCell::new(SmallMap::new()),
+            vm_cache: vm_cache::VmCacheCell::default(),
             seen_free_epoch: Cell::new(0),
             seen_stale_gen: Cell::new(0),
             stale_arm_uid: Cell::new(0),
@@ -1615,7 +1615,7 @@ impl Heap {
             proc_send_errors: false,
             proc_no_break: false,
             gc_trace: gc_trace_default(),
-            vm_cache: RefCell::new(SmallMap::new()),
+            vm_cache: vm_cache::VmCacheCell::default(),
             seen_free_epoch: Cell::new(0),
             seen_stale_gen: Cell::new(0),
             stale_arm_uid: Cell::new(0),

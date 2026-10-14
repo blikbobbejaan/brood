@@ -16,10 +16,16 @@
 //! is the only way a 328 B step reads as a step: at 4 600 the sabotage passed.
 //! Sabotage-verified: restoring the unconditional `cold_mut()` read 4 439 against a 4 300
 //! bound and reds this.
+//!
+//! Raised 4 000 → 4 020 (2026-10-14): the computed-call memo (ADR-405) costs 16 B per process
+//! — one nullable pointer, the table itself allocated only by a process that calls a closure
+//! value from native code — and buys ~240 instructions on every such call. Measured 3 976–3 985
+//! before it, 3 995–3 996 after, which left 4 B under the old bound against ~9 B of run-to-run
+//! jitter.
 
 use brood::Interp;
 
-const FLOOR_BYTES: i64 = 4000;
+const FLOOR_BYTES: i64 = 4020;
 
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {
