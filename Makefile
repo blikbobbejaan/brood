@@ -143,12 +143,18 @@ test: ## Run Rust tests + the in-language suite via cargo-nextest (each test cas
 	# off — see .config/nextest.toml. Built uncapped, then run under $(RUN_CAP).
 	# The run goes through `nextest-no-flakes.sh`, as CI's does: a test that passes only on
 	# its retry fails the target and is named, instead of reading green.
-	cargo nextest run --no-run --features brood/treesit-grammars
-	$(RUN_CAP) ./scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars
-	cargo test --doc   # nextest doesn't run doctests; none today, kept so future ones still run
+	$(TEST_NICE) $(TEST_BUILD_ENV) cargo nextest run --no-run --features brood/treesit-grammars
+	$(RUN_CAP) $(TEST_NICE) ./scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars $(TEST_JOBS_FLAG)
+	$(TEST_NICE) cargo test --doc   # nextest doesn't run doctests; none today, kept so future ones still run
+
+# `make test`'s three knobs, all empty (full speed) unless `test-light` sets them: a CPU
+# priority prefix, a build-job cap, and a cap on concurrent test processes.
+TEST_NICE ?=
+TEST_BUILD_ENV ?=
+TEST_JOBS_FLAG ?=
 
 # Concurrency cap for `test-light` — override on the command line, e.g. `make test-light LIGHT_JOBS=4`.
-LIGHT_JOBS ?= 8  # concurrent test PROCESSES (nextest -j) and cargo build jobs
+LIGHT_JOBS ?= 8# concurrent test PROCESSES (nextest -j) and cargo build jobs
 
 test-light: ## Like `make test` but capped + de-prioritized so it won't saturate the machine (override LIGHT_JOBS)
 	# Same suite as `make test`, tuned to stay off your back on a busy desktop —
@@ -169,12 +175,8 @@ test-light: ## Like `make test` but capped + de-prioritized so it won't saturate
 	# (`cpu_bound_process_does_not_starve_peers_on_one_worker`) and reddens them — see
 	# `worker_count` in crates/lisp/src/process/scheduler.rs. Set it by hand for an ad-hoc run
 	# if you know you're not touching those, but it can't be a default here.
-	$(REQUIRE_NEXTEST)
-	nice -n 19 env CARGO_BUILD_JOBS=$(LIGHT_JOBS) \
-		cargo nextest run --no-run --features brood/treesit-grammars
-	$(RUN_CAP) nice -n 19 \
-		./scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars -j $(LIGHT_JOBS)
-	nice -n 19 cargo test --doc
+	@$(MAKE) --no-print-directory test TEST_NICE='nice -n 19' \
+		TEST_BUILD_ENV='env CARGO_BUILD_JOBS=$(LIGHT_JOBS)' TEST_JOBS_FLAG='-j $(LIGHT_JOBS)'
 
 test-both: ## Run the whole suite through BOTH engines (tree-walker + VM) — the differential gate (ADR-076)
 	# The VM (+ JIT) is the default; this also runs the tree-walker (BROOD_TIER=0) so a
