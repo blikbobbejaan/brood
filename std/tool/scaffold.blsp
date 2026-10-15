@@ -745,118 +745,63 @@ test discovery, lints, release, config)."
 ;; scaffold files overwritten), not rejected.
 (defdyn *project-templates* ["default" "tui-loop" "gen" "editor" "gui" "hatch" "web-api"])
 
-;; Write the template-specific src/ + tests/ files; return the list of relative
-;; paths written (for the summary). The shared files (manifest, CLAUDE.md, guide,
-;; …) are written by the caller; only the starter code varies by template.
-(defn- project-write-template (tmpl nm src-dir tests-dir actual-name)
+;; The template-specific files, as `[path content]` pairs with `path` relative to the
+;; project directory. The shared files (manifest, CLAUDE.md, guide, …) are written by the
+;; caller; only the starter code varies by template — and a template's own
+;; `project.blsp` replaces the shared manifest.
+(defn- project-template-files (tmpl actual-name)
   (cond
     (= tmpl "tui-loop")
-      (do
-        (file/spit (path/join src-dir "main.blsp")
-          (project-tui-main-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-tui-test-template actual-name))
-        [(str nm "/src/main.blsp") (str nm "/tests/main_test.blsp")])
+      [["src/main.blsp" (project-tui-main-template actual-name)]
+        ["tests/main_test.blsp" (project-tui-test-template actual-name)]]
     (= tmpl "gen")
-      (do
-        (file/spit (path/join src-dir "main.blsp")
-          (project-gen-main-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-gen-test-template actual-name))
-        [(str nm "/src/main.blsp") (str nm "/tests/main_test.blsp")])
+      [["src/main.blsp" (project-gen-main-template actual-name)]
+        ["tests/main_test.blsp" (project-gen-test-template actual-name)]]
     (= tmpl "editor")
-      (do
-        (file/spit (path/join src-dir "main.blsp")
-          (project-editor-main-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-editor-test-template actual-name))
-        [(str nm "/src/main.blsp") (str nm "/tests/main_test.blsp")])
+      [["src/main.blsp" (project-editor-main-template actual-name)]
+        ["tests/main_test.blsp" (project-editor-test-template actual-name)]]
     (= tmpl "gui")
-      (do
-        (file/spit (path/join src-dir "main.blsp") (project-gui-main-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-gui-test-template actual-name))
-        [(str nm "/src/main.blsp") (str nm "/tests/main_test.blsp")])
+      [["src/main.blsp" (project-gui-main-template actual-name)]
+        ["tests/main_test.blsp" (project-gui-test-template actual-name)]]
     (= tmpl "hatch")
-      (let (web-dir (path/join src-dir "web")
-            views-dir (path/join web-dir "views")
-            tests-web-dir (path/join tests-dir "web")
-            tests-views-dir (path/join tests-web-dir "views"))
-        (file/mkdir web-dir)
-        (file/mkdir views-dir)
-        (file/mkdir tests-web-dir)
-        (file/mkdir tests-views-dir)
-        (file/spit (path/join nm "project.blsp")
-          (project-hatch-manifest-template actual-name))
-        (file/spit (path/join src-dir "main.blsp")
-          (project-hatch-main-template actual-name))
-        (file/spit (path/join src-dir "db.blsp") (project-hatch-db-template actual-name))
-        (file/spit (path/join src-dir "db-setup.blsp")
-          (project-hatch-db-setup-template actual-name))
-        (file/spit (path/join web-dir "endpoint.blsp")
-          (project-hatch-endpoint-template actual-name))
-        (file/spit (path/join web-dir "errors.blsp")
-          (project-hatch-errors-template actual-name))
-        (file/spit (path/join web-dir "layout.blsp")
-          (project-hatch-layout-template actual-name))
-        (file/spit (path/join web-dir "routes.blsp")
-          (project-hatch-routes-template actual-name))
-        (file/spit (path/join views-dir "home.blsp")
-          (project-hatch-home-template actual-name))
-        (file/spit (path/join views-dir "messages.blsp")
-          (project-hatch-messages-view-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-hatch-main-test-template actual-name))
-        (file/spit (path/join tests-views-dir "messages_test.blsp")
-          (project-hatch-messages-test-template actual-name))
-        [(str nm "/src/main.blsp")
-          (str nm "/src/db.blsp")
-          (str nm "/src/db-setup.blsp")
-          (str nm "/src/web/endpoint.blsp")
-          (str nm "/src/web/errors.blsp")
-          (str nm "/src/web/layout.blsp")
-          (str nm "/src/web/routes.blsp")
-          (str nm "/src/web/views/home.blsp")
-          (str nm "/src/web/views/messages.blsp")
-          (str nm "/tests/main_test.blsp")
-          (str nm "/tests/web/views/messages_test.blsp")])
+      [["project.blsp" (project-hatch-manifest-template actual-name)]
+        ["src/main.blsp" (project-hatch-main-template actual-name)]
+        ["src/db.blsp" (project-hatch-db-template actual-name)]
+        ["src/db-setup.blsp" (project-hatch-db-setup-template actual-name)]
+        ["src/web/endpoint.blsp" (project-hatch-endpoint-template actual-name)]
+        ["src/web/errors.blsp" (project-hatch-errors-template actual-name)]
+        ["src/web/layout.blsp" (project-hatch-layout-template actual-name)]
+        ["src/web/routes.blsp" (project-hatch-routes-template actual-name)]
+        ["src/web/views/home.blsp" (project-hatch-home-template actual-name)]
+        ["src/web/views/messages.blsp" (project-hatch-messages-view-template actual-name)]
+        ["tests/main_test.blsp" (project-hatch-main-test-template actual-name)]
+        ["tests/web/views/messages_test.blsp" (project-hatch-messages-test-template actual-name)]]
     (= tmpl "web-api")
-      (let (web-dir (path/join src-dir "web")
-            tests-web-dir (path/join tests-dir "web"))
-        (file/mkdir web-dir)
-        (file/mkdir tests-web-dir)
-        (file/spit (path/join nm "project.blsp")
-          (project-web-api-manifest-template actual-name))
-        (file/spit (path/join src-dir "main.blsp")
-          (project-web-api-main-template actual-name))
-        (file/spit (path/join web-dir "endpoint.blsp")
-          (project-web-api-endpoint-template actual-name))
-        (file/spit (path/join web-dir "routes.blsp")
-          (project-web-api-routes-template actual-name))
-        (file/spit (path/join web-dir "api.blsp")
-          (project-web-api-handlers-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp")
-          (project-hatch-main-test-template actual-name))
-        (file/spit (path/join tests-web-dir "api_test.blsp")
-          (project-web-api-test-template actual-name))
-        [(str nm "/src/main.blsp")
-          (str nm "/src/web/endpoint.blsp")
-          (str nm "/src/web/routes.blsp")
-          (str nm "/src/web/api.blsp")
-          (str nm "/tests/main_test.blsp")
-          (str nm "/tests/web/api_test.blsp")])
+      [["project.blsp" (project-web-api-manifest-template actual-name)]
+        ["src/main.blsp" (project-web-api-main-template actual-name)]
+        ["src/web/endpoint.blsp" (project-web-api-endpoint-template actual-name)]
+        ["src/web/routes.blsp" (project-web-api-routes-template actual-name)]
+        ["src/web/api.blsp" (project-web-api-handlers-template actual-name)]
+        ["tests/main_test.blsp" (project-hatch-main-test-template actual-name)]
+        ["tests/web/api_test.blsp" (project-web-api-test-template actual-name)]]
     else
-      (do
-        (file/spit (path/join src-dir "main.blsp") (project-main-template actual-name))
-        (file/spit (path/join src-dir (str (project-module-name actual-name) ".blsp"))
-          (project-hello-template actual-name))
-        (file/spit (path/join tests-dir "main_test.blsp") (project-main-test-template actual-name))
-        (file/spit (path/join tests-dir (str (project-module-name actual-name) "_test.blsp"))
-          (project-hello-test-template actual-name))
-        [(str nm "/src/main.blsp")
-          (str nm "/src/" (project-module-name actual-name) ".blsp")
-          (str nm "/tests/main_test.blsp")
-          (str nm "/tests/" (project-module-name actual-name) "_test.blsp")])))
+      (let (module (project-module-name actual-name))
+        [["src/main.blsp" (project-main-template actual-name)]
+          [(str "src/" module ".blsp") (project-hello-template actual-name)]
+          ["tests/main_test.blsp" (project-main-test-template actual-name)]
+          [(str "tests/" module "_test.blsp") (project-hello-test-template actual-name)]])))
+
+;; Write each `[path content]` under project directory `nm`, creating the directories it
+;; needs; return the written paths, each prefixed with `nm/` (for the summary and the
+;; formatter). The ONE place template files are written, so a file cannot be written
+;; without also being listed.
+(defn- scaffold-write-files (nm files)
+  (map files
+    (fn ([relative content])
+      (let (path (str nm "/" relative))
+        (file/mkdir (path/dirname path))
+        (file/spit path content)
+        path))))
 
 ;; Run every generated `.blsp` through the formatter.
 ;;
@@ -917,8 +862,12 @@ test discovery, lints, release, config)."
       (file/spit (path/join nm ".mcp.json") (project-mcp-json-template actual-name))
       (file/spit (path/join docs-dir "brood-for-claude.md") (%builtin-doc 'brood-for-claude))
       (file/spit (path/join skill-dir "SKILL.md") (%builtin-doc 'writing-brood-skill))
-      (let (code-files (project-write-template tmpl nm src-dir tests-dir actual-name)
-            _ (scaffold-format-generated (cons (path/join nm "project.blsp") code-files)))
+      (let (manifest (str nm "/project.blsp")
+            ;; a template's own manifest is printed on the summary's fixed manifest line
+            code-files (seq/reject (scaffold-write-files nm
+                                     (project-template-files tmpl actual-name))
+                         (fn (path) (= path manifest)))
+            _ (scaffold-format-generated (cons manifest code-files)))
         (io/puts (str "Created Brood project '"
                    actual-name
                    "'"
