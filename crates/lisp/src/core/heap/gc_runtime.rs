@@ -401,7 +401,7 @@ impl Heap {
     ///
     /// SAFETY of the store: the drain guarantees no live process holds a handle into
     /// `old_gen`, so no accessor is (or will be) borrowing into its slab — the old
-    /// `Arc` has no live [`SlabRef`] guard and drops without invalidating a read. (A
+    /// `Arc` has no live borrow and drops without invalidating a read. (A
     /// concurrent `load()` on the slot is still memory-safe: `ArcSwap` hands out
     /// either the old or new `Arc`, both valid — the drain only rules out a *semantic*
     /// use of an old-gen handle.)

@@ -3,7 +3,7 @@
 //! when the argument has the wrong shape. Every domain file reads its arguments through
 //! these, built on the `expect!` macro in `builtins.rs`, rather than writing its own match.
 
-use crate::core::heap::{Heap, SlabRef};
+use crate::core::heap::Heap;
 use crate::core::value::{self, MapId, Value};
 use crate::error::LispError;
 
@@ -86,7 +86,7 @@ pub(super) fn expect_string_ref<'h>(
     heap: &'h Heap,
     who: &str,
     v: Value,
-) -> Result<SlabRef<'h, str>, LispError> {
+) -> Result<&'h str, LispError> {
     expect!(heap, who, v, "string",
         Value::Str(id) => heap.string(id),
     )
@@ -110,7 +110,7 @@ pub(super) fn expect_rope_ref<'h>(
     heap: &'h Heap,
     who: &str,
     v: Value,
-) -> Result<SlabRef<'h, ropey::Rope>, LispError> {
+) -> Result<&'h ropey::Rope, LispError> {
     expect!(heap, who, v, "rope",
         Value::Rope(id) => heap.rope(id),
     )

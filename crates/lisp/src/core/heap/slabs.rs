@@ -4,11 +4,11 @@
 //! the slab slot up to [`INLINE_VEC_CAP`] and spilled to a `Vec` past it), [`Slabs`] (one `Vec`
 //! per kind — the LOCAL nursery/old generations and the frozen PRELUDE are all this shape) with
 //! the live-count / capacity / park-trim helpers the collector's sizing reads, [`CodeSlabs`]
-//! (the append-only `boxcar` slabs of one RUNTIME code generation), and [`SlabRef`], the borrow
-//! shim every accessor returns — a direct reference into a LOCAL/PRELUDE slab, or a pinned one
-//! into a RUNTIME generation. Fields and constructors are `pub(super)` because `heap.rs`,
-//! `gc.rs` and `gc_runtime.rs` address the slabs directly; `heap.rs` re-exports `VecStore`,
-//! `INLINE_VEC_CAP` and `SlabRef`.
+//! (the append-only `boxcar` slabs of one RUNTIME code generation). An accessor's borrow into
+//! a RUNTIME generation is a plain `&T`: `Heap::code_gen_ref`'s per-process cache keeps every
+//! generation it has handed out alive until `&mut self`. Fields and constructors are
+//! `pub(super)` because `heap.rs`, `gc.rs` and `gc_runtime.rs` address the slabs directly;
+//! `heap.rs` re-exports `VecStore` and `INLINE_VEC_CAP`.
 
 use super::*;
 
@@ -493,95 +493,6 @@ pub(super) struct CodeSlabs {
     /// once promoted (read-only), so append-only is sound. `OnceLock`-wrapped for
     /// the same reserve-then-fill cycle break as `closures` above.
     pub(super) envs: boxcar::Vec<OnceLock<EnvFrame>>,
-}
-
-/// A borrow into a slab, valid for as long as the wrapper is held — LOCAL / PRELUDE storage
-/// of `&self`, or a RUNTIME generation's slabs through the per-process generation cache
-/// ([`Heap::code_gen_ref`]), which keeps every `Arc<CodeSlabs>` it has handed out a borrow of
-/// alive until `&mut self`. So a concurrent Stage-4 free ([`Heap::free_runtime_gen`],
-/// ADR-091) can swap a generation out without invalidating an in-flight read, and a read
-/// costs no refcount traffic. `Deref`s to `T`, so call sites use it exactly like `&T`.
-/// (An `Arc` clone per borrow would cost two shared atomic RMWs per trie level of a
-/// `def`'d map read.)
-pub struct SlabRef<'a, T: ?Sized> {
-    /// Points into the borrowed slot. Valid for the wrapper's whole lifetime: LOCAL and
-    /// PRELUDE storage is `&'a self`'s, and a RUNTIME generation's slabs are kept alive for
-    /// any `&self`-borrow by the per-process generation cache (`Heap::code_gen_ref`).
-    ptr: *const T,
-    _life: std::marker::PhantomData<&'a T>,
-}
-
-// SAFETY: `SlabRef` is a plain shared borrow; it is `Send`/`Sync` exactly when `&T` is.
-unsafe impl<T: ?Sized + Sync> Sync for SlabRef<'_, T> {}
-unsafe impl<T: ?Sized + Sync> Send for SlabRef<'_, T> {}
-
-impl<'a, T: ?Sized> SlabRef<'a, T> {
-    /// A direct `&self`-borrow.
-    #[inline]
-    pub(super) fn direct(r: &'a T) -> Self {
-        SlabRef {
-            ptr: r as *const T,
-            _life: std::marker::PhantomData,
-        }
-    }
-    /// Re-project the borrow to a part of `T` (e.g. a field). Like `Ref::map`.
-    #[inline]
-    pub(crate) fn map<U: ?Sized>(self, f: impl FnOnce(&T) -> &U) -> SlabRef<'a, U> {
-        // SAFETY: `self.ptr` is valid (invariant of `SlabRef`); the projected `&U`
-        // points within the same slab the pin (moved below) keeps alive.
-        let ptr = f(unsafe { &*self.ptr }) as *const U;
-        SlabRef {
-            ptr,
-            _life: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<T: ?Sized> std::ops::Deref for SlabRef<'_, T> {
-    type Target = T;
-    #[inline]
-    fn deref(&self) -> &T {
-        // SAFETY: `ptr` is either a direct `&'a T` or points into the slab the held
-        // `_guard` keeps alive; both outlive `&self`.
-        unsafe { &*self.ptr }
-    }
-}
-
-// `&T`-like ergonomics so a `SlabRef` drops into most call sites unchanged.
-impl<T: ?Sized> AsRef<T> for SlabRef<'_, T> {
-    #[inline]
-    fn as_ref(&self) -> &T {
-        self
-    }
-}
-impl<T: ?Sized + std::fmt::Debug> std::fmt::Debug for SlabRef<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        (**self).fmt(f)
-    }
-}
-impl<T: ?Sized + std::fmt::Display> std::fmt::Display for SlabRef<'_, T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        (**self).fmt(f)
-    }
-}
-impl<T: ?Sized + PartialEq> PartialEq for SlabRef<'_, T> {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        **self == **other
-    }
-}
-impl<T: ?Sized + PartialEq> PartialEq<T> for SlabRef<'_, T> {
-    #[inline]
-    fn eq(&self, other: &T) -> bool {
-        **self == *other
-    }
-}
-// Comparing a `SlabRef<str>` against a string literal / `&str` (`sr == "foo"`).
-impl PartialEq<&str> for SlabRef<'_, str> {
-    #[inline]
-    fn eq(&self, other: &&str) -> bool {
-        &**self == *other
-    }
 }
 
 impl CodeSlabs {

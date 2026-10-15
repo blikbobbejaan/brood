@@ -9,7 +9,6 @@ use crate::error::{LispError, LispResult};
 
 use super::args::{arg, expect_int, expect_string, expect_string_ref};
 use super::realize_seqview;
-use crate::core::heap::SlabRef;
 use crate::core::value::StrId;
 use crate::syntax::printer;
 
@@ -282,7 +281,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
 /// already (`expect_string` still does that at ~113 other sites).
 struct StrArg<'h> {
     id: StrId,
-    s: SlabRef<'h, str>,
+    s: &'h str,
     chars: usize,
     ascii: bool,
 }
@@ -591,7 +590,7 @@ pub(super) fn str_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     } else {
         a.char_to_byte(h, start)
     };
-    let idx = match a.s[byte_start..].find(&*needle) {
+    let idx = match a.s[byte_start..].find(needle) {
         Some(rel) => a.byte_to_char(h, byte_start + rel) as i64,
         None => -1,
     };
@@ -660,7 +659,7 @@ pub(super) fn str_last_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
     } else {
         a.char_to_byte(h, end_char)
     };
-    Ok(Value::int(match a.s[..end].rfind(&*needle) {
+    Ok(Value::int(match a.s[..end].rfind(needle) {
         Some(b) => a.byte_to_char(h, b) as i64,
         None => -1,
     }))

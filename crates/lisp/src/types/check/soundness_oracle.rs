@@ -90,7 +90,7 @@ fn value_member_of(heap: &Heap, v: Value, ty: &Ty) -> bool {
         }
         Value::Str(id) => {
             if let Some(set) = ty.as_lit_str() {
-                if !set.contains(&*heap.string(id)) {
+                if !set.contains(heap.string(id)) {
                     return false;
                 }
             }

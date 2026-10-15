@@ -1224,7 +1224,7 @@ pub(super) fn vector_concat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     let tail = heap.seq_items(arg(args, 1))?;
     let head = heap.vector(id);
     let mut items = Vec::with_capacity(head.len() + tail.len());
-    items.extend_from_slice(&head);
+    items.extend_from_slice(head);
     items.extend(tail);
     Ok(heap.alloc_vector(items))
 }
@@ -1390,7 +1390,7 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
         Value::Nil => None,
         Value::Sym(s) => Some(s),
         // A module KEY as the image replay holds it (a string): the same name, interned.
-        Value::Str(id) => Some(value::intern(&heap.string(id))),
+        Value::Str(id) => Some(value::intern(heap.string(id))),
         v => {
             return Err(LispError::wrong_type(
                 heap,
@@ -1577,7 +1577,7 @@ pub(super) fn display_width(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         Value::Str(id) => {
             let (start_col, tab_width) = tab_layout(heap, "string/display-width", args, 1)?;
             Ok(Value::int(crate::host::text_width::display_width_from(
-                &heap.string(id),
+                heap.string(id),
                 start_col,
                 tab_width,
             ) as i64))

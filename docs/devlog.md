@@ -17886,3 +17886,22 @@ Nothing tested the rule, so `timer_test` "no way of ending a receive carries its
 into the next one" now covers a timeout, a match and a throwing guard. Sabotage: never
 clearing reds it, and so does keeping the deadline on any error (only the `:throw` case).
 10/10 on repeat; wasm suite 10/10.
+
+## 2026-10-15 (later) — `SlabRef` is gone; accessors return `&T`
+
+`SlabRef` had been a guard wrapper that pinned a RUNTIME generation. Since the per-process
+generation cache (`code_gen_ref`) keeps every generation it hands out alive until
+`&mut self`, every construction was `SlabRef::direct(&T)` around a raw pointer. Its unsafe
+derefs carried SAFETY comments about a guard that no longer existed.
+
+The heap accessors now return plain references, and the compiler checks that each borrow
+is tied to `&self`. With them went:
+- `rt_slab_ref` and `with_code_gen`, two trivial wrappers around `code_gen_ref`;
+- three unsafe blocks;
+- the `.map` projection;
+- about 30 `&*` re-borrows the wrapper forced (`clippy --fix`, reviewed).
+
+**A red caught here:** `9dc5ff29`'s new `RootsBuf` layout assertion broke the wasm32
+build, where a `usize` is four bytes. The JIT that reads +0/+8/+16 exists only on 64-bit,
+so the pin is now gated on `target_pointer_width = "64"`. Lesson: a `const` assertion about
+a layout must run the wasm check too.

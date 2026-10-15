@@ -977,47 +977,47 @@ impl Heap {
             // magnitude than any i64) — `BigInt::cmp` after promotion gives that
             // for free.
             (BigInt(_) | Int(_), BigInt(_) | Int(_)) => self.bigint_of(a).cmp(&self.bigint_of(b)),
-            (BigInt(x), Float(y)) => bigint_cmp_float(&self.bigint(x), y),
-            (Float(x), BigInt(y)) => bigint_cmp_float(&self.bigint(y), x).reverse(),
+            (BigInt(x), Float(y)) => bigint_cmp_float(self.bigint(x), y),
+            (Float(x), BigInt(y)) => bigint_cmp_float(self.bigint(y), x).reverse(),
             // Decimals order by value; against an Int/BigInt promote both to
             // BigDecimal; against a Float compare exactly in base 10 (the f64 is
             // an exact decimal — so ordering is precise, unlike the arithmetic
             // tower's deliberate float contagion).
-            (Decimal(x), Decimal(y)) => self.decimal(x).cmp(&self.decimal(y)),
+            (Decimal(x), Decimal(y)) => self.decimal(x).cmp(self.decimal(y)),
             (Decimal(x), Int(y)) => self.decimal(x).cmp(&bigdecimal::BigDecimal::from(y)),
-            (Int(x), Decimal(y)) => bigdecimal::BigDecimal::from(x).cmp(&self.decimal(y)),
+            (Int(x), Decimal(y)) => bigdecimal::BigDecimal::from(x).cmp(self.decimal(y)),
             (Decimal(x), BigInt(y)) => self
                 .decimal(x)
                 .cmp(&bigdecimal::BigDecimal::from(self.bigint(y).clone())),
             (BigInt(x), Decimal(y)) => {
-                bigdecimal::BigDecimal::from(self.bigint(x).clone()).cmp(&self.decimal(y))
+                bigdecimal::BigDecimal::from(self.bigint(x).clone()).cmp(self.decimal(y))
             }
-            (Decimal(x), Float(y)) => bigdecimal_cmp_float(&self.decimal(x), y),
-            (Float(x), Decimal(y)) => bigdecimal_cmp_float(&self.decimal(y), x).reverse(),
+            (Decimal(x), Float(y)) => bigdecimal_cmp_float(self.decimal(x), y),
+            (Float(x), Decimal(y)) => bigdecimal_cmp_float(self.decimal(y), x).reverse(),
             // Ratios order by value; against an Int/BigInt promote the integer to a
             // ratio; against a Float compare exactly (every finite f64 is a dyadic
             // rational); against a Decimal promote the (exact) decimal to a ratio.
-            (Ratio(x), Ratio(y)) => self.ratio(x).cmp(&self.ratio(y)),
+            (Ratio(x), Ratio(y)) => self.ratio(x).cmp(self.ratio(y)),
             (Ratio(x), Int(y)) => self.ratio(x).cmp(&num_rational::BigRational::from_integer(
                 num_bigint::BigInt::from(y),
             )),
             (Int(x), Ratio(y)) => {
                 num_rational::BigRational::from_integer(num_bigint::BigInt::from(x))
-                    .cmp(&self.ratio(y))
+                    .cmp(self.ratio(y))
             }
             (Ratio(x), BigInt(y)) => self.ratio(x).cmp(&num_rational::BigRational::from_integer(
                 self.bigint(y).clone(),
             )),
             (BigInt(x), Ratio(y)) => {
-                num_rational::BigRational::from_integer(self.bigint(x).clone()).cmp(&self.ratio(y))
+                num_rational::BigRational::from_integer(self.bigint(x).clone()).cmp(self.ratio(y))
             }
-            (Ratio(x), Float(y)) => ratio_cmp_float(&self.ratio(x), y),
-            (Float(x), Ratio(y)) => ratio_cmp_float(&self.ratio(y), x).reverse(),
-            (Ratio(x), Decimal(y)) => ratio_cmp_bigdecimal(&self.ratio(x), &self.decimal(y)),
+            (Ratio(x), Float(y)) => ratio_cmp_float(self.ratio(x), y),
+            (Float(x), Ratio(y)) => ratio_cmp_float(self.ratio(y), x).reverse(),
+            (Ratio(x), Decimal(y)) => ratio_cmp_bigdecimal(self.ratio(x), self.decimal(y)),
             (Decimal(x), Ratio(y)) => {
-                ratio_cmp_bigdecimal(&self.ratio(y), &self.decimal(x)).reverse()
+                ratio_cmp_bigdecimal(self.ratio(y), self.decimal(x)).reverse()
             }
-            (Str(x), Str(y)) => self.string(x).cmp(&self.string(y)),
+            (Str(x), Str(y)) => self.string(x).cmp(self.string(y)),
             // Symbols/keywords sort by spelling so it's stable and human-meaningful.
             (Sym(x), Sym(y)) | (Keyword(x), Keyword(y)) => {
                 crate::core::value::symbol_name(x).cmp(&crate::core::value::symbol_name(y))

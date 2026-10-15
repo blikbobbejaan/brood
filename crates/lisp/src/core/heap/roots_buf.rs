@@ -24,6 +24,9 @@ pub(crate) struct RootsBuf {
     cap: usize,
 }
 
+// 64-bit only: the JIT that reads these offsets exists only there, and a 32-bit `usize`
+// (wasm32) puts the same fields at +4/+8.
+#[cfg(target_pointer_width = "64")]
 const _: () = assert!(
     std::mem::offset_of!(RootsBuf, ptr) == 0
         && std::mem::offset_of!(RootsBuf, len) == 8

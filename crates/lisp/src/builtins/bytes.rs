@@ -74,16 +74,12 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         bytes_index_of);
 }
 
-/// Borrow a `Value::Bytes`'s raw bytes, or a type error. The borrow is a guarded
-/// [`SlabRef`](crate::core::heap::SlabRef) (derefs to `&[u8]`) so a RUNTIME bytes
-/// value's generation can't be freed while it's read (ADR-091 Stage 4).
-fn as_bytes<'h>(
-    heap: &'h Heap,
-    who: &str,
-    v: Value,
-) -> Result<crate::core::heap::SlabRef<'h, [u8]>, LispError> {
+/// Borrow a `Value::Bytes`'s raw bytes, or a type error. The borrow lives as long as
+/// `&heap`, which is what keeps a RUNTIME bytes value's generation alive while it's read
+/// (ADR-091 Stage 4, via `Heap::code_gen_ref`'s cache).
+fn as_bytes<'h>(heap: &'h Heap, who: &str, v: Value) -> Result<&'h [u8], LispError> {
     expect!(heap, who, v, "bytes",
-        Value::Bytes(id) => heap.bytes(id).map(|b| -> &[u8] { b.as_bytes() }),
+        Value::Bytes(id) => heap.bytes(id).as_bytes(),
     )
 }
 

@@ -1473,7 +1473,7 @@ fn bind_params(
         let cl_data = heap.closure(cl);
         let arm = match cl_data.select_arm(argv.len()) {
             Some(a) => a,
-            None => return Err(arity_error_for(&cl_data, argv.len())),
+            None => return Err(arity_error_for(cl_data, argv.len())),
         };
         params.extend_from_slice(&arm.params);
         optionals.extend_from_slice(&arm.optionals);

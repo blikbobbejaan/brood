@@ -542,7 +542,7 @@ mod tests {
             let crate::core::value::ValueRef::Str(id) = read[0].unpack() else {
                 panic!("{s:?} did not read back as a string")
             };
-            assert_eq!(&*heap.string(id), s, "the literal changed the string");
+            assert_eq!(heap.string(id), s, "the literal changed the string");
         }
     }
 

@@ -1462,7 +1462,7 @@ pub(crate) fn every_provided_feature_is_embedded(heap: &Heap) -> bool {
         _ => return false,
     };
     heap.map_entries(map_id).iter().all(|(k, _)| match *k {
-        Value::Str(s) => is_embedded_module(&heap.string(s)),
+        Value::Str(s) => is_embedded_module(heap.string(s)),
         _ => false,
     })
 }

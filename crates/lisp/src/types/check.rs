@@ -384,7 +384,7 @@ fn loaded_feature_modules(heap: &Heap) -> Vec<Symbol> {
     heap.map_entries(mid)
         .into_iter()
         .filter_map(|(k, _)| match k {
-            Value::Str(id) => Some(value::intern(&heap.string(id))),
+            Value::Str(id) => Some(value::intern(heap.string(id))),
             _ => None,
         })
         .collect()

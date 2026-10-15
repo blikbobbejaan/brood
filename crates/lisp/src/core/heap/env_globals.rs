@@ -21,7 +21,7 @@ impl Heap {
     // top-level frame's parent chain bottoms out there. (During prelude *build*
     // the global is instead a real local root frame with no parent.)
 
-    pub(super) fn env_frame(&self, env: EnvId) -> SlabRef<'_, EnvFrame> {
+    pub(super) fn env_frame(&self, env: EnvId) -> &EnvFrame {
         // `EnvId::GLOBAL` is a sentinel (region bits `0b11`) — there is no
         // frame to return; the global scope routes through
         // `runtime.globals_read()` instead. Callers MUST short-circuit
@@ -38,20 +38,20 @@ impl Heap {
             LOCAL if env.is_old() => {
                 #[cfg(debug_assertions)]
                 self.check_epoch_aged(true, env.generation(), env.index(), "env_frame", env.0);
-                SlabRef::direct(&self.old().envs[env.index()])
+                &self.old().envs[env.index()]
             }
             LOCAL => {
                 #[cfg(debug_assertions)]
                 self.check_epoch_aged(false, env.generation(), env.index(), "env_frame", env.0);
-                SlabRef::direct(&self.local.envs[env.index()])
+                &self.local.envs[env.index()]
             }
-            RUNTIME => self.rt_slab_ref(env.code_gen(), |c| {
-                c.envs
-                    .get(env.index())
-                    .expect("runtime env frame")
-                    .get()
-                    .expect("runtime env read before promote filled its slot")
-            }),
+            RUNTIME => self
+                .code_gen_ref(env.code_gen())
+                .envs
+                .get(env.index())
+                .expect("runtime env frame")
+                .get()
+                .expect("runtime env read before promote filled its slot"),
             _ => unreachable!("env frames live only in the local or runtime region"),
         }
     }
@@ -63,10 +63,10 @@ impl Heap {
     /// the shared global table), so the walk stops there — globals resolve on
     /// the receiver, never travel. The borrow is tied to `&self` (the LOCAL slab
     /// or the stable-ref RUNTIME boxcar), so callers walk a chain without cloning.
-    pub fn env_frame_ref(&self, env: EnvId) -> (Option<EnvId>, SlabRef<'_, [(Symbol, Value)]>) {
+    pub fn env_frame_ref(&self, env: EnvId) -> (Option<EnvId>, &[(Symbol, Value)]) {
         let frame = self.env_frame(env);
         let parent = frame.parent;
-        (parent, frame.map(|f| f.vars.as_slice()))
+        (parent, frame.vars.as_slice())
     }
 
     /// The name `env`'s *immediate* frame binds to `val`, if any — used by the VM's

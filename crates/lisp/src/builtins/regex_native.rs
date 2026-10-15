@@ -148,7 +148,7 @@ fn string_id(heap: &Heap, who: &str, v: Value) -> Result<StrId, LispError> {
 /// A pattern argument, compiled.
 fn pattern_arg(heap: &Heap, who: &str, v: Value, kind: Kind) -> Result<Arc<Regex>, LispError> {
     let pattern = expect_string_ref(heap, who, v)?;
-    compiled(who, &pattern, kind)
+    compiled(who, pattern, kind)
 }
 
 /// The byte just past the character that starts at byte `at` of `s` (one past the end
@@ -250,7 +250,7 @@ fn match_value(heap: &mut Heap, id: StrId, spans: &[Option<Span>]) -> Value {
 fn regex_match(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let rx = pattern_arg(heap, "%regex-match?", arg(args, 0), Kind::LeftmostFirst)?;
     let s = expect_string_ref(heap, "%regex-match?", arg(args, 1))?;
-    Ok(Value::Bool(rx.is_match(&*s)))
+    Ok(Value::Bool(rx.is_match(s)))
 }
 
 /// `(%regex-find pattern s from)`
@@ -262,11 +262,11 @@ fn regex_find(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let start = heap.str_char_to_byte(id, from);
         let s = heap.string(id);
         let mut caps = rx.create_captures();
-        rx.search_captures(&Input::new(&*s).range(start..), &mut caps);
+        rx.search_captures(&Input::new(s).range(start..), &mut caps);
         if !caps.is_match() {
             return Ok(Value::Nil);
         }
-        match_spans(&s, &caps)
+        match_spans(s, &caps)
     };
     Ok(match_value(heap, id, &spans))
 }
@@ -284,14 +284,14 @@ fn regex_find_all(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let mut all = Vec::new();
         let mut at = 0usize;
         while at <= s.len() {
-            rx.search_captures(&Input::new(&*s).range(at..), &mut caps);
+            rx.search_captures(&Input::new(s).range(at..), &mut caps);
             let Some(whole) = caps.get_match() else { break };
             at = if whole.is_empty() {
-                next_char(&s, whole.end())
+                next_char(s, whole.end())
             } else {
                 whole.end()
             };
-            all.push(match_spans(&s, &caps));
+            all.push(match_spans(s, &caps));
         }
         all
     };
@@ -349,7 +349,7 @@ fn vector_arg(heap: &Heap, who: &str, v: Value) -> Result<Vec<Value>, LispError>
 fn regex_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let patterns: Vec<Box<str>> = vector_arg(heap, "%regex-tokens", arg(args, 0))?
         .into_iter()
-        .map(|p| expect_string_ref(heap, "%regex-tokens", p).map(|s| Box::from(&*s)))
+        .map(|p| expect_string_ref(heap, "%regex-tokens", p).map(Box::from))
         .collect::<Result<_, _>>()?;
     let tags = vector_arg(heap, "%regex-tokens", arg(args, 1))?;
     if tags.len() != patterns.len() {
@@ -367,22 +367,22 @@ fn regex_tokens(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         let mut at = 0usize;
         while at < s.len() {
             // the earliest place ANY rule matches; nothing before it can start a token
-            let Some(hit) = lex.any_rule.search(&Input::new(&*s).range(at..)) else {
+            let Some(hit) = lex.any_rule.search(&Input::new(s).range(at..)) else {
                 break;
             };
             let p = hit.start();
             let token = lex.rules.iter().enumerate().find_map(|(k, rule)| {
-                longest_at(rule, &s, p, s.len())
+                longest_at(rule, s, p, s.len())
                     .filter(|&e| e > p)
                     .map(|e| (e, k))
             });
             match token {
                 Some((end, k)) => {
-                    tokens.push((span(&s, p, end), k));
+                    tokens.push((span(s, p, end), k));
                     at = end;
                 }
                 // only empty matches start here: no token, look from the next character
-                None => at = next_char(&s, p),
+                None => at = next_char(s, p),
             }
         }
         tokens
@@ -410,13 +410,13 @@ fn regex_paint(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         if s.is_empty() {
             return Ok(Value::Nil);
         }
-        ends_at(&prefix, &s, 0).into_iter().find_map(|p| {
-            let mut ends = ends_at(&pattern, &s, p);
+        ends_at(&prefix, s, 0).into_iter().find_map(|p| {
+            let mut ends = ends_at(&pattern, s, p);
             if lazy {
                 ends.reverse();
             }
             ends.into_iter()
-                .find(|&e| longest_at(&suffix, &s, e, s.len()).is_some())
+                .find(|&e| longest_at(&suffix, s, e, s.len()).is_some())
                 .map(|e| (p, e))
         })
     };

@@ -281,7 +281,7 @@ fn path_guard_assertion_inner(heap: &Heap, test: Value) -> Option<PathGuard> {
         };
         let ty = match lit {
             Value::Keyword(_) | Value::Int(_) | Value::Bool(_) | Value::Nil => Ty::of_value(lit),
-            Value::Str(id) => Ty::str_lit(&heap.string(id)),
+            Value::Str(id) => Ty::str_lit(heap.string(id)),
             _ => return None,
         };
         let (base, keys) = path_of(heap, path)?;
@@ -933,7 +933,7 @@ fn literal_eq_guard(heap: &Heap, a: Value, b: Value) -> Option<(Symbol, Ty)> {
         // `as_lit_str`). Int and keyword literals have refined here since ADR-120; this
         // is strings catching up, and it is what lets `(if (= expr "1") (string/->number
         // expr) 0)` know its parse cannot fail.
-        Value::Str(id) => Some((s, Ty::str_lit(&heap.string(id)))),
+        Value::Str(id) => Some((s, Ty::str_lit(heap.string(id)))),
         other => Some((s, Ty::of_value(other))),
     }
 }

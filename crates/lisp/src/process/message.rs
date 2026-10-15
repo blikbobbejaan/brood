@@ -612,8 +612,8 @@ fn copy_value_inner<T: CopyTarget>(
         ),
         // Raw bytes ship their Arc<SharedBlob> by reference (no byte copy). Byte-clean.
         Value::Bytes(id) => target.leaf(
-            |dst| dst.alloc_bytes(Arc::clone(&src.bytes(id))),
-            || Message::Bytes(Arc::clone(&src.bytes(id))),
+            |dst| dst.alloc_bytes(Arc::clone(src.bytes(id))),
+            || Message::Bytes(Arc::clone(src.bytes(id))),
         ),
         // A LOCAL Shared string crosses by its `Arc`; PRELUDE/RUNTIME and LOCAL Inline
         // strings are copied. Neither needs charging beyond its one node: a string big
@@ -622,7 +622,7 @@ fn copy_value_inner<T: CopyTarget>(
         Value::Str(id) => match src.local_shared_blob(id) {
             Some(blob) => target.shared_string(blob),
             None => target.leaf(
-                |dst| dst.alloc_string(&src.string(id)),
+                |dst| dst.alloc_string(src.string(id)),
                 || Message::Str(src.string(id).to_string()),
             ),
         },

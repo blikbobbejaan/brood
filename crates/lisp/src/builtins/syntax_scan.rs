@@ -435,7 +435,7 @@ pub(super) fn scan_form_start_2(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
             (0, 0)
         } else {
             let table = form_scan_table(h, v, s.len());
-            form_start_pair(&s, table.as_deref(), pos as usize)
+            form_start_pair(s, table.as_deref(), pos as usize)
         }
     };
     let items = vec![Value::int(prev as i64), Value::int(best as i64)];
@@ -491,7 +491,7 @@ pub(super) fn scan_form_end(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
         Value::Str(id) => h.str_char_to_byte(id, from),
         _ => s.char_indices().nth(from).map_or(s.len(), |(b, _)| b),
     };
-    let end = scan_form_end_bytes(&s, start_byte, from, nforms);
+    let end = scan_form_end_bytes(s, start_byte, from, nforms);
     Ok(Value::int(end as i64))
 }
 
@@ -504,7 +504,7 @@ pub(super) fn scan_form_start(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
         return Ok(Value::int(0));
     }
     let table = form_scan_table(h, v, s.len());
-    let (best, _) = form_start_pair(&s, table.as_deref(), pos as usize);
+    let (best, _) = form_start_pair(s, table.as_deref(), pos as usize);
     Ok(Value::int(best as i64))
 }
 

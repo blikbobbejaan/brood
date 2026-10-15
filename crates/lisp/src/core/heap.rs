@@ -59,7 +59,7 @@ use crate::error::LispError;
 macro_rules! region_ref {
     ($(#[$attribute:meta])* $name:ident, $id:ty, $field:ident, $t:ty, $what:literal) => {
         $(#[$attribute])*
-        pub fn $name(&self, id: $id) -> SlabRef<'_, $t> {
+        pub fn $name(&self, id: $id) -> &$t {
             match id.region() {
                 LOCAL if id.is_old() => {
                     #[cfg(debug_assertions)]
@@ -70,7 +70,7 @@ macro_rules! region_ref {
                         stringify!($name),
                         id.0,
                     );
-                    SlabRef::direct(&self.old().$field[id.index()])
+                    &self.old().$field[id.index()]
                 }
                 LOCAL => {
                     #[cfg(debug_assertions)]
@@ -81,16 +81,14 @@ macro_rules! region_ref {
                         stringify!($name),
                         id.0,
                     );
-                    SlabRef::direct(&self.local.$field[id.index()])
+                    &self.local.$field[id.index()]
                 }
-                PRELUDE => SlabRef::direct(&self.prelude.slabs.$field[id.index()]),
-                RUNTIME => SlabRef::direct(
-                    &self
-                        .code_gen_ref(id.code_gen())
-                        .$field
-                        .get(id.index())
-                        .expect($what),
-                ),
+                PRELUDE => &self.prelude.slabs.$field[id.index()],
+                RUNTIME => self
+                    .code_gen_ref(id.code_gen())
+                    .$field
+                    .get(id.index())
+                    .expect($what),
                 _ => unreachable!("invalid handle region"),
             }
         }
@@ -1269,7 +1267,6 @@ pub use self::runtime_code::{
 };
 mod slabs;
 mod small_map;
-pub use self::slabs::SlabRef;
 use self::slabs::{
     owned_bytes, park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
     CodeSlabs, Slabs, PARK_TRIM_GROWTH_SLOTS,
@@ -2010,16 +2007,9 @@ impl Heap {
 
     // ===== Accessors — read LOCAL/PRELUDE/RUNTIME values =======================
 
-    /// Run `f` against RUNTIME generation `g`'s slabs — [`code_gen_ref`](Self::code_gen_ref)
-    /// for callers that copy a value straight out.
-    #[inline]
-    fn with_code_gen<R>(&self, g: usize, f: impl FnOnce(&CodeSlabs) -> R) -> R {
-        f(self.code_gen_ref(g))
-    }
-
     /// RUNTIME generation `g`'s slabs, borrowed for as long as `&self` — no refcount bump.
     ///
-    /// ADR-224's reasoning, extended from `with_code_gen` to every RUNTIME read: a `get` on a
+    /// ADR-224's reasoning, extended to every RUNTIME read: a `get` on a
     /// `def`'d map dereferences one trie node per level, and cloning the generation's `Arc`
     /// there would cost two contended atomics per level.
     ///
@@ -2140,10 +2130,12 @@ impl Heap {
             }
             PRELUDE => self.prelude.slabs.pairs[id.index()],
             // Copy-out read: borrow the generation rather than pinning it, so a pair
-            // deref costs no atomic refcount traffic (see `with_code_gen`).
-            RUNTIME => self.with_code_gen(id.code_gen(), |slabs| {
-                *slabs.pairs.get(id.index()).expect("runtime pair handle")
-            }),
+            // deref costs no atomic refcount traffic (see `code_gen_ref`).
+            RUNTIME => *self
+                .code_gen_ref(id.code_gen())
+                .pairs
+                .get(id.index())
+                .expect("runtime pair handle"),
             _ => unreachable!("invalid handle region"),
         }
     }
@@ -2156,47 +2148,29 @@ impl Heap {
     region_ref!(vector, VecId, vectors, [Value], "runtime vector handle");
     region_ref!(map_node, MapId, maps, MapNode, "runtime map node");
 
-    /// Build a guarded [`SlabRef`] into RUNTIME generation `g` by projecting the
-    /// generation's [`CodeSlabs`] to the `&T` a hand-written accessor wants. The
-    /// [`Guard`] is moved into the `SlabRef`, keeping the generation's slab alive for
-    /// the borrow's lifetime — so a concurrent Stage-4 free can't drop it mid-read
-    /// (ADR-091). Mirrors the `RUNTIME` arm of [`region_ref!`] for the accessors that
-    /// can't use the macro (`OnceLock`/`LocalString`/`Arc` projections).
-    #[inline]
-    fn rt_slab_ref<T: ?Sized>(
-        &self,
-        g: usize,
-        project: impl FnOnce(&CodeSlabs) -> &T,
-    ) -> SlabRef<'_, T> {
-        // A generation can be **freed concurrently** by the multi-process collector while
-        // other processes run (ADR-091); the per-process cache keeps the slabs this borrow
-        // points into alive until `&mut self` — see `code_gen_ref`. No refcount bump.
-        SlabRef::direct(project(self.code_gen_ref(g)))
-    }
-
     /// Resolve a closure handle to its `&Closure`. Hand-written (not via
     /// `region_ref!`) because the RUNTIME slab wraps each entry in a `OnceLock`
     /// (reserve-then-fill cycle break, see `CodeSlabs::closures`); the cell is
     /// always filled before its handle is published, so `get()` is infallible in
     /// practice.
-    pub fn closure(&self, id: ClosureId) -> SlabRef<'_, Closure> {
+    pub fn closure(&self, id: ClosureId) -> &Closure {
         match id.region() {
             LOCAL if id.is_old() => {
                 local_gc_check!(old, self, id, "closure");
-                SlabRef::direct(&self.old().closures[id.index()])
+                &self.old().closures[id.index()]
             }
             LOCAL => {
                 local_gc_check!(nursery, self, id, "closure");
-                SlabRef::direct(&self.local.closures[id.index()])
+                &self.local.closures[id.index()]
             }
-            PRELUDE => SlabRef::direct(&self.prelude.slabs.closures[id.index()]),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.closures
-                    .get(id.index())
-                    .expect("runtime closure handle")
-                    .get()
-                    .expect("runtime closure read before promote filled its slot")
-            }),
+            PRELUDE => &self.prelude.slabs.closures[id.index()],
+            RUNTIME => self
+                .code_gen_ref(id.code_gen())
+                .closures
+                .get(id.index())
+                .expect("runtime closure handle")
+                .get()
+                .expect("runtime closure read before promote filled its slot"),
             _ => unreachable!("invalid handle region"),
         }
     }

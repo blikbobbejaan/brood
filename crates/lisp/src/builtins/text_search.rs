@@ -181,7 +181,7 @@ fn rope_find(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let from = expect_int(heap, who, arg(args, 2))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
     Ok(Value::Int(
-        find_from(&rope, &needle, from, fold).map_or(-1, |i| i as i64),
+        find_from(rope, &needle, from, fold).map_or(-1, |i| i as i64),
     ))
 }
 
@@ -193,7 +193,7 @@ fn rope_rfind(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let before = expect_int(heap, who, arg(args, 2))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
     Ok(Value::Int(
-        find_last_before(&rope, &needle, before, fold).map_or(-1, |i| i as i64),
+        find_last_before(rope, &needle, before, fold).map_or(-1, |i| i as i64),
     ))
 }
 
@@ -238,5 +238,5 @@ fn rope_skip(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         .collect();
     let at = expect_int(heap, who, arg(args, 1))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
-    Ok(Value::Int(skip_run(&rope, at, forward, &set, inside) as i64))
+    Ok(Value::Int(skip_run(rope, at, forward, &set, inside) as i64))
 }

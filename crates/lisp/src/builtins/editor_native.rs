@@ -205,7 +205,7 @@ fn string_width_to_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     };
     let (start_col, tab_width) = tab_layout(heap, "string/width->index", args, 2)?;
     Ok(Value::int(
-        crate::host::text_width::index_at_cell_from(&s, cell, start_col, tab_width) as i64,
+        crate::host::text_width::index_at_cell_from(s, cell, start_col, tab_width) as i64,
     ))
 }
 
@@ -224,10 +224,10 @@ fn string_expand_tabs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         }
     };
     let (start_col, tab_width) = tab_layout(heap, "string/expand-tabs", args, 1)?;
-    let expanded =
-        match crate::host::text_width::expand_tabs(&heap.string(id), start_col, tab_width) {
-            std::borrow::Cow::Borrowed(_) => return Ok(Value::Str(id)),
-            std::borrow::Cow::Owned(expanded) => expanded,
-        };
+    let expanded = match crate::host::text_width::expand_tabs(heap.string(id), start_col, tab_width)
+    {
+        std::borrow::Cow::Borrowed(_) => return Ok(Value::Str(id)),
+        std::borrow::Cow::Owned(expanded) => expanded,
+    };
     Ok(heap.alloc_string(&expanded))
 }

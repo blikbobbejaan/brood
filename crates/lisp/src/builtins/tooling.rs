@@ -247,7 +247,7 @@ pub(super) fn private_p(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRes
 fn existing_name_arg(heap: &Heap, who: &str, v: Value) -> Result<Option<value::Symbol>, LispError> {
     match v {
         Value::Sym(s) => Ok(Some(s)),
-        Value::Str(id) => Ok(value::intern_existing(&heap.string(id))),
+        Value::Str(id) => Ok(value::intern_existing(heap.string(id))),
         other => Err(LispError::wrong_type(heap, who, "symbol or string", other)),
     }
 }

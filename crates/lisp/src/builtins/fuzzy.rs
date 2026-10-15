@@ -206,7 +206,7 @@ fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then_with(|| {
             let (left, right) = (cands[a.2], cands[b.2]);
             match (left.unpack(), right.unpack()) {
-                (ValueRef::Str(l), ValueRef::Str(r)) => heap.string(l).cmp(&*heap.string(r)),
+                (ValueRef::Str(l), ValueRef::Str(r)) => heap.string(l).cmp(heap.string(r)),
                 _ => std::cmp::Ordering::Equal,
             }
         })

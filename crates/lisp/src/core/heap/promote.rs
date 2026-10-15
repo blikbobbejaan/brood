@@ -131,7 +131,7 @@ impl Heap {
             ValueRef::Bytes(id) if id.region() == LOCAL => {
                 // A leaf: share the Arc<SharedBlob> into the shared region byte-clean —
                 // never through the UTF-8 string path. Just an Arc bump.
-                let b = Arc::clone(&self.bytes(id));
+                let b = Arc::clone(self.bytes(id));
                 Value::bytes(self.runtime.push_bytes(b))
             }
             ValueRef::Rope(id) if id.region() == LOCAL => {

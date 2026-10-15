@@ -117,9 +117,9 @@ fn write_value(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u
         ValueRef::Str(id) => {
             let s = heap.string(id);
             if readable {
-                write_string_literal(out, &s);
+                write_string_literal(out, s);
             } else {
-                out.push_str(&s);
+                out.push_str(s);
             }
         }
         ValueRef::Pair(_) => write_list(out, heap, v, readable, depth),

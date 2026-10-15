@@ -861,19 +861,21 @@ impl Heap {
     /// Resolve a rope handle to its `&ropey::Rope`. LOCAL slots are the common
     /// case; RUNTIME holds a rope `def`'d to a global (shared read-only across
     /// the runtime's processes). There is no PRELUDE rope (see `to_prelude`).
-    pub fn rope(&self, id: RopeId) -> SlabRef<'_, ropey::Rope> {
+    pub fn rope(&self, id: RopeId) -> &ropey::Rope {
         match id.region() {
             LOCAL if id.is_old() => {
                 local_gc_check!(old, self, id, "rope");
-                SlabRef::direct(&self.old().ropes[id.index()])
+                &self.old().ropes[id.index()]
             }
             LOCAL => {
                 local_gc_check!(nursery, self, id, "rope");
-                SlabRef::direct(&self.local.ropes[id.index()])
+                &self.local.ropes[id.index()]
             }
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.ropes.get(id.index()).expect("runtime rope handle")
-            }),
+            RUNTIME => self
+                .code_gen_ref(id.code_gen())
+                .ropes
+                .get(id.index())
+                .expect("runtime rope handle"),
             _ => unreachable!("Rope handles live only in LOCAL or RUNTIME"),
         }
     }

@@ -335,27 +335,27 @@ impl Heap {
         }
     }
 
-    pub fn string(&self, id: StrId) -> SlabRef<'_, str> {
+    pub fn string(&self, id: StrId) -> &str {
         match id.region() {
             LOCAL if id.is_old() => {
                 local_gc_check!(old, self, id, "string");
-                SlabRef::direct(self.old().strings[id.index()].as_str())
+                self.old().strings[id.index()].as_str()
             }
             LOCAL => {
                 local_gc_check!(nursery, self, id, "string");
-                SlabRef::direct(self.local.strings[id.index()].as_str())
+                self.local.strings[id.index()].as_str()
             }
             // PRELUDE's `Slabs::strings` is also `Vec<LocalString>` because
             // it shares the `Slabs` shape, but `freeze_as_shared_code`
             // inline-extracts any `Shared` entries — every prelude slot is
             // `Inline`. `as_str` works either way.
-            PRELUDE => SlabRef::direct(self.prelude.slabs.strings[id.index()].as_str()),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.strings
-                    .get(id.index())
-                    .expect("runtime string handle")
-                    .as_str()
-            }),
+            PRELUDE => self.prelude.slabs.strings[id.index()].as_str(),
+            RUNTIME => self
+                .code_gen_ref(id.code_gen())
+                .strings
+                .get(id.index())
+                .expect("runtime string handle")
+                .as_str(),
             _ => unreachable!("invalid handle region"),
         }
     }
@@ -387,7 +387,7 @@ mod shared_text_tests {
         assert!(heap
             .local_shared_blob(id)
             .is_some_and(|blob| blob.is_text()));
-        assert_eq!(&*heap.string(id), text.as_str());
+        assert_eq!(heap.string(id), text.as_str());
     }
 }
 
