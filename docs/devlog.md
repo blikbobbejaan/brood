@@ -17869,3 +17869,20 @@ say whether it carries a handle; writing that list immediately caught `Pid`.
 
 GC stress plus `BROOD_GC_VERIFY` on seven files are green, as is a 1650-program fuzz
 differential.
+
+## 2026-10-15 (later) — `receive_match_timed` has one exit
+
+The scan-and-wait loop moved into `scan_until_answered`, which only says how the receive
+ended. `receive_match_timed` then does what every ending shares, once: drop the scan's
+operand roots, and clear the persisted capture-mode deadline unless a control signal
+(suspend, kill) ended it.
+
+The six hand-written exits had looked different:
+- one checked `capture` alone, one added `!is_control()`, and the kill path skipped the
+  clear;
+- all of these turned out to be the same rule, so behaviour is unchanged.
+
+Nothing tested the rule, so `timer_test` "no way of ending a receive carries its deadline
+into the next one" now covers a timeout, a match and a throwing guard. Sabotage: never
+clearing reds it, and so does keeping the deadline on any error (only the `:throw` case).
+10/10 on repeat; wasm suite 10/10.

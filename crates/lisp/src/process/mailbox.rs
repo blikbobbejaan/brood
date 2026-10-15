@@ -1314,37 +1314,42 @@ fn receive_match_timed(
         Value::Ref(id) if recv_mark_enabled() => heap.recv_mark_for(id),
         _ => None,
     };
+    let result = scan_until_answered(heap, &ctx, rbase, mark, deadline);
+    // The one exit, for every way the receive ends: this scan's operand roots go, and so
+    // does a persisted capture-mode deadline — unless a control signal (suspend, kill)
+    // ended the scan, since a suspended receive resumes against the deadline it stored. A
+    // nil-timeout receive never persisted one, so it skips the lock.
+    heap.truncate_roots(rbase);
+    let resumes = matches!(&result, Err(error) if error.is_control());
+    if capture && deadline.is_some() && !resumes {
+        crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
+    }
+    result
+}
+
+/// The scan-and-wait loop of [`receive_match_timed`]: scan the queue, then answer the
+/// match, time out, suspend (a clean top-level capture receive), or block and re-scan.
+/// Returns how the receive ended; the cleanup every ending shares is the caller's.
+fn scan_until_answered(
+    heap: &mut Heap,
+    ctx: &Ctx,
+    rbase: usize,
+    mark: Option<u64>,
+    deadline: Option<SchedDeadline>,
+) -> LispResult {
     let mut i = 0usize;
     loop {
         // Scan the queued messages for a ready clause (advancing `i` past
         // non-matches). The wait, below, is the only blocking step — this split is
         // the seam the coming state-capture path uses: there, a `None` becomes a
         // *suspend signal* returned to the scheduler instead of a `wait_for_message`.
-        match scan_mailbox(heap, &ctx, rbase, &mut i, mark) {
-            Ok(Some(matched)) => {
-                // The receive completed (a clause matched) — clear any persisted
-                // capture-mode deadline so the next receive starts fresh. A nil-timeout
-                // receive (`deadline` None) never persisted one, so it skips the lock —
-                // the previous receive's exit already cleared the slot.
-                if capture && deadline.is_some() {
-                    crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
-                }
-                heap.truncate_roots(rbase);
-                return Ok(matched);
-            }
-            Ok(None) => {
-                // Scanned every queued message with no match.
-                if let Some(d) = deadline {
-                    if d.reached() {
-                        // The receive completed via timeout — answer `nil` (the macro's
-                        // `after` branch tests for it) and clear the persisted
-                        // capture-mode deadline.
-                        if capture {
-                            crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
-                        }
-                        heap.truncate_roots(rbase);
-                        return Ok(Value::Nil);
-                    }
+        match scan_mailbox(heap, ctx, rbase, &mut i, mark)? {
+            Some(matched) => return Ok(matched),
+            None => {
+                // Scanned every queued message with no match. A deadline that has passed
+                // completes the receive with `nil` (the macro's `after` branch tests for it).
+                if deadline.is_some_and(SchedDeadline::reached) {
+                    return Ok(Value::Nil);
                 }
                 // About to park (no clause matched, and no timeout has fired): republish
                 // this process's LOCAL footprint + GC count so an observer's `process-info`
@@ -1391,12 +1396,11 @@ fn receive_match_timed(
                         let mut st = crate::core::sync::lock(&ctx.mailbox.state);
                         st.scanned = i.min(st.queue.len());
                     }
-                    set_self_status(&ctx, ST_WAITING);
+                    set_self_status(ctx, ST_WAITING);
                     if let Some(d) = deadline {
                         let gen = ctx.mailbox.timer_gen.fetch_add(1, Ordering::Relaxed) + 1;
                         arm_timer(ctx.pid, d, gen);
                     }
-                    heap.truncate_roots(rbase);
                     return Err(LispError::suspend(deadline));
                 }
                 // A green process dirty-blocking (not the root thread): record which
@@ -1419,14 +1423,14 @@ fn receive_match_timed(
                         );
                     }
                 }
-                wait_for_message(&ctx, i, deadline);
+                wait_for_message(ctx, i, deadline);
                 // Back from the wait → running again. This *block* path (the root thread,
                 // and a native-nested capture receive — §7.4) returns inline without a
                 // `run_one`, so its `ST_WAITING` would otherwise leak into the next scan
                 // (and a `process-info` after the receive would read `:waiting` while
                 // running). The capture path that suspends above is flipped back by
                 // `run_one` on resume instead.
-                set_self_status(&ctx, ST_RUNNING);
+                set_self_status(ctx, ST_RUNNING);
                 // An `(exit …)` may have woken us rather than a message, and a blocked
                 // receive has no `run_one` boundary to check `kill_pending`, so do it here
                 // — only in a scheduler-run green process, whose body driver turns the
@@ -1435,30 +1439,14 @@ fn receive_match_timed(
                 if crate::process::in_capture_run()
                     && ctx.mailbox.kill_pending.load(Ordering::Relaxed)
                 {
-                    heap.truncate_roots(rbase);
                     return Err(LispError::kill_signal());
                 }
                 // The mailbox bound (ADR-307), re-probed on every wake of this BLOCKING
                 // path: the entry probe ran once, and a flood arriving while blocked would
                 // otherwise surface only at a quantum rollover. Raised like the entry probe.
                 if let Some((len, limit)) = ctx.mailbox.take_overflow_hit() {
-                    if capture && deadline.is_some() {
-                        crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
-                    }
-                    heap.truncate_roots(rbase);
                     return Err(crate::eval::proc_mailbox_limit_error(len, limit));
                 }
-            }
-            Err(e) => {
-                // A control signal (suspend) keeps the in-progress receive's persisted
-                // deadline; a real error (e.g. the matcher threw) ends this receive, so
-                // clear it lest a later receive in this process reuse a stale deadline.
-                // (Nothing to clear when this receive had no deadline — see the match arm.)
-                if capture && deadline.is_some() && !e.is_control() {
-                    crate::core::sync::lock(&ctx.mailbox.state).recv_deadline = None;
-                }
-                heap.truncate_roots(rbase);
-                return Err(e);
             }
         }
     }

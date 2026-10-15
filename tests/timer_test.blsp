@@ -58,3 +58,34 @@
             m (monitor t))
         (assert= :timer-exited
           (receive ([:down ^m ^t _] :timer-exited) (after *test-wait-ms* :timeout)))))))
+
+;; A green process's `receive` persists its deadline across resumes, so however a receive
+;; ends — a match, a timeout, a guard that throws — the deadline has to go, or the NEXT
+;; receive inherits one that is already (nearly) spent and times out before its message
+;; can arrive. Each worker ends one receive the given way, says so, then waits for `:go`,
+;; which arrives well inside that second receive's own timeout.
+(defn- deadline-after (ending)
+  (let (parent (self))
+    (spawn (do
+             (cond
+               (= ending :timeout) (receive (:never :never) (after 20 :timed-out))
+               (= ending :match)
+                 (do (send (self) :ready) (receive (:ready :matched) (after 20 :late)))
+               else
+                 (do
+                   (send (self) :poke)
+                   (try
+                     (receive (_ :when (error "guard throws") :matched) (after 20 :late))
+                     (catch _ :threw))))
+             (send parent :waiting)
+             (send parent [:second (receive (:go :go) (after *test-wait-ms* :stale))])))))
+
+(describe "receive deadlines"
+  (test "no way of ending a receive carries its deadline into the next one"
+    (doseq (ending [:timeout :match :throw])
+      (let (worker (deadline-after ending))
+        (assert= (receive (:waiting :waiting) (after *test-wait-ms* :timeout)) :waiting)
+        (sleep 60)
+        (send worker :go)
+        (assert= (receive ([:second outcome] [ending outcome]) (after *test-wait-ms* :timeout))
+          [ending :go])))))
