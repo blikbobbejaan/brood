@@ -639,6 +639,58 @@ if you are reintroducing hoisting, they are what you have to write back."
   (let (parts (string/split s "\n"))
     (string/length (last parts))))
 
+;; ---- layout items -----------------------------------------------------------
+;; Every walker below reads a node's children the same way: whitespace only counts
+;; newlines, a comment on its own line is emitted where it stands, and a form keeps a
+;; same-line trailing comment beside it. `layout-items` does that reading once, so each
+;; walker decides only where its items go. An item is
+;;
+;;   {:node n :gap g :comment? true}     an own-line comment
+;;   {:node n :gap g :trailing text}     a form, with its same-line comment or nil
+;;
+;; `:gap` counts the newlines between the previous item and this one; two or more is a
+;; blank line the author left. It restarts at 1 after a comment (the comment's own line
+;; break starts the gap) and at 0 after a form, its trailing comment included.
+(defn- layout-items (kids start)
+  (layout-items-at kids start (count kids) 0 []))
+
+(defn- layout-items-at (kids i n gap items)
+  (if (= i n)
+    items
+    (let (c (nth kids i))
+      (cond
+        (whitespace? c)
+          (layout-items-at kids (inc i) n (+ gap (count-newlines (node-text c))) items)
+        (comment? c)
+          (layout-items-at kids (inc i) n 1 (conj items {:node c :gap gap :comment? true}))
+        else
+          (let (tc (trailing-comment-at kids (inc i) n))
+            (layout-items-at kids
+              (if tc (inc tc) (inc i))
+              n
+              0
+              (conj items
+                {:node c
+                 :gap gap
+                 :trailing (when tc (comment-strip-trailing-nl (node-text (nth kids tc))))})))))))
+(sig layout-items-at (vector int int int vector -> vector))
+
+;; The break before an item: a blank line where the author left one.
+(defn- line-break (gap) (if (>= gap 2) "\n\n" "\n"))
+
+(defn- comment-text (item) (comment-strip-trailing-nl (node-text (get item :node))))
+
+;; " ; comment" for a form item with a same-line trailing comment, else "".
+(defn- trailing-text (item)
+  (let (text (get item :trailing)) (if text (str " " text) "")))
+
+;; Whether the form at `k` may pair with the item after it: that item is a form, and this
+;; one has no trailing comment — pairing would step over the comment and drop it.
+(defn- pairs-with-next? (items k)
+  (and (nil? (get (nth items k) :trailing))
+    (< (inc k) (count items))
+    (not (get (nth items (inc k)) :comment?))))
+
 ;; ---- pair-list emit (let / letrec / binding / ... bindings) -----------------
 ;; Renders a list node `n` whose children are alternating name/value, breaking
 ;; to one pair per line when it doesn't fit. Continuation lines align under
@@ -663,7 +715,7 @@ if you are reintroducing hoisting, they are what you have to write back."
   ;; `render-break` already applies to a body.
   (let (pair-ind (inc indent))
     (str open
-      (render-pair-walk kids 0 (count kids) pair-ind 0 "")
+      (render-pair-walk (layout-items kids 0) 0 pair-ind 0 "")
       (if (last-nonws-comment? kids) (str "\n" (indent-of pair-ind)) "")
       close)))
 (sig render-pair-break (vector int string string -> string))
@@ -678,66 +730,51 @@ if you are reintroducing hoisting, they are what you have to write back."
     (>= nl 2) (str "\n\n" (indent-of pair-ind))
     else (str "\n" (indent-of pair-ind))))
 
-(defn- render-pair-walk (kids i n pair-ind nl acc)
-  ;; Walk kids, emitting one name+value pair per line and each comment in place.
-  ;; `nl` tracks newlines since the last emitted item (so a blank line between
-  ;; bindings survives). Mirrors render-body-pairs, but with no head, the pair
-  ;; indent for continuation lines, and same-line trailing comments hoisted above.
-  (if (= i n)
+(defn- render-pair-walk (items k pair-ind carry acc)
+  ;; Emit one name+value pair per line, with the pair's trailing comment after it, and
+  ;; each comment in place. A name with no form to pair with — the end, a comment, or a
+  ;; trailing comment of its own — goes alone, and its own trailing comment drops to the
+  ;; next line. `carry` is that dropped comment's line break, which the next item's gap
+  ;; does not count. Mirrors render-body-pairs, but with no head and the pair indent for
+  ;; continuation lines.
+  (if (= k (count items))
     acc
-    (let (c (nth kids i))
+    (let (item (nth items k)
+          gap (+ carry (get item :gap)))
       (cond
-        (whitespace? c)
-          (render-pair-walk kids
-            (inc i)
-            n
+        (get item :comment?)
+          (render-pair-walk items
+            (inc k)
             pair-ind
-            (+ nl (count-newlines (node-text c)))
-            acc)
-        (comment? c)
-          (render-pair-walk kids
-            (inc i)
-            n
-            pair-ind
-            1
-            (str acc
-              (render-pair-sep acc nl pair-ind true)
-              (comment-strip-trailing-nl (node-text c))))
-        ;; a name; pair it with the next form unless a comment (or the end)
-        ;; intervenes first — pairing across a comment would step over and drop it.
+            0
+            (str acc (render-pair-sep acc gap pair-ind true) (comment-text item)))
+        (pairs-with-next? items k)
+          (let (name (render (get item :node) pair-ind)
+                value-item (nth items (inc k))
+                value (render (get value-item :node) (+ pair-ind (string/length name) 1)))
+            (render-pair-walk items
+              (+ k 2)
+              pair-ind
+              0
+              (str acc
+                (render-pair-sep acc gap pair-ind false)
+                name
+                " "
+                value
+                (trailing-text value-item))))
         else
-          (let (j (kids-next-nonws kids (inc i) n)
-                arendr (render c pair-ind))
-            (if (or (= j n) (comment? (nth kids j)))
-              (render-pair-walk kids
-                (inc i)
-                n
+          (let (line (str acc
+                       (render-pair-sep acc gap pair-ind false)
+                       (render (get item :node) pair-ind))
+                text (get item :trailing))
+            (if text
+              (render-pair-walk items
+                (inc k)
                 pair-ind
-                0
-                (str acc (render-pair-sep acc nl pair-ind false) arendr))
-              (let (brendr (render (nth kids j) (+ pair-ind (string/length arendr) 1))
-                    pair-body (str arendr " " brendr)
-                    tc (trailing-comment-at kids (inc j) n))
-                (if (nil? tc)
-                  (render-pair-walk kids
-                    (inc j)
-                    n
-                    pair-ind
-                    0
-                    (str acc (render-pair-sep acc nl pair-ind false) pair-body))
-                  ;; Keep a same-line trailing comment after its pair, where the author
-                  ;; wrote it (see render-body-at).
-                  (render-pair-walk kids
-                    (inc tc)
-                    n
-                    pair-ind
-                    0
-                    (str acc
-                      (render-pair-sep acc nl pair-ind false)
-                      pair-body
-                      " "
-                      (comment-strip-trailing-nl (node-text (nth kids tc)))))))))))))
-(sig render-pair-walk (vector int int int int string -> string))
+                1
+                (str line (render-pair-sep line 0 pair-ind true) text))
+              (render-pair-walk items (inc k) pair-ind 0 line)))))))
+(sig render-pair-walk (vector int int int string -> string))
 
 ;; ---- pair body emit (cond / case clauses) -----------------------------------
 ;; Like render-body but consumes two structural forms per emission, joined by
@@ -749,136 +786,77 @@ if you are reintroducing hoisting, they are what you have to write back."
 ;; paired with the NEXT test and every later clause of the `cond` was shifted by
 ;; one (an `else` indented as a value, its body at the test column).
 (defn- render-body-pairs (kids start-idx body-ind)
-  (render-body-pairs-at kids start-idx (count kids) body-ind 0 "" false))
+  (render-body-pairs-at (layout-items kids start-idx) 0 body-ind "" false))
 
-(defn- render-body-pairs-at (kids i n body-ind nl acc pending?)
-  (if (= i n)
+(defn- render-body-pairs-at (items k body-ind acc pending?)
+  (if (= k (count items))
     acc
-    (let (c (nth kids i))
+    (let (item (nth items k)
+          c (get item :node)
+          lead (str acc (line-break (get item :gap))))
       (cond
-        (whitespace? c)
-          (render-body-pairs-at kids
-            (inc i)
-            n
+        (get item :comment?)
+          (render-body-pairs-at items
+            (inc k)
             body-ind
-            (+ nl (count-newlines (node-text c)))
-            acc
-            pending?)
-        (comment? c)
-          (render-body-pairs-at kids
-            (inc i)
-            n
-            body-ind
-            1
-            (str acc
-              (if (>= nl 2) "\n\n" "\n")
-              (indent-of body-ind)
-              (comment-strip-trailing-nl (node-text c)))
+            (str lead (indent-of body-ind) (comment-text item))
             pending?)
         ;; The result of a test a comment split it from: its own line at the value
         ;; indent, keeping a same-line trailing comment beside it.
         pending?
-          (let (value-ind (+ body-ind 2)
-                tc (trailing-comment-at kids (inc i) n)
-                line (str acc (if (>= nl 2) "\n\n" "\n") (indent-of value-ind) (render c value-ind)))
-            (if (nil? tc)
-              (render-body-pairs-at kids (inc i) n body-ind 0 line false)
-              (render-body-pairs-at kids
-                (inc tc)
-                n
-                body-ind
-                0
-                (str line " " (comment-strip-trailing-nl (node-text (nth kids tc))))
-                false)))
-        ;; A structural clause. Pair it with the *next* form — but only if a form
-        ;; is what comes next. If a comment intervenes first (or we're at the end),
-        ;; emit this clause alone and let the loop handle the comment on its own
-        ;; line; pairing across a comment would step over and DROP it. The clause's
-        ;; result is then PENDING: the next form is its value, not a new test.
+          (let (value-ind (+ body-ind 2))
+            (render-body-pairs-at items
+              (inc k)
+              body-ind
+              (str lead (indent-of value-ind) (render c value-ind) (trailing-text item))
+              false))
+        ;; A structural clause, and a form follows to pair with.
+        (pairs-with-next? items k)
+          (let (value-item (nth items (inc k))
+                arendr (render c body-ind)
+                vnode (get value-item :node)
+                ;; Miser drop (CL miser mode): if `key value` won't fit on one
+                ;; line at the width, put the value on the NEXT line at a block
+                ;; indent rather than starting it deep after the key — this
+                ;; avoids far-right drift AND gives the value's own contents the
+                ;; full width (so e.g. each `:dependencies` entry gets room).
+                ;; The trigger is content-based (does the flat pair fit?), so it
+                ;; is idempotent. `value-ind` is +2 from the key's indent.
+                ;; The test is what the value RENDERS as, not its flat form: a value
+                ;; the author broke stays broken (`render` honours those newlines),
+                ;; and gluing it to the key on the strength of a flat form that fits
+                ;; left `else (let (x 1)` with the body hanging deep beneath.
+                vrendr (render vnode (+ body-ind (string/length arendr) 1))
+                pair-fits (and (not (includes? vrendr "\n"))
+                            (<= (+ body-ind (string/length arendr) 1 (string/length vrendr))
+                              (width)))
+                value-ind (+ body-ind 2)
+                pair-str (if pair-fits
+                           (str arendr " " vrendr)
+                           (str arendr "\n" (indent-of value-ind) (render vnode value-ind))))
+            ;; the pair's same-line trailing comment stays on the pair's line
+            (render-body-pairs-at items
+              (+ k 2)
+              body-ind
+              (str lead (indent-of body-ind) pair-str (trailing-text value-item))
+              false))
+        ;; No form to pair with — the end, or a comment intervenes first (its own trailing
+        ;; one, which stays on its line). Pairing across a comment would step over and DROP
+        ;; it, so the clause goes alone, and its result is PENDING if anything follows: the
+        ;; next form is its value, not a new test.
         else
-          (let (j (kids-next-nonws kids (inc i) n))
-            (if (or (= j n) (comment? (nth kids j)))
-              ;; No form to pair with. If what intervenes is this clause's own
-              ;; SAME-LINE trailing comment, keep it on the clause's line rather than
-              ;; letting the loop drop it onto its own.
-              (let (tc (trailing-comment-at kids (inc i) n))
-                (if (nil? tc)
-                  (render-body-pairs-at kids
-                    (inc i)
-                    n
-                    body-ind
-                    0
-                    (str acc (if (>= nl 2) "\n\n" "\n") (indent-of body-ind) (render c body-ind))
-                    (not (= j n)))
-                  (render-body-pairs-at kids
-                    (inc tc)
-                    n
-                    body-ind
-                    0
-                    (str acc
-                      (if (>= nl 2) "\n\n" "\n")
-                      (indent-of body-ind)
-                      (render c body-ind)
-                      " "
-                      (comment-strip-trailing-nl (node-text (nth kids tc))))
-                    (not (= (kids-next-nonws kids (inc tc) n) n)))))
-              (let (arendr (render c body-ind)
-                    vnode (nth kids j)
-                    ;; Miser drop (CL miser mode): if `key value` won't fit on one
-                    ;; line at the width, put the value on the NEXT line at a block
-                    ;; indent rather than starting it deep after the key — this
-                    ;; avoids far-right drift AND gives the value's own contents the
-                    ;; full width (so e.g. each `:dependencies` entry gets room).
-                    ;; The trigger is content-based (does the flat pair fit?), so it
-                    ;; is idempotent. `value-ind` is +2 from the key's indent.
-                    ;; The test is what the value RENDERS as, not its flat form: a value
-                    ;; the author broke stays broken (`render` honours those newlines),
-                    ;; and gluing it to the key on the strength of a flat form that fits
-                    ;; left `else (let (x 1)` with the body hanging deep beneath.
-                    vrendr (render vnode (+ body-ind (string/length arendr) 1))
-                    pair-fits (and (not (includes? vrendr "\n"))
-                                (<= (+ body-ind (string/length arendr) 1 (string/length vrendr))
-                                  (width)))
-                    value-ind (+ body-ind 2)
-                    pair-str (if pair-fits
-                               (str arendr " " vrendr)
-                               (str arendr "\n" (indent-of value-ind) (render vnode value-ind)))
-                    tc (trailing-comment-at kids (inc j) n))
-                (if (nil? tc)
-                  (render-body-pairs-at kids
-                    (inc j)
-                    n
-                    body-ind
-                    0
-                    (str acc (if (>= nl 2) "\n\n" "\n") (indent-of body-ind) pair-str)
-                    false)
-                  ;; Keep the pair's same-line trailing comment on the pair's line.
-                  (render-body-pairs-at kids
-                    (inc tc)
-                    n
-                    body-ind
-                    0
-                    (str acc
-                      (if (>= nl 2) "\n\n" "\n")
-                      (indent-of body-ind)
-                      pair-str
-                      " "
-                      (comment-strip-trailing-nl (node-text (nth kids tc))))
-                    false)))))))))
-(sig render-body-pairs-at (vector int int int int string bool -> string))
+          (render-body-pairs-at items
+            (inc k)
+            body-ind
+            (str lead (indent-of body-ind) (render c body-ind) (trailing-text item))
+            (< (inc k) (count items)))))))
+(sig render-body-pairs-at (vector int int string bool -> string))
 
-;; Next non-WHITESPACE child at or after `i` (comments are NOT skipped — a
-;; comment is a meaningful boundary the pair emitter must not pair across).
-(defn- kids-next-nonws (kids i n)
-  (cond (= i n) n (whitespace? (nth kids i)) (kids-next-nonws kids (inc i) n) else i))
-(sig kids-next-nonws (vector int int -> int))
-
-;; "Trailing same-line comment" detection. After emitting a structural form,
-;; peek through any following whitespace. If that whitespace contains no newline
-;; AND the next non-whitespace node is a comment, the comment was on the same line
-;; as the form in the source. Each render site **hoists** such a comment onto its
-;; own line *above* the form (a trailing comment never stays after the code on the
-;; same line). Returns the index of that comment, or nil if there is none.
+;; "Trailing same-line comment" detection. After a structural form, peek through any
+;; following whitespace. If that whitespace contains no newline AND the next
+;; non-whitespace node is a comment, the comment was on the same line as the form in the
+;; source; `layout-items` attaches it to the form, and the walkers keep it after the
+;; form on its line. Returns the index of that comment, or nil if there is none.
 (defn- trailing-comment-at (kids i n)
   (cond
     (= i n) nil
@@ -900,15 +878,6 @@ if you are reintroducing hoisting, they are what you have to write back."
     (and (not (trivia? (nth kids i))) (container? (nth kids i))) true
     else (body-has-container?-at kids (inc i) n)))
 
-;; The index of the value that belongs to the keyword argument at `i`, or nil when
-;; `kids[i]` is not a keyword or no FORM follows it (end of body, or a comment next —
-;; pairing across a comment would step over and drop it).
-(defn- keyword-value-at (kids i n)
-  (when (= (node-kind (nth kids i)) :keyword)
-    (let (j (kids-next-nonws kids (inc i) n))
-      (when (and (< j n) (not (comment? (nth kids j)))) j))))
-(sig keyword-value-at (vector int int -> (or int nil)))
-
 (defn- render-body (kids start-idx body-ind fill? &optional (labelled? false))
   ;; Walk kids from start-idx, emitting each structural form (and each comment) at
   ;; body-ind. `nl` mirrors the root walker: it tracks the newline count between
@@ -924,123 +893,84 @@ if you are reintroducing hoisting, they are what you have to write back."
   ;; to force a fresh line (start of body, after a comment, after a multi-line arg).
   ;; `labelled?` (a labelled body, see `label-node?`): a label sits at `body-ind`,
   ;; every other item two further in.
-  (render-body-at kids start-idx (count kids) body-ind 0 "" fill? nil labelled?))
+  (render-body-at (layout-items kids start-idx) 0 body-ind "" fill? nil labelled?))
 
-(defn- render-body-at (kids i n body-ind nl acc fill? col labelled?)
-  (if (= i n)
+(defn- render-body-at (items k body-ind acc fill? col labelled?)
+  (if (= k (count items))
     acc
-    (let (c (nth kids i))
-      (cond
-        (whitespace? c)
-          (render-body-at kids
-            (inc i)
-            n
-            body-ind
-            (+ nl (count-newlines (node-text c)))
-            acc
-            fill?
-            col
-            labelled?)
-        (comment? c)
-          (render-body-at kids
-            (inc i)
-            n
-            body-ind
-            1
-            (str acc
-              (if (>= nl 2) "\n\n" "\n")
-              (indent-of body-ind)
-              (comment-strip-trailing-nl (node-text c)))
-            fill?
-            nil
-            labelled?)
-        else
-          (let (
-                ;; in a labelled body an item that is not a label indents two further
-                item-ind (if (and labelled? (not (label-node? c))) (+ body-ind 2) body-ind)
-                ind (indent-of item-ind)
-                ;; A KEYWORD ARGUMENT and the value after it are one unit, so they are
-                ;; rendered together and never split across lines. Without this,
-                ;; `(io/puts "…" :to (io/stderr-port))` broke as
-                ;;
-                ;;     (io/puts "…"
-                ;;       :to
-                ;;       (io/stderr-port))
-                ;;
-                ;; which reads as two unrelated arguments rather than one named one. It
-                ;; only showed when filling was off — a body containing a container breaks
-                ;; linearly — so the short-value form `:to *err*` looked fine and hid it.
-                ;;
-                ;; Only when a FORM is what follows: pairing across a comment would step
-                ;; over and drop it (the trap `render-body-pairs-at` documents), and a
-                ;; trailing keyword with nothing after it is an ordinary argument.
-                kw-val-idx (keyword-value-at kids i n)
-                form-rendr (if kw-val-idx
-                             (str (node-text c)
-                               " "
-                               (render (nth kids kw-val-idx) item-ind))
-                             (render c item-ind))
-                ;; Skip past the value too when the pair was emitted as one.
-                i (if kw-val-idx kw-val-idx i)
-                c (if kw-val-idx (nth kids kw-val-idx) c)
-                tc-idx (trailing-comment-at kids (inc i) n)
-                single (not (includes? form-rendr "\n"))
-                w (string/length form-rendr)
-                ;; Ride onto the current line when: filling is allowed, the
-                ;; previous item left a fillable column, this arg is single-line,
-                ;; no blank line or trailing comment forces a break, and it fits.
-                can-fill (and fill?
-                           col
-                           single
-                           (nil? tc-idx)
-                           (< nl 2)
-                           (<= (+ col 1 w) (width)))
-                ;; The column a following arg would fill to: end of this arg on
-                ;; its line, or nil when it is multi-line (can't fill after it).
-                next-col (if single (+ body-ind w) nil))
-            (cond
-              can-fill
-                (render-body-at kids
-                  (inc i)
-                  n
-                  body-ind
-                  0
-                  (str acc " " form-rendr)
-                  fill?
-                  ;; `can-fill` proved `col` non-nil; the `or` only says so to the checker.
-                  (+ (or col 0) 1 w)
-                  labelled?)
-              (nil? tc-idx)
-                (render-body-at kids
-                  (inc i)
-                  n
-                  body-ind
-                  0
-                  (str acc (if (>= nl 2) "\n\n" "\n") ind form-rendr)
-                  fill?
-                  next-col
-                  labelled?)
-              ;; Keep a same-line trailing comment WHERE THE AUTHOR PUT IT — after the
-              ;; form, on the same line — hoisting it above the form would destroy the
-              ;; alignment that makes a column of trailing comments readable. `col` is nil
-              ;; after one: nothing may ride a
-              ;; line that now ends in a comment, or it would be commented out.
-              else
-                (render-body-at kids
-                  (inc tc-idx)
-                  n
-                  body-ind
-                  0
-                  (str acc
-                    (if (>= nl 2) "\n\n" "\n")
-                    ind
-                    form-rendr
-                    " "
-                    (comment-strip-trailing-nl (node-text (nth kids tc-idx))))
-                  fill?
-                  nil
-                  labelled?)))))))
-(sig render-body-at (vector int int int int string any (or int nil) bool -> string))
+    (let (item (nth items k)
+          c (get item :node)
+          gap (get item :gap))
+      (if (get item :comment?)
+        (render-body-at items
+          (inc k)
+          body-ind
+          (str acc (line-break gap) (indent-of body-ind) (comment-text item))
+          fill?
+          nil
+          labelled?)
+        (let (
+              ;; in a labelled body an item that is not a label indents two further
+              item-ind (if (and labelled? (not (label-node? c))) (+ body-ind 2) body-ind)
+              ind (indent-of item-ind)
+              ;; A KEYWORD ARGUMENT and the value after it are one unit, so they are
+              ;; rendered together and never split across lines. Without this,
+              ;; `(io/puts "…" :to (io/stderr-port))` broke as
+              ;;
+              ;;     (io/puts "…"
+              ;;       :to
+              ;;       (io/stderr-port))
+              ;;
+              ;; which reads as two unrelated arguments rather than one named one. It
+              ;; only showed when filling was off — a body containing a container breaks
+              ;; linearly — so the short-value form `:to *err*` looked fine and hid it.
+              ;;
+              ;; Only when a FORM is what follows: pairing across a comment would step
+              ;; over and drop it (the trap `render-body-pairs-at` documents), and a
+              ;; trailing keyword with nothing after it is an ordinary argument.
+              kw-value (when (and (= (node-kind c) :keyword) (pairs-with-next? items k))
+                         (nth items (inc k)))
+              form-rendr (if kw-value
+                           (str (node-text c) " " (render (get kw-value :node) item-ind))
+                           (render c item-ind))
+              ;; The item that ends this emission: the value when the pair went as one.
+              last-item (or kw-value item)
+              next-k (if kw-value (+ k 2) (inc k))
+              trailing (get last-item :trailing)
+              single (not (includes? form-rendr "\n"))
+              w (string/length form-rendr)
+              ;; Ride onto the current line when: filling is allowed, the
+              ;; previous item left a fillable column, this arg is single-line,
+              ;; no blank line or trailing comment forces a break, and it fits.
+              can-fill (and fill?
+                         col
+                         single
+                         (nil? trailing)
+                         (< gap 2)
+                         (<= (+ col 1 w) (width))))
+          (if can-fill
+            (render-body-at items
+              next-k
+              body-ind
+              (str acc " " form-rendr)
+              fill?
+              ;; `can-fill` proved `col` non-nil; the `or` only says so to the checker.
+              (+ (or col 0) 1 w)
+              labelled?)
+            ;; A same-line trailing comment stays WHERE THE AUTHOR PUT IT — after the
+            ;; form, on the same line — as hoisting it above the form would destroy the
+            ;; alignment that makes a column of trailing comments readable. The next
+            ;; column is then nil: nothing may ride a line that ends in a comment, or it
+            ;; would be commented out. Otherwise it is the end of this arg on its line,
+            ;; or nil when the arg is multi-line (nothing can fill after it).
+            (render-body-at items
+              next-k
+              body-ind
+              (str acc (line-break gap) ind form-rendr (trailing-text last-item))
+              fill?
+              (if (or trailing (not single)) nil (+ body-ind w))
+              labelled?)))))))
+(sig render-body-at (vector int int string any (or int nil) bool -> string))
 
 ;; ---- top-level walk ---------------------------------------------------------
 ;; `source src` parses src, renders the root, and ensures exactly one
@@ -1058,50 +988,18 @@ if you are reintroducing hoisting, they are what you have to write back."
   ;; Accumulating the output string itself — `(str acc "\n" block)` per form — would recopy
   ;; everything emitted so far, O(forms × file); it reads as linear at small sizes and only
   ;; shows as the file grows.
-  (let (out (apply str (reverse (format-cst-root-walk kids 0 (count kids) 0 ()))))
+  ;; A top-level form keeps its same-line trailing comment after it, where the author
+  ;; wrote it (see render-body-at); a blank line between two blocks survives.
+  (let (blocks (fold (layout-items kids 0)
+                 ()
+                 (fn (acc item)
+                   (format-source-glue acc
+                     (get item :gap)
+                     (if (get item :comment?)
+                       (comment-text item)
+                       (str (render (get item :node) 0) (trailing-text item))))))
+        out (apply str (reverse blocks)))
     (cond (= out "") "" (string/ends-with? out "\n") out else (str out "\n"))))
-
-;; The walker threads `nl-since-last`: the newline count between the last
-;; emitted block and the cursor. Whitespace adds its newline count; a comment
-;; resets to 1 (its own trailing `\n` is the start of the gap to the next
-;; block); a form resets to 0. Two-or-more newlines between blocks → blank line.
-(defn- format-cst-root-walk (kids i n nl acc)
-  (if (= i n)
-    acc
-    (let (c (nth kids i))
-      (cond
-        (whitespace? c)
-          (format-cst-root-walk kids
-            (inc i)
-            n
-            (+ nl (count-newlines (node-text c)))
-            acc)
-        (comment? c)
-          (format-cst-root-walk kids
-            (inc i)
-            n
-            1
-            (format-source-glue acc nl (comment-strip-trailing-nl (node-text c))))
-        else
-          (let (form-block (render c 0) tc-idx (trailing-comment-at kids (inc i) n))
-            (if (nil? tc-idx)
-              (format-cst-root-walk kids
-                (inc i)
-                n
-                0
-                (format-source-glue acc nl form-block))
-              ;; Keep a top-level form's same-line trailing comment after it, where the
-              ;; author wrote it (see render-body-at).
-              (format-cst-root-walk kids
-                (inc tc-idx)
-                n
-                0
-                (format-source-glue acc
-                  nl
-                  (str form-block
-                    " "
-                    (comment-strip-trailing-nl (node-text (nth kids tc-idx))))))))))))
-(sig format-cst-root-walk (vector int int int list -> list))
 
 ;; `acc` is the reversed chunk list, so gluing is two `cons`es instead of a full recopy.
 ;; The empty case is deliberately `(if (= block "") acc …)` rather than a plain `(list

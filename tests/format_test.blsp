@@ -261,6 +261,10 @@
   (test "an own-line comment in let bindings stays on its own line, pairs intact"
     (let (out (source "(let (a 1\n      ;; mid\n      b 2)\n  body)"))
       (is (includes? out "a 1\n      ;; mid\n      b 2"))))
+  ;; A name with its own trailing comment cannot pair across it, so the comment drops to
+  ;; the next line — and that drop is a line break the blank line after it must not eat.
+  (test "a lone name's trailing comment drops below it, keeping the blank line after"
+    (assert= (source "(let (a ; c\n\n      b 2) a)\n") "(let (a\n      ; c\n\n      b 2)\n  a)\n"))
   (test "a comment in a map pairs up like bindings (not one element per line)"
     (let (out (source "(def m {:a 1\n        :b 2  ; note\n        :c 3})"))
       (is (includes? out "; note"))
