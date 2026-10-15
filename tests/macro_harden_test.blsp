@@ -12,13 +12,10 @@
 
 (defmodule macro-harden-test
   (:use test)
+  (:use suite-helpers)
   (:use math))
 
 ;; ── helpers ──────────────────────────────────────────────────────────────────
-
-(defn expand-error (form)
-  "Expand `form` at runtime and return the error string, or nil on success."
-  (error-of (reflect/eval form)))
 
 (defn expand-ok? (form)
   "True when `form` expands and evaluates without error."

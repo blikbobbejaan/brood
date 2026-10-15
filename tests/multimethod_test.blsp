@@ -2,7 +2,7 @@
 ;; the arguments: exact match, then a declared `:default`, else a loud `%no-method` error —
 ;; never a nearest guess. A `:commutative`/`:antisymmetric` algebra derives each off-diagonal
 ;; binary method's mirror. `defmulti`/`defmethod` are core (prelude), so they refer bare.
-(defmodule multimethod-test (:use test))
+(defmodule multimethod-test (:use test) (:use suite-helpers))
 
 (defmulti mm-combine :commutative)
 (defmethod mm-combine [:int :string] (n s) (str n s))
@@ -99,25 +99,23 @@
   ;; The checker half, exercised through `check-string-structured` so a warning is a VALUE
   ;; rather than a build failure. A conforming method is silent; a non-conforming one names
   ;; the multi, the dispatch key, the declared type, and what the body actually yields.
-  (defn- mm-warnings (src)
-    (map (reflect/check-string-structured src) (fn (d) (get d :message))))
 
   (test "a method whose body conforms to the declared return is silent"
-    (assert= (mm-warnings "(defmulti k :-> int) (defmethod k [:int] (n) n)") (list)))
+    (assert= (checker-messages "(defmulti k :-> int) (defmethod k [:int] (n) n)") (list)))
 
   (test "a method that violates the declared return warns, naming the key and both types"
-    (let (w (mm-warnings "(defmulti k :-> int) (defmethod k [:string] (s) \"nope\")"))
+    (let (w (checker-messages "(defmulti k :-> int) (defmethod k [:string] (s) \"nope\")"))
       (is (not (empty? w)))
       (is (includes? (first w) "multimethod k"))
       (is (includes? (first w) "[:string]"))
       (is (includes? (first w) "declared return type int"))))
 
   (test "an undeclared multimethod constrains nothing"
-    (assert= (mm-warnings "(defmulti k) (defmethod k [:string] (s) \"anything\") (defmethod k [:int] (n) n)")
+    (assert= (checker-messages "(defmulti k) (defmethod k [:string] (s) \"anything\") (defmethod k [:int] (n) n)")
       (list)))
 
   (test "a declared `any` return imposes no constraint"
-    (assert= (mm-warnings "(defmulti k :-> any) (defmethod k [:string] (s) \"fine\")") (list)))
+    (assert= (checker-messages "(defmulti k :-> any) (defmethod k [:string] (s) \"fine\")") (list)))
 
   ;; ABSENT is not `nil`. `nil` is a legal return type — `sig` and `defability` both take
   ;; `:-> nil` — so "was a return declared?" is a question about POSITION, never about the
@@ -130,12 +128,12 @@
     (is (not (nil? (error-of (macroexpand (quote (defmulti dang :commutative :->))))))))
 
   (test "`:-> nil` is a legal declaration, not a missing one"
-    (assert= (mm-warnings "(defmulti k :-> nil) (defmethod k [:int] (n) nil)") (list)))
+    (assert= (checker-messages "(defmulti k :-> nil) (defmethod k [:int] (n) nil)") (list)))
 
   (test "and a declared nil return is ENFORCED, not silently dropped"
     ;; The whole point of distinguishing it: `render` promises nil, so using its result as a
     ;; number is a provable mismatch. Before, a nil return was indistinguishable from no
     ;; declaration at all and this warned nowhere.
-    (let (w (mm-warnings "(defmulti k :-> nil) (defmethod k [:int] (n) nil) (defn u () (+ 1 (k 5)))"))
+    (let (w (checker-messages "(defmulti k :-> nil) (defmethod k [:int] (n) nil) (defn u () (+ 1 (k 5)))"))
       (is (not (empty? w)))
       (is (any? w (fn (m) (includes? m "got nil")))))))

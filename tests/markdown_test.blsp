@@ -3,6 +3,14 @@
 ;; exercise the generator's use of it.
 (defmodule markdown-test (:use test) (:use markdown))
 
+(describe "markdown/escape"
+  (test "the HTML metacharacters are escaped, & first"
+    (assert= (escape "a<b>&c") "a&lt;b&gt;&amp;c"))
+  (test "a double quote is escaped, so the result is safe inside an attribute"
+    (assert= (escape "say \"hi\"") "say &quot;hi&quot;"))
+  (test "a non-string is coerced then escaped"
+    (assert= (escape 42) "42")))
+
 (describe "markdown/->html"
   (test "the subset renders"
     (assert= (->html "# Hi") "<h1>Hi</h1>")

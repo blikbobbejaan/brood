@@ -9,17 +9,11 @@
 ;; i64), plus a few float laws that survive IEEE rounding (commutativity, self-
 ;; subtraction, identity element — NOT associativity/distributivity, which don't).
 
-(defmodule arithmetic-identities-test (:use test))
-
-;; deterministic LCG (matches the stress-suite generator)
-(defn lcg (s) (math/rem (+ (* s 1103515245) 12345) 2147483648))
+(defmodule arithmetic-identities-test (:use test) (:use suite-helpers))
 
 ;; a wide-range int: -1e6..1e6, occasionally cubed into bignum territory, with
 ;; the type/overflow edges mixed in so promotion boundaries get exercised.
-;; Integers throughout — an LCG over machine ints — but `(* s …)` widens to `number`
-;; and `math/rem` wants an int.
-(sig lcg (int -> int))
-(defn lcg-int (s)
+(defn draw-int (s)
   (let (x (- (math/rem s 2000001) 1000000))
     (cond
       (= (math/rem s 11) 0) (* x x x)
@@ -71,20 +65,20 @@
 (defn check-ints (s n)
   (if (= n 0)
     true
-    (let (a (lcg-int (lcg s))
-          b (lcg-int (lcg (lcg s)))
-          c (lcg-int (lcg (lcg (lcg s)))))
+    (let (a (draw-int (next-seed s))
+          b (draw-int (next-seed (next-seed s)))
+          c (draw-int (next-seed (next-seed (next-seed s)))))
       (if (int-laws a b c)
-        (check-ints (lcg (lcg (lcg (lcg s)))) (- n 1))
+        (check-ints (next-seed (next-seed (next-seed (next-seed s)))) (- n 1))
         false))))
 
 (defn check-floats (s n)
   (if (= n 0)
     true
-    (let (a (/ (lcg-int (lcg s)) 7.0)
-          b (/ (lcg-int (lcg (lcg s))) 13.0))
+    (let (a (/ (draw-int (next-seed s)) 7.0)
+          b (/ (draw-int (next-seed (next-seed s))) 13.0))
       (if (float-laws a b)
-        (check-floats (lcg (lcg s)) (- n 1))
+        (check-floats (next-seed (next-seed s)) (- n 1))
         false))))
 
 (describe "arithmetic identities hold over random values"

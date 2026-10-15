@@ -7,20 +7,18 @@
 ;; NB vectors and lists are NOT `=` even with equal elements, and `reverse`
 ;; returns a LIST — so every identity below is written to be type-consistent.
 
-(defmodule collection-identities-test (:use test))
+(defmodule collection-identities-test (:use test) (:use suite-helpers))
 
-(defn lcg (s) (math/rem (+ (* s 1103515245) 12345) 2147483648))
-
-;; Integers throughout; `(* s …)` widens to `number` and `math/rem` wants an int.
-(sig lcg (int -> int))
 (defn build-vec (s n acc)
-  (if (= n 0) acc (build-vec (lcg s) (- n 1) (conj acc (- (math/rem s 200) 100)))))
+  (if (= n 0) acc (build-vec (next-seed s) (- n 1) (conj acc (- (math/rem s 200) 100)))))
 (defn rand-vec (s n) (build-vec s n []))
 
 (defn build-map (s n acc)
   (if (= n 0)
     acc
-    (build-map (lcg s) (- n 1) (assoc acc (math/rem s 20) (- (math/rem (lcg s) 2000) 1000)))))
+    (build-map (next-seed s)
+      (- n 1)
+      (assoc acc (math/rem s 20) (- (math/rem (next-seed s) 2000) 1000)))))
 (defn rand-map (s n) (build-map s n {}))
 
 ; merge overrides
@@ -67,27 +65,29 @@
 (defn check-maps (s n)
   (if (= n 0)
     true
-    (let (m (rand-map (lcg s) (+ 1 (math/rem s 8)))
-          k (math/rem (lcg (lcg s)) 20)
-          v (- (math/rem (lcg (lcg (lcg s))) 2000) 1000))
-      (if (map-laws m k v) (check-maps (lcg (lcg (lcg (lcg s)))) (- n 1)) false))))
+    (let (m (rand-map (next-seed s) (+ 1 (math/rem s 8)))
+          k (math/rem (next-seed (next-seed s)) 20)
+          v (- (math/rem (next-seed (next-seed (next-seed s))) 2000) 1000))
+      (if (map-laws m k v)
+        (check-maps (next-seed (next-seed (next-seed (next-seed s)))) (- n 1))
+        false))))
 
 (defn check-vecs (s n)
   (if (= n 0)
     true
-    (let (v (rand-vec (lcg s) (+ 1 (math/rem s 9)))
-          w (rand-vec (lcg (lcg s)) (math/rem s 6))
+    (let (v (rand-vec (next-seed s) (+ 1 (math/rem s 9)))
+          w (rand-vec (next-seed (next-seed s)) (math/rem s 6))
           x (- (math/rem s 200) 100))
       (if (and (vec-laws v w x) (hof-laws v))
-        (check-vecs (lcg (lcg (lcg s))) (- n 1))
+        (check-vecs (next-seed (next-seed (next-seed s))) (- n 1))
         false))))
 
 (defn check-strs (s n)
   (if (= n 0)
     true
     (let (a (str (math/rem s 100000) "x")
-          b (str "y" (math/rem (lcg s) 100000)))
-      (if (str-laws a b) (check-strs (lcg (lcg s)) (- n 1)) false))))
+          b (str "y" (math/rem (next-seed s) 100000)))
+      (if (str-laws a b) (check-strs (next-seed (next-seed s)) (- n 1)) false))))
 
 ;; A char index is a byte offset only for pure-ASCII text, so every char-indexed string
 ;; op has a second path on multi-byte text: the kernel converts through the string slot's
@@ -100,7 +100,7 @@
 (defn- mb-build (s n acc)
   (if (= n 0)
     (apply str acc)
-    (mb-build (lcg s) (- n 1) (cons (nth mb-alphabet (math/rem s 7)) acc))))
+    (mb-build (next-seed s) (- n 1) (cons (nth mb-alphabet (math/rem s 7)) acc))))
 (def- mb-text (mb-build 8675309 600 nil))
 (def- mb-cps (into [] (string/->list mb-text)))
 (def- mb-len (string/length mb-text))
@@ -120,8 +120,8 @@
   (if (= n 0)
     true
     (let (i (math/rem s mb-len)
-          j (+ i (math/rem (lcg s) (math/floor (- mb-len i)))))
-      (if (mb-laws i j) (check-mb (lcg (lcg s)) (- n 1)) false))))
+          j (+ i (math/rem (next-seed s) (math/floor (- mb-len i)))))
+      (if (mb-laws i j) (check-mb (next-seed (next-seed s)) (- n 1)) false))))
 
 (describe "collection identities hold over random values"
   (test "map laws over 1200 cases" (is (check-maps 24680 1200)))

@@ -7,7 +7,7 @@
 ;; Register-only — discovered and run by `nest test` (and cargo test, via
 ;; crates/lisp/tests/suite.rs).
 
-(defmodule syntax-finalization-test (:use test))
+(defmodule syntax-finalization-test (:use test) (:use suite-helpers))
 
 ;; Drop any fixtures a prior run left in /tmp (at load, before any test runs). Missing
 ;; until 2026-08-05 (KI-30) — 387 directories per prefix.
@@ -17,10 +17,6 @@
 (defn err-of (src)
   "The message of the error raised by reading+evaluating `src`, or nil if it ran."
   (try (do (reflect/eval (reflect/read-string src)) nil) (catch e (error-message e))))
-
-(defn hint-of (src)
-  "The :hint of the error raised by reading+evaluating `src`, or nil."
-  (try (do (reflect/eval (reflect/read-string src)) nil) (catch e (get e :hint))))
 
 ;; ---- ADR-149: a binding container is a list ---------------------------------
 

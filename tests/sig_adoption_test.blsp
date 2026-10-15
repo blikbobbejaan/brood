@@ -9,17 +9,14 @@
 ;; Register-only — discovered and run by `nest test` (and cargo test, via
 ;; crates/lisp/tests/suite.rs).
 
-(defmodule sig-adoption-test (:use test) (:use path))
+(defmodule sig-adoption-test (:use test) (:use suite-helpers) (:use path))
 
-;; `check-source` returns the advisory warnings for a source string, which is how
+;; `checker-messages` returns the advisory warnings for a source string, which is how
 ;; we assert on a *static* diagnostic without failing this file's own compile pass.
-(defn warns-of (src)
-  "The advisory warning messages for `src`, as a list of strings."
-  (map (reflect/check-string-structured src) (fn (w) (get w :message))))
 
 (defn warns-about? (src needle)
   "Does checking `src` produce a warning containing `needle`?"
-  (any? (warns-of src) (fn (w) (includes? w needle))))
+  (any? (checker-messages src) (fn (w) (includes? w needle))))
 
 (describe "sig: std modules carry signatures the checker enforces"
   (test "a declared std signature is enforced at a call site in another module"
@@ -33,8 +30,9 @@
           "expects string")))
 
   (test "correct calls stay silent (no false positives)"
-    (assert= (warns-of "(defmodule t4 (:use path)) (defn f () (basename \"/usr/bin/env\"))") nil)
-    (assert= (warns-of "(defmodule t5 (:use path)) (defn f (p) (basename p))") nil))
+    (assert= (checker-messages "(defmodule t4 (:use path)) (defn f () (basename \"/usr/bin/env\"))")
+      nil)
+    (assert= (checker-messages "(defmodule t5 (:use path)) (defn f (p) (basename p))") nil))
 
   (test "the annotated functions still behave"
     (assert= (basename "/usr/bin/env") "env")
@@ -67,7 +65,7 @@
               "q: argument 1"))
     ;; A capitalised unknown name stays silent — that is an ability used as a type,
     ;; whose module a single-file check may not have loaded (ADR-181/186).
-    (assert= (warns-of "(sig w (Shape -> int)) (defn w (x) 1) (defn p () (w 42))") nil)))
+    (assert= (checker-messages "(sig w (Shape -> int)) (defn w (x) 1) (defn p () (w 42))") nil)))
 
 (describe "sig: placement is free in every mode"
   ;; `sig` is a pure declaration (ADR-381): enforcement is decided when the BINDING comes
@@ -77,8 +75,8 @@
   ;; order over every `.blsp` until the rule itself went away). The runtime half —
   ;; both orders enforced — is `tests/contract_test.blsp`.
   (test "the declaration is placement-independent for the checker"
-    (assert= (warns-of "(sig ab (string -> string)) (defn ab (s) s)") nil)
-    (assert= (warns-of "(defn ba (s) s) (sig ba (string -> string))") nil)))
+    (assert= (checker-messages "(sig ab (string -> string)) (defn ab (s) s)") nil)
+    (assert= (checker-messages "(defn ba (s) s) (sig ba (string -> string))") nil)))
 
 ;; ---- occurrence typing: inferred params check callers, zero annotations (ADR-190) ----
 ;; Pass 2.8 now carries each same-file function's inferred PARAMETER demands (not just its
@@ -90,12 +88,12 @@
     (is (warns-about? "(defmodule ot1) (defn needstr (s) (string/length s)) (defn c () (needstr 5))"
           "expects string")))
   (test "a correct caller is silent"
-    (assert= (warns-of "(defmodule ot2) (defn needstr (s) (string/length s)) (defn c () (needstr \"hi\"))")
+    (assert= (checker-messages "(defmodule ot2) (defn needstr (s) (string/length s)) (defn c () (needstr \"hi\"))")
       nil))
   (test "an unconstrained param never flags (no demand → sound)"
-    (assert= (warns-of "(defmodule ot3) (defn id2 (s) s) (defn c () (id2 5))") nil))
+    (assert= (checker-messages "(defmodule ot3) (defn id2 (s) s) (defn c () (id2 5))") nil))
   (test "a guarded use never constrains the param (sound)"
-    (assert= (warns-of "(defmodule ot4) (defn g (s) (if (string? s) (string/length s) 0)) (defn c () (g 5))")
+    (assert= (checker-messages "(defmodule ot4) (defn g (s) (if (string? s) (string/length s) 0)) (defn c () (g 5))")
       nil)))
 
 (describe "occurrence typing — a sealed ability op derives the param"
@@ -106,10 +104,10 @@
     (is (warns-about? "(defmodule ot5) (defrecord circle (r)) (defrecord rect (w h)) (defability Shape :sealed [circle rect] (area [self] :-> float)) (impl Shape circle (area [c] 1.0)) (impl Shape rect (area [r] 1.0)) (defn shout (s) (area s)) (defn c () (shout 5))"
           "ot5/circle | ot5/rect")))
   (test "a member caller is silent"
-    (assert= (warns-of "(defmodule ot6) (defrecord circle (r)) (defability Shape :sealed [circle] (area [self] :-> float)) (impl Shape circle (area [c] 1.0)) (defn shout (s) (area s)) (defn c () (shout (circle 2)))")
+    (assert= (checker-messages "(defmodule ot6) (defrecord circle (r)) (defability Shape :sealed [circle] (area [self] :-> float)) (impl Shape circle (area [c] 1.0)) (defn shout (s) (area s)) (defn c () (shout (circle 2)))")
       nil))
   (test "a :default impl makes the op accept any value — no demand (sound)"
-    (assert= (warns-of "(defmodule ot7) (defrecord circle (r)) (defability Shape :sealed [circle] (area [self] :-> float)) (impl Shape circle (area [c] 1.0)) (impl Shape :default (area [_] 0.0)) (defn shout (s) (area s)) (defn c () (shout 5))")
+    (assert= (checker-messages "(defmodule ot7) (defrecord circle (r)) (defability Shape :sealed [circle] (area [self] :-> float)) (impl Shape circle (area [c] 1.0)) (impl Shape :default (area [_] 0.0)) (defn shout (s) (area s)) (defn c () (shout 5))")
       nil)))
 
 (describe "sig: a declaration must agree with what it annotates (ADR-259)"

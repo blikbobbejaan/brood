@@ -5,7 +5,7 @@
 ;; deep-copy bug (a dropped map entry, a truncated bignum, a mangled nested vector)
 ;; shows up as a round-tripped value that no longer equals the original.
 
-(defmodule message-roundtrip-test (:use test))
+(defmodule message-roundtrip-test (:use test) (:use suite-helpers))
 
 (defn echo (parent) (receive (v (send parent [:echoed v]))))
 
@@ -17,8 +17,6 @@
     (do
       (send w v)
       (receive ([:echoed back] back) (after *test-wait-ms* :timeout)))))
-
-(defn lcg (s) (math/rem (+ (* s 1103515245) 12345) 2147483648))
 
 ;; a random depth-bounded value: ints/bignums/floats/strings/keywords at the
 ;; leaves, lists/vectors/maps in the interior. Deliberately non-tail — the
@@ -35,19 +33,19 @@
         (cond
           (= c 3) (if (= (math/rem s 2) 0) :kw-a :kw-b)
           (= c 4)
-            (list (rand-val (lcg s) (- depth 1))
-              (rand-val (lcg (lcg s)) (- depth 1)))
-          (= c 5) [(rand-val (lcg s) (- depth 1)) (rand-val (lcg (lcg s)) (- depth 1))]
+            (list (rand-val (next-seed s) (- depth 1))
+              (rand-val (next-seed (next-seed s)) (- depth 1)))
+          (= c 5)
+            [(rand-val (next-seed s) (- depth 1)) (rand-val (next-seed (next-seed s)) (- depth 1))]
           else
-            {(math/rem s 10) (rand-val (lcg s) (- depth 1))
-             :k (rand-val (lcg (lcg s)) (- depth 1))})))))
+            {(math/rem s 10) (rand-val (next-seed s) (- depth 1))
+             :k (rand-val (next-seed (next-seed s)) (- depth 1))})))))
 
-(sig lcg (int -> int))
 (defn check-rt (s n)
   (if (= n 0)
     true
     (let (v (rand-val s 4))
-      (if (= (roundtrip v) v) (check-rt (lcg s) (- n 1)) false))))
+      (if (= (roundtrip v) v) (check-rt (next-seed s) (- n 1)) false))))
 
 (describe "values survive a cross-process send round-trip unchanged"
   (test "int" (assert= (roundtrip 42) 42))

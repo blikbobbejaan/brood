@@ -9,10 +9,8 @@
 
 (defmodule chaos-test
   (:use test)
+  (:use suite-helpers)
   (:use math))
-
-(defn expand-error (form)
-  (error-of (reflect/eval form)))
 
 (defn chaos-crash-helper (x)
   "Crash one call down, so the death reason's :trace has a named frame."

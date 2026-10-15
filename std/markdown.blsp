@@ -16,8 +16,14 @@
 `1. ` lists, quotes, rules, blank-line paragraphs, inline `code`, links, autolinks and
 `**emphasis**`), HTML-escaping everything.")
 
-(defn- md-escape (s)
-  (-> (str s) (string/replace "&" "&amp;") (string/replace "<" "&lt;") (string/replace ">" "&gt;")))
+(defn escape (raw)
+  "HTML-escape `&`, `<`, `>` and `\"` in `raw` (coerced to a string), so the result is safe
+both as element text and inside a double-quoted attribute."
+  (-> (str raw)
+    (string/replace "&" "&amp;")
+    (string/replace "<" "&lt;")
+    (string/replace ">" "&gt;")
+    (string/replace "\"" "&quot;")))
 
 ;; The schemes a link may carry. Anything else is refused: some schemes execute rather than
 ;; fetch (`javascript:`, `vbscript:`, `data:text/html,<script>…`), and a link carrying one
@@ -44,14 +50,14 @@
         cut (string/span-until url 0 "/?#"))
     (if (and (>= colon 0) (< colon cut)) (string/lower (string/substring url 0 colon)) nil)))
 
-;; Escape a URL for an `href="…"` attribute (adds `"` to `md-escape`) and neutralise a link
+;; Escape a URL for an `href="…"` attribute and neutralise a link
 ;; whose scheme is not allowed, so a guide's Markdown can't break out of the attribute or
 ;; inject script into the generated site.
 (defn- md-attr (url)
   (let (scrubbed (md-url-scrub url)
         scheme (md-url-scheme scrubbed))
     (if (or (nil? scheme) (includes? *md-safe-schemes* scheme))
-      (string/replace (md-escape scrubbed) "\"" "&quot;")
+      (escape scrubbed)
       "#")))
 
 ;; A non-code text run: turn `[text](url)` into a link, HTML-escape everything else.
@@ -65,7 +71,7 @@
   (apply str (reverse (md-run-acc text '()))))
 
 ;; The four characters an inline construct can begin with. `string/span-until` finds the
-;; earliest of them in one native scan, so a run with no markup is one `md-escape`.
+;; earliest of them in one native scan, so a run with no markup is one `escape`.
 (def- *md-inline-openers* "[<*`")
 
 ;; The scanning worker: **tail**-recursive, carrying the emitted chunks newest-first (so the
@@ -82,14 +88,14 @@
   (let (at (string/span-until text 0 *md-inline-openers*)
         end (string/length text))
     (if (>= at end)
-      (cons (md-escape text) chunks)
-      (let (before (md-escape (string/substring text 0 at))
+      (cons (escape text) chunks)
+      (let (before (escape (string/substring text 0 at))
             rest (string/substring text at end)
             parsed (md-construct rest))
         (if parsed
           (md-run-acc (second parsed) (cons (first parsed) (cons before chunks)))
           (md-run-acc (string/substring rest 1 (string/length rest))
-            (cons (md-escape (string/substring rest 0 1)) (cons before chunks))))))))
+            (cons (escape (string/substring rest 0 1)) (cons before chunks))))))))
 
 ;; One inline construct at the head of `text` (which starts with an opener), as
 ;; `[html remaining]`, or nil when the opener is just a character.
@@ -108,7 +114,7 @@
 (defn- md-code (text)
   (let (close (index-of text "`" 1))
     (when (> close 0)
-      [(str "<code>" (md-escape (string/substring text 1 close)) "</code>")
+      [(str "<code>" (escape (string/substring text 1 close)) "</code>")
         (string/substring text (+ close 1) (string/length text))])))
 
 ;; `[text](url)`: the link text is escaped, not re-scanned — `[**x**](u)` is rare enough that
@@ -124,7 +130,7 @@
           [(str "<a href=\""
              (md-attr (string/substring rest 0 close-paren))
              "\">"
-             (md-escape (string/substring text 1 close-bracket))
+             (escape (string/substring text 1 close-bracket))
              "</a>")
             (string/substring rest (+ close-paren 1) (string/length rest))])))))
 
@@ -139,7 +145,7 @@
       (let (url (string/substring text 1 close))
         (when (and (any? *md-autolink-schemes* (fn (scheme) (string/starts-with? url scheme)))
                 (= (string/span-until url 0 " \t") (string/length url)))
-          [(str "<a href=\"" (md-attr url) "\">" (md-escape url) "</a>")
+          [(str "<a href=\"" (md-attr url) "\">" (escape url) "</a>")
             (string/substring text (+ close 1) end)])))))
 
 ;; `**…**` / `*…*`: the content is re-scanned, so a link or code-free emphasis nests inside
@@ -164,7 +170,7 @@
 ;; Close the open block: append `html` to the output and return to `:none`.
 (defn- md-emit (state html) (assoc state :out (str (get state :out) html) :mode :none :buf nil))
 
-(defn- md-pre (lines) (str "<pre><code>" (md-escape (string/join lines "\n")) "</code></pre>"))
+(defn- md-pre (lines) (str "<pre><code>" (escape (string/join lines "\n")) "</code></pre>"))
 
 ;; The code block that was buffered, its lines shed of the fence's own indentation — no more
 ;; than that, so a further-indented line inside the block keeps its shape.

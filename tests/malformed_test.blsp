@@ -16,11 +16,8 @@
 
 (defmodule malformed-test
   (:use test)
+  (:use suite-helpers)
   (:use math))
-
-(defn expand-error (form)
-  "Return the error string when `form` raises via eval, or nil if it succeeds."
-  (error-of (reflect/eval form)))
 
 ;; ── 1. Calling non-functions ──────────────────────────────────────────────────
 

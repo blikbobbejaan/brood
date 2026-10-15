@@ -8,7 +8,10 @@
 decided on it, `ascending?` is the span invariant every highlighter test checks,
 `sibling-binary` finds the `brood`/`nest` binary next to the runner, and
 `queued-while-idle` (with `await-paused`, `take-chunks`, `queued-count` and
-`high-water-bound`) measures what a paused reader left queued in this process's mailbox."
+`high-water-bound`) measures what a paused reader left queued in this process's mailbox,
+`late-messages` counts a socket's stragglers, `next-seed` steps a deterministic generator,
+and `expand-error`, `hint-of` and `checker-messages` read an error, a reader hint or the
+checker's diagnostics."
   (:use test))
 
 ;; ---- the JIT ----------------------------------------------------------------------
@@ -81,3 +84,36 @@ summed with `size` over each chunk."
   (await-paused)
   (let (chunks (take-chunks tag source (queued-count) nil))
     [(reduce chunks 0 (fn (sum chunk) (+ sum (size chunk)))) chunks]))
+
+(defn late-messages (sock wait-ms seen)
+  "`seen` plus the messages for `sock` that arrive, each within `wait-ms` of the last."
+  (receive
+    ([:tcp ^sock _] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-closed ^sock] (late-messages sock wait-ms (inc seen)))
+    ([:tcp-error ^sock _] (late-messages sock wait-ms (inc seen)))
+    (after wait-ms seen)))
+
+;; ---- generated inputs -------------------------------------------------------------
+
+(defn next-seed (seed)
+  "The next state of a deterministic generator, and the value to draw from: a non-negative
+32-bit int (`rand`'s xorshift32). Every bit is mixed. The LCG the generative tests each
+copied (`(* s 1103515245) + 12345 mod 2^31`) was not: its low bit alternated, so a
+`(math/rem s 2)` choice took the same branch every other draw."
+  (%rand-step (%rand-seed seed)))
+(sig next-seed (int -> int))
+
+;; ---- errors, hints and checker output ---------------------------------------------
+
+(defn expand-error (form)
+  "The error message raised evaluating (and so expanding) `form`, or nil if it succeeds."
+  (error-of (reflect/eval form)))
+
+(defn hint-of (src)
+  "The `:hint` of the error raised reading and evaluating `src`, or nil — nil too when it
+raises nothing."
+  (try (do (reflect/eval (reflect/read-string src)) nil) (catch e (get e :hint))))
+
+(defn checker-messages (src)
+  "The message of every diagnostic the checker reports for source `src`, as a list."
+  (map (reflect/check-string-structured src) (fn (diagnostic) (get diagnostic :message))))

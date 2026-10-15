@@ -10,7 +10,7 @@
 ;; a chain of named steps, and a fold that stops once its accumulator has failed, because
 ;; that accumulator is threaded by the combinator where neither of the others can reach it.
 
-(defmodule failure-mechanisms-test (:use test))
+(defmodule failure-mechanisms-test (:use test) (:use suite-helpers))
 
 (defn- bad () (string/->number "q"))
 
@@ -163,11 +163,9 @@
       (assert= (count (map (range n) (fn (_) (receive (ok ok))))) n))))
 
 ;; ---- the checker side -------------------------------------------------------------
-(defn- warnings-for (src)
-  (mapv (or (reflect/check-string-structured src) []) (fn (d) (get d :message))))
 
 (defn- impossible-count-of (src pred)
-  (count (seq/keep (warnings-for src)
+  (count (seq/keep (checker-messages src)
            (fn (m) (if (string/starts-with? m (str pred ": this can never")) m nil)))))
 
 (defn- impossible-count (src) (impossible-count-of src "failure?"))
@@ -216,5 +214,5 @@
     ;; it fell through to \"unknown\", and unknown is contagious: the enclosing `defn` read
     ;; as `(string -> any)` and every check needing a pinned body type went quiet — including
     ;; the declared-return check, the one thing that would have named the missing branches
-    (let (msgs (warnings-for "(sig h (string -> int)) (defn h (s) (if (failure? (string/->number s))))"))
+    (let (msgs (checker-messages "(sig h (string -> int)) (defn h (s) (if (failure? (string/->number s))))"))
       (is (any? msgs (fn (m) (includes? m "yields nil")))))))

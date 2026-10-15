@@ -8,7 +8,7 @@
 ;;
 ;; Register-only — discovered and run by `nest test` (and cargo test).
 
-(defmodule tcp-test (:use test) (:use tcp :exclude [send]))
+(defmodule tcp-test (:use test) (:use suite-helpers) (:use tcp :exclude [send]))
 
 (defn- listen-port (ls)
   "The listener's OS-assigned port, or a failed test.
@@ -738,14 +738,6 @@
       (tcp/close cs)
       (tcp/close ls)
       (send parent [:received (self) outcome]))))
-
-(defn- late-messages (sock wait-ms seen)
-  "`seen` plus the messages for `sock` that arrive, each within `wait-ms` of the last."
-  (receive
-    ([:tcp ^sock _] (late-messages sock wait-ms (inc seen)))
-    ([:tcp-closed ^sock] (late-messages sock wait-ms (inc seen)))
-    ([:tcp-error ^sock _] (late-messages sock wait-ms (inc seen)))
-    (after wait-ms seen)))
 
 (defn- close-under-chatter (payload window-ms)
   "One round: connect to a peer that writes without pause, send `payload` (nil for none)

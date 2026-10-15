@@ -17630,3 +17630,24 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
   (`tls_test.blsp`, sabotage-verified). `ttf-parser` (via cosmic-text) is ignored with its
   advisory id. `brood-playground` declared no license; it now inherits the workspace's.
 - `install.log`, a committed build transcript, is removed and ignored.
+
+## 2026-10-15 (later) — one HTML escape; the suite's copied helpers, round two
+
+- **`markdown/escape` is the one HTML escape**, and it now escapes `"` as well, so its result
+  is safe inside an attribute. `markdown`'s private `md-escape` and `docsite/escape` were the
+  same three replacements, and neither handled `"`. `docsite` feeds names into `id="…"` and
+  `href="#…"`, so the gap was one bad name away from broken markup.
+- **Five more helpers in `tests/support/suite-helpers`:**
+  - `expand-error` (3 copies) and `hint-of` (2). The `reader_hints` copy returned the
+    evaluated value on success, so its `(is (nil? (hint-of …)))` held whether the form failed
+    without a hint or ran fine.
+  - `checker-messages`, which had 6 copies under 5 names, some returning a vector and some
+    a list.
+  - `late-messages` (2).
+  - `next-seed`, replacing 4 copies of an LCG whose low bit alternated: every
+    `(math/rem s 2)` choice in the generative tests took the same branch every other draw.
+    `next-seed` is `rand`'s xorshift32. The generative tests pass on the new streams.
+  - The `stress/` copies stay, since that harness does not load `tests/support`.
+- **Left alone, on purpose:** `test/opt?`/`opt-val` step one element at a time. The run-tests
+  option list mixes bare flags (`:trace`) with key/value pairs, so a plist reader would
+  misread it.

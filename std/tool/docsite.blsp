@@ -30,13 +30,8 @@
   docstring can never inject markup.")
 
 ;; ---- escaping + inline prose ------------------------------------------------
-
-(defn escape (raw)
-  "HTML-escape `&`, `<`, `>` in `raw` (coerced to a string). `&` must go first."
-  (-> (str raw)
-    (string/replace "&" "&amp;")
-    (string/replace "<" "&lt;")
-    (string/replace ">" "&gt;")))
+;; Every value goes through `markdown/escape` — one escape for the whole renderer, the same
+;; one Markdown text gets.
 
 ;; ---- doc links: `[[name]]` --------------------------------------------------
 ;; Docstrings across the tree cross-reference each other with `[[name]]` — `io/inspect` cites
@@ -94,9 +89,9 @@ result and the cited name stays escaped."
       (if (and (nil? module-name) (< (index-of raw "/") 0))
         nil
         (str "<a class=\"doc-link\" href=\"#"
-          (escape (doc-link-target module-name raw))
+          (markdown/escape (doc-link-target module-name raw))
           "\"><code>"
-          (escape raw)
+          (markdown/escape raw)
           "</code></a>")))))
 
 ;; `[[name]]` links in rendered HTML, applied to the text BETWEEN `<code>` spans only — inside
@@ -143,7 +138,7 @@ result and the cited name stays escaped."
   (str "m-" (slug module-name)))
 ;; An anchor is built from a definition NAME, and a name is whatever the source called it —
 ;; Brood symbols admit `&`, `<` and `>`, so an anchor can contain them. Every site that puts
-;; one into an `id="…"` or `href="#…"` runs it through `escape` first: unescaped, an `&`
+;; one into an `id="…"` or `href="#…"` runs it through `markdown/escape` first: unescaped, an `&`
 ;; starts an entity the browser may decode, which is invalid HTML and can silently change the
 ;; id. Escaping BOTH the id and the href keeps them equal — the browser decodes entities on
 ;; each side alike — so the link still lands.
@@ -170,15 +165,15 @@ result and the cited name stays escaped."
         raw-sig (get definition :sig)
         sig (if qualified? (qualify-sig module-name raw-sig) raw-sig))
     (str "<div class=\"def\" id=\""
-      (escape (def-anchor module-name (get definition :name)))
+      (markdown/escape (def-anchor module-name (get definition :name)))
       "\">"
       "<div class=\"def-head\">"
       "<code class=\"sig\">"
-      (escape sig)
+      (markdown/escape sig)
       "</code>"
       (if macro? " <span class=\"tag\">macro</span>" "")
       "</div>"
-      (if type-arrow (str "<div class=\"type\">" (escape type-arrow) "</div>") "")
+      (if type-arrow (str "<div class=\"type\">" (markdown/escape type-arrow) "</div>") "")
       (if docstring
         (str "<div class=\"doc\">" (prose docstring module-name) "</div>")
         "<p class=\"undoc\">Undocumented.</p>")
@@ -191,16 +186,16 @@ result and the cited name stays escaped."
 ;; stylesheet already covers it.
 (defn- type-html (module-name type-alias)
   (str "<div class=\"def\" id=\""
-    (escape (def-anchor module-name (get type-alias :name)))
+    (markdown/escape (def-anchor module-name (get type-alias :name)))
     "\">"
     "<div class=\"def-head\">"
     "<code class=\"sig\">"
-    (escape (str module-name "/" (get type-alias :name)))
+    (markdown/escape (str module-name "/" (get type-alias :name)))
     "</code>"
     " <span class=\"tag\">type</span>"
     "</div>"
     "<div class=\"type\">"
-    (escape (get type-alias :type))
+    (markdown/escape (get type-alias :type))
     "</div>"
     "</div>"))
 
@@ -210,10 +205,10 @@ result and the cited name stays escaped."
         types (or (get module :types) [])
         defs (get module :defs))
     (str "<section class=\"module\" id=\""
-      (escape (module-anchor module-name))
+      (markdown/escape (module-anchor module-name))
       "\">"
       "<h2>"
-      (escape module-name)
+      (markdown/escape module-name)
       "</h2>"
       (let (moduledoc (get module :doc))
         (if moduledoc (str "<div class=\"moduledoc\">" (prose moduledoc module-name) "</div>") ""))
@@ -239,7 +234,7 @@ result and the cited name stays escaped."
          (fn (acc m)
            (let (sec (get m :section)
                  head (if (and sec (not (= sec (get acc :section))))
-                        (str "<h2 class=\"doc-section\">" (escape sec) "</h2>")
+                        (str "<h2 class=\"doc-section\">" (markdown/escape sec) "</h2>")
                         ""))
              {:section (or sec (get acc :section))
               :html (str (get acc :html) head (module-html m))})))
@@ -249,18 +244,18 @@ result and the cited name stays escaped."
 
 (defn- sidebar-def (module-name definition)
   (str "<li><a href=\"#"
-    (escape (def-anchor module-name (get definition :name)))
+    (markdown/escape (def-anchor module-name (get definition :name)))
     "\">"
-    (escape (get definition :name))
+    (markdown/escape (get definition :name))
     "</a></li>"))
 
 (defn- sidebar-module (module)
   (let (module-name (get module :module))
     (str "<div class=\"nav-module\">"
       "<a class=\"nav-module-link\" href=\"#"
-      (escape (module-anchor module-name))
+      (markdown/escape (module-anchor module-name))
       "\">"
-      (escape module-name)
+      (markdown/escape module-name)
       "</a>"
       "<ul class=\"nav-defs\">"
       (apply str (map (get module :defs) (fn (d) (sidebar-def module-name d))))
@@ -275,7 +270,7 @@ result and the cited name stays escaped."
          (fn (acc m)
            (let (sec (get m :section)
                  head (if (and sec (not (= sec (get acc :section))))
-                        (str "<div class=\"nav-section\">" (escape sec) "</div>")
+                        (str "<div class=\"nav-section\">" (markdown/escape sec) "</div>")
                         ""))
              {:section (or sec (get acc :section))
               :html (str (get acc :html) head (sidebar-module m))})))
@@ -284,8 +279,9 @@ result and the cited name stays escaped."
 (defn- sidebar-html (model)
   (str "<nav class=\"sidebar\">"
     "<div class=\"brand\">"
-    (escape (or (get model :name) "Documentation"))
-    (let (v (get model :version)) (if v (str " <span class=\"ver\">" (escape v) "</span>") ""))
+    (markdown/escape (or (get model :name) "Documentation"))
+    (let (v (get model :version))
+      (if v (str " <span class=\"ver\">" (markdown/escape v) "</span>") ""))
     "</div>"
     "<input id=\"docsite-filter\" type=\"search\" placeholder=\"Filter…\" autocomplete=\"off\" spellcheck=\"false\">"
     (apply str (map (or (get model :guides) []) sidebar-guide))
@@ -298,9 +294,9 @@ result and the cited name stays escaped."
   (let (v (get model :version))
     (str "<header class=\"page-head\">"
       "<h1>"
-      (escape (or (get model :name) "Documentation"))
+      (markdown/escape (or (get model :name) "Documentation"))
       "</h1>"
-      (if v (str "<span class=\"badge\">" (escape v) "</span>") "")
+      (if v (str "<span class=\"badge\">" (markdown/escape v) "</span>") "")
       "</header>")))
 
 ;; ---- guides (narrative pages) -----------------------------------------------
@@ -314,7 +310,7 @@ result and the cited name stays escaped."
     (guide-anchor (get guide :title))
     "\">"
     "<h2>"
-    (escape (get guide :title))
+    (markdown/escape (get guide :title))
     "</h2>"
     "<div class=\"guide-body\">"
     (get guide :html)
@@ -325,7 +321,7 @@ result and the cited name stays escaped."
   (str "<div class=\"nav-module\"><a class=\"nav-module-link\" href=\"#"
     (guide-anchor (get guide :title))
     "\">"
-    (escape (get guide :title))
+    (markdown/escape (get guide :title))
     "</a></div>"))
 
 (defn- content-html (model)
@@ -494,7 +490,7 @@ result and the cited name stays escaped."
       (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
         "<title>"
-        (escape (or (get opts :title) (get model :name) "Documentation"))
+        (markdown/escape (or (get opts :title) (get model :name) "Documentation"))
         "</title>"
         "<style>"
         (page-reset-css)

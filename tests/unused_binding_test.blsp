@@ -10,16 +10,13 @@
 ;;
 ;; Register-only — discovered and run by `nest test` (and cargo test).
 
-(defmodule unused-binding-test (:use test) (:use seq))
-
-(defn- warnings-for (src)
-  (mapv (or (reflect/check-string-structured src) []) (fn (d) (get d :message))))
+(defmodule unused-binding-test (:use test) (:use suite-helpers) (:use seq))
 
 (defn- count-of (src want)
-  (count (keep (warnings-for src) (fn (m) (if (= m want) m nil)))))
+  (count (keep (checker-messages src) (fn (m) (if (= m want) m nil)))))
 
 (defn- unused-count (src)
-  (count (keep (warnings-for src) (fn (m) (if (string/starts-with? m "unused ") m nil)))))
+  (count (keep (checker-messages src) (fn (m) (if (string/starts-with? m "unused ") m nil)))))
 
 (describe "checker: an unused PATTERN binding in an anonymous fn clause"
   (test "the accumulator no arm reads is reported, once per clause"
@@ -91,7 +88,7 @@
 (describe "checker: a special form's name in a VALUE position"
   (test "names the form that lost its parentheses, not a symptom two levels down"
     ;; `(reduce '() fn (acc token) acc)` used to report only `unbound symbol: acc`, twice
-    (let (msgs (warnings-for "(defn calc (xs) (reduce xs '() fn (acc token) acc))"))
+    (let (msgs (checker-messages "(defn calc (xs) (reduce xs '() fn (acc token) acc))"))
       (is (any? msgs (fn (m) (string/starts-with? m "fn is a special form, not a value"))))))
 
   (test "a LOCAL of that name is an ordinary variable, not a slip"
@@ -109,7 +106,7 @@
     ;; `((acc num :when (string? num)) body)` becomes a FOUR-parameter head, so the clause
     ;; stops matching and every call dies with `[:match-error :fn …]` naming the clauses
     ;; rather than the slip. Nothing said anything until this.
-    (let (msgs (warnings-for "(defn f (xs) (reduce xs '() (fn ((acc num :when (string? num)) acc))))"))
+    (let (msgs (checker-messages "(defn f (xs) (reduce xs '() (fn ((acc num :when (string? num)) acc))))"))
       (is (any? msgs (fn (m) (string/starts-with? m "`:when` belongs after the head list"))))))
 
   (test "and the correct spelling is silent"
@@ -139,7 +136,7 @@
 
 (describe "checker: a bare symbol evaluated for effect"
   (test "reports the `f(x)` shape, which is two forms and not a call"
-    (let (msgs (warnings-for "(defn a (n) (do string?(n) 1))"))
+    (let (msgs (checker-messages "(defn a (n) (do string?(n) 1))"))
       (is (any? msgs (fn (m) (includes? m "is how `string?(x)` reads to the reader"))))))
 
   (test "a QUALIFIED name read for effect is the auto-load idiom, not dead code"

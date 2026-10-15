@@ -7,11 +7,7 @@
 ;;
 ;; Register-only — discovered and run by `nest test` (and cargo test).
 
-(defmodule reader-hints-test (:use test))
-
-(defn hint-of (src)
-  "The :hint of the error raised reading+evaluating `src`, or nil."
-  (try (reflect/eval (reflect/read-string src)) (catch e (get e :hint))))
+(defmodule reader-hints-test (:use test) (:use suite-helpers))
 
 ; a bare #-atom is a symbol
 (describe "reader: Clojure/Scheme syntax gets a teaching hint"

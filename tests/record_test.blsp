@@ -4,7 +4,7 @@
 ;; record is NOT `=` to a bare map with the same fields). `record?`/`record-id`/`fields`
 ;; are the clean, id-free view. A record is still a plain immutable map underneath:
 ;; `get`/`assoc`/`merge` work, plus one accessor per field.
-(defmodule record-test (:use test) (:use math))
+(defmodule record-test (:use test) (:use suite-helpers) (:use math))
 
 (defrecord point (x y))
 ; typed fields
@@ -184,23 +184,20 @@
 ;; `(sig area (circle -> float))` warned "unknown type `circle`" about a type the checker
 ;; held in `*record-ids*` all along. Sealed ability names have resolved since ADR-181.
 
-(defn- rt-warnings (src)
-  (map (reflect/check-string-structured src) (fn (d) (get d :message))))
-
 (describe "a record name in type position"
   (test "resolves, bare and qualified, and admits a record carrying extra fields"
-    (assert= (rt-warnings "(defmodule u) (defrecord circle (r)) (sig area (circle -> float)) (defn area (c) (get c :r)) (defn ok () (area (circle 2))) (defn q () (area (assoc (circle 2) :z 3)))")
+    (assert= (checker-messages "(defmodule u) (defrecord circle (r)) (sig area (circle -> float)) (defn area (c) (get c :r)) (defn ok () (area (circle 2))) (defn q () (area (assoc (circle 2) :z 3)))")
       (list)))
   (test "rejects a different record and a non-record"
-    (let (w (rt-warnings "(defmodule u) (defrecord circle (r)) (defrecord square (s)) (sig area (circle -> float)) (defn area (c) (get c :r)) (defn bad () (area (square 2)))"))
+    (let (w (checker-messages "(defmodule u) (defrecord circle (r)) (defrecord square (s)) (sig area (circle -> float)) (defn area (c) (get c :r)) (defn bad () (area (square 2)))"))
       (is (not (empty? w)))
       (is (any? w (fn (m) (includes? m "argument 1"))))))
   (test "a base type name still outranks a record that claimed it"
     ;; In a type EXPRESSION `int` is the int kind, even with a root record named `int`.
-    (assert= (rt-warnings "(defrecord int (n)) (sig f (int -> int)) (defn f (n) (+ n 1)) (defn ok () (f 42))")
+    (assert= (checker-messages "(defrecord int (n)) (sig f (int -> int)) (defn f (n) (+ n 1)) (defn ok () (f 42))")
       (list)))
   (test "an ambiguous bare name declines rather than guessing"
-    (let (w (rt-warnings "(defmodule a) (defrecord pt (x y)) (defmodule b) (defrecord pt (m n)) (sig amb (pt -> int)) (defn amb (p) 1)"))
+    (let (w (checker-messages "(defmodule a) (defrecord pt (x y)) (defmodule b) (defrecord pt (m n)) (sig amb (pt -> int)) (defn amb (p) 1)"))
       (is (any? w (fn (m) (includes? m "unknown type")))))))
 
 (describe "defrecord: the field list"

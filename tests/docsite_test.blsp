@@ -16,12 +16,6 @@
                       {:name "bar" :sig "(bar z)" :doc nil :macro true :type nil}]}
               {:module "my/empty" :doc nil :defs []}]})
 
-(describe "docsite: escaping"
-  (test "the HTML metacharacters are escaped (& first)"
-    (assert= (docsite/escape "a<b>&c") "a&lt;b&gt;&amp;c"))
-  (test "a non-string is coerced then escaped"
-    (assert= (docsite/escape 42) "42")))
-
 (describe "docsite: prose"
   (test "blank lines split paragraphs"
     (assert= (docsite/prose "one\n\ntwo") "<p>one</p><p>two</p>"))
