@@ -160,7 +160,25 @@
   (test "char offsets are correct through multi-byte text"
     ;;         "(café) (π x)"  — é is 2 bytes, π is 2 bytes, but offsets are CHARS
     (assert= (reflect/scan-form-end "(café) (π x)" 0 1) 6) ; just past (café)
-    (assert= (reflect/scan-form-end "(café) (π x)" 0 2) 12)))
+    (assert= (reflect/scan-form-end "(café) (π x)" 0 2) 12))
+  (test "brackets inside a bar-quoted symbol or keyword do not change depth"
+    ;; literal source: (a |)(| :|]|) (b)
+    (assert= (reflect/scan-form-end "(a |)(| :|]|) (b)" 0 1) 13)
+    (assert= (reflect/scan-form-end "(a |)(| :|]|) (b)" 0 2) 17))
+  (test "a bar inside an atom is part of the atom, not a quote"
+    (assert= (reflect/scan-form-end "(a|b) (c)" 0 1) 5)))
+
+(describe "scan-form-start agrees with the reader about bar symbols"
+  ;; Both form scans share one lexer: a bracket in `|…|` is no form start and no depth.
+  (test "an open bracket inside a bar symbol is not a form start"
+    ;; literal source: (def |(| 1)\n(b)  — `(b)` is the second top-level form, at 12
+    (assert= (reflect/scan-form-start "(def |(| 1)\n(b)" 13) 12)
+    (assert= (reflect/scan-form-start-2 "(def |(| 1)\n(b)" 13) [0 12]))
+  (test "the answer holds past a safepoint, in a text long enough to carry a table"
+    (let (filler (string/join (map (range 400) (fn (i) (str "(def |x(" i "| " i ")\n"))) "")
+          text (str filler "(last)"))
+      (assert= (reflect/scan-form-start text (string/length text))
+        (- (string/length text) 6)))))
 
 (describe "sexp buffer commands"
   (test "forward moves point to the end of the next sexp"

@@ -278,74 +278,112 @@ fn utf8_width(b: u8) -> usize {
     }
 }
 
-/// The lexical pass, resumed from `from` and stopped once the char index passes `upto`.
-/// `emit` is called at each safepoint-eligible position (between tokens) so one pass can
-/// both answer a query and build the table. Returns the state reached.
-///
-/// The rules: `"` opens a string body in which `\` escapes the next character and which
-/// an unterminated literal runs to the end of; `;` runs to end-of-line; and `(`/`[`/`{`
-/// at bracket **depth 0** outside both is a form start, where the previous `best` becomes
-/// `prev`. Depth — not column 0 — is what makes the answer exact on mis-indented source:
-/// an open bracket at column 0 *inside* an unclosed form (the classic Emacs
-/// beginning-of-defun trap) is not a start, and an indented top-level open is one. A
-/// stray close at depth 0 is ignored (saturating), so unbalanced text degrades gracefully.
-fn form_scan(s: &str, from: ScanPoint, upto: usize, mut emit: impl FnMut(ScanPoint)) -> ScanPoint {
+/// What [`lex`] stepped over: a bracket, or anything else (which never changes depth).
+enum Lexeme {
+    Open,
+    Close,
+    Other,
+}
+
+/// Step the cursor (`byte` and its char index `ch`, kept in step) past the token at it,
+/// split as the reader splits it: a `"` string (to its closing quote, `\` escaping the
+/// next character; an unterminated one runs to the end), a `;` comment (to end of line),
+/// a `|…|` bar-quoted symbol or `:|…|` keyword (to the closing bar, `\` escaping), one
+/// bracket, one delimiter, or an atom (to the next delimiter). The one lexer both form
+/// scans share, so a bracket inside a string, comment or bar symbol never counts — and
+/// since an atom is consumed whole, the cursor always rests between tokens, where a scan
+/// may safely resume (a `|` *inside* an atom is not a bar). Every byte it matches is
+/// ASCII; only an atom decodes characters, to know where it ends.
+fn lex(s: &str, byte: &mut usize, ch: &mut usize) -> Lexeme {
     let b = s.as_bytes();
-    let len = b.len();
-    let mut st = from;
-    // Advance one whole character, keeping the byte and char cursors in step.
-    macro_rules! step {
-        () => {{
-            st.byte += utf8_width(b[st.byte as usize]) as u32;
-            st.ch += 1;
-        }};
-    }
-    while (st.byte as usize) < len && (st.ch as usize) <= upto {
-        emit(st);
-        match b[st.byte as usize] {
-            b'"' => {
-                step!();
-                while (st.byte as usize) < len && (st.ch as usize) <= upto {
-                    match b[st.byte as usize] {
-                        b'\\' => {
-                            step!();
-                            if (st.byte as usize) < len {
-                                step!();
-                            }
-                        }
-                        b'"' => {
-                            step!();
-                            break;
-                        }
-                        _ => step!(),
-                    }
-                }
+    let step = |byte: &mut usize, ch: &mut usize| {
+        *byte += utf8_width(b[*byte]);
+        *ch += 1;
+    };
+    let quoted = |byte: &mut usize, ch: &mut usize, close: u8| {
+        while *byte < b.len() {
+            let c = b[*byte];
+            step(byte, ch);
+            if c == close {
+                break;
             }
-            b';' => {
-                while (st.byte as usize) < len && b[st.byte as usize] != b'\n' {
-                    step!();
-                }
+            if c == b'\\' && *byte < b.len() {
+                step(byte, ch);
             }
-            b'(' | b'[' | b'{' => {
-                if st.depth == 0 {
-                    if st.ch > 0 {
-                        st.prev = st.best;
-                    }
-                    st.best = st.ch;
-                }
-                st.depth += 1;
-                step!();
+        }
+    };
+    let delimiter_at = |byte: usize| {
+        s[byte..]
+            .chars()
+            .next()
+            .is_some_and(crate::syntax::atom::is_delimiter)
+    };
+    match b[*byte] {
+        b'(' | b'[' | b'{' => {
+            step(byte, ch);
+            return Lexeme::Open;
+        }
+        b')' | b']' | b'}' => {
+            step(byte, ch);
+            return Lexeme::Close;
+        }
+        b'"' | b'|' => {
+            let close = b[*byte];
+            step(byte, ch);
+            quoted(byte, ch, close);
+        }
+        b':' if b.get(*byte + 1) == Some(&b'|') => {
+            step(byte, ch);
+            step(byte, ch);
+            quoted(byte, ch, b'|');
+        }
+        b';' => {
+            while *byte < b.len() && b[*byte] != b'\n' {
+                step(byte, ch);
             }
-            b')' | b']' | b'}' => {
-                st.depth = st.depth.saturating_sub(1);
-                step!();
-            }
-            _ => {
-                step!();
+        }
+        _ if delimiter_at(*byte) => step(byte, ch),
+        _ => {
+            while *byte < b.len() && !delimiter_at(*byte) {
+                step(byte, ch);
             }
         }
     }
-    st
+    Lexeme::Other
+}
+
+/// The lexical pass, resumed from `from` and stopped at the first token past char index
+/// `upto`. `emit` is called before each token (a safepoint-eligible position) so one pass
+/// can both answer a query and build the table. Returns the state reached.
+///
+/// Tokens are [`lex`]'s; an open bracket at bracket **depth 0** is a form start, where
+/// the previous `best` becomes `prev`. Depth — not column 0 — is what makes the answer
+/// exact on mis-indented source: an open bracket at column 0 *inside* an unclosed form
+/// (the classic Emacs beginning-of-defun trap) is not a start, and an indented top-level
+/// open is one. A stray close at depth 0 is ignored (saturating), so unbalanced text
+/// degrades gracefully.
+fn form_scan(s: &str, from: ScanPoint, upto: usize, mut emit: impl FnMut(ScanPoint)) -> ScanPoint {
+    let mut state = from;
+    let (mut byte, mut ch) = (from.byte as usize, from.ch as usize);
+    while byte < s.len() && ch <= upto {
+        (state.byte, state.ch) = (byte as u32, ch as u32);
+        emit(state);
+        match lex(s, &mut byte, &mut ch) {
+            Lexeme::Open => {
+                if state.depth == 0 {
+                    if state.ch > 0 {
+                        state.prev = state.best;
+                    }
+                    state.best = state.ch;
+                }
+                state.depth += 1;
+            }
+            Lexeme::Close => state.depth = state.depth.saturating_sub(1),
+            Lexeme::Other => {}
+        }
+    }
+    (state.byte, state.ch) = (byte as u32, ch as u32);
+    state
 }
 
 /// `(best, prev)` for char index `pos` in `s`, resuming from `table`'s last safepoint at
@@ -404,72 +442,30 @@ pub(super) fn scan_form_start_2(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
     Ok(heap.alloc_vector(items))
 }
 
-/// Forward from byte offset `start_byte` (whose char index is `start_ch`) in `s`,
-/// skipping string and `;`-comment content and tracking bracket depth. Returns the char
-/// offset just after `nforms` top-level (depth-returns-to-0) forms have completed, or the
-/// char length of `s` if it ends first. A depth-0 open bracket begins a form; the close
-/// that returns depth to 0 completes it. Every character this cares about (`"`, `\`, `;`,
-/// `\n`, the brackets) is ASCII, so the pass matches bytes and carries the char index
-/// alongside — the same technique as [`form_scan`].
+/// Forward from byte offset `start_byte` (whose char index is `start_ch`) in `s` over
+/// [`lex`]'s tokens, tracking bracket depth. Returns the char offset just after `nforms`
+/// top-level (depth-returns-to-0) forms have completed, or the char length of `s` if it
+/// ends first. A depth-0 open bracket begins a form; the close that returns depth to 0
+/// completes it.
 ///
-/// This is the byte-native form of `tool/sexp`'s interpreted `sexp-scan`: same lexical
-/// rules as `scan-tokens`/`scan-form-start` (`"` opens a string in which `\` escapes the
-/// next char and which runs to the end if unterminated; `;` runs to end-of-line), but one
-/// native pass over the ~3-form window instead of an O(window) `char-at` loop in Brood,
-/// which was ~85% of every structural motion.
+/// This is the byte-native form of `tool/sexp`'s interpreted `sexp-scan` — one native
+/// pass over the ~3-form window instead of an O(window) `char-at` loop in Brood, which
+/// was ~85% of every structural motion.
 fn scan_form_end_bytes(s: &str, start_byte: usize, start_ch: usize, nforms: i64) -> usize {
-    let b = s.as_bytes();
-    let len = b.len();
-    let mut byte = start_byte.min(len);
+    let mut byte = start_byte.min(s.len());
     let mut ch = start_ch;
     let mut depth: i64 = 0;
     let mut left = nforms;
-    macro_rules! step {
-        () => {{
-            byte += utf8_width(b[byte]) as usize;
-            ch += 1;
-        }};
-    }
-    while byte < len {
-        if depth == 0 && left <= 0 {
-            break;
-        }
-        match b[byte] {
-            b'"' => {
-                step!(); // past the opening quote
-                while byte < len {
-                    match b[byte] {
-                        b'\\' => {
-                            step!();
-                            if byte < len {
-                                step!();
-                            }
-                        }
-                        b'"' => {
-                            step!();
-                            break;
-                        }
-                        _ => step!(),
-                    }
-                }
-            }
-            b';' => {
-                while byte < len && b[byte] != b'\n' {
-                    step!();
-                }
-            }
-            b'(' | b'[' | b'{' => {
-                depth += 1;
-                step!();
-            }
-            b')' | b']' | b'}' => {
+    while byte < s.len() && !(depth == 0 && left <= 0) {
+        match lex(s, &mut byte, &mut ch) {
+            Lexeme::Open => depth += 1,
+            Lexeme::Close => {
                 depth = (depth - 1).max(0);
                 if depth == 0 {
                     left -= 1;
                 }
-                step!();
             }
-            _ => step!(),
+            Lexeme::Other => {}
         }
     }
     ch

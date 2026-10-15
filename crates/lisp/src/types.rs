@@ -31,35 +31,9 @@ use std::sync::Arc;
 use crate::core::value::{self, Symbol, Tag, Value};
 
 /// Every tag, in bit order — for iterating a `Ty`'s members (printing, etc.) and
-/// the source of [`TAG_COUNT`]. **Must list every [`Tag`] variant in discriminant
-/// order**; the compiler can't enumerate variants, so `tag_universe_is_consistent`
-/// (below) is what guards completeness, ordering, and the universe size.
-const ALL_TAGS: [Tag; 24] = [
-    Tag::Nil,
-    Tag::Bool,
-    Tag::Int,
-    Tag::Float,
-    Tag::Sym,
-    Tag::Keyword,
-    Tag::Str,
-    Tag::Pair,
-    Tag::Vector,
-    Tag::Fn,
-    Tag::Macro,
-    Tag::Native,
-    Tag::Map,
-    Tag::Ref,
-    Tag::Pid,
-    Tag::Rope,
-    Tag::Socket,
-    Tag::Subprocess,
-    Tag::Table,
-    Tag::Bytes,
-    Tag::Decimal,
-    Tag::Set,
-    Tag::Ratio,
-    Tag::Failure,
-];
+/// the source of [`TAG_COUNT`]. It is [`Tag::ALL`], whose order is checked at compile
+/// time beside it; `tag_universe_is_consistent` (below) guards the universe size.
+const ALL_TAGS: [Tag; Tag::ALL.len()] = Tag::ALL;
 
 /// The number of tag atoms — derived from [`ALL_TAGS`], not hand-counted.
 const TAG_COUNT: u32 = ALL_TAGS.len() as u32;

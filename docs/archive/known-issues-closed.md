@@ -13816,3 +13816,20 @@ snapshots, a second heap on the same runtime tries to age. Sabotage (the check d
 reds it with "another process aged the region while this one held a globals snapshot".
 End to end, the probe went from about 1 in 10 failing to 0 in 120 across tiers 1 and 2, and
 `stdimage_test` under GC stress to 6/6.
+
+## KI-260 — the native form scans counted brackets inside a `|…|` bar-quoted symbol ✅ FIXED 2026-10-15
+
+**Symptom.** `(reflect/scan-form-start "(def |(| 1)\n(b)" 13)` answered 0, not 12; the `(`
+inside the bar symbol opened a depth that never closed, so no later form was a top-level
+start. `scan-form-end` miscounted forms the same way. Both feed `tool/sexp` narrowing and
+`highlight/safe-restart`, so motion and fontify restarts were wrong after any bar symbol
+holding a bracket. **Cause.** `form_scan` and `scan_form_end_bytes` each had a copy of the
+byte lexer, which knew `"` strings and `;` comments but not `|…|` / `:|…|`, though the
+reader, the CST and `scan-tokens` all do. The copies had also stepped atoms one character
+at a time, so a safepoint could fall inside an atom. **Fix.** One `lex` both scans call,
+splitting tokens as the reader does: strings, comments and bar quotes to their ends; an atom
+to the next delimiter (so the cursor always rests between tokens, and a `|` inside an atom,
+`a|b`, stays part of it). **Guard.** `tests/sexp_test.blsp`: bracketed bar symbols and
+keywords for `scan-form-end`; a bar symbol before a form for `scan-form-start` and `-2`; the
+same through a >4 KB text, which takes the safepoint table; and `a|b`. Sabotage: dropping the
+bar arm reds three tests; letting a mid-atom `|` open a quote reds the fourth.

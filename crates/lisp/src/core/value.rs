@@ -905,42 +905,62 @@ impl Tag {
     /// per element) must not re-intern the tag name on every call, which would dominate
     /// `intern` on map/list-heavy code. Indexed by the `#[repr(u8)]` discriminant.
     pub fn keyword(self) -> Symbol {
-        static KW: LazyLock<[Symbol; 24]> = LazyLock::new(|| {
-            const TAGS: [Tag; 24] = [
-                Tag::Nil,
-                Tag::Bool,
-                Tag::Int,
-                Tag::Float,
-                Tag::Sym,
-                Tag::Keyword,
-                Tag::Str,
-                Tag::Pair,
-                Tag::Vector,
-                Tag::Fn,
-                Tag::Macro,
-                Tag::Native,
-                Tag::Map,
-                Tag::Ref,
-                Tag::Pid,
-                Tag::Rope,
-                Tag::Socket,
-                Tag::Subprocess,
-                Tag::Table,
-                Tag::Bytes,
-                Tag::Decimal,
-                Tag::Set,
-                Tag::Ratio,
-                Tag::Failure,
-            ];
-            let mut out = [0u32; 24];
-            for t in TAGS {
+        static KW: LazyLock<[Symbol; Tag::ALL.len()]> = LazyLock::new(|| {
+            let mut out = [0u32; Tag::ALL.len()];
+            for t in Tag::ALL {
                 out[t as usize] = intern(t.name());
             }
             out
         });
         KW[self as usize]
     }
+
+    /// Every tag, in discriminant order — the one list; the type lattice's atoms
+    /// (`types::ALL_TAGS`) and the keyword cache above both read it. The check below
+    /// pins each entry to its own discriminant, so a reorder or a gap fails to compile;
+    /// a tag appended after `Failure` must extend this list and move that check's end.
+    pub const ALL: [Tag; 24] = [
+        Tag::Nil,
+        Tag::Bool,
+        Tag::Int,
+        Tag::Float,
+        Tag::Sym,
+        Tag::Keyword,
+        Tag::Str,
+        Tag::Pair,
+        Tag::Vector,
+        Tag::Fn,
+        Tag::Macro,
+        Tag::Native,
+        Tag::Map,
+        Tag::Ref,
+        Tag::Pid,
+        Tag::Rope,
+        Tag::Socket,
+        Tag::Subprocess,
+        Tag::Table,
+        Tag::Bytes,
+        Tag::Decimal,
+        Tag::Set,
+        Tag::Ratio,
+        Tag::Failure,
+    ];
 }
+
+const _: () = {
+    let mut i = 0;
+    while i < Tag::ALL.len() {
+        assert!(
+            Tag::ALL[i] as usize == i,
+            "Tag::ALL out of discriminant order"
+        );
+        i += 1;
+    }
+    assert!(
+        Tag::Failure as usize + 1 == Tag::ALL.len(),
+        "Tag::ALL must end at the last tag"
+    );
+};
 
 /// Re-wrap a forwarded/promoted CHAMP `id` in the same kind `original` had, so a
 /// storage walk that moved the trie preserves map-vs-set-vs-failure identity.

@@ -414,11 +414,12 @@ pub(crate) fn spawn_overflow_drainer() {
             );
         }
     }
-    let ok = std::thread::Builder::new()
+    let named = || std::thread::Builder::new().name("brood-overflow-drain".into());
+    let ok = named()
         .stack_size(WORKER_STACK_BYTES)
         .spawn(overflow_drain)
         .is_ok()
-        || std::thread::Builder::new().spawn(overflow_drain).is_ok();
+        || named().spawn(overflow_drain).is_ok();
     if !ok {
         // Couldn't start a thread — undo the accounting rather than leave it inflated
         // (which would suppress every future spawn and re-strand the work).
@@ -563,7 +564,10 @@ pub(crate) fn ensure_workers() {
         let mut live = 0usize;
         let mut refusal = None;
         for wid in 0..n {
+            // Named on both tries: gdb backtraces and the stranded-work watchdog read
+            // `brood-worker-N`, and only the fallback used to carry it.
             let started = std::thread::Builder::new()
+                .name(format!("brood-worker-{wid}"))
                 .stack_size(WORKER_STACK_BYTES)
                 .spawn(move || worker_loop(wid))
                 // Retry once at the default stack size: the big reservation is the most

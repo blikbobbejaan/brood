@@ -17794,3 +17794,16 @@ Correlating the `AGE` lines with failures was exact, 4 for 4.
   local `seq` hand-listed the same six tags.
 - Stale comments fixed: a `%div` "answers a float" (it answers a `Ratio`), two line
   numbers into a file that no longer exists, and a KI-48 note describing code since replaced.
+
+## 2026-10-15 (later) — one form-scan lexer (KI-260), one tag list, named threads
+
+- **KI-260.** The two native form scans had their own copies of a lexer that knew strings
+  and comments but not `|…|` bar symbols. They now share one `lex` that splits tokens as
+  the reader does.
+- **`Tag::ALL`** is the one list of tags. A `const` assertion pins its order to the
+  discriminants, so a reorder fails to compile (sabotage-verified). `types::ALL_TAGS` and
+  the `Tag::keyword` cache read it instead of keeping two more copies.
+- **`with_string_slot`** reads a RUNTIME generation through `code_gen_ref`'s cache, like
+  every other RUNTIME accessor.
+- **Scheduler workers are named `brood-worker-N`** on the normal spawn, not only on the
+  fallback. Overflow drainers are named too.

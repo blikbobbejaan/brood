@@ -324,15 +324,13 @@ impl Heap {
                 f(&self.local.strings[id.index()])
             }
             PRELUDE => f(&self.prelude.slabs.strings[id.index()]),
-            RUNTIME => {
-                let c = self
-                    .runtime
-                    .gens
-                    .get(id.code_gen())
-                    .expect("runtime string generation")
-                    .load();
-                f(c.strings.get(id.index()).expect("runtime string handle"))
-            }
+            // Through the cached generation read every other RUNTIME accessor uses, not a
+            // fresh `ArcSwap` load per call.
+            RUNTIME => f(self
+                .code_gen_ref(id.code_gen())
+                .strings
+                .get(id.index())
+                .expect("runtime string handle")),
             _ => unreachable!("invalid handle region"),
         }
     }
