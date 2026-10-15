@@ -190,9 +190,8 @@ fn replay_std_image_install(heap: &mut Heap, root: core::value::EnvId) -> Option
 /// a value that will not decode, or a failed install replay — and the caller falls back to
 /// the source boot.
 ///
-/// The tail is identical to the source boot: a builder heap with the natives registered,
-/// the bindings installed, then `freeze_as_shared_code`. Only *how the bindings arrive*
-/// differs, which is what keeps the two paths interchangeable.
+/// Both ends are shared with the source boot — [`builder_heap`] and [`finish_bundle`] — so
+/// only *how the bindings arrive* differs, which is what keeps the two paths interchangeable.
 fn boot_from_prelude_image() -> Option<SharedBundle> {
     // Stand aside under coverage, exactly as the stdlib image does (ADR-281): coverage
     // instruments the COMPILER, and a materialised binding is never compiled, so an imaged
@@ -202,10 +201,7 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     }
     let started = web_time::Instant::now();
     let path = prelude_image_path()?;
-    let mut heap = Heap::new();
-    let root = heap.new_env(None);
-    heap.set_global(root);
-    builtins::register(&mut heap, root);
+    let (mut heap, root) = builder_heap();
     let registered = started.elapsed();
     // Like the source boot: materialise the on-disk prelude copy the def sites name, so
     // stdlib `M-.` can actually open the file the image points at.
@@ -235,12 +231,8 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     // a runtime `gensym` must start ABOVE that counter or a fresh name could collide with a
     // baked one. The image carries the floor in its header.
     core::value::gensym_floor(gensym_floor);
-    let private = heap.private_names_snapshot();
-    let dynamics = heap.dynamic_names();
-    let image_kinds = heap.image_kinds_snapshot();
-    let name_meta = heap.name_meta_snapshot();
     let before_freeze = started.elapsed();
-    let (code, bindings) = heap.freeze_as_shared_code(root);
+    let bundle = finish_bundle(heap, root);
     if crate::diagnostics::debug_flags::boot_trace() {
         eprintln!(
             "[boot] register={:?} image={:?} ({entries} entries) freeze={:?} — total={:?} (prelude image)",
@@ -250,14 +242,36 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
             started.elapsed()
         );
     }
-    Some(SharedBundle {
+    Some(bundle)
+}
+
+/// The throwaway heap both boot paths build the prelude in: a fresh root env, made the
+/// global one, with every native registered.
+fn builder_heap() -> (Heap, core::value::EnvId) {
+    let mut heap = Heap::new();
+    let root = heap.new_env(None);
+    heap.set_global(root);
+    builtins::register(&mut heap, root);
+    (heap, root)
+}
+
+/// Snapshot the builder heap's name tables and freeze it into the shared bundle — the end
+/// of both boot paths, so a field added to [`SharedBundle`] is filled once, the same way
+/// for each (the `meta` field was once added to one path only).
+fn finish_bundle(heap: Heap, root: core::value::EnvId) -> SharedBundle {
+    let private = heap.private_names_snapshot();
+    let dynamics = heap.dynamic_names();
+    let image_kinds = heap.image_kinds_snapshot();
+    let meta = heap.name_meta_snapshot();
+    let (code, bindings) = heap.freeze_as_shared_code(root);
+    SharedBundle {
         code: Arc::new(code),
         bindings,
         private,
         dynamics,
         image_kinds,
-        meta: name_meta,
-    })
+        meta,
+    }
 }
 
 /// The full source boot: parse + macro-expand + eval + freeze the prelude,
@@ -266,10 +280,7 @@ fn boot_from_source() -> SharedBundle {
     let t_start = web_time::Instant::now();
     // Build the prelude + builtins in a throwaway builder heap, then relocate it
     // all into the shared region. Done once for the whole process.
-    let mut heap = Heap::new();
-    let root = heap.new_env(None);
-    heap.set_global(root);
-    builtins::register(&mut heap, root);
+    let (mut heap, root) = builder_heap();
     // Snapshot what registration alone bound: the prelude image may omit exactly these,
     // because the warm path calls `register` too. Taken here rather than derived from the
     // values later — "is a native" is not the same question (a prelude `def` can bind one).
@@ -316,10 +327,6 @@ fn boot_from_source() -> SharedBundle {
     heap.set_current_file(None);
     let t_eval = t_mark.elapsed();
     let t_mark = web_time::Instant::now();
-    let private = heap.private_names_snapshot();
-    let dynamics = heap.dynamic_names();
-    let image_kinds = heap.image_kinds_snapshot();
-    let name_meta = heap.name_meta_snapshot();
     // ADR-314: write the prelude image before the freeze consumes the builder heap. The
     // cold boot is allowed to be slow — it runs once per binary build — so this is pure
     // addition; every later boot skips the read+eval this one just did. Best-effort: a
@@ -341,7 +348,7 @@ fn boot_from_source() -> SharedBundle {
             });
         }
     }
-    let (code, bindings) = heap.freeze_as_shared_code(root);
+    let bundle = finish_bundle(heap, root);
     let t_freeze = t_mark.elapsed();
     if crate::diagnostics::debug_flags::boot_trace() {
         eprintln!(
@@ -355,14 +362,7 @@ fn boot_from_source() -> SharedBundle {
             if write_image { ", image written" } else { "" }
         );
     }
-    SharedBundle {
-        code: Arc::new(code),
-        bindings,
-        private,
-        dynamics,
-        image_kinds,
-        meta: name_meta,
-    }
+    bundle
 }
 
 /// The standard prelude, written in Brood and baked into the binary. Split across
@@ -804,10 +804,7 @@ mod replay_tests {
     /// `%std-image-reinstall!` (natives only, no prelude) is that failure on demand.
     #[test]
     fn a_failed_install_replay_fails_the_imaged_boot() {
-        let mut heap = Heap::new();
-        let root = heap.new_env(None);
-        heap.set_global(root);
-        builtins::register(&mut heap, root);
+        let (mut heap, root) = builder_heap();
         assert!(
             replay_std_image_install(&mut heap, root).is_none(),
             "an install replay that raised was treated as a successful boot step"
