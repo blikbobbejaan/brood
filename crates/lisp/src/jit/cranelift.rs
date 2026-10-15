@@ -70,7 +70,9 @@ impl CraneliftBackend {
         // after any Cranelift bump, re-check: the fuzz differential against a RELEASE binary
         // (`BROOD=target/release-fast/brood scripts/fuzz/run.sh …` — the armed build keeps the
         // verifier on and cannot see this) and every benchmark row's stderr grepped for
-        // CODEGEN-PANICKED. Re-verified clean on 0.135.1.
+        // CODEGEN-PANICKED. Re-verified clean on 0.136.3 (2026-10-15: eleven generators,
+        // 3400 programs, against `release-fast`; the benchmark-row half belongs on the
+        // benchmark machine and is still to run there).
         let verifier = if cfg!(debug_assertions) {
             "true"
         } else {
@@ -83,135 +85,16 @@ impl CraneliftBackend {
         )
         .or_else(|_| JITBuilder::new(default_libcall_names()))
         .expect("Cranelift JITBuilder for the host ISA");
-        builder.symbol("brood_rt_tick", brood_rt_tick as *const u8);
-        builder.symbol("brood_rt_tick_n", brood_rt_tick_n as *const u8);
-        builder.symbol("brood_rt_gc_safepoint", brood_rt_gc_safepoint as *const u8);
-        builder.symbol("brood_rt_cons", brood_rt_cons as *const u8);
-        builder.symbol("brood_rt_vec2_room", brood_rt_vec2_room as *const u8);
-        builder.symbol(
-            "brood_rt_make_vector_n",
-            brood_rt_make_vector_n as *const u8,
-        );
-        builder.symbol("brood_rt_car", brood_rt_car as *const u8);
-        builder.symbol("brood_rt_cdr", brood_rt_cdr as *const u8);
-        builder.symbol("brood_rt_push", brood_rt_push as *const u8);
-        builder.symbol("brood_rt_push_room", brood_rt_push_room as *const u8);
-        builder.symbol(
-            "brood_rt_in_call_journal",
-            brood_rt_in_call_journal as *const u8,
-        );
-        builder.symbol(
-            "brood_rt_call_native_fl",
-            brood_rt_call_native_fl as *const u8,
-        );
-        builder.symbol("brood_rt_global", brood_rt_global as *const u8);
-        builder.symbol("brood_rt_global_probe", brood_rt_global_probe as *const u8);
-        builder.symbol("brood_rt_global_ic", brood_rt_global_ic as *const u8);
-        builder.symbol("brood_rt_call_slow", brood_rt_call_slow as *const u8);
-        builder.symbol("brood_rt_note_deopt", brood_rt_note_deopt as *const u8);
-        builder.symbol("brood_rt_trace_push", brood_rt_trace_push as *const u8);
-        builder.symbol(
-            "brood_rt_fastlink_base",
-            brood_rt_fastlink_base as *const u8,
-        );
-        builder.symbol("brood_rt_fast_frame", brood_rt_fast_frame as *const u8);
-        builder.symbol("brood_rt_xcall_latch", brood_rt_xcall_latch as *const u8);
-        builder.symbol("brood_rt_xcall_cold", brood_rt_xcall_cold as *const u8);
-        builder.symbol("brood_rt_vector_ref", brood_rt_vector_ref as *const u8);
-        builder.symbol("brood_rt_vector_len", brood_rt_vector_len as *const u8);
-        builder.symbol("brood_rt_table_has", brood_rt_table_has as *const u8);
-        builder.symbol("brood_rt_table_get2", brood_rt_table_get2 as *const u8);
-        builder.symbol("brood_rt_table_put", brood_rt_table_put as *const u8);
-        builder.symbol("brood_rt_vector_base", brood_rt_vector_base as *const u8);
-        builder.symbol(
-            "brood_rt_table_dense_base",
-            brood_rt_table_dense_base as *const u8,
-        );
-        builder.symbol("brood_rt_global_epoch", brood_rt_global_epoch as *const u8);
-        builder.symbol(
-            "brood_rt_dispatch_identity",
-            brood_rt_dispatch_identity as *const u8,
-        );
-        builder.symbol("brood_rt_map_get", brood_rt_map_get as *const u8);
-        builder.symbol("brood_rt_map_get3", brood_rt_map_get3 as *const u8);
-        builder.symbol("brood_rt_make_map_n", brood_rt_make_map_n as *const u8);
-        builder.symbol("brood_rt_map_assoc", brood_rt_map_assoc as *const u8);
-        builder.symbol("brood_rt_equal", brood_rt_equal as *const u8);
-        builder.symbol("brood_rt_first", brood_rt_first as *const u8);
-        builder.symbol("brood_rt_rest", brood_rt_rest as *const u8);
-        builder.symbol("brood_rt_is_empty", brood_rt_is_empty as *const u8);
-        builder.symbol(
-            "brood_rt_i64_overflow_ptr",
-            brood_rt_i64_overflow_ptr as *const u8,
-        );
-        builder.symbol(
-            "brood_rt_global_epoch_ptr",
-            brood_rt_global_epoch_ptr as *const u8,
-        );
-        #[cfg(debug_assertions)]
-        builder.symbol(
-            "brood_rt_dbg_set_staging",
-            brood_rt_dbg_set_staging as *const u8,
-        );
-        #[cfg(debug_assertions)]
-        builder.symbol(
-            "brood_rt_dbg_check_slot",
-            brood_rt_dbg_check_slot as *const u8,
-        );
-        builder.symbol("brood_rt_in_capture", brood_rt_in_capture as *const u8);
-        builder.symbol("brood_rt_roots_base", brood_rt_roots_base as *const u8);
-        builder.symbol("brood_rt_i64_throw", brood_rt_i64_throw as *const u8);
-        builder.symbol(
-            "brood_rt_pair_nursery_base",
-            brood_rt_pair_nursery_base as *const u8,
-        );
-        builder.symbol(
-            "brood_rt_pair_old_base",
-            brood_rt_pair_old_base as *const u8,
-        );
-        builder.symbol(
-            "brood_rt_vec_nursery_base",
-            brood_rt_vec_nursery_base as *const u8,
-        );
-        builder.symbol("brood_rt_vec_old_base", brood_rt_vec_old_base as *const u8);
-        builder.symbol("brood_rt_const_load", brood_rt_const_load as *const u8);
-        // DEBUG (bug #2): print the callback addresses once, so an offline disasm of a
+        let callbacks = callback_table();
+        for &(name, address) in &callbacks {
+            builder.symbol(name, address);
+        }
+        // Print the callback addresses once, so an offline disassembly of a
         // BROOD_DUMP_CODE'd arm can resolve each `movabs/call` target to a name.
         #[cfg(debug_assertions)]
         if std::env::var_os("BROOD_DUMP_CODE").is_some() {
-            for (n, a) in [
-                ("roots_base", brood_rt_roots_base as *const () as usize),
-                ("call_slow", brood_rt_call_slow as *const () as usize),
-                ("fast_frame", brood_rt_fast_frame as *const () as usize),
-                ("xcall_latch", brood_rt_xcall_latch as *const () as usize),
-                ("xcall_cold", brood_rt_xcall_cold as *const () as usize),
-                (
-                    "fastlink_base",
-                    brood_rt_fastlink_base as *const () as usize,
-                ),
-                ("push", brood_rt_push as *const () as usize),
-                ("car", brood_rt_car as *const () as usize),
-                ("cdr", brood_rt_cdr as *const () as usize),
-                ("cons", brood_rt_cons as *const () as usize),
-                ("global", brood_rt_global as *const () as usize),
-                ("global_probe", brood_rt_global_probe as *const () as usize),
-                ("global_ic", brood_rt_global_ic as *const () as usize),
-                ("const_load", brood_rt_const_load as *const () as usize),
-                ("vector_ref", brood_rt_vector_ref as *const () as usize),
-                ("vector_base", brood_rt_vector_base as *const () as usize),
-                ("tick", brood_rt_tick as *const () as usize),
-                ("gc_safepoint", brood_rt_gc_safepoint as *const () as usize),
-                ("vec2_room", brood_rt_vec2_room as *const () as usize),
-                (
-                    "global_epoch_ptr",
-                    brood_rt_global_epoch_ptr as *const () as usize,
-                ),
-                (
-                    "dbg_set_staging",
-                    brood_rt_dbg_set_staging as *const () as usize,
-                ),
-            ] {
-                eprintln!("[rt-addr] {n} = {a:#x}");
+            for &(name, address) in &callbacks {
+                eprintln!("[rt-addr] {name} = {:#x}", address as usize);
             }
         }
         CraneliftBackend {
@@ -223,6 +106,72 @@ impl CraneliftBackend {
     pub fn module(&mut self) -> &mut JITModule {
         &mut self.module
     }
+}
+
+/// `(name, address)` for each listed `brood_rt_*` callback, the name being the function's.
+macro_rules! callbacks {
+    ($($callback:ident),* $(,)?) => {
+        vec![$((stringify!($callback), $callback as *const u8)),*]
+    };
+}
+
+/// Every runtime callback JIT'd code can call, by the symbol name the lowering declares it
+/// under. The one list: registration and the `BROOD_DUMP_CODE` address dump both read it,
+/// and `every_declared_callback_is_registered_and_used` checks it against the lowering's
+/// declarations (`jit_lower/callbacks.rs`) in both directions.
+fn callback_table() -> Vec<(&'static str, *const u8)> {
+    #[allow(unused_mut)]
+    let mut table = callbacks![
+        brood_rt_tick_n,
+        brood_rt_gc_safepoint,
+        brood_rt_cons,
+        brood_rt_vec2_room,
+        brood_rt_make_vector_n,
+        brood_rt_car,
+        brood_rt_cdr,
+        brood_rt_push_room,
+        brood_rt_in_call_journal,
+        brood_rt_call_native_fl,
+        brood_rt_global,
+        brood_rt_global_probe,
+        brood_rt_global_ic,
+        brood_rt_call_slow,
+        brood_rt_note_deopt,
+        brood_rt_trace_push,
+        brood_rt_fastlink_base,
+        brood_rt_fast_frame,
+        brood_rt_xcall_latch,
+        brood_rt_xcall_cold,
+        brood_rt_vector_ref,
+        brood_rt_vector_len,
+        brood_rt_table_has,
+        brood_rt_table_get2,
+        brood_rt_table_put,
+        brood_rt_vector_base,
+        brood_rt_table_dense_base,
+        brood_rt_map_get,
+        brood_rt_map_get3,
+        brood_rt_make_map_n,
+        brood_rt_map_assoc,
+        brood_rt_equal,
+        brood_rt_first,
+        brood_rt_rest,
+        brood_rt_is_empty,
+        brood_rt_i64_overflow_ptr,
+        brood_rt_global_epoch_ptr,
+        brood_rt_i64_throw,
+        brood_rt_pair_nursery_base,
+        brood_rt_pair_old_base,
+        brood_rt_vec_nursery_base,
+        brood_rt_vec_old_base,
+        brood_rt_const_load,
+    ];
+    #[cfg(debug_assertions)]
+    table.extend(callbacks![
+        brood_rt_dbg_set_staging,
+        brood_rt_dbg_check_slot
+    ]);
+    table
 }
 
 /// The whole seam, in one place: the tiering glue in `eval/compile/jit_runtime.rs` reaches
@@ -260,5 +209,47 @@ impl JitBackend for CraneliftBackend {
     /// `jit_native_depth`/`jit_force_vm`.
     fn note_depth_bail(name: Symbol) {
         i64_mark_too_deep(name);
+    }
+}
+
+#[cfg(test)]
+mod callback_table_tests {
+    /// The lowering declares each callback it calls by name (`jit_lower/callbacks.rs`,
+    /// `jit_lower/i64.rs`) and this backend registers them (`callback_table`). A declared
+    /// name with no registration fails at link time on the first arm that uses it; a
+    /// registered one nothing declares is dead code whose doc still describes a protocol
+    /// (six were, among them the abandoned dispatch-speculation guard and a staging push the
+    /// "bug #2" comments still named). Every lowering file is read, so a new one is covered.
+    #[test]
+    fn every_declared_callback_is_registered_and_used() {
+        let lowering =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/eval/compile/jit_lower");
+        let mut sources = String::new();
+        for entry in std::fs::read_dir(&lowering).expect("read jit_lower/") {
+            let path = entry.expect("a jit_lower entry").path();
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                sources.push_str(&std::fs::read_to_string(&path).expect("read a lowering file"));
+            }
+        }
+        let declared: std::collections::BTreeSet<&str> = sources
+            .split('"')
+            .filter(|piece| piece.starts_with("brood_rt_"))
+            .collect();
+        let registered: std::collections::BTreeSet<&str> = super::callback_table()
+            .iter()
+            .map(|&(name, _)| name)
+            .collect();
+        assert!(
+            declared.len() > 30,
+            "found only {} declarations",
+            declared.len()
+        );
+        let unregistered: Vec<_> = declared.difference(&registered).collect();
+        let undeclared: Vec<_> = registered.difference(&declared).collect();
+        assert!(
+            unregistered.is_empty() && undeclared.is_empty(),
+            "declared but not registered: {unregistered:?}; registered but never declared: \
+             {undeclared:?}"
+        );
     }
 }

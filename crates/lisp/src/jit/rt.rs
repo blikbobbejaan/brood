@@ -100,33 +100,6 @@ fn sample_native_activation(ctx: &crate::jit::JitCallCtx) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn brood_rt_tick(_heap: *mut Heap) -> u8 {
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::jit_callback_trace() {
-        eprintln!("[jit-cb] brood_rt_tick()");
-    }
-    if crate::process::in_capture_run() {
-        crate::process::tick_capture() as u8
-    } else {
-        0 // root / non-capture: never preempt (matches the VM)
-    }
-}
-
-/// Is this thread running a **capture-mode** (preemptible green) process? JIT'd code reads it
-/// **once at arm entry** to gate the per-back-edge preemption poll: capture mode is constant for
-/// an arm's whole execution (set per process-run by the scheduler; unchanged across the arm and
-/// its nested calls), so a non-capture loop (the root thread — every single-threaded compute
-/// benchmark) skips the [`brood_rt_tick`] FFI entirely, which always returns 0 there anyway. The
-/// capture path is unchanged (still polls each iteration), so preemption fairness is untouched.
-///
-/// # Safety
-/// `heap` is unused (the state is a thread-local); the arg keeps the callback ABI uniform.
-#[no_mangle]
-pub extern "C" fn brood_rt_in_capture(_heap: *mut Heap) -> u8 {
-    crate::process::in_capture_run() as u8
-}
-
 /// GC safepoint check. JIT'd code calls this where the interpreter would collect (a
 /// loop top / before an allocation burst): collect if due and not inside the compile
 /// pass (mirrors the eval safepoint, ADR-061).
@@ -650,21 +623,6 @@ pub unsafe extern "C" fn brood_rt_table_dense_base(
     std::ptr::null()
 }
 
-/// The process global-rebind epoch ([`Heap::global_epoch`]). Used by the JIT's
-/// global-vector hoist: a no-call arm captures the epoch at entry, then re-checks it on
-/// each loop back-edge and **deopts** if it changed — so hoisting a global's element base
-/// out of the loop stays bit-identical to the VM's per-iteration late binding (a `def`
-/// rebinding the global from another process bumps the epoch → the arm deopts and the VM
-/// re-runs against the live binding). Checking on the back-edge (not per read) is enough:
-/// a deopt always re-runs from the current frame on the VM.
-///
-/// # Safety
-/// `heap` must be the live context pointer.
-#[no_mangle]
-pub unsafe extern "C" fn brood_rt_global_epoch(heap: *mut Heap) -> i64 {
-    (*heap).global_epoch() as i64
-}
-
 /// `(get m k default)` on a CHAMP map — the native half of `PrimOp3::MapGet3` (ADR-368).
 /// Status 0 = the answer is in `*out`; 1 = decline (a non-map receiver, or a record's nil
 /// result, which `get`'s `%lookup-miss` owns). The rule is `Heap::map_get3_inline`, shared
@@ -801,42 +759,11 @@ pub unsafe extern "C" fn brood_rt_equal(
     h.equal(a, b) as i64
 }
 
-/// The **dispatch identity** of a value, as an interned keyword symbol — the read a
-/// speculation guard makes before calling an ability impl directly
-/// (docs/dispatch-speculation.md, phase 2a).
-///
-/// Returns the `Symbol` widened to `i64`, or **-1** when the identity is not a keyword. The
-/// second case is real rather than defensive: `%identity-of` answers with whatever truthy
-/// value sits under `:__id__`, and a hand-written `{:__id__ 42}` therefore identifies as `42`.
-/// A guard compares against a keyword constant, so -1 can never match one and the site falls
-/// back — which is the correct answer for a value the speculation was not about.
-///
-/// This exists as a callback rather than inline code because a record's identity is a CHAMP
-/// field, and reading one is not something native code can do on its own. It delegates to
-/// [`Heap::dispatch_identity`] — the single definition, pinned to the language's
-/// `%identity-of` by `tests/dispatch_identity_agrees.rs`. That pinning is the whole safety
-/// property here: a guard that computes identity differently from the dispatcher passes and
-/// then calls the wrong impl, silently.
-///
-/// # Safety
-/// `heap` must be the live context pointer; the word triple is bytes the JIT read out of a
-/// real `Value`.
-#[no_mangle]
-pub unsafe extern "C" fn brood_rt_dispatch_identity(
-    heap: *mut Heap,
-    w0: i64,
-    w1: i64,
-    w2: i64,
-) -> i64 {
-    match (*heap).dispatch_identity(words_to_val(w0, w1, w2)) {
-        crate::core::value::Value::Keyword(s) => s as i64,
-        _ => -1,
-    }
-}
-
-/// Address of the global-epoch counter, so JIT'd code reads the epoch with a raw load instead
-/// of calling [`brood_rt_global_epoch`] on every loop back-edge / linked call. Fetched once at
-/// arm entry; the address is stable for the process. See [`Heap::global_epoch_ptr`].
+/// Address of the global-rebind epoch counter ([`Heap::global_epoch`]), so JIT'd code reads
+/// the epoch with a raw load on every loop back-edge / linked call instead of an FFI call.
+/// The global-vector hoist captures it at entry and **deopts** when it changes, so hoisting a
+/// global's element base out of a loop stays bit-identical to the VM's late binding. Fetched
+/// once at arm entry; the address is stable for the process. See [`Heap::global_epoch_ptr`].
 ///
 /// # Safety
 /// `heap` must be live; the returned pointer is valid for the process lifetime.
@@ -1011,19 +938,6 @@ fn soft_limit_check(heap: &Heap) -> Result<(), crate::error::LispError> {
     }
 }
 
-/// Base pointer of the operand-stack/`roots` buffer. JIT'd code calls this once at
-/// entry, then indexes a frame slot `k` directly at `roots_base + k *
-/// size_of::<Value>()` (tag byte at +0, payload at +8). Valid for the arm's duration:
-/// a tier-1 JIT'd arm keeps operands in registers (never `push`es `roots`) and the
-/// int-arithmetic subset never allocates, so `roots` doesn't reallocate.
-///
-/// # Safety
-/// `heap` must be the live context pointer.
-#[no_mangle]
-pub unsafe extern "C" fn brood_rt_roots_base(heap: *mut Heap) -> *mut u8 {
-    (*heap).roots_base_ptr() as *mut u8
-}
-
 /// `(throw x)` reached inside an unboxed-scalar register worker
 /// (`jit_lower.rs::lower_i64_value`): park the thrown error and tell the worker how to
 /// unwind. Returns the **sentinel byte** the native code stores before jumping its
@@ -1061,8 +975,8 @@ pub unsafe extern "C" fn brood_rt_i64_throw(heap: *mut Heap, bits: i64, is_float
 }
 
 // DEBUG ONLY: the call site currently staging its args (set by `brood_rt_dbg_set_staging`
-// at the start of each call's staging, read by `brood_rt_push` on garbage). Thread-local
-// because set→push run synchronously on one worker with no yield between.
+// at the start of each call's staging, read by `brood_rt_dbg_check_slot` on garbage).
+// Thread-local because set→check run synchronously on one worker with no yield between.
 #[cfg(debug_assertions)]
 thread_local! {
     static DBG_STAGING: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
@@ -1122,42 +1036,6 @@ pub unsafe extern "C" fn brood_rt_dbg_check_slot(
             h.dbg_site_loc(site),
         );
     }
-}
-
-/// Push a `Value` (by word-triple) onto the operand stack (`roots`). The JIT stages a
-/// Brood→Brood call's callee + args here, in the VM's `Inst::Call` layout, before
-/// [`brood_rt_call_slow`]. Goes through `push_root` so the `roots` length/capacity are
-/// maintained; a growth may reallocate the buffer, so the JIT re-fetches
-/// [`brood_rt_roots_base`] after the call.
-///
-/// # Safety
-/// `heap` must be the live context pointer; the word triple is bytes the JIT read out
-/// of a real `Value` (a slot, an `Int` box, or a handle result).
-#[no_mangle]
-pub unsafe extern "C" fn brood_rt_push(heap: *mut Heap, w0: i64, w1: i64, w2: i64) {
-    let v = words_to_val(w0, w1, w2);
-    // DEBUG: catch a stale/OOB heap handle being STAGED as a call arg — the definitive
-    // bug-#2 catch point (independent of how the value was produced: read_words, a call
-    // result, car/cdr, …). Prints the staging site (→ the JIT arm) before the value goes
-    // into roots and out to the callee.
-    #[cfg(debug_assertions)]
-    {
-        let h = &*heap;
-        let stale = h.dbg_value_stale(v);
-        let oob = h.dbg_value_oob(v);
-        if stale.is_some() || oob.is_some() {
-            let site = DBG_STAGING.with(|s| s.get());
-            eprintln!(
-                "[push-stage] STAGING GARBAGE arg w0={w0:#x} w1={w1:#x} w2={w2:#x} \
-                 stale={stale:?} oob={oob:?}; roots_len={} jit_native_depth={} site={site} arm='{}' loc={}",
-                h.roots_len(),
-                h.jit_native_depth,
-                crate::core::value::symbol_name_opt(h.jit_dbg_fn).unwrap_or("<none/computed>"),
-                h.dbg_site_loc(site),
-            );
-        }
-    }
-    (*heap).push_root(v);
 }
 
 /// Load the current `Value` from a `ConstVal` (a compiled literal that may be a

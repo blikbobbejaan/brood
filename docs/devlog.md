@@ -17725,3 +17725,39 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
 - **`cli_support::install_panic_reporting` and `init_runtime`:** `brood` and `nest` each
   spelled out the backtrace default, the crash dump, the worker cap, the memory limits and
   the GC-config warning.
+
+## 2026-10-15 (later) — the JIT's runtime callbacks are one table
+
+`jit/cranelift.rs` registered 51 `brood_rt_*` callbacks one `builder.symbol` at a time, and
+the `BROOD_DUMP_CODE` address dump listed a hand-picked 21 of them. Six were registered and
+never called:
+
+- `brood_rt_tick` and `brood_rt_in_capture`, replaced by `tick_n` and the batched poll.
+- `brood_rt_push`, replaced by `push_room`; two "bug #2" comments still named it as where
+  validation lived.
+- `brood_rt_roots_base`, `brood_rt_global_epoch` (replaced by `global_epoch_ptr`) and
+  `brood_rt_dispatch_identity`, which served dispatch-speculation phase 2a, abandoned on
+  2026-08-29.
+
+They are deleted, with the `Heap::roots_base_ptr` and `tick_capture` re-export only they
+used. Registration and the dump now read one `callback_table`.
+`every_declared_callback_is_registered_and_used` reads every file under `jit_lower/` and
+fails on a name declared but not registered (a link failure on the first arm that uses it)
+or registered but never declared. Sabotage: dropping `brood_rt_const_load` from the table
+reds it by name.
+
+Also in this batch:
+
+- **The stdlib image decoder** reads through one bounds-checked `take(r, n)`, with `get_u8`
+  in place of four inline tag-byte reads, `put_def_site` beside `get_def_site`, and no
+  `.unwrap()` in the directory parse.
+- **The GC's six local leaf copies** (`flush_string`, `bigint`, `decimal`, `ratio`, `bytes`,
+  `rope`) are one `flush_leaf!`, the twin of the runtime side's `flush_rt_leaf!`.
+- **`Value::raw_tag`** reads only the discriminant byte. The debug tripwires transmuted the
+  whole value to `[i64; 3]`, which also reads the padding after the tag.
+
+**The cranelift 0.136 bump, verified as `jit/cranelift.rs` asks after any Cranelift change:**
+the fuzz differential against `target/release-fast/brood` (the verifier off, the build an
+armed binary cannot stand in for). Eleven generators, 3400 programs, each under the
+tree-walker, VM, VM+JIT and GC stress: 0 divergences, 0 crashes, 0 stale. The other half,
+every benchmark row's stderr grepped for CODEGEN-PANICKED, is for the benchmark machine.

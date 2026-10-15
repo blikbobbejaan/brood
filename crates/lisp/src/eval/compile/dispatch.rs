@@ -564,7 +564,7 @@ pub(crate) fn dispatch(
 #[cfg(debug_assertions)]
 pub(crate) fn dbg_check_args(args: &[Value], label: &str) {
     for (i, a) in args.iter().enumerate() {
-        let tag = (unsafe { std::mem::transmute::<Value, [i64; 3]>(*a) }[0] as u64 & 0xff) as u8;
+        let tag = a.raw_tag();
         // Anything above the last discriminant is garbage. The bound lives beside the
         // enum (`MAX_VALUE_DISCRIMINANT`) rather than as a literal here: as a literal it
         // silently went stale when ADR-310 appended `Value::Failure`, and every valid

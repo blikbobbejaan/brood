@@ -168,30 +168,35 @@ fn put_str(w: &mut Vec<u8>, s: &str) {
     w.extend_from_slice(s.as_bytes());
 }
 
+/// The next `n` bytes of `r`, advancing past them; `None` (and `r` unmoved) when fewer
+/// remain. The one bounds check every image read goes through.
+fn take(r: &mut Cursor<Vec<u8>>, n: usize) -> Option<&[u8]> {
+    let start = r.position() as usize;
+    let end = start.checked_add(n)?;
+    if end > r.get_ref().len() {
+        return None;
+    }
+    r.set_position(end as u64);
+    Some(&r.get_ref()[start..end])
+}
+
+fn get_u8(r: &mut Cursor<Vec<u8>>) -> Option<u8> {
+    Some(take(r, 1)?[0])
+}
+
 fn get_u64(r: &mut Cursor<Vec<u8>>) -> Option<u64> {
-    let p = r.position() as usize;
-    let n = {
-        let b = r.get_ref();
-        if p + 8 > b.len() {
-            return None;
-        }
-        u64::from_le_bytes(b[p..p + 8].try_into().ok()?)
-    };
-    r.set_position((p + 8) as u64);
-    Some(n)
+    Some(u64::from_le_bytes(take(r, 8)?.try_into().ok()?))
 }
 
 fn get_u32(r: &mut Cursor<Vec<u8>>) -> Option<u32> {
-    let p = r.position() as usize;
-    let n = {
-        let b = r.get_ref();
-        if p + 4 > b.len() {
-            return None;
-        }
-        u32::from_le_bytes(b[p..p + 4].try_into().ok()?)
-    };
-    r.set_position((p + 4) as u64);
-    Some(n)
+    Some(u32::from_le_bytes(take(r, 4)?.try_into().ok()?))
+}
+
+/// Write a def site as [`get_def_site`] reads it: file, line, column.
+fn put_def_site(out: &mut Vec<u8>, loc: &crate::core::heap::SourceLoc) {
+    put_str(out, &loc.file);
+    put_u32(out, loc.pos.line);
+    put_u32(out, loc.pos.col);
 }
 
 /// The payload of a `KIND_DEF_SITE` entry (after its name): file, line, column.
@@ -207,16 +212,7 @@ fn get_def_site(r: &mut Cursor<Vec<u8>>) -> Option<crate::core::heap::SourceLoc>
 
 fn get_str(r: &mut Cursor<Vec<u8>>) -> Option<String> {
     let n = get_u32(r)? as usize;
-    let p = r.position() as usize;
-    let s = {
-        let b = r.get_ref();
-        if p + n > b.len() {
-            return None;
-        }
-        String::from_utf8(b[p..p + n].to_vec()).ok()?
-    };
-    r.set_position((p + n) as u64);
-    Some(s)
+    String::from_utf8(take(r, n)?.to_vec()).ok()
 }
 
 /// Encode one section: the global bindings named by `syms`, plus their declared sigs.
@@ -366,9 +362,7 @@ fn encode_section(
         if let Some(loc) = heap.def_site(sym) {
             entries.push(KIND_DEF_SITE);
             put_str(&mut entries, &value::symbol_name(sym));
-            put_str(&mut entries, &loc.file);
-            put_u32(&mut entries, loc.pos.line);
-            put_u32(&mut entries, loc.pos.col);
+            put_def_site(&mut entries, &loc);
             count += 1;
         }
     }
@@ -675,14 +669,10 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             return Ok(Value::Nil);
         };
         section_names.push(name.clone());
-        let position = directory.position() as usize;
-        let bytes = directory.get_ref();
-        if position + 12 > bytes.len() {
+        let (Some(offset), Some(length)) = (get_u64(&mut directory), get_u32(&mut directory))
+        else {
             return Ok(Value::Nil);
-        }
-        let offset = u64::from_le_bytes(bytes[position..position + 8].try_into().unwrap());
-        let length = u32::from_le_bytes(bytes[position + 8..position + 12].try_into().unwrap());
-        directory.set_position((position + 12) as u64);
+        };
         let key = heap.alloc_string(&name);
         let span = heap.alloc_vector(vec![Value::int(offset as i64), Value::int(length as i64)]);
         pairs.push((key, span));
@@ -878,13 +868,7 @@ fn load_section_entries(
     // are replaced every other entry is bound.
     let mut deferred: Vec<(u8, value::Symbol, Value)> = Vec::new();
     for _ in 0..count {
-        let p = r.position() as usize;
-        if p >= r.get_ref().len() {
-            return Ok(None);
-        }
-        let kind = r.get_ref()[p];
-        r.set_position((p + 1) as u64);
-        let Some(name) = get_str(r) else {
+        let (Some(kind), Some(name)) = (get_u8(r), get_str(r)) else {
             return Ok(None);
         };
         // A privacy entry carries a name and no value — branch before decoding one.
@@ -1010,9 +994,7 @@ fn put_meta(out: &mut Vec<u8>, m: &crate::core::heap::NameMeta) {
 
 fn get_meta(r: &mut Cursor<Vec<u8>>) -> Option<crate::core::heap::NameMeta> {
     let opt = |r: &mut Cursor<Vec<u8>>| -> Option<Option<String>> {
-        let p = r.position() as usize;
-        let tag = *r.get_ref().get(p)?;
-        r.set_position((p + 1) as u64);
+        let tag = get_u8(r)?;
         if tag == 0 {
             Some(None)
         } else {
@@ -1062,9 +1044,7 @@ fn put_fact(out: &mut Vec<u8>, fact: &crate::core::heap::Fact) {
             put_str(out, &value::symbol_name(*sym));
             // The file is written per entry rather than hoisted: prelude def sites all name
             // the same materialised copy today, but nothing in the format should assume it.
-            put_str(out, &loc.file);
-            put_u32(out, loc.pos.line);
-            put_u32(out, loc.pos.col);
+            put_def_site(out, loc);
         }
         Fact::RegistryName(sym) => {
             out.push(FACT_REGISTRY_NAME);
@@ -1081,25 +1061,12 @@ fn put_fact(out: &mut Vec<u8>, fact: &crate::core::heap::Fact) {
 /// whole load, so the source boot takes over rather than a partial fact set being installed.
 fn get_fact(r: &mut Cursor<Vec<u8>>) -> Option<crate::core::heap::Fact> {
     use crate::core::heap::Fact;
-    let p = r.position() as usize;
-    let tag = *r.get_ref().get(p)?;
-    r.set_position((p + 1) as u64);
+    let tag = get_u8(r)?;
     let sym = value::intern(&get_str(r)?);
     Some(match tag {
         FACT_PRIVATE => Fact::Private(sym),
         FACT_META => Fact::Meta(sym, get_meta(r)?),
-        FACT_DEF_SITE => {
-            let file = get_str(r)?;
-            let line = get_u32(r)?;
-            let col = get_u32(r)?;
-            Fact::DefSite(
-                sym,
-                crate::core::heap::SourceLoc {
-                    file,
-                    pos: crate::error::Pos { line, col },
-                },
-            )
-        }
+        FACT_DEF_SITE => Fact::DefSite(sym, get_def_site(r)?),
         FACT_REGISTRY_NAME => Fact::RegistryName(sym),
         FACT_DYNAMIC => Fact::Dynamic(sym),
         _ => return None,
@@ -1221,12 +1188,7 @@ pub(crate) fn load_prelude_image(
     let count = get_u32(&mut r)?;
     let mut done = 0usize;
     for _ in 0..count {
-        let p = r.position() as usize;
-        if p >= r.get_ref().len() {
-            return None;
-        }
-        let kind = r.get_ref()[p];
-        r.set_position((p + 1) as u64);
+        let kind = get_u8(&mut r)?;
         let name = get_str(&mut r)?;
         if kind == KIND_PRIVATE {
             heap.mark_private(value::intern(&name));

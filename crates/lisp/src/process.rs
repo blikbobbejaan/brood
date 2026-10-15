@@ -111,9 +111,7 @@ pub(crate) use scheduler::{
 // A native activation's poll is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.
 #[cfg(feature = "jit")]
-pub(crate) use scheduler::{
-    current_mailbox_overflow_pending, native_poll, tick_capture, NativePoll,
-};
+pub(crate) use scheduler::{current_mailbox_overflow_pending, native_poll, NativePoll};
 // Test-only: the JIT preempt unit test (`compile.rs`) drives a tiered arm as if it
 // were a capture-mode green process. That test is itself `#[cfg(feature = "jit")]`,
 // so the re-export must match — gating on bare `test` leaves it unused (and warned)

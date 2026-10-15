@@ -1354,6 +1354,17 @@ pub fn gensym_floor(n: u64) {
     GENSYM_COUNTER.fetch_max(n, Ordering::Relaxed);
 }
 
+impl Value {
+    /// The discriminant byte at offset 0 — the tag JIT code checks, and what the debug
+    /// tripwires compare against `MAX_VALUE_DISCRIMINANT`.
+    pub(crate) fn raw_tag(&self) -> u8 {
+        // SAFETY: `Value` is `repr(C, u8)` (pinned by `value_layout_is_stable_for_the_jit`):
+        // its first byte is the initialised `u8` discriminant. Only that byte is read — the
+        // bytes after it are padding, which an integer read of the whole word would touch.
+        unsafe { *(self as *const Value as *const u8) }
+    }
+}
+
 /// JIT layout constants for [`Value`] (`#[repr(C, u8)]`). JIT codegen hardcodes these
 /// to read a `Value` out of a `Heap::roots` slot — the discriminant byte at offset 0,
 /// the payload at [`jit_layout::PAYLOAD_OFFSET`]. Pinned by the layout test below; a
@@ -1585,7 +1596,7 @@ mod discriminant_bound_tests {
         // value of the last variant sits exactly at the bound — not past it.
         let last = Value::Failure(MapId::local(0));
         assert_eq!(variant_index(&last), MAX_VALUE_DISCRIMINANT);
-        let tag = (unsafe { std::mem::transmute::<Value, [i64; 3]>(last) }[0] as u64 & 0xff) as u8;
+        let tag = last.raw_tag();
         assert_eq!(
             tag, MAX_VALUE_DISCRIMINANT,
             "the last variant's tag byte must equal the bound dbg_check_args compares against"
@@ -1598,7 +1609,7 @@ mod discriminant_bound_tests {
             Value::Int(7),
             Value::Float(1.5),
         ] {
-            let t = (unsafe { std::mem::transmute::<Value, [i64; 3]>(v) }[0] as u64 & 0xff) as u8;
+            let t = v.raw_tag();
             assert!(t <= MAX_VALUE_DISCRIMINANT, "tag {t} above the bound");
         }
     }

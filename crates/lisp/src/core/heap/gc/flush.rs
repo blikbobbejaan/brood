@@ -367,118 +367,42 @@ pub(super) fn flush_vector(
     forward.mint_vector(new_idx)
 }
 
-pub(super) fn flush_string(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: StrId,
-) -> StrId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.strings.lookup(key) {
-        return forward.mint_string(new_idx as usize);
-    }
-    // `Clone` keeps the cached char length with the entry: an Inline clones its
-    // `String`, a Shared bumps the blob's `Arc` (no byte copy) and the source slab's
-    // drop takes it back, so a survivor keeps its `SharedBlob` identity.
-    let entry = old.strings[flush_bound!(old.strings, id, forward, "string")].clone();
-    let new_idx = new.strings.len();
-    new.strings.push(entry);
-    forward.strings.set(key, new_idx as u32);
-    forward.mint_string(new_idx)
+/// Flush one LOCAL **leaf** — a value with nothing inside it to forward: clone it into the
+/// new slab on the first visit, answer from the forwarding map on every later one. The
+/// LOCAL twin of `gc_runtime`'s `flush_rt_leaf!`.
+///
+/// Each clone is cheap or byte-free: a string entry keeps its cached char length, and a
+/// Shared one bumps its blob's `Arc` (the source slab's drop takes it back, so a survivor
+/// keeps its `SharedBlob` identity); bytes bump their `Arc<SharedBlob>`; a rope's clone is
+/// an `Arc`-node bump; a bigint, decimal or ratio copies its digits (the source slab drops
+/// after the collection).
+macro_rules! flush_leaf {
+    ($name:ident, $slab:ident, $id:ty, $mint:ident, $what:literal) => {
+        pub(super) fn $name(
+            old: &Slabs,
+            new: &mut Slabs,
+            forward: &mut FlushForward,
+            id: $id,
+        ) -> $id {
+            let key = id.index() as u32;
+            if let Some(new_idx) = forward.$slab.lookup(key) {
+                return forward.$mint(new_idx as usize);
+            }
+            let leaf = old.$slab[flush_bound!(old.$slab, id, forward, $what)].clone();
+            let new_idx = new.$slab.len();
+            new.$slab.push(leaf);
+            forward.$slab.set(key, new_idx as u32);
+            forward.$mint(new_idx)
+        }
+    };
 }
 
-pub(super) fn flush_bigint(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: BigIntId,
-) -> BigIntId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.bigints.lookup(key) {
-        return forward.mint_bigint(new_idx as usize);
-    }
-    // A leaf: clone the value's digits into the new slab (the source slab drops
-    // after the collection).
-    let n = old.bigints[flush_bound!(old.bigints, id, forward, "bigint")].clone();
-    let new_idx = new.bigints.len();
-    new.bigints.push(n);
-    forward.bigints.set(key, new_idx as u32);
-    forward.mint_bigint(new_idx)
-}
-
-/// Flush a LOCAL decimal (mirrors [`flush_bigint`]): a leaf, cloned into the new slab.
-pub(super) fn flush_decimal(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: DecimalId,
-) -> DecimalId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.decimals.lookup(key) {
-        return forward.mint_decimal(new_idx as usize);
-    }
-    let n = old.decimals[flush_bound!(old.decimals, id, forward, "decimal")].clone();
-    let new_idx = new.decimals.len();
-    new.decimals.push(n);
-    forward.decimals.set(key, new_idx as u32);
-    forward.mint_decimal(new_idx)
-}
-
-/// Flush a LOCAL ratio (mirrors [`flush_bigint`]): a leaf, cloned into the new slab.
-pub(super) fn flush_ratio(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: RatioId,
-) -> RatioId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.ratios.lookup(key) {
-        return forward.mint_ratio(new_idx as usize);
-    }
-    let n = old.ratios[flush_bound!(old.ratios, id, forward, "ratio")].clone();
-    let new_idx = new.ratios.len();
-    new.ratios.push(n);
-    forward.ratios.set(key, new_idx as u32);
-    forward.mint_ratio(new_idx)
-}
-
-/// Flush a LOCAL bytes value (mirrors [`flush_bigint`]). A byte-clean leaf —
-/// clone the `Arc<SharedBlob>` (a refcount bump, not a byte copy) into the new slab.
-pub(super) fn flush_bytes(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: BytesId,
-) -> BytesId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.bytes.lookup(key) {
-        return forward.mint_bytes(new_idx as usize);
-    }
-    let b = old.bytes[flush_bound!(old.bytes, id, forward, "bytes")].clone();
-    let new_idx = new.bytes.len();
-    new.bytes.push(b);
-    forward.bytes.set(key, new_idx as u32);
-    forward.mint_bytes(new_idx)
-}
-
-pub(super) fn flush_rope(
-    old: &Slabs,
-    new: &mut Slabs,
-    forward: &mut FlushForward,
-    id: RopeId,
-) -> RopeId {
-    let key = id.index() as u32;
-    if let Some(new_idx) = forward.ropes.lookup(key) {
-        return forward.mint_rope(new_idx as usize);
-    }
-    // `ropey::Rope::clone` is a cheap `Arc`-node bump (no byte copy) — the same
-    // structural sharing as `flush_string`.
-    let rope = old.ropes[flush_bound!(old.ropes, id, forward, "rope")].clone();
-    let new_idx = new.ropes.len();
-    new.ropes.push(rope);
-    forward.ropes.set(key, new_idx as u32);
-    forward.mint_rope(new_idx)
-}
+flush_leaf!(flush_string, strings, StrId, mint_string, "string");
+flush_leaf!(flush_bigint, bigints, BigIntId, mint_bigint, "bigint");
+flush_leaf!(flush_decimal, decimals, DecimalId, mint_decimal, "decimal");
+flush_leaf!(flush_ratio, ratios, RatioId, mint_ratio, "ratio");
+flush_leaf!(flush_bytes, bytes, BytesId, mint_bytes, "bytes");
+flush_leaf!(flush_rope, ropes, RopeId, mint_rope, "rope");
 
 pub(super) fn flush_map(
     old: &Slabs,

@@ -100,8 +100,8 @@ pub(super) fn emit_call(
     // `Handle` into a reserved frame slot (GC-visible, relocated correctly by the
     // callee's safepoint) and replace it with that `Slot` — this is what lets two-call
     // recursion (`(+ (fib …) (fib …))`, bintree `check`) lower instead of bailing. The
-    // store writes the handle's three words into the frame *before* any `brood_rt_push`
-    // (which may realloc `roots`), so the read-all-then-stage discipline below is
+    // store writes the handle's three words into the frame *before* the staging
+    // `brood_rt_push_room` (which may realloc `roots`), so the read-all-then-stage discipline below is
     // preserved. Out of reserved slots → bail to the VM.
     let below = stack
         .len()
@@ -119,8 +119,8 @@ pub(super) fn emit_call(
         }
     }
     // Pop the operands (computed callee deepest, then args), then read each into registers
-    // BEFORE staging — a `brood_rt_push` may reallocate `roots`, so no slot read may run
-    // after a push (the read-all-then-store discipline, same as `SelfCall`).
+    // BEFORE staging — `brood_rt_push_room` may reallocate `roots`, so no slot read may run
+    // after it (the read-all-then-store discipline, same as `SelfCall`).
     let mut ops: Vec<Op> = Vec::with_capacity(n_ops);
     for _ in 0..n_ops {
         ops.push(stack.pop().or_bail("operand-stack-underflow")?);

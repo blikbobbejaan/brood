@@ -683,7 +683,8 @@ pub(super) fn read_words(
             );
             // NOTE: an in-IR validation call here (dbg_check_slot_ref) PERTURBS codegen —
             // it forces register spills around the call that mask the very register-liveness
-            // bug we're hunting (#2). Validation lives in the Rust-side `brood_rt_push`.
+            // bug we're hunting (#2). Validation lives on the Rust side, at the callee's
+            // frame entry (`dispatch.rs`).
             [w0, w1, w2]
         }
         Op::Float(v) => {
@@ -701,7 +702,7 @@ pub(super) fn read_words(
         }
         Op::Handle(w0, w1, w2) => {
             // NOTE: no in-IR validation call here — it would perturb codegen and mask the
-            // bug (see Op::Slot above). Register handles flow to brood_rt_push for checking.
+            // bug (see Op::Slot above); the callee's frame entry checks what arrives.
             [w0, w1, w2]
         }
         // A hoisted global vector used as a whole `Value` (any non-`VectorRef`

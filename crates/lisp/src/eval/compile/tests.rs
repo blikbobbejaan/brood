@@ -727,7 +727,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     let f: crate::jit::JitArmFn = unsafe { std::mem::transmute(ptr) };
 
     // Prime the reduction budget so these short loops run to completion (the
-    // back-edge `brood_rt_tick` would otherwise yield at REDUCTIONS == 0).
+    // back-edge `brood_rt_tick_n` would otherwise yield at REDUCTIONS == 0).
     crate::process::yield_now();
     // sumto(n,0) = n+(n-1)+…+1; sumto(1,0)→sumto(0,1)→1; sumto(0,0)→0.
     for (n, want) in [(5i64, 15i64), (100, 5050), (1, 1), (0, 0)] {
@@ -748,7 +748,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
 
     // Preemption: a loop longer than the reduction budget yields at a back-edge —
     // the JIT'd arm returns 2 (preempt), with the frame slots left mid-computation
-    // in `roots` for the driver to resume on the VM. `brood_rt_tick` only preempts in
+    // in `roots` for the driver to resume on the VM. `brood_rt_tick_n` only preempts in
     // a capture-mode green process, so simulate one (set/clear `capture_run`), with a
     // process waiting for the worker — nothing else is worth unwinding for.
     crate::process::set_capture_run(true);

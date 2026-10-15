@@ -63,17 +63,6 @@ impl Heap {
         dst
     }
 
-    /// Raw base pointer of the operand-stack/`roots` buffer, for JIT'd code to index
-    /// frame slots directly (`roots_base + (base+i) * size_of::<Value>()`). Valid only
-    /// while `roots` does not reallocate — a tier-1 JIT'd arm keeps operands in
-    /// registers (it never `push`es), and the int-arithmetic subset never allocates
-    /// (so no GC grows it), so the pointer is stable for the arm's duration. Callers
-    /// outside that invariant must re-fetch after any push. See `src/jit/`.
-    #[cfg(feature = "jit")]
-    pub(crate) fn roots_base_ptr(&mut self) -> *mut Value {
-        self.roots.as_mut_ptr()
-    }
-
     /// Raw byte pointer to the LOCAL nursery pair slab (the flat `Vec<(Value, Value)>` backing
     /// young LOCAL `Value::Pair` handles). Valid only while no `cons` can grow the slab. Used
     /// by `brood_rt_pair_nursery_base` so the JIT can inline `first`/`rest` for LOCAL pairs
