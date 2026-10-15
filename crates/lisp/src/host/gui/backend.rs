@@ -19,6 +19,7 @@ pub(crate) use {paint::text_px_width, render::snap_hairline};
 
 use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
 
+use crate::core::sync::lock;
 use crate::core::value;
 
 use crate::process::{deliver, Message};
@@ -35,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use std::sync::mpsc::{self, Sender};
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use std::thread::JoinHandle;
 
@@ -507,7 +508,7 @@ pub fn host_main_thread<T: Send + 'static>(handle: JoinHandle<T>, name: &str) ->
             .unwrap_or_else(|_| panic!("{name} thread panicked"));
     }
     let (tx, rx) = mpsc::channel::<MainMsg>();
-    *main_slot().lock().unwrap() = Some(tx.clone());
+    *lock(main_slot()) = Some(tx.clone());
 
     let result: Arc<Mutex<Option<std::thread::Result<T>>>> = Arc::new(Mutex::new(None));
     let sink = Arc::clone(&result);
@@ -515,7 +516,7 @@ pub fn host_main_thread<T: Send + 'static>(handle: JoinHandle<T>, name: &str) ->
         .name("brood-main-join".into())
         .spawn(move || {
             let r = handle.join();
-            *sink.lock().unwrap() = Some(r);
+            *lock(&sink) = Some(r);
             if GUI_OWNS_MAIN.load(Ordering::SeqCst) {
                 // winit is never giving this thread back, so a returning runtime has to
                 // end the process itself. Exit 0 is what a `main` that returned would
@@ -537,7 +538,7 @@ pub fn host_main_thread<T: Send + 'static>(handle: JoinHandle<T>, name: &str) ->
     }
     let outcome = result
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .take()
         .expect("runtime finished without recording a result");
     outcome.unwrap_or_else(|_| panic!("{name} thread panicked"))
@@ -552,7 +553,7 @@ fn start_thread() -> Result<EventLoopProxy<UserEvent>, String> {
         // blocked in `recv` below, so the runtime cannot finish in the window between.
         let tx = main_slot()
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
             .ok_or_else(|| MAIN_THREAD_UNRESERVED.to_string())?;
         tx.send(MainMsg::HostGui(ready_tx))
@@ -577,7 +578,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
     // starting winit, so nothing pops up.
     if headless() {
         let id = next_id();
-        windows().lock().unwrap().insert(
+        lock(windows()).insert(
             id,
             WinHandle {
                 size: Arc::new(Mutex::new(headless_cells(spec.size))),
@@ -592,7 +593,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
     // slow window build can't block other windows' sends.
     gui()?
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::Open {
             subscriber,
             spec,
@@ -607,7 +608,7 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
     } = reply_rx
         .recv()
         .map_err(|_| "gui thread did not reply".to_string())??;
-    windows().lock().unwrap().insert(
+    lock(windows()).insert(
         id,
         WinHandle {
             size,
@@ -620,12 +621,12 @@ pub fn open(subscriber: u64, spec: WindowSpec) -> Result<u64, String> {
 
 /// `(gui-close id)` — destroy window `id` (idempotent; unknown id is a no-op).
 pub fn close(id: u64) -> Result<(), String> {
-    windows().lock().unwrap().remove(&id);
+    lock(windows()).remove(&id);
     if headless() {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::Close { id });
+        let _ = lock(g).send_event(UserEvent::Close { id });
     }
     Ok(())
 }
@@ -635,141 +636,62 @@ pub fn close(id: u64) -> Result<(), String> {
 /// request through the event-loop proxy like `close`/`draw`; the actual
 /// `focus_window` runs there. Errors only if the id isn't a live window.
 pub fn focus(id: u64) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
+    dispatch(id, UserEvent::Focus { id })
+}
+
+/// Send `event` for window `id` to the GUI thread — the shape every window op here
+/// shares: an error when `id` is not a live window, a no-op headless.
+fn dispatch(id: u64, event: UserEvent) -> Result<(), String> {
+    if !lock(windows()).contains_key(&id) {
+        return Err("gui window not open".into());
     }
     if headless() {
         return Ok(());
     }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::Focus { id })
+    lock(gui()?)
+        .send_event(event)
         .map_err(|_| "gui thread is gone".to_string())
 }
 
 /// `(gui-grab-cursor id on)` — confine the pointer to window `id` (`on` true) or
 /// release it. Dispatched to the GUI thread like `focus`.
 pub fn grab(id: u64, on: bool) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::Grab { id, on })
-        .map_err(|_| "gui thread is gone".to_string())
+    dispatch(id, UserEvent::Grab { id, on })
 }
 
 /// `(gui-maximize! id on)` — maximise window `id` (`on` true) or restore it,
 /// keeping the title bar. Dispatched to the GUI thread like `grab`.
 pub fn maximize(id: u64, on: bool) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::Maximize { id, on })
-        .map_err(|_| "gui thread is gone".to_string())
+    dispatch(id, UserEvent::Maximize { id, on })
 }
 
 /// `(gui-minimize! id)` — iconify window `id`. Dispatched like `maximize`.
 pub fn minimize(id: u64) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::Minimize { id })
-        .map_err(|_| "gui thread is gone".to_string())
+    dispatch(id, UserEvent::Minimize { id })
 }
 
 /// `(gui-drag-move id)` — start an interactive window move.
 pub fn drag_move(id: u64) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::DragMove { id })
-        .map_err(|_| "gui thread is gone".to_string())
+    dispatch(id, UserEvent::DragMove { id })
 }
 
 /// `(gui-drag-resize id dir)` — start an interactive resize from edge/corner `dir`.
 pub fn drag_resize(id: u64, dir: &str) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::DragResize {
-            id,
-            dir: dir.to_string(),
-        })
-        .map_err(|_| "gui thread is gone".to_string())
+    let dir = dir.to_string();
+    dispatch(id, UserEvent::DragResize { id, dir })
 }
 
 /// `(gui-fullscreen! id on)` — make window `id` borderless-fullscreen (`on`
 /// true) or restore it. Dispatched to the GUI thread like `grab`.
 pub fn fullscreen(id: u64, on: bool) -> Result<(), String> {
-    {
-        let w = windows().lock().unwrap();
-        if !w.contains_key(&id) {
-            return Err("gui window not open".into());
-        }
-    }
-    if headless() {
-        return Ok(());
-    }
-    gui()?
-        .lock()
-        .unwrap()
-        .send_event(UserEvent::Fullscreen { id, on })
-        .map_err(|_| "gui thread is gone".to_string())
+    dispatch(id, UserEvent::Fullscreen { id, on })
 }
 
 /// `(gui-size id)` — window `id`'s size in character cells.
 pub fn size(id: u64) -> Result<(u16, u16), String> {
-    let w = windows().lock().unwrap();
+    let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
-    let size = *h.size.lock().unwrap();
+    let size = *lock(&h.size);
     Ok(size)
 }
 
@@ -786,7 +708,7 @@ pub fn size(id: u64) -> Result<(u16, u16), String> {
 /// inventing a number; a caller that can run headless falls back to the size ratio.
 pub fn cell_size(id: u64, px: Option<f32>) -> Result<(u16, u16), String> {
     {
-        let w = windows().lock().unwrap();
+        let w = lock(windows());
         if !w.contains_key(&id) {
             return Err("gui window not open".into());
         }
@@ -797,7 +719,7 @@ pub fn cell_size(id: u64, px: Option<f32>) -> Result<(u16, u16), String> {
     let (reply_tx, reply_rx) = mpsc::channel();
     gui()?
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::Metrics {
             id,
             px,
@@ -815,16 +737,16 @@ pub fn cell_size(id: u64, px: Option<f32>) -> Result<(u16, u16), String> {
 /// can confirm a key is still down before repeating — the source of truth that
 /// makes a missed key-up unable to cause runaway repeat (ADR-086).
 pub fn held_key(id: u64) -> Result<Option<Key>, String> {
-    let w = windows().lock().unwrap();
+    let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
-    let k = *h.held_key.lock().unwrap();
+    let k = *lock(&h.held_key);
     Ok(k)
 }
 
 /// `(gui-draw id ops)` — paint a frame to window `id`.
 pub fn draw(id: u64, ops: Vec<Op>) -> Result<(), String> {
     {
-        let w = windows().lock().unwrap();
+        let w = lock(windows());
         if !w.contains_key(&id) {
             return Err("gui window not open".into());
         }
@@ -834,7 +756,7 @@ pub fn draw(id: u64, ops: Vec<Op>) -> Result<(), String> {
     }
     gui()?
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::Draw { id, ops })
         .map_err(|_| "gui thread is gone".to_string())
 }
@@ -850,7 +772,7 @@ pub fn font(id: Option<u64>, family: Option<u32>, px: Option<f32>) -> Result<(),
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::Font { id, family, px });
     }
     Ok(())
@@ -864,7 +786,7 @@ pub fn inset(px: f32) -> Result<(), String> {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::Inset { px });
+        let _ = lock(g).send_event(UserEvent::Inset { px });
     }
     Ok(())
 }
@@ -877,7 +799,7 @@ pub fn bg(rgb: Option<[u8; 3]>) -> Result<(), String> {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::Background { rgb });
+        let _ = lock(g).send_event(UserEvent::Background { rgb });
     }
     Ok(())
 }
@@ -890,7 +812,7 @@ pub fn line_height(mult: f32) -> Result<(), String> {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::LineHeight { mult });
+        let _ = lock(g).send_event(UserEvent::LineHeight { mult });
     }
     Ok(())
 }
@@ -902,7 +824,7 @@ pub fn text_aa(mode: TextAa) -> Result<(), String> {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::TextAa { mode });
+        let _ = lock(g).send_event(UserEvent::TextAa { mode });
     }
     Ok(())
 }
@@ -916,7 +838,7 @@ pub fn text_contrast(gamma: f32) -> Result<(), String> {
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::TextContrast { gamma });
     }
     Ok(())
@@ -930,7 +852,7 @@ pub fn title(id: u64, title: String) -> Result<(), String> {
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::Title { id, title });
+        let _ = lock(g).send_event(UserEvent::Title { id, title });
     }
     Ok(())
 }
@@ -945,7 +867,7 @@ pub fn icon(id: u64, rgba: Vec<u8>, w: u32, h: u32) -> Result<(), String> {
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::Icon { id, rgba, w, h });
     }
     Ok(())
@@ -959,7 +881,7 @@ pub fn texture(id: u64, tex: u32, rgba: Vec<u8>, w: u32, h: u32) -> Result<(), S
         return Ok(());
     }
     if let Ok(g) = gui() {
-        let _ = g.lock().unwrap().send_event(UserEvent::Texture {
+        let _ = lock(g).send_event(UserEvent::Texture {
             id,
             tex,
             rgba,
@@ -978,7 +900,7 @@ pub fn texture_free(id: u64, tex: u32) -> Result<(), String> {
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::TextureFree { id, tex });
     }
     Ok(())
@@ -996,7 +918,7 @@ pub fn sound(id: u64, snd: u32, rate: u32, channels: u16, pcm: Vec<u8>) -> Resul
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::Sound { id, snd, data });
     }
     Ok(())
@@ -1010,7 +932,7 @@ pub fn sound_free(id: u64, snd: u32) -> Result<(), String> {
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::SoundFree { id, snd });
     }
     Ok(())
@@ -1025,7 +947,7 @@ pub fn input_mode(id: u64, pixels: bool) -> Result<(), String> {
     if let Ok(g) = gui() {
         let _ = g
             .lock()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .send_event(UserEvent::InputMode { id, pixels });
     }
     Ok(())
@@ -1041,9 +963,9 @@ pub fn next_texture_id() -> u32 {
 
 /// `(gui-size-px id)` — window `id`'s inner size in PHYSICAL pixels.
 pub fn size_px(id: u64) -> Result<(u32, u32), String> {
-    let w = windows().lock().unwrap();
+    let w = lock(windows());
     let h = w.get(&id).ok_or("gui window not open")?;
-    let size = *h.size_px.lock().unwrap();
+    let size = *lock(&h.size_px);
     Ok(size)
 }
 
@@ -1062,7 +984,7 @@ pub fn register_family(
     }
     gui()?
         .lock()
-        .unwrap()
+        .unwrap_or_else(PoisonError::into_inner)
         .send_event(UserEvent::RegisterFamily {
             name,
             regular,
@@ -1761,7 +1683,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // "playing" after key-up (the cursor scrolling on past).
                 ElementState::Pressed if !is_synthetic => {
                     if let Some(k) = translate_key(&ke, w.mods) {
-                        let mut hk = w.held_key.lock().unwrap();
+                        let mut hk = lock(&w.held_key);
                         if *hk != Some(k) {
                             *hk = Some(k);
                             drop(hk);
@@ -1785,7 +1707,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // while unfocused — exactly when we must stop).
                 ElementState::Released => {
                     if w.held_physical == Some(ke.physical_key) {
-                        let mut hk = w.held_key.lock().unwrap();
+                        let mut hk = lock(&w.held_key);
                         let held = *hk;
                         *hk = None;
                         drop(hk);
@@ -1808,7 +1730,7 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 // Drop the held key: we can't observe its release while unfocused,
                 // so `gui-held-key` must not keep reporting it (the poll-based stop)
                 // and the `:blur` is the event-based stop. Both, belt-and-braces.
-                *w.held_key.lock().unwrap() = None;
+                *lock(&w.held_key) = None;
                 w.held_physical = None;
                 deliver(w.subscriber, Message::Keyword(value::intern("blur")));
                 // Same for a held mouse button: its release may land off-window /
@@ -2214,11 +2136,11 @@ fn apply_font(w: &mut Win, family: Option<u32>, px: Option<f32>) {
 fn publish_size(w: &Win) {
     update_cells(&w.window, &w.renderer, &w.size);
     let inner = w.window.inner_size();
-    *w.size_px.lock().unwrap() = (inner.width, inner.height);
+    *lock(&w.size_px) = (inner.width, inner.height);
     if w.pixel_input {
         deliver(w.subscriber, resize_message_px(inner.width, inner.height));
     } else {
-        let (cols, rows) = *w.size.lock().unwrap();
+        let (cols, rows) = *lock(&w.size);
         deliver(w.subscriber, resize_message(cols, rows));
     }
 }
@@ -2234,7 +2156,7 @@ fn update_cells(window: &winit::window::Window, r: &Renderer, size: &Arc<Mutex<(
     let usable_h = (sz.height as usize).saturating_sub(2 * inset);
     let cols = (usable_w / r.cell_w.max(1)).max(1).min(u16::MAX as usize) as u16;
     let rows = (usable_h / r.cell_h.max(1)).max(1).min(u16::MAX as usize) as u16;
-    *size.lock().unwrap() = (cols, rows);
+    *lock(size) = (cols, rows);
 }
 
 impl Win {

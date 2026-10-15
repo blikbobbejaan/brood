@@ -669,7 +669,10 @@ pub(super) fn file_stat(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 #[cfg(unix)]
 pub(super) fn uid_name(uid: u32) -> Option<String> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::core::sync::lock(&LOCK);
+    // SAFETY: `getpwuid`'s result points into libc's static buffer, which only another
+    // `getpwuid` call can overwrite — and every one in this process holds `LOCK`. The name
+    // is copied out before the guard drops.
     unsafe {
         let pw = libc::getpwuid(uid as libc::uid_t);
         if pw.is_null() {
@@ -686,7 +689,8 @@ pub(super) fn uid_name(uid: u32) -> Option<String> {
 #[cfg(unix)]
 pub(super) fn gid_name(gid: u32) -> Option<String> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _g = LOCK.lock().unwrap();
+    let _g = crate::core::sync::lock(&LOCK);
+    // SAFETY: as in `uid_name`, for `getgrgid`'s static buffer.
     unsafe {
         let gr = libc::getgrgid(gid as libc::gid_t);
         if gr.is_null() {

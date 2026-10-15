@@ -178,7 +178,7 @@ static REGISTRY: LazyLock<Mutex<OwnedTable<Arc<Mutex<WasmInst>>>>> =
 /// must not turn every future wasm op into a hard panic (the "must Err, never
 /// panic" bar). The map is plain data, so a poisoned guard is still usable.
 fn reg() -> std::sync::MutexGuard<'static, OwnedTable<Arc<Mutex<WasmInst>>>> {
-    REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+    crate::core::sync::lock(&REGISTRY)
 }
 
 /// A fresh, unguessable instance token: 62 random bits (positive as a Brood int), never
@@ -197,7 +197,7 @@ fn fresh_token(registry: &OwnedTable<Arc<Mutex<WasmInst>>>) -> Result<u64, LispE
 
 /// Lock one instance, poison-tolerant (see [`reg`]).
 fn lock_inst(inst: &Arc<Mutex<WasmInst>>) -> std::sync::MutexGuard<'_, WasmInst> {
-    inst.lock().unwrap_or_else(|e| e.into_inner())
+    crate::core::sync::lock(inst)
 }
 
 /// The shared engine: fuel metering on, Cranelift, built once.

@@ -17703,3 +17703,13 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
 - Two parameters named `seq/keep` (`project-check/project-cache-prune`,
   `editor/buffer/collapse-whitespace`) were left behind by a rename wave that rewrote `keep`.
   They bound fine as locals, which is why nothing noticed. Renamed.
+
+## 2026-10-15 (later) — poisoned locks recover everywhere (KI-258); seven GUI ops are one
+
+- **KI-258:** coverage dropped every hit after a poisoned lock and reported empty. It, the
+  GUI backend (33 `.lock().unwrap()`), the wasm host (a hand copy of the recovery) and
+  `file/stat`'s name lookup now all recover through `core::sync::lock` or the same
+  `PoisonError::into_inner`. No `.lock().unwrap()` is left in the kernel outside tests.
+- `gui/focus`, `grab`, `maximize`, `minimize`, `drag-move`, `drag-resize` and `fullscreen`
+  were seven copies of "is the window live, headless is a no-op, send the event". They are
+  now one `dispatch`.

@@ -46,6 +46,7 @@
 //! (`eval::compile::precompile` / `%coverage-precompile`), which is what puts a
 //! never-called function into the denominator and nowhere else.
 
+use crate::core::sync::lock;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -93,79 +94,89 @@ pub fn enabled() -> bool {
 
 /// Record that `line` of `file` executed.
 pub fn record(file: &str, line: u32) {
-    if let Ok(mut map) = hits().lock() {
-        map.entry(file.to_string()).or_default().insert(line);
-    }
-    // A poisoned lock means another thread panicked mid-insert. Coverage is a
-    // diagnostic: losing a hit beats propagating that panic into the measured program.
+    // Every map here is taken poison-tolerant (`core::sync::lock`): one panic while a map
+    // was held must not drop every later hit and report the run as 0% covered — which is
+    // what `if let Ok(…)` and `Err(_) => Vec::new()` did. A poisoned set is still a set.
+    lock(hits())
+        .entry(file.to_string())
+        .or_default()
+        .insert(line);
 }
 
 /// Register the lines of `file` that an arm's bytecode was instrumented for — every
 /// line that COULD record a hit. Called once per arm compile, from `compile_arm`.
 pub fn note_instrumented(file: &str, lines: impl IntoIterator<Item = u32>) {
-    if let Ok(mut map) = instrumented_lines().lock() {
-        let entry = map.entry(file.to_string()).or_default();
-        entry.extend(lines);
-    }
+    lock(instrumented_lines())
+        .entry(file.to_string())
+        .or_default()
+        .extend(lines);
 }
 
 /// Record that one edge (`taken`) of the branch at `line:col` of `file` executed.
 pub fn record_branch(file: &str, line: u32, col: u32, taken: bool) {
-    if let Ok(mut map) = branch_hits().lock() {
-        map.entry(file.to_string())
-            .or_default()
-            .insert((line, col, taken));
-    }
+    lock(branch_hits())
+        .entry(file.to_string())
+        .or_default()
+        .insert((line, col, taken));
 }
 
 /// Register the `(line, col)` decision points an arm was instrumented for — the branch
 /// denominator. Called once per arm compile, from `compile_arm`.
 pub fn note_branches(file: &str, sites: impl IntoIterator<Item = (u32, u32)>) {
-    if let Ok(mut map) = branch_sites().lock() {
-        map.entry(file.to_string()).or_default().extend(sites);
-    }
+    lock(branch_sites())
+        .entry(file.to_string())
+        .or_default()
+        .extend(sites);
+}
+
+/// Every `file -> [entry …]` of one coverage map, for the reporting side.
+fn listed<T: Copy + Ord>(map: &Mutex<BTreeMap<String, BTreeSet<T>>>) -> Vec<(String, Vec<T>)> {
+    lock(map)
+        .iter()
+        .map(|(file, entries)| (file.clone(), entries.iter().copied().collect()))
+        .collect()
 }
 
 /// Every recorded branch edge, `file -> [(line, col, taken) …]` (for the reporting side).
 pub fn branch_snapshot() -> Vec<(String, Vec<(u32, u32, bool)>)> {
-    match branch_hits().lock() {
-        Ok(map) => map
-            .iter()
-            .map(|(f, edges)| (f.clone(), edges.iter().copied().collect()))
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    listed(branch_hits())
 }
 
 /// Every instrumented branch site, `file -> [(line, col) …]` — the branch denominator.
 pub fn branch_instrumented() -> Vec<(String, Vec<(u32, u32)>)> {
-    match branch_sites().lock() {
-        Ok(map) => map
-            .iter()
-            .map(|(f, sites)| (f.clone(), sites.iter().copied().collect()))
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    listed(branch_sites())
 }
 
 /// Every instrumented `(file, lines)` pair — the denominator, mirroring [`snapshot`].
 pub fn instrumented() -> Vec<(String, Vec<u32>)> {
-    match instrumented_lines().lock() {
-        Ok(map) => map
-            .iter()
-            .map(|(f, lines)| (f.clone(), lines.iter().copied().collect()))
-            .collect(),
-        Err(_) => Vec::new(),
-    }
+    listed(instrumented_lines())
 }
 
 /// Every recorded `(file, lines)` pair, for the reporting side.
 pub fn snapshot() -> Vec<(String, Vec<u32>)> {
-    match hits().lock() {
-        Ok(map) => map
-            .iter()
-            .map(|(f, lines)| (f.clone(), lines.iter().copied().collect()))
-            .collect(),
-        Err(_) => Vec::new(),
+    listed(hits())
+}
+
+#[cfg(test)]
+mod tests {
+    /// A panic while the hit map was held poisons it. Recording must carry on and the
+    /// report must still show what was recorded — before, every later hit was dropped
+    /// and the snapshot came back empty, so the run read as 0% covered.
+    #[test]
+    fn a_poisoned_hit_map_keeps_recording_and_reporting() {
+        super::record("before.blsp", 1);
+        let _ = std::thread::spawn(|| {
+            let _held = super::hits().lock();
+            panic!("poison the coverage map");
+        })
+        .join();
+        assert!(super::hits().is_poisoned(), "the setup must poison the map");
+        super::record("after.blsp", 7);
+        let snapshot = super::snapshot();
+        assert!(
+            snapshot.contains(&("before.blsp".to_string(), vec![1]))
+                && snapshot.contains(&("after.blsp".to_string(), vec![7])),
+            "a poisoned map lost coverage: {snapshot:?}"
+        );
     }
 }

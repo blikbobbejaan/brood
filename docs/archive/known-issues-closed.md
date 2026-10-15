@@ -13764,3 +13764,19 @@ runs `brood` with a relative and with an empty `XDG_CACHE_HOME` and requires the
 directory and the stdlib image path to agree. Sabotage (the old Brood rule restored in
 `%std-image-path`) reds it with "the stdlib image must live in the same directory, got
 relative/cache/brood/std-image-…".
+
+## KI-258 — one panic during a coverage run would have reported every later line as uncovered ✅ FIXED 2026-10-15
+
+**Symptom.** None observed; found by reading. **Cause.** `diagnostics/coverage.rs` took its
+four maps with `if let Ok(…) = m.lock()` when recording and `Err(_) => Vec::new()` when
+reporting. A panic on any thread while it held one poisoned that map for the rest of the
+process. Every later hit was then dropped, and the report came back empty, reading as 0%
+covered rather than as an error. Every other runtime table takes its locks through
+`core::sync::lock`, which recovers. **Why it survived.** A panic mid-insert is rare, and
+nothing poisons a map on purpose. **Fix.** All eight sites use `core::sync::lock`; the four
+report functions are one `listed`. The same pass moved the GUI backend's 33
+`.lock().unwrap()` (where a poisoned lock panics again on every later GUI call), the wasm
+host's hand-written recovery, and `file/stat`'s user/group-name lock onto the same
+recovery. **Guard.** `coverage::tests::a_poisoned_hit_map_keeps_recording_and_reporting`
+poisons the hit map from a panicking thread, then records. Sabotage (`record` back to
+`if let Ok`) reds it with "a poisoned map lost coverage: [(\"before.blsp\", [1])]".
