@@ -287,14 +287,14 @@ pub fn yield_now() {
 
 /// Test hook: set this thread's remaining budget, so a unit test can drive the capture-mode
 /// VM through preemptions without a scheduler.
-#[cfg(test)]
+#[cfg(all(test, feature = "jit"))]
 pub(crate) fn set_reduction_budget_for_test(n: u32) {
     REDUCTIONS.with(|r| r.set(n));
 }
 
 /// Unit tests that stand in for a scheduler: pretend `n` more processes are queued (and undo
 /// it with the negation), so a preemption has someone to make room for.
-#[cfg(test)]
+#[cfg(all(test, feature = "jit"))]
 pub(crate) fn test_pretend_queued(n: isize) {
     if n >= 0 {
         STEALABLE.fetch_add(n as usize, Ordering::SeqCst);

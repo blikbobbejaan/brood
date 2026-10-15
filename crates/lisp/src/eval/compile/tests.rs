@@ -103,59 +103,13 @@ fn rewrite_arm_handles_rewrites_every_embedded_handle() {
         ),
     ]));
     let arm = CompiledArm {
-        nrequired: 0,
         noptional: 1,
         optional_defaults: Box::new([Some(Node::Const(ConstVal::new(Value::str_(
             StrId::runtime(4),
         ))))]),
-        rest_slot: None,
-        nslots: 0,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body,
-        chunk: None,
         has_runtime_handles: true,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
 
     rewrite_arm_handles(&arm, &mut |v| bump(v, 100));
@@ -252,56 +206,10 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
     };
     let arm = Arc::new(CompiledArm {
         nrequired: 1, // slot 0 = the callee, passed as the sole arg
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 1,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())), // unused at runtime (chunk drives)
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     });
 
     // First run: the native suspends, so the driver captures the continuation
@@ -449,6 +357,7 @@ fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
 }
 
 #[test]
+#[cfg(feature = "jit")]
 fn jit_lowers_and_runs_a_straight_line_int_arm() {
     let mut heap = Heap::new();
     // Body `(+ x 1)`: [Local(0), Const(1), Prim2 Add].
@@ -467,56 +376,10 @@ fn jit_lowers_and_runs_a_straight_line_int_arm() {
     };
     let arm = CompiledArm {
         nrequired: 1,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 1,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
 
     let mut jit = crate::jit::CraneliftBackend::new();
@@ -567,56 +430,10 @@ fn jit_lowers_and_runs_an_if_with_comparison() {
     };
     let arm = CompiledArm {
         nrequired: 1,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 1,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
 
     let mut jit = crate::jit::CraneliftBackend::new();
@@ -674,56 +491,10 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     };
     let arm = CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
 
     let mut jit = crate::jit::CraneliftBackend::new();
@@ -865,56 +636,10 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
     };
     let arm = CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     let mut jit = crate::jit::CraneliftBackend::new();
     assert!(
@@ -953,56 +678,10 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
     };
     let elided_arm = CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(elided),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     assert!(
         jit_lower_arm(&mut jit, &elided_arm, &[]).is_some(),
@@ -1039,56 +718,10 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
     };
     let thin_arm = CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(thin),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     assert!(
         jit_lower_arm(&mut jit, &thin_arm, &[]).is_none(),
@@ -1128,56 +761,10 @@ fn jit_lowers_fused_prims_map_and_overflow() {
     };
     let mk_arm = |chunk: Chunk, nreq: usize, nslots: usize| CompiledArm {
         nrequired: nreq,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots,
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     let mut jit = crate::jit::CraneliftBackend::new();
 
@@ -1296,56 +883,10 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
     // sumto(i acc) = (if (< i 1) acc (sumto (- i 1) (+ acc i))).
     let mk_arm = |chunk: Chunk, nreq: usize, nslots: usize| CompiledArm {
         nrequired: nreq,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots,
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: AtomicU32::new(0),
-        jit_deopts_total: AtomicU32::new(0),
-        jit_poly_slots: AtomicU32::new(0),
-        jit_entry_deopts: AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     let sumto = Arc::new(mk_arm(
         Chunk {
@@ -1499,56 +1040,10 @@ fn vm_run_bc_runs_a_tiered_arm_via_the_hook() {
     };
     let arm = Arc::new(CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: AtomicU32::new(0),
-        jit_deopts_total: AtomicU32::new(0),
-        jit_poly_slots: AtomicU32::new(0),
-        jit_entry_deopts: AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     });
 
     // Warm it past the threshold so jit_tier hands it to the background compiler;
@@ -1623,14 +1118,7 @@ fn jit_speedup_vs_vm() {
     };
     let mk = || CompiledArm {
         nrequired: 2,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(Chunk {
             code: vec![
@@ -1649,46 +1137,7 @@ fn jit_speedup_vs_vm() {
                 Inst::SelfCall { argc: 2 },
             ],
         }),
-        has_runtime_handles: false,
-        jit_code: AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: AtomicU32::new(0),
-        jit_deopts_total: AtomicU32::new(0),
-        jit_poly_slots: AtomicU32::new(0),
-        jit_entry_deopts: AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
-        dbg_name: None,
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
     let n = 100_000i64; // iterations per sumto call
     let reps = 300;
@@ -1773,49 +1222,11 @@ fn jit_speedup_vs_vm() {
 fn ki26_arm(nslots: usize, inline_nslots: usize) -> CompiledArm {
     CompiledArm {
         nrequired: 1,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots,
-        nsites: 0,
-        ngsites: 0,
         uid: 0,
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::int(0))),
-        chunk: None,
-        has_runtime_handles: false,
-        jit_code: AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: AtomicU32::new(0),
-        jit_deopts_total: AtomicU32::new(0),
-        jit_poly_slots: AtomicU32::new(0),
-        jit_entry_deopts: AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        dbg_name: None,
-        inline_name: None,
-        inline_stride: 0,
         inline_nslots,
-        inline_code: AtomicPtr::new(std::ptr::null_mut()),
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        leaf: None,
+        ..CompiledArm::default()
     }
 }
 
@@ -1925,56 +1336,11 @@ fn tiering_advisories_route_to_the_predicate_they_name() {
     };
     let arm = CompiledArm {
         nrequired: 1,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 1,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
-        jit_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
-        compile_epoch: std::sync::atomic::AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
-        #[cfg(feature = "jit")]
-        inline_name: None,
         dbg_name: Some(name),
-        #[cfg(feature = "jit")]
-        inline_stride: 0,
-        #[cfg(feature = "jit")]
-        inline_nslots: 0,
-        #[cfg(feature = "jit")]
-        inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        leaf: None,
+        ..CompiledArm::default()
     };
 
     // Nothing demoted yet, so a peer's published code is adoptable...
@@ -2074,9 +1440,11 @@ fn tier_order_is_treewalk_lowest_and_native_highest() {
 /// (the same blind spot ADR-221 hit). Hence an assertion on the refcount itself.
 #[test]
 fn arm_handle_clone_does_not_touch_the_shared_arm_refcount() {
-    // Reuse the existing arm builder rather than a second 30-field literal that would
-    // drift out of step with `CompiledArm`.
-    let shared: Arc<CompiledArm> = Arc::new(ki26_arm(1, 0));
+    let shared: Arc<CompiledArm> = Arc::new(CompiledArm {
+        nrequired: 1,
+        nslots: 1,
+        ..CompiledArm::default()
+    });
 
     // One process installs the arm into its IC: exactly one shared-refcount bump, ever.
     let handle = ArmHandle::new(shared.clone());
@@ -2439,39 +1807,13 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
     };
     let arm = Arc::new(CompiledArm {
         nrequired: 1,
-        noptional: 0,
-        optional_defaults: Box::new([]),
-        rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
-        uid: super::ir::next_arm_uid(),
-        site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(chunk),
-        has_runtime_handles: false,
         // The state a peer's inline swap leaves behind: the inlined pointer installed…
         jit_code: std::sync::atomic::AtomicPtr::new(code),
-        jit_calls: std::sync::atomic::AtomicU32::new(0),
-        deopt_watch: false,
-        jit_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_deopts_total: std::sync::atomic::AtomicU32::new(0),
-        jit_poly_slots: std::sync::atomic::AtomicU32::new(0),
-        jit_entry_deopts: std::sync::atomic::AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false),
-        self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-        ckpt_slot: u32::MAX,
         compile_epoch: std::sync::atomic::AtomicU64::new(heap.global_epoch()),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(true),
-        fn_name: None,
-        src_file: None,
-        module: None,
-        capture_names: Box::new([]),
         inline_name: Some(value::intern("peer-inlined")),
         dbg_name: Some(value::intern("peer-inlined")),
         inline_stride: 2,
@@ -2480,10 +1822,7 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
         inline_code: std::sync::atomic::AtomicPtr::new(code),
         inline_queued: std::sync::atomic::AtomicBool::new(true),
         inline_installed: std::sync::atomic::AtomicBool::new(true),
-        xcall_wanted: std::sync::OnceLock::new(),
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        leaf: None,
+        ..CompiledArm::default()
     });
 
     let base = heap.roots_len();
@@ -2702,6 +2041,7 @@ fn a_letrec_loop_is_a_self_call_and_a_shadowed_name_is_not() {
 /// for 3000 iterations and asserts the arm left the untried state. Sabotage-verified: with
 /// the weight at 1 the same loop has counted 11 of 128 and `jit_code` is still null.
 #[test]
+#[cfg(feature = "jit")]
 fn a_self_tail_loop_is_elected_for_tiering_within_one_activation() {
     use std::sync::atomic::Ordering::Acquire;
     set_forced_ceiling(Some(Tier::Native));

@@ -1593,6 +1593,7 @@ pub(crate) mod jit_layout {
     /// keyword`], so the collapsing rules (`BigInt`→`int`, `Range`/`SeqView`→
     /// `pair`) hold by construction and a new variant is covered the moment the
     /// exemplar list is (the exhaustive-`match` test below forces that).
+    #[cfg(feature = "jit")]
     pub(crate) fn type_of_kw_table() -> &'static [u32; 256] {
         use super::*;
         static T: LazyLock<[u32; 256]> = LazyLock::new(|| {
@@ -1609,6 +1610,7 @@ pub(crate) mod jit_layout {
     /// One dummy-handle exemplar per `Value` variant. The `match` on a probe
     /// value is exhaustive, so adding a `Value` variant fails compilation here
     /// until its exemplar (and thus its `type_of_kw_table` entry) exists.
+    #[cfg(feature = "jit")]
     fn exemplars() -> Vec<super::Value> {
         use super::*;
         let all = vec![

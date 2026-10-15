@@ -842,6 +842,76 @@ pub struct CompiledArm {
     pub leaf: Option<Box<LeafInline>>,
 }
 
+/// An arm with every field at the value a freshly compiled arm starts from: no body, no
+/// frame, no native code yet, every counter at zero and every sentinel at its sentinel
+/// (`self_bound_stamp`, `ckpt_slot`). A construction site names only what it compiled
+/// (`CompiledArm { nrequired, body, … ..CompiledArm::default() }`), so a new runtime field
+/// is one edit here — not one per construction site, where a wrong start value would
+/// compile fine. It mints a fresh `uid`, like every compiled arm.
+impl Default for CompiledArm {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64};
+        use std::sync::OnceLock;
+        CompiledArm {
+            nrequired: 0,
+            noptional: 0,
+            optional_defaults: Box::new([]),
+            rest_slot: None,
+            nslots: 0,
+            nsites: 0,
+            ngsites: 0,
+            uid: next_arm_uid(),
+            site_pos: Box::new([]),
+            body: Node::Const(ConstVal::new(Value::Nil)),
+            chunk: None,
+            has_runtime_handles: false,
+            jit_code: AtomicPtr::new(std::ptr::null_mut()),
+            jit_calls: AtomicU32::new(0),
+            deopt_watch: false,
+            jit_deopts: AtomicU32::new(0),
+            jit_deopts_total: AtomicU32::new(0),
+            jit_poly_slots: AtomicU32::new(0),
+            jit_entry_deopts: AtomicU32::new(0),
+            jit_float_context: AtomicBool::new(false),
+            jit_float_deopts: AtomicU32::new(0),
+            float_globals: OnceLock::new(),
+            self_global_ok: AtomicBool::new(false),
+            // Sentinel: no binding validated yet.
+            self_bound_stamp: AtomicU64::new(u64::MAX),
+            // Sentinel: no deopt-checkpoint journal slot.
+            ckpt_slot: u32::MAX,
+            compile_epoch: AtomicU64::new(0),
+            stale_bindings: AtomicBool::new(false),
+            share_key: None,
+            shared_published: AtomicBool::new(false),
+            capture_names: Box::new([]),
+            fn_name: None,
+            src_file: None,
+            module: None,
+            #[cfg(feature = "jit")]
+            inline_name: None,
+            dbg_name: None,
+            #[cfg(feature = "jit")]
+            inline_stride: 0,
+            #[cfg(feature = "jit")]
+            inline_nslots: 0,
+            #[cfg(feature = "jit")]
+            inline_code: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(feature = "jit")]
+            inline_queued: AtomicBool::new(false),
+            #[cfg(feature = "jit")]
+            inline_installed: AtomicBool::new(false),
+            #[cfg(feature = "jit")]
+            xcall_wanted: OnceLock::new(),
+            #[cfg(feature = "jit")]
+            scalar_kind: OnceLock::new(),
+            calls_receive: OnceLock::new(),
+            #[cfg(feature = "jit")]
+            leaf: None,
+        }
+    }
+}
+
 /// The stored leaf-inline derivation: see [`CompiledArm::leaf`].
 #[cfg(feature = "jit")]
 pub struct LeafInline {

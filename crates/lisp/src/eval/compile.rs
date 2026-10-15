@@ -23,7 +23,7 @@
 
 use smallvec::SmallVec;
 
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use std::sync::Arc;
 
@@ -516,64 +516,18 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
             // strand — registering it lets `runtime_collect` rewrite them in place.
             let has_runtime_handles = node_has_rt_handles(&node);
             let arm = Arc::new(CompiledArm {
-                nrequired: 0,
-                noptional: 0,
-                optional_defaults: Box::new([]),
-                rest_slot: None,
                 nslots: scope.max,
                 // Top-level forms allocate sites through this scope like any arm; the
                 // throwaway arm needs the counts so `exec_value`'s activation resolves
                 // an IC block covering them.
                 nsites: scope.sites,
                 ngsites: scope.gsites,
-                uid: next_arm_uid(),
                 site_pos: std::mem::take(&mut scope.site_pos).into_boxed_slice(),
-                body: node,
                 // Top-level forms run via `exec_value` below, not the bytecode loop
                 // (Stage 1 bytecode is reached only through `vm_apply`); no chunk.
-                chunk: None,
+                body: node,
                 has_runtime_handles,
-                jit_code: AtomicPtr::new(std::ptr::null_mut()),
-                jit_calls: AtomicU32::new(0),
-                deopt_watch: false,
-                jit_deopts: AtomicU32::new(0),
-                jit_deopts_total: AtomicU32::new(0),
-                jit_poly_slots: AtomicU32::new(0),
-                jit_entry_deopts: AtomicU32::new(0),
-                jit_float_context: std::sync::atomic::AtomicBool::new(false),
-                jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-                float_globals: std::sync::OnceLock::new(),
-                self_global_ok: std::sync::atomic::AtomicBool::new(false),
-                self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
-                ckpt_slot: u32::MAX,
-                compile_epoch: AtomicU64::new(0),
-                stale_bindings: std::sync::atomic::AtomicBool::new(false),
-                share_key: None,
-                shared_published: std::sync::atomic::AtomicBool::new(false),
-                fn_name: None,
-                src_file: None,
-                module: None,
-                capture_names: Box::new([]),
-                #[cfg(feature = "jit")]
-                inline_name: None,
-                dbg_name: None,
-                #[cfg(feature = "jit")]
-                inline_stride: 0,
-                #[cfg(feature = "jit")]
-                inline_nslots: 0,
-                #[cfg(feature = "jit")]
-                inline_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-                #[cfg(feature = "jit")]
-                inline_queued: std::sync::atomic::AtomicBool::new(false),
-                #[cfg(feature = "jit")]
-                inline_installed: std::sync::atomic::AtomicBool::new(false),
-                #[cfg(feature = "jit")]
-                xcall_wanted: std::sync::OnceLock::new(),
-                #[cfg(feature = "jit")]
-                scalar_kind: std::sync::OnceLock::new(),
-                calls_receive: std::sync::OnceLock::new(),
-                #[cfg(feature = "jit")]
-                leaf: None,
+                ..CompiledArm::default()
             });
             let arm_slot = if arm.has_runtime_handles {
                 heap.live_arm_push(ArmHandle::new(arm.clone()))

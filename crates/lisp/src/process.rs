@@ -122,9 +122,9 @@ pub(crate) use scheduler::{current_mailbox_overflow_pending, native_poll, Native
 // fn directly.
 #[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::set_capture_run;
-#[cfg(test)]
+#[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::set_reduction_budget_for_test;
-#[cfg(test)]
+#[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::test_pretend_queued;
 
 pub(crate) use mailbox::{deliver, is_alive, read_name_address};

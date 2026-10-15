@@ -259,11 +259,12 @@ pub(crate) fn compile_arm(
                                 // journalled against. It shares this arm's `uid` (hence
                                 // its inline-cache block) and its identity/diagnostic
                                 // fields; only body, chunk, frame and checkpoint differ.
+                                // Never published to the cross-process cache (`share_key`
+                                // stays None): this arm is reachable only through its
+                                // caller's derivation. It is the spliced body, so it must
+                                // not itself splice again (no `inline_name`, no `leaf`).
                                 let resume = CompiledArm {
                                     nrequired,
-                                    noptional: 0,
-                                    optional_defaults: Box::new([]),
-                                    rest_slot: None,
                                     nslots: leaf_nslots,
                                     nsites: scope.sites,
                                     ngsites: scope.gsites,
@@ -272,51 +273,15 @@ pub(crate) fn compile_arm(
                                     body: d.body,
                                     chunk: Some(d.chunk),
                                     has_runtime_handles,
-                                    jit_code: AtomicPtr::new(std::ptr::null_mut()),
-                                    jit_calls: AtomicU32::new(0),
-                                    deopt_watch: false,
-                                    jit_deopts: AtomicU32::new(0),
-                                    jit_deopts_total: AtomicU32::new(0),
-                                    jit_poly_slots: AtomicU32::new(0),
-                                    jit_entry_deopts: AtomicU32::new(0),
-                                    jit_float_context: std::sync::atomic::AtomicBool::new(false),
-                                    jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-                                    float_globals: std::sync::OnceLock::new(),
-                                    self_global_ok: std::sync::atomic::AtomicBool::new(false),
-                                    self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
                                     ckpt_slot: d.ckpt_slot,
-                                    compile_epoch: AtomicU64::new(0),
-                                    stale_bindings: std::sync::atomic::AtomicBool::new(false),
-                                    // Never published to the cross-process cache: this arm
-                                    // is reachable only through its caller's derivation.
-                                    share_key: None,
-                                    shared_published: std::sync::atomic::AtomicBool::new(false),
                                     fn_name: trace_name,
                                     src_file: src_file.clone(),
                                     module: scope.module,
                                     capture_names: capture_names.clone(),
                                     dbg_name: defn_name,
-                                    // The resume arm is the spliced body; it must not
-                                    // itself splice again.
-                                    #[cfg(feature = "jit")]
-                                    inline_name: None,
-                                    #[cfg(feature = "jit")]
-                                    inline_stride: 0,
                                     #[cfg(feature = "jit")]
                                     inline_nslots: leaf_nslots,
-                                    #[cfg(feature = "jit")]
-                                    inline_code: AtomicPtr::new(std::ptr::null_mut()),
-                                    #[cfg(feature = "jit")]
-                                    inline_queued: std::sync::atomic::AtomicBool::new(false),
-                                    #[cfg(feature = "jit")]
-                                    inline_installed: std::sync::atomic::AtomicBool::new(false),
-                                    #[cfg(feature = "jit")]
-                                    xcall_wanted: std::sync::OnceLock::new(),
-                                    #[cfg(feature = "jit")]
-                                    scalar_kind: std::sync::OnceLock::new(),
-                                    calls_receive: std::sync::OnceLock::new(),
-                                    #[cfg(feature = "jit")]
-                                    leaf: None,
+                                    ..CompiledArm::default()
                                 };
                                 // Load-bearing for the deopt-resume swap in `vm_run_bc`,
                                 // which replaces the frame's arm with `resume` mid-run:
@@ -369,22 +334,8 @@ pub(crate) fn compile_arm(
         body,
         chunk,
         has_runtime_handles,
-        jit_code: AtomicPtr::new(std::ptr::null_mut()),
-        jit_calls: AtomicU32::new(0),
         deopt_watch,
-        jit_deopts: AtomicU32::new(0),
-        jit_deopts_total: AtomicU32::new(0),
-        jit_poly_slots: AtomicU32::new(0),
-        jit_entry_deopts: AtomicU32::new(0),
-        jit_float_context: std::sync::atomic::AtomicBool::new(false),
-        jit_float_deopts: std::sync::atomic::AtomicU32::new(0),
-        float_globals: std::sync::OnceLock::new(),
-        self_global_ok: std::sync::atomic::AtomicBool::new(false), self_bound_stamp: std::sync::atomic::AtomicU64::new(u64::MAX),
         ckpt_slot,
-        compile_epoch: AtomicU64::new(0),
-        stale_bindings: std::sync::atomic::AtomicBool::new(false),
-        share_key: None,
-        shared_published: std::sync::atomic::AtomicBool::new(false),
         fn_name: trace_name,
         // The file the body was read from — trace entries name it as the call
         // site's file (a fn's calls are in its own source). Cold: once per arm
@@ -414,18 +365,8 @@ pub(crate) fn compile_arm(
         // racing `frame_size_for_code` that matches it must answer `nslots`, not 0.
         inline_nslots: inline_nslots.max(nslots_total),
         #[cfg(feature = "jit")]
-        inline_code: AtomicPtr::new(std::ptr::null_mut()),
-        #[cfg(feature = "jit")]
-        inline_queued: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        inline_installed: std::sync::atomic::AtomicBool::new(false),
-        #[cfg(feature = "jit")]
-        xcall_wanted: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
-        scalar_kind: std::sync::OnceLock::new(),
-        calls_receive: std::sync::OnceLock::new(),
-        #[cfg(feature = "jit")]
         leaf,
+        ..CompiledArm::default()
     })
 }
 
