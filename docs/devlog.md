@@ -17761,3 +17761,20 @@ the fuzz differential against `target/release-fast/brood` (the verifier off, the
 armed binary cannot stand in for). Eleven generators, 3400 programs, each under the
 tree-walker, VM, VM+JIT and GC stress: 0 divergences, 0 crashes, 0 stale. The other half,
 every benchmark row's stderr grepped for CODEGEN-PANICKED, is for the benchmark machine.
+
+## 2026-10-15 (later) — KI-259: aging under another process's isolate snapshot
+
+Running the touched test files under `BROOD_GC_STRESS` turned up `stdimage_test` failing 1
+in 6. It was not this session's: the pre-session baseline fails too, once it has a stdlib
+image. The first bisect missed that because the image is keyed per commit and none of the
+bisect builds had one. The cause was the crash reporter aging the RUNTIME region inside an
+`%isolate-discard-loads` window. The snapshot's off-graph handles came back after the
+migration, and a stale `*features-loading*` claim made the next `require-one` skip a
+module. `rt_collect_block` (KI-6) is per heap and never covered another process. Aging and
+freeing now ask the runtime whether any snapshot is outstanding, and a snapshot waits out
+an aging cycle in progress. Full account in KI-259.
+
+The tools that found it are worth reusing. `BROOD_SCOPE_DBG` printed the stuck claim at the
+restore: its timeout branch now lists every in-flight claim and its owner. One-line traces
+in `require-one`'s rare branches did not disturb the timing; the heavy global tracers did.
+Correlating the `AGE` lines with failures was exact, 4 for 4.

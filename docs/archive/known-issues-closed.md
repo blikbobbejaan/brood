@@ -13780,3 +13780,39 @@ host's hand-written recovery, and `file/stat`'s user/group-name lock onto the sa
 recovery. **Guard.** `coverage::tests::a_poisoned_hit_map_keeps_recording_and_reporting`
 poisons the hit map from a panicking thread, then records. Sabotage (`record` back to
 `if let Ok`) reds it with "a poisoned map lost coverage: [(\"before.blsp\", [1])]".
+
+## KI-259 — another process aged the RUNTIME region inside an `%isolate` window, and the restore brought back pre-aging handles ✅ FIXED 2026-10-15
+
+**Symptom.** `tests/stdimage_test.blsp` "a root global is attributed to the module that
+defines it, not to a dependent" failed about 1 run in 6 under `BROOD_GC_STRESS=1`:
+`(is (= (os/cmd-out result) "own=true via=true smaller=true"))`, actual false. Its probe
+loads `editor/lineedit` in one `%isolate-discard-loads`, then `repl` (which `:use`s it) in a
+second. In a failing run the second load introduced 70 names instead of 236 and none of
+`lineedit`'s. **Cause.** Under GC stress the crash-reporter process (pid 3) reached a
+safepoint inside the first isolate and **aged** the RUNTIME region (`[rt-dbg] AGE pid=3 …
+outstanding=1`, in exactly the failing runs). Aging migrates the *live* global table into
+the fresh generation, but the isolate's `GlobalsSnapshot` holds the table's handles off the
+graph, and the restore reinstalled them. After that, `*features-loading*` read as
+`{"editor/lineedit" <self>}`, confirmed against the shared table (`%registry-member?`). The
+nested `require-one` of `lineedit` then took the circular-require branch
+(`(= (get *features-loading* key) (self))`) and returned without loading. Since KI-6, the
+snapshot suppresses RUNTIME collection through `rt_collect_block`. That counter is per
+heap, so it stops only the snapshotting process, and aging is run by whichever process
+reaches a safepoint. `maybe_runtime_collect` even falls into `advance_runtime_multigen` when
+compaction declines. **Why it survived.** It needs another live process to reach a safepoint
+mid-window with the region over its floor. GC stress makes both likely, and nothing else
+does. Without stress: 0 in 20. Any extra tracing (`BROOD_IMAGE_TRACE`, `BROOD_TRACE_GLOBAL`)
+hid it entirely. **A wrong turn worth recording:** a bisect across this session's commits
+read clean at every step, because the probe only fails when std loads from the stdlib
+image. The image is keyed by `system/stdlib-id`, which includes the commit, so none of the
+bisect builds (`brood` only, no `nest stdimage` run) had one. The pre-session baseline with
+an image fails 4 in 40. **Fix.** `age_runtime` refuses while any globals snapshot is
+outstanding in the runtime (the load journal's count, which `snapshot_globals`/
+`restore_globals` already keep), and `free_runtime_gen` refuses too.
+`snapshot_globals`, once registered, waits out an aging cycle already past that check, so it
+cannot read a half-migrated table. **Guard.**
+`runtime_collector::aging_waits_for_a_globals_snapshot_held_by_another_process`: one heap
+snapshots, a second heap on the same runtime tries to age. Sabotage (the check disabled)
+reds it with "another process aged the region while this one held a globals snapshot".
+End to end, the probe went from about 1 in 10 failing to 0 in 120 across tiers 1 and 2, and
+`stdimage_test` under GC stress to 6/6.

@@ -431,6 +431,42 @@ fn nested_globals_snapshots_suppress_then_re_enable_compaction() {
     );
 }
 
+/// KI-259: a globals snapshot held by ONE process stops every process from aging the
+/// RUNTIME region. Aging migrates the live table into the fresh generation, but the
+/// snapshot holds the table's handles off the graph; restored after an aging, it reinstalled
+/// handles into the vacated generation. Under GC stress the crash reporter aged the region
+/// inside a `%isolate-discard-loads` window, and the restored `*features-loading*` then read
+/// a module as still claimed, so the next load skipped it (`stdimage_test`, about 1 run in 8
+/// under `BROOD_GC_STRESS`). `rt_collect_block` never covered this: it is per heap, and
+/// aging is run by whichever process reaches a safepoint.
+#[test]
+fn aging_waits_for_a_globals_snapshot_held_by_another_process() {
+    LazyLock::force(&MEM_GUARD);
+    let mut interp = Interp::new();
+    interp.heap.set_rt_auto_collect(false);
+    interp.eval_str("(def kept {:a 1})").expect("seed a global");
+    // A second process of the same runtime: the one whose safepoint would age the region.
+    let other = Heap::with_regions(interp.heap.prelude_arc(), interp.heap.runtime_arc());
+
+    let snapshot = interp.heap.snapshot_globals();
+    assert!(
+        !other.age_runtime(),
+        "another process aged the region while this one held a globals snapshot",
+    );
+    assert_eq!(
+        interp.heap.runtime_cur_gen(),
+        0,
+        "the generation must not flip"
+    );
+    interp.heap.restore_globals(snapshot, None, 0);
+
+    assert!(
+        other.age_runtime(),
+        "once every snapshot is restored, aging proceeds"
+    );
+    assert_eq!(interp.heap.runtime_cur_gen(), 1);
+}
+
 /// Hot-reload soundness for the checker's namespace caches (`module_public_exports` /
 /// `known_ns_prefixes`, count-keyed): adding an export to a module (the hot-reload case)
 /// must be reflected — the cache invalidates because the global COUNT moved. (A rebind

@@ -1528,6 +1528,15 @@ impl Heap {
             }
             j.next_seq
         };
+        // KI-259: aging refuses once a snapshot is registered, but one may already be past
+        // that check — flipping the generation and migrating the live globals. Reading the
+        // table now could take handles it has not yet migrated, which the drain would then
+        // free under the snapshot. Wait it out: the registration above is ordered after the
+        // cycle's check by the journal lock, so a cycle that missed it is visible here as
+        // `aging`, and one that starts later sees the count and declines.
+        while self.runtime.aging.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
         GlobalsSnapshot {
             saved: self.runtime.globals_read().clone(),
             block_depth: self.rt_collect_block.get(),

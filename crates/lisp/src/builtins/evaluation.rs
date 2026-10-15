@@ -814,6 +814,15 @@ fn wait_for_inflight_loads(heap: &Heap) {
                     "[scope] RESTORE by {} proceeding with a module load still in flight after 5s",
                     crate::process::self_pid()
                 );
+                if let Some(Value::Map(id)) = heap.env_get(heap.global(), marker) {
+                    for (key, owner) in heap.map_entries(id) {
+                        eprintln!(
+                            "[scope]   in flight: {} owned by {}",
+                            crate::syntax::printer::print(heap, key),
+                            crate::syntax::printer::print(heap, owner)
+                        );
+                    }
+                }
             }
             break;
         }

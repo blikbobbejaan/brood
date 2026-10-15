@@ -126,6 +126,17 @@ impl Heap {
     /// multi-process reclamation primitive. Freeing the *old* generation once no
     /// live process references it is stage 4 (cooperative liveness).
     pub fn age_runtime(&self) -> bool {
+        // Never while a globals snapshot is outstanding ANYWHERE in the runtime (KI-259).
+        // The snapshot holds the table's handles off the graph, so migration cannot rewrite
+        // them: its restore would put back handles into the generation this vacates, which
+        // the drain then treats as dead. `rt_collect_block` only stops the snapshotting
+        // process itself; aging is run by whichever process reaches a safepoint, so it must
+        // ask the runtime. Checked, and the journal lock released, before `promote_lock` is
+        // taken — a definer holds `promote_lock` while it journals. A snapshot that begins
+        // after this check waits for the aging cycle to finish (`snapshot_globals`).
+        if self.globals_snapshot_outstanding() {
+            return false;
+        }
         // Exclude every in-flight `promote` for the flip: the write lock waits for all
         // promote read-guards to drain, so no promote's slot reservation and fill can
         // straddle the `current_gen` change (ADR-091 — else the fill hits the wrong
@@ -145,6 +156,17 @@ impl Heap {
             .store(other, std::sync::atomic::Ordering::Relaxed);
         self.runtime.aged_count.fetch_add(1, Ordering::Relaxed);
         true
+    }
+
+    /// Is any process in this runtime holding a globals snapshot (`%isolate`) right now?
+    /// The runtime-wide count `snapshot_globals`/`restore_globals` keep in the load journal.
+    pub(crate) fn globals_snapshot_outstanding(&self) -> bool {
+        self.runtime
+            .load_journal
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .outstanding
+            > 0
     }
 
     /// How many times this runtime has aged ([`age_runtime`](Self::age_runtime))
@@ -426,10 +448,14 @@ impl Heap {
         // deep-copy"). The in-flight pin is that assumption's replacement: refuse while any
         // shared-closure message is outstanding against this generation. Released by
         // `GenPin::drop`, so a discarded message cannot strand the veto.
+        // And an outstanding globals snapshot is another off-graph holder (KI-259): it may
+        // predate the aging that vacated `old_gen`, so its restore would reinstall handles
+        // into the slab this would free.
         let ok = (owns_drain || !drain_armed)
             && old_gen != self.runtime.cur_gen()
             && !self.runtime.gens[old_gen].load().is_empty()
-            && self.runtime.gen_inflight[old_gen].load(Ordering::Acquire) == 0;
+            && self.runtime.gen_inflight[old_gen].load(Ordering::Acquire) == 0
+            && !self.globals_snapshot_outstanding();
         if !ok {
             self.end_aging();
             return false;
