@@ -16,7 +16,7 @@
 #   automatically, over the mechanisms the cooperative scheduler is made of.
 #
 # REQUIREMENTS   rustup target add wasm32-unknown-unknown; cargo install wasm-bindgen-cli
-#                --version 0.2.100 (must match crates/playground); node
+#                --version <the `wasm-bindgen` pin in crates/playground/Cargo.toml>; node
 # USAGE          scripts/wasm-suite.sh
 set -euo pipefail
 
@@ -27,8 +27,12 @@ LIMIT="${LIMIT:-120}"
 # `wasm-bindgen` is installed into ~/.cargo/bin, which a non-login shell may not have.
 export PATH="$HOME/.cargo/bin:$PATH"
 command -v node >/dev/null || { echo "wasm-suite: node not found"; exit 2; }
+# The CLI must be exactly the crate's pinned version, so read the pin rather than restate it.
+BINDGEN_PIN="$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' "$ROOT/crates/playground/Cargo.toml")"
 command -v wasm-bindgen >/dev/null || {
-  echo "wasm-suite: wasm-bindgen CLI not found (cargo install wasm-bindgen-cli --version 0.2.100)"; exit 2; }
+  echo "wasm-suite: wasm-bindgen CLI not found (cargo install wasm-bindgen-cli --version $BINDGEN_PIN --locked)"; exit 2; }
+wasm-bindgen --version | grep -qw "$BINDGEN_PIN" || {
+  echo "wasm-suite: $(wasm-bindgen --version) does not match the crate pin $BINDGEN_PIN (cargo install wasm-bindgen-cli --version $BINDGEN_PIN --locked)"; exit 2; }
 rustup target list --installed | grep -qx wasm32-unknown-unknown \
   || { echo "wasm-suite: wasm32-unknown-unknown target not installed"; exit 2; }
 

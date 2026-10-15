@@ -138,10 +138,10 @@ tree-sitter = { version = "0.27", optional = true }
 # Runtime grammar loading (`tree-sitter-load-grammar`): dlopen a grammar shared library and
 # build a `Language` from its entry point. `tree-sitter-language` carries the sanctioned
 # `LanguageFn::from_raw`, so no transmute is needed. Both are tiny; the alternative —
-# tree-sitter's own `wasm` feature — wants wasmtime-c-api 48 while this runtime is on
-# wasmtime 47, i.e. a second copy of wasmtime or a version coupled to tree-sitter's cadence.
+# tree-sitter's own `wasm` feature — pins its own `wasmtime-c-api` major, i.e. a second copy
+# of wasmtime or this runtime's wasmtime version coupled to tree-sitter's cadence.
 tree-sitter-language = { version = "0.1", optional = true }
-libloading = { version = "0.8", optional = true }
+libloading = { version = "0.9", optional = true }
 tree-sitter-ruby = { version = "0.23", optional = true }
 tree-sitter-elixir = { version = "0.3", optional = true }
 # Lock-free, append-only vector for the shared RUNTIME code region: stable
@@ -224,7 +224,7 @@ getrandom = "0.4"
 flate2 = "1"
 # Brotli compression (the `%brotli`/`%unbrotli` builtins) — the `Content-Encoding: br`
 # wire format, which beats gzip on text at a comparable cost. Pure-Rust, no_std-friendly.
-brotli = "8"
+brotli = "9"
 # Node-link channel encryption (ADR-089): a Noise-style session that gives the
 # steady-state node link confidentiality + per-frame integrity, closing ADR-081's
 # cleartext/injection gap. `x25519-dalek` does the ephemeral ECDH (forward secrecy);
@@ -233,7 +233,7 @@ brotli = "8"
 # authenticated by folding both ephemeral pubkeys into the existing cookie-HMAC.
 # Vetted RustCrypto/dalek crates — the "don't roll your own crypto" case the
 # dependency rule allows. See docs/distribution.md + ADR-089.
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+x25519-dalek = { version = "3",features = ["static_secrets"] }
 # ed25519 signatures for package signing (ADR-212): a release's sha256 checksum is
 # signed by the publisher's private key and TOFU-verified by the client. Same vetted
 # dalek family as x25519 above — the `%ed25519-*` primitives are the one new mechanism;
@@ -291,7 +291,7 @@ softbuffer = { version = "0.4", optional = true }
 # Audio output for the `audio-beep` builtin (feature `audio`, pulled in by `gui`).
 # default-features off drops the format decoders (symphonia/flac/mp3/…); we keep
 # only `playback` (the cpal output path) — all we need to play synthesised tones.
-rodio = { version = "0.22", optional = true, default-features = false, features = ["playback"] }
+rodio = { version = "0.23",optional = true, default-features = false, features = ["playback"] }
 # Optional GPU backend (the `gui-gpu` feature). wgpu creates its surface on the existing
 # winit window through raw-window-handle 0.6 directly — the same rwh line winit 0.30
 # speaks — so nothing in the window layer changes when the render target does. `pollster`
@@ -302,7 +302,7 @@ rodio = { version = "0.22", optional = true, default-features = false, features 
 # wgpu major that moves off raw-window-handle 0.6 must move with winit (see the winit
 # note above). CPU `gui` builds link none of these.
 wgpu = { version = "30", optional = true, default-features = false, features = ["wgsl", "std", "dx12", "metal", "vulkan"] }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1",optional = true }
 raw-window-handle = { version = "0.6", optional = true }
 # OS clipboard: text and images (ADR-392). `image-data` gives `get_image`/`set_image`
 # (RGBA8, which arboard decodes from the platform's PNG/TIFF). It was once left out so
@@ -332,11 +332,11 @@ unicode-segmentation = "1"
 # makes that true — "é" as U+00E9 and as U+0065 U+0301 are different strings until
 # one of them is normalised. Same tier as the two above: tiny tables, always linked.
 unicode-normalization = "0.1"
-cranelift-jit = { version = "0.135", optional = true }
-cranelift-module = { version = "0.135", optional = true }
-cranelift-codegen = { version = "0.135", optional = true }
-cranelift-frontend = { version = "0.135", optional = true }
-wasmtime = { version = "47.0.2", default-features = false, features = ["runtime", "component-model", "cranelift", "wat"], optional = true }
+cranelift-jit = { version = "0.136", optional = true }
+cranelift-module = { version = "0.136", optional = true }
+cranelift-codegen = { version = "0.136", optional = true }
+cranelift-frontend = { version = "0.136", optional = true }
+wasmtime = { version = "49",default-features = false, features = ["runtime", "component-model", "cranelift", "wat"], optional = true }
 
 # uid/gid → owner/group name resolution for `file-stat`'s `ls -l`-style listing
 # (getpwuid/getgrgid). Unix-only; already in the dependency tree (transitive).
@@ -362,7 +362,7 @@ rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "
 # feature via unification — 0.2 uses `js`, 0.3 uses `wasm_js` (paired with the cfg
 # in .cargo/config.toml). Native builds never see these.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-# 0.4 is the direct dep (line ~180); adding the feature here merges for wasm only.
+# 0.4 is the direct dep (beside `hmac`/`sha2` above); adding the feature here merges for wasm only.
 getrandom = { version = "0.4", features = ["wasm_js"] }
 # 0.2/0.3 arrive transitively; renamed, unused deps flip their features via unification.
 getrandom_02 = { package = "getrandom", version = "0.2", features = ["js"] }

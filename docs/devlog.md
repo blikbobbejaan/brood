@@ -17561,3 +17561,28 @@ with live images and N 2M vs 10M — at 1M vs 3M with stale images the per-call 
 ±30 instructions, larger than the step being measured. Deep recursion through a computed head
 pinned: 200 000 levels complete and 2 000 000 raise, in a spawned process, both binaries alike.
 
+
+## 2026-10-15 — dependencies to latest; MSRV 1.96
+
+`cargo update` across the lockfile, plus the majors: cranelift 0.135 → 0.136, wasmtime 47 → 49,
+brotli 8 → 9, x25519-dalek 2 → 3, rodio 0.22 → 0.23, pollster 0.4 → 1, libloading 0.8 → 0.9,
+wasm-bindgen 0.2.128 → 0.2.129. No source change was needed. wasmtime 49 is built on the same
+cranelift as the JIT, so the lockfile carries one cranelift instead of two (−240 lines).
+
+**MSRV 1.95 → 1.96:** wasmtime 49 and cranelift 0.136 declare `rust-version = "1.96.0"`. Checked
+with `cargo +1.96 check --workspace --all-targets`.
+
+**One break, in a test fixture:** the newer `wast` rejects the legacy component export
+reference `(memory $i "mem")`. The form is now `(memory (core memory $i "mem"))`, and `realloc`
+likewise takes `(core func …)`. `tests/wasm_test.blsp` was the only place that spelled it.
+
+**The wasm-bindgen pin is read, not restated:** CI's install step and both wasm scripts now
+take the version from `crates/playground/Cargo.toml`. `wasm-suite.sh` also refuses an installed
+CLI that does not match the pin. Two scripts had still said 0.2.100.
+
+Not taken: num-bigint 0.5. `bigdecimal` 0.4 and `num-rational` 0.4 are built on num-bigint 0.4,
+so moving it alone would split `BigInt` into two incompatible types.
+
+Verified: clippy `--all-targets --all-features -D warnings` on 1.99; `wasm-suite.sh` 10/10;
+`wasm`, `wasm_sandbox_limits`, `zlib`, `crypto`, `conformance_crypto`, `grammar`, `tree_sitter`
+and the `jit_*` Brood files; `jit.rs` 40/40; `distribution.rs` 39/39.

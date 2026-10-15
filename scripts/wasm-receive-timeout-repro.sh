@@ -23,7 +23,7 @@
 #
 # REQUIREMENTS
 #   rustup target add wasm32-unknown-unknown
-#   cargo install wasm-bindgen-cli --version 0.2.100   # must match crates/playground
+#   cargo install wasm-bindgen-cli --version <the pin in crates/playground/Cargo.toml>
 #   node
 #
 # USAGE
@@ -42,7 +42,8 @@ BURN="${BURN:-50000000}"
 LIMIT="${LIMIT:-90}"
 
 command -v node >/dev/null || { echo "node not found"; exit 2; }
-command -v wasm-bindgen >/dev/null || { echo "wasm-bindgen CLI not found (cargo install wasm-bindgen-cli --version 0.2.100)"; exit 2; }
+BINDGEN_PIN="$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' "$ROOT/crates/playground/Cargo.toml")"
+command -v wasm-bindgen >/dev/null || { echo "wasm-bindgen CLI not found (cargo install wasm-bindgen-cli --version $BINDGEN_PIN --locked)"; exit 2; }
 rustup target list --installed | grep -qx wasm32-unknown-unknown \
   || { echo "wasm32-unknown-unknown target not installed (rustup target add wasm32-unknown-unknown)"; exit 2; }
 

@@ -181,7 +181,7 @@ boot-checks the binary it wrote and deletes it on failure; `--no-smoke` opts out
 
 ## Commands
 
-**Minimum Rust: 1.95** (`rust-version` in `Cargo.toml`). CI tracks `stable`, so this is a
+**Minimum Rust: 1.96** (`rust-version` in `Cargo.toml`). CI tracks `stable`, so this is a
 declaration, not a pin; raise it only deliberately, after building on that version.
 
 ```bash

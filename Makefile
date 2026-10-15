@@ -328,7 +328,7 @@ wasm-test: ## Run the wasm32 cooperative scheduler BEHAVIOURALLY (build + wasm-b
 	# The native suite cannot cover the cooperative scheduler by construction (off wasm there
 	# are OS workers and a real clock), so this runs the real artifact under node.
 	# Needs: rustup target add wasm32-unknown-unknown; cargo install wasm-bindgen-cli
-	# --version 0.2.128; node.
+	# --version <the pin in crates/playground/Cargo.toml>; node.
 	@./scripts/wasm-suite.sh
 
 smoke-bedit: ## Run bedit's gates (nest check, --check-boot, nest test) against THIS tree's nest — the downstream smoke CI's `downstream-bedit` job runs
