@@ -1,0 +1,23 @@
+# Weekly, grouped: one PR per ecosystem rather than one per crate or action, so a bump is a
+# single CI run to judge. Majors arrive in the same group; a red run is the signal to split.
+#
+# Pins this does not reach, by design: cargo-nextest (`tool: cargo-nextest@…` in the workflows
+# and NEXTEST_VERSION in the Makefile — `crates/lisp/tests/tool_pins.rs` keeps them in step)
+# and the wasm-bindgen CLI, which CI installs at whatever `crates/playground/Cargo.toml` pins.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

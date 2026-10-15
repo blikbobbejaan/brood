@@ -59,7 +59,8 @@ use web_time::Instant;
 use mio::net::{TcpListener as MioListener, TcpStream as MioStream};
 use mio::{Events, Interest, Poll, Token, Waker};
 
-use rustls::pki_types::ServerName;
+use rustls::pki_types::pem::{self, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
 
 use crate::core::value;
@@ -2125,8 +2126,7 @@ fn tls_config() -> Arc<ClientConfig> {
 /// CAs and for talking to a `tls-self-signed` dev server (also what makes the
 /// TLS loop testable end-to-end in-tree).
 fn tls_config_with_ca(ca_pem: &str) -> std::io::Result<Arc<ClientConfig>> {
-    let mut rd = ca_pem.as_bytes();
-    let certs = rustls_pemfile::certs(&mut rd)
+    let certs = CertificateDer::pem_slice_iter(ca_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| invalid(&format!("tls: bad CA PEM: {e}")))?;
     if certs.is_empty() {
@@ -2228,17 +2228,16 @@ pub fn tls_request(
 /// Build a rustls `ServerConfig` from a PEM certificate chain + private key (the app
 /// supplies them; reading files/secrets is Brood-side policy).
 fn build_server_config(cert_pem: &str, key_pem: &str) -> std::io::Result<Arc<ServerConfig>> {
-    let mut cert_rd = cert_pem.as_bytes();
-    let certs = rustls_pemfile::certs(&mut cert_rd)
+    let certs = CertificateDer::pem_slice_iter(cert_pem.as_bytes())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| invalid(&format!("tls: bad certificate PEM: {e}")))?;
     if certs.is_empty() {
         return Err(invalid("tls: no certificates in cert PEM"));
     }
-    let mut key_rd = key_pem.as_bytes();
-    let key = rustls_pemfile::private_key(&mut key_rd)
-        .map_err(|e| invalid(&format!("tls: bad key PEM: {e}")))?
-        .ok_or_else(|| invalid("tls: no private key in key PEM"))?;
+    let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes()).map_err(|e| match e {
+        pem::Error::NoItemsFound => invalid("tls: no private key in key PEM"),
+        e => invalid(&format!("tls: bad key PEM: {e}")),
+    })?;
     ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(certs, key)

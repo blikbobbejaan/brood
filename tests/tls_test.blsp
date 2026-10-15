@@ -147,3 +147,13 @@
                     6))
       (tcp/close ls)
       (assert= outcome nil))))
+
+(describe "tls: a listener refuses PEM it cannot use, naming which half is wrong"
+  (defn- listen-error (cert key)
+    (try (do (tls/listen "127.0.0.1" 0 cert key) nil) (catch e (get e :message))))
+  (test "a key PEM with no private key in it"
+    (let (cert (first (tls/self-signed "localhost")))
+      (is (includes? (listen-error cert "not a pem") "no private key in key PEM"))))
+  (test "a certificate PEM with no certificate in it"
+    (let (key (second (tls/self-signed "localhost")))
+      (is (includes? (listen-error "not a pem" key) "no certificates in cert PEM")))))

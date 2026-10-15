@@ -107,7 +107,15 @@ PERF_DIR    := target/$(TARGET_SUBDIR)release-perf
 SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
 
 .DEFAULT_GOAL := help
-.PHONY: help build release perf-brood perf-symbols test test-light test-both breakagetests check-examples check-stress smoke-bedit ensure-nextest benchmark quickbench suite repl configure install uninstall fmt clippy check clean
+# Every target is phony — none names a file it builds. A target missing here silently does
+# nothing once a file or directory of its name appears (`stress/`, `fuzz/`…); `tool_pins.rs`
+# fails on one.
+.PHONY: ab ab-clean ab-pin ab-vm asan benchmark breakagetests build check check-corpora \
+	check-cost check-examples check-imaged check-stress clean clippy configure doctor \
+	enable-perf-check ensure-nextest fmt fuzz gcstress green green-all help hooks install \
+	latency-gate loom perf-brood perf-symbols prepush quickbench release release-brood repl \
+	runtime-soak smoke-bedit stress suite test test-both test-light tier-audit tsan \
+	uninstall wasm-test
 
 help: ## Show this help
 	@echo "Brood — available make targets:"
@@ -131,8 +139,10 @@ test: ## Run Rust tests + the in-language suite via cargo-nextest (each test cas
 	# The `SETUP warm-boot-cache` line comes from a nextest setup script that boots
 	# `brood`/`nest` once before the fan-out (KI-38); `BROOD_NO_WARM_BOOT_CACHE=1` turns it
 	# off — see .config/nextest.toml. Built uncapped, then run under $(RUN_CAP).
+	# The run goes through `nextest-no-flakes.sh`, as CI's does: a test that passes only on
+	# its retry fails the target and is named, instead of reading green.
 	cargo nextest run --no-run --features brood/treesit-grammars
-	$(RUN_CAP) cargo nextest run --no-fail-fast --features brood/treesit-grammars
+	$(RUN_CAP) ./scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars
 	cargo test --doc   # nextest doesn't run doctests; none today, kept so future ones still run
 
 # Concurrency cap for `test-light` — override on the command line, e.g. `make test-light LIGHT_JOBS=4`.
@@ -161,7 +171,7 @@ test-light: ## Like `make test` but capped + de-prioritized so it won't saturate
 	nice -n 19 env CARGO_BUILD_JOBS=$(LIGHT_JOBS) \
 		cargo nextest run --no-run --features brood/treesit-grammars
 	$(RUN_CAP) nice -n 19 \
-		cargo nextest run --no-fail-fast --features brood/treesit-grammars -j $(LIGHT_JOBS)
+		./scripts/nextest-no-flakes.sh --no-fail-fast --features brood/treesit-grammars -j $(LIGHT_JOBS)
 	nice -n 19 cargo test --doc
 
 test-both: ## Run the whole suite through BOTH engines (tree-walker + VM) — the differential gate (ADR-076)
@@ -174,9 +184,9 @@ test-both: ## Run the whole suite through BOTH engines (tree-walker + VM) — th
 	cargo nextest run --no-run
 	@vm=0; tw=0; \
 	 echo ">>> suite under the default ceiling (VM + JIT)"; \
-	 ( $(RUN_CAP) cargo nextest run --no-fail-fast ) || vm=$$?; \
+	 ( $(RUN_CAP) ./scripts/nextest-no-flakes.sh --no-fail-fast ) || vm=$$?; \
 	 echo ">>> suite under the tree-walker (BROOD_TIER=0)"; \
-	 ( $(RUN_CAP) BROOD_TIER=0 cargo nextest run --no-fail-fast ) || tw=$$?; \
+	 ( $(RUN_CAP) BROOD_TIER=0 ./scripts/nextest-no-flakes.sh --no-fail-fast ) || tw=$$?; \
 	 if [ $$vm -ne 0 ] || [ $$tw -ne 0 ]; then \
 	   echo ">>> test-both FAILED — VM exit $$vm, tree-walker exit $$tw"; \
 	   echo ">>> (a red on ONE engine is a differential finding; a red on BOTH is usually the shared cause)"; \
@@ -293,12 +303,16 @@ breakagetests: ## Run the aggressive `breakage/` stress suite (JIT on, GC tripwi
 	if [ $$fail -ne 0 ]; then echo ">>> breakage suite: FAILURES above"; exit 1; \
 	else echo ">>> breakage suite: all files passed"; fi
 
-ensure-nextest: ## Install cargo-nextest into ~/.local/bin (prebuilt binary) if it's missing
-	@command -v cargo-nextest >/dev/null 2>&1 && { echo "cargo-nextest already installed: $$(cargo nextest --version)"; } || { \
-		echo "installing cargo-nextest into $(HOME)/.local/bin ..."; \
+# The cargo-nextest CI installs. `crates/lisp/tests/tool_pins.rs` fails when this and the
+# workflows' `cargo-nextest@…` pins disagree.
+NEXTEST_VERSION := 0.9.148
+
+ensure-nextest: ## Install CI's pinned cargo-nextest into ~/.local/bin (prebuilt binary) unless that version is already there
+	@cargo nextest --version 2>/dev/null | grep -qw "$(NEXTEST_VERSION)" && { echo "cargo-nextest $(NEXTEST_VERSION) already installed"; } || { \
+		echo "installing cargo-nextest $(NEXTEST_VERSION) into $(HOME)/.local/bin ..."; \
 		mkdir -p $(HOME)/.local/bin; \
-		curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C $(HOME)/.local/bin; \
-		echo "installed: $$(cargo nextest --version)"; }
+		curl -LsSf https://get.nexte.st/$(NEXTEST_VERSION)/linux | tar zxf - -C $(HOME)/.local/bin; \
+		echo "installed: $$(cargo nextest --version | head -1)"; }
 
 benchmark: ## Run benchmarks; archive results to docs/benchmarks/<timestamp>.md
 	./scripts/bench.sh $(ARGS)

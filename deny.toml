@@ -1,0 +1,50 @@
+# `cargo deny check` — the supply-chain gate CI runs (the `deny` job in ci.yml).
+#
+# advisories: any RustSec advisory against a crate in Cargo.lock fails the job.
+# licenses:   every dependency must be under a license this AGPL-3.0-only project can ship.
+# sources:    crates come from crates.io and nowhere else.
+# bans:       duplicate versions are reported, not refused — several (getrandom 0.2/0.3/0.4,
+#             windows-sys) arrive transitively and are not ours to unify.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # ttf-parser is unmaintained. It arrives through cosmic-text → fontdb (the `gui` feature)
+    # and is not ours to replace; drop this when cosmic-text moves off it.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: transitive via cosmic-text; no maintained drop-in" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "0BSD",
+    "AGPL-3.0-only",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+# The workspace's own `path = "../lisp"` dependencies are the only versionless ones.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

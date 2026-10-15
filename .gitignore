@@ -42,6 +42,11 @@ tests/corpus/gabriel/reference/
 # path, never a `brood` file or directory elsewhere in the tree.
 /brood
 
+# A captured build transcript at the root (one was committed by accident) and the log
+# `scripts/nextest-no-flakes.sh` writes.
+/install.log
+/nextest.log
+
 # Local debug artifacts (never commit)
 .brood_crash_dump
 .brood-skip-blsp-check

@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
       - name: Compare Cargo.toml against the tags
         run: |
@@ -62,11 +62,40 @@ jobs:
     name: rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all --check
+
+  # `rust-version` in Cargo.toml is a claim; this job is what makes it true. Every other
+  # job tracks `stable`, so a newly-stabilised API used anywhere would raise the real floor
+  # with nothing saying so (it happened once: `isolate_lowest_one`, see Cargo.toml). The
+  # toolchain is read from Cargo.toml, so a deliberate bump there moves this job with it.
+  msrv:
+    name: builds on the declared minimum Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - run: cargo check --workspace --all-targets
+
+  # RustSec advisories, licenses and sources against Cargo.lock (deny.toml says what passes).
+  # A new advisory against a crate already locked turns this red with no change here — that
+  # is the point: it is the only job that learns about a dependency going bad.
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
 
   # wasm32 is the ONE target nothing else here builds, and it is not a nice-to-have: the
   # in-browser playground (`crates/playground`) is a workspace member whose only real
@@ -93,7 +122,7 @@ jobs:
     name: wasm32 (the playground target — built AND run)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -138,7 +167,7 @@ jobs:
     name: clippy (all features)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install system dependencies
         run: |
           sudo apt-get update
@@ -231,7 +260,7 @@ jobs:
     name: macOS compiles (the target only a tag used to reach)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -258,7 +287,7 @@ jobs:
     name: test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # System libraries for the --all-features surface: libasound2-dev for the
       # `audio` feature (rodio→cpal links libasound.so.2), and the windowing /
@@ -287,7 +316,7 @@ jobs:
       # ran). Bump deliberately, after it installs cleanly.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.148
 
       # The no-default-features build (no JIT, no dev-tools): keeps every
       # `#[cfg(feature = …)]` seam honest without a second full test run.
@@ -366,7 +395,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -374,7 +403,7 @@ jobs:
       # Pinned for the same reason as build-test's.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.143
+          tool: cargo-nextest@0.9.148
 
       # No --all-features here: this job only needs the default surface (the
       # engine under test), so it skips the gui/audio system-dep install above.
@@ -476,7 +505,7 @@ jobs:
 
       - name: Upload the tree-walker log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tree-walker-nextest-log
           path: tree-walker-nextest.log
@@ -499,7 +528,7 @@ jobs:
     name: examples + stress still run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -608,10 +637,10 @@ jobs:
     name: downstream smoke (bedit @ BEDIT_REF)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: brood
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: broodlang/bedit
           ref: ${{ env.BEDIT_REF }}
@@ -667,7 +696,7 @@ jobs:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -711,7 +740,7 @@ jobs:
 
       - name: Upload the breakage log (on failure)
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: breakage-log
           path: breakage.log

@@ -1,8 +1,10 @@
 [package]
 name = "brood-playground"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
 publish = false
 description = "wasm-bindgen shim exposing a Brood eval() to the browser (the in-browser playground)."
 

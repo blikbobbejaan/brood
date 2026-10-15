@@ -17610,3 +17610,23 @@ shaped so that the bad state has no path, and the comment at the site says so.
 A tooling trap found on the way: the Edit tool trims trailing whitespace from a replacement,
 so a prefix rewrite ending in `": "` produced `"name:message"` 51 times. The new test missed it
 because it splits on `": "`. Grep for the joined form after any such rewrite.
+
+## 2026-10-15 (later) — tooling: flakes fail locally, pins agree, a supply-chain gate
+
+- **`make test`/`test-light`/`test-both` run through `scripts/nextest-no-flakes.sh`**, as CI
+  does. A retry-only pass used to read green locally and red in CI.
+- **cargo-nextest 0.9.148 everywhere.** One nightly job floated on `install-action@nextest`,
+  and `make ensure-nextest` installed `latest`. The Makefile's `NEXTEST_VERSION` is now the
+  pin, and `crates/lisp/tests/tool_pins.rs` fails when any pin disagrees or floats.
+- **`.PHONY` lists every target** (it had 26 of 49). `tool_pins.rs` fails on a missing one.
+- **Actions:** checkout v7, upload-artifact v7, cache v6, action-gh-release v3. Their breaking
+  changes are the Node 24 runtime and `pull_request_target` defaults; no workflow uses those
+  triggers.
+- **New CI jobs:** `msrv` (`cargo check` on the `rust-version` Cargo.toml declares, read from
+  the file) and `deny` (`cargo-deny`: RustSec advisories, licenses, sources; `deny.toml`).
+- **`.github/dependabot.yml`:** weekly, one grouped PR for cargo and one for actions.
+- **cargo-deny's first run:** `rustls-pemfile` is unmaintained. Its job is done by rustls's
+  own `pki_types::pem`, so it is gone. The two TLS error paths it fed now have tests
+  (`tls_test.blsp`, sabotage-verified). `ttf-parser` (via cosmic-text) is ignored with its
+  advisory id. `brood-playground` declared no license; it now inherits the workspace's.
+- `install.log`, a committed build transcript, is removed and ignored.

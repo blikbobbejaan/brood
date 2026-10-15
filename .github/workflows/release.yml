@@ -33,7 +33,7 @@ jobs:
     name: tag matches the tree
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The tag, Cargo.toml and CHANGELOG must agree
         run: |
           tag="${{ github.event.inputs.tag || github.ref_name }}"
@@ -95,7 +95,7 @@ jobs:
           - os: macos-14
             target: x86_64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -147,7 +147,7 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.package.outputs.tag }}
           files: |

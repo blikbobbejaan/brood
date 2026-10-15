@@ -267,7 +267,8 @@ ropey = "1.6"
 # the thin, zero-dependency readiness layer under tokio, not Lisp-callable
 # behaviour. Non-wasm only (see the target section below) — mio's epoll/kqueue
 # reactor has no wasm backend, and the wasm net stub needs none.
-# TLS for `https` (ADR-062) — rustls/webpki-roots/rustls-pemfile/rcgen. Used only by
+# TLS for `https` (ADR-062) — rustls/webpki-roots/rcgen (PEM parsing is rustls's own
+# `pki_types::pem`; `rustls-pemfile` is unmaintained). Used only by
 # the socket layer (crate::net), so they live in the non-wasm target section below:
 # their aws-lc-rs crypto provider is a C toolchain build that has no wasm target, and
 # the wasm net stub does no TLS.
@@ -354,7 +355,6 @@ crossterm = "0.29"
 # aws-lc-rs crypto provider is a C build with no wasm target.
 rustls = "0.23"
 webpki-roots = "1"
-rustls-pemfile = "2"
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 # WASM (browser playground) entropy: enable getrandom's browser backends so
