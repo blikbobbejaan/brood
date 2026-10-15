@@ -122,8 +122,10 @@ atomic writes are gone); what is left of it is `exec_chunk`'s call-site share (I
 768 of an interpreted call, then native to native.
 The interpreted call is now 691 (devlog 2026-10-16; the quantum TLS merge, a fast-link base
 mirror and an in-IR `push_room` were measured and dropped there — the last moved `json` +2.5%).
-Native to native is ~255 once the xcall re-lowering lands; its structural lever is a direct
-i64-convention call that skips the callee's boxed wrapper.
+Native to native is ~255 once the xcall re-lowering lands; a direct i64-convention call that
+skips the callee's boxed wrapper was the structural idea, but the wrapper is 0.0% of every
+row (an i64 worker is entered once and recurses in registers) — not worth building for the
+corpus.
 
 ### Older threads
 
@@ -135,7 +137,10 @@ i64-convention call that skips the callee's boxed wrapper.
    callee entry, and `vm_run_bc`'s frame push/pop. The cheap forms were built, measured and
    dropped (devlog 2026-09-25 "(later)"); what remains is structural.
 3. **Per-message residue:** `receive_match`, `run_one`, allocation, `Ctx` install — each small;
-   count the calls before touching any of them.
+   count the calls before touching any of them. Profiled 2026-10-16 (`ring`, precise
+   sampling): `receive_match` is 9.7% of the row with no source line above 0.6% — no
+   hotspot to cut; `run_one` 3.8%, `send` 2.3%, the `Ctx` thread-local + its drop ~2.8%.
+   The interpreter running the process bodies (`exec_chunk` 30%) is thread 1's lever.
 4. **Refresh the benchmark column** once 1 or 2 lands (protocol in brood-benchmarks'
    `CLAUDE.md`). Not on this machine.
 5. **Known limit:** under the tree-walker a caught contract error's position is the raise
