@@ -17651,3 +17651,21 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
 - **Left alone, on purpose:** `test/opt?`/`opt-val` step one element at a time. The run-tests
   option list mixes bare flags (`:trace`) with key/value pairs, so a plist reader would
   misread it.
+
+## 2026-10-15 (later) — `project/source-files`; `codemod` down to one walker
+
+- **`project/source-files` and `project/test-files`.** Six tool functions each computed "the
+  project's source files" as `(apply append (map (abs-paths root *project-source-paths*)
+  collect-sources))`: `docs`, the image fingerprint, `project-check` twice (once privately
+  as `source-files`), co-located tests and `changed-files`. They now share one function. The
+  image fingerprint still sorts on top. The zero-warning checker gate caught two call sites
+  in `--suggest-sigs`/`--fix-sigs` that no test reaches.
+- **`codemod` lost 290 of its 603 lines:**
+  - The ADR-308 data-first migration (`reorder`, `data-first`, its table and four shape
+    heuristics) is finished; every downstream project requires brood ≥ 0.38.
+  - `rename-from-file` had no caller.
+  - `swap2`'s hand-written s-expression scanner is replaced by a `:swap` mode of the same
+    syntax-tree walk `cst-rename` uses. `nest rename --swap` goes through it. The scanner
+    matched `(old` inside strings and comments, did not skip `;` inside a form, and split
+    `#b"…"` in two. None of that can happen on syntax-tree nodes; tests in `codemod_test`
+    cover all three (sabotage-verified).

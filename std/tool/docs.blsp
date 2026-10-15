@@ -49,10 +49,6 @@ module's namespace-rooted globals (ADR-070) back to it."
     (setup root)
     root))
 
-;; Every source file under `root`'s source paths, in source-path order.
-(defn- docs-source-files (root)
-  (apply append (map (project/abs-paths root *project-source-paths*) project/collect-sources)))
-
 ;; --- which names a module defines (global-table delta) -----------------------
 
 ;; Names present in `after` but not `before` — the bindings a module introduced
@@ -259,7 +255,7 @@ bare-surface (prelude) name, whose references are bare already."
 (defn document-project ()
   "The Markdown documentation for the whole project (every source file under it), found from the cwd. Errors if not in a project."
   ; project/find-root / --collect-sources / setup
-  (let (files (docs-source-files (docs-setup-root "doc")))
+  (let (files (project/source-files (docs-setup-root "doc")))
     ;; One join over the whole project, not a per-file recopy of everything emitted
     ;; so far — this is the outermost of the three, so it was O(total-docs²).
     (apply str (map files (fn (f) (str (document-file f) "\n"))))))
@@ -377,7 +373,7 @@ bare-surface (prelude) name, whose references are bare already."
     {:name *project-name*
      :version *project-version*
      :guides (collect-guides root)
-     :modules (apply vector (map (docs-source-files root) model-file))}))
+     :modules (apply vector (map (project/source-files root) model-file))}))
 
 ;; The full builtin+prelude reference (for `nest docs --all`), grouped by the category
 ;; `doc-catalog` derives from each name's definition site — Math, Strings, Filesystem,

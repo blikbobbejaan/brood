@@ -517,6 +517,16 @@ path ends in `suffix`; nil when `dir` is not a directory."
 `dir` is not a directory."
   (files-ending-in dir ".blsp"))
 
+(defn source-files (root)
+  "Every `.blsp` file under the source paths of the project at `root`, in source-path
+order: the project's code, as every tool that walks it sees it."
+  (apply append (map (abs-paths root *project-source-paths*) collect-sources)))
+
+(defn test-files (root)
+  "Every `<name>_test.blsp` under the test paths of the project at `root`, in test-path
+order. Co-located tests are [[project-colocated-test-files]]."
+  (apply append (map (abs-paths root *project-test-paths*) collect-tests)))
+
 ;; A source file that carries co-located tests (ADR-225): it has a top-level
 ;; `deftest` or `describe` form. Detection is by FORM — not filename, not module
 ;; name — so a test written beside the code it exercises is found wherever it
@@ -534,8 +544,7 @@ path ends in `suffix`; nil when `dir` is not a directory."
   "The project's source files that carry co-located tests (ADR-225), so a `describe` written
 beside the code runs under `nest test` without a `tests/` file. Scans the source paths
 only; `tests/` files come from [[collect-tests]]."
-  (seq/filter (apply append (map (abs-paths root *project-source-paths*) collect-sources))
-    project-file-has-tests?))
+  (seq/filter (source-files root) project-file-has-tests?))
 
 ;; The feature a source file provides — the name of its top-level `(defmodule NAME …)`
 ;; as a string, or nil when it declares none. Read from the project's module index
@@ -634,7 +643,7 @@ them — and every source file it has never loaded at all.
 Never-loaded counts as changed on purpose: a file added since boot is exactly the kind of
 thing a long-lived image is most likely to be wrong about."
   (into []
-    (seq/filter (apply append (map (abs-paths root *project-source-paths*) collect-sources))
+    (seq/filter (source-files root)
       (fn (f) (not (= (get *loaded-mtimes* f) (or (file/mtime f) 0)))))))
 
 (defn reload-changed (root)

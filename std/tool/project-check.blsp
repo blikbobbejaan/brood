@@ -16,14 +16,12 @@ module-private defns) and the two migration aids, `--fix-renames` (ADR-304) and
 
 (defn all-files (root)
   "Every `.blsp` file the project at `root` owns — its source files plus its test files.
-The set the advisory type-checker walks for `(check)`; the sibling of [[source-files]],
-which gives the source half alone. Public because the MCP `callers` tool scans the whole
-project, and a `defn-` here is exactly the dead call site KI-67 found four of (this was
-the fifth, and it hid inside a map literal until the checker learned to walk one)."
-  (let (src-dirs (project/abs-paths root *project-source-paths*)
-        test-dirs (project/abs-paths root *project-test-paths*))
-    (append (apply append (map src-dirs project/collect-sources))
-      (apply append (map test-dirs project/collect-tests)))))
+The set the advisory type-checker walks for `(check)`; the sibling of
+[[project/source-files]], which gives the source half alone. Public because the MCP
+`callers` tool scans the whole project, and a `defn-` here is exactly the dead call site
+KI-67 found four of (this was the fifth, and it hid inside a map literal until the checker
+learned to walk one)."
+  (append (project/source-files root) (project/test-files root)))
 
 ;; ── KI-17 reachability: each file's transitive require-closure ────────────────
 ;; A file that names `mod/foo` must be able to REACH `mod`; otherwise the reference
@@ -731,12 +729,6 @@ against the fully-loaded state is also what a live image would see. Returns nil.
     (map (seq/keep nodes project-def-entry)
       (fn (entry) (project-qualify ns (first entry) (second entry))))))
 
-;; The project's source files (no tests) — the set the flat-namespace rule binds.
-(defn- source-files (root)
-  (fold (project/abs-paths root *project-source-paths*)
-    nil
-    (fn (acc d) (append acc (project/collect-sources d)))))
-
 ;; Warning strings for a *qualified* global key (`ns/name`, per
 ;; `project-file-def-names`) defined across more than one source file. Under
 ;; namespaces (ADR-065) this fires only on a genuine collision — two files in
@@ -779,7 +771,7 @@ them per open file, while every helper it needs is module-private — the altern
 `mcp` reaching for four `defn-` names, which is exactly the dead call site KI-67 found.
 Returns nil when there is nothing to report."
   (let (defined (project-file-def-names file)
-        srcs (source-files root)
+        srcs (project/source-files root)
         extracts (project-gather-extracts srcs)
         source-set (fold srcs {} (fn (m p) (%map-assoc m p true))))
     (seq/filter (project-duplicate-def-warnings extracts source-set)
@@ -1125,7 +1117,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
           ;; native parallel scan every run — cheaper than any disk cache (see
           ;; `project-gather-extracts`)
           extracts (project-gather-extracts files)
-          source-set (fold (source-files root) {} (fn (m p) (%map-assoc m p true))))
+          source-set (fold (project/source-files root) {} (fn (m p) (%map-assoc m p true))))
       (fold (seq/filter (append (project-duplicate-def-warnings extracts source-set)
                           (project-unused-private-warnings extracts))
               keep?)
@@ -1248,7 +1240,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
   "Like `check`, but checks only the project's source paths (skips `tests/`, whose files reference test-framework macros). Used by `nest run`'s pre-flight."
   (let (root (project/require-root "check-sources"))
     (project-ensure-loaded root)
-    (let (srcs (source-files root)
+    (let (srcs (project/source-files root)
           extracts (project-gather-extracts srcs)
           source-set (fold srcs {} (fn (m p) (%map-assoc m p true))))
       (project-check-duplicate-defs extracts source-set)
@@ -1649,7 +1641,7 @@ file before writing it, so a file is either correct or untouched.
 
 `nest check --suggest-sigs` prints the same set and changes nothing."
   (let (targets (if (empty? files)
-                  (source-files (project/require-root "fix-sigs"))
+                  (project/source-files (project/require-root "fix-sigs"))
                   files)
         totals (fold targets
                  [0 0]
@@ -1676,7 +1668,7 @@ file before writing it, so a file is either correct or untouched.
 lacks one, grouped by file. With `files` empty, the whole project. Writes nothing.
 Backs `nest check --suggest-sigs`."
   (let (targets (if (empty? files)
-                  (source-files (project/require-root "suggest-sigs"))
+                  (project/source-files (project/require-root "suggest-sigs"))
                   files)
         total (fold targets
                 0

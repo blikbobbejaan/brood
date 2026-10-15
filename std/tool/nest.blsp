@@ -874,14 +874,14 @@ parsed command line."
         old (first (get options :positionals))
         new (second (get options :positionals)))
     (cond
-      ;; A reversed-args rename: every 2-arg call `(OLD a b)` → `(NEW b a)`.
-      (get flags "--swap") (codemod/swap2 old new)
       ;; The context-blind whole-token replace, for a rename that must touch prose.
       (get flags "--text") (codemod/rename (list (list old new)))
       else
         (codemod/cst-rename old
           new
           (cond
+            ;; A reversed-args rename: every 2-arg call `(OLD a b)` → `(NEW b a)`.
+            (get flags "--swap") :swap
             (get flags "--refs-only") :refs-only
             (get flags "--defs-only") :defs-only
             (get flags "--in-quote") :in-quote

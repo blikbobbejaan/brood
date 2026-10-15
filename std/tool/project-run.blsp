@@ -159,8 +159,7 @@ test registrations a previous run left in a long-lived image. Returns the root."
   "The project's test corpus: `tests/**/*_test.blsp` plus every source file carrying
 co-located `deftest`/`describe` forms (ADR-225). The ONE discovery `nest test` and the
 structured runner share."
-  (append (apply append (map (project/abs-paths root *project-test-paths*) project/collect-tests))
-    (project/project-colocated-test-files root)))
+  (append (project/test-files root) (project/project-colocated-test-files root)))
 
 (defn- project-run-suite (files opts)
   "Run `files` file-by-file, each loaded inside its own rolled-back global scope, so a large

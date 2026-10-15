@@ -48,7 +48,7 @@ takes; everything else is the mechanism behind it.")
 ;; stable across directory-listing order.
 (defn source-files (root)
   "Every `.blsp` file under `root`'s source paths, sorted so the fingerprint is stable across directory-listing order."
-  (sort (apply append (map (project/abs-paths root *project-source-paths*) project/collect-sources))))
+  (sort (project/source-files root)))
 
 (defn- project-image-fingerprint (root)
   (fingerprint-of (source-files root)))

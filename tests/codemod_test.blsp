@@ -73,3 +73,23 @@
   (test "every reader-macro wrapper round-trips"
     (for (form ["'x" "`x" "`(a ~b)" "`(a ~@b)" "^:kw x" "#{a b}" "{:a 1}" "[1 2]"])
       (is (= form (cst-rename-text form "no-such-name" "zap"))))))
+
+(describe "cst-rename-text :swap — a reversed-arguments rename"
+  (test "a two-argument call is renamed with its arguments exchanged, nested calls too"
+    (assert= (cst-rename-text "(member? x (member? a b))" "member?" "includes?" :swap)
+      "(includes? (includes? b a) x)"))
+  (test "only a two-argument CALL moves — other arities, references and vectors stay"
+    (let (text "(member? a)\n(member? a b c)\n(map member? xs)\n[member? a b]")
+      (assert= (cst-rename-text text "member?" "includes?" :swap) text)))
+  (test "a comment between the arguments stays where it was"
+    (assert= (cst-rename-text "(member? a ; why\n  b)" "member?" "includes?" :swap)
+      "(includes? b ; why\n  a)"))
+  (test "the name inside a string or comment is not a call"
+    (let (text "\"(member? a b)\" ; (member? a b)\n")
+      (assert= (cst-rename-text text "member?" "includes?" :swap) text)))
+  (test "a byte-string argument moves as one argument"
+    (assert= (cst-rename-text "(member? #b\"ab\" x)" "member?" "includes?" :swap)
+      "(includes? x #b\"ab\")"))
+  (test "quoted data is left alone"
+    (let (text "'(member? a b)")
+      (assert= (cst-rename-text text "member?" "includes?" :swap) text))))
