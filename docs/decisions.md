@@ -210,102 +210,6 @@ out to already exist (`nest check` has always exited 1 on any warning).
 
 ---
 
-## ADR-299 — An operator's domain is what its multimethod covers
-
-**Context.** `+ - * /` and `< <= > >=` are operator sugar: a numeric operand takes the
-fast path, a record operand dispatches to the `num/add`…`num/div` / `compare-to`
-multimethods on both operands' identities (ADR-179). The natives therefore declared their
-domain as `number | map` — a record is a map — and every inferred signature that touched
-arithmetic rendered as `((or map number) -> (or map number))`. ADR-276 counted 237 such
-suggestions and called them noise; the playground's hover showed the same for
-`(defn foo (x) (+ 1 x 1/2))`. Sound, and unreadable: `map` here never meant "a map".
-
-**Decision.** A multimethod's parameter type is **what its methods cover**: the union of
-the nominal shape (`{__id__: :t/usd}`) of every identity with a method at that position —
-`any` if it has a `:default`, `never` if it has no method at all (`MultiInfo::domain_ty`).
-The operator sugar's domain is `number` plus the cover of the multimethods it routes to
-(`protocol::operator_domains`), read off this file's `defmethod`s and the registry at the
-root of every check, and consulted ahead of the native's declaration (`sigs::operator_sig`).
-With no such record loaded, `+` accepts `number` and nothing else; with `usd` loaded it
-accepts `number | t/usd` and says so by name — a record inside a wider term now renders
-by its identity, not as the tag `map`.
-
-The registry is the ground truth here for the same reason it is at runtime: the kernel's
-cold path looks the method up at the call, and a record without one raises `no-method`,
-so the checker's domain and the runtime's are the same set.
-
-**Addendum — the covers have names.** Once std's `datetime` registers `compare-to`, every
-function that compares got `(or number datetime/datetime datetime/date datetime/time-of-day)`
-— correct, and 63 times over, unreadable. The derived sets are now **named types**:
-`numeric` (the domain of `+`) and `ordered` (the domain of `<`), parsed in a `sig`
-(`annot`), always spelled by name in a suggestion — the listed form goes stale the day
-another record gains a method, the name does not — and by name in a diagnostic once two or
-more records are in the cover (with one, `number | t/usd` says more). `countable` joins them
-for `count`/`get`'s domain, a set the checker already had and could not spell.
-
-**Consequences.** Inferred and suggested signatures over arithmetic read `number`, or
-name the records that take part. A method registered *after* a check widens the domain on
-the next check, which is what an advisory checker over a live image already means. The
-curated `number | map` entries stay as the widest reading behind the derived one.
-
-## ADR-298 — Strict checking is a launch switch, not a second lattice
-
-**Context.** The gradual relation reads a *dynamic* value — a call result, an inferred or
-redefinable global — by overlap: `number` handed to an `int` parameter is *consistent*,
-because some materialisation fits. That is the reload-safe reading (docs/type-gating.md,
-B1) and it is why a project's check stays quiet while it is being edited. It also means the
-checker knows `(h x)` is a `number` and says nothing when an `int` was wanted — the residue
-the corpus keeps turning up as "sound but not what I meant".
-
-**Decision.** `nest check --strict` (or `BROOD_CHECK_STRICT=1`) checks a dynamic value whose
-bound is anything narrower than `any` by **inclusion**, `bound ⊆ expected`, exactly as a
-static value is checked. A bare `dynamic()` — the genuinely unknown — keeps the overlap
-reading in both modes: strictness sharpens what is known, it never invents a verdict.
-
-Strictness is a **launch setting**: the CLI flips one process-wide switch, a file check
-reads it once at its root into the checker context (`Ctx::strict`), and every relation
-call takes it from there (`GradualTy::consistent_with_mode`). Nothing in the walk consults
-the global, so a test passes the mode explicitly (`check_file_mode`) and two tests in
-parallel can never see each other's strictness. The default stays lax: a hot reload must
-not turn a green check red.
-
-**Consequences.** Opt-in precision with no new rule in the lattice — the same `⊆` the
-static branch already runs. The trade is explicit: strict mode warns on the merely-wider,
-and the merely-wider is sometimes what a redefinable global will become after reload.
-
-## ADR-297 — Synthetic code is located at the form it was expanded from
-
-**Status:** accepted; implemented 2026-08-29 (`eval/macros.rs` `stamp_synthetic`,
-`Heap::mark_synthetic` / `is_synthetic`).
-
-**Context.** Source positions are recorded by the reader, on the pairs it builds. A macro's
-result — and the expander's own desugars (pattern binders to `match*`) — are pairs the
-reader never saw, so they carried no position. Every consumer of positions inherited the
-hole: the checker's match-exhaustiveness and unreachable-clause lints, and an argument
-check inside a destructuring `let`, printed `file: warning: …` with nothing to jump to;
-a runtime error raised from generated code had no location. The one mechanism that
-existed (`rebuild_list`) copied a position only for a list the expansion walk itself
-rebuilt — a macro's output got nothing. And one lint (the unused-`let` exemption for
-match-generated bindings) had come to *rely* on the hole, reading "no position" as "is
-generated".
-
-**Decision.** After every expansion step, every unpositioned pair reachable from the
-result takes the position of the form the step expanded — the rule every mature Lisp
-uses (Racket's srcloc propagation, Clojure's meta inheritance). Sub-forms the user wrote
-are the same pair values and keep their exact positions; the walk stops at any positioned
-pair, which keeps the pass linear (children are expanded before their parent, so a
-positioned subtree is already finished). "Is generated" becomes an explicit fact —
-`Heap::mark_synthetic`, set by the same stamp — rather than an inference from a missing
-position, and the two lints that asked the inferred question now ask the fact.
-
-**Consequences.** Every checker warning carries a `line:col` (guard:
-`every_warning_carries_a_position`), coarse for generated code — the enclosing user form,
-which is the honest answer — and exact for the user's own text. Runtime errors from inside
-expansions gain a location for free. The checker's interim backfill (which had placed a
-positionless warning at its top-level form) is gone: one mechanism, in the expander, where
-the information is created. A position on quoted data inside an expansion is harmless and
-unused.
-
 ## ADR-001 — Implement the runtime in Rust (not C or Zig)
 
 **Status:** accepted.
@@ -5126,125 +5030,6 @@ in the frontend), ADR-079 (the sibling GUI-`Face` work this lands alongside), AD
 `crates/lisp/src/host/gui/backend/paint.rs` (`cursor_zones`, the frame walk) +
 `crates/lisp/src/builtins/mod.rs` (`gui-draw` parsing) + `std/editor/display.blsp`.
 
-## ADR-083 — Output ports (`*out*`/`*err*`) and an async, safe logger
-
-**Status:** accepted, shipped (2026-05-31).
-
-**Context.** `print`/`println` wrote straight to stdout via a Rust primitive.
-A host like the editor (myedit) needs output to land somewhere *other* than
-stdout — an in-editor buffer (`*Messages*`) — and the project needs a real
-**logger** that is *async* (a log call must not block the caller) and *safe* (no
-interleaved/garbled lines, no shared mutable state, an isolated failure). Both are
-the same underlying need: *write a string to a sink*, where the sink might be a
-process that owns a buffer.
-
-**Decision.**
-- **A port is a one-argument function `(fn (s) …)`** that consumes a ready string
-  — nothing more (ADR-011: the simplest thing; a richer named/introspectable port
-  value can come later behind `io-write` without changing callers). The prelude
-  declares dynamic vars **`*out*`/`*err*`** holding the current ports and routes
-  `print`/`println`/`eprint`/`eprintln` through them.
-- **Rust keeps only mechanism, split in two** (ADR-006): `%render` (args → the
-  space-joined display string, the exact text stdout would show) and
-  `%write-out`/`%write-err` (a ready string → stdout/stderr, the former honouring
-  the `with-out-str` capture stack). `*out*` defaults to `%write-out`, so
-  `with-out-str` is unaffected and the default path is unchanged. Everything else
-  — `std/io.blsp` (port constructors + `with-out`/`with-err`) and `std/log.blsp`
-  (the logger) — is Brood.
-- **The logger is one `hatch` process** (ADR-006) carrying `{:level :backends}`.
-  A log call is a fire-and-forget **cast** → async; the single process serialises
-  every write → safe (no interleaving) and isolates a crashing backend. A
-  *backend* is an `io` port + a min level + a formatter, so the logger **reuses
-  ports** rather than inventing a sink. The default logger is addressed via the
-  kernel name registry (`register`/`whereis :logger`), with a stderr fallback when
-  none runs so a log is never lost.
-- **A buffer sink is a `process-port`/`process-backend`**: the string is *sent* to
-  the buffer-owning process as `[:io-write s]` (copied, share-nothing), never a
-  mutated value — consistent with immutability (ADR-026) and why it is safe.
-
-**Rejected / deferred.** A tagged-map port value (named/introspectable — deferred
-until `nest observe` wants it); a `*logger*` dynamic override (additive, deferred
-until a consumer needs per-scope loggers); a string-collecting port (`with-out-str`
-already covers capture). Building the logger on `std/task` (one-shot thunk+timeout,
-wrong shape) or a hand-rolled receive loop (duplicates `hatch`).
-
-**Consequences.** `print` now goes through a dynamic var + indirect call (a small
-cost on a cold path, broadly worth the capability). Dynamic bindings don't reach a
-`spawn`ed child, so `with-out` + `spawn` does not redirect the child — pass it a
-port explicitly. `nest new`'s default scaffold starts a logger and documents the
-buffer route. Lives in `crates/lisp/src/builtins/mod.rs` (`%render`/`%write-out`/
-`%write-err`), `std/prelude.blsp` (`*out*`/`*err*` + the four print fns),
-`std/io.blsp`, and `std/log.blsp`; tested in `tests/io_test.blsp` +
-`tests/log_test.blsp`.
-
-## ADR-082 — Opt-in type annotations & runtime contracts (`sig` / `sig!`)
-
-**Status:** accepted, shipped (2026-05-31). (ADR-081 is the concurrent dist
-security-hardening decision; this work took the next free number.)
-
-**Context.** Brood's type system is set-theoretic and **advisory** (ADR-023/024):
-it warns on a provably-wrong call, never gates, and is engineered for zero false
-positives. The Elixir paper (Castagna/Duboc/Valim, *The Design Principles of the
-Elixir Type System* — notes in `docs/research/`) shows how such a system can be
-made *sound* without inserting casts or changing compilation: the **strong arrow**
-— a function that checks its arguments at run time can be trusted statically. We
-want that soundness *available on demand* without compromising Brood's parameters
-(greenfield, editor-serving, hot-reload, never-gate, policy-in-Brood) and without
-ever forcing a user to write a type.
-
-**Decision.** Two opt-in declaration **macros** — no new special form, no new
-primitive:
-
-- `(sig name (params… -> ret))` declares a signature the advisory checker reads
-  *first* (ahead of primitive / curated / inferred sigs), so it flags a provably
-  wrong argument or a wrong result against the declaration. A pure declaration —
-  a runtime no-op. This closes the multi-clause / branchy gap that the
-  straight-line `infer_sig` can't reach. Type grammar: base names (the `type-of`
-  spellings + the named unions `number`/`list`/`fn`), arrows `(p… -> r)`,
-  `(list E)` / `(vector E)`, and `(or A B …)`. An unrecognised type-expression is
-  dropped, never guessed.
-- `(sig! …)` declares the **same** signature *and* installs a runtime contract: it
-  rebinds `name` to a **same-arity** wrapper that checks each argument and the
-  result and **throws** on a mismatch. That makes `name` a strong arrow — applied
-  off-domain it returns an in-codomain value, fails a runtime check, or diverges;
-  it can never silently return an off-type value — so the checker's trust is now
-  *sound*. All policy in Brood: `type-matches?` + `contract--check-args` + the
-  `sig!` macro in `std/prelude.blsp`. Place it **after** the definition (it
-  rebinds the name); the preserved arity keeps introspection and the reload-arity
-  diagnostic undisturbed.
-
-The spelling is `sig`, not the `::` first sketched, because a leading `:` lexes as
-a keyword in Brood (so `(:: …)` is a keyword-headed list). Enforcement is
-**separate and opt-in**: writing a *type* never changes behaviour or cost; opting
-into a *runtime check* (`sig!`) does.
-
-**Why this, not the alternatives.** Static gating / inserted casts would break
-never-gate and hot reload. A sound-by-default checker would force annotations and
-reintroduce false positives. Leaning on a runtime check the programmer opts into
-is the only route that stays sound *and* additive *and* never in the way of live
-redefinition — and it doubles as real declared types for the editor
-(hover/completion). Unknown type-expressions accept any value, so a contract can
-never throw on a type it can't interpret (no spurious runtime failure).
-
-**Consequences.** `arglist` of a `sig!`-wrapped fn reflects the wrapper (minor
-introspection cost). Re-`def`ing a name drops its contract (re-run `sig!` to
-reinstall). The static checker also gained, alongside this: **soundness-oracle
-tests** (every `expr_ty` over-approximates the runtime value; a clean-running
-program draws no disjointness warning) and **curated sigs** for common predicates
-(`even?`/`abs`/`count`/…). Deferred (ADR-011): a `BROOD_CONTRACTS=1` switch to
-enforce *every* `sig`; element-level `(list E)` / `(vector E)` runtime checks;
-intersections / rest params in the grammar; a noise-free dead-clause lint (a naive
-version flags compiler-generated guard plumbing).
-
-**References.** ADR-023/024 (set-theoretic advisory types), ADR-078 (the
-structured `arrow`/`elem` refinements the checker reuses), ADR-011 (defer power
-features), ADR-006 (policy in Brood). Design: `docs/type-annotations.md`. Review +
-applied model: `docs/research/set-theoretic-types-in-brood.md`,
-`docs/research/elixir-set-theoretic-types.md`. Lives in
-`crates/lisp/src/types/check/annot.rs` (parser) + the `check/` walk + the contract
-macros in `std/prelude.blsp`; tests in `tests/contract_test.blsp` and the
-`soundness_oracle` module.
-
 ## ADR-081 — Node-link security: pre-auth DoS hardening now, authenticated-encrypted channel required for network nodes
 
 **Status:** accepted (2026-05-31). The hardening half is implemented. **Update
@@ -5330,6 +5115,125 @@ ADR-043 (the memory cap that is a backstop, not a substitute for this bound).
 Lives in `crates/lisp/src/dist.rs` (`HandshakeSlot`, `MAX_IN_FLIGHT_HANDSHAKES`,
 `MAX_HANDSHAKE_FRAME`), `dist/handshake.rs` (capped handshake reads), and
 `dist/wire.rs` (`read_frame_capped`).
+
+## ADR-082 — Opt-in type annotations & runtime contracts (`sig` / `sig!`)
+
+**Status:** accepted, shipped (2026-05-31). (ADR-081 is the concurrent dist
+security-hardening decision; this work took the next free number.)
+
+**Context.** Brood's type system is set-theoretic and **advisory** (ADR-023/024):
+it warns on a provably-wrong call, never gates, and is engineered for zero false
+positives. The Elixir paper (Castagna/Duboc/Valim, *The Design Principles of the
+Elixir Type System* — notes in `docs/research/`) shows how such a system can be
+made *sound* without inserting casts or changing compilation: the **strong arrow**
+— a function that checks its arguments at run time can be trusted statically. We
+want that soundness *available on demand* without compromising Brood's parameters
+(greenfield, editor-serving, hot-reload, never-gate, policy-in-Brood) and without
+ever forcing a user to write a type.
+
+**Decision.** Two opt-in declaration **macros** — no new special form, no new
+primitive:
+
+- `(sig name (params… -> ret))` declares a signature the advisory checker reads
+  *first* (ahead of primitive / curated / inferred sigs), so it flags a provably
+  wrong argument or a wrong result against the declaration. A pure declaration —
+  a runtime no-op. This closes the multi-clause / branchy gap that the
+  straight-line `infer_sig` can't reach. Type grammar: base names (the `type-of`
+  spellings + the named unions `number`/`list`/`fn`), arrows `(p… -> r)`,
+  `(list E)` / `(vector E)`, and `(or A B …)`. An unrecognised type-expression is
+  dropped, never guessed.
+- `(sig! …)` declares the **same** signature *and* installs a runtime contract: it
+  rebinds `name` to a **same-arity** wrapper that checks each argument and the
+  result and **throws** on a mismatch. That makes `name` a strong arrow — applied
+  off-domain it returns an in-codomain value, fails a runtime check, or diverges;
+  it can never silently return an off-type value — so the checker's trust is now
+  *sound*. All policy in Brood: `type-matches?` + `contract--check-args` + the
+  `sig!` macro in `std/prelude.blsp`. Place it **after** the definition (it
+  rebinds the name); the preserved arity keeps introspection and the reload-arity
+  diagnostic undisturbed.
+
+The spelling is `sig`, not the `::` first sketched, because a leading `:` lexes as
+a keyword in Brood (so `(:: …)` is a keyword-headed list). Enforcement is
+**separate and opt-in**: writing a *type* never changes behaviour or cost; opting
+into a *runtime check* (`sig!`) does.
+
+**Why this, not the alternatives.** Static gating / inserted casts would break
+never-gate and hot reload. A sound-by-default checker would force annotations and
+reintroduce false positives. Leaning on a runtime check the programmer opts into
+is the only route that stays sound *and* additive *and* never in the way of live
+redefinition — and it doubles as real declared types for the editor
+(hover/completion). Unknown type-expressions accept any value, so a contract can
+never throw on a type it can't interpret (no spurious runtime failure).
+
+**Consequences.** `arglist` of a `sig!`-wrapped fn reflects the wrapper (minor
+introspection cost). Re-`def`ing a name drops its contract (re-run `sig!` to
+reinstall). The static checker also gained, alongside this: **soundness-oracle
+tests** (every `expr_ty` over-approximates the runtime value; a clean-running
+program draws no disjointness warning) and **curated sigs** for common predicates
+(`even?`/`abs`/`count`/…). Deferred (ADR-011): a `BROOD_CONTRACTS=1` switch to
+enforce *every* `sig`; element-level `(list E)` / `(vector E)` runtime checks;
+intersections / rest params in the grammar; a noise-free dead-clause lint (a naive
+version flags compiler-generated guard plumbing).
+
+**References.** ADR-023/024 (set-theoretic advisory types), ADR-078 (the
+structured `arrow`/`elem` refinements the checker reuses), ADR-011 (defer power
+features), ADR-006 (policy in Brood). Design: `docs/type-annotations.md`. Review +
+applied model: `docs/research/set-theoretic-types-in-brood.md`,
+`docs/research/elixir-set-theoretic-types.md`. Lives in
+`crates/lisp/src/types/check/annot.rs` (parser) + the `check/` walk + the contract
+macros in `std/prelude.blsp`; tests in `tests/contract_test.blsp` and the
+`soundness_oracle` module.
+
+## ADR-083 — Output ports (`*out*`/`*err*`) and an async, safe logger
+
+**Status:** accepted, shipped (2026-05-31).
+
+**Context.** `print`/`println` wrote straight to stdout via a Rust primitive.
+A host like the editor (myedit) needs output to land somewhere *other* than
+stdout — an in-editor buffer (`*Messages*`) — and the project needs a real
+**logger** that is *async* (a log call must not block the caller) and *safe* (no
+interleaved/garbled lines, no shared mutable state, an isolated failure). Both are
+the same underlying need: *write a string to a sink*, where the sink might be a
+process that owns a buffer.
+
+**Decision.**
+- **A port is a one-argument function `(fn (s) …)`** that consumes a ready string
+  — nothing more (ADR-011: the simplest thing; a richer named/introspectable port
+  value can come later behind `io-write` without changing callers). The prelude
+  declares dynamic vars **`*out*`/`*err*`** holding the current ports and routes
+  `print`/`println`/`eprint`/`eprintln` through them.
+- **Rust keeps only mechanism, split in two** (ADR-006): `%render` (args → the
+  space-joined display string, the exact text stdout would show) and
+  `%write-out`/`%write-err` (a ready string → stdout/stderr, the former honouring
+  the `with-out-str` capture stack). `*out*` defaults to `%write-out`, so
+  `with-out-str` is unaffected and the default path is unchanged. Everything else
+  — `std/io.blsp` (port constructors + `with-out`/`with-err`) and `std/log.blsp`
+  (the logger) — is Brood.
+- **The logger is one `hatch` process** (ADR-006) carrying `{:level :backends}`.
+  A log call is a fire-and-forget **cast** → async; the single process serialises
+  every write → safe (no interleaving) and isolates a crashing backend. A
+  *backend* is an `io` port + a min level + a formatter, so the logger **reuses
+  ports** rather than inventing a sink. The default logger is addressed via the
+  kernel name registry (`register`/`whereis :logger`), with a stderr fallback when
+  none runs so a log is never lost.
+- **A buffer sink is a `process-port`/`process-backend`**: the string is *sent* to
+  the buffer-owning process as `[:io-write s]` (copied, share-nothing), never a
+  mutated value — consistent with immutability (ADR-026) and why it is safe.
+
+**Rejected / deferred.** A tagged-map port value (named/introspectable — deferred
+until `nest observe` wants it); a `*logger*` dynamic override (additive, deferred
+until a consumer needs per-scope loggers); a string-collecting port (`with-out-str`
+already covers capture). Building the logger on `std/task` (one-shot thunk+timeout,
+wrong shape) or a hand-rolled receive loop (duplicates `hatch`).
+
+**Consequences.** `print` now goes through a dynamic var + indirect call (a small
+cost on a cold path, broadly worth the capability). Dynamic bindings don't reach a
+`spawn`ed child, so `with-out` + `spawn` does not redirect the child — pass it a
+port explicitly. `nest new`'s default scaffold starts a logger and documents the
+buffer route. Lives in `crates/lisp/src/builtins/mod.rs` (`%render`/`%write-out`/
+`%write-err`), `std/prelude.blsp` (`*out*`/`*err*` + the four print fns),
+`std/io.blsp`, and `std/log.blsp`; tested in `tests/io_test.blsp` +
+`tests/log_test.blsp`.
 
 ## ADR-084 — Quasiquote is a compile/eval-time code transform, not a runtime walker
 
@@ -6639,64 +6543,6 @@ release, 5/5 debug) and the KI-1 guard `tests/concurrency_race.rs` clean 13/13
 plain-release incl. `BROOD_GC_STRESS`; full suite green. The full-migration design,
 staging, and its added acceptance bar live in `concurrency-v2.md` §7.
 
-## ADR-102 — Named timers for the `ui-run` loop
-
-**Status:** accepted (2026-06-07). Landed in `std/editor/ui.blsp` (the
-`:timers` model API + the clock-threaded `ui--loop`); tests in
-`tests/ui_test.blsp`. Builds on ADR-046 (the one render-op protocol / many
-frontends seam `ui-run` lives on) and the M4 let-it-crash render loop.
-
-**Context.** `ui-run` had a single poll timeout — `:tick-ms` (default 1000 ms) —
-and no notion of wall-clock time: a `nil` poll became a bare `:tick`, and that was
-the *only* time-driven event an app could get. The editor (brood-edit) needed
-several independent time-driven concerns at once — eldoc/diagnostics debounce
-(250 ms), the which-key panel delay (500 ms), the undo-pause boundary (600 ms),
-and consumer-paced key-repeat (300 ms then 35 ms) — and had to multiplex them all
-onto that one scalar by *overwriting* it in a priority cascade
-(`ed-post-step`: `(ed--which-key-arm (ed--arm-undo-pause (ed-arm-idle-beat m)))`),
-with a held-key short-circuit and a single ambiguous `:tick` that re-derived its
-intent from model flags. This made a **steady** animation timer impossible: a
-cursor-blink beat (530 ms) would be stomped by the next keystroke's 250/600 ms
-arming, and a held key zeroed it out entirely. Every new time-driven feature added
-another branch to the cascade.
-
-**Decision.** Declare time-driven work as *data* on the model: `:timers`, a map
-`name -> spec`, where a spec is `{:every ms}` (repeating) or `{:after ms}`
-(one-shot), optionally `:idle? true` (count from the last real input, not from
-arm/last-fire). The loop parks the poll until the soonest timer is due and folds
-`[:timer name]` when it fires — so a steady animation timer and several idle
-one-shots coexist, each on its own clock and with its own fired-event identity. The
-per-timer bookkeeping (when each appeared, when it last fired, and the last-input
-time) lives in a `clock` map threaded through `ui--loop`, **not** in the model. The
-firing math is factored into pure functions (`ui--deadline`, `ui--timer-live?`,
-`ui--poll-ms`, `ui--fire`) so it tests deterministically off a hand-supplied
-clock; a `:now-fn` model hook injects a scripted clock in tests (default `(now)`).
-Named timers are **opt-in by the `:timers` key**: a model without it keeps the
-exact legacy path (`nil` poll → bare `:tick` on the `:tick-ms` beat), so
-`std/tool/observer.blsp` and any pre-timers app are untouched.
-
-Two subtleties the implementation pins down: (1) a `nil` poll only fires a timer
-when `(now)` confirms its deadline has actually arrived — `display--poll-any`
-slices the timeout across frontends and can wake early, so firing must be
-clock-gated, not "the poll returned nil." (2) "fire once per arming/idle stretch"
-falls out of the fire predicate `(and (>= now deadline) (> deadline last-fire))`:
-a non-idle one-shot's deadline is fixed at arm-time so it never re-fires; an idle
-one-shot re-arms automatically once new input pushes its deadline past the last
-fire. Stale per-timer state is GC'd against the live timer set each iteration, so
-a removed-then-re-added timer re-arms clean.
-
-**Consequences.** The clock is wall-clock reality, so it does **not** roll back
-when the let-it-crash loop rolls the model back on a `view`/`update` throw (a key
-the user pressed stays pressed), and the `:focus` branch threads it through without
-advancing `:last-input` (a focus message from another process is not user input).
-brood-edit's eldoc/which-key/undo/key-repeat arming all migrate onto named timers,
-deleting the `:tick-ms`-overwrite cascade, and a cursor-blink the old architecture
-couldn't express becomes a one-line `{:every 530 :idle? true}` timer. The single
-`:tick-ms` knob is kept only for the legacy back-compat path. (A companion change
-in the same effort: GUI mouse presses now carry a click-chain count, enabling
-double-click-word / triple-click-line — independent of timers but part of the same
-"make the editor feel like GUI Emacs" push.)
-
 ## ADR-101 — JIT compilation: three-layer assembly model, Cranelift backend, calling convention
 
 **Status:** accepted (architecture, 2026-06-07). Implementation gated on bytecode
@@ -6772,6 +6618,64 @@ hand-rolled assembler drops AArch64 and costs more to maintain.
 forms (optional Layer 2 inline stubs; Layer 3 trampoline files) plus the Cranelift
 feature gate. No hand-written machine code per opcode. Default builds are
 unaffected. The `Value`-repr decision is flagged as a prerequisite blocker.
+
+## ADR-102 — Named timers for the `ui-run` loop
+
+**Status:** accepted (2026-06-07). Landed in `std/editor/ui.blsp` (the
+`:timers` model API + the clock-threaded `ui--loop`); tests in
+`tests/ui_test.blsp`. Builds on ADR-046 (the one render-op protocol / many
+frontends seam `ui-run` lives on) and the M4 let-it-crash render loop.
+
+**Context.** `ui-run` had a single poll timeout — `:tick-ms` (default 1000 ms) —
+and no notion of wall-clock time: a `nil` poll became a bare `:tick`, and that was
+the *only* time-driven event an app could get. The editor (brood-edit) needed
+several independent time-driven concerns at once — eldoc/diagnostics debounce
+(250 ms), the which-key panel delay (500 ms), the undo-pause boundary (600 ms),
+and consumer-paced key-repeat (300 ms then 35 ms) — and had to multiplex them all
+onto that one scalar by *overwriting* it in a priority cascade
+(`ed-post-step`: `(ed--which-key-arm (ed--arm-undo-pause (ed-arm-idle-beat m)))`),
+with a held-key short-circuit and a single ambiguous `:tick` that re-derived its
+intent from model flags. This made a **steady** animation timer impossible: a
+cursor-blink beat (530 ms) would be stomped by the next keystroke's 250/600 ms
+arming, and a held key zeroed it out entirely. Every new time-driven feature added
+another branch to the cascade.
+
+**Decision.** Declare time-driven work as *data* on the model: `:timers`, a map
+`name -> spec`, where a spec is `{:every ms}` (repeating) or `{:after ms}`
+(one-shot), optionally `:idle? true` (count from the last real input, not from
+arm/last-fire). The loop parks the poll until the soonest timer is due and folds
+`[:timer name]` when it fires — so a steady animation timer and several idle
+one-shots coexist, each on its own clock and with its own fired-event identity. The
+per-timer bookkeeping (when each appeared, when it last fired, and the last-input
+time) lives in a `clock` map threaded through `ui--loop`, **not** in the model. The
+firing math is factored into pure functions (`ui--deadline`, `ui--timer-live?`,
+`ui--poll-ms`, `ui--fire`) so it tests deterministically off a hand-supplied
+clock; a `:now-fn` model hook injects a scripted clock in tests (default `(now)`).
+Named timers are **opt-in by the `:timers` key**: a model without it keeps the
+exact legacy path (`nil` poll → bare `:tick` on the `:tick-ms` beat), so
+`std/tool/observer.blsp` and any pre-timers app are untouched.
+
+Two subtleties the implementation pins down: (1) a `nil` poll only fires a timer
+when `(now)` confirms its deadline has actually arrived — `display--poll-any`
+slices the timeout across frontends and can wake early, so firing must be
+clock-gated, not "the poll returned nil." (2) "fire once per arming/idle stretch"
+falls out of the fire predicate `(and (>= now deadline) (> deadline last-fire))`:
+a non-idle one-shot's deadline is fixed at arm-time so it never re-fires; an idle
+one-shot re-arms automatically once new input pushes its deadline past the last
+fire. Stale per-timer state is GC'd against the live timer set each iteration, so
+a removed-then-re-added timer re-arms clean.
+
+**Consequences.** The clock is wall-clock reality, so it does **not** roll back
+when the let-it-crash loop rolls the model back on a `view`/`update` throw (a key
+the user pressed stays pressed), and the `:focus` branch threads it through without
+advancing `:last-input` (a focus message from another process is not user input).
+brood-edit's eldoc/which-key/undo/key-repeat arming all migrate onto named timers,
+deleting the `:tick-ms`-overwrite cascade, and a cursor-blink the old architecture
+couldn't express becomes a one-line `{:every 530 :idle? true}` timer. The single
+`:tick-ms` knob is kept only for the legacy back-compat path. (A companion change
+in the same effort: GUI mouse presses now carry a click-chain count, enabling
+double-click-word / triple-click-line — independent of timers but part of the same
+"make the editor feel like GUI Emacs" push.)
 
 ## ADR-103 — Foreign-language parsing: one `tree-sitter-parse` builtin into the existing node shape, not an opaque tree resource
 
@@ -18767,43 +18671,6 @@ the test reads.
 `crates/**/*.rs` — the one tool built to catch this class could not see the half of it that
 caused the sessions above.
 
-## ADR-289 — A product can be covered by several alternatives together
-
-**Status:** accepted (2026-08-28)
-
-ADR-267 decomposed cross-term subtyping per tag: a term is the disjoint union of its per-tag
-projections, so placing each projection in *some* alternative decides containment. That left
-one documented gap — a single tag's refinement split across several alternatives:
-
-```lisp
-(tuple (or int string))  ⊆  (tuple int) | (tuple string)     ; true, and answered false
-```
-
-A 1-tuple holds exactly one value, so it lands in one alternative or the other; between them
-they cover it though neither does alone. Missing it costs a **false positive**, the one class
-this checker does not accept.
-
-**Decision: decide products by the set-theoretic rule**, which splits the candidates every
-possible way:
-
-```text
-(A₁ … Aₙ) ⊆ ⋃_{j∈J} (B₁ⱼ … Bₙⱼ)   ⟺   ∀ J' ⊆ J:
-    A₁ ⊆ ⋃_{j∈J'} B₁ⱼ    or    (A₂ … Aₙ) ⊆ ⋃_{j∈J∖J'} (B₂ⱼ … Bₙⱼ)
-```
-
-Exponential in the candidate count, which is safe because a `Ty` holds at most
-`MAX_TY_TERMS` alternatives; past a cap it refuses rather than enumerates.
-
-**Componentwise coverage is not product coverage**, and assuming it is is the classic error:
-`(int|string, int|string)` covers each component against `{(int,int), (string,string)}` and
-yet `(int, string)` belongs to neither. The rule above answers that correctly.
-
-**Only products.** A `vector<A>` covered by `vector<B₁> | vector<B₂>` needs `A ⊆ Bⱼ` for a
-single j — an arbitrary-length vector can hold one element outside `B₁` and another outside
-`B₂` and escape both, so `[1 "a"]` is a `vector<int|string>` and is neither. The **fixed
-arity** is exactly what makes the product case different, and both neighbours are pinned as
-tests beside the rule.
-
 ## ADR-288 — A term subtracts, so a structural complement is exact
 
 **Status:** accepted (2026-08-28)
@@ -18868,6 +18735,43 @@ truth, worse than the widening it replaced. `Display` and `to_source` both write
 represented exactly, while deciding coverage *between* arrow types still falls back to the
 single-candidate rule. Contravariance needs its own decomposition, and nothing yet asks for
 it.
+
+## ADR-289 — A product can be covered by several alternatives together
+
+**Status:** accepted (2026-08-28)
+
+ADR-267 decomposed cross-term subtyping per tag: a term is the disjoint union of its per-tag
+projections, so placing each projection in *some* alternative decides containment. That left
+one documented gap — a single tag's refinement split across several alternatives:
+
+```lisp
+(tuple (or int string))  ⊆  (tuple int) | (tuple string)     ; true, and answered false
+```
+
+A 1-tuple holds exactly one value, so it lands in one alternative or the other; between them
+they cover it though neither does alone. Missing it costs a **false positive**, the one class
+this checker does not accept.
+
+**Decision: decide products by the set-theoretic rule**, which splits the candidates every
+possible way:
+
+```text
+(A₁ … Aₙ) ⊆ ⋃_{j∈J} (B₁ⱼ … Bₙⱼ)   ⟺   ∀ J' ⊆ J:
+    A₁ ⊆ ⋃_{j∈J'} B₁ⱼ    or    (A₂ … Aₙ) ⊆ ⋃_{j∈J∖J'} (B₂ⱼ … Bₙⱼ)
+```
+
+Exponential in the candidate count, which is safe because a `Ty` holds at most
+`MAX_TY_TERMS` alternatives; past a cap it refuses rather than enumerates.
+
+**Componentwise coverage is not product coverage**, and assuming it is is the classic error:
+`(int|string, int|string)` covers each component against `{(int,int), (string,string)}` and
+yet `(int, string)` belongs to neither. The rule above answers that correctly.
+
+**Only products.** A `vector<A>` covered by `vector<B₁> | vector<B₂>` needs `A ⊆ Bⱼ` for a
+single j — an arbitrary-length vector can hold one element outside `B₁` and another outside
+`B₂` and escape both, so `[1 "a"]` is a `vector<int|string>` and is neither. The **fixed
+arity** is exactly what makes the product case different, and both neighbours are pinned as
+tests beside the rule.
 
 ## ADR-290 — Twelve tooling primitives leave the bare namespace for `reflect/` and `proc/`
 
@@ -19316,6 +19220,102 @@ second test is the non-vacuity check and states the purpose: a field-reading bod
 leaf-inlinable without the prim and **is** with it, asserted through `BROOD_INLINE_DBG`. Both
 sabotage-verified.
 
+## ADR-297 — Synthetic code is located at the form it was expanded from
+
+**Status:** accepted; implemented 2026-08-29 (`eval/macros.rs` `stamp_synthetic`,
+`Heap::mark_synthetic` / `is_synthetic`).
+
+**Context.** Source positions are recorded by the reader, on the pairs it builds. A macro's
+result — and the expander's own desugars (pattern binders to `match*`) — are pairs the
+reader never saw, so they carried no position. Every consumer of positions inherited the
+hole: the checker's match-exhaustiveness and unreachable-clause lints, and an argument
+check inside a destructuring `let`, printed `file: warning: …` with nothing to jump to;
+a runtime error raised from generated code had no location. The one mechanism that
+existed (`rebuild_list`) copied a position only for a list the expansion walk itself
+rebuilt — a macro's output got nothing. And one lint (the unused-`let` exemption for
+match-generated bindings) had come to *rely* on the hole, reading "no position" as "is
+generated".
+
+**Decision.** After every expansion step, every unpositioned pair reachable from the
+result takes the position of the form the step expanded — the rule every mature Lisp
+uses (Racket's srcloc propagation, Clojure's meta inheritance). Sub-forms the user wrote
+are the same pair values and keep their exact positions; the walk stops at any positioned
+pair, which keeps the pass linear (children are expanded before their parent, so a
+positioned subtree is already finished). "Is generated" becomes an explicit fact —
+`Heap::mark_synthetic`, set by the same stamp — rather than an inference from a missing
+position, and the two lints that asked the inferred question now ask the fact.
+
+**Consequences.** Every checker warning carries a `line:col` (guard:
+`every_warning_carries_a_position`), coarse for generated code — the enclosing user form,
+which is the honest answer — and exact for the user's own text. Runtime errors from inside
+expansions gain a location for free. The checker's interim backfill (which had placed a
+positionless warning at its top-level form) is gone: one mechanism, in the expander, where
+the information is created. A position on quoted data inside an expansion is harmless and
+unused.
+
+## ADR-298 — Strict checking is a launch switch, not a second lattice
+
+**Context.** The gradual relation reads a *dynamic* value — a call result, an inferred or
+redefinable global — by overlap: `number` handed to an `int` parameter is *consistent*,
+because some materialisation fits. That is the reload-safe reading (docs/type-gating.md,
+B1) and it is why a project's check stays quiet while it is being edited. It also means the
+checker knows `(h x)` is a `number` and says nothing when an `int` was wanted — the residue
+the corpus keeps turning up as "sound but not what I meant".
+
+**Decision.** `nest check --strict` (or `BROOD_CHECK_STRICT=1`) checks a dynamic value whose
+bound is anything narrower than `any` by **inclusion**, `bound ⊆ expected`, exactly as a
+static value is checked. A bare `dynamic()` — the genuinely unknown — keeps the overlap
+reading in both modes: strictness sharpens what is known, it never invents a verdict.
+
+Strictness is a **launch setting**: the CLI flips one process-wide switch, a file check
+reads it once at its root into the checker context (`Ctx::strict`), and every relation
+call takes it from there (`GradualTy::consistent_with_mode`). Nothing in the walk consults
+the global, so a test passes the mode explicitly (`check_file_mode`) and two tests in
+parallel can never see each other's strictness. The default stays lax: a hot reload must
+not turn a green check red.
+
+**Consequences.** Opt-in precision with no new rule in the lattice — the same `⊆` the
+static branch already runs. The trade is explicit: strict mode warns on the merely-wider,
+and the merely-wider is sometimes what a redefinable global will become after reload.
+
+## ADR-299 — An operator's domain is what its multimethod covers
+
+**Context.** `+ - * /` and `< <= > >=` are operator sugar: a numeric operand takes the
+fast path, a record operand dispatches to the `num/add`…`num/div` / `compare-to`
+multimethods on both operands' identities (ADR-179). The natives therefore declared their
+domain as `number | map` — a record is a map — and every inferred signature that touched
+arithmetic rendered as `((or map number) -> (or map number))`. ADR-276 counted 237 such
+suggestions and called them noise; the playground's hover showed the same for
+`(defn foo (x) (+ 1 x 1/2))`. Sound, and unreadable: `map` here never meant "a map".
+
+**Decision.** A multimethod's parameter type is **what its methods cover**: the union of
+the nominal shape (`{__id__: :t/usd}`) of every identity with a method at that position —
+`any` if it has a `:default`, `never` if it has no method at all (`MultiInfo::domain_ty`).
+The operator sugar's domain is `number` plus the cover of the multimethods it routes to
+(`protocol::operator_domains`), read off this file's `defmethod`s and the registry at the
+root of every check, and consulted ahead of the native's declaration (`sigs::operator_sig`).
+With no such record loaded, `+` accepts `number` and nothing else; with `usd` loaded it
+accepts `number | t/usd` and says so by name — a record inside a wider term now renders
+by its identity, not as the tag `map`.
+
+The registry is the ground truth here for the same reason it is at runtime: the kernel's
+cold path looks the method up at the call, and a record without one raises `no-method`,
+so the checker's domain and the runtime's are the same set.
+
+**Addendum — the covers have names.** Once std's `datetime` registers `compare-to`, every
+function that compares got `(or number datetime/datetime datetime/date datetime/time-of-day)`
+— correct, and 63 times over, unreadable. The derived sets are now **named types**:
+`numeric` (the domain of `+`) and `ordered` (the domain of `<`), parsed in a `sig`
+(`annot`), always spelled by name in a suggestion — the listed form goes stale the day
+another record gains a method, the name does not — and by name in a diagnostic once two or
+more records are in the cover (with one, `number | t/usd` says more). `countable` joins them
+for `count`/`get`'s domain, a set the checker already had and could not spell.
+
+**Consequences.** Inferred and suggested signatures over arithmetic read `number`, or
+name the records that take part. A method registered *after* a check widens the domain on
+the next check, which is what an advisory checker over a live image already means. The
+curated `number | map` entries stay as the widest reading behind the derived one.
+
 ## ADR-300 — `not=` is deprecated: a name must buy a capability, not a spelling
 
 **Status:** accepted (2026-08-30). **Deprecation only** — the name still works, every use is
@@ -19603,6 +19603,51 @@ rethrow. The `:trace` printed after a rethrow is the original raise's, not the r
 site's.
 
 
+## ADR-307 — `(proc/flag :max-mailbox n)`: a mailbox bound that faults the receiver, never the sender
+
+**Status:** accepted (2026-08-30). Implemented: the bound + sticky breach flag on the
+mailbox (`process/mailbox.rs`), sender-side checks at both enqueue paths (wire +
+L1-parked), receiver-side probes at the four `:max-heap` safepoints and at `receive`
+entry, the `proc/flag` arm, `E0046`. Tests: `tests/process_limit_test.blsp`.
+
+**Context.** Item F of the 2026-08-30 OTP-gap backlog. A receiver that cannot keep up
+accumulates its mailbox without bound — the one unbounded buffer in the share-nothing
+model — and the failure is the machine's, not the process's. BEAM has `max_heap_size`
+(mirrored as `:max-heap`, ADR-051-era) but no queue bound; the request for one is
+perennial there, and a queue bound is the more *legible* guard (messages, not bytes).
+
+**Decision.** Mirror `:max-heap`'s protocol exactly, on the queue axis:
+- The bound lives on the registry-reachable mailbox (like `trap_exit`) because the
+  *senders* observe it: each enqueue compares post-push length, one relaxed load when
+  unset. A breach arms a sticky `overflow_hit`; the message is **still delivered**.
+- **The sender is never blocked or errored.** A blocking send would reintroduce
+  deadlock into fire-and-forget; an erroring send would make delivery depend on the
+  receiver's backlog, which no sender can reason about. Backpressure stays a library
+  concern (`gen/call` with a timeout).
+- The **flooded process itself** raises catchable `E0046` — at the same loop-top
+  safepoints that probe `take_proc_limit_hit`, and at `receive` entry, which is where a
+  process parked on a never-matching pattern (woken per delivery, never reaching a VM
+  safepoint) reliably notices. Uncaught, it retires just the offender; the crash
+  reporter (ADR-305) names it. A handler can drain (the flag was taken; `receive`
+  works), and `(proc/flag :max-mailbox nil)` clears a pending trip — the `:max-heap`
+  rescue rule.
+- A selective-receive rebuild re-inserts already-counted messages and does not
+  re-check; only new arrivals can breach.
+
+**Alternatives rejected.** *Dropping new messages at the bound* (a lossy queue): silent
+loss is the failure mode ADR-232 exists to surface; a fault in the offender is honest.
+*Killing the receiver from the sender's thread*: the kill path exists, but a catchable
+error preserves the drain-and-recover option and matches `:max-heap`. *Blocking the
+sender*: deadlock by construction.
+
+**Consequences.** Two atomics per mailbox (16 bytes); one relaxed load per enqueue when
+unbounded. A trap-exit `[:EXIT …]` message and a monitor `[:down …]` count like any
+arrival — the bound is about queue length, not blame. `process-info` does not yet report
+the bound; add it with the observer work if wanted.
+
+
+---
+
 ## ADR-308 — Data-first argument order: one pipe, no thread-last
 
 **Status:** accepted (2026-08-30). Implemented: ~1780 call sites across 30 functions plus
@@ -19658,51 +19703,6 @@ synthesis. Those degrade to `any` silently rather than erroring. And `map` is th
 function name that is also a *type* name: `(map -> int)` in a `sig` parses as a two-argument
 call and was silently swapped in 18 signatures. Enumerate the spellings and the tooling
 first; do not discover them one suite run at a time.
-
-## ADR-307 — `(proc/flag :max-mailbox n)`: a mailbox bound that faults the receiver, never the sender
-
-**Status:** accepted (2026-08-30). Implemented: the bound + sticky breach flag on the
-mailbox (`process/mailbox.rs`), sender-side checks at both enqueue paths (wire +
-L1-parked), receiver-side probes at the four `:max-heap` safepoints and at `receive`
-entry, the `proc/flag` arm, `E0046`. Tests: `tests/process_limit_test.blsp`.
-
-**Context.** Item F of the 2026-08-30 OTP-gap backlog. A receiver that cannot keep up
-accumulates its mailbox without bound — the one unbounded buffer in the share-nothing
-model — and the failure is the machine's, not the process's. BEAM has `max_heap_size`
-(mirrored as `:max-heap`, ADR-051-era) but no queue bound; the request for one is
-perennial there, and a queue bound is the more *legible* guard (messages, not bytes).
-
-**Decision.** Mirror `:max-heap`'s protocol exactly, on the queue axis:
-- The bound lives on the registry-reachable mailbox (like `trap_exit`) because the
-  *senders* observe it: each enqueue compares post-push length, one relaxed load when
-  unset. A breach arms a sticky `overflow_hit`; the message is **still delivered**.
-- **The sender is never blocked or errored.** A blocking send would reintroduce
-  deadlock into fire-and-forget; an erroring send would make delivery depend on the
-  receiver's backlog, which no sender can reason about. Backpressure stays a library
-  concern (`gen/call` with a timeout).
-- The **flooded process itself** raises catchable `E0046` — at the same loop-top
-  safepoints that probe `take_proc_limit_hit`, and at `receive` entry, which is where a
-  process parked on a never-matching pattern (woken per delivery, never reaching a VM
-  safepoint) reliably notices. Uncaught, it retires just the offender; the crash
-  reporter (ADR-305) names it. A handler can drain (the flag was taken; `receive`
-  works), and `(proc/flag :max-mailbox nil)` clears a pending trip — the `:max-heap`
-  rescue rule.
-- A selective-receive rebuild re-inserts already-counted messages and does not
-  re-check; only new arrivals can breach.
-
-**Alternatives rejected.** *Dropping new messages at the bound* (a lossy queue): silent
-loss is the failure mode ADR-232 exists to surface; a fault in the offender is honest.
-*Killing the receiver from the sender's thread*: the kill path exists, but a catchable
-error preserves the drain-and-recover option and matches `:max-heap`. *Blocking the
-sender*: deadlock by construction.
-
-**Consequences.** Two atomics per mailbox (16 bytes); one relaxed load per enqueue when
-unbounded. A trap-exit `[:EXIT …]` message and a monitor `[:down …]` count like any
-arrival — the bound is about queue length, not blame. `process-info` does not yet report
-the bound; add it with the observer work if wanted.
-
-
----
 
 ## ADR-309 — `spawn-monitor`: the monitor side of the atomic-spawn gap
 
