@@ -112,7 +112,9 @@ through the slow path. Followed 2026-10-15 (evening): the gate is right (§7.1),
 boundary was cut instead — a native → interpreted → native round trip −23% (devlog). Left:
 the nested `vm_run_bc` trampoline per crossing and `jit_tier_in_frame`'s entry ceremony
 (older thread 2), and `fast_link_from_entry` re-checking a callee that is not native on
-every call.
+every call. A spike (devlog 2026-10-15 night) measured that resuming native code through the
+driver instead of nesting would be break-even for compute: the lever is the per-call
+constants — 768 instructions an interpreted call, 640 into native code, ~410 native to native.
 
 ### Older threads
 

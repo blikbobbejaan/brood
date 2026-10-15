@@ -17651,3 +17651,35 @@ Round trip 9.80G → 7.56G instructions (−23%) and 3.4G → 2.6G cycles at N=3
 What remains of the round trip is the trampoline itself (`vm_run_bc` per nested entry, the
 frame's arm refcount) and `jit_tier_in_frame`'s entry ceremony — handoff's "the rest of the
 VM call", structural.
+
+## 2026-10-15 (night) — spike: resuming native code through the driver does not pay for compute
+
+**The question.** Should a native → interpreted call stop nesting an interpreter run and
+instead return to the driver, which runs the callee as an ordinary frame and re-enters the
+caller's native code at the call site (a resumable native frame, BEAM's model)? The same
+design is what a compiled `receive` loop needs, so the spike asked the compute half first:
+is resuming through the driver cheaper than nesting?
+
+**Measured instead of built.** The new path is the sum of two costs that exist today, so they
+bound it. Microbenchmarks (instructions a call, min of 3, N 1M vs 3M, an interpreted driver
+kept off the JIT by a `binding`):
+
+| path | instructions |
+|---|---|
+| interpreted → interpreted call, callee body included (`BROOD_TIER=1`) | 768 |
+| interpreted → native call | 640 |
+| today's nested native → interpreted crossing, callee body included | ~1 180 |
+
+The resumed crossing is an exit from native code (~50), the driver running the callee
+(~768), and a re-entry at the call site — at least the native-entry ceremony (~200, from the
+computed-call work), plus reloading what was live across the call: carry variables, the
+per-slot register caches and the operand stack's block parameters, all of which the lowering
+keeps in SSA values and would have to write to the frame before every such exit. ~1 020–1 300
+against ~1 180: break-even. After the day's cuts the nesting is no longer the cost; the two
+per-call constants are, and the redesign pays both.
+
+**What follows.** Not built, for compute. The compute lever is the per-call constants
+themselves — 768 for an interpreted call, 640 into native code, ~410 native to native, where
+BEAM pays tens. The resumable native frame stays the design for compiled `receive` loops (it
+is the only way a native frame can park), and it is judged on the process rows, not on
+these; it will want the cheaper entry either way.
