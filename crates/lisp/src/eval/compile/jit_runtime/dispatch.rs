@@ -445,10 +445,11 @@ pub(crate) fn jit_dispatch_tail(
     // A tail call is staged by the native code ABOVE its own frame top.
     let top = base + frame_nslots;
     let n = heap.roots_len();
-    // KI-48 tripwire. `top` is derived from `frame_size_for_new_entry()`, which re-reads
-    // `inline_installed` — the KI-26 / ADR-210 anti-pattern — while the frame this native
-    // actually built was sized by whichever body was installed when it was ENTERED. If the
-    // background inline upgrade lands in that window, the two disagree and `top` points past
+    // KI-48 tripwire. `top` is the passed `frame_nslots`; it was once derived from
+    // `frame_size_for_new_entry()`, which re-reads `inline_installed` — the KI-26 / ADR-210
+    // anti-pattern — while the frame this native actually built was sized by whichever body
+    // was installed when it was ENTERED. If the background inline upgrade landed in that
+    // window, the two disagreed and `top` pointed past
     // the staged `[callee, args…]` region, which is how KI-48 was captured: `root_at(9)` on
     // a len-8 stack.
     //

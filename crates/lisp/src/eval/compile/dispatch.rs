@@ -393,7 +393,7 @@ pub(crate) fn dispatch(
                             // Tail call staged by the JIT: [callee, arg0..argN] sit
                             // above the frame at roots[base+nslots..] (see KI-48 below).  These
                             // were pushed *after* any GC that fired inside
-                            // jit_dispatch_call's safepoint (line ~8890), so they hold
+                            // jit_dispatch_call's safepoint, so they hold
                             // current-epoch handles — unlike cur_argv which was captured
                             // before jit_tier ran and may be stale.  Follow the staged
                             // call directly instead of re-running this arm on the VM.
@@ -460,7 +460,7 @@ pub(crate) fn dispatch(
                             crate::perf_bump!(jit_fast_deopt);
                             // Epoch reset (→ None), deopt (1), or preempt (2): re-run
                             // on the VM.  GC can fire during any jit_dispatch_call
-                            // safepoint (line ~8903) triggered by a sub-call inside
+                            // safepoint triggered by a sub-call inside
                             // jit_tier — even for deopt (the sub-call returns a
                             // non-int, GC fires in its safepoint, then the JIT deopts
                             // on the non-int result).  After that GC, cur_argv holds

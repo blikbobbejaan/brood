@@ -1,12 +1,13 @@
-//! Node tree-walk executor + prim exec helpers (extracted from mod.rs).
+//! Node tree-walk executor + prim exec helpers.
 use super::*;
 
-/// Int×Int-only fast path for `prim2_inline_exec`: just the fixnum arithmetic,
-/// no type dispatch, no allocation.  Marked `#[inline(always)]` because it is
-/// tiny (one `match` arm per op) — LLVM constant-folds `op` at each call site
-/// in `prim2_inline_exec` (itself always-inlined), emitting a single checked op
-/// or compare per instruction variant.  Float, BigInt, overflow, Cons, and Div
-/// all return `None`; the caller falls through to `prim_apply`.
+/// The Int×Int semantics of every inline-able op, in one table: just the fixnum
+/// arithmetic, no type dispatch, no allocation. `None` means **defer** to the real
+/// `%`-primitive, which owns every edge: i64 overflow (it promotes to a bignum, ADR
+/// bignums), ÷0 and the `i64::MIN / -1` overflow (it raises), a non-exact `%div` (it
+/// answers a `Ratio`), and the ops that need the heap. Marked `#[inline(always)]`
+/// because it is tiny — LLVM constant-folds `op` at each call site, emitting a single
+/// checked op or compare per instruction variant.
 #[inline(always)]
 pub(crate) fn prim2_int_fast(op: PrimOp, a: i64, b: i64) -> Option<Value> {
     match op {
@@ -17,17 +18,21 @@ pub(crate) fn prim2_int_fast(op: PrimOp, a: i64, b: i64) -> Option<Value> {
         PrimOp::Le => Some(Value::boolean(a <= b)),
         PrimOp::Eq => Some(Value::boolean(a == b)),
         PrimOp::Rem => a.checked_rem(b).map(Value::int),
+        // `%div` on two ints is EXACT: an even division is the Int quotient; anything
+        // else defers.
+        PrimOp::Div => match (a.checked_rem(b), a.checked_div(b)) {
+            (Some(0), Some(q)) => Some(Value::int(q)),
+            _ => None,
+        },
         PrimOp::Quot => a.checked_div(b).map(Value::int),
         PrimOp::Max => Some(Value::int(a.max(b))),
         PrimOp::Min => Some(Value::int(a.min(b))),
         PrimOp::BitAnd => Some(Value::int(a & b)),
         PrimOp::BitOr => Some(Value::int(a | b)),
         PrimOp::BitXor => Some(Value::int(a ^ b)),
-        // Cons needs heap alloc; Div may return Float — both handled by prim_apply.
-        // VectorRef needs the heap (slab index) and its operands aren't (Int, Int);
-        // handled directly in prim2_inline_exec.
+        // Cons needs heap alloc; VectorRef needs the heap (slab index) and its operands
+        // aren't (Int, Int); handled in the exec arm.
         PrimOp::Cons
-        | PrimOp::Div
         | PrimOp::VectorRef
         | PrimOp::TableHas
         | PrimOp::TableGet
@@ -44,63 +49,11 @@ pub(crate) fn prim2_int_fast(op: PrimOp, a: i64, b: i64) -> Option<Value> {
 /// by promoting to a bignum (ADR bignums) rather than erroring. Needs no heap:
 /// the inline result is a scalar, so nothing is allocated and no GC can intervene.
 pub(crate) fn prim_apply(op: PrimOp, x: Value, y: Value) -> Result<Option<Value>, LispError> {
-    let (a, b) = match (x.unpack(), y.unpack()) {
-        (ValueRef::Int(a), ValueRef::Int(b)) => (a, b),
-        _ => return Ok(prim_apply_float(op, x, y)),
-    };
-    let v = match op {
-        // On i64 overflow, defer (`Ok(None)`): the native `prim_add`/etc. redo
-        // the op in BigInt and demote, so a too-big result becomes a `BigInt`
-        // instead of an `E0041`.
-        PrimOp::Add => match a.checked_add(b) {
-            Some(r) => Value::int(r),
-            None => return Ok(None),
-        },
-        PrimOp::Sub => match a.checked_sub(b) {
-            Some(r) => Value::int(r),
-            None => return Ok(None),
-        },
-        PrimOp::Mul => match a.checked_mul(b) {
-            Some(r) => Value::int(r),
-            None => return Ok(None),
-        },
-        PrimOp::Lt => Value::boolean(a < b),
-        PrimOp::Le => Value::boolean(a <= b),
-        PrimOp::Eq => Value::boolean(a == b),
-        // Division family: handle the clean integer case inline, and **defer**
-        // (`Ok(None)`) every edge — div-by-zero, the `i64::MIN / -1` overflow,
-        // and (`%div` only) a non-exact quotient that the native returns as a
-        // Float — so the native owns those exact results and error messages.
-        PrimOp::Rem => match a.checked_rem(b) {
-            Some(r) => Value::int(r),
-            None => return Ok(None),
-        },
-        // `%div` on two ints is EXACT: an even division yields the Int quotient
-        // inline; every other case — a non-exact quotient (now a `Ratio`, not a
-        // float), the `i64::MIN / -1` overflow, and ÷0 — **defers** (`Ok(None)`) to
-        // the native `prim_div`, which owns the exact ratio result and the error.
-        PrimOp::Div => match (a.checked_rem(b), a.checked_div(b)) {
-            (Some(0), Some(q)) => Value::int(q),
-            _ => return Ok(None),
-        },
-        PrimOp::Quot => match a.checked_div(b) {
-            Some(q) => Value::int(q),
-            None => return Ok(None),
-        },
-        PrimOp::Max => Value::int(a.max(b)),
-        PrimOp::Min => Value::int(a.min(b)),
-        PrimOp::BitAnd => Value::int(a & b),
-        PrimOp::BitOr => Value::int(a | b),
-        PrimOp::BitXor => Value::int(a ^ b),
-        // Handled in the exec arm (they need `&mut Heap` / the heap); never reach here.
-        PrimOp::Cons
-        | PrimOp::VectorRef
-        | PrimOp::TableHas
-        | PrimOp::TableGet
-        | PrimOp::MapGet
-        | PrimOp::ContractAwait => return Ok(None),
-    };
-    Ok(Some(v))
+    match (x.unpack(), y.unpack()) {
+        // The one Int×Int table; its `None` is this function's defer.
+        (ValueRef::Int(a), ValueRef::Int(b)) => Ok(prim2_int_fast(op, a, b)),
+        _ => Ok(prim_apply_float(op, x, y)),
+    }
 }
 
 /// The float fast path of [`prim_apply`] (ADR-096): both operands `Int`/`Float`
@@ -190,7 +143,8 @@ pub(crate) fn prim2_inline_exec(
             crate::perf_bump!(prim2_inline);
             return Ok(Some(v));
         }
-        // Int overflow, Div, or Cons with Int operands → fall through to prim_apply.
+        // Int overflow, an inexact or ÷0 `%div`, or Cons with Int operands → the
+        // native owns it (prim_apply's Int×Int arm is this same table).
     }
     // Interned-immediate `=` fast path: `(%eq (type-of x) :kw)` is the single most
     // common non-int comparison in Brood — every type predicate (`empty?`/`nil?`/

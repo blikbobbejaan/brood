@@ -470,30 +470,21 @@ pub fn format_source(interp: &mut Interp, src: &str) -> Result<String, String> {
     result
 }
 
-/// Escape `\` and `"` so `s` can be interpolated inside a Brood string
-/// literal. Newlines and other control characters pass through verbatim —
-/// the reader's `read_string` only specials those two chars (it accepts raw
-/// newlines inside a literal, see `crates/lisp/src/syntax/reader.rs:280`).
-///
-/// Shared with `nest` / `brood-lsp` (`brood::introspect::escape_brood_string`):
-/// the one place this rule lives, since drift between sites is what would
-/// produce a "looks correct in source, breaks in some other escape sequence"
-/// bug.
-pub fn escape_brood_string(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
 /// `s` as a complete Brood string literal, quotes included — the form every Rust
 /// site that splices a user string into Brood source wants (`brood`'s bundle argv,
-/// `nest release`, the language server's quick-fixes, [`call_form`]).
+/// `nest release`, the language server's quick-fixes, [`call_form`]). The printer's own
+/// escaping ([`crate::syntax::printer::write_string_literal`]), so a spliced string
+/// reads back exactly as the printer would have written it.
 pub fn string_literal(s: &str) -> String {
-    format!("\"{}\"", escape_brood_string(s))
+    let mut out = String::new();
+    crate::syntax::printer::write_string_literal(&mut out, s);
+    out
 }
 
 /// Build a Brood call form `(fn-name "a1" "a2" …)` with each argument embedded
 /// as a properly-escaped string literal. The one place the "interpolate user
 /// strings into a Brood call" pattern lives — callers in `nest` / `brood-lsp`
-/// were each hand-writing `format!("(… \"{}\")", escape_brood_string(x))`,
+/// were each hand-writing `format!("(… \"{}\")", …)` around an escaper,
 /// which is easy to get subtly wrong (a forgotten escape, a missing space).
 /// All arguments are strings, which is what every current call site needs
 /// (paths, names, source); a literal/number arg would be a separate helper.
@@ -533,6 +524,27 @@ pub fn load_tooling_image(interp: &mut Interp, root: &str) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A spliced string reads back as itself, whatever it holds — the printer's escaping,
+    /// not a second rule that only knew `\` and `"`.
+    #[test]
+    fn a_string_literal_reads_back_as_the_string() {
+        let mut heap = crate::core::heap::Heap::new();
+        for s in [
+            "plain",
+            "a \"quoted\" \\ path",
+            "two\nlines\tand\r",
+            "esc\u{1b} nul\0 bell\u{7}",
+        ] {
+            let read = crate::syntax::reader::read_all(&mut heap, &string_literal(s))
+                .expect("a string literal reads");
+            assert_eq!(read.len(), 1, "{s:?} read as {} forms", read.len());
+            let crate::core::value::ValueRef::Str(id) = read[0].unpack() else {
+                panic!("{s:?} did not read back as a string")
+            };
+            assert_eq!(&*heap.string(id), s, "the literal changed the string");
+        }
+    }
 
     #[test]
     fn global_names_includes_prelude_and_builtins() {

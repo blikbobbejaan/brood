@@ -3,6 +3,7 @@ use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
+use std::cmp::Ordering;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -920,88 +921,64 @@ fn div_by_zero() -> LispError {
         .with_hint("guard the denominator: (when (not (= y 0)) (/ x y))")
 }
 
+/// How `a` orders against `b` — the one comparison `%lt`, `%le`, `%max` and `%min` share.
+/// `None` only for two numbers with no order (a NaN), which every caller must answer as
+/// "not less, not greater": `(<= nan 1)` is false, so `<=` matches `Less | Equal` rather
+/// than testing `!= Greater`.
+///
+/// Two integers compare directly; coercing to f64 first loses precision past 2^53
+/// (`(< 9007199254740992 9007199254740993)` would wrongly be false). `value_cmp` handles
+/// Int/BigInt exactly and the mixed int/float and BigInt/float cases. A record operand
+/// (a map with a truthy `__id__`) routes to the `Ord` multimethod; gating on the Map
+/// *tag* keeps the record check off the numeric path.
+fn ordering(heap: &mut Heap, who: &str, a: Value, b: Value) -> Result<Option<Ordering>, LispError> {
+    Ok(match (a, b) {
+        (Value::Int(x), Value::Int(y)) => Some(x.cmp(&y)),
+        _ if both_exact(a, b) => Some(heap.value_cmp(a, b)),
+        (Value::Map(_), _) | (_, Value::Map(_)) if is_record(heap, a) || is_record(heap, b) => {
+            Some(compare_multi_dispatch(heap, who, a, b)?)
+        }
+        _ => num_to_f64(heap, who, a)?.partial_cmp(&num_to_f64(heap, who, b)?),
+    })
+}
+
 pub(super) fn prim_lt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (a, b) = two(args, "<")?;
-    // Compare two integers directly; coercing to f64 first loses precision past
-    // 2^53 (e.g. `(< 9007199254740992 9007199254740993)` would wrongly be false).
-    // `value_cmp` already handles Int/BigInt exactly and the mixed int/float and
-    // BigInt/float cases.
-    let lt = match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x < y,
-        _ if both_exact(a, b) => heap.value_cmp(a, b) == std::cmp::Ordering::Less,
-        // A record operand (a map with a truthy __id__) routes to the `Ord` multimethod.
-        // Gating on the Map *tag* in the pattern keeps the record check off the numeric
-        // path — a float/decimal operand never reaches the `is_record` guard below.
-        (Value::Map(_), _) | (_, Value::Map(_)) if is_record(heap, a) || is_record(heap, b) => {
-            return Ok(Value::boolean(
-                compare_multi_dispatch(heap, "<", a, b)? == std::cmp::Ordering::Less,
-            ));
-        }
-        _ => num_to_f64(heap, "<", a)? < num_to_f64(heap, "<", b)?,
-    };
-    Ok(Value::boolean(lt))
+    Ok(Value::boolean(
+        ordering(heap, "<", a, b)? == Some(Ordering::Less),
+    ))
 }
 
 /// `(%le a b)` — `a <= b`. The `<=`/`>=` kernel: a direct primitive so the 2-arg
 /// clauses of `<=`/`>=` are pure passthroughs the ADR-069 thin-wrapper elision can
-/// reach (the old `(not (%lt …))` bodies were a nested call it couldn't). Same
-/// int-exact / float-coerce care as `%lt`.
+/// reach (the old `(not (%lt …))` bodies were a nested call it couldn't).
 pub(super) fn prim_le(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let (a, b) = two(args, "<=")?;
-    let le = match (a, b) {
-        (Value::Int(x), Value::Int(y)) => x <= y,
-        _ if both_exact(a, b) => heap.value_cmp(a, b) != std::cmp::Ordering::Greater,
-        // Map-tagged record operand → the `Ord` multimethod; the numeric path stays pure.
-        (Value::Map(_), _) | (_, Value::Map(_)) if is_record(heap, a) || is_record(heap, b) => {
-            return Ok(Value::boolean(
-                compare_multi_dispatch(heap, "<=", a, b)? != std::cmp::Ordering::Greater,
-            ));
-        }
-        _ => num_to_f64(heap, "<=", a)? <= num_to_f64(heap, "<=", b)?,
-    };
+    let le = matches!(
+        ordering(heap, "<=", a, b)?,
+        Some(Ordering::Less | Ordering::Equal)
+    );
     Ok(Value::boolean(le))
 }
 
-pub(super) fn prim_max(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let mut best = args[0]; // Arity::at_least(1) ensures non-empty
+/// The extreme of `args` (at least one, by arity): each later value replaces the best so
+/// far when the best orders `replace_when` against it.
+fn extremum(heap: &mut Heap, who: &str, args: &[Value], replace_when: Ordering) -> LispResult {
+    let mut best = args[0];
     for &v in &args[1..] {
-        let replace = match (best, v) {
-            (Value::Int(a), Value::Int(b)) => b > a,
-            _ if both_exact(best, v) => heap.value_cmp(best, v) == std::cmp::Ordering::Less,
-            // record (Map-tagged): keep the larger — replace when best sorts before v.
-            (Value::Map(_), _) | (_, Value::Map(_))
-                if is_record(heap, best) || is_record(heap, v) =>
-            {
-                compare_multi_dispatch(heap, "math/max", best, v)? == std::cmp::Ordering::Less
-            }
-            _ => num_to_f64(heap, "math/max", v)? > num_to_f64(heap, "math/max", best)?,
-        };
-        if replace {
+        if ordering(heap, who, best, v)? == Some(replace_when) {
             best = v;
         }
     }
     Ok(best)
 }
 
+pub(super) fn prim_max(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    extremum(heap, "math/max", args, Ordering::Less)
+}
+
 pub(super) fn prim_min(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let mut best = args[0]; // Arity::at_least(1) ensures non-empty
-    for &v in &args[1..] {
-        let replace = match (best, v) {
-            (Value::Int(a), Value::Int(b)) => b < a,
-            _ if both_exact(best, v) => heap.value_cmp(best, v) == std::cmp::Ordering::Greater,
-            // record (Map-tagged): keep the smaller — replace when best sorts after v.
-            (Value::Map(_), _) | (_, Value::Map(_))
-                if is_record(heap, best) || is_record(heap, v) =>
-            {
-                compare_multi_dispatch(heap, "math/min", best, v)? == std::cmp::Ordering::Greater
-            }
-            _ => num_to_f64(heap, "math/min", v)? < num_to_f64(heap, "math/min", best)?,
-        };
-        if replace {
-            best = v;
-        }
-    }
-    Ok(best)
+    extremum(heap, "math/min", args, Ordering::Greater)
 }
 
 pub(super) fn prim_eq(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {

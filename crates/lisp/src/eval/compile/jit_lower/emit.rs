@@ -373,7 +373,7 @@ pub(super) enum IntGuard {
     DivideByZero,
     /// `i64::MIN / -1`, the one signed-division overflow.
     DivideOverflow,
-    /// `%div` with a nonzero remainder (the VM answers a float).
+    /// `%div` with a nonzero remainder (the VM answers an exact `Ratio`).
     DivideInexact,
 }
 

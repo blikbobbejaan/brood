@@ -17778,3 +17778,19 @@ The tools that found it are worth reusing. `BROOD_SCOPE_DBG` printed the stuck c
 restore: its timeout branch now lists every in-flight claim and its owner. One-line traces
 in `require-one`'s rare branches did not disturb the timing; the heavy global tracers did.
 Correlating the `AGE` lines with failures was exact, 4 for 4.
+
+## 2026-10-15 (later) — one Int×Int table, one ordering, one string-literal rule, one `seqable`
+
+- **`prim2_int_fast` is the VM's single Int×Int table.** `prim_apply`'s integer arm was a
+  second copy that differed only in exact `%div`, which the table now handles.
+- **`%lt`, `%le`, `%max` and `%min` share one `ordering`.** It returns `None` for a NaN, so
+  each caller matches exactly the orderings it means. A "not greater" `<=` would answer
+  `(<= nan big)` true; the new `comparison_test` cases use a bignum operand to get past
+  every inline fast path (sabotage-verified).
+- **`printer::write_string_literal`** is the one escaping rule, and
+  `introspect::string_literal` uses it. The old two-character escaper was not wrong, since
+  the reader takes raw control characters, but it was a second rule.
+- **`seqable` is spelled once (`Ty::SEQABLE`).** `signature_types::seqable` and `sigs.rs`'s
+  local `seq` hand-listed the same six tags.
+- Stale comments fixed: a `%div` "answers a float" (it answers a `Ratio`), two line
+  numbers into a file that no longer exists, and a KI-48 note describing code since replaced.

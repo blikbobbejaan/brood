@@ -20,6 +20,35 @@ use crate::core::value::{symbol_name_ref, Value, ValueRef, VecId};
 /// readably.
 const MAX_DEPTH: u32 = crate::syntax::reader::MAX_DEPTH + 1;
 
+/// Write `s` as a Brood string literal, quotes included, that re-reads to `s` — the one
+/// escaping rule, shared by the printer and every Rust site that splices a string into
+/// Brood source (`introspect::string_literal`).
+pub fn write_string_literal(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            // Match the reader's own spellings for ESC and NUL
+            // (scanner::scan_string_body decodes `\e`/`\0`); any *other* C0 control
+            // char (and DEL) has no named escape, so emit the reader's `\u{H..H}` form
+            // rather than a raw byte. Readable output must round-trip.
+            '\u{1b}' => out.push_str("\\e"),
+            '\0' => out.push_str("\\0"),
+            c if c.is_control() => {
+                out.push_str("\\u{");
+                out.push_str(&format!("{:x}", c as u32));
+                out.push('}');
+            }
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+}
+
 pub fn print(heap: &Heap, v: Value) -> String {
     let mut out = String::new();
     write_value(&mut out, heap, v, true, 0);
@@ -88,31 +117,7 @@ fn write_value(out: &mut String, heap: &Heap, v: Value, readable: bool, depth: u
         ValueRef::Str(id) => {
             let s = heap.string(id);
             if readable {
-                out.push('"');
-                for c in s.chars() {
-                    match c {
-                        '"' => out.push_str("\\\""),
-                        '\\' => out.push_str("\\\\"),
-                        '\n' => out.push_str("\\n"),
-                        '\t' => out.push_str("\\t"),
-                        '\r' => out.push_str("\\r"),
-                        // Match the reader's own spellings for ESC and NUL
-                        // (scanner::scan_string_body decodes `\e`/`\0`); any
-                        // *other* C0 control char (and DEL) has no named
-                        // escape, so emit the reader's `\u{H..H}` form rather
-                        // than a raw byte. The result re-reads to the same
-                        // string — readable output must round-trip.
-                        '\u{1b}' => out.push_str("\\e"),
-                        '\0' => out.push_str("\\0"),
-                        c if c.is_control() => {
-                            out.push_str("\\u{");
-                            out.push_str(&format!("{:x}", c as u32));
-                            out.push('}');
-                        }
-                        _ => out.push(c),
-                    }
-                }
-                out.push('"');
+                write_string_literal(out, &s);
             } else {
                 out.push_str(&s);
             }

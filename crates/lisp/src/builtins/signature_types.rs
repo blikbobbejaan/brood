@@ -66,15 +66,8 @@ pub(crate) const seq_items_ty: Ty = Ty::of_tags(&[Tag::Nil, Tag::Pair, Tag::Vect
 // `first`/`rest` additionally walk a **set** (as its elements) and a **map** (as
 // its `[k v]` pairs), matching `seq`/`map`/`fold`/`last`. Kept separate from
 // `seq` so widening the head/tail pair doesn't silently widen every other
-// sequence primitive's domain.
-pub(crate) const seqable: Ty = Ty::of_tags(&[
-    Tag::Nil,
-    Tag::Pair,
-    Tag::Vector,
-    Tag::Bytes,
-    Tag::Set,
-    Tag::Map,
-]);
+// sequence primitive's domain. The checker's own `seqable` (`Ty::SEQABLE`), not a copy.
+pub(crate) const seqable: Ty = Ty::SEQABLE;
 pub(crate) const callable: Ty = Ty::of_tags(&[Tag::Fn, Tag::Native]);
 // An **iolist** (ADR-139): a string, a `bytes`, a byte int 0–255, or an
 // arbitrarily nested list/vector of iolists (nil = empty). The lattice can't

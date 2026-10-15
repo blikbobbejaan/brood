@@ -54,16 +54,10 @@ static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     // so the higher-order combinators accept maps too — without this the
     // checker would warn on `(map f some-map)` even though it runs fine. `bytes`
     // is likewise seqable — `count`/`first`/`rest`/`map`/`every?` all iterate its
-    // octets at runtime — so it belongs in the domain too.
+    // octets at runtime — so it belongs in the domain too. That set is `Ty::SEQABLE`,
+    // the type `seqable` names in a `sig`; spelled once, there.
     #[allow(non_upper_case_globals)]
-    const seq: Ty = Ty::of_tags(&[
-        Tag::Nil,
-        Tag::Pair,
-        Tag::Vector,
-        Tag::Map,
-        Tag::Set,
-        Tag::Bytes,
-    ]);
+    const seq: Ty = Ty::SEQABLE;
     #[allow(non_upper_case_globals)]
     const bool_ty: Ty = Ty::of(Tag::Bool);
     // `count` accepts a string, map, bytes, or sequence (the prelude

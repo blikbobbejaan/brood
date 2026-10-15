@@ -47,7 +47,7 @@ pub(crate) enum DeoptReason {
     IntDivideByZero = 16,
     /// Int `rem`/`quot`/`%div` of `i64::MIN` by `-1`.
     IntDivideOverflow = 17,
-    /// Int `%div` with a nonzero remainder (the VM answers a float).
+    /// Int `%div` with a nonzero remainder (the VM answers an exact `Ratio`).
     IntDivideInexact = 18,
     /// Float `/` by zero (the VM raises).
     FloatDivideByZero = 19,

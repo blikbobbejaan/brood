@@ -21,12 +21,9 @@ fn tempdir(tag: &str) -> std::path::PathBuf {
     p
 }
 
-/// Escape the path for a Brood string literal.
+/// The path as a Brood string literal.
 fn lit(p: &std::path::Path) -> String {
-    format!(
-        "\"{}\"",
-        brood::introspect::escape_brood_string(&p.to_string_lossy())
-    )
+    brood::introspect::string_literal(&p.to_string_lossy())
 }
 
 #[test]

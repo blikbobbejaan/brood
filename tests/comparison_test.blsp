@@ -32,7 +32,23 @@
     (is (= [1 2] [1 2]))
     (is (= {:a 1} {:a 1})))
   (test "= on NaN is false, including against itself (IEEE)"
-    (is (not (= nan nan)))))
+    (is (not (= nan nan))))
+  ;; `<`, `<=`, `max` and `min` share one ordering, where NaN orders as nothing. A shared
+  ;; `<=` written as "not greater" would answer true here.
+  (test "every ordering against NaN is false, and max/min keep what they had"
+    (is (not (< nan 1)))
+    (is (not (< 1 nan)))
+    (is (not (<= nan 1)))
+    (is (not (<= 1 nan)))
+    (is (not (>= nan 1)))
+    ;; A bignum operand is past every inline fast path, so these reach the primitive.
+    (is (not (<= nan 100000000000000000000)))
+    (is (not (<= 100000000000000000000 nan)))
+    (is (not (< nan 100000000000000000000)))
+    (assert= (math/max 1 nan) 1)
+    (assert= (math/min 1 nan) 1)
+    (assert= (math/max 1.5 2 0.5) 2)
+    (assert= (math/min 1.5 2 0.5) 0.5)))
 
 (describe "compare coerces across the numeric tower"
   (test "numerically equal values across types compare equal"
