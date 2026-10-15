@@ -1516,6 +1516,28 @@ impl Value {
         // bytes after it are padding, which an integer read of the whole word would touch.
         unsafe { *(self as *const Value as *const u8) }
     }
+
+    /// The value as the three machine words native code moves it as (`repr(C, u8)`, 24
+    /// bytes, pinned by `value_layout_is_stable_for_the_jit`).
+    ///
+    /// # Safety
+    /// The words include the padding after the discriminant byte, which is not guaranteed
+    /// initialised; reading it as an integer is only for what native code does anyway and
+    /// for diagnostics (the debug dumps print these words). Never branch on the padding.
+    #[cfg(feature = "jit")]
+    pub(crate) unsafe fn raw_words(self) -> [i64; 3] {
+        std::mem::transmute::<Value, [i64; 3]>(self)
+    }
+
+    /// The value native code hands back as three words.
+    ///
+    /// # Safety
+    /// `words` must be the bytes of a real `Value` (read out of one by native code or by
+    /// [`raw_words`](Self::raw_words)) — any other bit pattern is an invalid enum.
+    #[cfg(feature = "jit")]
+    pub(crate) unsafe fn from_raw_words(words: [i64; 3]) -> Value {
+        std::mem::transmute::<[i64; 3], Value>(words)
+    }
 }
 
 /// JIT layout constants for [`Value`] (`#[repr(C, u8)]`). JIT codegen hardcodes these

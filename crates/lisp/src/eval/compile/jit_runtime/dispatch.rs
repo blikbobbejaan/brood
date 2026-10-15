@@ -54,7 +54,8 @@ pub(crate) fn jit_dispatch_call(
         for k in stage_base..n {
             let v = heap.root_at(k);
             if let Some((kind, g, e)) = heap.dbg_value_stale(v) {
-                let raw = unsafe { std::mem::transmute::<Value, [i64; 3]>(v) };
+                // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
+                let raw = unsafe { v.raw_words() };
                 eprintln!(
                     "[jit-staged-stale] STALE {kind} (gen {g} != live {e}) staged at roots[{k}] \
                      BY arm '{}' for call to '{}' at {} (site={site}, argc={argc}); raw=[{:#x},{:#x},{:#x}]",

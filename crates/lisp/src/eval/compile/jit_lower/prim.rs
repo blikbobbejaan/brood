@@ -96,7 +96,9 @@ pub(super) fn emit_prim1(
                 let not_ok = b.create_block();
                 b.ins().brif(status, not_ok, &[], ok, &[]);
                 b.switch_to_block(not_ok);
-                let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+                let is_err =
+                    b.ins()
+                        .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
                 let deopt_reason = deopt_code(b, DeoptReason::PairAccessorDeclined);
                 b.ins().brif(
                     is_err,
@@ -261,7 +263,9 @@ pub(super) fn emit_prim1(
                 let not_ok = b.create_block();
                 b.ins().brif(status, not_ok, &[], ok, &[]);
                 b.switch_to_block(not_ok);
-                let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+                let is_err =
+                    b.ins()
+                        .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
                 let deopt_reason = deopt_code(b, DeoptReason::IsEmptyDeclined);
                 b.ins().brif(
                     is_err,
@@ -622,7 +626,9 @@ pub(super) fn emit_prim3_callback(
     let slow = b.create_block();
     b.ins().brif(status, slow, &[], cont, &[]);
     b.switch_to_block(slow);
-    let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+    let is_err = b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
     let deopt_reason = deopt_code(b, reason);
     b.ins().brif(
         is_err,
@@ -782,7 +788,9 @@ pub(super) fn emit_prim3_table_put(
         let slow = b.create_block();
         b.ins().brif(status, slow, &[], merge, &[]);
         b.switch_to_block(slow);
-        let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+        let is_err = b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
         let deopt_reason = deopt_code(b, DeoptReason::HoistedTablePutDeclined);
         b.ins()
             .brif(is_err, error, &[], deopt, &[BlockArg::Value(deopt_reason)]);
@@ -804,7 +812,9 @@ pub(super) fn emit_prim3_table_put(
         let slow = b.create_block();
         b.ins().brif(status, slow, &[], cont, &[]);
         b.switch_to_block(slow);
-        let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+        let is_err = b
+            .ins()
+            .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
         let deopt_reason = deopt_code(b, DeoptReason::TablePutDeclined);
         b.ins()
             .brif(is_err, error, &[], deopt, &[BlockArg::Value(deopt_reason)]);

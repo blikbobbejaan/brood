@@ -1189,7 +1189,8 @@ pub(crate) fn jit_verify_staged(
         let v = heap.root_at(k);
         if crate::diagnostics::debug_flags::jit_verify() {
             if let Some((kind, g, e)) = heap.dbg_value_stale(v) {
-                let raw = unsafe { std::mem::transmute::<Value, [i64; 3]>(v) };
+                // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
+                let raw = unsafe { v.raw_words() };
                 eprintln!(
                     "[jit-verify] STALE {kind} (gen {g} != live {e}) staged at roots[{k}] BY arm \
                      '{}' for call to '{head_name}' (site={site}, argc={argc}); raw=[{:#x},{:#x},{:#x}]",
@@ -1199,7 +1200,8 @@ pub(crate) fn jit_verify_staged(
             }
         }
         if log_args {
-            let raw = unsafe { std::mem::transmute::<Value, [i64; 3]>(v) };
+            // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
+            let raw = unsafe { v.raw_words() };
             eprintln!(
                 "[jit-verify-fn] BY arm '{}' call to '{head_name}' (site={site}) arg[{}] = {} raw=[{:#x},{:#x},{:#x}]",
                 crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),

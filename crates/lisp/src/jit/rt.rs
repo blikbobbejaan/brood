@@ -131,13 +131,25 @@ pub unsafe extern "C" fn brood_rt_gc_safepoint(heap: *mut Heap) {
 // can't go stale mid-`cons`; no `roots` is touched, so `roots_base` stays valid.
 #[inline]
 unsafe fn words_to_val(w0: i64, w1: i64, w2: i64) -> crate::core::value::Value {
-    std::mem::transmute::<[i64; 3], crate::core::value::Value>([w0, w1, w2])
+    crate::core::value::Value::from_raw_words([w0, w1, w2])
 }
 
-/// The answering half of the fallback status protocol the inline-prim callbacks share
-/// ([`brood_rt_first`], [`brood_rt_table_has`], …): `Ok` writes `*out` and returns 0; `Err`
-/// parks the error in `jit_pending_error` and returns 2, so the arm exits via its error
-/// block. (Status 1, deopt, is each caller's own early return.)
+/// The status a value-producing callback returns to native code — one protocol for all of
+/// them, so a lowering site reads the same number the same way whichever callback it called.
+/// (`brood_rt_equal` answers a boolean in its status and the tick/link callbacks return
+/// control signals; those are different contracts, documented where they live.)
+pub(crate) mod status {
+    /// `*out` holds the answer.
+    pub(crate) const DONE: i64 = 0;
+    /// Declined: an operand outside what the callback handles natively. The arm deopts and
+    /// the VM computes the exact result (or the exact error).
+    pub(crate) const DEOPT: i64 = 1;
+    /// A real error is parked in `jit_pending_error`; the arm exits via its error block.
+    pub(crate) const ERROR: i64 = 2;
+}
+
+/// The answering half of the [`status`] protocol: `Ok` writes `*out` and returns DONE; `Err`
+/// parks the error and returns ERROR. (DEOPT is each caller's own early return.)
 ///
 /// # Safety
 /// `out` must be a writable `*mut Value`.
@@ -150,12 +162,31 @@ unsafe fn answer_or_park(
     match result {
         Ok(value) => {
             *out = value;
-            0
+            status::DONE
         }
         Err(error) => {
             heap.jit_pending_error = Some(error);
-            2
+            status::ERROR
         }
+    }
+}
+
+/// `first` / `rest` / `empty?` of a value the inline fast path declined: the builtin's
+/// non-evaluating form answers, or `None` (a lazy seq-view, which needs the evaluator) is a
+/// DEOPT.
+///
+/// # Safety
+/// `out` must be a writable `*mut Value`; the word triple is bytes read out of a real `Value`.
+unsafe fn unary_fallback(
+    heap: *mut Heap,
+    out: *mut crate::core::value::Value,
+    words: [i64; 3],
+    without_eval: fn(&mut Heap, crate::core::value::Value) -> Option<crate::error::LispResult>,
+) -> i64 {
+    let h = &mut *heap;
+    match without_eval(h, words_to_val(words[0], words[1], words[2])) {
+        None => status::DEOPT,
+        Some(result) => answer_or_park(h, out, result),
     }
 }
 
@@ -296,11 +327,7 @@ pub unsafe extern "C" fn brood_rt_first(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    let h = &mut *heap;
-    match crate::builtins::first_without_eval(h, words_to_val(w0, w1, w2)) {
-        None => 1,
-        Some(result) => answer_or_park(h, out, result),
-    }
+    unary_fallback(heap, out, [w0, w1, w2], crate::builtins::first_without_eval)
 }
 
 /// `rest` of a non-pair — see [`brood_rt_first`].
@@ -315,11 +342,7 @@ pub unsafe extern "C" fn brood_rt_rest(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    let h = &mut *heap;
-    match crate::builtins::rest_without_eval(h, words_to_val(w0, w1, w2)) {
-        None => 1,
-        Some(result) => answer_or_park(h, out, result),
-    }
+    unary_fallback(heap, out, [w0, w1, w2], crate::builtins::rest_without_eval)
 }
 
 /// `empty?` of a non-nil, non-pair — the inline `empty?`'s tag-check miss, as a
@@ -339,11 +362,12 @@ pub unsafe extern "C" fn brood_rt_is_empty(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    let h = &mut *heap;
-    match crate::builtins::is_empty_without_eval(h, words_to_val(w0, w1, w2)) {
-        None => 1,
-        Some(result) => answer_or_park(h, out, result),
-    }
+    unary_fallback(
+        heap,
+        out,
+        [w0, w1, w2],
+        crate::builtins::is_empty_without_eval,
+    )
 }
 
 /// Byte pointer to the LOCAL nursery pair slab (`Vec<(Value, Value)>`). Called once at JIT
@@ -829,8 +853,8 @@ pub unsafe extern "C" fn brood_rt_in_call_journal(
 /// The args live in non-GC-visible stack memory: sound under the existing native
 /// contract (a native receives unrooted copies — today's `SmallVec` argv has the
 /// identical exposure — and must root anything it holds across its own evals).
-/// Status: 0 = done (`*out` holds the result), 1 = error parked in
-/// `jit_pending_error`.
+/// Status ([`status`]): DONE (`*out` holds the result) or ERROR (parked in
+/// `jit_pending_error`); the lowering branches to the error block on any nonzero.
 ///
 /// # Safety
 /// `heap` live; `out` writable; `func` a valid `NativeFnPtr`; `args` points to
@@ -907,16 +931,9 @@ pub unsafe extern "C" fn brood_rt_call_native_fl(
         Ok(v) if crate::core::alloc::take_soft_attention() => soft_limit_check(h).map(|()| v),
         r => r,
     };
-    match r {
-        Ok(v) => {
-            *out = v;
-            0
-        }
-        Err(e) => {
-            h.jit_pending_error = Some(e);
-            1
-        }
-    }
+    // ERROR, not the DEOPT a builtin's own failure would read as under the shared status
+    // protocol: a builtin's error is the answer, and the arm exits via its error block.
+    answer_or_park(h, out, r)
 }
 
 /// The soft-limit half of the VM's `quantum_checks`, for a native arm: measure this process
@@ -1074,7 +1091,7 @@ pub unsafe extern "C" fn brood_rt_const_load(
         };
         if let Some((kind, region)) = bad {
             if region == crate::core::value::LOCAL {
-                let raw = std::mem::transmute::<crate::core::value::Value, [i64; 3]>(v);
+                let raw = v.raw_words();
                 eprintln!(
                     "[const-garbage] const_load returned a LOCAL {kind} handle (cv={:p}) raw=[{:#x},{:#x},{:#x}] — \
                      a const must be RUNTIME/PRELUDE; likely a freed/stale ConstVal chunk",

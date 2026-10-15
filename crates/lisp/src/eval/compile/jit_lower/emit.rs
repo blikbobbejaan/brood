@@ -1495,7 +1495,9 @@ pub(super) fn table_prim(
     let slow = b.create_block();
     b.ins().brif(status, slow, &[], cont, &[]);
     b.switch_to_block(slow);
-    let is_err = b.ins().icmp_imm_s(IntCC::Equal, status, 2);
+    let is_err = b
+        .ins()
+        .icmp_imm_s(IntCC::Equal, status, crate::jit::rt::status::ERROR);
     let deopt_reason = deopt_code(b, DeoptReason::TableReadDeclined);
     b.ins().brif(
         is_err,
