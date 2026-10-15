@@ -104,7 +104,7 @@ are ignored. One optional space after the colon is stripped."
   (let (i (index-of line ":")
         field (if (< i 0) line (string/substring line 0 i))
         raw (if (< i 0) "" (string/substring line (+ i 1) (string/length line)))
-        val (if (string/starts-with? raw " ") (string/substring raw 1 (string/length raw)) raw))
+        val (string/drop-prefix raw " "))
     (cond
       (= field "data")
         (assoc ev

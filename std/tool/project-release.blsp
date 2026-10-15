@@ -151,18 +151,14 @@ paths resolve the way they do when that dep is the project being built."
     (when dir
       ;; `path/dirname` of a trailing-slash path answers the path itself, so the slash
       ;; has to come off before the parent can be taken.
-      (path/dirname (if (string/ends-with? dir "/")
-                      (string/substring dir 0 (dec (string/length dir)))
-                      dir)))))
+      (path/dirname (string/drop-suffix dir "/")))))
 
 (defn- project-bundle-name (dir path)
   (let (prefix (if (string/ends-with? dir "/") dir (str dir "/"))
         rel (if (string/starts-with? path prefix)
-              (string/substring path (string/length prefix) (string/length path))
+              (string/drop-prefix path prefix)
               (path/basename path)))
-    (if (string/ends-with? rel ".blsp")
-      (string/substring rel 0 (- (string/length rel) 5))
-      rel)))
+    (string/drop-suffix rel ".blsp")))
 
 (defn bundle-collect (root)
   "Collect a project's shippable source for `nest release`: a flat list of
@@ -544,7 +540,7 @@ modules it embeds, its size, and the target triple when there was one.
   ;; The newest mtime across the project's own sources, or nil when none can be read. This is
   ;; what "built" MEANS for a run from source: `nest run` compiles nothing, so the only honest
   ;; answer to "how old is the code I am running" is when that code last changed.
-  (let (times (seq/keep (try (project-image/source-files root) (catch _ '()))
+  (let (times (seq/keep (try (project/source-files root) (catch _ '()))
                 (fn (f) (file/mtime f))))
     (if (empty? times) nil (fold times 0 (fn (a b) (if (> b a) b a))))))
 

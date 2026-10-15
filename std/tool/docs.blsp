@@ -430,9 +430,7 @@ bare-surface (prelude) name, whose references are bare already."
 ;; A guide's display title from its filename: `getting-started.md` -> `Getting started`.
 (defn- guide-title (path)
   (let (file (last (string/split path "/"))
-        stem (if (string/ends-with? file ".md")
-               (string/substring file 0 (- (string/length file) 3))
-               file))
+        stem (string/drop-suffix file ".md"))
     (string/capitalize (string/replace stem "-" " "))))
 
 ;; Every `guides/*.md` under the project root, rendered — `[{:title :html}]`, sorted by

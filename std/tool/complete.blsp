@@ -331,9 +331,7 @@ suggestions\", never to an error on the user's command line."
     nil))
 
 (defn- complete-strip-extension (filename)
-  (if (string/ends-with? filename ".blsp")
-    (string/substring filename 0 (- (string/length filename) 5))
-    filename))
+  (string/drop-suffix filename ".blsp"))
 
 ;; --- dispatch -----------------------------------------------------------------
 ;; One entry point so `nest` needs only a single eval per completion request, and

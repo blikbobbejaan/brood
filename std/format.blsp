@@ -92,7 +92,7 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ;; is part of the node. We strip it before emitting so glue logic owns the
 ;; spacing between blocks.
 (defn- comment-strip-trailing-nl (text)
-  (if (string/ends-with? text "\n") (string/substring text 0 (dec (string/length text))) text))
+  (string/drop-suffix text "\n"))
 
 ;; ---- header table -----------------------------------------------------------
 ;; The number of args that ride on the same line as the head when a list breaks.

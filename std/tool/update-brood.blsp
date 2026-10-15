@@ -38,7 +38,7 @@ or a failure for a platform no release is built for.
 
 (defn- version-parts (version)
   ;; "v0.34.0" / "0.34.0" / "0.34.0-rc1" → [0 34 0]; a part that is not a number counts 0.
-  (let (plain (if (string/starts-with? version "v") (string/substring version 1) version)
+  (let (plain (string/drop-prefix version "v")
         core (first (string/split plain "-")))
     (vec (map (string/split core ".")
            (fn (part) (let (n (string/->number part)) (if (int? n) n 0)))))))

@@ -866,10 +866,7 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
     (if (or (nil? f) (nil? l)) "" (str (test-relative-path f) ":" l))))
 
 (defn- test-relative-path (path)
-  (let (here (str (file/cwd) "/"))
-    (if (string/starts-with? path here)
-      (string/substring path (string/length here) (string/length path))
-      path)))
+  (string/drop-prefix path (str (file/cwd) "/")))
 
 ;; --- colour --------------------------------------------------------------------
 ;; ANSI only when stdout is an interactive terminal, so a piped run, a CI log, or an

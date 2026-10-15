@@ -143,10 +143,13 @@ rewritten text."
                 (not in-quote?)
                 (= head-name old)
                 (= (count significant) 3))
+        ;; `swap?` holds exactly three significant nodes, so the defaults never apply.
+        first-argument (nth positions 1 0)
+        second-argument (nth positions 2 0)
         kids (if swap?
                (-> kids
-                 (assoc (nth positions 1) (nth kids (nth positions 2)))
-                 (assoc (nth positions 2) (nth kids (nth positions 1))))
+                 (assoc first-argument (nth kids second-argument))
+                 (assoc second-argument (nth kids first-argument)))
                kids))
     (apply str
       (map (range 0 (count kids))

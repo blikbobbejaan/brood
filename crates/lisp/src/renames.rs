@@ -49,7 +49,13 @@ pub const RENAMES: &[(&str, &str, &str)] = &[
     // ADR-325 — `std/tool/project.blsp` split into `project` (the model), `project-image`,
     // `project-check`, `project-run` and `project-release`; every public name that left
     // the model module is pointed at its new home (bedit's `about.blsp` was the first
-    // caller to hit `project/build-info`).
+    // caller to hit `project/build-info`). `source-files` went back: it is the model's
+    // question, which six tools were each answering by hand, and the image only sorts it.
+    (
+        "project-image/source-files",
+        "project/source-files",
+        "ADR-325",
+    ),
     (
         "project/*check-cache-version*",
         "project-check/*check-cache-version*",
@@ -240,11 +246,6 @@ pub const RENAMES: &[(&str, &str, &str)] = &[
     (
         "project/setup-lazy-image",
         "project-image/setup-lazy-image",
-        "ADR-325",
-    ),
-    (
-        "project/source-files",
-        "project-image/source-files",
         "ADR-325",
     ),
     (

@@ -448,6 +448,6 @@ of those loads the entry point, which is where a stale dependency actually dies 
                  "/"
                  (->string fname)
                  " ("
-                 (count (project-image/source-files root))
+                 (count (project/source-files root))
                  " source files loaded, nothing run)"))
       0)))

@@ -17807,3 +17807,17 @@ Correlating the `AGE` lines with failures was exact, 4 for 4.
   every other RUNTIME accessor.
 - **Scheduler workers are named `brood-worker-N`** on the normal spawn, not only on the
   fallback. Overflow drainers are named too.
+
+## 2026-10-15 (later) — `string/drop-prefix` / `drop-suffix`; two reds from earlier today
+
+- **`string/drop-prefix` and `string/drop-suffix`** replace eleven hand-written
+  "`starts-with?` then `substring` past it" strips across std/ (stream, sse, tempo, format,
+  docs, complete, test, update-brood, project-release).
+- **Two gates went red with `e339d3cc` and are green again.**
+  - `renames_test`: the new `project/source-files` reused a name the ledger listed as
+    retired. There is now one public name, `project/source-files`; `project-image` sorts
+    it privately, and the ledger entry points the other way.
+  - `nest check --strict`: the `:swap` rewrite in `codemod.blsp` passed
+    `(nth positions 2)`, which may be nil, as an index.
+  Neither red was pushed. Before a push now: `make prepush` over the whole unpushed range,
+  not just the tests the edited files name.

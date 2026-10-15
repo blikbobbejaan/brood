@@ -44,14 +44,13 @@ takes; everything else is the mechanism behind it.")
 ;; binary's build id. Any edit, add or delete changes it, as does a new `brood`.
 ;; Cheap — one `stat` per file, ~20 ms for 16 000 files — and it never says "fresh"
 ;; for a tree that has changed, which is the only direction that matters.
-;; Every source file under the project's source paths, sorted so the fingerprint is
-;; stable across directory-listing order.
-(defn source-files (root)
-  "Every `.blsp` file under `root`'s source paths, sorted so the fingerprint is stable across directory-listing order."
+;; The project's source files, sorted so the fingerprint is stable across
+;; directory-listing order.
+(defn- sorted-source-files (root)
   (sort (project/source-files root)))
 
 (defn- project-image-fingerprint (root)
-  (fingerprint-of (source-files root)))
+  (fingerprint-of (sorted-source-files root)))
 
 ;; Split from `project-image-fingerprint` so a caller that already has the file list
 ;; (the loader, which wants to report the count) does not walk and stat the tree twice.
@@ -392,7 +391,7 @@ hit — a cold load of a large project takes tens of seconds, and silence there 
 indistinguishable from a hang. stderr, not stdout, so `nest run`'s output stays the
 program's and the LSP's protocol channel stays clean."
   (let (t-a (os/now-ns)
-        files (source-files root)
+        files (sorted-source-files root)
         t-b (os/now-ns)
         fp (fingerprint-of files)
         t-c (os/now-ns)

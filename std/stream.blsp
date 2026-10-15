@@ -408,9 +408,7 @@ after EOF is emitted as a last line (for streams without a trailing newline)."
 
 (defn- strip-cr (line)
   "Drop one trailing `\\r`, so `\\r\\n` and `\\n` line endings both yield the bare line."
-  (if (string/ends-with? line "\r")
-    (string/substring line 0 (dec (string/length line)))
-    line))
+  (string/drop-suffix line "\r"))
 
 ;; ---- terminals --------------------------------------------------------------
 ;; These consume the stream in the calling process (no extra spawn).

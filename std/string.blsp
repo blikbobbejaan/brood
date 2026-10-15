@@ -243,6 +243,21 @@ incremental search rides on.
     (and (>= sl ql) (= (string/substring s (- sl ql) sl) suffix))))
 (sig ends-with? (string string -> bool))
 
+(defn drop-prefix (s prefix)
+  "`s` without its leading `prefix`, or `s` unchanged when it does not start with it.
+
+    (string/drop-prefix \"v1.2.0\" \"v\")   → \"1.2.0\"
+    (string/drop-prefix \"1.2.0\" \"v\")    → \"1.2.0\""
+  (if (starts-with? s prefix) (string/substring s (string/length prefix)) s))
+
+(defn drop-suffix (s suffix)
+  "`s` without its trailing `suffix`, or `s` unchanged when it does not end with it.
+
+    (string/drop-suffix \"main.blsp\" \".blsp\")   → \"main\"
+    (string/drop-suffix \"line\\r\" \"\\r\")         → \"line\"
+    (string/drop-suffix \"main\" \".blsp\")        → \"main\""
+  (if (ends-with? s suffix) (string/substring s 0 (- (string/length s) (string/length suffix))) s))
+
 ;; ---- whitespace: trimming & blank test --------------------------------------
 
 (defn- whitespace? (c) (or (= c " ") (= c "\t") (= c "\n") (= c "\r")))

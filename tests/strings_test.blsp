@@ -593,7 +593,25 @@
   (test "string-repeat result survives a send"
     (let (me (self))
       (spawn (send me (string/repeat "-" 8)))
-      (assert= (receive) "--------"))))
+      (assert= (receive) "--------")))
+  (test "a dropped prefix and suffix survive a send"
+    (let (me (self))
+      (spawn (send me [(string/drop-prefix "v1.2" "v") (string/drop-suffix "héllo.blsp" ".blsp")]))
+      (assert= (receive) ["1.2" "héllo"]))))
+
+(describe "drop-prefix and drop-suffix"
+  (test "only a matching end comes off, and only once"
+    (assert= (string/drop-prefix "vv1" "v") "v1")
+    (assert= (string/drop-suffix "a.md.md" ".md") "a.md")
+    (assert= (string/drop-prefix "1.2" "v") "1.2")
+    (assert= (string/drop-suffix "main" ".blsp") "main"))
+  (test "an affix as long as the string leaves it empty; a longer one leaves it whole"
+    (assert= (string/drop-prefix "abc" "abc") "")
+    (assert= (string/drop-suffix "abc" "abcd") "abc")
+    (assert= (string/drop-prefix "abc" "") "abc"))
+  (test "lengths count characters, not bytes"
+    (assert= (string/drop-suffix "café😀" "😀") "café")
+    (assert= (string/drop-prefix "😀café" "😀") "café")))
 
 (describe "capitalize"
   (test "basic"
