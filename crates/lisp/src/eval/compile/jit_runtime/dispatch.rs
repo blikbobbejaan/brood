@@ -147,20 +147,14 @@ pub(crate) fn jit_dispatch_call(
             compiled_arm_for(heap, id, argc).map(|a| {
                 let env = heap.closure(id).env.unwrap_or_else(|| heap.global());
                 let cb = heap.vm_arm_block(&a);
-                if !heap.is_dynamic(head) {
-                    heap.vm_call_ic_put(
-                        site,
-                        crate::core::heap::CallIcEntry {
-                            sym: head,
-                            argc: argc as u32,
-                            epoch,
-                            callee: Value::func(id),
-                            arm: Some((a.clone(), env)),
-                            // Overwritten inside `vm_call_ic_put`.
-                            callee_bases: (0, 0),
-                        },
-                    );
-                }
+                heap.vm_call_ic_install(
+                    site,
+                    head,
+                    argc as u32,
+                    epoch,
+                    Value::func(id),
+                    Some((a.clone(), env)),
+                );
                 (a, env, cb)
             })
         };
@@ -206,16 +200,13 @@ pub(crate) fn jit_dispatch_call(
                         // never cached (they can shadow per call) but still call direct.
                         Some(ValueRef::Native(nid)) if !over_cap() => {
                             if !heap.is_dynamic(head) {
-                                heap.vm_call_ic_put(
+                                heap.vm_call_ic_install(
                                     site,
-                                    crate::core::heap::CallIcEntry {
-                                        sym: head,
-                                        argc: argc as u32,
-                                        epoch,
-                                        callee: Value::native(nid),
-                                        arm: None,
-                                        callee_bases: (0, 0),
-                                    },
+                                    head,
+                                    argc as u32,
+                                    epoch,
+                                    Value::native(nid),
+                                    None,
                                 );
                                 // Flat-cell publish: the IR's next call at this site goes
                                 // straight to the fn pointer (arity pre-validated here).

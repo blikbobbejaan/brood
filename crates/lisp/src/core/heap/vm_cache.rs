@@ -1209,6 +1209,37 @@ impl Heap {
         self.vm_fast_links_base_for(self.cur_ic_base.get())
     }
 
+    /// Cache what call site `site` resolved global `sym` to — the one install every call
+    /// path (the node walker, the bytecode loop, native code's dispatch) goes through.
+    /// A *dynamic* symbol is never cached: a `binding` re-binds it without bumping the
+    /// epoch, so a cached resolution would bypass the binding. (A later `defdyn` of a
+    /// cached symbol bumps the epoch, so that entry self-invalidates.)
+    pub fn vm_call_ic_install(
+        &self,
+        site: u32,
+        sym: Symbol,
+        argc: u32,
+        epoch: u64,
+        callee: Value,
+        arm: Option<(Arc<crate::eval::compile::ArmHandle>, EnvId)>,
+    ) {
+        if self.is_dynamic(sym) {
+            return;
+        }
+        self.vm_call_ic_put(
+            site,
+            CallIcEntry {
+                sym,
+                argc,
+                epoch,
+                callee,
+                arm,
+                // Overwritten inside `vm_call_ic_put`, which resolves the callee's block.
+                callee_bases: (0, 0),
+            },
+        );
+    }
+
     /// Install (or overwrite) call-site `site`'s inline cache entry. An
     /// out-of-range site (a live arm compiled before the last
     /// [`Self::runtime_collect`] table clear) is ignored. Refuses to cache a
@@ -1218,7 +1249,7 @@ impl Heap {
     /// heap (whose "global" env is a plain LOCAL frame of unpromoted values)
     /// simply never caches, which is correct — its handles are re-tagged
     /// wholesale by `freeze_as_shared_code`.
-    pub fn vm_call_ic_put(&self, site: u32, mut entry: CallIcEntry) {
+    fn vm_call_ic_put(&self, site: u32, mut entry: CallIcEntry) {
         if is_movable(entry.callee) {
             return;
         }

@@ -598,37 +598,12 @@ pub(crate) fn exec_chunk(
                                 }
                             };
                             // Cache the resolved callee + (for a non-passthrough VM closure)
-                            // its arm. A dynamic var is never cached (it can shadow per call).
-                            let arm = match v.unpack() {
-                                ValueRef::Fn(id)
-                                    if crate::eval::passthrough_arm(heap, id, argc).is_none() =>
-                                {
-                                    compiled_arm_for(heap, id, argc).map(|arm| {
-                                        let cenv =
-                                            heap.closure(id).env.unwrap_or_else(|| heap.global());
-                                        (arm, cenv)
-                                    })
-                                }
-                                _ => None,
-                            };
+                            // its arm.
+                            let arm = call_site_arm(heap, v, argc);
                             fast = arm
                                 .as_ref()
                                 .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
-                            if !heap.is_dynamic(*sym) {
-                                heap.vm_call_ic_put(
-                                    *site,
-                                    crate::core::heap::CallIcEntry {
-                                        sym: *sym,
-                                        argc: argc as u32,
-                                        epoch,
-                                        callee: v,
-                                        arm,
-                                        // Overwritten inside `vm_call_ic_put` (it
-                                        // resolves the callee's block itself).
-                                        callee_bases: (0, 0),
-                                    },
-                                );
-                            }
+                            heap.vm_call_ic_install(*site, *sym, argc as u32, epoch, v, arm);
                             (v, drop_base)
                         }
                     } else {

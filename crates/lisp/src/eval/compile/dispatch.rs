@@ -74,23 +74,7 @@ pub(crate) fn exec_call(
                         }
                     };
                     if !heap.is_dynamic(*sym) {
-                        let arm = match v.unpack() {
-                            // Cache the VM fast path only for a callee
-                            // `dispatch` would run on the VM directly: a
-                            // non-passthrough closure with a compiled arm
-                            // for this argc. Everything else caches just
-                            // the value (still skips the lookup walk).
-                            ValueRef::Fn(id)
-                                if crate::eval::passthrough_arm(heap, id, args.len()).is_none() =>
-                            {
-                                compiled_arm_for(heap, id, args.len()).map(|arm| {
-                                    let cenv =
-                                        heap.closure(id).env.unwrap_or_else(|| heap.global());
-                                    (arm, cenv)
-                                })
-                            }
-                            _ => None,
-                        };
+                        let arm = call_site_arm(heap, v, args.len());
                         fast = arm
                             .as_ref()
                             .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
@@ -98,23 +82,14 @@ pub(crate) fn exec_call(
                         // trigger a LOCAL minor collect that moves the env without
                         // bumping the global epoch, so the epoch check at the fast-path
                         // use site wouldn't catch a stale LOCAL cenv.  Clear fast now.
+                        // (The bytecode loop has its arguments evaluated already, so it
+                        // needs no such guard.)
                         if let Some((_, cenv, _)) = &fast {
                             if *cenv != EnvId::GLOBAL && cenv.region() == value::LOCAL {
                                 fast = None;
                             }
                         }
-                        heap.vm_call_ic_put(
-                            site,
-                            crate::core::heap::CallIcEntry {
-                                sym: *sym,
-                                argc,
-                                epoch: probe_epoch,
-                                callee: v,
-                                arm,
-                                // Overwritten inside `vm_call_ic_put`.
-                                callee_bases: (0, 0),
-                            },
-                        );
+                        heap.vm_call_ic_install(site, *sym, argc, probe_epoch, v, arm);
                     }
                     cv = v;
                     break 'resolve;
@@ -506,6 +481,23 @@ pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, cen
             let v = heap.capture_value(cenv, k, name);
             heap.set_root_at(base + capture_base + k, v);
         }
+    }
+}
+
+/// The arm a call site caches for callee `v` called with `argc` arguments: a closure the
+/// VM runs directly — not a pass-through wrapper, which `dispatch` redirects (ADR-069) —
+/// with a compiled arm for that arity, plus the env it closed over. Everything else caches
+/// just the value (still skipping the lookup walk). Native code's dispatch deliberately
+/// caches a wrapper's own arm instead (ADR-408), so it does not use this.
+pub(super) fn call_site_arm(heap: &Heap, v: Value, argc: usize) -> Option<(Arc<ArmHandle>, EnvId)> {
+    match v.unpack() {
+        ValueRef::Fn(id) if crate::eval::passthrough_arm(heap, id, argc).is_none() => {
+            compiled_arm_for(heap, id, argc).map(|arm| {
+                let cenv = heap.closure(id).env.unwrap_or_else(|| heap.global());
+                (arm, cenv)
+            })
+        }
+        _ => None,
     }
 }
 

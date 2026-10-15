@@ -45,10 +45,23 @@
 ;; `:noproc` instead of the `[:error …]` crash reason the test asserts on.
 (defn dt-crasher () (receive (:go (binding (*dt* 999) (throw :boom)))))
 
+;; A dynamic var CALLED: the call site has a global head, which the VM's call-site cache
+;; would resolve once and keep — but `binding` re-binds it without bumping the epoch that
+;; invalidates the cache, so a dynamic head must never be cached.
+(defdyn *dt-op* (fn (x) [:outer x]))
+(defn dt-call-op (x) (*dt-op* x))
+(defn- dt-call-op-times (n) (when (> n 0) (dt-call-op n) (dt-call-op-times (dec n))))
+
 ;; ---- single-process semantics -----------------------------------------------
 
 (describe "dynamic variables"
   (test "a dynamic var defaults to its declared value" (assert= *dt* 0) (assert= (dt-read) 0))
+
+  (test "a call through a dynamic var sees its binding, however warm the call site"
+    (dt-call-op-times 500)
+    (assert= (dt-call-op 1) [:outer 1])
+    (assert= (binding (*dt-op* (fn (x) [:inner x])) (dt-call-op 1)) [:inner 1])
+    (assert= (dt-call-op 2) [:outer 2]))
 
   ;; `binding` is a special form, but it must not be reserved as an ordinary name:
   ;; a fn/macro/let that binds `binding` should work (the compile pass no longer
