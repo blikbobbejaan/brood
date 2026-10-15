@@ -828,8 +828,8 @@ pub(super) fn jit_lower_i64_arm(
             b.seal_block(nostack);
             b.seal_block(armed);
             b.switch_to_block(nostack);
-            let o5 = b.ins().iconst(types::I64, 5);
-            b.ins().return_(&[o5]);
+            let depth_bail = b.ins().iconst(types::I64, crate::jit::outcome::DEPTH_BAIL);
+            b.ins().return_(&[depth_bail]);
             b.switch_to_block(armed);
         }
         // Frame base address: roots + base*STRIDE. Args are at slots base+0..base+nargs-1; the
@@ -899,8 +899,8 @@ pub(super) fn jit_lower_i64_arm(
         b.seal_block(depthb);
         b.seal_block(notdepthb);
         b.switch_to_block(depthb);
-        let o5 = b.ins().iconst(types::I64, 5);
-        b.ins().return_(&[o5]);
+        let depth_bail = b.ins().iconst(types::I64, crate::jit::outcome::DEPTH_BAIL);
+        b.ins().return_(&[depth_bail]);
         b.switch_to_block(notdepthb);
         let is_err = b.ins().icmp_imm_s(IntCC::Equal, o, 3);
         let errb = b.create_block();
@@ -909,11 +909,11 @@ pub(super) fn jit_lower_i64_arm(
         b.seal_block(errb);
         b.seal_block(ovb);
         b.switch_to_block(errb);
-        let o3 = b.ins().iconst(types::I64, 3);
-        b.ins().return_(&[o3]);
+        let error = b.ins().iconst(types::I64, crate::jit::outcome::ERROR);
+        b.ins().return_(&[error]);
         b.switch_to_block(ovb);
-        let o1b = b.ins().iconst(types::I64, 1);
-        b.ins().return_(&[o1b]);
+        let overflow_deopt = b.ins().iconst(types::I64, crate::jit::outcome::DEOPT);
+        b.ins().return_(&[overflow_deopt]);
         // Done → box the scalar result through the caller's `out` pointer, outcome 0 (not
         // via `roots[base]`; see `emit::store_result`).
         b.switch_to_block(doneb);
@@ -938,12 +938,12 @@ pub(super) fn jit_lower_i64_arm(
             addr2,
             PAYLOAD_OFFSET as i32 + 8,
         );
-        let d = b.ins().iconst(types::I64, 0);
-        b.ins().return_(&[d]);
-        // Any non-Int arg landed here: outcome 1 (the VM runs the arm).
+        let done = b.ins().iconst(types::I64, crate::jit::outcome::DONE);
+        b.ins().return_(&[done]);
+        // Any non-Int arg landed here: a deopt (the VM runs the arm).
         b.switch_to_block(deopt);
-        let od = b.ins().iconst(types::I64, 1);
-        b.ins().return_(&[od]);
+        let deopt_outcome = b.ins().iconst(types::I64, crate::jit::outcome::DEOPT);
+        b.ins().return_(&[deopt_outcome]);
         b.finalize(m.target_config());
         m.define_function(wrap_id, &mut ctx)
             .ok()

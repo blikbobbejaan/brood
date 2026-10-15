@@ -13,7 +13,7 @@
 ;; (These also pass under BROOD_TIER=0 since the TreeWalkGuard fix — a
 ;; native-nested receive under the tree-walker used to re-run its thunk.)
 
-(defmodule sysmon-test (:use test))
+(defmodule sysmon-test (:use test) (:use suite-helpers))
 
 (defn- sysmon-churn (n acc) (if (= n 0) acc (sysmon-churn (- n 1) (cons n acc))))
 
@@ -275,3 +275,24 @@ worker's mailbox so it can't satisfy a later test's receive."
       (telemetry/detach :t-spawn)
       (telemetry/detach :t-exit)
       (telemetry/stop))))
+
+;; Native code that bails to the VM is a `:deopt` event, whichever call path ran it. The
+;; event was once emitted by the driver's frame path alone, so a deopt on any other path —
+;; a computed-head call (`apply`), a fast link, a HOF callback — never reached the monitor.
+;; The monitor reports on OTHER processes, so a worker takes the deopt.
+(defn- sysmon-inc (x) (+ x 1))
+(defn- sysmon-inc-batch (n) (when (> n 0) (apply sysmon-inc [n]) (sysmon-inc-batch (dec n))))
+
+(describe "system-monitor deopt events"
+  :isolated (test "a deopt on the computed-head native path reaches the monitor"
+    (when (%native-tier?)
+      (assert= (settle sysmon-inc 1 (fn () (sysmon-inc-batch 2000)) 40) :native)
+      (proc/system-monitor (self) {:deopt true})
+      (let (me (self)
+            ;; A float leaves the arm's int subset: the native code bails at its guard.
+            worker (spawn (send me [:sum (apply sysmon-inc [1.5])])))
+        (assert= (receive ([:sum s] s) (after *test-wait-ms* :timeout)) 2.5)
+        (let (detail (sysmon-drain-until :deopt worker))
+          (sysmon-done)
+          (is (string? detail))
+          (is (includes? detail "sysmon-inc")))))))

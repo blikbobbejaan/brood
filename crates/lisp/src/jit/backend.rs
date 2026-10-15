@@ -96,6 +96,26 @@ pub(crate) type JitArmFn = extern "C" fn(
     *mut JitCallCtx,
 ) -> i64;
 
+/// What a [`JitArmFn`] returns — the one vocabulary the lowering emits and every caller
+/// decodes. A raw `i64` because it crosses the native ABI; a decoder matching a number
+/// instead of one of these names is the drift this exists to prevent.
+pub(crate) mod outcome {
+    /// Finished: the result is in `out`.
+    pub(crate) const DONE: i64 = 0;
+    /// Left native code at a guard (`Heap::jit_deopt_reason` names it): the VM runs the
+    /// arm, resuming at the deopt checkpoint when the frame journalled one.
+    pub(crate) const DEOPT: i64 = 1;
+    /// Out of reductions at a back edge: the process is re-queued.
+    pub(crate) const PREEMPT: i64 = 2;
+    /// An error is parked in `Heap::jit_pending_error`.
+    pub(crate) const ERROR: i64 = 3;
+    /// A tail call is staged above the frame as `[callee, args…]`.
+    pub(crate) const TAIL: i64 = 4;
+    /// The unboxed-i64 worker reached its native recursion cap: the function moves to the
+    /// boxed path, and this activation runs on the VM.
+    pub(crate) const DEPTH_BAIL: i64 = 5;
+}
+
 /// The per-activation context a native arm runs under — what the call ceremony used to
 /// hand over through `Heap` fields (`jit_call_env`, the two IC-block cursors,
 /// `jit_native_depth`), built by the caller on its own stack and passed by pointer as

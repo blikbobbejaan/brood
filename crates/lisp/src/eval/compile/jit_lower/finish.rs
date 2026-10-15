@@ -37,25 +37,26 @@ pub(super) fn emit_exit_blocks(
     note_deopt: FuncRef,
     trace_push: FuncRef,
 ) {
+    use crate::jit::outcome;
     b.switch_to_block(exits.done);
-    let zero = b.ins().iconst(types::I64, 0);
-    b.ins().return_(&[zero]);
+    let done = b.ins().iconst(types::I64, outcome::DONE);
+    b.ins().return_(&[done]);
     b.switch_to_block(exits.deopt);
     let parked_reason = b.block_params(exits.deopt)[0];
     b.ins().call(note_deopt, &[heap, parked_reason]);
-    let one = b.ins().iconst(types::I64, 1);
-    b.ins().return_(&[one]);
+    let deopt = b.ins().iconst(types::I64, outcome::DEOPT);
+    b.ins().return_(&[deopt]);
     b.switch_to_block(exits.preempt);
-    let two = b.ins().iconst(types::I64, 2);
-    b.ins().return_(&[two]);
+    let preempt = b.ins().iconst(types::I64, outcome::PREEMPT);
+    b.ins().return_(&[preempt]);
     b.switch_to_block(exits.error);
     let arm_pointer = b.ins().iconst(types::I64, arm as *const CompiledArm as i64);
     b.ins().call(trace_push, &[heap, arm_pointer]);
-    let three = b.ins().iconst(types::I64, 3);
-    b.ins().return_(&[three]);
+    let error = b.ins().iconst(types::I64, outcome::ERROR);
+    b.ins().return_(&[error]);
     b.switch_to_block(exits.tailcall);
-    let four = b.ins().iconst(types::I64, 4);
-    b.ins().return_(&[four]);
+    let tail = b.ins().iconst(types::I64, outcome::TAIL);
+    b.ins().return_(&[tail]);
 }
 
 /// `BROOD_JIT_DUMP_IR=1`: each fully-lowered arm's bytecode fingerprint (opcode names —

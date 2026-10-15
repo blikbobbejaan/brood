@@ -1,5 +1,7 @@
-//! VM arm dispatcher: Call/SelfCall/IC/JIT fast path (extracted from mod.rs).
+//! VM arm dispatcher: Call/SelfCall/IC/JIT fast path.
 use super::*;
+#[cfg(feature = "jit")]
+use crate::jit::outcome;
 
 /// The combination executor for the surviving `Node` path ([`exec_value`] — used by
 /// `push_frame`'s `&optional` defaults and top-level `run`). Resolves the callee
@@ -372,23 +374,26 @@ pub(crate) fn dispatch(
                         false,
                     );
                     heap.set_ic_bases(saved_bases);
+                    // The same booking the driver's frame path does (counters, the sysmon
+                    // deopt event, `BROOD_DEOPT_TRACE`), so a deopt taken here is seen too.
+                    book_native_outcome(heap, &arm, base, jit_outcome);
                     match jit_outcome {
-                        Some(0) => {
+                        Some(outcome::DONE) => {
                             crate::perf_bump!(jit_apply_fast);
                             heap.truncate_roots(base);
                             heap.truncate_env_roots(env_base);
                             return Ok(Step::Done(jit_ret));
                         }
-                        Some(3) => {
+                        Some(outcome::ERROR) => {
                             heap.truncate_roots(base);
                             heap.truncate_env_roots(env_base);
                             let e = heap
                                 .jit_pending_error
                                 .take()
-                                .expect("JIT outcome 3 with no parked error");
+                                .expect("JIT error outcome with no parked error");
                             return Err(e);
                         }
-                        Some(4) => {
+                        Some(outcome::TAIL) => {
                             crate::perf_bump!(jit_fast_tail4);
                             // Tail call staged by the JIT: [callee, arg0..argN] sit
                             // above the frame at roots[base+nslots..] (see KI-48 below).  These
@@ -442,9 +447,9 @@ pub(crate) fn dispatch(
                             // the checkpoint — never re-running its side effects.
                             // This path is gated on `!inline_installed` above, so the
                             // resume arm is always `arm` itself here.
-                            // `Some(1) | Some(2)` (deopt AND preempt), consistent with the
-                            // other three consumers — see `jit_run_fast_link` (KI-18).
-                            if matches!(jit_outcome, Some(1) | Some(2)) {
+                            // Deopt AND preempt, consistent with the other three consumers —
+                            // see `jit_run_fast_link` (KI-18).
+                            if matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT)) {
                                 if let Some((resume, rip, depth)) =
                                     jit_ckpt_resume(heap, arm.arc(), base, arm.nslots)
                                 {

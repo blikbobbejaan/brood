@@ -13833,3 +13833,19 @@ to the next delimiter (so the cursor always rests between tokens, and a `|` insi
 keywords for `scan-form-end`; a bar symbol before a form for `scan-form-start` and `-2`; the
 same through a >4 KB text, which takes the safepoint table; and `a|b`. Sabotage: dropping the
 bar arm reds three tests; letting a mid-atom `|` open a quote reds the fourth.
+
+## KI-261 — three of the four native-call paths never told the system monitor about a deopt ✅ FIXED 2026-10-15
+
+**Symptom.** A subscriber with `{:deopt true}` saw no event when another process's native
+code deopted under `(apply f args)`, though `%jit-arm-state` counted it (`:deopts-total 1`).
+**Cause.** The `emit_deopt` call lived in `settle_native_frame`, the driver's frame path.
+The other three ways native code runs — `dispatch`'s computed-head fast path, the
+native-to-native fast link (`finish_nested`), and a HOF callback (`closure.rs`) — each
+decoded the outcome themselves and gave the arm its deopt feedback without reporting it.
+Found while naming the outcome codes (`jit::outcome`), when the dispatch copy turned out to
+book nothing at all. **Fix.** The event moves into `jit_any_deopt_feedback`, the feedback
+every deopting native exit reaches exactly once; the per-caller booking
+(`book_native_outcome`, now shared by the driver and `dispatch`) keeps the perf counters and
+`BROOD_DEOPT_TRACE`. **Guard.** `tests/sysmon_test.blsp` "a deopt on the computed-head
+native path reaches the monitor": a worker deopts a tiered arm with a float under `apply`
+(the monitor reports on other processes only). Disabling the emit reds it.

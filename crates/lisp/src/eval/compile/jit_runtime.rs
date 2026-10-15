@@ -13,7 +13,7 @@ use super::*;
 // `JIT_COMPILER` thread — the whole production codegen surface), plus the three tiering
 // advisories, which are associated fns precisely so consulting them per activation costs no
 // `GLOBAL_JIT` lock. See `crate::jit::backend`.
-use crate::jit::{ActiveBackend, JitBackend};
+use crate::jit::{outcome, ActiveBackend, JitBackend};
 
 mod compiler;
 mod deopt;
@@ -147,7 +147,7 @@ pub(crate) fn vm_call_native_direct(
     // finished with it.
     heap.truncate_env_roots(env_base);
     let r = match outcome {
-        Some(0) => {
+        Some(outcome::DONE) => {
             crate::perf_bump!(jit_native);
             crate::perf_bump!(vm_native_link);
             heap.truncate_roots(base);
@@ -155,8 +155,8 @@ pub(crate) fn vm_call_native_direct(
         }
         // A preempt unwinding out of this callee (ADR-401): record it and leave its frame
         // for the driver to rebuild.
-        Some(3)
-            if jit_unwind_through(heap, 3, unwind, |_| {
+        Some(outcome::ERROR)
+            if jit_unwind_through(heap, outcome::ERROR, unwind, |_| {
                 Some(UnwindFrame {
                     arm: arm.arc().clone(),
                     base,
@@ -168,11 +168,11 @@ pub(crate) fn vm_call_native_direct(
         {
             DirectNative::Unwound
         }
-        Some(3) => {
+        Some(outcome::ERROR) => {
             heap.truncate_roots(base);
             DirectNative::Error
         }
-        Some(4) => {
+        Some(outcome::TAIL) => {
             crate::perf_bump!(jit_native);
             crate::perf_bump!(vm_native_link);
             DirectNative::Tail {
@@ -706,12 +706,12 @@ pub(crate) fn jit_tier_in_frame(
     );
     native_feedback(heap, arm, base, frame_nslots, &exit);
     let outcome = exit.outcome;
-    // Outcome 5 = the unboxed-i64 worker hit its native-recursion depth cap. Register recursion
+    // DEPTH_BAIL = the unboxed-i64 worker hit its native-recursion depth cap. Register recursion
     // can't drain to the VM mid-stack, so permanently switch this fn to the boxed path (which
     // drains deep recursion gracefully via `jit_native_depth`/`jit_force_vm`): mark it too-deep,
     // drop the installed i64 wrapper, and re-tier promptly (→ boxed). Run this activation on the
     // VM. Without this a deep non-tail recursion would deopt-and-re-tier per level (~100× thrash).
-    if outcome == 5 {
+    if outcome == outcome::DEPTH_BAIL {
         if let Some(sym) = arm.dbg_name {
             ActiveBackend::note_depth_bail(sym);
         }

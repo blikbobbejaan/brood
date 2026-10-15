@@ -114,7 +114,7 @@ pub(crate) fn jit_unwind_through(
     unwind: bool,
     callee: impl FnOnce(&Heap) -> Option<UnwindFrame>,
 ) -> bool {
-    let passing = outcome == 3
+    let passing = outcome == outcome::ERROR
         && heap
             .jit_pending_error
             .as_ref()
@@ -132,7 +132,7 @@ pub(crate) fn jit_unwind_through(
         record_unwound(frame);
         return true;
     }
-    if outcome == 2 && unwind {
+    if outcome == outcome::PREEMPT && unwind {
         let Some(frame) = callee(heap) else {
             // Cannot name the arm (a swap moved it under us): take the preempt the old
             // way — the caller re-runs it on the VM. Correct, only unpreempted.

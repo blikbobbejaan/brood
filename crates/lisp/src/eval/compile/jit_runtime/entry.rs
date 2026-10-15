@@ -124,7 +124,7 @@ pub(crate) fn native_feedback(
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     jit_suspend_feedback(heap, arm, exit.outcome, exit.gateway);
-    if exit.outcome == 1 {
+    if exit.outcome == outcome::DEOPT {
         if crate::diagnostics::debug_flags::jit_bail_trace() {
             trace_deopt_site(heap, arm, base, nslots);
         }
@@ -287,7 +287,7 @@ pub(crate) fn finish_nested(
                 }
                 return Nested::Unresolved;
             };
-            if count_deopt && outcome == 1 {
+            if count_deopt && outcome == outcome::DEOPT {
                 jit_any_deopt_feedback(heap, &arm);
                 if arm.deopt_watch {
                     jit_deopt_feedback(heap, &arm);
@@ -296,7 +296,9 @@ pub(crate) fn finish_nested(
             // The shape check: a resolver that re-resolved through the IC may name a
             // different arm than the one whose native ran, and its journal cannot be read out
             // of this frame. Flag-free by construction (KI-26).
-            if matches!(outcome, 1 | 2) && jit_frame_shape_matches(&arm, frame.nslots) {
+            if matches!(outcome, outcome::DEOPT | outcome::PREEMPT)
+                && jit_frame_shape_matches(&arm, frame.nslots)
+            {
                 if let Some((resume, rip, depth)) =
                     jit_ckpt_resume(heap, arm.arc(), frame.base, frame.nslots)
                 {

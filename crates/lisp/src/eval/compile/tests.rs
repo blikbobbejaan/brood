@@ -527,7 +527,11 @@ fn jit_lowers_and_runs_a_straight_line_int_arm() {
     let base = heap.roots_len();
     heap.push_root(Value::int(41));
     let (outcome, ret) = run_arm(f, &mut heap, base);
-    assert_eq!(outcome, 0, "Done (no deopt — arg is an Int)");
+    assert_eq!(
+        outcome,
+        crate::jit::outcome::DONE,
+        "Done (no deopt — arg is an Int)"
+    );
     match ret.unpack() {
         ValueRef::Int(n) => assert_eq!(n, 42, "JIT-compiled (+ x 1) on x=41"),
         other => panic!("expected Int(42), got tag {:?}", value::tag(other)),
@@ -624,7 +628,7 @@ fn jit_lowers_and_runs_an_if_with_comparison() {
         let base = heap.roots_len();
         heap.push_root(Value::int(x));
         let (outcome, ret) = run_arm(f, &mut heap, base);
-        assert_eq!(outcome, 0, "Done for x={x}");
+        assert_eq!(outcome, crate::jit::outcome::DONE, "Done for x={x}");
         match ret.unpack() {
             ValueRef::Int(n) => assert_eq!(n, want, "abs({x})"),
             other => panic!(
@@ -736,7 +740,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
         heap.push_root(Value::int(n)); // i = slot 0
         heap.push_root(Value::int(0)); // acc = slot 1
         let (outcome, ret) = run_arm(f, &mut heap, base);
-        assert_eq!(outcome, 0, "Done for n={n}");
+        assert_eq!(outcome, crate::jit::outcome::DONE, "Done for n={n}");
         match ret.unpack() {
             ValueRef::Int(r) => assert_eq!(r, want, "sumto({n}, 0)"),
             other => panic!(
@@ -779,11 +783,13 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     let (nested_outcome, nested_ret) = run_arm_nested(f, &mut heap, base);
     crate::process::set_capture_run(false); // restore (cargo test shares threads)
     assert_eq!(
-        outcome, 2,
-        "a loop exceeding the budget must preempt (return 2) in a green process"
+        outcome,
+        crate::jit::outcome::PREEMPT,
+        "a loop exceeding the budget must preempt in a green process"
     );
     assert_eq!(
-        alone_outcome, 0,
+        alone_outcome,
+        crate::jit::outcome::DONE,
         "with no process waiting, a spent budget must not unwind (nothing would run instead)"
     );
     assert!(
@@ -791,7 +797,8 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
         "the unpreempted run's result"
     );
     assert_eq!(
-        nested_outcome, 0,
+        nested_outcome,
+        crate::jit::outcome::DONE,
         "an activation that cannot unwind must run on, not deopt into a nested interpreter"
     );
     assert!(
@@ -1201,7 +1208,7 @@ fn jit_lowers_fused_prims_map_and_overflow() {
         heap.push_root(Value::int(n));
         heap.push_root(Value::int(0));
         let (outcome, ret) = run_arm(f, &mut heap, base);
-        assert_eq!(outcome, 0, "Done for sumto({n})");
+        assert_eq!(outcome, crate::jit::outcome::DONE, "Done for sumto({n})");
         match ret.unpack() {
             ValueRef::Int(r) => assert_eq!(r, want, "fused sumto({n}, 0)"),
             other => panic!("expected Int, got tag {:?}", value::tag(other)),
@@ -1231,7 +1238,7 @@ fn jit_lowers_fused_prims_map_and_overflow() {
         let base = heap.roots_len();
         heap.push_root(Value::int(x));
         let (outcome, ret) = run_arm(g, &mut heap, base);
-        assert_eq!(outcome, 0, "Done for (> {x} 5)");
+        assert_eq!(outcome, crate::jit::outcome::DONE, "Done for (> {x} 5)");
         match ret.unpack() {
             ValueRef::Int(r) => {
                 assert_eq!(r, want, "(if (> {x} 5) 100 200) — map must be applied")
@@ -1256,7 +1263,7 @@ fn jit_lowers_fused_prims_map_and_overflow() {
     let base = heap.roots_len();
     heap.push_root(Value::int(3));
     let (outcome, ret) = run_arm(s, &mut heap, base);
-    assert_eq!(outcome, 0, "(* 3 3) is in range");
+    assert_eq!(outcome, crate::jit::outcome::DONE, "(* 3 3) is in range");
     assert!(matches!(ret.unpack(), ValueRef::Int(9)), "(* 3 3) = 9");
     let mut heap = Heap::new();
     let base = heap.roots_len();

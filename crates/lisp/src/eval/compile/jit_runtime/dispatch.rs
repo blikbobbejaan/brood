@@ -301,9 +301,9 @@ pub(crate) fn jit_dispatch_call(
                     &mut ret,
                 );
                 native_feedback(heap, arm.arc(), stage_base, frame_nslots, &exit);
-                // A value is finished here: `finish_nested`'s outcome 0 is this truncate, and
+                // A value is finished here: `finish_nested`'s DONE is this truncate, and
                 // the call cost more than it does on every computed-head call.
-                if exit.outcome == 0 {
+                if exit.outcome == outcome::DONE {
                     crate::perf_bump!(jit_link_done);
                     heap.truncate_roots(stage_base);
                     return Some(ret);

@@ -278,7 +278,7 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
         heap.blocked_under_gateway = 0;
     }
     if blocked
-        || (outcome == 3
+        || (outcome == crate::jit::outcome::ERROR
             && heap
                 .jit_pending_error
                 .as_ref()
@@ -305,9 +305,20 @@ const ENTRY_DEOPT_RELOWER: u32 = 16;
 /// shared copy. A `SelfCall` loop is exactly the arm this exists for — it is never
 /// deopt-watched, because a loop's deopt normally follows productive native iterations;
 /// an entry deopt has had none.
+///
+/// Every native exit with a deopt passes through here exactly once, whichever path ran it
+/// (the driver's frame, `dispatch`'s computed-head call, a fast link, a HOF callback), so
+/// this is also where the system monitor hears of it — a per-path emit missed three of
+/// the four.
 pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
     use std::sync::atomic::Ordering::Relaxed;
     arm.jit_deopts_total.fetch_add(1, Relaxed);
+    // Deopts are rare, so the armed() check runs only on this already-cold path.
+    if crate::process::sysmon::armed() {
+        if let Some(pid) = crate::process::current_pid() {
+            crate::process::sysmon::emit_deopt(pid, arm.dbg_name);
+        }
+    }
     let slot = match DeoptReason::decode(heap.jit_deopt_reason()) {
         // An integer-path tag guard (payload = the OBSERVED tag, KI-49) that saw a float.
         (Some(DeoptReason::SlotIntGuard | DeoptReason::HandleIntGuard), tag)

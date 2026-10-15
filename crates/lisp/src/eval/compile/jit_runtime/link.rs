@@ -94,7 +94,7 @@ pub(crate) fn jit_run_fast_link(
     // helper. A code-LAYOUT change with no semantic content: `perf` put this function at 24%
     // of `bintree`, spread thin across register saves and spills that the non-Done arms'
     // live values forced onto EVERY call.
-    if exit.outcome == 0 {
+    if exit.outcome == outcome::DONE {
         crate::perf_bump!(jit_link_done);
         // The result is already at `*out` — the arm wrote it there. Nothing to load.
         heap.truncate_roots(stage_base);

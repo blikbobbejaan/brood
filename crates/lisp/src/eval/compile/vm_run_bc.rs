@@ -1,5 +1,7 @@
-//! Outer VM trampoline + program-run bodies (extracted from mod.rs).
+//! Outer VM trampoline + program-run bodies.
 use super::*;
+#[cfg(feature = "jit")]
+use crate::jit::outcome;
 
 /// Run a green process's body thunk on the bytecode driver as the **top-level**
 /// state-capture run (ADR-100 §8.3) — the entry `run_one` uses. A `None` `resume`
@@ -390,6 +392,62 @@ impl Drop for ProgramState {
     }
 }
 
+/// Book what a native run of `arm` (its frame at `base`) came back with, for the two
+/// frame-owning callers (the driver and `dispatch`'s computed-head call):
+/// - work attribution (perf-stats): native completion vs a mid-run deopt vs a preemption.
+///   A hot arm with high `jit_deopt` against `jit_native` compiles but keeps falling off
+///   the native path — the matmul-class signal;
+/// - `BROOD_DEOPT_TRACE`, naming the arm, the checkpoint and the guard that fired.
+#[cfg(feature = "jit")]
+pub(super) fn book_native_outcome(
+    heap: &Heap,
+    arm: &CompiledArm,
+    base: usize,
+    jit_outcome: Option<i64>,
+) {
+    match jit_outcome {
+        Some(outcome::DONE | outcome::TAIL) => {
+            crate::perf_bump!(jit_native);
+        }
+        Some(outcome::DEOPT) => {
+            crate::perf_bump!(jit_deopt);
+            // (The system-monitor event is `jit_any_deopt_feedback`'s, which every native
+            // exit reaches.)
+            #[cfg(feature = "perf-stats")]
+            if crate::diagnostics::debug_flags::deopt_trace() {
+                // The checkpoint journal (ckpt_slot) packs
+                // (resume_ip << 16 | operand-depth) — print it so a
+                // deopt-storm's SITE is identifiable, not just its arm.
+                let ckpt = if arm.ckpt_slot != u32::MAX {
+                    match heap.root_at(base + arm.ckpt_slot as usize) {
+                        Value::Int(p) => p,
+                        _ => -1,
+                    }
+                } else {
+                    -1
+                };
+                // `reason=` names the lowering's guard site (`DeoptReason`) — without it a
+                // persistent deopt names its arm and nothing else.
+                eprintln!(
+                    "[deopt] arm={} watch={} resume_ip={} depth={} reason={}",
+                    arm.dbg_label(),
+                    arm.deopt_watch,
+                    ckpt >> 16,
+                    ckpt & 0xffff,
+                    crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
+                );
+            }
+        }
+        Some(outcome::PREEMPT) => {
+            crate::perf_bump!(jit_preempt);
+        }
+        _ => {}
+    }
+    // Only the trace reads the frame.
+    #[cfg(not(feature = "perf-stats"))]
+    let _ = (heap, arm, base);
+}
+
 /// Settle a frame a native run has just handed back — the part of the frame path that
 /// runs between `jit_tier_in_frame` returning and the outcome being acted on, shared with
 /// the VM→native direct call's `ChunkExit::CallResume` so the two cannot drift.
@@ -421,7 +479,7 @@ fn settle_native_frame(
     // the bounds condition: every slot this reads — the journal slot and
     // the operand journal above it — lies below `frame_nslots`. It is
     // `>=`, not `==`, so a native that left the stack dirty still resumes.
-    let resume = if matches!(jit_outcome, Some(1) | Some(2))
+    let resume = if matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT))
         && heap.roots_len() >= cur_base + frame_nslots
     {
         jit_ckpt_resume(heap, cur_arm.arc(), cur_base, frame_nslots)
@@ -435,7 +493,7 @@ fn settle_native_frame(
     // native's doing. Run after it, every deopt/preempt of a self- or leaf-inlined arm
     // would read as dirty by exactly `inline_nslots - nslots`, making the counter useless
     // for the class it exists to catch.
-    if matches!(jit_outcome, Some(1) | Some(2)) {
+    if matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT)) {
         let now = heap.roots_len();
         if now != pre_roots {
             crate::perf_bump!(jit_deopt_dirty);
@@ -457,65 +515,18 @@ fn settle_native_frame(
     // re-run sees the original layout (Done retires the whole frame anyway).
     // The inlined native keeps operands in registers, so it leaves `roots`
     // exactly at the frame top it was entered with (`cur_base+inline_nslots`).
-    // A Some(4) tail outcome stages callee+args ABOVE that top, read by
+    // A TAIL outcome stages callee+args ABOVE that top, read by
     // `jit_dispatch_tail` relative to `frame_size_for_new_entry` — don't disturb those.
     // A frame that will RESUME keeps its larger top: it continues in the
     // layout that wrote the journal.
     if inlined_active
         && resume.is_none()
-        && matches!(jit_outcome, Some(1) | Some(2) | None)
+        && matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT) | None)
         && heap.roots_len() == cur_base + cur_arm.inline_nslots
     {
         heap.truncate_roots(small_top);
     }
-    // Work-attribution (perf-stats): native completion (0/4) vs a
-    // mid-run deopt (1) vs preemption (2). A hot arm with high
-    // `jit_deopt` vs `jit_native` compiles but keeps falling off the
-    // native path — the matmul-class signal.
-    match jit_outcome {
-        Some(0) | Some(4) => {
-            crate::perf_bump!(jit_native);
-        }
-        Some(1) => {
-            crate::perf_bump!(jit_deopt);
-            // System-monitor deopt event (observability stream):
-            // deopts are rare, so the armed() check runs only on
-            // this already-cold branch.
-            if crate::process::sysmon::armed() {
-                if let Some(pid) = crate::process::current_pid() {
-                    crate::process::sysmon::emit_deopt(pid, cur_arm.dbg_name);
-                }
-            }
-            #[cfg(feature = "perf-stats")]
-            if crate::diagnostics::debug_flags::deopt_trace() {
-                // The checkpoint journal (ckpt_slot) packs
-                // (resume_ip << 16 | operand-depth) — print it so a
-                // deopt-storm's SITE is identifiable, not just its arm.
-                let ckpt = if cur_arm.ckpt_slot != u32::MAX {
-                    match heap.root_at(cur_base + cur_arm.ckpt_slot as usize) {
-                        Value::Int(p) => p,
-                        _ => -1,
-                    }
-                } else {
-                    -1
-                };
-                // `reason=` names the lowering's guard site (`DeoptReason`) — without it a
-                // persistent deopt names its arm and nothing else.
-                eprintln!(
-                    "[deopt] arm={} watch={} resume_ip={} depth={} reason={}",
-                    cur_arm.dbg_label(),
-                    cur_arm.deopt_watch,
-                    ckpt >> 16,
-                    ckpt & 0xffff,
-                    crate::eval::compile::DeoptReason::describe(heap.jit_deopt_reason())
-                );
-            }
-        }
-        Some(2) => {
-            crate::perf_bump!(jit_preempt);
-        }
-        _ => {}
-    }
+    book_native_outcome(heap, cur_arm, cur_base, jit_outcome);
     // Deopt-resume (see `CompiledArm::ckpt_slot`): a deopt in an activation that
     // completed a non-tail call resumes AT the checkpoint (operands re-pushed from the
     // journal slots) — never re-running, and so never re-effecting, the code before it.
@@ -686,7 +697,7 @@ fn rebuild_unwound_frames(heap: &mut Heap, frames: &mut Vec<BcFrame>) -> BcFrame
                 inlined_active,
                 base + arm.nslots,
                 base + f.nslots,
-                Some(2),
+                Some(outcome::PREEMPT),
             );
             let (arm, ip) = match resume {
                 Some((ra, rip)) => (ArmHandle::new(ra), rip),
@@ -1164,13 +1175,13 @@ pub(crate) fn vm_run_bc(
                     );
                     match jit_outcome {
                         // Done: result in `roots[cur_base]` → the `Done` arm retires it.
-                        Some(0) => Ok(ChunkExit::Done(jit_ret)),
+                        Some(outcome::DONE) => Ok(ChunkExit::Done(jit_ret)),
                         // A JIT'd call/global errored — propagate the parked error. The
                         // native arm recorded ITS OWN frame in its error block (KI-117),
                         // so this takes the generic `Err` arm's path but attaches only
                         // the pending callers — `attach_vm_trace` would name `cur_arm`,
                         // which is that same arm, a second time.
-                        Some(3) => {
+                        Some(outcome::ERROR) => {
                             let e = jit_take_error(heap)
                                 .expect("JIT error outcome without a parked error");
                             // A preempt unwound out to here (ADR-401): this frame is the
@@ -1197,7 +1208,7 @@ pub(crate) fn vm_run_bc(
                         }
                         // A JIT'd tail call: dispatch the staged callee+args → reuse the
                         // frame (`Tail`) or a finished native callee (`Done`).
-                        Some(4) => {
+                        Some(outcome::TAIL) => {
                             // Pass the size this frame was BUILT to (KI-48): the
                             // dispatcher must not re-derive it from
                             // `frame_size_for_new_entry()`, which can change mid-flight.
@@ -1228,7 +1239,7 @@ pub(crate) fn vm_run_bc(
                                 // chunk and frame layout are the spliced ones.
                                 cur_arm = ArmHandle::new(ra);
                             }
-                            if jit_outcome == Some(2) && capture {
+                            if jit_outcome == Some(outcome::PREEMPT) && capture {
                                 // A native PREEMPT: the reduction budget is spent, so yield
                                 // NOW with this frame — do not hand it to the interpreter
                                 // "until its own loop-top notices". That interpreter run
@@ -1442,9 +1453,9 @@ pub(crate) fn vm_run_bc(
                 // Resumed mid-arm: when the frame's guard last validated is unknown, so the
                 // first `SelfCall` re-checks the binding.
                 cur_entry_epoch = u64::MAX;
-                if outcome == Some(2) && capture {
+                if outcome == Some(outcome::PREEMPT) && capture {
                     // A native PREEMPT: yield NOW with this frame, as the frame path's
-                    // `Some(2)` arm does — see its comment for why it must not wait for
+                    // preempt arm does — see its comment for why it must not wait for
                     // the interpreter's next safepoint.
                     return_captured!(Preempted, current_frame!(cur_arm), None);
                 }
