@@ -19,17 +19,7 @@
 ;;; the slot" — actual 6 019 000, expect 12 008 000; the other cases pass either way — guards
 ;;; on the copy and float paths, not reproductions.
 
-(defmodule jit-int-slot-cache-test (:use test))
-
-;; Drive `f` until its arm settles on a tier. The compile is asynchronous and, under a
-;; loaded parallel suite, can lag any fixed call count (200 batches read `:queued` under the
-;; pre-push gate), so a round that finds it still queued waits for the compiler in TIME.
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (st (get (%jit-arm-state f argc) :state))
-    (if (or (= st :native) (= st :bailed) (= rounds 0))
-      st
-      (do (if (= st :queued) (sleep 10) nil) (settle f argc batch (- rounds 1))))))
+(defmodule jit-int-slot-cache-test (:use test) (:use suite-helpers))
 
 (defn- sum-over (f i acc) (if (= i 0) acc (sum-over f (- i 1) (+ acc (f i)))))
 

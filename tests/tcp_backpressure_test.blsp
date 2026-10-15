@@ -16,10 +16,7 @@
 ;; and a sender that exited early would close its socket at owner death — both would cut
 ;; off the bytes still queued behind the paused reader.
 
-(defmodule tcp-backpressure-test (:use test) (:use tcp :exclude [send]))
-
-;; The high-water mark (1 MiB) plus one read's worth (64 KiB) of overshoot.
-(def- high-water-bound (+ (* 1024 1024) 65536))
+(defmodule tcp-backpressure-test (:use test) (:use tcp :exclude [send]) (:use suite-helpers))
 
 (defn- block (k)
   "64 KiB whose content names `k`, so a reordered or dropped block is a mismatch."
@@ -36,42 +33,11 @@
     (receive ([:close] (tcp/close c)) (after 60000 (tcp/close c)))
     (receive ([:done] nil) (after 60000 nil))))
 
-(defn- take-chunks (sock n acc)
-  "Take exactly `n` queued `[:tcp sock d]` messages; return them oldest first."
-  (if (= n 0)
-    (reverse acc)
-    (receive
-      ([:tcp ^sock d] (take-chunks sock (dec n) (cons d acc)))
-      (after 20000 (error "take-chunks: a counted chunk never arrived")))))
-
-(defn- queued-while-idle (sock)
-  "Let the reactor deliver all it will to an owner that is not reading, then take the
-  chunks that are sitting in the mailbox. Returns `[byte-count chunks]`."
-  (await-paused)
-  (let (chunks (take-chunks sock (queued-count) nil))
-    [(reduce chunks 0 (fn (sum chunk) (+ sum (bytes/length chunk)))) chunks]))
-
 (defn- binary-listener ()
   "A loopback listener whose accepted sockets start in binary mode, and its port."
   (let (ls (tcp/listen "127.0.0.1" 0))
     (tcp/set-binary ls true)
     [ls (or (tcp/local-port ls) (error "the listener reported no local port"))]))
-
-(defn- queued-count ()
-  "How many messages sit in this process's mailbox."
-  (or (proc/mailbox-size (self)) 0))
-
-(defn- await-paused ()
-  "Wait until this process's mailbox holds chunks and has stopped growing — the reactor
-  has reached the budget and paused the socket. Returns the queued count."
-  (eventually "the socket pausing on its budget"
-    (fn ()
-      (let (first-count (queued-count))
-        (sleep 25)
-        (let (second-count (queued-count))
-          (sleep 25)
-          (when (and (> first-count 0) (= first-count second-count (queued-count)))
-            first-count))))))
 
 (defn- accept-binary (ls)
   (let (s (receive ([:tcp-accept ^ls cs] cs) (after 20000 (error "no accept"))))
@@ -87,7 +53,7 @@
         sender (spawn (send-then-hold me port payload))
         s (accept-binary ls))
     (receive ([:queued ^sender] nil) (after 60000 (error "sender never queued")))
-    (let ([queued early] (queued-while-idle s))
+    (let ([queued early] (queued-while-idle :tcp s bytes/length))
       (send sender [:close])
       (let (rest (drain s))
         (send sender [:done])
@@ -156,7 +122,7 @@
         (send sender [:close])
         (send heir [:go])
         (let (rest (receive ([:rest r] r) (after 30000 :timeout))
-              early (take-chunks s held nil))
+              early (take-chunks :tcp s held nil))
           (send sender [:done])
           (tcp/close s)
           (tcp/close ls)
@@ -196,7 +162,7 @@
           [port cert] (receive ([:ready p ct] [p ct]) (after 20000 (error "no tls server")))
           s (tls/request "localhost" port "go" cert true))
       (receive ([:queued] nil) (after 60000 (error "tls server never queued")))
-      (let ([queued early] (queued-while-idle s))
+      (let ([queued early] (queued-while-idle :tcp s bytes/length))
         (send server [:close])
         (let (rest (drain s))
           (send server [:done])

@@ -11,7 +11,7 @@
 ;; crossing, so a native lowering that disagreed with the VM's would show. The last cases
 ;; pin the deopt path: a non-vector reaching an inlined `%vector-length` / `%vector-ref`
 ;; after the arm went native must raise the native's exact error, not read garbage.
-(defmodule type-predicate-inline-test (:use test))
+(defmodule type-predicate-inline-test (:use test) (:use suite-helpers))
 
 (defrecord pt (x y))
 
@@ -136,12 +136,6 @@
 ;; `jit_eq_join_test` arms bailed on their literal argument. These arms must settle
 ;; `:native` on a literal argument. Sabotage-verified: with the region check routed back
 ;; to `deopt`, every one of the five reads `:bailed` with 16 deopts.
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (st (get (%jit-arm-state f argc) :state))
-    (if (or (= st :native) (= st :bailed) (= rounds 0))
-      st
-      (settle f argc batch (- rounds 1)))))
 (defn- drive (f v n) (if (= n 0) nil (do (f v) (drive f v (- n 1)))))
 
 (defn- lit-destructure (v) (let ([a b] v) a))

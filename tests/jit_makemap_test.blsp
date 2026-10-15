@@ -13,14 +13,7 @@
 ;;; answer slowly is what this used to produce. Sabotage-verified: with the `MakeMap`
 ;;; admission removed from `in_subset`, the tier case reads `:bailed`.
 
-(defmodule jit-makemap-test (:use test))
-
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (st (get (%jit-arm-state f argc) :state))
-    (if (or (= st :native) (= st :bailed) (= rounds 0))
-      st
-      (settle f argc batch (- rounds 1)))))
+(defmodule jit-makemap-test (:use test) (:use suite-helpers))
 
 ;; A literal with a duplicate key (last wins), a nested literal and a computed key, all
 ;; inside the loop body.

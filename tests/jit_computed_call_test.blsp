@@ -12,15 +12,7 @@
 ;;; checks run through the cache; under a ceiling below Native there is no native caller
 ;;; and the checks run on whatever engine is live.
 
-(defmodule jit-computed-call-test (:use test))
-
-;; Drive `f` until its arm settles on a tier — see `jit_int_slot_cache_test.blsp`.
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (st (get (%jit-arm-state f argc) :state))
-    (if (or (= st :native) (= st :bailed) (= rounds 0))
-      st
-      (do (if (= st :queued) (sleep 10) nil) (settle f argc batch (- rounds 1))))))
+(defmodule jit-computed-call-test (:use test) (:use suite-helpers))
 
 (defn- make-adder (k) (fn (x) (+ x k)))
 
