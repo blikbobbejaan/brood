@@ -319,7 +319,7 @@ Works on maps (by key) and vectors (by integer index, which must be in range).
 
     (identity 5)   → 5"
   x)
-;; `zero?` lives in tools.blsp now, beside `defability` — it dispatches on TYPE, and the
+;; `zero?` lives in abilities.blsp now, beside `defability` — it dispatches on TYPE, and the
 ;; ability machinery does not exist this early in the prelude. See the `Zero` ability.
 ;; `nan?` / `infinite?` live in `math/` — float-domain questions belong with `math/even?`
 ;; and `math/positive?`, and must not answer `false` for a string, a nil, a vector. See

@@ -377,7 +377,7 @@ import (and so `(:use set)` can't shadow them).
 (defn- %defrecord-ftype (f) (if (pair? f) (second f) nil))
 (defn- %defrecord-acc-sym (rec fld) (symbol (str (->string rec) "-" (->string fld))))
 ;; The form following keyword `kw` in a macro's flat option list, or nil — how `defrecord`
-;; reads `:derives` and `defability` (tools.blsp) reads `:sealed`/`:requires`/`:derive-record`.
+;; reads `:derives` and `defability` (abilities.blsp) reads `:sealed`/`:requires`/`:derive-record`.
 (defn- %form-after (opts kw)
   (cond
     (empty? opts) nil

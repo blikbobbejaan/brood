@@ -1,0 +1,1081 @@
+;; ---- record identity and library-value predicates -----------------------------
+
+(defn %identity-of (x)
+  "The dispatch identity of `x`: its nominal record id (a `module/name` keyword) if it
+  is an identity-carrying record, else its `type-of` kind. This — with `record?` /
+  `record-id` / `fields` — is the one seam a later kernel slot swaps behind; nothing
+  outside this module reads `:__id__` directly."
+  ; one hash on the hot path: `get` (not `contains?` + `get`). `:__id__` is a reserved
+  ; keyword a record always carries and is never nil, so a present id is truthy.
+  (if (map? x)
+    (let (id (get x :__id__))
+      (if id id (type-of x)))
+    (type-of x)))
+
+(defn record? (x)
+  "True if `x` is an identity-carrying record (a `defrecord` value). Requires a
+  *truthy* `:__id__` — matching `%identity-of`, which treats a nil/false id as a plain
+  map and dispatches on `type-of`. (A `defrecord` value always carries a truthy keyword
+  id; the guard only matters for a hand-written `{:__id__ nil …}` literal, which must not
+  be seen as a record by `record?`/`record-id`/`fields` while dispatching as `:map`.)
+
+    (record? 42) → false
+    (record? {:a 1}) → false"
+  (if (and (map? x) (get x :__id__)) true false))
+
+(defn record-id (x)
+  "The nominal id (`module/name` keyword) of record `x`, or nil if `x` is not a record.
+  Unlike `%identity-of`, never falls back to `type-of`.
+
+    (record-id {:a 1}) → nil"
+  (if (record? x) (get x :__id__) nil))
+
+(defn fields (x)
+  "The FIELDS of record `x` as a plain map — its identity omitted. The explicit id-free
+  view; the default `Seqable` view a record's `seq`/`count`/`keys`/`map`/`fold` already
+  give (so those don't leak `:__id__`). A plain map is returned unchanged.
+
+    (fields {:a 1 :b 2}) → {:a 1 :b 2}"
+  (if (record? x) (dissoc x :__id__) x))
+
+; ---- library type predicates ------------------------------------------------
+; Every TYPE PREDICATE is bare (`list?`/`vector?`/`map?`/`set?`/`record?`), so a value's
+; type reads the same way whatever its type. A few std library types are records rather
+; than core kinds — their predicates live here too (a small record-id check keyed by the
+; type's `:module/name` id) so `queue?`/`pq?` sit alongside `set?`/`map?` instead of doubling
+; as `queue/queue?` inside their own module (ADR-236). The check is pure and needs no module
+; loaded: a non-record, or a record of another id, is simply false.
+(defn queue? (x)
+  "True if `x` is a FIFO queue (`std/queue`) — by identity, not by shape.
+
+    (queue? (list 1 2))   → false"
+  (%eq (record-id x) :queue/queue))
+
+(defn pq? (x)
+  "True if `x` is a min-priority queue (`std/pq`) — by identity, not by shape.
+
+    (pq? [1 2 3])   → false"
+  (%eq (record-id x) :pq/pq))
+
+(defn multimap? (x)
+  "True if `x` is a multi-valued map (`std/multimap`) — by identity, not by shape.
+
+    (multimap? {:a 1})   → false"
+  (%eq (record-id x) :multimap/multimap))
+
+(defn datetime? (x)
+  "True if `x` is a datetime — a date *and* a time-of-day (`std/datetime`) — by identity.
+
+    (datetime? 42)   → false"
+  (%eq (record-id x) :datetime/datetime))
+
+(defn date? (x)
+  "True if `x` is a date with no time component (`std/datetime`) — by identity.
+
+    (date? (datetime/today))   → true"
+  (%eq (record-id x) :datetime/date))
+
+(defn time-of-day? (x)
+  "True if `x` is a time-of-day with no date component (`std/datetime`) — by identity.
+
+    (time-of-day? 42)   → false"
+  (%eq (record-id x) :datetime/time-of-day))
+
+;; ---- ability impl registration and dispatch -----------------------------------
+
+; The owning module of a record id keyword `:mod/name` (as a string), or nil for a
+; built-in id (`:int`, `:default` — no `/`). The record NAME is the final `/`-segment, so
+; the module is everything BEFORE the last `/` — a nested module keeps all its segments
+; (`:editor/display/frame` → `editor/display`, not `editor`). Used to place an impl in the
+; tier ladder: an impl whose registering ns equals this owns the type.
+;
+; Written on the two NATIVE string ops rather than `string/split` + `string/join`: this
+; runs on every `impl` registration, the prelude's own `Display`/`Inspect` impls included,
+; so it is the one boot-time caller of the `string` module — and the module loads
+; LAZILY (at the first lookup that misses, ADR-335). Cutting at the last `/` is also what the docstring above
+; describes, without building the intermediate list to rejoin all but its last element.
+(defn- %impl-id-owner (key)
+  (if (keyword? key)
+    (let (nm (->string key)
+          cut (%str-last-index-of nm "/"))
+      (if (< cut 0) nil (string/substring nm 0 cut)))
+    nil))
+
+; True if module `from` belongs to the current project's OWN package (ADR-172): its
+; `*ns-package*` entry (set at project setup) equals `*project-name*`. Guarded with `bound?`
+; so abilities still work when no project is loaded (a bare `brood script.blsp` — those
+; ambients are undeclared then). Root/REPL (`from` = nil) is handled by the caller as the app.
+(defn- %impl-app? (from)
+  (and from
+    (bound? '*project-name*)
+    *project-name*
+    (bound? '*ns-package*)
+    (= (get *ns-package* from) *project-name*)))
+
+(defn %impl-rank (aname key from)
+  "The ability-impl precedence TIER for an impl of `aname`/`key` declared by module `from` —
+higher wins: app 4, type-owner 3, ability-owner 2, other 1 (ADR-172 §3). Internal to impl
+resolution; `%impl-for` is what picks the winner."
+  ;; Precedence tier (ADR-172 §3), higher wins: **app (4) > type-owner (3) > ability-owner
+  ;; (2) > other (1)**. `from` = nil is the root/REPL — the user IS the app, so app tier; a
+  ;; module whose package is the project's own is likewise the app. Otherwise `from` owns the
+  ;; record's type (id-owner) or the ability (its `:default`/built-in impls), else it's other.
+  ;; Guard the nil/app cases before `(->string from)`.
+  (if (or (nil? from) (%impl-app? from))
+    4
+    (let (from-name (->string from)
+          id-owner (%impl-id-owner key)
+          abl-owner (let (o (%ability-owner-ns aname)) (if o (->string o) nil)))
+      (cond
+        (= from-name id-owner) 3
+        (= from-name abl-owner) 2
+        else 1))))
+
+(defn- %impl-fn-arity (f)
+  "The impl fn `f`'s shape as `[fixed-count variadic?]` — the number of fixed params (before
+  any `&`) and whether it takes a `&`-rest — read from `(arglist f)`."
+  (let (params (arglist f)
+        fixed (count (take-while params (fn (s) (not (= s '&))))))
+    [fixed (includes? params '&)]))
+
+(defn- %register-impl-check-arity (aname op f)
+  "Warn if impl `f`'s arity is incompatible with `aname`'s declared `op` arity. Only runs
+  when the ability is KNOWN (in `*abilities*`) — an impl registered before its `defability`
+  (legal, ADR-172 late binding) simply isn't arity-checked here; the checker covers the rest.
+  A fixed-arity impl must match exactly; a variadic impl must accept the declared arity."
+  (let (specs (get *abilities* aname)
+        op-spec (if specs (first (%filter specs (fn (s) (= (first s) op)))) nil)
+        op-args (if op-spec (second op-spec) nil))
+    ;; A method that is not one of the ability's ops can never dispatch — no generic
+    ;; function exists for it — so it is an error, not a silent registration. Only when the
+    ;; ability is known: an impl ahead of its `defability` is legal late binding.
+    (when (and specs (nil? op-spec))
+      (error "impl "
+        aname
+        ": `"
+        op
+        "` is not an op of "
+        aname
+        " (declared: "
+        (string/join (map (%filter specs pair?) first) " ")
+        ")"))
+    ; Skip a variadic OP spec — it declares no single arity to pin against (matches the
+    ; checker). Only a fixed op spec is arity-checked.
+    (when (and op-spec (not (includes? op-args '&)))
+      (let (op-arity (count op-args)
+            shape (%impl-fn-arity f)
+            fixed (nth shape 0)
+            variadic (nth shape 1))
+        (when (if variadic (> fixed op-arity) (not (= fixed op-arity)))
+          (%write-out (str "warning: ability "
+                        aname
+                        "/"
+                        op
+                        " expects "
+                        op-arity
+                        " arg(s), but this impl takes "
+                        (if variadic (str fixed "+") fixed)
+                        "\n")))))))
+
+(defn %register-impl (aname op key f from)
+  "Register impl `f` of `aname`'s `op` for dispatch id `key`, tagged with the registering
+  namespace `from`. Resolution is by PRECEDENCE, not load order (ADR-172 §3): the impl with
+  the highest tier for a `(aname, op, key)` slot wins, computed by `%impl-rank`, so the result
+  is deterministic regardless of registration order. A same-tier re-register from a DIFFERENT
+  `from` is a genuine cross-module conflict (warned; last wins); from the SAME `from` it is
+  hot-reload (silent); a strictly lower-tier registration is ignored (a higher tier holds the
+  slot). Read-modify-write of `*impls*` — register at load time, as top-level `impl` does."
+  (%register-impl-check-arity aname op f)
+  (%install-impl aname op key f from))
+
+(defn- %install-impl (aname op key f from)
+  "The registration itself — precedence, the cross-module conflict warning, the two registry
+writes — without `%register-impl`'s arity diagnostic. `%register-impl` is the entry an `impl`
+form takes; this is what a replay from the stdlib image takes, whose impls were checked when
+the image was written."
+  (let (op-key [aname op]
+        prov-key [aname op key]
+        ; presence, not truthiness: a root/REPL/app incumbent records `from` = nil, so a
+        ; nil `prev-from` is ambiguous between "no incumbent" and "incumbent was the app".
+        ; Keying off `contains?` keeps a later lower tier from displacing an app impl.
+        has-prev (contains? *impl-from* prov-key)
+        prev-from (get *impl-from* prov-key)
+        new-rank (%impl-rank aname key from)
+        ; recompute the incumbent's tier from its recorded `from` — no extra registry.
+        old-rank (if has-prev (%impl-rank aname key prev-from) 0))
+    (when (and has-prev (= new-rank old-rank) (not (= prev-from from)))
+      (%write-out (str "warning: ability "
+                    aname "/" op " for " key " — same-tier impl from " prev-from " overridden by "
+                    from " (last wins)" "\n")))
+    ; Store the winner only when the new impl's tier is >= the incumbent's — so a higher tier
+    ; always holds the slot and order can't decide it. A strictly lower tier is dropped (its
+    ; owner already has a stronger claim). The fn is stored DIRECTLY so dispatch (`%impl-for`)
+    ; stays a plain %map-get; provenance in *impl-from* is read only here, never on dispatch.
+    (when (>= new-rank old-rank)
+      (%registry-update! '*impls* :assoc [op-key key] f)
+      (%registry-update! '*impl-from* :assoc [prov-key] from))
+    nil))
+
+(defn %impl-for (op-key key)
+  "The impl fn of op `op-key` (a `[ability op]` pair) for id `key`, falling back to a
+  `:default` impl, or nil. One map fetch for the op's method set, then one by id."
+  (let (methods (get *impls* op-key))
+    (or (get methods key) (get methods :default))))
+
+(defn %impl-exact? (op-key key)
+  "Is there an impl of op `op-key` registered for id `key` SPECIFICALLY — ignoring the
+`:default` that `%impl-for` falls back to? The question the collection seams ask before
+handing a built-in kind to an ability: `Seqable`'s `:default` is `(map-pairs (fields x))`,
+which is meaningless for a rope, so falling through unconditionally would swap a clear
+`expected collection` error for a confusing one (ADR-253)."
+  (if (nil? (get (get *impls* op-key) key)) false true))
+
+(def- *substrate-abilities* ['Display 'Inspect 'Seqable 'Conjable])
+;; The abilities the LANGUAGE ITSELF dispatches on. Their `:default` impls are the fallback
+;; every value relies on — `Display`'s is what `io/write`/`io/puts`/`str` reach for — so they are
+;; substrate, not policy, and `%unregister-impl` refuses to retract them: `(%unimpl Display
+;; :default)` is one line that stops the image printing anything, and the only clue is a
+;; `no impl for :vector` from deep inside an unrelated call. Same reasoning as reserved names
+;; (ADR-166): the language's own definitions are not yours to remove. An `impl` you wrote for
+;; YOUR OWN id (`(impl Display my/rec …)`) is policy, and retracts normally.
+
+(defn- %impl-substrate? (aname key)
+  "Whether `[aname key]` names one of the language's own fallback impls — the `:default` of an
+  ability the runtime dispatches on itself."
+  (and (= key :default) (includes? *substrate-abilities* aname)))
+
+(defn %unregister-impl (aname op key)
+  "Remove `key`'s impl of `aname`'s `op` — the inverse of `%register-impl`. Returns true when
+  an impl was there, false when there was nothing to remove (idempotent, never raises) — and
+  errors for one case only: a `:default` of an ability the language dispatches on itself
+  (`%impl-substrate?`), because removing that leaves every value unprintable.
+
+  The slot becomes UNCLAIMED, not `:default`: a later `%register-impl` of any tier takes it,
+  because precedence compares against an incumbent and there is none. Dispatch falls back to
+  the ability's `:default` impl if it declares one, else `%no-impl` — the same state as before
+  anyone implemented it.
+
+  Registering an impl was open and reversible in every way but this one. A registry with no
+  inverse cannot be returned to a known state, which bites anything that has to: a test that
+  must not leak into the next one, a REPL session undoing an experiment, a hot reload
+  retracting an impl the new source no longer declares."
+  (when (%impl-substrate? aname key)
+    (error "%unregister-impl: "
+      aname "/" op " :default is part of the language — removing it "
+      "would leave every value unprintable. Override it with `impl` for your own id instead."))
+  (let (op-key [aname op]
+        prov-key [aname op key]
+        had (contains? (or (get *impls* op-key) {}) key))
+    (when had
+      (%registry-update! '*impls* :dissoc [op-key key] nil)
+      (%registry-update! '*impl-from* :dissoc [prov-key] nil))
+    had))
+
+(defn %derive-into (aname id fields from)
+  "Load-time worker for `defrecord`'s `:derives` (ADR-185): register ability `aname`'s derived
+  impl for record id `id` (field-name symbols `fields`), tagged with ns `from`. Calls the
+  ability's `:derive-record` recipe to get a list of `impl` method forms `((op [args] body…)
+  …)`, evals each into a fn, and registers it for `id`. Loud error if `aname` is not derivable
+  (declares no recipe). Runs at load, so the ability's `defability` need only precede the
+  record's construction — not its macro-expansion."
+  (let (recipe (%ability-derive-recipe aname))
+    (when (not recipe)
+      ;; Two different faults, and they want different fixes: an ability that is not LOADED
+      ;; (a typo, or a missing module) versus a real ability that declares no recipe. One
+      ;; message for both would send you looking for a recipe on an ability that isn't there.
+      (if (%ability-ops aname)
+        (error "defrecord :derives — ability "
+          aname " is not derivable " "(its defability declares no :derive-record recipe)")
+        (error "defrecord :derives — no ability named "
+          aname " is loaded " "(check the spelling, and that its defability runs first)")))
+    (doseq (m (recipe fields))
+      ;; a method form is `(op [args] body…)` (impl syntax — a `[args]` VECTOR); `fn` wants a
+      ;; LIST param, so convert the vector to a list, exactly as the `impl` macro does.
+      (%register-impl aname
+        (first m)
+        id
+        (reflect/eval (cons 'fn (cons (map (second m) (fn (s) s)) (rest (rest m)))))
+        from))))
+
+(defn %no-impl (op-key key)
+  "The loud, located error an op raises when no impl (and no `:default`) covers id
+  `key`. Throws a STRUCTURED error map — `{:kind :%no-impl :message … :ability :op :id
+  :have}` — so a handler can branch on the parts (`(get e :id)`) without string-parsing;
+  `error-message` still returns the `:message`, so a `(catch e (error-message e))` reads
+  the same human text as before. Names the ability, the op, the id, and the ids that ARE
+  implemented."
+  (let (aname (first op-key)
+        op (second op-key)
+        known (keys (or (get *impls* op-key) {}))
+        message (if (empty? known)
+                  (str "ability " aname "/" op ": no impl for " key)
+                  (str "ability " aname "/" op ": no impl for " key " — have " known)))
+    (throw {:kind :%no-impl :message message :ability aname :op op :id key :have known})))
+
+(defn satisfies? (aname x)
+  "True if ability `aname` is implemented for `x`'s identity — every declared op
+  resolves (directly or via `:default`). Lets a caller branch instead of letting the op
+  raise the missing-impl error. False for an unknown ability."
+  (let (key (%identity-of x)
+        ops (%ability-ops aname))
+    (if ops
+      (every? ops (fn (spec) (%impl-for [aname (first spec)] key)))
+      false)))
+
+; ---- macros -----------------------------------------------------------------
+
+(defn- %ability-id-kw (m)
+  "The dispatch-id keyword for an impl / sealed-member id `m`. A keyword is kept as-is
+  (`:int`, `:default`); a bare record symbol is qualified against the current ns
+  (`circle` → `:<ns>/circle`, matching what `defrecord` bakes into a value); an already-
+  qualified symbol has its MODULE segment rooted, then is keyworded (`geo/circle` →
+  `:geo/circle`, and an intra-project `shapes/circle` in project `app` → `:app/shapes/circle`).
+  Shared by `impl` and `:sealed` so they agree on a bare id — otherwise `(impl S circle …)`
+  would register under `:circle` while a value presents `:<ns>/circle` and never match (KI-15).
+
+  Rooting the qualified case is the same agreement one level up (ADR-070): `defrecord` bakes
+  `:__id__` by qualifying against the ROOTED current ns, so an impl written against the
+  record's own short module path (`(impl A op (r lsp-requests/LspHover) …)`) must root that
+  path too, or it registers under `:lsp-requests/lsp-hover` while every value presents
+  `:bedit/lsp-requests/lsp-hover` and dispatch finds no impl."
+  (if (symbol? m)
+    ;; `%str-last-index-of`, the kernel primitive, not the `string/last-index-of` wrapper
+    ;; around it: this runs during `impl` at module-load time, and a `string/…` reference
+    ;; from the prelude would LOAD the `string` module at this lookup (ADR-335) — inside an
+    ;; `impl` registration, which is not where a module load belongs. This is the rule
+    ;; `prelude_hygiene` states: prelude code reaches for the `%`-primitive, never the module
+    ;; wrapper.
+    (let (nm (->string m)
+          cut (%str-last-index-of nm "/" (string/length nm)))
+      (if (< cut 0)
+        (%defrecord-qualify nm)
+        (keyword (str (->string (%root-module-name (symbol (string/substring nm 0 cut))))
+                   "/"
+                   (string/substring nm (inc cut) (string/length nm))))))
+    m))
+
+(defn- %defability-op-call (impl-sym arg-syms)
+  "The dispatch call an op emits once its impl `impl-sym` is resolved. A fixed-arity op
+  emits a direct `(impl self a b …)` — no arg-list allocation. A VARIADIC op (a `&` in the
+  arg vector) emits `(apply impl self a … rest)`, because `&` is a binding marker, not a
+  call-position argument — a direct `(impl self & rest)` would pass the symbol `&` as an
+  argument (an unbound-symbol error at every call)."
+  (if (includes? arg-syms '&)
+    (let (fixed (take-while arg-syms (fn (s) (not (= s '&))))
+          rest-sym (second (drop-while arg-syms (fn (s) (not (= s '&))))))
+      (append (list '/apply impl-sym) (append fixed (list rest-sym))))
+    (cons impl-sym arg-syms)))
+
+(defn- %defability-op-body (op)
+  "The default-implementation body of op spec `op` — everything after the arg vector and
+  any `:-> RET` — or nil when the op declares none. A spec `(op [args] :-> ret? body…)`
+  with a body is a PROVIDED op (ADR-185): `defability` emits its body as an auto-registered
+  `:default` impl, so an `impl` that omits the op still gets it (Rust/Haskell provided
+  methods, Elixir `Protocol`'s derived defaults). The body typically calls the ability's
+  *required* ops on `self`, so it works for any id that supplies those."
+  (let (tail (rest (rest op)))
+    ; forms after `(op-name [args])`
+    (if (= (first tail) :->)
+      (rest (rest tail)) ; skip the `:-> ret` pair
+      tail)))
+
+;; Every list in a `defability` is an op spec, `(op [args…] …)`, except the value of a
+;; `:derive-record` clause (a `(fn (fields) …)`). One with a non-vector parameter list —
+;; `(zm (self))`, the `defn` spelling — is an error rather than silently dropped (which
+;; would leave the ability with no ops), and so is a duplicated op name (the second `defn`
+;; would shadow the first).
+(defn- %defability-check-specs (aname specs)
+  (letrec (go (fn (items after-derive seen)
+                (cond
+                  (empty? items) nil
+                  (%eq (first items) :derive-record) (go (rest items) true seen)
+                  (keyword? (first items)) (go (rest items) false seen)
+                  (pair? (first items))
+                    (let (s (first items))
+                      (cond
+                        after-derive (go (rest items) false seen)
+                        (not (symbol? (first s)))
+                          (error "defability "
+                            aname
+                            ": an op spec is (op [args…] …), got "
+                            (pr-str s))
+                        (not (vector? (second s)))
+                          (error "defability "
+                            aname
+                            ": op `"
+                            (first s)
+                            "` needs a [args…] VECTOR (the defn spelling `("
+                            (first s)
+                            " (…))` is not an op spec), got "
+                            (pr-str s))
+                        (includes? seen (first s))
+                          (error "defability " aname ": op `" (first s) "` is declared twice")
+                        else (go (rest items) false (cons (first s) seen))))
+                  else (go (rest items) false seen))))
+    (go (if (string? (first specs)) (rest specs) specs) false nil)))
+
+(defmacro defability (aname & specs)
+  "Declare ability `aname`. Each op spec `(op [args…] :-> ret?)` becomes a generic
+  function dispatching on its first argument's identity. An optional leading docstring
+  is allowed. Records the specs in *abilities* for the checker / LSP.
+
+  A **provided** op carries a default body after its spec — `(op [args] :-> ret? body…)`
+  — which `defability` registers as the op's `:default` impl (ADR-185). An `impl` that
+  omits a provided op inherits the default; one that supplies it overrides it (an id-keyed
+  impl always beats `:default`). Write the required ops as bodyless specs and derive the
+  rest — implement `rank`, get `outranks?`/`ranks-below?` free:
+
+    (defability Ranked
+      (rank [self] :-> int)                                        ; required
+      (outranks?    [a b] :-> bool (> (rank a) (rank b)))           ; provided
+      (ranks-below? [a b] :-> bool (< (rank a) (rank b))))          ; provided
+
+  An optional `:sealed [id …]` clause names the CLOSED set of member ids the ability is
+  meant to cover; the checker then flags any member missing an impl of any *required* op
+  (a provided op is satisfied by its default). An optional `:requires [A B …]` clause names
+  prerequisite (super-)abilities: any id implementing this ability must also implement each of
+  them, which the checker enforces (`(defability Ranked :requires [Eq] (rank …))`). A bare
+  record symbol is qualified with the current ns. An optional `:derive-record <fn>` clause makes the ability derivable: `<fn>`
+  maps a record's field names to a list of `impl` method forms, which `defrecord`'s
+  `:derives` splices in (see `defrecord`).
+
+    (defability Size  (size [self] :-> int))
+    (defability Store (fetch [self k]) (put [self k v]))
+    (defability Shape :sealed [circle rect] (area [self] :-> float))"
+  ; An op spec is a pair whose second element is the `[args]` VECTOR; that excludes a
+  ; `:derive-record` recipe `(fn (fields) …)` (its second is a `(fields)` *list*) and any
+  ; keyword-clause value, so only real ops are collected.
+  (%defability-check-specs aname specs)
+  (let (ops (%filter specs (fn (s) (and (pair? s) (vector? (second s)))))
+        ;; The ability's own docstring, if it wrote one — the leading string in `specs`.
+        ;; Each generated op inherits it (see the `defn` below): an op IS the ability's
+        ;; surface, and a generic function with no doc at all is a hole in `(doc …)`,
+        ;; `nest doc` and the LSP alike. Surfaced by `(audit/undocumented)`.
+        ability-doc (if (string? (first specs)) (first specs) nil)
+        ;; The keyword clauses: `:sealed [members…]`, `:derive-record recipe` (an inline
+        ;; `(fn (fields) …)` or a fn-symbol — its second element is no `[args]` vector, so
+        ;; the op filter above skips it) and `:requires [abilities…]`.
+        sealed-vec (%form-after specs :sealed)
+        sealed-ids (if sealed-vec (map sealed-vec %ability-id-kw) nil)
+        derive-fn (%form-after specs :derive-record)
+        requires-vec (%form-after specs :requires)
+        ; pass `(reflect/current-ns)` as the owner — evaluated at load in the DEFINING module, so
+        ; `*ability-owner*` records where the ability was declared (ADR-172 precedence).
+        ; The specs are stored WITH their bodies so the checker can tell a provided op from
+        ; a required one (a body ⇒ provided ⇒ not demanded of a sealed member).
+        reg (append
+              (append (cons (list '%register-ability
+                              (list 'quote aname)
+                              (list 'quote ops)
+                              (list '/reflect/current-ns))
+                        (if sealed-ids
+                          (list (list '%register-sealed (list 'quote aname) (cons 'list sealed-ids)))
+                          nil))
+                ; the `:derive-record` recipe is emitted UNQUOTED — evaluated to a closure at
+                ; load, so `defrecord`'s `:derives` can call it at expansion (ADR-185).
+                (if derive-fn
+                  (list (list '%register-ability-derive (list 'quote aname) derive-fn))
+                  nil))
+              ; `:requires [A B]` — an implementor of this ability must also implement A and B
+              ; (super-abilities, ADR-193). The names are emitted quoted so the list is the
+              ; ability-name symbols, not their (unbound) values.
+              (if requires-vec
+                (list (list '%register-ability-requires
+                        (list 'quote aname)
+                        (cons 'list (map requires-vec (fn (r) (list 'quote r))))))
+                nil))
+        ; A provided op (one with a default body) becomes a `:default` impl, registered from
+        ; the declaring ns (ability-owner tier) so an app/type impl can still override it. Its
+        ; body runs through ordinary dispatch, calling sibling ops on `self` by late binding.
+        provided-defs (fold ops
+                        nil
+                        (fn (acc op)
+                          (let (body (%defability-op-body op))
+                            (if (empty? body)
+                              acc
+                              (let (arg-syms (map (second op) (fn (s) (if (pair? s) (first s) s))))
+                                (append acc
+                                  (list (list '%register-impl
+                                          (list 'quote aname)
+                                          (list 'quote (first op))
+                                          :default (cons 'fn (cons arg-syms body))
+                                          (list '/reflect/current-ns)))))))))
+        op-defs (map ops
+                  (fn (op)
+                    (let (op-name (first op)
+                          ; arg vector → list of bare param symbols; dispatch reads the FIRST
+                          ; arg's identity. A param may be typed `(->string T)` (the `:-> RET`
+                          ; sibling — a checker-only annotation, ADR-180); strip the type here
+                          ; so the generated `defn` gets a plain symbol, `factor` not `(factor float)`.
+                          arg-syms (map (second op) (fn (s) (if (pair? s) (first s) s)))
+                          first-arg (first arg-syms)
+                          ; a *constant* [ability op] key — a quoted literal, built once
+                          op-key (list 'quote [aname op-name])
+                          ; gensym'd temporaries so an op arg named `k`/`f` can't be captured
+                          id-sym (gensym)
+                          impl-sym (gensym)
+                          ; the declared `:-> RET`, checked at every call when contracts are
+                          ; armed — HERE, in the op, not around each impl (KI-182): an impl
+                          ; stays the thin closure it was written as, so `(impl Port :native
+                          ; (write [p s] (%port-write p s)))` is still elided to its primitive,
+                          ; and an unarmed call pays one native `(%contracts-armed?)`. The
+                          ; wrapper the first shape put around every impl body made each one
+                          ; a real activation and its own `not` a hot closure: `(io/puts 0)`'s
+                          ; port ops tiered `not` up and instantiated Cranelift on every short
+                          ; run. Mode-independent, so an imaged std ability checks too.
+                          declared-ret (%op-declared-ret (list op) op-name)
+                          resolved-call (%defability-op-call impl-sym arg-syms)
+                          checked-call (if (nil? declared-ret)
+                                         resolved-call
+                                         (list 'if
+                                           (list '%contracts-armed?)
+                                           (list '%contract-check-op-result
+                                             (list 'quote aname)
+                                             (list 'quote op-name)
+                                             (list 'quote declared-ret)
+                                             resolved-call)
+                                           resolved-call)))
+                      ; A generic op dispatches on its FIRST argument, so a zero-arg op has
+                      ; nothing to dispatch on — every value would route to the `:nil` impl.
+                      ; Reject it at expansion rather than silently degrade.
+                      (when (empty? arg-syms)
+                        (error "defability "
+                          aname ": op `" op-name
+                          "` takes no arguments — a generic op must have at least one "
+                          "argument (it dispatches on the first)"))
+                      (list 'defn
+                        op-name
+                        arg-syms
+                        (str "`"
+                          (->string op-name)
+                          "` — an operation of ability `"
+                          (->string aname)
+                          "`, dispatching on its first argument."
+                          (if ability-doc (str "\n\n" ability-doc) ""))
+                        (list 'let
+                          ; `%dispatch` is `%impl-for` through the per-op inline cache (ADR-172
+                          ; §7): the op passes `*impls*` so the kernel stays decoupled from the
+                          ; global's name; a hit skips the two CHAMP lookups. Cache-transparent.
+                          (list id-sym
+                            (list '%identity-of first-arg)
+                            impl-sym
+                            (list '%dispatch '*impls* op-key id-sym))
+                          (list 'if
+                            impl-sym
+                            ; the resolved call — direct for a fixed arity, `apply` for a
+                            ; variadic op (`%defability-op-call`) — under the declared
+                            ; return's check when contracts are armed
+                            checked-call
+                            (list '%no-impl op-key id-sym))))))))
+    (cons 'do (append reg (append op-defs provided-defs)))))
+
+(defn- %op-declared-ret (specs op-name)
+  "The `:-> RET` form `defability` declared for `op-name` among `specs`, or nil when the op
+declares no return. Read at `defability` EXPANSION time, so the op function it generates can
+check what the ability promised at every call when contracts are armed (KI-182).
+
+Written as explicit recursion over `first`/`rest` rather than with `filter`, for the same
+load-order reason `%sig-pos` exists: this runs while the prelude is being expanded, and the
+prelude implements abilities of its own (`(impl Port :native …)`)."
+  (cond
+    (nil? specs) nil
+    (%eq (first (first specs)) op-name)
+      (let (tail (rest (rest (first specs))))
+        (if (%eq (first tail) :->) (first (rest tail)) nil))
+    else (%op-declared-ret (rest specs) op-name)))
+
+;; Defined HERE rather than in contracts.blsp with the rest of the contract machinery: the
+;; `impl` expansion below names it, and the prelude's own impls (`(impl Port :native …)`)
+;; are compiled before the last prelude file exists, which the compile pass reports as an
+;; unbound head. Self-contained for the same reason — a literal error map, not
+;; `%contract-error`.
+(defn- %contract-check-op-result (aname op ret value)
+  "Enforce an ability op's declared return at run time — reached only when contracts are
+armed (`BROOD_CONTRACTS=1`, the `nest run`/`nest test` default): the op function `defability`
+generates tests `(%contracts-armed?)` inline and skips this call unarmed (KI-182). The checker
+reports a *statically* visible violation already; this catches the ones it cannot see —
+an impl whose body only yields the wrong type for some inputs, and an impl registered at
+run time from a value the checker never read. Returns `value` so it can wrap a body. The
+error is a `:blame :callee` contract error, like a function's own result mismatch."
+  (if (type-matches? ret value)
+    value
+    (%contract-raise {:kind :contract
+                      :message (str aname
+                                 "/"
+                                 op
+                                 ": result expected "
+                                 ret
+                                 ", got "
+                                 (type-of value)
+                                 " ("
+                                 (pr-str value)
+                                 ")")
+                      :blame :callee
+                      :function (symbol (str aname "/" op))
+                      :argument nil
+                      :expected ret
+                      :got value})))
+
+(defmacro impl (aname key & methods)
+  "Register implementations of ability `aname` for dispatch id `key` — a `type-of`
+  keyword (`:int`, `:map`, …), a record's nominal id (`geometry/circle`), or `:default`.
+  Open and late: from any module, any time. Each method is `(op [args…] body…)`; the
+  registration is tagged with the current namespace for conflict detection.
+
+    (impl Size :int             (size [n] n))
+    (impl Size geometry/circle  (size [c] (get c :r)))"
+  ; the dispatch id is a KEYWORD: a record id written as a symbol (`geometry/circle`) is
+  ; keyworded to match what `%identity-of` produces; a built-in id (`:int`) is already one.
+  ; A method is registered as the thin closure it was written as. An op's declared `:-> RET`
+  ; is checked by the OP function (`defability`), at every call when contracts are armed —
+  ; never by a wrapper around each method body here, which would make every impl a real
+  ; activation and stop `(impl Port :native (write [p s] (%port-write p s)))` being elided
+  ; to its primitive (KI-182).
+  (let (id-kw (%ability-id-kw key))
+    (cons 'do
+      (map methods
+        (fn (m)
+          (let (op-name (first m)
+                ; arg vector → list
+                arg-syms (map (second m) (fn (s) s))
+                body (rest (rest m)))
+            (list '%register-impl
+              (list 'quote aname)
+              (list 'quote op-name)
+              id-kw
+              (cons 'fn (cons arg-syms body))
+              (list 'quote (reflect/current-ns)))))))))
+
+(defmacro %unimpl (aname key & ops)
+  "Retract ability `aname`'s implementations for dispatch id `key` — the named `ops`, or
+  EVERY op the ability declares when none are named. The inverse of `impl`, and the same
+  shape: `(%unimpl Size geometry/circle)` undoes `(impl Size geometry/circle …)`.
+
+    (%unimpl Size geometry/circle)          ; every op
+    (%unimpl Shape my/rect area)            ; just `area`
+
+  Returns the number of impls actually removed, so a caller can tell a retraction from a
+  no-op. A `key` that never had an impl is a quiet zero."
+  (let (id-kw (%ability-id-kw key))
+    (list '%unimpl-do
+      (list 'quote aname)
+      id-kw
+      (if (empty? ops)
+        (list '/map (list '/or (list '%ability-ops (list 'quote aname)) (list)) '/first)
+        (list 'quote ops)))))
+
+(defn- %unimpl-do (aname key ops)
+  "Runtime worker for `%unimpl`: retract each of `ops` for `key`, returning how many were
+  there. Separate from the macro so the op list can come from the ability's own declaration
+  at expansion time or from a caller's list at runtime."
+  (fold ops 0 (fn (n op) (if (%unregister-impl aname op key) (inc n) n))))
+
+;; The position of `:->` in a `defmulti`'s opts, or nil. `:->` is the same marker an
+;; ability op spec uses for its return (`(compare-to [self other] :-> int)`), so a reader
+;; meets one spelling for "and it returns" across both dispatch forms.
+(defn- %index-of-arrow (opts)
+  (%arrow-at opts 0))
+(defn- %arrow-at (opts i)
+  (cond
+    (empty? opts) nil
+    (%eq (first opts) :->) i
+    else (%arrow-at (rest opts) (inc i))))
+
+;; ── Multiple dispatch: `defmulti` / `defmethod` (ADR-179) ──────────────────────
+;; Dispatch on the IDENTITY-TUPLE of the arguments, resolved by EXACT match, then a declared
+;; `:default`, else a loud `%no-method` error — never a nearest-neighbour guess. Ambiguity is
+;; impossible by construction (no partial wildcards). A `defmulti` may declare a closure
+;; algebra — `:commutative` or `:antisymmetric` — that derives each off-diagonal binary
+;; method's mirror, so a binary operator is authored as the upper triangle of its type matrix.
+;; The single-dispatch seam is still `defability`/`impl`; this is its multi-arg sibling.
+
+(def- *methods* {}) ; multimethod name → { [id …] → fn, :default → fn }
+(def- *multi-algebra* {}) ; multimethod name → :commutative | :antisymmetric | nil (declared)
+(def- *multi-ret* {}) ; multimethod name → its declared `:-> RET` type form, or nil
+(def- *method-from* {}) ; [mname key] → registering ns, for cross-module conflict detection
+(defn %register-multi (mname algebra & more)
+  "Declare multimethod `mname` with optional closure `algebra` (nil, :commutative, or
+  :antisymmetric) and optional declared return type `ret` (the `:-> RET` tail). Records the
+  algebra so `%register-method` can derive each mirror, and the return so the checker can
+  type a CALL — a multimethod's own body is the dispatch machinery, so its inferred type is
+  opaque and the declaration is the only static handle, exactly as an ability op's `:-> RET`
+  is (`types/check/infer.rs`).
+
+  `& more` rather than a fixed `ret` parameter: absent must be distinguishable from an
+  explicitly declared nil, and a variadic tail is how that is spelled."
+  (%registry-update! '*multi-algebra* :assoc [mname] algebra)
+  (when (not (empty? more))
+    (%registry-update! '*multi-ret* :assoc [mname] (first more)))
+  nil)
+
+(defn multi-return-type (mname)
+  "The declared `:-> RET` type form of multimethod `mname`, or nil when it declares none.
+  The multimethod counterpart of `%op-declared-ret`, which reads an ability op's declared
+  return out of its `defability` specs. The Rust checker does not call this — it reads the
+  `*multi-ret*` registry from the heap directly (`types/check/protocol.rs`) — so this is the
+  in-language accessor: introspection, and the way a test asserts what a `:->` recorded."
+  (get *multi-ret* mname))
+
+(defn %multi-resolve (mname key)
+  "The method fn of multimethod `mname` for identity-tuple `key` (a vector), else the declared
+  `:default` method, else nil. Exact match or declared fallback — never a nearest guess."
+  (let (methods (get *methods* mname))
+    (or (get methods key) (get methods :default))))
+
+(defn %no-method (mname key)
+  "The loud, structured error a multimethod raises when neither an exact method nor a
+  `:default` covers identity-tuple `key`: `{:kind :%no-method :message … :multi :key :have}`
+  (the multiple-dispatch sibling of `%no-impl`). `error-message` returns the human text."
+  (let (known (keys (or (get *methods* mname) {}))
+        message (if (empty? known)
+                  (str "multimethod " mname ": no method for " key)
+                  (str "multimethod " mname ": no method for " key " — have " known)))
+    (throw {:kind :%no-method :message message :multi mname :key key :have known})))
+
+(defn- %register-method-store (mname key f)
+  "Store method `f` at EXACT `key` for `mname` (overwrites — an authored method always wins)."
+  (%registry-update! '*methods* :assoc [mname key] f)
+  nil)
+
+(defn- %register-method-derive (mname key f)
+  "Fill the CLOSURE-derived mirror at `key` only if ABSENT — an explicitly authored method of
+  the same key must never be clobbered by a derived one, whatever the load order."
+  ;; `:assoc-new` does the absent-check INSIDE the lock — checking out here would let a
+  ;; derived mirror clobber an authored method registered in between.
+  (%registry-update! '*methods* :assoc-new [mname key] f)
+  nil)
+
+(defn %register-method (mname key f from)
+  "Register method `f` of multimethod `mname` for identity-tuple `key` (a vector), tagged with
+  ns `from`. Derives the mirror per the declared algebra for a BINARY off-diagonal key
+  (:commutative → `(f y x)`; :antisymmetric → `(- 0 (f y x))`). STRICT: the multimethod must
+  be declared first, a closure needs a binary key, and a same-key re-register from a DIFFERENT
+  module is a loud conflict (last wins) — nothing is left unclear."
+  ; The multimethod must be declared (so its algebra/shape is known). Unclear otherwise —
+  ; fail at load, not silently at a later dispatch.
+  (when (not (contains? *multi-algebra* mname))
+    (error "defmethod "
+      mname " " key ": no `(defmulti " mname " …)` is in scope — "
+      "declare the multimethod before adding methods"))
+  (let (prov [mname key]
+        has-prev (contains? *method-from* prov)
+        prev-from (get *method-from* prov))
+    (when (and has-prev (not (= prev-from from)))
+      (%write-out (str "warning: multimethod "
+                    mname " method for " key " — redefined from " prev-from " by " from
+                    " (last wins)" "\n")))
+    (%register-method-store mname key f)
+    (%registry-update! '*method-from* :assoc [prov] from))
+  (let (algebra (get *multi-algebra* mname))
+    ; the `:default` catch-all is a keyword sentinel, not a tuple — never a closure target.
+    (when (and algebra (vector? key))
+      ; a closure encodes a BINARY-operator law; refuse to derive on a non-binary key.
+      (when (not (= (count key) 2))
+        (error "defmethod "
+          mname
+          " "
+          key
+          ": a "
+          algebra
+          " closure needs a binary (2-arg) "
+          "method, but this key has "
+          (count key)
+          " position(s)"))
+      (let (left (nth key 0) right (nth key 1))
+        ; skip the diagonal (key = its own mirror — it would wrap itself)
+        (when (not (= left right))
+          (let (mirror [right left])
+            (cond
+              (= algebra :commutative) (%register-method-derive mname mirror (fn (x y) (f y x)))
+              (= algebra :antisymmetric)
+                (%register-method-derive mname
+                  mirror
+                  (fn (x y) (- 0 (f y x))))
+              else
+                (error "defmulti "
+                  mname ": unknown algebra " algebra
+                  " (expected :commutative, :antisymmetric, or none)")))))))
+  nil)
+
+(defmacro defmulti (mname & opts)
+  "Declare multimethod `mname`, dispatching on the IDENTITY-TUPLE of its arguments: an EXACT
+  method, then a `:default` method, else a loud `%no-method` error — never a nearest guess.
+  An optional algebra keyword derives each off-diagonal binary method's mirror — `:commutative`
+  (`+`/`*`/`min`/`max`) or `:antisymmetric` (`compare-to`) — so a binary op is authored as the
+  UPPER TRIANGLE of its type-pair matrix. See [[decisions]] ADR-179.
+
+An optional leading docstring is carried onto the generated function.
+
+    (defmulti num/add :commutative)
+    (defmulti compare-to :antisymmetric)
+    (defmulti render)"
+  (let (
+        ;; An optional LEADING docstring, like `defn`/`defability`, so a multimethod has a
+        ;; `(doc …)` for `nest doc`, the LSP and `(audit/undocumented)`.
+        multi-doc (if (and (seq opts) (string? (first opts))) (first opts) nil)
+        opts (if multi-doc (rest opts) opts)
+        ret-pos (%index-of-arrow opts)
+        ret (if ret-pos (nth opts (inc ret-pos)) nil)
+        ; ABSENT is not `nil`. `nil` is a legal return type — `sig` and `defability` both
+        ; accept `:-> nil` — so "was a type given?" is a question about POSITION, never about
+        ; the value read: a `(nil? ret)` test would reject a legal `:-> nil`, and a DANGLING
+        ; `:->` (`(defmulti f :commutative :->)`) must be an error, not silently dropped.
+        ret-missing? (and ret-pos (>= (inc ret-pos) (count opts)))
+        opts (if ret-pos (take opts ret-pos) opts)
+        algebra (if (empty? opts) nil (first opts)))
+    ; STRICT: an unknown algebra keyword is a clear declaration error — fail at expansion.
+    (when (and algebra (not (includes? (list :commutative :antisymmetric) algebra)))
+      (error "defmulti "
+        mname ": unknown algebra " algebra " (expected :commutative, :antisymmetric, or none)"))
+    (when ret-missing?
+      (error "defmulti " mname ": `:->` must be followed by a return type"))
+    (list 'do
+      ; Pass the return ONLY when one was declared. `%register-multi` takes it as a variadic
+      ; tail precisely so absent stays distinguishable from a declared `nil` (see its
+      ; docstring); always passing a third argument would defeat that.
+      (if ret-pos
+        (list '%register-multi (list 'quote mname) algebra (list 'quote ret))
+        (list '%register-multi (list 'quote mname) algebra))
+      (list 'defn
+        mname
+        '(& args)
+        (str "`"
+          (->string mname)
+          "` — a multimethod, dispatching on the identity tuple "
+          "of its arguments."
+          (if multi-doc (str "\n\n" multi-doc) ""))
+        (list 'let
+          (list 'key
+            (list '/mapv 'args '%identity-of)
+            'f
+            (list '%multi-resolve (list 'quote mname) 'key))
+          (list 'if
+            'f
+            (list '/apply 'f 'args)
+            (list '%no-method (list 'quote mname) 'key)))))))
+
+(defmacro defmethod (mname pattern arglist & body)
+  "Register a method of multimethod `mname` for identity `pattern` — a vector whose positions
+  are a built-in id keyword (`:int`) or a record name (`money`, `geo/circle`), the same
+  spelling `impl` uses. STRICT (no guessing): the pattern must be a vector of ids and the
+  method's arg count must match the pattern length — a mismatch fails at load.
+
+    (defmethod num/add [money money] (a b) (money (+ (cents a) (cents b))))
+    (defmethod num/add [money :int]  (m n) (money (+ (cents m) n)))    ; + is commutative
+    (defmethod render   :default     (x) (str x))                      ; the catch-all"
+  (cond
+    ; the catch-all: consulted only when no exact identity-tuple matches. A keyword sentinel,
+    ; not a tuple — so it is arity-agnostic and never a closure target.
+    (= pattern :default)
+      (list '%register-method
+        (list 'quote mname)
+        :default (cons 'fn (cons arglist body))
+        (list '/reflect/current-ns))
+    (vector? pattern)
+      (do
+        (when (not (every? pattern (fn (p) (or (symbol? p) (keyword? p)))))
+          (error "defmethod "
+            mname " " pattern ": each position must be a record name or a " "built-in id keyword"))
+        ; `:default` is the whole-pattern catch-all, never a single position — reject the mix.
+        (when (any? pattern (fn (p) (= p :default)))
+          (error "defmethod "
+            mname " " pattern ": `:default` is the catch-all, not a dispatch "
+            "position — write `(defmethod " mname " :default …)`"))
+        (when (not (= (count pattern) (count arglist)))
+          (error "defmethod "
+            mname
+            " "
+            pattern
+            ": the method takes "
+            (count arglist)
+            " arg(s) but the pattern has "
+            (count pattern)
+            " position(s)"))
+        ; resolve each position to the id keyword a value presents (records qualified, `impl`).
+        (let (key (mapv pattern %ability-id-kw))
+          (list '%register-method
+            (list 'quote mname)
+            (list 'quote key)
+            (cons 'fn (cons arglist body))
+            (list '/reflect/current-ns))))
+    else
+      (error "defmethod "
+        mname ": the dispatch pattern must be a vector of ids or " "`:default`, got " pattern)))
+
+;; ── Display / Inspect: the print protocol (always on) ──────────────────────────
+(defability Display
+  "A value's human display string — what `io/write`/`io/puts` show for it."
+  (->string [self] :-> string))
+
+;; Every built-in kind, and every record without a custom impl, lands here: the
+;; native `str` — i.e. exactly what printing produced before this module loaded.
+(impl Display :default (->string [x] (str x)))
+
+;; A symbol or keyword displays as its SPELLING, without the sigil — `(->string :foo)`
+;; is "foo", not ":foo". This is the one built-in kind where `->string` and `str`
+;; deliberately DISAGREE (`(str :foo)` is ":foo", and `pr-str` must stay ":foo" because
+;; it round-trips).
+;;
+;; These two RESTATE the rule rather than delegating to the bootstrap `->string` in
+;; `core.blsp`, because `defability Display` has just rebound that name to the
+;; dispatcher — a delegating body would call itself forever, a silent hang rather than a
+;; compile error. Restating costs three kernel ops and is
+;; pinned by `bootstrap_and_ability_agree` in `prelude_hygiene`, so the two spellings
+;; cannot drift apart unnoticed.
+(impl Display :keyword (->string [k] (string/substring (str k) 1)))
+(impl Display :symbol (->string [s] (str s)))
+
+;; `Inspect` — the DEBUG form (Elixir's `Inspect`, Haskell's `Show`), the companion
+;; to `Display`. `(inspect x)` is what you want in a log line or a REPL: unambiguous,
+;; type-revealing, and free to include a wrapper a human reads (`#money<$10.50>`).
+;; It is DISTINCT from `pr-str` on purpose — `pr-str` must *round-trip* (its output
+;; re-reads to the same value), so it is a kernel guarantee this protocol must not
+;; override. `inspect` carries no round-trip contract, so a record may shape it
+;; freely. `:default` is `pr-str` (the readable form) for everything uncustomised.
+(defability Inspect
+  "A value's debug string — for logs / the REPL. Unlike `pr-str`, need not re-read."
+  (inspect [self] :-> string))
+
+(impl Inspect :default (inspect [x] (pr-str x)))
+
+;; `inspect` is the `Inspect` ability op and returns a STRING, so it belongs with `pr-str`,
+;; not with the printers; there is no print-and-return variant — use `inspect` + `io/puts`.
+
+;; Seqable — a value's list/seq view: the seam `seq` (and thus `map`/`filter`/`fold`/
+;; `for`/`into`, plus `count`/`keys`/`vals`) consults for a RECORD. The default is the
+;; record's fields (id-free) as `[k v]` pairs, so a record iterates, counts, and keys as
+;; its fields and never leaks the internal `:__id__`; a custom-collection record overrides
+;; `->seq` to define its own iteration. Built-ins never reach here — `seq` takes their
+;; native path — so this is purely the record extension point (à la `Display`), at zero
+;; cost to built-ins.
+(defability Seqable
+  "A value's sequence view — the list that `seq`/`map`/`fold`/`for`/`into` iterate.
+
+    (->seq {:a 1})   → ([:a 1])"
+  (->seq [self] :-> any))
+(impl Seqable :default (->seq [x] (%map-pairs (fields x))))
+
+;; Lookup — keyed access: the seam `get` consults for a RECORD that stores its contents
+;; somewhere other than its own fields. Without it a record answers `get` from its FIELDS,
+;; which for such a type is a wrong VALUE and not an error: `(get multimap k)` answered nil
+;; for a key holding values, indistinguishable from a real absence (ADR-254).
+;;
+;; No `:default` — a record with no impl keeps the field lookup, which is the right answer
+;; for an ordinary record and the reason `get` works on one at all.
+(defability Lookup
+  "A record's own keyed access — what `get` and `keys` should answer for it, when its
+contents are not simply its fields. An ordinary record has no impl and keeps the
+field lookup, so these are called only for a custom-collection record — see
+`std/multimap.blsp`, e.g. `(lookup-get mm :k)` → the values stored under `:k`."
+  (lookup-get [self k] :-> any)
+  (lookup-keys [self] :-> any))
+
+;; Conjable — adding an element: the seam `conj`/`into` consult for a RECORD. The default
+;; is the map behaviour (a record is a map: assoc a `[k v]` pair, or merge a map), so a
+;; plain record conj's like a map; a custom-collection record overrides `conj-onto` to define
+;; its own insertion (a queue pushes, a stack prepends, …). Built-ins keep their native
+;; `%conj-one` path — this fires only for a record.
+(defability Conjable
+  "Add element `x` to collection `self`, returning a fresh collection.
+
+    (conj-onto {:a 1} [:b 2])   → {:a 1, :b 2}"
+  (conj-onto [self x] :-> any))
+(impl Conjable
+  :default (conj-onto [coll x]
+    (cond
+      (map? x) (merge coll x)
+      (and (vector? x) (%eq (count x) 2)) (assoc coll (nth x 0) (nth x 1))
+      else (error "conj: adding to a record takes a [k v] pair or a map, got " (pr-str x)))))
+
+;; Total ordering for a RECORD: the seam `sort`/`sort-by` (and any `%ord-compare` caller)
+;; consult. `compare-to` returns -1 / 0 / 1.
+;;
+;; `compare-to` is a multimethod (ADR-179): `:antisymmetric`, so a `[ver :int]` method
+;; derives `[:int ver]` as its negation. STRICT like `Num` — there is NO `:default`: a record
+;; type must define `compare-to` to be ordered (`<`/`<=`/`>`/`>=`/`sort`), else the pair is a
+;; loud `%no-method` (a record is not silently ordered by its map layout). `(compare-to a b)`
+;; → -1 / 0 / 1.
+;;
+;; There is no `Ord` ability: ordering is this multimethod plus `%ord-compare`, so
+;; `:derives [Ord]` is an expansion error.
+;;
+;; The `:-> int` machine-checks the return: otherwise a method handing back a string or nil
+;; would be caught by nothing, and `sort` would compare on garbage. Declaring it types
+;; every `(compare-to a b)` call site and makes each method body checkable.
+(defmulti compare-to
+  "Three-way comparison: negative when `a` sorts before `b`, zero when they tie,
+positive when `a` sorts after. The seam `compare`/`<`/`sort` consult for a record."
+  :antisymmetric :-> int)
+
+;; Record-aware compare: a record uses its `compare-to` (a type with no such method is a loud
+;; %no-method — strict), everything else the kernel `compare`. This is the comparator
+;; `sort`/`sort-by` use, so a record type that defines one orders itself while built-ins keep the native
+;; path.
+(defn %ord-compare (a b)
+  "Record-aware three-way comparison returning -1 / 0 / 1: a record defers to its `compare-to`
+method, everything else to the kernel `compare`. This is the comparator `sort`/`sort-by`
+use, so a record type that defines one orders itself while built-ins keep the native path. A record type
+with no `compare-to` method is a loud `%no-method` error — never a silent order by map layout."
+  (if (record? a) (compare-to a b) (compare a b)))
+
+;; Num — arithmetic for a RECORD (a money value, complex number, 2-D vector, bignum), as
+;; multimethods (ADR-179) dispatching on BOTH operands. A record operand to `+`/`-`/`*`/`/`
+;; dispatches here — but NOT from the operators themselves (a Brood branch in `+` defeats the
+;; JIT's arithmetic specialization); the kernel `%add`/`%sub`/`%mul`/`%div`
+;; builtins call the matching `num-*` multimethod only on their COLD fallback, when EITHER
+;; operand is a record, so int/float arithmetic is byte-for-byte untouched. `+`/`*` are
+;; `:commutative` (author `[usd :int]` and `[:int usd]` is derived); `-`/`/` are not. There is
+;; NO `:default` — a pair with no method gets the loud `%no-method` error.
+(defmulti num/add
+  "Addition for a type `+` does not know natively — the seam `+` consults for a record."
+  :commutative)
+(defmulti num/sub
+  "Subtraction for a type `-` does not know natively — the seam `-` consults for a record.")
+(defmulti num/mul
+  "Multiplication for a type `*` does not know natively — the seam `*` consults for a record."
+  :commutative)
+(defmulti num/div
+  "Division for a type `/` does not know natively — the seam `/` consults for a record.")
+
+;; The per-print-argument hook the prelude installs into `*show*` at the end of boot
+;; (Display is core, ADR-172 §8 — no activation step). Only a RECORD is routed through
+;; `->string` (a `defrecord` value is the sole thing that can carry a custom impl); every
+;; other value passes through untouched so the built-in renderer stays on the fast path
+;; — no `%identity-of`/`%impl-for` lookup per printed int or string. Disable for a scope
+;; with `(binding (*show* nil) …)`.
+(defn- %show-print-hook (x)
+  "The per-argument hook `*show*` holds: render `x` through the `Display` ability when
+it has an impl, else hand it back untouched for the printer's own rendering.
+`(binding (*show* nil) …)` disables it for a scope.
+
+    (*show* 42)   → 42   ; no Display impl for an int — passed straight through"
+  ;; Which values the screen printers route through `Display`.
+  ;;
+  ;; Every kind but the natively rendered ones consults `Display`, so an `(impl Display
+  ;; :rope …)` is never a silently inert impl (ADR-253). The kinds `%render` renders
+  ;; natively skip the lookup: consulting the ability for them is behaviour-preserving but
+  ;; a real cost on every print, which the tests and the REPL pay constantly. A map is
+  ;; tested with `record?` (a record IS a map, so `type-of` cannot tell them apart).
+  ;;
+  ;; `:keyword` and `:symbol` are in the native list for CORRECTNESS as well as cost:
+  ;; `Display` strips the sigil (`(->string :foo)` is "foo") while printing must stay
+  ;; ":foo". Routing them through the ability silently drops the colon from every keyword
+  ;; any program prints. Leave them here.
+  (let (t (type-of x))
+    (cond
+      (%eq t :map) (if (record? x) (->string x) x)
+      (or (%eq t :int)
+        (%eq t :float)
+        (%eq t :string)
+        (%eq t :nil)
+        (%eq t :bool)
+        (%eq t :keyword)
+        (%eq t :symbol)
+        (%eq t :vector)
+        (%eq t :pair))
+        x
+      else (->string x))))
+
+;; Wire the screen printers to honor `Display` for records, by default (ADR-172 §8).
+;; `(binding (*show* nil) …)` disables it for a scope.
+(def *show* %show-print-hook)

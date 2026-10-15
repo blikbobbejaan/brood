@@ -122,7 +122,7 @@ pub(in crate::types::check) fn is_unbound(heap: &Heap, ctx: &Ctx, s: Symbol) -> 
     }
     // A name the enclosing top-level form tests with `(bound? 'name)` is *meant* to be
     // absent from some images — the guard is the handling. Warning there would flag
-    // correct code (`std/prelude/tools.blsp`'s `%impl-app?` reading the project ambients).
+    // correct code (`std/prelude/abilities.blsp`'s `%impl-app?` reading the project ambients).
     if ctx.is_bound_guarded(s) {
         return false;
     }

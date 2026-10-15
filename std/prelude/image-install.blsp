@@ -1,0 +1,54 @@
+;; --- boot-time stdlib image install (opt-in) ---------------------------------
+;;
+;; The last thing the prelude does, because it must happen before the first `require` and
+;; there is nothing after this. This placement is not a convenience: installing the image
+;; from a PROGRAM materialises nothing at all — a qualified name auto-requires its module at
+;; compile time, so anything the program mentions has already loaded from source (ADR-256).
+;;
+;; **On by default; opt OUT with `BROOD_NO_STDIMAGE=1`.** Sections install already-bound
+;; names last (ADR-279, KI-72), so a racing process never takes a function whose private
+;; helpers are not yet bound. ADR-280's differential (`image_matches_source`) loads every
+;; baked-in module from source and from the image and requires the resulting state to match.
+;; Safe by construction: the image is keyed on `system/stdlib-id`, a content hash of every
+;; baked-in `.blsp`, so a stale one cannot be read — and with no image built at all,
+;; `install` returns nil and `require` reads source. A run therefore either gets a snapshot
+;; of the library this very binary bakes in, or the source. There is no third state.
+;;
+;; The opt-out exists to A/B it, to bisect a suspected materialise fault, and as the stopgap
+;; if one is ever found — the same reason `BROOD_NO_RECV_MARK` and `BROOD_NO_SHARE_FN` have
+;; switches. `nest` builds the image when it is missing (`ensure_stdimage`), so a project gets
+;; this without being asked; `brood` alone installs one if present and never pays to build.
+;;
+;; The traced arm times the install: an install that grows costs every boot, a regression
+;; only a measurement at this exact point can see.
+;; The guard is `%std-image-wanted?` (defined beside `%std-image-reinstall!`): BROOD_NO_STDIMAGE
+;; opts out, and line coverage stands aside because it instruments the COMPILER (ADR-148) — a
+;; materialised module is never evaluated, so with an image installed no std module could appear
+;; in a coverage readout and `nest test --cover-lines` would silently report nothing for the
+;; standard library. ONE predicate for both boot paths, so an imaged boot cannot install what
+;; a source boot would have declined.
+(when (%std-image-wanted?)
+  (if (%getenv "BROOD_IMAGE_TRACE")
+    (let (t0 (%now-ns) n (%std-image-install) t1 (%now-ns))
+      ;; nanoseconds, not microseconds: this runs during PRELUDE evaluation, where a
+      ;; qualified `math/quot` would load the `math` module (ADR-335) — a module load this
+      ;; early in boot is not possible, and dividing is not worth one anyway.
+      (%eprint (str "[image] install: " n " sections, " (- t1 t0) " ns\n")))
+    ;; **A miss must say so.** `%std-image-install` answers nil for absent, stale and
+    ;; unreadable alike, and asking for the image while silently not getting it is the
+    ;; single most expensive thing about this feature: the id carries the git sha and a
+    ;; hash of every baked-in `.blsp`, so a commit — or someone else editing `std/` while
+    ;; your measurement runs — turns the arm you believe is imaged into the source arm.
+    ;; That produced every wrong reading in KI-72's history, three of them in one session.
+    ;; The env var is an explicit request, so an unmet one is worth a line; `stdimage/status`
+    ;; says which of the three it was, and why.
+    ;; The warning fires only for an EXPLICIT `BROOD_STDIMAGE=1`. On the default path a
+    ;; miss is ordinary — no image has been built on this machine yet, or a commit has just
+    ;; moved the id — and falling back to source is exactly right, so saying so every time
+    ;; would be noise on a correct run. An explicit request that goes unmet is different:
+    ;; the caller is measuring something, and silence is what made three measurements wrong
+    ;; in one session.
+    (when (and (nil? (%std-image-install)) (%getenv "BROOD_STDIMAGE"))
+      (%eprint (if (%build-stdimage?)
+                 "brood: BROOD_STDIMAGE is set but no current stdlib image was installed — loading from source. `(stdimage/status)` says why.\n"
+                 "brood: BROOD_STDIMAGE is set but this build was configured --without-stdimage, so there is no image to install.\n")))))

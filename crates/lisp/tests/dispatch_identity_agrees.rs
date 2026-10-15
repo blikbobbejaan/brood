@@ -1,6 +1,6 @@
 //! **The kernel's dispatch identity must equal the language's.**
 //!
-//! `%identity-of` (`std/prelude/tools.blsp`) is what ability dispatch keys on, and it is
+//! `%identity-of` (`std/prelude/abilities.blsp`) is what ability dispatch keys on, and it is
 //! written in Brood. `Heap::dispatch_identity` is the kernel's copy, added so the compiler's
 //! devirtualization and — under speculative dispatch (docs/dispatch-speculation.md) — native
 //! guard code can ask the same question without each re-deriving the answer. Before it, the

@@ -154,7 +154,7 @@ pub const AMP_REST: &str = "&rest";
 
 // The reserved field a `defrecord` value carries, holding its nominal `module/name`
 // identity. It is what ability dispatch keys on, so it is read by `%identity-of`
-// (`std/prelude/tools.blsp`, the language-level definition), by `Heap::dispatch_identity`
+// (`std/prelude/abilities.blsp`, the language-level definition), by `Heap::dispatch_identity`
 // (the kernel one), and by the checker's record-shape reasoning (`types/check/annot.rs`).
 // Spelled here so a fourth reader — native code, under speculative dispatch — cannot
 // introduce a fifth spelling of it.

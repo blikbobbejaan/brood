@@ -757,7 +757,7 @@ impl Heap {
 
     /// **The dispatch identity of `v` — the one definition.**
     ///
-    /// Mirrors `%identity-of` (`std/prelude/tools.blsp`) exactly: an identity-carrying record
+    /// Mirrors `%identity-of` (`std/prelude/abilities.blsp`) exactly: an identity-carrying record
     /// answers with its nominal `:__id__` keyword, everything else with its `type-of` kind. A
     /// map whose `:__id__` is absent or falsy is a plain map and dispatches as `:map` — the
     /// distinction `record?` documents, and the reason this cannot be a bare `map_get`.

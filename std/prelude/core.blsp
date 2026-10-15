@@ -142,7 +142,7 @@
 
 ;; ---- ->string: the value → display string conversion ----
 ;; ONE name for this operation, from here to user code. This is the BOOTSTRAP
-;; implementation; `defability Display` (std/prelude/tools.blsp) rebinds the same
+;; implementation; `defability Display` (std/prelude/abilities.blsp) rebinds the same
 ;; name to a dispatching version far below, so a record can define its own display.
 ;; The rebind is the whole point of defining it here rather than beside the ability:
 ;; the prelude's own machinery — `defmodule`, `require`, package rooting, `defrecord`
@@ -843,7 +843,7 @@ no-op; the marker is read only by the type checker (`nest check`)."
 ;; contract machinery, for two reasons that pull in opposite directions. It must come AFTER
 ;; `and`/`or`/`cond` (above): a prelude closure keeps a call to a macro defined after it
 ;; unexpanded, and the VM then defers the whole closure to the tree-walker for good (~200×
-;; slower). And it must come BEFORE tools.blsp: an ability op with a declared `:->` return
+;; slower). And it must come BEFORE abilities.blsp: an ability op with a declared `:->` return
 ;; checks its result through this function whenever contracts are armed, and the prelude's
 ;; own `->string` is called while later prelude forms EXPAND — defined any later, an armed
 ;; source boot dies with `unbound symbol: type-matches?`.

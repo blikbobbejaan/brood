@@ -15,7 +15,7 @@
 //!
 //! Conventionally imported as `use crate::core::registries as reg;`.
 
-// ---- modules and loading (`std/prelude/tools.blsp`) ----------------------------------
+// ---- modules and loading (`std/prelude/modules.blsp`) --------------------------------
 
 /// Loaded modules: a map of module name → `true`. `provide` writes it; `require-one` trusts it.
 pub const FEATURES: &str = "*features*";
@@ -34,7 +34,7 @@ pub const RELOAD_DIAGNOSTICS: &str = "*reload-diagnostics*";
 
 /// Record constructors' identities (`std/prelude/seq.blsp`).
 pub const RECORD_IDS: &str = "*record-ids*";
-/// Declared abilities (`std/prelude/tools.blsp`).
+/// Declared abilities (`std/prelude/abilities.blsp`).
 pub const ABILITIES: &str = "*abilities*";
 /// An ability's required abilities.
 pub const ABILITY_REQUIRES: &str = "*ability-requires*";

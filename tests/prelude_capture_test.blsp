@@ -25,7 +25,8 @@
   ["std/prelude/core.blsp"
     "std/prelude/predicates.blsp" "std/prelude/map.blsp" "std/prelude/control.blsp"
     "std/prelude/match.blsp" "std/prelude/process.blsp" "std/prelude/seq.blsp"
-    "std/prelude/string.blsp" "std/prelude/tools.blsp"])
+    "std/prelude/string.blsp" "std/prelude/tools.blsp" "std/prelude/modules.blsp"
+    "std/prelude/abilities.blsp" "std/prelude/image-install.blsp"])
 
 (def- prelude-source
   (string/join (map prelude-files file/slurp) "\n"))

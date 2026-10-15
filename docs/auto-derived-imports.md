@@ -158,7 +158,7 @@ Two decisive questions both resolved favorably, so this is **small-to-medium** w
   curated index** (not the live-globals scan, which only sees loaded modules).
 
 ### Triggering the load — deferred to the compile driver
-- Load path: `require` → `%require-force-in` (`std/prelude/tools.blsp`), `%builtin-module`
+- Load path: `require` → `%require-force-in` (`std/prelude/modules.blsp`), `%builtin-module`
   branch → `%load-module-source` (Rust, `builtins/evaluation.rs`). Cannot be called from the blocked
   resolver.
 - **Plan:** the resolver records intent (push `(bare, module)` to a non-GC side buffer —

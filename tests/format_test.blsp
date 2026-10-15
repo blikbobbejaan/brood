@@ -369,7 +369,7 @@
   (test "the prelude is idempotent (format(format(prelude)) == format(prelude))"
     ;; The prelude (now split across std/prelude/*.blsp) is the largest Brood program we
     ;; have; idempotency on its biggest file is a high-confidence smoke test of the walker.
-    (let (src (file/slurp "std/prelude/tools.blsp") once (source src) twice (source once))
+    (let (src (file/slurp "std/prelude/modules.blsp") once (source src) twice (source once))
       (assert= once twice))))
 
 ;; Tail-recursive (the test green-process stack is small, so O(1) stack): format

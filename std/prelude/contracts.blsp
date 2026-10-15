@@ -21,7 +21,7 @@
 ;; process for a mode that is off (KI-182). What stays is what the kernel or the
 ;; expander needs in every mode: this hook, the exemption, and `sig!`.
 ;;
-;; `%contract-check-op-result` — an ability op's declared return — stays in tools.blsp for a
+;; `%contract-check-op-result` — an ability op's declared return — stays in abilities.blsp for a
 ;; different reason: `defability` names it in the op functions it generates, and the prelude
 ;; defines abilities of its own, so a qualified reference into a not-yet-loaded module would
 ;; have to resolve while the prelude is still being built.

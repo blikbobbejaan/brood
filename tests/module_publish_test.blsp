@@ -111,7 +111,7 @@
       (assert= true (live-bound? early))
       (assert= true (contains? *features* name)))))
 
-;; `*live-registries*` (std/prelude/tools.blsp) is the policy that keeps the load-coordination
+;; `*live-registries*` (std/prelude/modules.blsp) is the policy that keeps the load-coordination
 ;; registries LIVE while a load's other writes are staged. Staged, a `*features-loading*`
 ;; claim is invisible to every other process, so a second requirer starts the same load. The
 ;; probe claims a key from inside an open frame and asks a frameless process what it sees.

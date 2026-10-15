@@ -155,7 +155,7 @@ crates/cli/src/main.rs   the `brood` binary — the language (REPL, file runner,
 crates/nest/src/         the `nest` binary — a thin shell over std/tool/nest.blsp — ADR-028
 crates/lsp/src/main.rs   the `brood-lsp` language server (ADR-025, docs/lsp.md)
 crates/playground/src/   the wasm-bindgen in-browser playground
-std/                     the standard library in Brood (ADR-085): prelude/ (ten bare-root
+std/                     the standard library in Brood (ADR-085): prelude/ (13 bare-root
                          files concatenated in the order boot.rs lists) + bare-core modules;
                          `proc/*` (gen, supervisor, agent, crash-report), `net/*` (http, sse,
                          tcp, reconnect), `tool/*` (the toolchain: test, project*, nest, repl,

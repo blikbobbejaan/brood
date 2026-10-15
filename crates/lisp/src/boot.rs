@@ -378,12 +378,16 @@ pub const PRELUDE: &str = concat!(
     include_str!("../../../std/prelude/seq.blsp"),
     include_str!("../../../std/prelude/string.blsp"),
     include_str!("../../../std/prelude/tools.blsp"),
+    include_str!("../../../std/prelude/modules.blsp"),
+    include_str!("../../../std/prelude/abilities.blsp"),
+    // Installs the stdlib image: must follow everything a `require` could need.
+    include_str!("../../../std/prelude/image-install.blsp"),
     // Runtime contracts (ADR-381) come LAST among the prelude files: a prelude closure whose
     // body calls a macro defined after it is deferred to the tree-walker for good, and every
     // contract check runs through this machinery.
     include_str!("../../../std/prelude/contracts.blsp"),
     // Behaviour contracts are CORE (defbehaviour / %register-protocol / ops / *protocols*).
-    // After tools.blsp, which defines the `swap-registry!` macro protocol uses.
+    // After modules.blsp, which defines the `swap-registry!` macro protocol uses.
     include_str!("../../../std/protocol.blsp"),
 );
 
@@ -401,6 +405,9 @@ pub const PRELUDE_PATHS: &[&str] = &[
     "std/prelude/seq.blsp",
     "std/prelude/string.blsp",
     "std/prelude/tools.blsp",
+    "std/prelude/modules.blsp",
+    "std/prelude/abilities.blsp",
+    "std/prelude/image-install.blsp",
     "std/prelude/contracts.blsp",
     "std/protocol.blsp",
 ];
@@ -596,46 +603,23 @@ mod prelude_hygiene {
 
     #[test]
     fn prelude_code_references_no_unloaded_module_wrapper() {
-        const FILES: &[(&str, &str)] = &[
-            ("core.blsp", include_str!("../../../std/prelude/core.blsp")),
-            (
-                "predicates.blsp",
-                include_str!("../../../std/prelude/predicates.blsp"),
-            ),
-            ("map.blsp", include_str!("../../../std/prelude/map.blsp")),
-            (
-                "control.blsp",
-                include_str!("../../../std/prelude/control.blsp"),
-            ),
-            (
-                "match.blsp",
-                include_str!("../../../std/prelude/match.blsp"),
-            ),
-            (
-                "process.blsp",
-                include_str!("../../../std/prelude/process.blsp"),
-            ),
-            ("seq.blsp", include_str!("../../../std/prelude/seq.blsp")),
-            (
-                "string.blsp",
-                include_str!("../../../std/prelude/string.blsp"),
-            ),
-            (
-                "tools.blsp",
-                include_str!("../../../std/prelude/tools.blsp"),
-            ),
-            (
-                "contracts.blsp",
-                include_str!("../../../std/prelude/contracts.blsp"),
-            ),
-            ("protocol.blsp", include_str!("../../../std/protocol.blsp")),
-        ];
+        // Every prelude file, from the one authoritative list, so a file added there is
+        // checked here without a second list to keep in step.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let sources: Vec<(&str, String)> = PRELUDE_PATHS
+            .iter()
+            .map(|path| {
+                let src = std::fs::read_to_string(root.join(path))
+                    .unwrap_or_else(|e| panic!("read {path}: {e}"));
+                (*path, src)
+            })
+            .collect();
         let primitives = registered_primitives();
         let mut heap = Heap::new();
         // Two passes: the whole prelude's definitions have to be
         // known before any file's references can be judged, since a reference in `core.blsp`
-        // may name something `tools.blsp` declares.
-        let read: Vec<(&str, Vec<Value>)> = FILES
+        // may name something `abilities.blsp` declares.
+        let read: Vec<(&str, Vec<Value>)> = sources
             .iter()
             .map(|(fname, src)| {
                 let forms = syntax::reader::read_all(&mut heap, src)
@@ -777,7 +761,7 @@ mod prelude_hygiene {
                 interp.print(v),
                 "true",
                 "`{op}` is named by numeric.rs's operator table but is not bound — the \
-                 `defmulti` in std/prelude/tools.blsp and that table have drifted apart"
+                 `defmulti` in std/prelude/abilities.blsp and that table have drifted apart"
             );
         }
         // And the table really is the source of those names, so a future edit to it is

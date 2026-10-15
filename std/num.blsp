@@ -1,7 +1,7 @@
 ;; std/num.blsp — arithmetic for a RECORD, as multimethods (ADR-179).
 ;;
 ;; A namespace in the ADR-251 shape: the module declares and documents the surface, while
-;; the ops themselves are defined in the PRELUDE (`std/prelude/tools.blsp`) — the same
+;; the ops themselves are defined in the PRELUDE (`std/prelude/abilities.blsp`) — the same
 ;; split `bit`, `decimal` and `proc` use, for the same reason. Here the reason is that the
 ;; kernel's `%add`/`%sub`/`%mul`/`%div` call these on their cold fallback, so they have to
 ;; be bound before any module can load; a `require` would be too late.

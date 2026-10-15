@@ -1,0 +1,1449 @@
+;; ---- modules: Emacs-flat provide / require (ADR-019) ------------------------
+;; A flat module system over the one shared global table: `provide` records a
+;; loaded feature, `require` loads one once. Embedded std modules (test, project)
+;; are baked into the binary and found via `%builtin-module`; everything else is
+;; searched for on `*load-path*` as `<name>.blsp`. This is policy — Rust supplies
+;; only the filesystem + embedded-source mechanism (ADR-006/008).
+(def *features* {})
+; names (strings) of features already loaded, as a SET-SHAPED map name -> true.
+; A map, not a list, because `require-one` asks "already loaded?" on every single
+; require: over a list that is a linear scan, so loading N modules is O(N²)
+; (ADR-216). `(keys *features*)` when you want the names as a sequence.
+(def *load-path* (list "."))
+; directories searched for <name>.blsp
+
+;; Features that a startup image can supply instead of a source file (ADR-218):
+;; feature name -> [offset len] into `*image-path*`. Empty unless a tool installs one;
+;; `require` consults it just before falling back to the load-path, so an imaged module
+;; is materialised on first require rather than at startup. Policy — which image, when it
+;; is stale, what goes in it — lives in `std/tool/project.blsp`.
+(def- *image-sections* {})
+(def- *image-path* nil)
+
+;; ADDITIONAL image sources, consulted in order AFTER `*image-sections*` — a list of
+;; `[path sections]` pairs. There are two independent producers of images and they must
+;; coexist: a PROJECT image (built by `std/tool/project.blsp` from the project's own
+;; modules) and a STDLIB image (the embedded `std/*` modules, whose source `require`
+;; otherwise re-evaluates every run). A single `*image-path*` could only ever hold one of them, so the second
+;; producer to install silently displaced the first.
+;;
+;; Order is precedence: the project's own section for a name wins over the stdlib's, which
+;; is what lets a project shadow a stdlib module name if it ever needs to.
+(def- *image-sources* (list))
+
+;; feature name -> [feature name …] : the modules each module required WHILE ITS BODY
+;; LOADED — its `(:use …)` clauses and any top-level `(require …)`.
+;;
+;; Why the loader has to carry this. Materialising an imaged section DEFINES a module's
+;; bindings; it does not EVALUATE its source, so the `(defmodule shapes (:use geom))` header
+;; that would require `geom` never runs. Restoring a section and providing the feature
+;; therefore produced a heap with holes — `demo/shapes/area` restored, `demo/geom/square`
+;; never loaded — and the program died on the first call across the missing edge. The edges
+;; are the one part of a module's *behaviour*, as opposed to its bindings, that the image has
+;; to reproduce.
+;;
+;; Recorded here rather than re-derived from module headers because it is FREE: `require-one`
+;; already sees every edge as it happens, so this costs one CAS per edge, where re-parsing
+;; headers at materialisation time is the very cost ADR-218 exists to remove. Being a registry, it is imaged into the
+;; always-materialised root section automatically (KI-35's derived set), so no image-format
+;; version knows about it.
+;;
+;; A spurious edge — a runtime `require` that happens to run while some other module loads,
+;; and is attributed to it by dynamic scope — costs one extra materialisation and nothing
+;; else. The error direction is one-sided on purpose.
+(def- *require-edges* {})
+
+;; DECLARE it a registry here, at prelude build, rather than leaving that to whichever load
+;; happens to write the first edge. A registry name enters `(%registry-names)` only as a
+;; consequence of a WRITE, and under lazy loading (ADR-335) an imaged boot may load no module
+;; at all — so the registry set would differ between an imaged and a source boot (the KI-106
+;; class the ADR-280 boot differential catches). Which registries EXIST must not depend on
+;; load timing.
+;;
+;; Assoc-then-dissoc because marking is a side effect of a successful write and there is no
+;; declare-only op: the assoc marks the name, the dissoc takes the value back out, and the
+;; registry is left `{}` — the same value the `def-` above gives it — but now present in the
+;; name set of every boot, and frozen into the prelude image along with it.
+(%registry-update! '*require-edges* :assoc ["%declare"] nil)
+(%registry-update! '*require-edges* :dissoc ["%declare"] nil)
+
+;; The feature whose body is currently being evaluated, or nil. `require-one` attributes
+;; each edge to it. Dynamic (not a parameter) because the edge is discovered arbitrarily
+;; deep inside `reflect/load`ing the parent's source, with no call path to thread it down.
+(defdyn *require-parent* nil)
+
+;; The root setter for the pair above, and it exists for the same reason `reflect/set-load-path`
+;; does: these globals live in the ROOT namespace, so a `(def *image-sections* …)` written
+;; inside a module defines `mod/*image-sections*` and `%require-force` — root code — goes on
+;; reading the empty root one — nothing fails, the image is simply never consulted. Install
+;; through here instead.
+(defn- %set-image-source! (path sections)
+  "Install `path`'s section directory `sections` (feature name → `[offset len]`) as a source
+of features, so `require` materialises an imaged module instead of loading its source.
+Returns the directory. Pass `{}` to stop consulting an image.
+
+`def-`, not `def`, and that is load-bearing wherever this file REASSIGNS a `def-` global.
+A plain `def` CLEARS the private mark — `env_define` does it on every global definition, so
+that editing `defn-` to `defn` and hot-reloading actually publishes the name (ADR-146). A plain
+`def` here would silently make the image bookkeeping globals PUBLIC: `apropos`, `doc-search`
+and completion would offer them and the private-reference warning would stop firing. Only
+ADR-320's fact journal can see that regression."
+  (def- *image-path* path)
+  (def- *image-sections* sections)
+  *image-sections*)
+
+(defn- %add-image-source! (path sections)
+  "Append `path`'s section directory as an ADDITIONAL feature source, consulted after the
+primary one. Use this for a second, independently-produced image — the stdlib image beside
+a project's — rather than `%set-image-source!`, which replaces."
+  (def- *image-sources* (append *image-sources* (list [path sections])))
+  *image-sources*)
+
+(defn- %image-section-for (key)
+  "`[path [offset len]]` for the first installed image that carries feature `key`, or nil.
+The primary source is consulted first, then `*image-sources*` in install order."
+  (if (contains? *image-sections* key)
+    [*image-path* (get *image-sections* key)]
+    (letrec (scan (fn (srcs)
+                    (if (empty? srcs)
+                      nil
+                      (let ([p secs] (first srcs))
+                        (if (contains? secs key)
+                          [p (get secs key)]
+                          (scan (rest srcs)))))))
+      (scan *image-sources*))))
+
+;; `*load-path*` lives in the ROOT namespace, so only root code can rebind it: a
+;; `(def *load-path* …)` written inside a module defines `mod/*load-path*` (ambient
+;; is a declaration now, not an earmuff spelling — see `defdyn`). These two setters
+;; are that root code, so project tooling and tests can extend the path from any
+;; namespace without the loader losing track of it.
+
+;; These two STAY BARE, unlike `system/module-doc` and `system/reload-defs`, which live in
+;; `system`. `reflect/set-load-path` `def`s the bare global `*load-path*` that the
+;; loader reads, and a `def` inside a module defines the MODULE's name — `system/*load-path*`
+;; — not the root one. A module can READ a root global (`/*load-path*`), but it cannot rebind
+;; it, so this pair belongs where the variable does.
+(defn reflect/set-load-path (dirs)
+  "Replace the module search path with `dirs` (a list of directory strings); returns it."
+  (def *load-path* dirs)
+  ;; A module the miss path has already failed to find may be reachable down a path we did
+  ;; not have a moment ago, so the kernel's record of absences cannot outlive this (ADR-335).
+  (%forget-absent-modules!)
+  *load-path*)
+(defn reflect/add-load-path (& dirs)
+  "Prepend `dirs` to the module search path (skipping any already present); returns the new path."
+  (reflect/set-load-path (append (seq/reject dirs (fn (d) (includes? *load-path* d))) *load-path*)))
+
+;; Package-rooted namespaces (ADR-070): a *dependency* `foo` providing a module `b`
+;; is loaded as the rooted global namespace `foo/b`, so two deps can both provide a
+;; `parser` (`a/parser`, `b/parser`) with no collision — Rust's `crate::mod` model.
+;; The package manager populates these two registries when it resolves dependencies
+;; (`std/tool/package.blsp`); they are empty for a bare `brood file.blsp` run with no
+;; project, and the root project's OWN modules stay short (unrooted) — only deps root.
+;;   *module-files* : a rooted module name (string, `"foo/b"`) → the .blsp file
+;;     that provides it. `%require-force` consults it before the load-path, and a hit
+;;     drives the package-context load below.
+;;   *package-modules-of*   : a package's local name (string, `"foo"`) → the list of
+;;     SHORT module-name symbols it provides — the set that tells `%root-module-name`
+;;     which references in `foo`'s files are intra-package (root them) vs external.
+(def- *module-files* {})
+(def- *package-modules-of* {})
+
+;; The rooted-key setters (root code, like `reflect/set-load-path`): the package manager
+;; calls these to register a dependency's modules before its first `require`.
+(defn %register-package-module! (rooted-key path)
+  "Record that rooted module `rooted-key` (e.g. \"foo/b\") is provided by file `path`."
+  (%registry-update! '*module-files* :assoc [rooted-key] path)
+  rooted-key)
+(defn %register-package-modules! (prefix short-modules)
+  "Record package `prefix`'s SHORT module names (a list of symbols) — the intra-package set."
+  (%registry-update! '*package-modules-of* :assoc [prefix] short-modules)
+  prefix)
+(def- *features-waiting* {})
+; feature key → the list of pids WAITING for that key's in-flight load. The waiter
+; queue of the OTP `code_server` model — see `%require-await` for the protocol and
+; why its two orderings (register-then-recheck, provide-then-drain) are load-bearing.
+(def- *features-loading* {})
+; feature key → loader pid for loads IN FLIGHT. Set before a load begins so (a) a
+; CIRCULAR require inside that same load returns immediately, and (b) a CONCURRENT
+; require from another process WAITS for the load to finish instead of returning while
+; the module is half-evaluated — else the caller calls `mod/fn` and finds it unbound.
+
+;; The registries a module load writes LIVE while everything else it writes is staged
+;; (ADR-344). They are how loads COORDINATE, so a staged copy would defeat them: a staged
+;; `*features-loading*` claim would let a second process start the same load, and a staged
+;; waiter entry would never be released. Read by the kernel (`reg::LIVE_REGISTRIES`); policy,
+;; so it lives here beside the registries it names rather than as a list inside Rust.
+(def- *live-registries* #{'*features-loading* '*features-waiting*})
+
+;; ---- the general registry update: compare-and-swap + retry (KI-23) ------------
+;;
+;; `%registry-update!` names each shape it supports as a kernel op (`:assoc`,
+;; `:cons-new`, `:append-new`, `:merge`, …), which fits a registry whose update is one map/list operation. Several
+;; registries are not like that — `face-set` merges into the *existing* entry, `attach`
+;; strips an id from every bucket before consing onto one, `register-repl-command` filters
+;; by name overlap and appends. Adding a Rust op per shape would push policy into the
+;; kernel; instead `%registry-cas!` makes the read-decide-write indivisible and the
+;; transform stays an ordinary Brood function, retried here until it lands.
+;;
+;; Why a plain `(def *X* (f *X*))` cannot be made safe: two processes each read the old
+;; registry, each compute their own new one, and the second `def` wins — the first
+;; registration is silently gone (KI-22).
+
+(defn %registry-swap! (sym read f)
+  "Atomically set registry global `sym` to `(f current)`, retrying if another process
+wrote in between; returns the value that landed. `read` is a thunk re-reading the global,
+so each retry recomputes against the value that won. `f` must be pure — it can run more
+than once. Prefer the `%swap-registry!` macro, which writes both arguments for you.
+
+Raises rather than spinning when `sym` and `read` cannot agree. `%registry-cas!` reads an
+UNBOUND `sym` as nil, so if `read` answers anything else the compare can never hold — and
+`read` never consults `sym`, so retrying re-reads the same disagreement forever. That is a
+misnamed registry, not contention: one process cannot wait out a name that does not exist,
+and an unbounded silent spin is far harder to place than an error."
+  (let (old (read)
+        new (f old))
+    (if (%registry-cas! sym old new)
+      new
+      (do
+        (when (and (not (bound? sym)) (not (nil? old)))
+          (error "%registry-swap!: registry "
+            sym
+            " is not bound, but its reader answered "
+            (pr-str old)
+            " — the name and the value being read are different globals, so the compare-and-swap can never land. Name the global `def` actually binds (inside a module that is `<module>/<name>`, and inside a package the package prefix too)."))
+        (%registry-swap! sym read f)))))
+
+;; The name a `def` of `sym` actually BINDS, resolved at macro-EXPANSION time — which is
+;; load time of the module being compiled, so `reflect/current-ns` is that module.
+;;
+;; `%swap-registry!` needs a literal symbol for the kernel, and a hand-written one is wrong
+;; in both directions once the caller is inside a module. A bare name there names a ROOT
+;; global that does not exist, and `%registry-cas!` reads an unbound symbol as nil, so the
+;; compare never holds and the swap spins. A hand-qualified `mod/*name*` misses a PACKAGE
+;; prefix, so inside a published package it quietly registers into a second global that
+;; nothing reads.
+;;
+;; The std/ callers are not namespaced: the prelude's own registries and `*protocols*` (std/protocol.blsp is CORE — loaded in the prelude with
+;; no `defmodule`, so its globals are root) are bare and root, `editor/face`'s `*faces*` is
+;; `defdyn` and therefore ambient (root, never namespaced, ADR-151), and the rest are
+;; written out qualified. So this resolution must not disturb any of them — which is why it
+;; checks rather than assumes: an already-qualified name passes through untouched, and
+;; between the qualified and bare forms it picks whichever is actually BOUND. Root registries
+;; keep resolving to root; a module's own registry resolves to the module.
+(defn %registry-global-name (sym)
+  (let (ns (reflect/current-ns))
+    (if (or (nil? ns) (includes? (str sym) "/"))
+      sym
+      (let (qualified (symbol (str (->string ns) "/" (str sym))))
+        (cond
+          (bound? qualified) qualified
+          (bound? sym) sym
+          else qualified)))))
+
+(defmacro %swap-registry! (registry f)
+  "Atomically update registry global `registry` by `(f current)` — e.g.
+`(%swap-registry! debug/*traced-fns* (fn (m) (assoc m sym orig)))`.
+
+Write `registry` the way you would refer to it in ordinary code: bare inside the module
+that defines it, qualified from outside, and bare for a `defdyn` (which is ambient). The
+macro resolves it to the name `def` actually binds (`%registry-global-name`) at expansion
+time, so a module does not have to know its own namespace — or, inside a published
+package, its package prefix. It is quoted for the kernel *and* spliced as a live reference
+for the re-read; the resolution is what keeps those two naming the same global."
+  `(%registry-swap! '~(%registry-global-name registry) (fn () ~registry) ~f))
+
+;; (provide 'foo) — mark a feature loaded (idempotent). Returns its name.
+(defn provide (mod)
+  "Mark feature `mod` (a symbol or string) as loaded (idempotent); returns its name.
+
+    (provide 'already-here)   → \"already-here\""
+  (let (key (->string mod))
+    (%registry-update! '*features* :assoc-new [key] true)
+    ;; Runtime contracts, moment 3 (ADR-381): a module's bindings now exist, whichever way
+    ;; they arrived — evaluated from source, where an embedded module's `def`s stood down
+    ;; from the per-binding hook, or materialised from the stdlib image, which evaluates
+    ;; nothing and so never registered a sig's enforcement. `provide` is where both paths
+    ;; meet (and where `require-one` publishes the module to every other process), so the
+    ;; declarations this module owns are offered to `%contract-wrap` here, once. A name
+    ;; whose binding is already a shim is left alone. Armed only: the sweep walks every
+    ;; declaration in the runtime, and an unarmed process has nothing to install.
+    (when (%contracts-armed?) (%contracts-sweep! key))
+    key))
+
+;; A module declares itself at the top with `defmodule`: its name, an optional
+;; docstring, and (implicitly) `provide`. The canonical module header — no bare leading
+;; docstring string and no trailing `(provide 'name)`.
+(def- *module-docs* {})
+; module name (string) -> its docstring (or nil)
+
+;; Called from `defmodule`'s expansion, which runs inside the *consumer's* module —
+;; where a bare `(def *module-docs* …)` would define `mod/*module-docs*`. Defined
+;; here at root, so the `def` below targets the one real registry.
+(defn %record-module-doc! (mod doc)
+  "Record `doc` as module `mod`'s docstring (the registry `system/module-doc` reads); returns
+doc. Takes a symbol OR a string, and converts here rather than at the call site, because the
+one call site is inside `defmodule`'s template — see the note there."
+  (%registry-update! '*module-docs* :assoc [(->string mod)] doc)
+  doc)
+
+;; The hot-reload `def` diagnostics switch. The kernel reads it by BARE name from
+;; root (`eval::reload_diagnostics_on`), so it has to be ambient by declaration —
+;; a plain `(def *reload-diagnostics* false)` inside a module would define
+;; `mod/*reload-diagnostics*` and silence nothing. Declared here (default `true`,
+;; matching the kernel's unbound-means-on) so any module or test can turn it off
+;; for its own scope with an ordinary `def`.
+(defdyn *reload-diagnostics* true)
+
+;; ---- deprecation ------------------------------------------------------------
+;; Deprecating a function is `(meta name :deprecated "0.14.0" :use 'replacement)` — ADR-283.
+;; The warning lands at the CALL SITE, at `nest check` time, in the file that has to change,
+;; and it is advisory: a deprecation that fails the build is a removal with extra steps. The
+;; prelude uses it on itself (`not=`), and `(check-allow :deprecated …)` silences a
+;; deliberate call, such as a shim calling the name it replaces.
+;;
+;; Do not add a RUNTIME deprecation print: ADR-283 rejected it because it "would fire in a
+;; hot loop, on a machine that cannot act on it, long after the edit that caused it". If a
+;; deprecated *form shape* (as opposed to a name) ever needs saying, it wants a checker
+;; diagnostic beside `:deprecated`, not a print.
+
+;; The `(require …)`+`(%refer …)` forms for one `(:use mod [:only|:exclude [a b]])`
+;; clause: load the module, then import its names. `:only [a b]` imports just those;
+;; `:exclude [a b]` imports all public names *except* those (Elixir's `except:` — the
+;; escape for a name that would clash with another `:use` or shadow the prelude); with
+;; no marker, all of `mod`'s public (non-`--`) names. `:only`/`:exclude` are the sole
+;; import filters — any other marker is a clean error (ADR-152: name the fix, don't
+;; silently import everything). Used at `defmodule` expand time.
+(defn- %defmodule-use-clause (clause)
+  (let (mod (second clause)
+        opts (rest (rest clause))
+        marker (first opts))
+    (when (and marker (not (= marker :only)) (not (= marker :exclude)))
+      (error "defmodule: unknown (:use "
+        mod " " marker " …) marker — the import filters are :only and :exclude, as " "`(:use " mod
+        " :only [a b])` or `(:use " mod " :exclude [a b])`"))
+    (let (subset (if (= marker :only) (second opts) nil)
+          exclude (if (= marker :exclude) (second opts) nil)
+          ;; Package-rooted namespaces (ADR-070): an intra-package `(:use b)` inside a
+          ;; dependency roots to `(:use foo/b)` at load time; an external/std module is
+          ;; left unchanged. `%root-module-name` decides which, from the active package
+          ;; context. The same rooting form goes in both positions so require and refer
+          ;; agree on the target (it is idempotent — evaluating it twice is harmless).
+          rooted (list '%root-module-name (list 'quote mod)))
+      (list (list 'require-one rooted)
+        (list '%refer rooted (list 'quote subset) (list 'quote exclude))))))
+
+;; All forms for the `(head …)` clauses in a `defmodule` header — `f` turns one clause into
+;; its list of forms — skipping the optional docstring and every other clause, flattened
+;; for splicing.
+(defn- %defmodule-clause-forms (clauses head f)
+  (apply append (map (%filter clauses (fn (c) (and (pair? c) (= (first c) head)))) f)))
+
+;; The forms for one `(:use-internals mod [:only [a b]])` clause — module privacy's
+;; @testable seam (ADR-146): like `(:use mod)` (reflect/load + refer publics), PLUS a grant
+;; that lets this file reference `mod`'s module-private `--` names, which is otherwise
+;; a compile error. `:only [a b]` refers just those names (which may be `--` privates,
+;; since the grant is in scope) instead of a refer-all — the cycle-safe form when `mod`
+;; and this module are mutually dependent, because a subset refer resolves lazily and
+;; skips the "refer-all into a still-loading module" error a plain `(:use-internals mod)`
+;; hits mid-cycle. For tests and tightly-coupled tooling; loud and greppable by design.
+(defn- %defmodule-internals-clause (clause)
+  (let (mod (second clause)
+        opts (rest (rest clause))
+        marker (first opts))
+    (when (and marker (not (= marker :only)))
+      (error "defmodule: unknown (:use-internals "
+        mod " " marker " …) marker — the only import filter is :only, as " "`(:use-internals " mod
+        " :only [a b])`"))
+    (let (subset (if (= marker :only) (second opts) nil)
+          ;; Root an intra-package target to `foo/mod` under a dependency load (ADR-070).
+          rooted (list '%root-module-name (list 'quote mod)))
+      ;; Grant BEFORE refer: a `--` name in the `:only` subset is a privacy breach
+      ;; unless the internals grant is already recorded when `%refer` checks it.
+      (list (list 'require-one rooted)
+        (list '%grant-internals rooted)
+        (list '%refer rooted (list 'quote subset))))))
+
+;; web/views/counter → counter  (a module name's last `/`-segment, as a symbol).
+(defn- %defmodule-last-segment (mod)
+  (symbol (last (string/split (->string mod) "/"))))
+
+;; The `(require …)`+`(%alias …)` forms for one `(:alias mod [:as short])` clause:
+;; load the module, then register a prefix alias so a later `short/name` resolves to
+;; `mod/name` (Elixir-style `alias`). `short` defaults to `mod`'s last path segment;
+;; `:as` overrides it (needed when two modules share a last segment).
+(defn- %defmodule-alias-clause (clause)
+  (let (mod (second clause)
+        opts (rest (rest clause))
+        short (if (= (first opts) :as) (second opts) (%defmodule-last-segment mod))
+        ;; Root an intra-package target to `foo/mod` (ADR-070); the local `short` alias
+        ;; is unchanged — you still write `short/name` in this file.
+        rooted (list '%root-module-name (list 'quote mod)))
+    (list (list 'require-one rooted)
+      (list '%alias rooted (list 'quote short)))))
+
+;; A file declares itself a **module = namespace** at the top with `defmodule`
+;; (ADR-065): each `def`/`defn`/`defmacro` defines `mod/name`, and a bare reference
+;; resolves to `mod/name` if this namespace defines it, then through a `(:use …)`
+;; import, then falls back to root (the prelude). It also records an optional
+;; docstring and `provide`s the feature (the load-once key). A `(:use bar)` clause
+;; refers `bar`'s public names bare; `(:use baz :only [a b])` refers just `a`/`b`.
+;; Put it first; one per file. e.g. (defmodule observer "process viewer" (:use display)).
+;; defmodule's top-of-file provide — but ONLY when no `require` is driving the load.
+;; Under require, the feature is provided when the WHOLE file has evaluated
+;; (%require-force); providing here, before the module's defs exist, is exactly the
+;; window a concurrent requirer would slip through. A direct `(reflect/load "x.blsp")`
+;; (no require in flight) keeps the immediate provide it always had.
+(defn- %defmodule-provide (mod)
+  ;; Symbol or string in; converts here, not at the call site — see `defmodule`'s template.
+  (let (key (->string mod))
+    (if (contains? *features-loading* key) key (provide key))))
+
+;; `(:load a b …)` loads modules at THIS file's load and refers nothing (ADR-335). It is the
+;; explicit eager request for code whose references would otherwise load on first use —
+;; the hazard it exists for is `%isolate`: a module first used INSIDE an isolated unit is
+;; rolled back with it, and a bystander (the test runner's driver) that started depending
+;; on it meanwhile dies on `unbound symbol`. `std/tool/test.blsp` declares its closure this way, and a gate pins the list.
+(defn- %defmodule-load-clause (clause)
+  (map (rest clause) (fn (m) (list 'require-one (list '%root-module-name (list 'quote m))))))
+
+;; The only clauses the header understands; anything else is a hard error. Ignoring it
+;; would let a misspelled `(:use-internal m)` or a Clojure-style `(:require m)` look like it
+;; imported names / granted access while doing nothing — the worst failure mode for a header
+;; that governs imports *and* privacy.
+;; `:implements` is a CHECKER annotation, not a loader one: a module claiming a protocol
+;; is verified by `crates/lisp/src/types/check/protocol.rs`, which reads the clause
+;; straight out of the header source. The loader's job is only to tolerate it — drop it
+;; from this list and every protocol-implementing module fails to load.
+(def- %defmodule-clause-heads [:use :use-internals :alias :load :implements])
+
+;; A header clause that is a bare string or symbol is almost never a typo'd clause — it is
+;; the tail of a DOCSTRING that ended early, because someone wrote an unescaped `"` inside
+;; it. The reader cannot see that: `"a doc with a "quote" in it"` is a perfectly good
+;; string, then a symbol, then another string, so the fault only surfaces here, as clauses
+;; that make no sense. Say so, because the alternative is unguessable.
+(defn- %defmodule-clause-hint (clause)
+  (if (or (string? clause) (symbol? clause))
+    (str " A bare "
+      (if (string? clause) "string" "symbol")
+      " in the header usually means the module docstring above it ENDED EARLY —"
+      " look for an unescaped `\"` inside it.")
+    ""))
+
+;; `mod` is in the message because the error is raised while EXPANDING this module's
+;; `defmodule`, and an expansion error carries no source location of its own: the reporter
+;; attributes it to whichever `require-one` is on top of the stack, which is the file that
+;; imported this one, not this one. Naming the module is what tells you which file to open.
+(defn- %defmodule-check-clause (mod clause)
+  (if (and (pair? clause)
+        (keyword? (first clause))
+        (includes? %defmodule-clause-heads (first clause)))
+    clause
+    (error "defmodule "
+      (->string mod)
+      ": unrecognised header form "
+      (pr-str clause)
+      " — a `defmodule` header takes only (:use mod [:only [names]]), (:load mod …),"
+      " (:use-internals mod), (:alias mod [:as short]), and (:implements Protocol)."
+      " Check the spelling;"
+      " Clojure's `(:require …)` is not a Brood clause (`:use` both loads and refers)."
+      (%defmodule-clause-hint clause))))
+
+(defmacro defmodule (mod & more)
+  "Declare module/namespace `mod` and compile the rest of the file into it —
+definitions become `mod/name`; bare references resolve there, then through
+`(:use …)` imports, then root. Records an optional docstring and `provide`s the
+feature. Put it first. e.g. (defmodule gen \"A gen_server …\")."
+  (let (doc (if (string? (first more)) (first more) nil)
+        clauses (if (string? (first more)) (rest more) more)
+        _checked (map clauses (fn (clause) (%defmodule-check-clause mod clause))))
+    ;; The feature/doc key is the module's ROOTED name (ADR-070): inside a dependency
+    ;; `foo`, `(defmodule b)` provides `foo/b` and `(%in-ns 'b)` roots compile-ns to
+    ;; `foo/b`, so an outside `foo/b/…` reference finds it and the file's defs become
+    ;; `foo/b/…`. At root (no package context) `%root-module-name` is the identity, so
+    ;; the root project and std stay short. Computed at load time, when the context is set.
+    ;; This template emits NO conversion call, deliberately. Every symbol it emits lands in
+    ;; the user's namespace, where a same-named definition of theirs wins — so a bare
+    ;; `(name …)` here is captured by any module defining
+    ;; `name`, and a bare `(->string …)` is captured by any module defining `->string`,
+    ;; which `std/text.blsp` and `std/decimal.blsp` both do. Renaming the operation moves
+    ;; that hazard; it does not remove it.
+    ;;
+    ;; The `/` root escape (ADR-236) is NOT the fix either: the resolver that rewrites `/x`
+    ;; is a no-op for the root prelude (ADR-230), so an emitted `/->string` survives to
+    ;; runtime literally and is unbound. Verified, not assumed.
+    ;;
+    ;; So the symbol is passed through untouched and `%record-module-doc!` /
+    ;; `%defmodule-provide` convert it in THEIR bodies, which are ordinary prelude functions
+    ;; resolved in the prelude's own scope and beyond a user's reach. The rule this states:
+    ;; a prelude macro should emit `%`-prefixed names and data, never a bare public verb.
+    `(let (root-key# (%root-module-name '~mod))
+       (%record-module-doc! root-key# ~doc)
+       (%defmodule-provide root-key#)
+       (%in-ns '~mod)
+       ~@(%defmodule-clause-forms clauses :load %defmodule-load-clause)
+       ~@(%defmodule-clause-forms clauses :use %defmodule-use-clause)
+       ~@(%defmodule-clause-forms clauses :use-internals %defmodule-internals-clause)
+       ~@(%defmodule-clause-forms clauses :alias %defmodule-alias-clause))))
+
+;; First existing <filename> across the load-path dirs, or nil.
+(defn- %require-find (filename dirs)
+  (cond
+    (empty? dirs) nil
+    (file/exists? (%path-join (first dirs) filename)) (%path-join (first dirs) filename)
+    else (%require-find filename (rest dirs))))
+
+;; The co-located-module fallback (ADR-223). A module whose name is not its file's —
+;; declared beside another `(defmodule …)` in one file — is invisible to the `<name>.blsp`
+;; filename probe. A NAMED project registers every declared module in `*module-files*`
+;; (rooted), so `require` finds it there; a NAMELESS project or a bare `brood file.blsp` run
+;; has no such registry, so `require` instead scans `*load-path*` for the file that declares
+;; the name. Reached only AFTER the filename probe misses, so the common path is untouched.
+(defn- %require-file-declares? (path key-name)
+  ;; True if `path` has a top-level `(defmodule key-name …)`. Read-only; a parse error is
+  ;; false (the file's real error surfaces when something actually loads it).
+  ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer
+  (any? (check-allow :discarded-catch (try (%read-all (file/slurp path)) (catch _ nil)))
+    (fn (form)
+      (and (pair? form)
+        (= (first form) 'defmodule)
+        (not (empty? (rest form)))
+        (= (->string (first (rest form))) key-name)))))
+(defn- %require-colocated-files (key-name dirs)
+  ;; Every `.blsp` on `dirs` (searched top-level, not recursively) that declares `key-name`.
+  (fold dirs
+    nil
+    (fn (acc dir)
+      (fold
+        ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer
+        (or (check-allow :discarded-catch (try (file/ls dir) (catch _ nil))) nil)
+        acc
+        (fn (a entry)
+          (if (and (string/ends-with? entry ".blsp")
+                (%require-file-declares? (%path-join dir entry) key-name))
+            (cons (%path-join dir entry) a)
+            a))))))
+(defn- %require-find-colocated (key)
+  ;; The single file declaring co-located module `key`, or nil if none. Errors if two files
+  ;; declare it — the nameless/bare analogue of a named project's duplicate-module rejection.
+  (let (key-name (->string key)
+        matches (seq/distinct (%require-colocated-files key-name *load-path*)))
+    (cond
+      (empty? matches) nil
+      (empty? (rest matches)) (first matches)
+      else
+        (error "require: module '"
+          key-name
+          "' is declared in more than one file: "
+          (pr-str matches)))))
+
+;; Record `key` as an edge from the module currently loading (see `*require-edges*`).
+;; Called at the TOP of `require-one`, BEFORE its already-loaded short-circuit: the edge
+;; exists whether or not this particular require is the one that does the loading, and a
+;; module whose dep happened to be loaded first by some other path would otherwise lose its
+;; edge and later materialise from an image with a hole where that dep should be.
+;;
+;; The `member?` read is a lock-free fast path — every repeat of an edge (the common case,
+;; since a widely-used module is `:use`d from everywhere) skips the CAS entirely; only a
+;; genuinely new edge pays for the atomic update. `%swap-registry!` rather than a plain `def`
+;; because loads run concurrently and a read-modify-write over a whole map silently loses
+;; ~40% of its updates under contention (KI-22).
+(def- *std-require-edges* nil)
+
+(defn- %set-std-require-edges! (edges)
+  "Record `edges` in the ROOT global the stdlib image carries them in, and return it.
+
+Deliberately a root global set through the prelude rather than a `def` inside `stdimage`:
+a `def` there would be namespaced `stdimage/*std-edges*`, and the boot install loads that
+section BEFORE anything requires `stdimage` — which left the module looking already-present,
+so its source never loaded and `(:use stdimage)` referred nothing. A root name belongs to no
+module, so restoring it cannot half-load one."
+  (def- *std-require-edges* edges)
+  *std-require-edges*)
+
+(def- *std-image-file* nil)
+
+(defn- %std-image-serves? (img-path src)
+  "May the section found at `img-path` be used for a module whose embedded source is `src`?
+
+Yes for a PROJECT image, which snapshots that project's own modules and is the only thing
+that has them. For the STDLIB image, only when this binary actually bakes the module in
+(`src` non-nil).
+
+The stdlib image is keyed on `system/stdlib-id`, which hashes every `std/**/*.blsp` **on
+disk** regardless of features — deliberately, so `brood`, `nest` and `brood-lsp` from one tree
+share one ~2 MB copy instead of writing three. But they do not bake the same MODULES: `nest`
+carries the dev-tools (`test`, `project`, `mcp`); a lean runtime — what `nest release` and
+`make install INSTALL_FEATURES=RUN_FEATURES` produce, i.e. what SHIPS — does not. Without this
+check, `nest` writing the image would let a lean `brood` beside it materialise `test` and
+friends: modules that binary was built to exclude, present only because a developer tool once
+ran on that machine. That is the worst shape a bug can take — it works on the dev box and
+fails in production, where no image exists.
+
+So the image may only ever make a module this binary already has FASTER to load; it can never
+add one. The same rule `%std-edges-for` applies to a replayed edge, for the same reason.
+Checked HERE rather than by filtering the index at install: the filter is O(sections) of
+`%builtin-module` on the boot path, while this is one comparison, paid only by a module that
+actually materialises."
+  (or (not (= img-path *std-image-file*)) (not (nil? src))))
+
+(def- *std-image-sections* nil)
+
+;; How many sections THIS process installed from the stdlib image at boot, or nil if it
+;; installed none. Deliberately separate from `*std-image-sections*` beside it, which is a
+;; transient stash of three section coordinates and is CLEARED on the first materialise —
+;; so it cannot answer the question anyone actually asks, which is "did this run use the
+;; image?".
+;;
+;; A miss is silent by design (an absent image is ordinary), and `(stdimage/status)`'s
+;; `:state` reads what is on DISK NOW — a different fact the moment anything rebuilds the
+;; image mid-command, which `nest` does after a `std/` edit. Without this, a run that loaded
+;; every module from source could read as `:live`.
+(def- *std-image-installed* nil)
+
+(defn- %std-image-installed ()
+  "Sections installed from the stdlib image at boot, or nil if none — what THIS process
+did, as opposed to what is on disk now. See [[stdimage/status]], which reports both."
+  *std-image-installed*)
+
+(defn- %std-image-tables! ()
+  "Load the image's three bookkeeping sections — require-edges, ability impls, other
+registrations — the first time a module actually materialises, and clear the stash so later
+materialises pay nothing. Returns nil.
+
+Lazy because `%std-image-install` runs at BOOT, before anything knows whether this program
+will require a single module: a `brood one-liner.blsp` should not read 94 KB of tables it
+will never consult."
+  (when *std-image-sections*
+    (let (path (get *std-image-sections* "path"))
+      (doseq (k ["%std-edges" "%std-impls" "%std-regs"])
+        (let (sec (get *std-image-sections* k))
+          (when sec (%image-load-section path (first sec) (second sec)))))
+      (def- *std-image-sections* nil))))
+
+(defn- %std-edges-for (key)
+  "Module `key`'s recorded require-edges: the live registry\'s if a source load already put
+them there, else the image\'s record.
+
+Read per module rather than merged into `*require-edges*` wholesale at install, which
+would put the merge on every boot. Filtered here, at read time, rather than when the image is
+built, because the image may have been written by a different binary from the one reading it: an image is keyed on the stdlib\'s CONTENT, deliberately shared by `brood`,
+`nest` and `brood-lsp`, but those binaries do not bake in the same MODULES — a lean runtime
+has no dev-tools, and `project`\'s edges name `test`. Following an edge to a module this
+binary cannot load would fail the require outright."
+  (let (live (get *require-edges* key))
+    (if live
+      live
+      (let (rec (get (or *std-require-edges* {}) key))
+        (when rec
+          (let (have (into #{} (map (reflect/builtin-modules) ->string)))
+            (%filter rec (fn (d) (contains? have (->string d))))))))))
+
+(def- *std-impls* nil)
+
+(defn- %set-std-impls! (by-module)
+  "Record `by-module` (module name → vector of `[ability op key f from]`) in the ROOT global
+the stdlib image carries ability registrations in, and return it. A root global for the same
+reason `*std-require-edges*` is one: named inside `stdimage` it would half-load that module.
+
+Why registrations travel as VALUES rather than as forms to re-evaluate: a closure nested in
+a snapshotted value round-trips — a `{[A op] {:int (fn …)}}` written to an image restores
+and the impl calls correctly. Forms would have needed the
+defining module's namespace re-established to resolve their bodies\' bare names; values need
+nothing, and replaying them through `%register-impl` reproduces tiering and provenance
+exactly rather than approximating it."
+  (def- *std-impls* by-module)
+  *std-impls*)
+
+(defn- %replay-std-impls! (key)
+  "Re-register the ability impls module `key`'s load performed, from the image's record.
+Returns the number replayed.
+
+Materialising a module defines its bindings and evaluates NOTHING, so every `impl` form in
+its source — a top-level call, not a definition — is skipped. That is invisible until a
+dispatch: `(json/encode r)` does not fail to load, it fails to find an impl."
+  (let (regs (or (get (or *std-impls* {}) key) []))
+    ;; The registration proper, not `%register-impl`: the arity diagnostic ran when the
+    ;; `impl` form did, as the image was written. Re-running it here would push its helpers
+    ;; past the JIT's tier threshold, compiling them in every short run (KI-182).
+    (doseq (r regs) (%install-impl (get r 0) (get r 1) (get r 2) (get r 3) (get r 4)))
+    (count regs)))
+
+(def- *std-regs* nil)
+
+(defn- %set-std-regs! (by-module)
+  "Record `by-module` (module name → vector of `[registry-symbol key-path value]`) in the
+ROOT global the stdlib image carries a load's non-impl REGISTRATIONS in, and return it.
+
+The registries a module load writes are enumerable — every one is reached through
+`%registry-update!` — and apart from `*impls*` they hold plain data keyed by an ability
+name, a record id, a multimethod name or a module name. Each of those keys names its owner,
+so a registration can be attributed to the module that made it exactly, rather than by
+watching what a probe load happened to introduce.
+
+Impls travel separately (`*std-impls*`): they alone have a PRECEDENCE tier, so they are
+replayed through `%register-impl` rather than assoc\'d back, and an app-tier impl a program
+registered before the module materialised still holds its slot."
+  (def- *std-regs* by-module)
+  *std-regs*)
+
+(defn- %replay-std-regs! (key)
+  "Re-apply the registrations module `key`'s load performed, from the image's record.
+Returns the number replayed.
+
+Without this a materialised `datetime` is bound and its impls dispatch, but `Temporal` is
+not declared: `satisfies?` answers no, `%sealed-members` answers nil, and an ability op
+resolves against an ability the runtime has never heard of."
+  (let (regs (or (get (or *std-regs* {}) key) []))
+    ;; `key` as the writer: the namespace at this moment is whoever required the module,
+    ;; and the writer journal (KI-136) must credit the module being materialised.
+    (doseq (r regs) (%registry-update! (get r 0) :assoc (get r 1) (get r 2) key))
+    (count regs)))
+
+;; --- the stdlib image, from the prelude --------------------------------------
+;;
+;; `std/tool/stdimage.blsp` owns BUILDING the image and documents the whole mechanism.
+;; The path and the install live here instead, for a reason that is structural rather than
+;; stylistic: an image exists to make `require` cheap, so it has to be installed before the
+;; first `require` — and `stdimage` is itself a module, reachable only by requiring it and
+;; its dependency tree from source. By the time the module's own `install` can run, every
+;; module the image serves has already loaded the slow way — the image would report its
+;; sections installed and materialise nothing.
+;;
+;; So `stdimage/image-path` and `stdimage/install` are one-line calls into these — one
+;; definition, reachable from both ends.
+;;
+;; Prelude-only vocabulary on purpose: `os/env`, `path/join` and the `file` module do not
+;; exist yet. `%getenv` and `str` stand in; `path/join` on components of this shape is
+;; exactly a `/` between them, and `file/exists?` is a native, bound from the start.
+
+(defn- %std-image-path ()
+  "Where this binary's stdlib image lives, or nil when there is no cache directory
+(`$XDG_CACHE_HOME/brood`, else `~/.cache/brood`).
+
+Named by `system/stdlib-id` — a hash of what is BAKED IN, not of this executable.
+Deliberately NOT `system/build-id`, which embeds the running binary's mtime: that would give
+`brood`, `nest` and `brood-lsp` three different keys for one identical stdlib, and three
+~2 MB images."
+  ;; nil for a build configured WITHOUT the image (`./configure --without-stdimage`),
+  ;; which is the single choke point for that choice: no path means nothing installs and
+  ;; nothing is written, so such a build never touches a cache directory at all.
+  ;; `%cache-dir` is the kernel's own rule, so this path agrees with every Rust-side cache.
+  (let (dir (when (%build-stdimage?) (%cache-dir)))
+    (when dir (str dir "/std-image-" (system/stdlib-id) ".bin"))))
+
+(defn- %std-image-install ()
+  "Install this binary's stdlib image as an additional feature source, if one exists and is
+current. Returns the section count, or nil on a miss (absent, stale, unreadable) — in which
+case `require` keeps loading stdlib modules from source exactly as before."
+  (let (path (%std-image-path))
+    (when (and path (file/exists? path))
+      ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer
+      (let (idx (check-allow :discarded-catch
+                  (try (%image-index path (system/stdlib-id)) (catch _ nil))))
+        (when idx
+          ;; Stash the three bookkeeping sections' coordinates and load NONE of them. This
+          ;; runs at boot on every single `brood` invocation, so it must cost almost nothing
+          ;; for a program that never requires anything: the whole install is one index read.
+          ;; The tables load on the first materialise instead (`%std-image-tables!`), and a
+          ;; run that materialises nothing never pays at all.
+          (def- *std-image-sections*
+            {"path" path
+             "%std-edges" (get idx "%std-edges")
+             "%std-impls" (get idx "%std-impls")
+             "%std-regs" (get idx "%std-regs")})
+          ;; Remember WHICH file is the stdlib image, so a section read back can be told
+          ;; from a project's own (see `%std-image-serves?`).
+          (def- *std-image-file* path)
+          (%add-image-source! path
+            (dissoc (dissoc (dissoc idx "%std-edges") "%std-impls") "%std-regs"))
+          ;; Record the count durably as well as returning it: the caller is the boot form,
+          ;; which discards it, and `*std-image-sections*` above is cleared on the first
+          ;; materialise. See `*std-image-installed*` for why the on-disk state is not a
+          ;; substitute for this.
+          (let (n (count (keys idx)))
+            ;; `def-`, not `def`: the name is private, and a plain `def` rebinding it drops
+            ;; the privacy mark, so an imaged module disagrees with its own source about this
+            ;; binding's visibility (ADR-280's differential,
+            ;; `crates/lisp/tests/image_matches_source.rs`, guards it). Every write to a
+            ;; private global has to say private, not just the first one.
+            (def- *std-image-installed* n)
+            n))))))
+
+(defn- %std-image-wanted? ()
+  "Should THIS run install the stdlib image at all? The one predicate behind both boot paths —
+the prelude's own top-level install form (a source or text-cache boot) and
+`%std-image-reinstall!` (an imaged boot) — so the two can never disagree. `BROOD_NO_STDIMAGE=1`
+opts out (the A/B lever, and how CI keeps the source path covered); `BROOD_COVERAGE` stands
+aside because a materialised module is never compiled and so never instrumented (ADR-148).
+
+The imaged replay must honour this guard too, or a run that asked for the source path gets
+the image anyway (`stdimage_reporting.rs` guards that misattribution). Replaying what the
+evaluation DID includes replaying what it declined to do."
+  (and (nil? (%getenv "BROOD_NO_STDIMAGE"))
+    (nil? (%getenv "BROOD_COVERAGE"))))
+
+(defn- %std-image-reinstall! ()
+  "Install the stdlib image from a PRISTINE registry. The entry point for a boot from the
+PRELUDE image (ADR-314), which restores bindings rather than evaluating the prelude, and so
+brings back a *snapshot* of whatever install was live when that image was written.
+
+`%add-image-source!` appends, so replaying `%std-image-install` over that snapshot leaves
+TWO directories for the same file — the stale one first, and `%image-section-for` scans in
+install order. The stale entry's path still exists (it is the same file), so the read
+succeeds and returns garbage from the current file at an old offset rather than failing
+cleanly and falling back to source — surfacing as an `unbound symbol` in a healthy module
+(KI-105).
+
+So clear the registry to the values `def-` gives it on a source boot, then install. Sound
+because nothing else can have installed yet: this runs during boot, before any project
+image and before any `require`.
+
+`*std-image-installed*` is cleared with the rest — it is the snapshot's ANSWER to \"what did
+this process install\"; kept, a warm boot under `BROOD_NO_STDIMAGE=1` would report the
+writing process's count while `require` reads source."
+  (def- *image-sources* (list))
+  (def- *image-path* nil)
+  (def- *image-sections* {})
+  (def- *std-image-sections* nil)
+  (def- *std-image-file* nil)
+  (def- *std-require-edges* nil)
+  (def- *std-impls* nil)
+  (def- *std-regs* nil)
+  (def- *std-image-installed* nil)
+  (when (%std-image-wanted?) (%std-image-install)))
+
+(defn- %require-record-edge! (key)
+  ;; `reflect/current-ns` first: it is the module whose FILE is being loaded, which is the accurate
+  ;; parent for every require in that file — the `(:use …)` clauses `defmodule` expands and
+  ;; any bare top-level `(require …)` alike. It is also the only one that works for the
+  ;; project's own sources, which the bulk loader `reflect/load`s directly rather than through
+  ;; `%require-force`, so `*require-parent*` is nil for all of them. It reads nil at RUNTIME
+  ;; (only a load sets it), which is exactly the requires that are not load-time edges.
+  ;; `*require-parent*` is the fallback for a file with no `(defmodule …)` header, which
+  ;; establishes no namespace but is still `require`able by its filename.
+  ;; A load the kernel INFERRED from a qualified reference is not an edge either (ADR-335):
+  ;; the miss path satisfies a body reference on first use, imaged or not, so only a header
+  ;; clause is something an image has to replay. `%load-edge-skipped?` is one-shot — true for
+  ;; exactly this `require-one`, consumed here BEFORE the parent test so it cannot leak to a
+  ;; later call when `parent` is nil.
+  (let (skipped (%load-edge-skipped?)
+        ns (reflect/current-ns)
+        parent (if ns (->string ns) *require-parent*))
+    (when (and parent
+            (not skipped)
+            (not (= parent key))
+            (not (includes? (or (get *require-edges* parent) nil) key)))
+      (%swap-registry! *require-edges*
+        (fn (m)
+          (let (cur (or (get m parent) nil))
+            (if (includes? cur key) m (assoc m parent (cons key cur)))))))))
+
+;; The short module name of a rooted bundle key: `store/repo` -> `repo`, `sp/wire/bytes` ->
+;; `wire/bytes` (everything after the FIRST `/`, i.e. the package prefix).
+(defn- %bundle-key-short (key pkg)
+  (symbol (string/substring key (+ 1 (string/length pkg)) (string/length key))))
+
+;; True if SHORT module name `short` is provided by MORE THAN ONE registered package — a genuine
+;; cross-dependency name collision (two deps each shipping a `parser`). Only such a name needs
+;; the rooted `pkg/mod` binding to stay distinct; a uniquely-named module does not.
+(defn- %bundle-short-collides? (short)
+  (> (count (%filter (map (%map-pairs *package-modules-of*) first)
+              (fn (pkg) (includes? (get *package-modules-of* pkg) short))))
+    1))
+
+;; For an embedded module loaded via `%builtin-module`: the package `pkg` a rooted key `pkg/mod`
+;; should load UNDER (rooting its `(defmodule mod)` to `pkg/mod`), or nil to load at ROOT.
+;;
+;; A bundled dependency module roots ONLY when its short name collides across packages — then the
+;; rooted key keeps the two apart and the consumer references it qualified (`alpha/parser`), which
+;; is the ADR-070 guarantee. A UNIQUELY-named dependency module loads at ROOT (bare `(defmodule
+;; repo)`), exactly as a dev run binds it (found by basename on the load-path, never rooted) and
+;; exactly as apps reference it — hive's `(:alias repo)`, a bare `web/router/through-handler`.
+;; This makes the flat bundle bind the same names the dev image does.
+;; Std modules and a bundle's unrooted root-project modules have no package prefix and stay ROOT.
+(defn- %bundle-module-package (key)
+  (let (seg (first (string/split key "/")))
+    (if (and (not (= seg key))
+          (contains? *package-modules-of* seg)
+          (%bundle-short-collides? (%bundle-key-short key seg)))
+      (symbol seg)
+      nil)))
+
+;; The embedded rooted key `pkg/key` a registered package provides for a request whose bare
+;; name isn't embedded directly, or nil. A consumer references a dependency module by its bare
+;; `(defmodule)` name (`repo`, `pool`, `wire/bytes`); the bundle embeds it under `pkg/name`, so
+;; this is the basename lookup that finds it — the dev load-path parity that makes a bare require
+;; order-independent (a root module can be required before the dep whose module it uses). `key`
+;; may itself be namespaced; a rooted key like `store/repo` is never in a short set, so a direct
+;; rooted request finds no owner here and simply loads its own embedded source.
+(defn- %bundle-resolve-bare (key)
+  (let (owner (seq/find (map (%map-pairs *package-modules-of*) first)
+                (fn (pkg) (includes? (get *package-modules-of* pkg) (symbol key)))))
+    (if owner (str owner "/" key) nil)))
+
+;; The raw load of feature `key`: evaluate its embedded source (a baked-in std
+;; module) or the first <key>.blsp found on *load-path*, then record it. No
+;; loading-bookkeeping — callers manage *features-loading*. Errors if not found.
+(defn- %require-force (key)
+  ;; Everything this load requires is an edge OUT of `key` — `require-one` reads the
+  ;; binding to attribute it. It wraps the image branch too, which merely re-records edges
+  ;; that are already there (the `member?` fast path makes that free).
+  (binding (*require-parent* key)
+    (%require-force-in key)))
+
+;; `%require-force`'s body, split out only so the dynamic binding above wraps every branch.
+(defn- %require-force-in (key)
+  ;; `key`'s embedded source. If a bare key isn't embedded directly, resolve it to the
+  ;; dependency module embedded under its rooted key `pkg/key` (`%bundle-resolve-bare`) — the
+  ;; bundle's basename lookup, so a bare `(:alias repo)` / `pool` reference finds `store/repo`
+  ;; / `store-postgres/pool` regardless of load order. The load below uses the resolved key for
+  ;; both its context (`%bundle-module-package`) and its source file. `src` is read under
+  ;; `(when load-key …)`, so the source branch below knows `load-key` is a key.
+  (let (direct (%builtin-module key)
+        load-key (if direct key (%bundle-resolve-bare key))
+        src (when load-key (if direct direct (%builtin-module load-key))))
+    (cond
+      ;; The IMAGE branch is tested FIRST — before the embedded-source branch below.
+      ;; Every baked-in std module has embedded source, so `src` matches for all of them
+      ;; and this branch would be unreachable for exactly the modules a stdlib image exists
+      ;; to serve. Preferring it is safe on its own terms: an image is only ever installed
+      ;; after its fingerprint matched (the stdlib image keys on `system/build-id`, so it cannot
+      ;; outlive the binary whose source it snapshotted), and a module with no section
+      ;; still falls through to the source branch unchanged.
+      (let (hit (%image-section-for key))
+        (and hit (%std-image-serves? (first hit) src)))
+        (let ([img-path sec] (%image-section-for key))
+          ;; `src` non-nil means this key is an EMBEDDED module — the same condition under
+          ;; which the source branch below reaches `%load-module-source`, which is what makes
+          ;; a std module's functions reserved (ADR-166). A project's own image must not
+          ;; reserve its functions: the program is allowed to redefine those.
+          ;; That same flag also means "this image is PRISTINE, older than the heap": an
+          ;; embedded module's registry that is already bound (restored by a project image,
+          ;; or accumulated by a running program) keeps its binding rather than being reset
+          ;; to the image's empty seed — the `defonce` a source load would have run.
+          ;; PUBLICATION ORDER — the invariant a source load has by construction and this
+          ;; branch must reproduce: **a name is never bound before everything its callers
+          ;; need is in place.** In `std/queue.blsp` the `(impl Conjable …)` precedes
+          ;; `(defn list-> …)`, so no process can call `list->` and find `conj` undispatchable.
+          ;; Materialising in the OTHER order — bindings first, registrations after — opens
+          ;; exactly that window for the whole module at once, and under lazy loading
+          ;; (ADR-335) a concurrent process reaches a freshly-bound `queue/list->` through an
+          ;; ordinary global HIT — no `require-one`, no wait — and dies on `conj: adding to a
+          ;; record takes a [k v] pair or a map` (KI-134's second window).
+          ;;
+          ;; So: the dependencies this module's load would have pulled in, its non-impl
+          ;; registrations, its impls — and only THEN its bindings, and only then `provide`.
+          ;;
+          ;; Dependencies first. Materialising evaluates nothing, so the requires the load
+          ;; would have run are replayed from the edges the original load recorded; without
+          ;; this an imaged start builds a heap with holes and the program dies on the first
+          ;; call across a missing edge. A require CYCLE
+          ;; still terminates: `require-one` returns immediately for this process's own
+          ;; in-flight load (the `*features-loading*` marker is already set by the caller).
+          (%std-image-tables!)
+          (fold (or (%std-edges-for key) nil) nil (fn (_ d) (require-one d)))
+          ;; Registrations next. Declarations before impls: `%impl-rank` reads
+          ;; `*ability-owner*` to decide an impl's precedence tier, so replaying impls against
+          ;; an undeclared ability would tier every one of them as "other". Neither needs the
+          ;; module's bindings: the impl fns travel in the image's own `*std-impls*` table.
+          (let (nregs (%replay-std-regs! key)
+                nimpls (%replay-std-impls! key))
+            (when (%getenv "BROOD_IMAGE_TRACE")
+              (%eprint (str "[image] "
+                         (->string key)
+                         " registered "
+                         nregs
+                         " regs, "
+                         nimpls
+                         " impls\n"))))
+          ;; Bindings last — the moment the module becomes reachable by a global hit.
+          (%image-load-section img-path (first sec) (second sec) (not (nil? src)) (->string key))
+          (when (%getenv "BROOD_IMAGE_TRACE") (%eprint (str "[image] " (->string key) "\n")))
+          ;; `provide` after all of it: it is what makes `require-one` return immediately for
+          ;; every other process, so providing earlier publishes a module whose dependencies
+          ;; are not loaded — a racing process calls `uuid/v7` and dies on `unbound symbol:
+          ;; rand/token` while this one is still replaying. The race is concurrency-only:
+          ;; every affected file passes when run alone.
+          (provide key)
+          key)
+      ;; A dependency module (ADR-070): `key` is a rooted name (`"foo/b"`) the package
+      ;; manager mapped to a file. Load it under `foo`'s package context so its
+      ;; `(defmodule b)` roots to `foo/b` and its intra-package `(:use …)` targets root.
+      src
+      ;; Attribute the baked-in source to the file it was WRITTEN in, not to whichever
+      ;; file happened to be mid-load when the `require` ran. The path comes from the
+      ;; same literal the source was baked in from, so it can't drift.
+      ;; `%load-module-source`, not `%load-string`: a baked-in std module's own defs
+      ;; are allowed to bind reserved names and BECOME reserved (ADR-166). A project
+      ;; file (the branch below) goes through the ordinary `reflect/load`, so a package's
+      ;; names are never reserved.
+      ;;
+      ;; Load an embedded module. A baked-in std module loads at ROOT: clear any ambient
+      ;; package context (ADR-070) around it and restore after — embedded std is never a
+      ;; package module, so without this a project whose own module shares a std name (a
+      ;; local `json`/`set`/`format`) would misroot the baked-in `(defmodule json)` to
+      ;; `myproj/json` under that context. A bundled DEPENDENCY module, though, is embedded
+      ;; under its ROOTED key `pkg/mod` and must load under `pkg`'s context so its
+      ;; `(defmodule mod)` roots to `pkg/mod` and its intra-package `(:use …)` targets root
+      ;; — mirroring the disk `%require-force-package` path so two deps providing a same-named
+      ;; module coexist in one flat bundle (dev/release parity). `%bundle-module-package`
+      ;; picks the context; it returns nil for std and for a bundle's unrooted root-project
+      ;; module (both load at ROOT). In a non-bundle dev run this branch only ever fires for
+      ;; std (a dep loads from disk — `%builtin-module` returns nil), and std namespaces are
+      ;; never packages, so the check is a no-op there.
+        (do
+          (let (prefix (%bundle-module-package load-key)
+                prev (if prefix
+                       (%set-package-context prefix (get *package-modules-of* (->string prefix)))
+                       (%set-package-context nil nil)))
+            (%load-module-source src (%builtin-module-file load-key))
+            (%set-package-context (first prev) (second prev)))
+          (provide key)
+          ;; Reached by resolving a bare name to the embedded rooted key `pkg/key`: mark the
+          ;; rooted key loaded too, so the run-bundle load-all loop, requiring `pkg/key`
+          ;; directly, does not re-evaluate the same source and redefine its macros.
+          (when (and load-key (not (= load-key key))) (provide load-key)))
+      ;; A feature can come from a startup IMAGE instead of a source file (ADR-218): its
+      ;; bindings are materialised from a byte range rather than evaluated. This is the
+      ;; seam that makes an imaged project load LAZILY — `require` stays the unit of
+      ;; materialisation, so a program pays only for the modules it actually reaches.
+      ;; The registry is empty unless a tool populated it; the prelude only knows how to
+      ;; consult it, never how to build one (that is `std/tool/project.blsp`).
+      ;;
+      ;; BEFORE the package branch, and that ordering is load-bearing: a project roots its
+      ;; OWN modules too (ADR-070), so `*module-files*` holds `myproj/shapes` as
+      ;; surely as it holds a dependency's `foo/b`. Consulted after it, the image branch would
+      ;; be unreachable for every module of every named project. Preferring it is also the right precedence on
+      ;; its own terms: an image is only ever installed after its fingerprint matched the
+      ;; sources the package branch would otherwise re-evaluate, and a module with no section
+      ;; still falls through to that branch.
+      (contains? *module-files* key)
+        (%require-force-package key
+          (get *module-files* key))
+      else
+      ;; Filename probe first (the fast, overwhelmingly common path: module `foo` in
+      ;; `foo.blsp`). On a miss, fall back to the co-located scan (ADR-223) — a module
+      ;; declared beside others in a file whose name it does not share, in a nameless
+      ;; project or a bare run. Only the miss pays for the scan.
+        (let (path (or (%require-find (str key ".blsp") *load-path*)
+                     (%require-find-colocated key)))
+          (if path
+            (do (reflect/load path) (provide key))
+            (error "require: cannot find module '" key "'"))))
+    key))
+
+;; A package (dependency or root project) may not take a name the standard library
+;; already owns. Its name becomes a load-time package prefix (ADR-070), so a package
+;; called `net` would provide `tcp` — exactly the baked-in module — and even where
+;; the rooted names would not collide, a package sharing a stdlib name (`json`, `set`,
+;; `test`) is a trap. The reserved set is the first path segment of every module baked
+;; into this binary (`(reflect/builtin-modules)`). Enforced in THREE layers: at `nest new`
+;; (scaffold) and `nest publish` (package.blsp), and here at LOAD time so a `:path`/`:git`
+;; dependency that never went through the registry is refused all the same (ADR-166 kin).
+;;
+;; It stays BARE, and not only because the load path needs it before any module can load:
+;; `crates/lisp/tests/autoload_race.rs` calls it *because* it is bare-named and its body
+;; reaches a lazily-loaded module (`seq/distinct`, loaded at the first lookup that misses —
+;; ADR-335) — the KI-72 guard. Qualifying it, or hiding it
+;; behind a `%` name with a `package/` face, leaves that test passing while it no longer
+;; tests the thing it names. ADR-291 rule 4.
+(defn reserved-package-name? (nm)
+  "True if package name `nm` (a symbol or string) is reserved by the standard library —
+its first segment names a module baked into this binary, so a package taking it would
+root its own modules onto stdlib namespaces. Backs the `nest new` / `nest publish` /
+load-time (`require`) guards.
+
+    (reserved-package-name? \"json\") → true
+    (reserved-package-name? \"brood\") → false"
+  (let (seg (first (string/split (->string nm) "/"))
+        owned (seq/distinct (map (reflect/builtin-modules) (fn (m) (first (string/split m "/"))))))
+    (includes? owned seg)))
+
+;; Load a dependency module file `path` under package `key`'s context (ADR-070): set
+;; the active prefix + intra-package module set so the file's `%in-ns`/`(:use …)`
+;; root, load it, then RESTORE the enclosing context on both the normal and error
+;; paths (a dep may be required mid-load of another dep, so contexts nest). The
+;; prefix is the rooted key's first segment (package local names are single-segment).
+(defn- %require-force-package (key path)
+  (let (prefix (symbol (first (string/split key "/"))))
+    ;; Refuse a package whose name the standard library owns, BEFORE touching the
+    ;; ambient context — a `:path`/`:git`/registry dep (or a root project) named after
+    ;; a baked-in module would silently root its modules onto stdlib namespaces.
+    (when (reserved-package-name? prefix)
+      (error "require: package '"
+        (->string prefix)
+        "' is reserved by the standard library "
+        "(it owns the '"
+        (->string prefix)
+        "' module namespace) — a package cannot take this "
+        "name; rename the package"))
+    (let (modules (get *package-modules-of* (->string prefix))
+          prev (%set-package-context prefix modules))
+      (try
+        (do (reflect/load path) (provide key))
+        (catch e
+          (do (%set-package-context (first prev) (second prev)) (throw e))))
+      (%set-package-context (first prev) (second prev))
+      key)))
+
+;; ---- waiting for someone else's in-flight load (the OTP `code_server` model) ----
+;;
+;; A waiter BLOCKS on the loader rather than polling `*features*`. `code_server` keeps a per-module queue of requesters (`schedule_or_run_loader/4`): a
+;; request for a module already in `loading` is appended to that module's waiting list and
+;; deliberately left unanswered — the caller just stays blocked in its `gen_server:call` —
+;; and `run_loader_next/2` replies to it when the in-flight load finishes. So:
+;;
+;;   1. a waiter costs the load's REAL DURATION, not a poll quantum times its rounds;
+;;   2. there is NO force-load fallback. The claim is authoritative and only the claimant
+;;      releases a waiter. Loading the module ourselves after a timeout is a *second*
+;;      loader for a module already being loaded;
+;;   3. a loader that DIES is handled by monitoring it, not by timing out. OTP monitors the
+;;      client for exactly this (`{'LOADER_DOWN', Mod}`).
+;;
+;; Two orderings make the handoff airtight, and both are load-bearing:
+;;
+;;   * the waiter REGISTERS in `*features-waiting*` and only then RE-CHECKS `*features*`.
+;;     That closes the window where the loader finishes before we are on the list — we see
+;;     its `provide` ourselves rather than waiting for a notification nobody will send.
+;;   * the loader PROVIDES first and only then drains the waiter list (`%require-release!`).
+;;     That closes the mirror window where we join the list after the drain — our re-check
+;;     then sees the provide.
+;;
+;; Reverse either one and a waiter blocks on a notification that can never arrive. That is
+;; the same class as the wake this file's callers depend on: a notification delivered to
+;; nobody is gone, so the state has to be observable to a late arrival.
+(defn- %require-enqueue-waiter! (key me rref)
+  "Add `[me rref]` to `key`'s waiter list, atomically against a concurrent drain. `rref` is
+this waiter's one-shot REPLY ALIAS (OTP 24's `{alias, demonitor}`): the loader addresses the
+completion to it, so a waiter that stops waiting can have a late reply dropped at delivery
+rather than left in its mailbox — see `%require-unwatch!`."
+  (%swap-registry! *features-waiting*
+    (fn (m) (assoc m key (cons [me rref] (or (get m key) (list)))))))
+
+(defn- %require-take-waiters! (key)
+  "Atomically REMOVE and return `key`'s waiter list (empty if none). CAS-retried, so a
+waiter joining concurrently either lands before the take (and is returned here) or after it
+(and its own re-check sees the `provide` that preceded this call)."
+  (let (old *features-waiting*
+        ws (or (get old key) (list)))
+    (cond
+      (empty? ws) ws
+      (%registry-cas! '*features-waiting* old (dissoc old key)) ws
+      else (%require-take-waiters! key))))
+
+(defn- %require-release! (key)
+  "Wake every process waiting on `key`'s load. MUST be called after `provide` (or after the
+marker is cleared on failure), never before — see the ordering note above."
+  ;; `[:load-done <ref> …]` — keyword first, ref second, which is the shape the kernel
+  ;; recognises as a reply alias. A waiter that has already given up deactivated its
+  ;; ref, so this send is dropped at delivery instead of queueing in a process that is
+  ;; back to doing application work.
+  (doseq ([p r] (%require-take-waiters! key))
+    (send p [:load-done r key])))
+
+(defn- %require-await (key)
+  "Block until the process that claimed `key`'s load has finished it. Returns `key`."
+  (let (me (self)
+        rref (ref))
+    ;; Register FIRST, then look at the world — see the ordering note above.
+    (%require-enqueue-waiter! key me rref)
+    ;; The claimant, for the death watch (OTP's `LOADER_DOWN`). Advisory only: every branch
+    ;; below is correct without it, so a stale or missing pid costs a slower path, never a
+    ;; wrong answer.
+    (let (loader (get *features-loading* key)
+          mref (if (pid? loader) (monitor loader) nil))
+      (cond
+        ;; It landed while we were getting on the list.
+        (%registry-member? '*features* key) (do (%require-unwatch! key me rref mref) key)
+        ;; The claim is VACANT and `key` is still unprovided: the claimant's load threw, and
+        ;; it released its waiters before we joined the queue — so no notification is coming.
+        ;; Retry through `require-one`, not `%require-force`: that re-runs the claim CAS, so
+        ;; two waiters arriving here together still produce exactly one loader; going
+        ;; straight to `%require-force` would be a DOUBLE LOAD.
+        (not (%registry-member? '*features-loading* key))
+          (do (%require-unwatch! key me rref mref) (require-one key))
+        else
+          (receive
+            ([:load-done r k] :when
+              (= r rref)
+              (do
+                (when mref (demonitor mref))
+                ;; "Finished" includes FAILED — the error path releases waiters too, so that
+                ;; nobody blocks on a load that will never provide. So re-check rather than
+                ;; trust the notification: without this a failed load is reported to every
+                ;; waiter as a success, and the caller meets an unbound name instead of the
+                ;; loader's actual error.
+                (if (%registry-member? '*features* k) k (require-one k))))
+            ;; The claimant died mid-load: nobody will provide, and its marker is still there
+            ;; — nothing clears `*features-loading*` on process death. CLEAR IT FIRST, then
+            ;; retry. Retrying without clearing is not a slow retry, it is a hot infinite
+            ;; loop: `require-one` sees the stale marker, comes back here, monitors the same
+            ;; dead pid, and `add_monitor` answers a dead target with an IMMEDIATE synthetic
+            ;; `[:down … :noproc]` — so the cycle spins at 100% CPU with no delay in it, and
+            ;; it poisons that module for every process, not just this one.
+            ([:down r _ _] :when
+              (= r mref)
+              (do
+                (%require-unwatch! key me rref nil)
+                (%require-release-dead-claim! key loader)
+                (require-one key)))
+            ;; Backstop. OTP needs none — its code server cannot silently forget a requester.
+            ;; Ours is ordinary Brood, so keep a last resort, but make it LOUD: reaching it
+            ;; means the protocol above dropped a waiter, and KI-72's whole lesson is that a
+            ;; silent stall is unattributable.
+            (after 30000
+              (do
+                (%require-unwatch! key me rref mref)
+                (%eprint (str "[require] BUG: waited 30s for an in-flight load of '"
+                           key "' with no completion and no loader death; force-loading. "
+                           "This should be unreachable — please report it.\n"))
+                ;; `%require-force`, not `require-one`: reaching here means the claimant is
+                ;; alive and has been mid-load for 30 s, so its marker is still set and
+                ;; `require-one` would simply wait another 30 s, forever. Forcing risks a
+                ;; duplicate load, which is the lesser evil against never making progress —
+                ;; and the message above says the protocol is broken either way.
+                (%require-force key))))))))
+
+(defn- %require-release-dead-claim! (key loader)
+  "Clear `key`'s in-flight marker, but only while it still names `loader` — CAS-retried, so
+a claim another process has meanwhile taken over is left alone rather than clobbered."
+  (%swap-registry! *features-loading*
+    (fn (m) (if (= (get m key) loader) (dissoc m key) m))))
+
+(defn- %require-unwatch! (key me rref mref)
+  "Stop waiting on `key`: leave the waiter queue, drop the death watch, and DEACTIVATE both
+refs so a notification already in flight is dropped at delivery instead of queueing.
+
+The deactivation is the part that is easy to miss. Leaving the queue does not un-send a
+completion the loader has already taken the list for, and `demonitor` is explicitly
+best-effort — a `[:down …]` already queued is not recalled. Without this, an ordinary
+process that merely triggered a lazy autoload can be left holding a stray
+`[:load-done \"json\" …]` or `[:down …]`, which some later catch-all `receive` (a `gen`
+server's unknown-message clause, say) then picks up as if it were application traffic. This
+is exactly what OTP 24 reply aliases exist for."
+  (when mref (demonitor mref))
+  (when mref (%ref-deactivate mref))
+  (%ref-deactivate rref)
+  (%require-drop-waiter! key me))
+
+(defn- %require-drop-waiter! (key me)
+  "Remove `me` from `key`'s waiter list (best-effort; a concurrent drain may beat us)."
+  (%swap-registry! *features-waiting*
+    (fn (m)
+      (let (ws (or (get m key) (list))
+            left (%filter ws (fn (w) (not (= (first w) me)))))
+        (if (empty? left) (dissoc m key) (assoc m key left))))))
+
+;; Load one feature once. CONCURRENT-SAFE: `require` returning means the module's
+;; defs exist — a require that races another process's load of the same feature
+;; waits for that load to complete rather than trusting a top-of-file provide.
+;; A circular require inside one file's own load
+;; still returns immediately (the loader pid matches).
+;; `require-one` is the loader's PUBLIC entry point and stays bare — mechanism, not tooling
+;; (ADR-291). It is not merely convention: six Rust sites resolve it BY NAME —
+;; `eval/derive.rs` (twice), `types/check.rs` (three) and `process/message.rs`, which builds
+;; `(require-one 'mod)` to make a shipped closure's module load on the receiving node. There
+;; is no bound `require`; this is the function underneath a qualified reference's inferred
+;; load, and the one a program calls to load a module by a name computed at runtime.
+(defn require-one (mod)
+  "Load a single feature `mod` once (a no-op if already loaded); returns its name.
+Safe under concurrency: never returns while another process is mid-load of `mod` —
+it waits for that load to finish (a half-evaluated module is never observable)."
+  (let (key (->string mod))
+    ;; Before every early return below: the edge is a property of the requiring module,
+    ;; not of who won the race to load the target.
+    (%require-record-edge! key)
+    (cond
+      (contains? *features* key) key
+      ;; OUR OWN in-flight load of `key` requiring it back (a :use cycle): proceed —
+      ;; the classic load-once contract for circular requires
+      (= (get *features-loading* key) (self)) key
+      ;; someone else is mid-load: wait for their provide (never see a partial module)
+      (contains? *features-loading* key) (%require-await key)
+      ;; Claim the load atomically. `:assoc-new` sets the marker only if `key` is
+      ;; still absent — the test-and-set runs INSIDE the registry lock — and returns
+      ;; false if another process claimed it between the `contains?` read above and
+      ;; here. Without this CAS two simultaneous first-requirers both see
+      ;; `contains? = false`, both `:assoc`, and both run `%require-force`: the module
+      ;; body is evaluated twice and `provide`d twice (the double-load ADR-136 forbids).
+      ;; Losing the race means someone else now owns the load — wait for their provide.
+      (not (%registry-update! '*features-loading* :assoc-new [key] (self))) (%require-await key)
+      else
+      ;; We won the claim (the marker is now set). Clear it on BOTH exits: a load that
+      ;; throws (module not found, or an error inside its source) must not leave `key`
+      ;; marked, or every later require of it waits in `%require-await` on a load nobody
+      ;; is running.
+        (do
+          ;; We won the load claim — but the `(contains? *features* key)` guard at the top read
+          ;; the per-process global inline cache, which can momentarily MISS a racing loader's
+          ;; `provide` (its version bump is not yet visible to our `Relaxed` cache read). We only
+          ;; reach here AFTER that loader released the marker, i.e. after it finished providing —
+          ;; so re-check `*features*` against the SHARED table (`%registry-member?` bypasses the
+          ;; cache) and skip the load if it is already there. Without this, a claimant whose
+          ;; guard read was stale reloads an already-loaded module — the co-located-secondary
+          ;; double-load (ADR-225). The marker is released either way.
+          (unless (%registry-member? '*features* key)
+            ;; `%with-load-journal` (KI-134, ADR-339): this load's defines and registrations
+            ;; are journalled, so an `%isolate` restore — this process's window or a
+            ;; concurrent one's — replays them instead of rolling back a module every other
+            ;; process may already be using. Isolation undoes what a TEST did, never a load.
+            (try
+              (%with-load-journal (fn () (%require-force key)))
+              (catch e
+                (do
+                  (%registry-update! '*features-loading* :dissoc [key] nil)
+                  ;; Release BEFORE rethrowing. A load that throws must not strand its
+                  ;; waiters: the marker is gone, so nobody will provide, and a waiter
+                  ;; blocked on a completion that can never arrive would sit until its
+                  ;; backstop. Woken here, each waiter re-checks, finds `key` unprovided and
+                  ;; unclaimed, and one of them wins the claim and retries the load.
+                  (%require-release! key)
+                  (throw e)))))
+          ;; Marker cleared, then waiters released — and both AFTER `provide` (inside
+          ;; `%require-force`). See the ordering note on `%require-await`: provide-then-drain
+          ;; is what lets a waiter that joins the queue late still observe the load itself.
+          (%registry-update! '*features-loading* :dissoc [key] nil)
+          (%require-release! key)
+          key))))
+
+;; ---- library names the PRELUDE itself references -----------------------------
+;; The prelude's own helpers call a handful of names that live in `std/string.blsp`,
+;; `std/seq.blsp` and `std/proc/crash-report.blsp` (`string/join`, `seq/find`,
+;; `crash-report/take-over`, …). Nothing binds them at boot, and nothing has to: a qualified
+;; reference loads its module at the first lookup that misses (`derive::global_miss`,
+;; ADR-335), so the first caller that actually needs `string/join` pays for `string` and a
+;; run that never crashes never loads the crash reporter — force-loading them at boot is
+;; the cost KI-61 removed. `prelude_hygiene` in `boot.rs` keeps it honest: every qualified
+;; name the prelude references must name a module this binary embeds (or a primitive
+;; namespace), so a typo cannot hide behind "loads later".
+;;
+;; One constraint survives the mechanism change: a qualified reference INSIDE the require
+;; machinery itself (`require-one` and what it calls before `provide`) would re-enter
+;; `require-one` from the miss path, mid-claim. That is why those four sites use the private
+;; `%filter` (predicates.blsp) rather than `seq/filter` — see the note there (ADR-330).
+
+;; ═══ Abilities + the Display protocol (core) ════════════════════════════════
+;; Open generic functions with nominal dispatch — Brood's unified polymorphism seam
+;; (ADR-168/172). Part of the prelude so
+;; `defability`/`impl`/`defrecord` and the always-on `Display`/`Inspect` protocol are
+;; core — no `(:use ability)`, no load step at all, no activation. Dispatch is on
+;; the FIRST arg's identity (a built-in's `type-of` kind, or a `defrecord` value's
+;; nominal `module/name` id); resolution is by PRECEDENCE tier, not load order:
+;; app > type-owner > ability-owner > other.
+
+; ---- registries -------------------------------------------------------------
+
+; ability-name → op specs (introspection / checker / LSP)
+(def- *abilities* {})
+; ability-name → the namespace that `defability`'d it (its OWNER, ADR-172): one input to
+; an impl's precedence tier — an impl from this ns is the ability-owner tier, and only this
+; ns may impl the ability for a built-in id (`:int`, `:default`).
+(def- *ability-owner* {})
+; [ability op] → {id → fn} (runtime dispatch — the fn stored directly, no wrapper)
+(def- *impls* {})
+; [ability op id] → registering ns (provenance for conflict detection; read only at
+; registration, never on dispatch — keeps the dispatch value a bare fn)
+(def- *impl-from* {})
+; qualified-op-fn-symbol → the ability that declared it. An ability op becomes a global
+; `defn` named after the op (qualified to the declaring ns), so two abilities in the SAME
+; ns declaring the same op name would have the second silently clobber the first's op
+; function. This registry lets `%register-ability` warn on that collision instead of losing
+; an op silently (ADR-172; the checker can't see a same-ns clobber either). Keyed by the
+; QUALIFIED symbol (`<ns>/op` or bare `op` at root) so cross-module same-name ops — which
+; get distinct globals and never clash — do not false-warn.
+(def- *op-ability* {})
+
+(defn- %ability-qualify-op (owner op-name)
+  "The global symbol an ability op's `defn` binds: `op-name` qualified to the declaring ns
+  `owner` (`<owner>/op`), or bare `op-name` when `owner` is nil (root/REPL). Mirrors how the
+  `defn` `defability` emits is namespaced at load, so `*op-ability*` keys on the real global."
+  (if owner (symbol (str (->string owner) "/" (->string op-name))) op-name))
+
+(defn %register-ability (aname specs &optional owner)
+  "Record ability `aname`'s declared op specs (raw forms) for the checker / LSP, and its
+  OWNER namespace (`defability`'s defining ns, ADR-172) for impl precedence. Warns if an op
+  name is already owned by a DIFFERENT ability in the same ns — that op's generic function
+  would otherwise be silently clobbered (only the last-defined ability's op survives)."
+  (%registry-update! '*abilities* :assoc [aname] specs)
+  (when owner (%registry-update! '*ability-owner* :assoc [aname] owner))
+  ;; Record op-name ownership and warn on a same-ns cross-ability collision. A re-declaration
+  ;; of the SAME ability (hot reload) re-registers its own ops — same owner → no warning.
+  (for (spec specs)
+    (when (pair? spec)
+      (let (qsym (%ability-qualify-op owner (first spec))
+            prev (get *op-ability* qsym))
+        ; Warn only when a real generic function is at stake: a DIFFERENT ability already
+        ; owns this op name AND that name is bound (its `defability` emitted the `defn`, so a
+        ; second `defability` of the same op name genuinely shadows it). A direct
+        ; `%register-ability` that never defines a generic fn (crafted precedence fixtures) is
+        ; harmless and stays quiet.
+        (when (and prev (not (= prev aname)) (bound? qsym))
+          (%write-out (str "warning: ability "
+                        aname
+                        " declares op `"
+                        (first spec)
+                        "` already owned by ability "
+                        prev
+                        " — its generic function will be shadowed (rename one op)"
+                        "\n")))
+        (%registry-update! '*op-ability* :assoc [qsym] aname))))
+  nil)
+
+(defn %ability-owner-ns (aname)
+  "The namespace that `defability`'d `aname` (its owner), or nil."
+  (get *ability-owner* aname))
+
+(defn %ability-ops (aname)
+  "The op specs declared for ability `aname` (or nil) — which ops an `impl` must
+  provide, with what arities."
+  (get *abilities* aname))
+
+; ability-name → its `:derive-record` recipe (ADR-185): a fn `(fn (fields) …)` that, given
+; a record's field-name symbols, returns a list of `impl` METHOD forms `((op (args…) body…)
+; …)` for the ability's REQUIRED ops (provided ops come free). `defrecord`'s `:derives`
+; clause calls it at EXPANSION and splices the result into an `(impl <ability> <record> …)`,
+; so the derived methods are ordinary, statically-checkable impls. The per-ability recipe is
+; the Elixir `@derive` / Rust `#[derive]` model: each ability decides how it derives itself.
+(def- *ability-derives* {})
+
+(defn %register-ability-derive (aname recipe)
+  "Record ability `aname`'s `:derive-record` recipe (the fn `defrecord`'s `:derives` runs to
+  synthesise a structural impl). Rebindable like any registry — a later `defability` wins."
+  (%registry-update! '*ability-derives* :assoc [aname] recipe)
+  nil)
+
+(defn %ability-derive-recipe (aname)
+  "Ability `aname`'s `:derive-record` recipe fn (fields → `impl` method forms), or nil when
+  the ability declared none — i.e. it is not derivable, and `:derives [aname]` is an error."
+  (get *ability-derives* aname))
+
+; ability-name → its SEALED member ids (a closed set), or absent if open
+(def- *sealed* {})
+
+(defn %register-sealed (aname members)
+  "Record ability `aname`'s SEALED member ids — the closed set of identities it is meant
+  to be implemented for. The checker uses this for exhaustiveness: every member must have
+  an impl of every declared op. Runtime dispatch is unaffected (sealing is a contract)."
+  (%registry-update! '*sealed* :assoc [aname] members)
+  nil)
+
+(defn %sealed-members (aname)
+  "The sealed member ids of ability `aname` (a list of keyword ids), or nil if open."
+  (get *sealed* aname))
+
+; ability-name → its REQUIRED (super-)abilities (ADR-193): a list of ability names that any id
+; implementing this ability must ALSO implement. A declared conformance contract like `:sealed`
+; — checker-only, advisory (late binding means it can't gate); runtime dispatch is unaffected.
+(def- *ability-requires* {})
+
+(defn %register-ability-requires (aname reqs)
+  "Record that ability `aname` REQUIRES abilities `reqs` (a list of names) — an implementor of
+  `aname` must also implement each of them (ADR-193). The checker enforces it."
+  (%registry-update! '*ability-requires* :assoc [aname] reqs)
+  nil)
+
+(defn %ability-requires (aname)
+  "The abilities `aname` requires (a list of names), or nil."
+  (get *ability-requires* aname))

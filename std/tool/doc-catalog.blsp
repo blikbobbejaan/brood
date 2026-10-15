@@ -101,7 +101,7 @@
    "library names the PRELUDE itself references" :meta
    "record identity and library-value predicates" :predicates
    "ability impl registration and dispatch" :meta
-   ;; The last tools.blsp header also covers what follows it: contracts.blsp and protocol.blsp.
+   ;; image-install.blsp's header also covers what follows it: contracts.blsp and protocol.blsp.
    "boot-time stdlib image install" :meta})
 
 ;; Kernel primitives (and two `defn`s nested in a `let`), which record no definition site.

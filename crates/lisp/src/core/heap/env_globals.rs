@@ -427,7 +427,7 @@ impl Heap {
 
     /// Is `sym` one of the registries loads coordinate THROUGH, written live even while a
     /// load is staged? Which ones is policy — the prelude's `*live-registries*` set, defined
-    /// beside them (`std/prelude/tools.blsp`) — so it is read from the table here, never
+    /// beside them (`std/prelude/modules.blsp`) — so it is read from the table here, never
     /// staged and never cached: it is a prelude binding and does not change.
     fn is_live_coordination_registry(&self, sym: Symbol) -> bool {
         static LIVE: std::sync::OnceLock<Symbol> = std::sync::OnceLock::new();

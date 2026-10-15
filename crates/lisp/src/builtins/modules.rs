@@ -982,8 +982,7 @@ pub(super) fn builtin_modules(_: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
 pub(super) fn in_ns(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     // `(%in-ns nil)` clears the namespace back to ROOT — the restore half of a
     // save/set/restore bracket (`reflect/current-ns` returns nil at root, so a
-    // bracket that saved nil needs a way to put it back). The deferred-contracts
-    // machinery (`%contracts-apply-pending!` in tools.blsp) is the first user.
+    // bracket that saved nil needs a way to put it back).
     if matches!(arg(args, 0), Value::Nil) {
         heap.set_compile_ns(None);
         return Ok(Value::nil());
