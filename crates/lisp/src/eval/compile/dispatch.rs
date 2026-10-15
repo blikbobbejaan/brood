@@ -425,33 +425,8 @@ pub(crate) fn dispatch(
                                 )?));
                             }
                             // Staged area is empty (shouldn't happen for outcome 4,
-                            // but fall back gracefully).  GC may have run, so read
-                            // fresh args from the frame rather than stale cur_argv.
-                            let argc = cur_argv.len();
-                            let fresh_argv: SmallVec<[Value; 4]> = if arm.rest_slot.is_none() {
-                                (0..argc).map(|k| heap.root_at(base + k)).collect()
-                            } else {
-                                // Rest arm: the rest elements were folded into a list at
-                                // bind time, so they can't be reconstructed per-slot from
-                                // `roots`; fall back to the pre-call `cur_argv`. Sound ONLY
-                                // if no GC relocated those handles since capture — i.e. a
-                                // rest arm never reaches here after a real safepoint (it's
-                                // outside the JIT int-subset). A stale handle here is the
-                                // bug #2 class (ADR-114) and would corrupt, so enforce the
-                                // invariant in debug rather than leaving it as a silent
-                                // assumption.
-                                #[cfg(debug_assertions)]
-                                for v in &cur_argv {
-                                    debug_assert!(
-                                        heap.dbg_value_stale(*v).is_none(),
-                                        "dispatch: stale LOCAL handle in the rest-arm \
-                                             cur_argv fallback after a JIT safepoint — the \
-                                             'rest arms never JIT post-safepoint' invariant \
-                                             broke (ADR-114; re-read from roots instead)"
-                                    );
-                                }
-                                cur_argv
-                            };
+                            // but fall back gracefully).
+                            let fresh_argv = fresh_frame_args(heap, &arm, base, cur_argv);
                             heap.truncate_roots(base);
                             heap.truncate_env_roots(env_base);
                             return Ok(Step::Done(vm_apply(heap, arm, &fresh_argv, callee_env2)?));
@@ -459,16 +434,8 @@ pub(crate) fn dispatch(
                         _ => {
                             crate::perf_bump!(jit_fast_deopt);
                             // Epoch reset (→ None), deopt (1), or preempt (2): re-run
-                            // on the VM.  GC can fire during any jit_dispatch_call
-                            // safepoint triggered by a sub-call inside
-                            // jit_tier — even for deopt (the sub-call returns a
-                            // non-int, GC fires in its safepoint, then the JIT deopts
-                            // on the non-int result).  After that GC, cur_argv holds
-                            // stale LOCAL handles.  The frame at roots[base..base+nslots]
-                            // is updated in place by every GC, so read fresh args from
-                            // there.  Arms with a rest slot collect the rest elements
-                            // into a list; they're unreachable in the JIT int-subset
-                            // and fall through to cur_argv as an inert dead-code path.
+                            // on the VM, with arguments re-read from the frame
+                            // (`fresh_frame_args`).
                             let callee_env2 = heap.read_root_env(env_root);
                             // Deopt-resume (see `CompiledArm::ckpt_slot`): a deopt after
                             // a completed non-tail call keeps the frame and resumes AT
@@ -492,31 +459,7 @@ pub(crate) fn dispatch(
                                     )?));
                                 }
                             }
-                            let argc = cur_argv.len();
-                            let fresh_argv: SmallVec<[Value; 4]> = if arm.rest_slot.is_none() {
-                                (0..argc).map(|k| heap.root_at(base + k)).collect()
-                            } else {
-                                // Rest arm: the rest elements were folded into a list at
-                                // bind time, so they can't be reconstructed per-slot from
-                                // `roots`; fall back to the pre-call `cur_argv`. Sound ONLY
-                                // if no GC relocated those handles since capture — i.e. a
-                                // rest arm never reaches here after a real safepoint (it's
-                                // outside the JIT int-subset). A stale handle here is the
-                                // bug #2 class (ADR-114) and would corrupt, so enforce the
-                                // invariant in debug rather than leaving it as a silent
-                                // assumption.
-                                #[cfg(debug_assertions)]
-                                for v in &cur_argv {
-                                    debug_assert!(
-                                        heap.dbg_value_stale(*v).is_none(),
-                                        "dispatch: stale LOCAL handle in the rest-arm \
-                                             cur_argv fallback after a JIT safepoint — the \
-                                             'rest arms never JIT post-safepoint' invariant \
-                                             broke (ADR-114; re-read from roots instead)"
-                                    );
-                                }
-                                cur_argv
-                            };
+                            let fresh_argv = fresh_frame_args(heap, &arm, base, cur_argv);
                             heap.truncate_roots(base);
                             heap.truncate_env_roots(env_base);
                             return Ok(Step::Done(vm_apply(heap, arm, &fresh_argv, callee_env2)?));
@@ -589,6 +532,40 @@ pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, cen
             heap.set_root_at(base + capture_base + k, v);
         }
     }
+}
+
+/// The arguments to re-run `arm` with on the VM after its native code bailed. A collection
+/// can fire at any safepoint inside the native call — even on a deopt (a sub-call returns
+/// a non-int, collects, then the arm deopts on it) — leaving `cur_argv`, captured before
+/// the call, holding stale LOCAL handles. The frame at `roots[base..]` is updated in place
+/// by every collection, so the arguments are re-read from there.
+///
+/// A rest arm folded its rest elements into a list at bind time, so they can't be rebuilt
+/// per slot; it falls back to `cur_argv`. That is sound only because a rest arm never
+/// reaches here after a real safepoint (it is outside the JIT int-subset). A stale handle
+/// would be the bug #2 class (ADR-114) and corrupt, so debug builds enforce the invariant
+/// rather than leave it a silent assumption.
+fn fresh_frame_args(
+    heap: &Heap,
+    arm: &CompiledArm,
+    base: usize,
+    cur_argv: SmallVec<[Value; 4]>,
+) -> SmallVec<[Value; 4]> {
+    if arm.rest_slot.is_none() {
+        return (0..cur_argv.len())
+            .map(|k| heap.root_at(base + k))
+            .collect();
+    }
+    #[cfg(debug_assertions)]
+    for v in &cur_argv {
+        debug_assert!(
+            heap.dbg_value_stale(*v).is_none(),
+            "dispatch: stale LOCAL handle in the rest-arm cur_argv fallback after a JIT \
+             safepoint — the 'rest arms never JIT post-safepoint' invariant broke (ADR-114; \
+             re-read from roots instead)"
+        );
+    }
+    cur_argv
 }
 
 /// Push a fresh activation frame for `arm` onto `Heap::roots`: required args, then
