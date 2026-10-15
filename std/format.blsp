@@ -649,8 +649,10 @@ if you are reintroducing hoisting, they are what you have to write back."
 ;;   {:node n :gap g :trailing text}     a form, with its same-line comment or nil
 ;;
 ;; `:gap` counts the newlines between the previous item and this one; two or more is a
-;; blank line the author left. It restarts at 1 after a comment (the comment's own line
-;; break starts the gap) and at 0 after a form, its trailing comment included.
+;; blank line the author left. It restarts at 1 after any comment, own-line or trailing,
+;; because a comment node carries its own line break, which starts the gap; and at 0
+;; after a form with no trailing comment. Restarting at 0 after a trailing comment lost
+;; the blank line below it in every walker.
 (defn- layout-items (kids start)
   (layout-items-at kids start (count kids) 0 []))
 
@@ -668,7 +670,7 @@ if you are reintroducing hoisting, they are what you have to write back."
             (layout-items-at kids
               (if tc (inc tc) (inc i))
               n
-              0
+              (if tc 1 0)
               (conj items
                 {:node c
                  :gap gap
@@ -715,7 +717,7 @@ if you are reintroducing hoisting, they are what you have to write back."
   ;; `render-break` already applies to a body.
   (let (pair-ind (inc indent))
     (str open
-      (render-pair-walk (layout-items kids 0) 0 pair-ind 0 "")
+      (render-pair-walk (layout-items kids 0) 0 pair-ind "")
       (if (last-nonws-comment? kids) (str "\n" (indent-of pair-ind)) "")
       close)))
 (sig render-pair-break (vector int string string -> string))
@@ -730,23 +732,21 @@ if you are reintroducing hoisting, they are what you have to write back."
     (>= nl 2) (str "\n\n" (indent-of pair-ind))
     else (str "\n" (indent-of pair-ind))))
 
-(defn- render-pair-walk (items k pair-ind carry acc)
+(defn- render-pair-walk (items k pair-ind acc)
   ;; Emit one name+value pair per line, with the pair's trailing comment after it, and
   ;; each comment in place. A name with no form to pair with — the end, a comment, or a
   ;; trailing comment of its own — goes alone, and its own trailing comment drops to the
-  ;; next line. `carry` is that dropped comment's line break, which the next item's gap
-  ;; does not count. Mirrors render-body-pairs, but with no head and the pair indent for
+  ;; next line. Mirrors render-body-pairs, but with no head and the pair indent for
   ;; continuation lines.
   (if (= k (count items))
     acc
     (let (item (nth items k)
-          gap (+ carry (get item :gap)))
+          gap (get item :gap))
       (cond
         (get item :comment?)
           (render-pair-walk items
             (inc k)
             pair-ind
-            0
             (str acc (render-pair-sep acc gap pair-ind true) (comment-text item)))
         (pairs-with-next? items k)
           (let (name (render (get item :node) pair-ind)
@@ -755,7 +755,6 @@ if you are reintroducing hoisting, they are what you have to write back."
             (render-pair-walk items
               (+ k 2)
               pair-ind
-              0
               (str acc
                 (render-pair-sep acc gap pair-ind false)
                 name
@@ -767,14 +766,11 @@ if you are reintroducing hoisting, they are what you have to write back."
                        (render-pair-sep acc gap pair-ind false)
                        (render (get item :node) pair-ind))
                 text (get item :trailing))
-            (if text
-              (render-pair-walk items
-                (inc k)
-                pair-ind
-                1
-                (str line (render-pair-sep line 0 pair-ind true) text))
-              (render-pair-walk items (inc k) pair-ind 0 line)))))))
-(sig render-pair-walk (vector int int int string -> string))
+            (render-pair-walk items
+              (inc k)
+              pair-ind
+              (if text (str line (render-pair-sep line 0 pair-ind true) text) line)))))))
+(sig render-pair-walk (vector int int string -> string))
 
 ;; ---- pair body emit (cond / case clauses) -----------------------------------
 ;; Like render-body but consumes two structural forms per emission, joined by

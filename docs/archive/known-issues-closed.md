@@ -13867,3 +13867,20 @@ peer, so `notify_peers` never re-enters. **Guard.** `crates/lisp/tests/unlink_ra
 `demonitor_race.rs` shape with links, as the root process: red 3 of 3 before the fix, green
 5 of 5 after. The link, exit, supervisor, spawn-monitor and crash-report suites are green
 on tiers 0-2 and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
+
+## KI-263 — `nest format` deleted the blank line below any trailing comment ✅ FIXED 2026-10-15
+
+**Symptom.** `(def a 1) ; c`, a blank line, `(def b 2)` formatted to two adjacent lines. The
+same happened between two body forms, two `cond` clauses and two `let` bindings: whenever
+the line above a blank line ended in a same-line comment, the formatter dropped the blank.
+**Cause.** Each walker counted the newlines between items and kept a blank line at two or
+more. A comment node carries its own line break, so after an own-line comment the count
+restarted at 1. After a trailing comment it restarted at 0, which lost that line break, and
+the blank line below then counted as a single newline. The `let`-bindings walker had a
+one-off correction for the case where it moves a lone name's trailing comment onto its own
+line, which is how the asymmetry surfaced. **Fix.** Found while folding the four walkers onto
+one item list (`layout-items`): the gap restarts at 1 after any comment, and the one-off
+correction goes. Every tracked file was a fixed point of the old formatter, so none changes.
+**Guard.** `tests/format_test.blsp` "a blank line after a trailing comment survives, in every
+walker" (top level, body, `cond`, `let`) and "and no blank line appears after a trailing
+comment that had none". Restarting at 0 again reds the first.

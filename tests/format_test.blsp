@@ -265,6 +265,17 @@
   ;; the next line — and that drop is a line break the blank line after it must not eat.
   (test "a lone name's trailing comment drops below it, keeping the blank line after"
     (assert= (source "(let (a ; c\n\n      b 2) a)\n") "(let (a\n      ; c\n\n      b 2)\n  a)\n"))
+  ;; A comment carries its own line break, so the gap after a trailing one starts at 1,
+  ;; as after an own-line one. Started at 0, the blank line below a trailing comment was
+  ;; deleted in every walker — between two top-level definitions too.
+  (test "a blank line after a trailing comment survives, in every walker"
+    (assert= (source "(def a 1) ; c\n\n(def b 2)\n") "(def a 1) ; c\n\n(def b 2)\n")
+    (assert= (source "(do\n  x ; c\n\n  y)\n") "(do\n  x ; c\n\n  y)\n")
+    (assert= (source "(cond\n  a 1 ; t\n\n  b 2)\n") "(cond\n  a 1 ; t\n\n  b 2)\n")
+    (assert= (source "(let (a 1 ; c\n\n      b 2)\n  a)\n") "(let (a 1 ; c\n\n      b 2)\n  a)\n"))
+  (test "and no blank line appears after a trailing comment that had none"
+    (assert= (source "(def a 1) ; c\n(def b 2)\n") "(def a 1) ; c\n(def b 2)\n")
+    (assert= (source "(do\n  x ; c\n  y)\n") "(do\n  x ; c\n  y)\n"))
   (test "a comment in a map pairs up like bindings (not one element per line)"
     (let (out (source "(def m {:a 1\n        :b 2  ; note\n        :c 3})"))
       (is (includes? out "; note"))
