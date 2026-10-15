@@ -844,8 +844,7 @@ impl Heap {
         } else {
             LocalString::inline(s.to_string())
         };
-        let idx = self.local.strings.len();
-        self.local.strings.push(entry);
+        let idx = alloc_slot!(self, strings, entry);
         Value::str_(StrId::local_gen(idx, self.local_epoch))
     }
 
@@ -853,8 +852,7 @@ impl Heap {
     /// (ADR-045). Bump-only like the other allocators; the rope's internal
     /// `Arc` nodes mean this stores one cheap handle, not a byte copy.
     pub fn alloc_rope(&mut self, r: ropey::Rope) -> Value {
-        let idx = self.local.ropes.len();
-        self.local.ropes.push(r);
+        let idx = alloc_slot!(self, ropes, r);
         Value::rope(RopeId::local_gen(idx, self.local_epoch))
     }
 
@@ -910,8 +908,7 @@ impl Heap {
             "alloc_bigint given an i64-range value (breaks the normalize invariant); \
              use int_from_bigint for computed results"
         );
-        let idx = self.local.bigints.len();
-        self.local.bigints.push(n);
+        let idx = alloc_slot!(self, bigints, n);
         Value::bigint(BigIntId::local_gen(idx, self.local_epoch))
     }
 
@@ -931,8 +928,7 @@ impl Heap {
     /// (mirrors [`alloc_bigint`](Self::alloc_bigint)). Unlike a bignum there is no
     /// normalize-into-`Int` invariant — a decimal is stored as-is.
     pub fn alloc_decimal(&mut self, n: bigdecimal::BigDecimal) -> Value {
-        let idx = self.local.decimals.len();
-        self.local.decimals.push(n);
+        let idx = alloc_slot!(self, decimals, n);
         Value::decimal(DecimalId::local_gen(idx, self.local_epoch))
     }
 
@@ -957,8 +953,7 @@ impl Heap {
         if n.denom().is_one() {
             return self.int_from_bigint(n.numer().clone());
         }
-        let idx = self.local.ratios.len();
-        self.local.ratios.push(n);
+        let idx = alloc_slot!(self, ratios, n);
         Value::ratio(RatioId::local_gen(idx, self.local_epoch))
     }
 
@@ -990,8 +985,7 @@ impl Heap {
     /// (mirrors [`alloc_bigint`](Self::alloc_bigint)). Byte-clean — the bytes
     /// are arbitrary, never assumed UTF-8.
     pub fn alloc_bytes(&mut self, blob: Arc<SharedBlob>) -> Value {
-        let idx = self.local.bytes.len();
-        self.local.bytes.push(blob);
+        let idx = alloc_slot!(self, bytes, blob);
         Value::bytes(BytesId::local_gen(idx, self.local_epoch))
     }
 
@@ -1044,8 +1038,7 @@ impl Heap {
     /// the sender already bumped the refcount via `Arc::clone` for the
     /// `Message`, so installing it here is just slot bookkeeping — no copy.
     pub(crate) fn alloc_string_from_shared(&mut self, blob: Arc<SharedBlob>) -> Value {
-        let idx = self.local.strings.len();
-        self.local.strings.push(LocalString::shared(blob));
+        let idx = alloc_slot!(self, strings, LocalString::shared(blob));
         Value::str_(StrId::local_gen(idx, self.local_epoch))
     }
 
@@ -1208,8 +1201,7 @@ impl Heap {
         // Natives are only allocated during the prelude build (then frozen into
         // PRELUDE); the LOCAL natives slab stays empty at runtime and is never
         // collected.
-        let idx = self.local.natives.len();
-        self.local.natives.push(f);
+        let idx = alloc_slot!(self, natives, f);
         Value::native(NativeId::local_gen(idx, self.local_epoch))
     }
 
