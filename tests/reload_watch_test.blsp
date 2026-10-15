@@ -5,7 +5,7 @@
 ;; watcher down. `nest run --watch` wires `project-check/check-sources` in
 ;; as this callback inside a project; these tests exercise the callback
 ;; contract directly, independent of `nest`/the checker.
-(defmodule reload-watch-test (:use test) (:use reload))
+(defmodule reload-watch-test (:use-internals reload) (:use test) (:use reload))
 
 ;; Drop any fixtures a prior run left in /tmp (at load, before any test runs). Missing
 ;; until 2026-08-05 (KI-30): this file's 926 leftover directories were the second-largest
@@ -66,3 +66,13 @@
           (file/spit f "(def rwt-val2 3)\n")
           (is (reload-watch-test-wait (fn () (= (reflect/eval 'rwt-val2) 3)) 3000))
           (assert= (reflect/eval 'rwt-val2) 3))))))
+
+(describe "on-change: the directory walk"
+  (test "a symlinked directory is not entered, so a cycle watches each file once"
+    (let (d (temp-dir "brood-reload-")
+          sub (path/join d "sub"))
+      (file/mkdir d)
+      (file/mkdir sub)
+      (file/spit (path/join sub "deep.blsp") "")
+      (%os-cmd "/bin/ln" ["-s" d (path/join sub "up")])
+      (assert= (reload/reload-collect-blsp d) (list (path/join sub "deep.blsp"))))))

@@ -610,7 +610,7 @@ pub(super) fn span_runs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     // `lo`/`hi` handed to `span_runs_push` is provably in `[base, end]`.
     let end = base.checked_add(chars.len() as i64).ok_or_else(|| {
         LispError::runtime(format!(
-            "span-runs: base {base} plus text length {} overflows i64",
+            "%span-runs: base {base} plus text length {} overflows i64",
             chars.len()
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE)

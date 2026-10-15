@@ -149,7 +149,7 @@
     (assert= (message (fn () (bit/shift-left 1 1000000000)))
       "bit/shift-left: shift amount 1000000000 too large (max 134217728)")
     (is (string/starts-with? (message (fn () (math/->fixed 1.5 99999)))
-          "->fixed: decimal places 99999 too large (max 1000)"))))
+          "math/->fixed: decimal places 99999 too large (max 1000)"))))
 
 (describe "a value nested past 256 levels crosses a send and a table"
   ;; The serialiser capped at 256 levels — an abort-safe bound that made a persistent

@@ -14,7 +14,7 @@ use crate::builtins::numeric::{arg, expect_bigint, expect_int, expect_string, nu
 
 /// Map a crossterm I/O error into a runtime `LispError`.
 pub(in crate::builtins) fn term_err(e: std::io::Error) -> LispError {
-    LispError::runtime(format!("terminal: {}", e))
+    LispError::runtime(format!("terminal I/O failed: {}", e))
 }
 
 /// `(term-enter)` — take over the terminal: raw mode + alternate screen, cursor
@@ -807,7 +807,7 @@ pub(in crate::builtins) fn gui_open(args: &[Value], _: EnvId, heap: &mut Heap) -
             let name = expect_string(heap, "%gui-open", v)?;
             if name.is_empty() {
                 return Err(LispError::runtime(
-                    "gui-open: :app-id must not be empty — it names the .desktop entry \
+                    "%gui-open: :app-id must not be empty — it names the .desktop entry \
                      the desktop matches this window to (pass nil for no app id)",
                 ));
             }
@@ -860,7 +860,7 @@ pub(in crate::builtins) fn gui_texture(args: &[Value], _: EnvId, heap: &mut Heap
     let h_i = expect_int(heap, "%gui-texture", arg(args, 4))?;
     let Ok(tex) = u32::try_from(tex_i) else {
         return Err(LispError::runtime(format!(
-            "gui-texture: texture handle must be a non-negative int, got {tex_i}"
+            "%gui-texture: texture handle must be a non-negative int, got {tex_i}"
         )));
     };
     let (w, h) = match (u32::try_from(w_i), u32::try_from(h_i)) {
@@ -876,7 +876,7 @@ pub(in crate::builtins) fn gui_texture(args: &[Value], _: EnvId, heap: &mut Heap
         }
         _ => {
             return Err(LispError::runtime(format!(
-                "gui-texture: {w_i}x{h_i} needs {} bytes of rgba, got {}",
+                "%gui-texture: {w_i}x{h_i} needs {} bytes of rgba, got {}",
                 (w_i.max(0) as u64)
                     .saturating_mul(h_i.max(0) as u64)
                     .saturating_mul(4),
@@ -900,17 +900,17 @@ pub(in crate::builtins) fn gui_sound(args: &[Value], _: EnvId, heap: &mut Heap) 
     let pcm = collect_bytes("%gui-sound", arg(args, 4), heap)?;
     let Ok(snd) = u32::try_from(snd_i) else {
         return Err(LispError::runtime(format!(
-            "gui-sound: sound handle must be a non-negative int, got {snd_i}"
+            "%gui-sound: sound handle must be a non-negative int, got {snd_i}"
         )));
     };
     if !(1..=384_000).contains(&rate_i) || !(1..=2).contains(&channels_i) {
         return Err(LispError::runtime(format!(
-            "gui-sound: rate must be 1..384000 Hz and channels 1 or 2, got {rate_i} Hz × {channels_i}"
+            "%gui-sound: rate must be 1..384000 Hz and channels 1 or 2, got {rate_i} Hz × {channels_i}"
         )));
     }
     if pcm.len() % 2 != 0 {
         return Err(LispError::runtime(format!(
-            "gui-sound: PCM16 needs an even byte count, got {}",
+            "%gui-sound: PCM16 needs an even byte count, got {}",
             pcm.len()
         )));
     }
@@ -1014,7 +1014,7 @@ pub(in crate::builtins) fn gui_icon(args: &[Value], _: EnvId, heap: &mut Heap) -
             .collect(),
         _ => {
             return Err(LispError::runtime(
-                "gui-icon!: rgba must be a vector of bytes".to_string(),
+                "%gui-icon!: rgba must be a vector of bytes".to_string(),
             ))
         }
     };
@@ -1039,7 +1039,7 @@ pub(in crate::builtins) fn gui_icon(args: &[Value], _: EnvId, heap: &mut Heap) -
         }
         _ => {
             return Err(LispError::runtime(format!(
-                "gui-icon!: w*h*4 must equal the rgba byte count (w={w_i}, h={h_i}, {} bytes)",
+                "%gui-icon!: w*h*4 must equal the rgba byte count (w={w_i}, h={h_i}, {} bytes)",
                 rgba.len()
             )))
         }
@@ -1860,10 +1860,10 @@ pub(in crate::builtins) fn gui_font_register(
         }
     };
     let read = |p: &str| -> Result<Vec<u8>, LispError> {
-        std::fs::read(p).map_err(|e| LispError::runtime(format!("gui-font-register: {p}: {e}")))
+        std::fs::read(p).map_err(|e| LispError::runtime(format!("%gui-font-register: {p}: {e}")))
     };
     let regular_path = path("regular")?
-        .ok_or_else(|| LispError::runtime("gui-font-register: a :regular path is required"))?;
+        .ok_or_else(|| LispError::runtime("%gui-font-register: a :regular path is required"))?;
     let regular = read(&regular_path)?;
     // each missing style falls back to the regular file's bytes
     let style = |key: &str| -> Result<Vec<u8>, LispError> {

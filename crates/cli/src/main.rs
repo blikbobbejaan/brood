@@ -112,13 +112,9 @@ fn main() {
         std::process::exit(70);
     }
     if brood::bundle::is_bundled() {
-        // `args_os` + lossy, not `args`: this runs *before* clap, so nothing has
-        // validated argv yet, and `std::env::args()` panics outright on a non-UTF-8
-        // argument. A bundled app must not die on a filename its own OS allows.
-        let args: Vec<String> = std::env::args_os()
-            .skip(1)
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
+        // Lossy, not `std::env::args()`: this runs *before* clap, and a bundled app must
+        // not die on a filename its own OS allows.
+        let args = brood::cli_support::args_lossy();
         // The two runtime-reserved arguments, honoured only as the FIRST one. They are
         // the single exception to "argv goes straight to the app", and they carry the
         // `--brood-` prefix precisely so the exception costs the app nothing: the prefix

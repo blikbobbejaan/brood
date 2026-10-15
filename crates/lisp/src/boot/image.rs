@@ -841,7 +841,22 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
             .ok()
             .and_then(|key| crate::builtins::modules::embedded_module_path(&key)),
     };
+    // Restored on EVERY exit — the decode-failure nils and an error from a define alike —
+    // because every exit of the body passes back through here.
     let prior_file = heap.set_current_file(section_file.map(str::to_string));
+    let loaded = load_section_entries(heap, &mut r, count, reserve);
+    heap.set_current_file(prior_file);
+    Ok(loaded?.map_or(Value::Nil, Value::int))
+}
+
+/// The body of [`image_load_section`]: define a section's `count` entries from `r`.
+/// `Ok(None)` when the bytes do not decode.
+fn load_section_entries(
+    heap: &mut Heap,
+    r: &mut Cursor<Vec<u8>>,
+    count: u32,
+    reserve: bool,
+) -> Result<Option<i64>, LispError> {
     let global = heap.global();
     let mut done: i64 = 0;
     let (mut ns_decode, mut ns_from_msg, mut ns_define) = (0u64, 0u64, 0u64);
@@ -866,18 +881,12 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
     for _ in 0..count {
         let p = r.position() as usize;
         if p >= r.get_ref().len() {
-            {
-                heap.set_current_file(prior_file);
-                return Ok(Value::Nil);
-            }
+            return Ok(None);
         }
         let kind = r.get_ref()[p];
         r.set_position((p + 1) as u64);
-        let Some(name) = get_str(&mut r) else {
-            {
-                heap.set_current_file(prior_file);
-                return Ok(Value::Nil);
-            }
+        let Some(name) = get_str(r) else {
+            return Ok(None);
         };
         // A privacy entry carries a name and no value — branch before decoding one.
         if kind == KIND_PRIVATE {
@@ -887,22 +896,16 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
         }
         // So does a def-site entry: file, line, column.
         if kind == KIND_DEF_SITE {
-            let Some(loc) = get_def_site(&mut r) else {
-                {
-                    heap.set_current_file(prior_file);
-                    return Ok(Value::Nil);
-                }
+            let Some(loc) = get_def_site(r) else {
+                return Ok(None);
             };
             heap.set_def_site(value::intern(&name), loc);
             done += 1;
             continue;
         }
         let t0 = std::time::Instant::now();
-        let Ok(msg) = decode_msg(&mut r) else {
-            {
-                heap.set_current_file(prior_file);
-                return Ok(Value::Nil);
-            }
+        let Ok(msg) = decode_msg(r) else {
+            return Ok(None);
         };
         ns_decode += t0.elapsed().as_nanos() as u64;
         let t1 = std::time::Instant::now();
@@ -964,8 +967,7 @@ pub(crate) fn image_load_section(args: &[Value], _: EnvId, heap: &mut Heap) -> L
             ns_define / 1_000_000
         );
     }
-    heap.set_current_file(prior_file);
-    Ok(Value::int(done))
+    Ok(Some(done))
 }
 
 // ─── The PRELUDE image (ADR-314) ───────────────────────────────────────────────

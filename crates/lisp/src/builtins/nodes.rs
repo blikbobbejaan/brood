@@ -134,7 +134,7 @@ pub(super) fn node_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 pub(super) fn node_also_listen(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let addr = expect_string(heap, "%node-also-listen", arg(args, 0))?;
     crate::dist::node_also_listen(&addr).map_err(|e| {
-        LispError::runtime(format!("node-also-listen: {e}"))
+        LispError::runtime(format!("%node-also-listen: {e}"))
             .with_code(crate::error::error_codes::DISTRIBUTION)
     })?;
     Ok(Value::nil())
@@ -147,7 +147,7 @@ pub(super) fn node_connect(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
     let peer = expect_node_name(heap, "%node-connect", arg(args, 0))?;
     let addr = expect_string(heap, "%node-connect", arg(args, 1))?;
     let real = crate::dist::node_connect(peer, &addr).map_err(|e| {
-        LispError::runtime(format!("connect: {e}"))
+        LispError::runtime(format!("%node-connect: {e}"))
             .with_code(crate::error::error_codes::DISTRIBUTION)
     })?;
     Ok(Value::keyword(real))

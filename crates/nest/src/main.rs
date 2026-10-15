@@ -200,8 +200,8 @@ fn main() {
     // A subcommand implemented in Brood (`std/tool/nest.blsp`, ADR-322) is routed there
     // BEFORE clap sees argv: clap would reject its flags, which it no longer knows. The list
     // is the routing table; a name is in exactly one of it and the `Cmd` enum.
-    let argv: Vec<String> = std::env::args().collect();
-    if let Some((max_parallel, rest)) = blsp_routed(&argv[1..]) {
+    let argv = brood::cli_support::args_lossy();
+    if let Some((max_parallel, rest)) = blsp_routed(&argv) {
         run_on_main_stack("nest-main", move || run_blsp(max_parallel, rest));
         return;
     }

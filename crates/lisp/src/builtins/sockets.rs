@@ -179,7 +179,7 @@ pub(super) fn tls_self_signed(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
             let k = heap.alloc_string(&key);
             Ok(heap.alloc_vector(vec![c, k]))
         }
-        Err(e) => Err(LispError::runtime(format!("tls-self-signed: {}", e))),
+        Err(e) => Err(LispError::runtime(format!("%tls-self-signed: {}", e))),
     }
 }
 
@@ -203,14 +203,15 @@ pub(super) fn tls_request(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let binary = args.get(4).is_some_and(|value| crate::eval::truthy(*value));
     let owner = crate::process::self_pid();
     let id = crate::host::net::tls_request(&host, port, request, ca, binary, owner)
-        .map_err(|e| LispError::runtime(format!("tls-request: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("%tls-request: {}", e)))?;
     Ok(Value::socket(id))
 }
 
 pub(super) fn tcp_send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_socket(heap, "%tcp-send", arg(args, 0))?;
     let out = send_payload(heap, "%tcp-send", arg(args, 1))?;
-    crate::host::net::send(id, &out).map_err(|e| LispError::runtime(format!("tcp-send: {}", e)))?;
+    crate::host::net::send(id, &out)
+        .map_err(|e| LispError::runtime(format!("%tcp-send: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -218,7 +219,7 @@ pub(super) fn tcp_set_binary(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
     let id = expect_socket(heap, "%tcp-set-binary", arg(args, 0))?;
     let on = !matches!(arg(args, 1), Value::Nil | Value::Bool(false));
     crate::host::net::set_binary(id, on)
-        .map_err(|e| LispError::runtime(format!("tcp-set-binary: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("%tcp-set-binary: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -227,11 +228,11 @@ pub(super) fn tcp_set_idle_timeout(args: &[Value], _: EnvId, heap: &mut Heap) ->
     let ms = expect_int(heap, "%tcp-set-idle-timeout", arg(args, 1))?;
     if ms < 0 {
         return Err(LispError::runtime(
-            "tcp-set-idle-timeout: ms must be >= 0 (0 disarms)",
+            "%tcp-set-idle-timeout: ms must be >= 0 (0 disarms)",
         ));
     }
     crate::host::net::set_idle_timeout(id, ms as u64)
-        .map_err(|e| LispError::runtime(format!("tcp-set-idle-timeout: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("%tcp-set-idle-timeout: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -241,7 +242,7 @@ pub(super) fn tcp_controlling_process(args: &[Value], _: EnvId, heap: &mut Heap)
         Value::Pid { id, .. } => id,
     )?;
     crate::host::net::controlling_process(id, pid)
-        .map_err(|e| LispError::runtime(format!("tcp-controlling-process: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("%tcp-controlling-process: {}", e)))?;
     Ok(Value::nil())
 }
 

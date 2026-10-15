@@ -163,3 +163,13 @@
   (test "a declaration on a later line is still found"
     (assert= (complete/complete-tags-in "(def s \"prose\")\n(describe \"g\" :tags [:yes])" nil 0)
       (list "yes"))))
+
+(describe "complete: walking the project's files"
+  (test "a symlinked directory is not entered, so a cycle lists each file once"
+    (let (d (temp-dir "brood-complete-")
+          sub (path/join d "sub"))
+      (file/mkdir d)
+      (file/mkdir sub)
+      (file/spit (path/join sub "deep_test.blsp") "")
+      (%os-cmd "/bin/ln" ["-s" d (path/join sub "up")])
+      (assert= (complete/complete-under d "_test.blsp") (list (path/join sub "deep_test.blsp"))))))

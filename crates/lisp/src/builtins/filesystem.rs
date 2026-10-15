@@ -233,10 +233,8 @@ fn strip_deleted_marker(path: &str) -> &str {
 pub(super) fn cwd(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     match std::env::current_dir() {
         Ok(p) => Ok(heap.alloc_string(&p.to_string_lossy())),
-        Err(e) => {
-            Err(LispError::runtime(format!("cwd: {}", e))
-                .with_code(crate::error::error_codes::FILE_IO))
-        }
+        Err(e) => Err(LispError::runtime(format!("file/cwd: {}", e))
+            .with_code(crate::error::error_codes::FILE_IO)),
     }
 }
 
@@ -414,11 +412,11 @@ pub(super) fn append_bytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
         .append(true)
         .open(&path)
         .map_err(|e| {
-            LispError::runtime(format!("append-bytes: {}: {}", path, e))
+            LispError::runtime(format!("file/spit-bytes-append: {}: {}", path, e))
                 .with_code(crate::error::error_codes::FILE_IO)
         })?;
     f.write_all(&bytes).map_err(|e| {
-        LispError::runtime(format!("append-bytes: {}: {}", path, e))
+        LispError::runtime(format!("file/spit-bytes-append: {}: {}", path, e))
             .with_code(crate::error::error_codes::FILE_IO)
     })?;
     Ok(Value::nil())

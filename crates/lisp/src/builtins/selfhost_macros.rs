@@ -228,8 +228,11 @@ pub(super) fn check_file_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -
 pub(super) fn file_signatures_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/file-signatures", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        LispError::runtime(format!("file-signatures: cannot read {}: {}", path, e))
-            .with_code(crate::error::error_codes::FILE_IO)
+        LispError::runtime(format!(
+            "reflect/file-signatures: cannot read {}: {}",
+            path, e
+        ))
+        .with_code(crate::error::error_codes::FILE_IO)
     })?;
     let forms = reader::read_all_positioned(heap, &src).map_err(|e| e.or_file(path.clone()))?;
     let just_forms: Vec<Value> = forms.into_iter().map(|(f, _)| f).collect();

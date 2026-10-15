@@ -174,7 +174,14 @@
       (file/mkdir (path/join d "sub"))
       (file/spit (path/join (path/join d "sub") "deep.txt") "b")
       (assert= (sort (walk-files d))
-        (sort (list (path/join d "top.txt") (path/join (path/join d "sub") "deep.txt")))))))
+        (sort (list (path/join d "top.txt") (path/join (path/join d "sub") "deep.txt"))))))
+  (test "walk-files lists a symlinked directory but does not enter it, so a cycle terminates"
+    (let (d (ftmp)
+          sub (path/join d "sub"))
+      (file/mkdir sub)
+      (file/spit (path/join sub "deep.txt") "b")
+      (%os-cmd "/bin/ln" ["-s" d (path/join sub "up")])
+      (assert= (sort (walk-files d)) (list (path/join sub "deep.txt") (path/join sub "up"))))))
 
 ;; `extension`/`stem` are pure path-string ops and live in `path` (covered by
 ;; path_test); `file` no longer duplicates them (ADR-234). `path-absolute` below is

@@ -254,8 +254,14 @@ fn timer_loop() {
                     drop(q);
                     // `wake_for_timeout` itself drops a superseded entry (gen no
                     // longer current), so we needn't filter here.
+                    //
+                    // Each wake is caught on its own: this thread is the only one that
+                    // fires deadlines, and `TIMER_STARTED` stays set if it dies, so one
+                    // panicking wake would otherwise end every timeout in the runtime —
+                    // and silently. The panic hook has already reported the panic.
                     for (pid, gen) in due {
-                        super::mailbox::wake_for_timeout(pid, gen);
+                        let _ =
+                            std::panic::catch_unwind(|| super::mailbox::wake_for_timeout(pid, gen));
                     }
                     q = crate::core::sync::lock(lock);
                 }

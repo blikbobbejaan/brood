@@ -165,7 +165,7 @@ pub(super) fn clipboard_set_image(args: &[Value], _: EnvId, heap: &mut Heap) -> 
     let encoded = collect_bytes("clipboard-set-image", arg(args, 0), heap)?;
     let Some(image) = decode_untrusted_image(&encoded) else {
         return Err(LispError::runtime(format!(
-            "clipboard-set-image: the {} bytes given are not a decodable image (PNG/JPEG/GIF/WebP/BMP, at most {} px a side)",
+            "%clipboard-set-image: the {} bytes given are not a decodable image (PNG/JPEG/GIF/WebP/BMP, at most {} px a side)",
             encoded.len(),
             IMAGE_MAX_SIDE
         )));

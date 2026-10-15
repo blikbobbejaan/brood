@@ -212,7 +212,7 @@ pub(super) fn eval_builtin(args: &[Value], env: EnvId, heap: &mut Heap) -> LispR
 pub(super) fn reload_defs(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "system/reload-defs", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        LispError::runtime(format!("reload-defs: cannot read {}: {}", path, e))
+        LispError::runtime(format!("system/reload-defs: cannot read {}: {}", path, e))
             .with_code(crate::error::error_codes::FILE_IO)
     })?;
     // File current BEFORE the read — the reader stamps records with the ambient file;
@@ -318,7 +318,7 @@ pub(super) fn reload_defs(args: &[Value], env: EnvId, heap: &mut Heap) -> LispRe
 pub(super) fn load(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/load", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
-        LispError::runtime(format!("load: cannot read {}: {}", path, e))
+        LispError::runtime(format!("reflect/load: cannot read {}: {}", path, e))
             .with_code(crate::error::error_codes::FILE_IO)
     })?;
     // The file must be CURRENT before the READ, not just before the eval: the reader

@@ -17586,3 +17586,27 @@ so moving it alone would split `BigInt` into two incompatible types.
 Verified: clippy `--all-targets --all-features -D warnings` on 1.99; `wasm-suite.sh` 10/10;
 `wasm`, `wasm_sandbox_limits`, `zlib`, `crypto`, `conformance_crypto`, `grammar`, `tree_sitter`
 and the `jit_*` Brood files; `jit.rs` 40/40; `distribution.rs` 39/39.
+
+## 2026-10-15 (later) — six bugs from the duplication review (KI-250..255)
+
+A whole-project review for duplication turned up six bugs. Each sat where the same logic is
+written more than once, and one copy had drifted:
+
+- **KI-250:** `spawn_pty` dup'd its master after the spawn, against its own comment. Its plain
+  sibling did not. The registration both spawns repeated is now one infallible `register_child`.
+- **KI-251:** `image_load_section` restored `current_file` by hand at four exits and missed the
+  two error exits. It now has one restore around the whole body.
+- **KI-252:** `nest` read argv with `std::env::args()`; `brood` had already switched to `args_os`
+  for exactly this. Both now use `cli_support::args_lossy()`.
+- **KI-253:** a panic in the timer thread would have ended every timeout. Each wake is now caught.
+- **KI-254:** two deliberate copies of `file/walk-files` lacked its symlink rule.
+- **KI-255:** 52 hand-typed error prefixes named functions that do not exist. The label test
+  now reads message prefixes too.
+
+Three of the six guards are arguments from construction: a dup failing at exactly one instant,
+a define failing mid-section and a wake panicking cannot be produced on demand. Each fix is
+shaped so that the bad state has no path, and the comment at the site says so.
+
+A tooling trap found on the way: the Edit tool trims trailing whitespace from a replacement,
+so a prefix rewrite ending in `": "` produced `"name:message"` 51 times. The new test missed it
+because it splits on `": "`. Grep for the joined form after any such rewrite.

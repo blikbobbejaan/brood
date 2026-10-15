@@ -964,7 +964,7 @@ pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     let n = expect_int(heap, "math/->fixed", arg(args, 1))?;
     if n < 0 {
         return Err(LispError::runtime(format!(
-            "->fixed: decimal places must be non-negative, got {}",
+            "math/->fixed: decimal places must be non-negative, got {}",
             n
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE));
@@ -977,7 +977,7 @@ pub(super) fn to_fixed(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     const MAX_DECIMALS: i64 = 1000;
     if n > MAX_DECIMALS {
         return Err(LispError::runtime(format!(
-            "->fixed: decimal places {n} too large (max {MAX_DECIMALS}); an f64 has \
+            "math/->fixed: decimal places {n} too large (max {MAX_DECIMALS}); an f64 has \
              ~17 significant digits, so a larger count only pads zeros"
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE));
@@ -1038,7 +1038,7 @@ pub(super) fn utf8_bytes_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
     match String::from_utf8(bytes) {
         Ok(s) => Ok(heap.alloc_string(&s)),
         Err(e) => Err(LispError::runtime(format!(
-            "utf8-bytes->string: invalid UTF-8: {}",
+            "%utf8-bytes->string: invalid UTF-8: {}",
             e
         ))),
     }

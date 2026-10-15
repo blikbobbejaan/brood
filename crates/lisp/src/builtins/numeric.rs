@@ -1058,7 +1058,7 @@ pub(super) fn remainder(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     if let (Value::Int(x), Value::Int(y)) = (a, b) {
         return match x.checked_rem(y) {
             Some(r) => Ok(Value::int(r)),
-            None if y == 0 => Err(LispError::runtime("rem: division by zero")
+            None if y == 0 => Err(LispError::runtime("%rem: division by zero")
                 .with_code(crate::error::error_codes::DIV_BY_ZERO)
                 .with_hint("guard the denominator: (when (not (= y 0)) (math/rem x y))")),
             None => Ok(Value::int(0)), // i64::MIN % -1
@@ -1066,7 +1066,7 @@ pub(super) fn remainder(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     }
     let (x, y) = bigint_pair(heap, args, "math/rem")?;
     if num_traits::Zero::is_zero(&y) {
-        return Err(LispError::runtime("rem: division by zero")
+        return Err(LispError::runtime("%rem: division by zero")
             .with_code(crate::error::error_codes::DIV_BY_ZERO)
             .with_hint("guard the denominator: (when (not (= y 0)) (math/rem x y))"));
     }
@@ -1085,7 +1085,7 @@ pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
         match x.checked_div(y) {
             Some(q) => return Ok(Value::int(q)),
             None if y == 0 => {
-                return Err(LispError::runtime("quot: division by zero")
+                return Err(LispError::runtime("%quot: division by zero")
                     .with_code(crate::error::error_codes::DIV_BY_ZERO)
                     .with_hint("guard the denominator: (when (not (= y 0)) (math/quot x y))"))
             }
@@ -1094,7 +1094,7 @@ pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     }
     let (x, y) = bigint_pair(heap, args, "math/quot")?;
     if num_traits::Zero::is_zero(&y) {
-        return Err(LispError::runtime("quot: division by zero")
+        return Err(LispError::runtime("%quot: division by zero")
             .with_code(crate::error::error_codes::DIV_BY_ZERO)
             .with_hint("guard the denominator: (when (not (= y 0)) (math/quot x y))"));
     }
@@ -1125,7 +1125,7 @@ pub(super) fn floor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             let f = num_to_f64(heap, "math/floor", v)?.floor();
             if !f.is_finite() {
                 return Err(LispError::runtime(format!(
-                    "floor: argument {} has no integer floor",
+                    "math/floor: argument {} has no integer floor",
                     f
                 ))
                 .with_code(crate::error::error_codes::INT_OVERFLOW));
@@ -1331,17 +1331,17 @@ pub(super) fn prim_decimal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
         Value::Float(f) => {
             if !f.is_finite() {
                 return Err(LispError::runtime(format!(
-                    "decimal: cannot represent non-finite float {f}"
+                    "decimal/of: cannot represent non-finite float {f}"
                 )));
             }
             // Shortest round-trip text (what the printer would show), parsed exactly.
             bigdecimal::BigDecimal::from_str(&format_decimal_from_float(f))
-                .map_err(|_| LispError::runtime(format!("decimal: cannot convert float {f}")))?
+                .map_err(|_| LispError::runtime(format!("decimal/of: cannot convert float {f}")))?
         }
         Value::Str(id) => {
             let s = heap.string(id).trim().to_string();
             bigdecimal::BigDecimal::from_str(&s).map_err(|_| {
-                LispError::runtime(format!("decimal: malformed decimal string {s:?}"))
+                LispError::runtime(format!("decimal/of: malformed decimal string {s:?}"))
             })?
         }
         other => {

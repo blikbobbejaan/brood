@@ -140,7 +140,7 @@ pub(super) fn byte_at(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         Ok(Value::int(b[i as usize] as i64))
     } else {
         Err(LispError::runtime(format!(
-            "byte-at: index {} out of range [0, {})",
+            "bytes/at: index {} out of range [0, {})",
             i,
             b.len()
         ))
@@ -162,7 +162,7 @@ pub(super) fn subbytes(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     };
     if start < 0 || end > len || start > end {
         return Err(LispError::runtime(format!(
-            "subbytes: range [{}, {}) out of bounds [0, {})",
+            "bytes/slice: range [{}, {}) out of bounds [0, {})",
             start, end, len
         ))
         .with_code(error_codes::INDEX_OUT_OF_RANGE));

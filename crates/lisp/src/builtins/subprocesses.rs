@@ -182,7 +182,7 @@ pub(super) fn pty_resize(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
     let cols = expect_int(heap, "os/resize-pty", arg(args, 1))?.clamp(1, 10_000) as u16;
     let rows = expect_int(heap, "os/resize-pty", arg(args, 2))?.clamp(1, 10_000) as u16;
     crate::host::subprocess::pty_resize(id, cols, rows)
-        .map_err(|e| LispError::runtime(format!("pty-resize: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("os/resize-pty: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -190,7 +190,7 @@ pub(super) fn proc_send(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     let id = expect_subprocess(heap, "os/write", arg(args, 0))?;
     let out = send_payload(heap, "os/write", arg(args, 1))?;
     crate::host::subprocess::send(id, &out)
-        .map_err(|e| LispError::runtime(format!("proc-send: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("os/write: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -198,7 +198,7 @@ pub(super) fn proc_set_binary(args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
     let id = expect_subprocess(heap, "os/set-binary", arg(args, 0))?;
     let on = crate::eval::truthy(arg(args, 1));
     crate::host::subprocess::set_binary(id, on)
-        .map_err(|e| LispError::runtime(format!("proc-set-binary: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("os/set-binary: {}", e)))?;
     Ok(Value::nil())
 }
 
@@ -208,7 +208,7 @@ pub(super) fn proc_signal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         Value::Keyword(k) => value::symbol_name_ref(k),
     )?;
     crate::host::subprocess::signal(id, sig)
-        .map_err(|e| LispError::runtime(format!("proc-signal: {}", e)))?;
+        .map_err(|e| LispError::runtime(format!("os/signal: {}", e)))?;
     Ok(Value::nil())
 }
 

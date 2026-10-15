@@ -55,16 +55,20 @@ suggestions\", never to an error on the user's command line."
 
 ;; Every path under `dir` (recursively) whose filename ends in `suffix`, in no particular
 ;; order (callers sort or filter). One accumulator threads the whole walk, so it stays
-;; linear in the file count.
+;; linear in the file count. A symlinked directory is not entered — `file/walk-files`'
+;; rule, copied with the walk: `dir?` follows the link, so a cycle (`a/up -> ..`) was
+;; walked until the kernel refused the path, listing every file once per level.
 (defn- complete-under (dir suffix) (complete-under-into dir suffix nil))
 (defn- complete-under-into (dir suffix found)
   (if (file/dir? dir)
     (fold (file/ls dir)
       found
       (fn (acc entry)
-        (let (path (path/join dir entry))
+        (let (path (path/join dir entry)
+              stat (file/stat path))
           (cond
-            (file/dir? path) (complete-under-into path suffix acc)
+            (and stat (get stat :dir?) (not (get stat :symlink?)))
+              (complete-under-into path suffix acc)
             (string/ends-with? entry suffix) (cons path acc)
             else acc))))
     found))

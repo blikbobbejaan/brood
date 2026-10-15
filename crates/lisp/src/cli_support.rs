@@ -48,6 +48,16 @@ fn fmt_utc_ms(ms: u128) -> String {
     format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02} UTC")
 }
 
+/// The process arguments after argv[0], lossily decoded. For a binary that reads argv
+/// before clap validates it: `std::env::args()` panics outright on a non-UTF-8
+/// argument, which is a filename the OS allows.
+pub fn args_lossy() -> Vec<String> {
+    std::env::args_os()
+        .skip(1)
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect()
+}
+
 /// Install a panic hook that appends a full crash report (message + location +
 /// backtrace) to `.brood_crash_dump` in the working directory, *in addition* to
 /// the normal stderr output. A Rust panic in these binaries is almost always a

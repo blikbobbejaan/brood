@@ -143,14 +143,18 @@ behind a long-lived loop has changed since it started."
 ;; too so std/reload stays prelude-only and require-able without project.
 (defn- reload-collect-blsp (dir) (reload-collect-blsp-into dir nil))
 (defn- reload-collect-blsp-into (dir found)
-  ;; One accumulator threads the whole walk, so it stays linear in the file count.
+  ;; One accumulator threads the whole walk, so it stays linear in the file count. A
+  ;; symlinked directory is not entered, as in `file/walk-files`: a cycle would list —
+  ;; and watch — every file once per level until the kernel refused the path.
   (if (file/dir? dir)
     (fold (file/ls dir)
       found
       (fn (acc entry)
-        (let (path (path/join dir entry))
+        (let (path (path/join dir entry)
+              stat (file/stat path))
           (cond
-            (file/dir? path) (reload-collect-blsp-into path acc)
+            (and stat (get stat :dir?) (not (get stat :symlink?)))
+              (reload-collect-blsp-into path acc)
             (string/ends-with? entry ".blsp") (cons path acc)
             else acc))))
     found))

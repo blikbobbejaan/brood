@@ -766,25 +766,12 @@ pub fn spawn(
     let stdout: ChildStdout = child.stdout.take().expect("piped stdout");
     let stderr: ChildStderr = child.stderr.take().expect("piped stderr");
 
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let child = Arc::new(ChildHandle {
-        slot: Mutex::new(ChildSlot {
-            child,
-            reaped: false,
-        }),
-    });
-    let binary = Arc::new(AtomicBool::new(false));
-    let writer = start_stdin_writer(writer_thread, stdin);
-    reg().insert(
-        id,
+    let (id, child, binary) = register_child(
+        child,
+        start_stdin_writer(writer_thread, stdin),
+        &lifecycle,
         subscriber,
-        Proc {
-            writer,
-            child: child.clone(),
-            lifecycle: lifecycle.clone(),
-            binary: binary.clone(),
-            pty: None,
-        },
+        None,
     );
     start_output_reader(
         next_reader(&mut reader_threads),
@@ -834,6 +821,38 @@ impl ChildThreads {
             waiter: reserve_io_thread("brood-proc-wait").map_err(refused)?,
         })
     }
+}
+
+/// Enter a just-spawned child in the registry: its handle id, the shared reap slot and
+/// the inbound decode flag, for the caller's readers and waiter. Infallible on purpose —
+/// it runs with a live child, where any failure would leak it.
+fn register_child(
+    child: std::process::Child,
+    writer: mpsc::SyncSender<Vec<u8>>,
+    lifecycle: &Arc<Lifecycle>,
+    subscriber: u64,
+    pty: Option<i32>,
+) -> (u64, Arc<ChildHandle>, Arc<AtomicBool>) {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let child = Arc::new(ChildHandle {
+        slot: Mutex::new(ChildSlot {
+            child,
+            reaped: false,
+        }),
+    });
+    let binary = Arc::new(AtomicBool::new(false));
+    reg().insert(
+        id,
+        subscriber,
+        Proc {
+            writer,
+            child: child.clone(),
+            lifecycle: lifecycle.clone(),
+            binary: binary.clone(),
+            pty,
+        },
+    );
+    (id, child, binary)
 }
 
 fn next_reader(reader_threads: &mut Vec<IoThread>) -> IoThread {
@@ -1237,40 +1256,31 @@ pub fn spawn_pty(
             Ok(())
         });
     }
+    // One fd, two directions: the reader and the writer each get their own `File` over
+    // a dup, so EOF on one does not close the other out from under it, while the
+    // registry keeps the master itself for resizing. Dup'd BEFORE the spawn: a `dup`
+    // can fail (EMFILE), and after the spawn that failure would return with a running
+    // child that nothing reads, waits for or reaps.
+    let read_file = std::fs::File::from(master.try_clone()?);
+    let write_file = std::fs::File::from(master.try_clone()?);
+
     let child = command.spawn();
     // The parent keeps only the master: the child has its own dups of the slave, and
     // dropping ours is what lets the master see EOF when the child exits.
     drop(slave);
     let child = child?;
+    // From here to the end nothing can fail: a child now exists, so an early return
+    // would leak it.
 
-    // One fd, two directions: the reader and the writer each get their own `File` over
-    // a dup, so EOF on one does not close the other out from under it, while the
-    // registry keeps the master itself for resizing.
-    let read_file = std::fs::File::from(master.try_clone()?);
-    let write_file = std::fs::File::from(master.try_clone()?);
     // Hand the master to the registry as a raw fd — deliberately, and `close` releases
     // it. Everything above this line was owned, so no earlier exit could leak it.
     let master = std::os::fd::IntoRawFd::into_raw_fd(master);
-
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    let child = Arc::new(ChildHandle {
-        slot: Mutex::new(ChildSlot {
-            child,
-            reaped: false,
-        }),
-    });
-    let binary = Arc::new(AtomicBool::new(false));
-    let writer = start_stdin_writer(writer_thread, write_file);
-    reg().insert(
-        id,
+    let (id, child, binary) = register_child(
+        child,
+        start_stdin_writer(writer_thread, write_file),
+        &lifecycle,
         subscriber,
-        Proc {
-            writer,
-            child: child.clone(),
-            lifecycle: lifecycle.clone(),
-            binary: binary.clone(),
-            pty: Some(master),
-        },
+        Some(master),
     );
     start_output_reader(
         next_reader(&mut reader_threads),

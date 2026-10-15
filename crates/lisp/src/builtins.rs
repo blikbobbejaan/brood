@@ -375,6 +375,65 @@ mod who_label_tests {
         labels
     }
 
+    /// `(file:line, label)` for every error message written with its label inline:
+    /// `LispError::runtime("name: …")` or `LispError::runtime(format!("name: …", …))`, and
+    /// the same for `type_err`. The label is the text before the first `": "` when it is
+    /// one word — a prose message (`"index out of range: …"`) carries no label.
+    fn message_prefix_labels(files: &[(PathBuf, String)]) -> Vec<(String, String)> {
+        let mut labels = Vec::new();
+        for (path, source) in files {
+            for constructor in ["LispError::runtime(", "LispError::type_err("] {
+                for (start, _) in source.match_indices(constructor) {
+                    let open = start + constructor.len() - 1;
+                    let Some(argument) = parenthesised(source, open) else {
+                        continue;
+                    };
+                    let argument = argument.trim_start();
+                    let argument = argument
+                        .strip_prefix("format!(")
+                        .map(str::trim_start)
+                        .unwrap_or(argument);
+                    let Some(text) = argument.strip_prefix('"') else {
+                        continue;
+                    };
+                    let Some((label, _)) = text.split_once(": ") else {
+                        continue;
+                    };
+                    if label.is_empty() || label.contains([' ', '"', '{', '\\']) {
+                        continue;
+                    }
+                    let line = source[..start].lines().count();
+                    let file = path.file_name().unwrap().to_string_lossy();
+                    labels.push((format!("{file}:{line}"), label.to_string()));
+                }
+            }
+        }
+        labels
+    }
+
+    #[test]
+    fn builtins_error_message_prefixes_name_callable_functions() {
+        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let labels = message_prefix_labels(&sources(&source_root.join("builtins")));
+        assert!(
+            labels.len() > 50,
+            "message-prefix extraction found only {} labels — the scanner has broken",
+            labels.len()
+        );
+        let mut interp = Interp::new();
+        let stale: Vec<String> = labels
+            .iter()
+            .filter(|(_, label)| !callable(&mut interp, label))
+            .map(|(site, label)| format!("{site}: {label:?}"))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "error messages whose `name:` prefix names no primitive or global — use the name \
+             the user calls:\n  {}",
+            stale.join("\n  ")
+        );
+    }
+
     fn sources(directory: &Path) -> Vec<(PathBuf, String)> {
         let mut paths = Vec::new();
         rust_files(directory, &mut paths);

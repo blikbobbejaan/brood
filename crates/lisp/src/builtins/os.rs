@@ -709,7 +709,7 @@ pub(super) fn run_process(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             Value::Str(id) => argv.push(heap.string(id).to_string()),
             _ => {
                 return Err(LispError::type_err(
-                    "run-process: arguments must be strings",
+                    "os/run-process: arguments must be strings",
                 ))
             }
         }
@@ -720,9 +720,11 @@ pub(super) fn run_process(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         .status()
     {
         Ok(status) => Ok(Value::int(status.code().unwrap_or(-1) as i64)),
-        Err(e) => Err(LispError::runtime(format!("run-process: {}: {}", prog, e))
-            .with_code(crate::error::error_codes::SUBPROCESS_FAILED)
-            .with_hint("check that the program is on PATH and the args are well-formed")),
+        Err(e) => Err(
+            LispError::runtime(format!("os/run-process: {}: {}", prog, e))
+                .with_code(crate::error::error_codes::SUBPROCESS_FAILED)
+                .with_hint("check that the program is on PATH and the args are well-formed"),
+        ),
     }
 }
 

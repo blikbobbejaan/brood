@@ -629,10 +629,10 @@ pub(super) fn register_name(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
             }
         }
         Value::Pid { .. } => Err(LispError::type_err(
-            "register: can only register a local pid",
+            "proc/register: can only register a local pid",
         )),
         _ => Err(LispError::type_err(
-            "register: second argument must be a pid",
+            "proc/register: second argument must be a pid",
         )),
     }
 }

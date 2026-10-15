@@ -13648,3 +13648,82 @@ stderr — the result no longer depends on how long anything takes. The armed di
 test fail exactly as the sighting did — `Connection refused`, `left: 0` — and the fixed test
 pass. Other fixed `(sleep N)`s in `crates/cli/tests/` were checked: each is a deliberate wait (a
 negative gossip check, a watchdog's park, a long-lived server), not a peer lifetime racing a boot.
+
+## KI-250 — a pty child could be left running with nothing to read or reap it ✅ FIXED 2026-10-15
+
+**Symptom.** None observed; found by reading during the 2026-10-15 duplication review.
+`os/spawn-pty` could return an error with its child process still running. **Cause.**
+`host/subprocess.rs` `spawn_pty` dup'd the pty master twice (`master.try_clone()?`, once for the
+reader and once for the writer) AFTER `command.spawn()`. Its own comment two lines above the
+spawn said "once there is a child, every failure would have to clean it up". An `EMFILE` on
+either dup returned `Err` with no reader, no waiter and no registry entry: the child ran on,
+unreaped, the KI-241 hazard again. **Why it survived.** The plain `spawn` beside it has no
+fallible step after its spawn, and the pty path only fails this way under descriptor
+exhaustion, which no test arranges. **Fix.** Both dups happen before the spawn. The
+registration both spawns repeated is one infallible `register_child`, so nothing after a
+child exists can return early. **Guard.** By construction: every `?` in `spawn_pty` now
+precedes `command.spawn()`, and the comment after it says so. An `EMFILE` at exactly the dup
+cannot be arranged reliably (it depends on the process's descriptor count at that instant),
+so there is no clean inverse to sabotage.
+
+## KI-251 — loading an image section could leave the wrong `current_file` behind on an error ✅ FIXED 2026-10-15
+
+**Symptom.** None observed; found by reading. **Cause.** `boot/image.rs`
+`image_load_section` points `current_file` at the section's module while it materialises (so
+rebuilt forms carry the right file: KI-184) and restored it by hand at each of its four
+decode-failure returns. The two `define_image_entry(...)?` calls skipped the restore; a define
+can fail (a table entry's `table::put`). On that path every later form built in the process was
+stamped with the section's file, the KI-184 class. **Why it survived.** No test makes a define
+fail mid-section, and the four hand-written restores read as complete. **Fix.** The body is
+`load_section_entries`; `image_load_section` sets the file, calls it, and restores it once
+before returning anything, `Ok` or `Err`. **Guard.** By construction: there is one restore and
+every exit of the body passes through it. A define cannot be made to fail on demand.
+
+## KI-252 — `nest` panicked on a non-UTF-8 argument ✅ FIXED 2026-10-15
+
+**Symptom.** `nest check` with a filename that is not UTF-8 died with exit 101 and a Rust
+panic before printing anything of its own. **Cause.** `nest`'s `main` reads argv before clap,
+to route the Brood-implemented subcommands, with `std::env::args()`, which panics on a
+non-UTF-8 argument. `brood` already used `args_os` for the same reason, with a comment
+saying why. **Why it survived.** No test passes a non-UTF-8 argument. **Fix.**
+`cli_support::args_lossy()`, used by both binaries. **Guard.**
+`crates/nest/tests/non_utf8_args.rs`, red before the fix (`nest panicked`), green after.
+
+## KI-253 — one panicking wake would have ended every receive timeout in the runtime ✅ FIXED 2026-10-15
+
+**Symptom.** None observed; found by reading. **Cause.** The timer thread (`process/timer.rs`
+`timer_loop`) is the only thread that fires `receive … after` deadlines, and nothing caught a
+panic in it. A panic inside `wake_for_timeout` would end the thread while `TIMER_STARTED`
+stayed set, so no restart could ever happen and every later timeout in the runtime would never
+fire: silently, the KI-93 class. **Why it survived.** `wake_for_timeout` has not panicked in
+practice. **Fix.** Each wake runs under `catch_unwind`, so a panic costs that one process's
+wake (the panic hook has already reported it) and the rest of the due batch is still woken.
+**Guard.** By construction: the only call out of the timer's own queue handling is wrapped.
+`wake_for_timeout` cannot be made to panic on demand.
+
+## KI-254 — completion and the reload watcher followed symlinked directories round a cycle ✅ FIXED 2026-10-15
+
+**Symptom.** With a directory symlink pointing back up the tree (`sub/up -> ..`), `nest`'s
+completion listed every test file once per level of the cycle, and `reload/on-change` started
+that many watchers on the same file. **Cause.** `std/tool/complete.blsp` (`complete-under-into`)
+and `std/tool/reload.blsp` (`reload-collect-blsp-into`) are deliberate copies of
+`file/walk-files` (each module must not load another), and the copies recursed on `file/dir?`,
+which follows links. `walk-files` itself refuses to enter a symlinked directory; that rule was
+not copied. **Why it survived.** None of the three walkers had a symlink test. **Fix.** Both
+copies check `file/stat`'s `:symlink?` as `walk-files` does. **Guard.** One test per walker:
+`tests/file_test.blsp`, `tests/complete_test.blsp` and `tests/reload_watch_test.blsp`, each
+building a cycle with `ln -s`. Sabotage (each guard replaced by `true`) reds all three with the
+duplicated listing.
+
+## KI-255 — 52 error messages named functions that do not exist ✅ FIXED 2026-10-15
+
+**Symptom.** Errors a user hit read `byte-at: index …`, `subbytes: …`, `floor: …`,
+`append-bytes: …`, `proc-send: …` and so on: names that are not callable. The same functions'
+argument checks used the right names (`bytes/at`, `bytes/slice`, `math/floor`). **Cause.**
+Those prefixes were typed into `LispError::runtime(format!("name: …"))` by hand and went stale
+through renames. `builtins_error_labels_name_callable_functions` checks only labels passed
+through a `who: &str` parameter, so it never saw them. **Fix.** All 52 name the callable
+function, `%`-prefixed where that is what the function's own checks say. `terminal: {e}` was a
+domain, not a function, and is now `terminal I/O failed: {e}`. **Guard.**
+`builtins_error_message_prefixes_name_callable_functions` reads the leading `name:` of every
+`LispError::runtime`/`type_err` message in `builtins/`. It was red on the 52 before the fix.

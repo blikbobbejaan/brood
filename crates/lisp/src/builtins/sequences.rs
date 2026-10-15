@@ -1167,7 +1167,7 @@ pub(super) fn vector_ref(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
             Ok(heap.vector(id)[n as usize])
         }
         Value::Vector(id) => Err(LispError::runtime(format!(
-            "vector-ref: index {} out of range [0, {})",
+            "%vector-ref: index {} out of range [0, {})",
             n,
             heap.vector(id).len()
         ))
@@ -1200,7 +1200,7 @@ pub(super) fn vector_assoc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             Ok(heap.alloc_vector(items))
         }
         Value::Vector(id) => Err(LispError::runtime(format!(
-            "vector-assoc: index {} out of range [0, {})",
+            "%vector-assoc: index {} out of range [0, {})",
             i,
             heap.vector(id).len()
         ))
@@ -1248,7 +1248,7 @@ pub(super) fn subvec(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     };
     if start < 0 || end > len || start > end {
         return Err(LispError::runtime(format!(
-            "subvec: range [{start}, {end}) out of bounds for vector of length {len}"
+            "seq/subvec: range [{start}, {end}) out of bounds for vector of length {len}"
         ))
         .with_code(crate::error::error_codes::INDEX_OUT_OF_RANGE));
     }
