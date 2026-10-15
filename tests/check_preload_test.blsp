@@ -12,7 +12,7 @@
 ;;; `b` sees `a`. Without the preload the modules load as each file's check requires them —
 ;;; `b` first — and `b` records `false`. Sabotage-verified.
 
-(defmodule check-preload-test (:use test))
+(defmodule check-preload-test (:use test) (:use suite-helpers))
 
 (purge-stale-temp "chkpre-")
 (def- *dir* (temp-dir "chkpre-"))
@@ -34,17 +34,13 @@
   (file/spit (path/join *dir* (str name ".blsp"))
     (str "(defmodule " name " (:use " uses "))\n" "(defn g () (f))\n")))
 
-(defn- nest-bin ()
-  (let (dir (path/dirname (or (os/exe-path) "")))
-    (first (seq/filter [(path/join dir "nest") (path/join dir ".." "nest")] file/exists?))))
-
 (describe "nest check loads the listed files' modules before it checks any of them (KI-137)"
   (test "listed b then a, the modules still load a then b, and each check sees the same heap"
     (fixture! "chkpre-a" "chkpre-b")
     (fixture! "chkpre-b" "chkpre-a")
     (user! "chkpre-uses-a" "chkpre-a")
     (user! "chkpre-uses-b" "chkpre-b")
-    (let (nest (nest-bin))
+    (let (nest (sibling-binary "nest"))
       (if (nil? nest)
         (is true) ; no sibling binary to drive (an odd install) — nothing to observe
         (let (r (os/cmd "sh"

@@ -17453,6 +17453,13 @@ Brood project"; `package` said "not inside", `update-tooling` said something els
 for the rendering. The fourth candidate, a shared HTML escape for `markdown` and `docsite`,
 is two copies of three lines and stays as it is.
 
+**Follow-up: the suite's copied helpers.** `tests/support/suite-helpers.blsp` (on
+`:source-paths` beside `corpus`) now holds what test files had each copied: the JIT `settle`
+loop (6 files, two variants; the one that sleeps on `:queued` won), the span `ascending?`
+(dotenv, dockerfile), `sibling-binary` (the beside-the-runner-or-one-up lookup, 10 sites in 4
+files), and the backpressure tests' mailbox measuring (`queued-while-idle` and its parts,
+parameterised by message tag and chunk size).
+
 ## 2026-10-14 (night) — a named wrapper links from native code; `reduce` takes the counted loop; `range` is multi-arity
 
 `perf_event_paranoid` is 1 on this box tonight, so the session started from `perf stat` /

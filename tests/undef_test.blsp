@@ -13,18 +13,9 @@
 ;;; test uses, so the parallel runner never sees one test remove what another calls; the
 ;;; groups are `:isolated` anyway, so whatever they remove comes back for the next file.
 
-(defmodule undef-test (:use test))
+(defmodule undef-test (:use test) (:use suite-helpers))
 
 (purge-stale-temp "brood-undef-")
-
-;; Drive `f` until its arm settles on a tier (see `jit_int_slot_cache_test`): the compile
-;; is asynchronous, so a round that finds it still queued waits for the compiler in TIME.
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (state (get (%jit-arm-state f argc) :state))
-    (if (or (= state :native) (= state :bailed) (= rounds 0))
-      state
-      (do (if (= state :queued) (sleep 10) nil) (settle f argc batch (- rounds 1))))))
 
 ;; The message of the error `thunk` raises, or `:no-error`.
 (defn- error-message-of (thunk)

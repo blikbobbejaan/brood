@@ -4,14 +4,7 @@
 ;; Covers comments, leading instruction keywords (case-insensitive), and quoted-string
 ;; arguments, plus the ascending / non-overlapping span invariant the tiler relies on.
 
-(defmodule dockerfile-test (:use test) (:use editor/dockerfile))
-
-(defn ascending? (spans) (ascending-go spans -1))
-(defn- ascending-go (spans prev-end)
-  (if (empty? spans)
-    true
-    (let (s (first spans))
-      (and (>= (first s) prev-end) (ascending-go (rest spans) (second s))))))
+(defmodule dockerfile-test (:use test) (:use editor/dockerfile) (:use suite-helpers))
 
 (describe "dockerfile-spans — line shapes"
   (test "a # comment colours the whole line"

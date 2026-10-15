@@ -26,18 +26,7 @@
 ;;; case the same way. The value cases pass either way — they are guards against the fix
 ;;; ever miscompiling, not reproductions.
 
-(defmodule jit-eq-join-test (:use test))
-
-;; Drive `f` through `batch` until its `argc`-ary arm has settled on a tier (native or
-;; latched), or give up after `rounds` batches. Tiering is asynchronous — the background
-;; compiler installs the code some calls after the arm went hot — so a fixed call count
-;; would be a flake either way.
-(defn- settle (f argc batch rounds)
-  (batch)
-  (let (st (get (%jit-arm-state f argc) :state))
-    (if (or (= st :native) (= st :bailed) (= rounds 0))
-      st
-      (settle f argc batch (- rounds 1)))))
+(defmodule jit-eq-join-test (:use test) (:use suite-helpers))
 
 (defn- times (n thunk) (if (= n 0) nil (do (thunk) (times (- n 1) thunk))))
 

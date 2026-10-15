@@ -9,7 +9,8 @@
 (defmodule format-test
   (:use-internals format)
   (:use test)
-  (:use format))
+  (:use format)
+  (:use suite-helpers))
 
 ;; Drop any fixtures a prior run left in /tmp (at load, before any test runs).
 (purge-stale-temp "brood-fmt-safe-")
@@ -448,9 +449,7 @@
   ;; out file. With the rule the check passes; the same tree without it fails on that file —
   ;; so the pass is the ignore rule's doing, not a walk that never saw `gen/`.
   (test "a file git ignores is not judged by the project check"
-    (let (bin (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join bin "brood") (path/join bin ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           dir (temp-dir "brood-fmt-ignored-")
           ;; the program lives beside the project, not in it: a top-level .blsp is the project's
           prog (str dir "-run.blsp")

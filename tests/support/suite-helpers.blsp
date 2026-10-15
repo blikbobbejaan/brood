@@ -1,0 +1,83 @@
+;; tests/support/suite-helpers.blsp — helpers several test files share.
+;;
+;; Source, not tests (discovery only picks up `*_test.blsp`): a test file opts in with
+;; `(:use suite-helpers)`. Only what at least two files used to copy belongs here.
+
+(defmodule suite-helpers
+  "Helpers shared by the in-language suite: `settle` drives a function until the JIT has
+decided on it, `ascending?` is the span invariant every highlighter test checks,
+`sibling-binary` finds the `brood`/`nest` binary next to the runner, and
+`queued-while-idle` (with `await-paused`, `take-chunks`, `queued-count` and
+`high-water-bound`) measures what a paused reader left queued in this process's mailbox."
+  (:use test))
+
+;; ---- the JIT ----------------------------------------------------------------------
+
+(defn settle (f argc batch rounds)
+  "Call `batch` until arity `argc` of `f` is `:native` or `:bailed`, or `rounds` run out;
+returns the last state seen. A `:queued` arm is waiting on the compiler thread, so the
+loop sleeps briefly rather than spending a round on it."
+  (batch)
+  (let (state (get (%jit-arm-state f argc) :state))
+    (if (or (= state :native) (= state :bailed) (= rounds 0))
+      state
+      (do (when (= state :queued) (sleep 10)) (settle f argc batch (- rounds 1))))))
+
+;; ---- highlighter spans ------------------------------------------------------------
+
+(defn ascending? (spans)
+  "True when every `[start end …]` span starts at or after the previous one's end — the
+shape a fontify tiler relies on."
+  (ascending-from spans -1))
+
+(defn- ascending-from (spans previous-end)
+  (or (empty? spans)
+    (let (span (first spans))
+      (and (>= (first span) previous-end) (ascending-from (rest spans) (second span))))))
+
+;; ---- binaries ---------------------------------------------------------------------
+
+(defn sibling-binary (name)
+  "The path of the binary `name` beside the running one or one directory up (a test
+binary runs from `target/<profile>/deps/`, the binaries sit in `target/<profile>/`), or
+nil when neither exists."
+  (let (dir (path/dirname (or (os/exe-path) "")))
+    (first (seq/filter [(path/join dir name) (path/join dir ".." name)] file/exists?))))
+
+;; ---- mailbox backpressure ---------------------------------------------------------
+
+(def high-water-bound
+  ;; a reader's high-water mark (1 MiB) plus one read (64 KiB) of overshoot
+  (+ (* 1024 1024) 65536))
+
+(defn queued-count ()
+  "How many messages sit in this process's mailbox."
+  (or (proc/mailbox-size (self)) 0))
+
+(defn await-paused ()
+  "Wait until this process's mailbox holds messages and has stopped growing — the reader
+feeding it has reached its budget and paused. Returns the queued count."
+  (eventually "the reader pausing on its budget"
+    (fn ()
+      (let (first-count (queued-count))
+        (sleep 25)
+        (let (second-count (queued-count))
+          (sleep 25)
+          (when (and (> first-count 0) (= first-count second-count (queued-count)))
+            first-count))))))
+
+(defn take-chunks (tag source n acc)
+  "Take exactly `n` queued `[tag source data]` messages; return the data oldest first."
+  (if (= n 0)
+    (reverse acc)
+    (receive
+      ([^tag ^source data] (take-chunks tag source (dec n) (cons data acc)))
+      (after 20000 (error "take-chunks: a counted chunk never arrived")))))
+
+(defn queued-while-idle (tag source size)
+  "Let the reader deliver all it will to an owner that is not reading, then take the
+`[tag source data]` chunks sitting in the mailbox. Returns `[total chunks]`, the total
+summed with `size` over each chunk."
+  (await-paused)
+  (let (chunks (take-chunks tag source (queued-count) nil))
+    [(reduce chunks 0 (fn (sum chunk) (+ sum (size chunk)))) chunks]))

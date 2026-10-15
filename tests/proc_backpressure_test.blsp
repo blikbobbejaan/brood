@@ -11,42 +11,7 @@
 ;; exactly that many are taken and summed), then reads the rest: everything must arrive
 ;; intact and in order, followed by `[:proc-exit …]` and `[:proc-closed …]`.
 
-(defmodule proc-backpressure-test (:use test))
-
-;; The high-water mark (1 MiB) plus one read (64 KiB) of overshoot.
-(def- high-water-bound (+ (* 1024 1024) 65536))
-
-(defn- queued-count ()
-  "How many messages sit in this process's mailbox."
-  (or (proc/mailbox-size (self)) 0))
-
-(defn- take-chunks (p n acc)
-  "Take exactly `n` queued `[:proc p d]` messages; return them oldest first."
-  (if (= n 0)
-    (reverse acc)
-    (receive
-      ([:proc ^p d] (take-chunks p (dec n) (cons d acc)))
-      (after 20000 (error "take-chunks: a counted chunk never arrived")))))
-
-(defn- await-paused ()
-  "Wait until this process's mailbox holds output and has stopped growing — its reader
-  has reached its budget and paused. Returns the queued count."
-  (eventually "the reader pausing on its budget"
-    (fn ()
-      (let (first-count (queued-count))
-        (sleep 25)
-        (let (second-count (queued-count))
-          (sleep 25)
-          (when (and (> first-count 0) (= first-count second-count (queued-count)))
-            first-count))))))
-
-(defn- queued-while-idle (p)
-  "Let the readers deliver all they will to an owner that is not reading, then take the
-  chunks sitting in the mailbox. Returns `[byte-count chunks]` (the output is ASCII, so
-  characters are bytes)."
-  (await-paused)
-  (let (chunks (take-chunks p (queued-count) nil))
-    [(reduce chunks 0 (fn (sum chunk) (+ sum (count chunk)))) chunks]))
+(defmodule proc-backpressure-test (:use test) (:use suite-helpers))
 
 (defn- read-to-end (p acc)
   "Read `p`'s output to its end. Returns `[output exit-code closed-code]`; the exit must
@@ -65,7 +30,8 @@
   "Spawn `seq 1 n` owned by the calling process, read nothing for a while, then read it
   all. Returns `[queued-bytes intact? exit-code closed-code]`."
   (let (p (os/spawn "seq" ["1" (str n)])
-        [queued early] (queued-while-idle p)
+        ;; the output is ASCII, so its character count is its byte count
+        [queued early] (queued-while-idle :proc p count)
         [rest code closed] (read-to-end p nil))
     [queued (= (str (string/join early "") rest) (seq-output n)) code closed]))
 

@@ -6,7 +6,7 @@
 ;;; yet" half of every case depends on that. Each fixture's top level leaves a marker file,
 ;;; which is how a load-time EFFECT is observed from outside.
 
-(defmodule lazy-load-test (:use test))
+(defmodule lazy-load-test (:use test) (:use suite-helpers))
 
 (purge-stale-temp "lazyload-")
 (purge-stale-temp "loadpath-")
@@ -157,8 +157,7 @@
 ;; and `hot-pick` included. In this process the fixtures are therefore loaded by the time
 ;; these units run; only a fresh runtime can show the deferral.
 (defn- in-child (src)
-  (let (dir (path/dirname (or (os/exe-path) ""))
-        exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")] file/exists?)))
+  (let (exe (sibling-binary "brood"))
     (when exe
       (let (prog (path/temp "lazyload-child-"))
         (file/spit prog (str "(reflect/add-load-path \"" *dir* "\")\n" src))
@@ -172,12 +171,10 @@
 ;; suite `url` is loaded by its own test file at some point — and a global `loaded?` here
 ;; cannot tell a sibling's load landing in the window from the deferral under test (it did:
 ;; the unit passed alone and failed beside `url_test`). A child `brood` where nothing else
-;; runs can. `exe` is resolved as `stdimage_test` resolves it: beside the runner or one up.
+;; runs can.
 (describe "lazy call heads (the image's kind index)"
   (test "a function head into an imaged module loads at first call, not at the referencing load"
-    (let (dir (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "lazyhead-")
           _ (file/spit prog
               (string/join [(str "(reflect/add-load-path \"" *dir* "\")")
@@ -224,9 +221,7 @@
 ;; as the imaged-head case above: the suite process has `math` loaded long before this runs.
 (describe "a body compiled before its module loaded is recompiled once it has (ADR-366)"
   (test "the call into the module becomes the inlined primitive at the next activation"
-    (let (dir (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "lazyshape-")
           _ (file/spit prog
               (string/join ["(defn go (i acc) (if (< i 3) (go (inc i) (+ acc (math/rem i 3))) acc))"
@@ -305,9 +300,7 @@
 ;; under `BROOD_NO_LAZY_LOAD=1` is the eager policy in a process where nothing else has run.
 (describe "the eager drain does not load a module for a name the prelude already binds (KI-150)"
   (test "a file whose only qualified reference is a prelude binding loads no module"
-    (let (dir (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "eagerbound-")
           ;; `before=` is read FIRST: on the source boot path (`BROOD_NO_STDIMAGE=1`, the
           ;; tree-walker job) the prelude's own boot already lists `seq` in `*features*`, and
@@ -331,9 +324,7 @@
           (when (includes? out "before=false")
             (is (includes? out "after=false")))))))
   (test "and an UNBOUND qualified name still loads its module under the eager policy"
-    (let (dir (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "eagerunbound-")
           ;; `lazyprobe-plain/answer` is unbound until its fixture loads; under EAGER the load
           ;; happens at the compile pass, before the first form runs.
@@ -369,8 +360,7 @@
 ;; wrong in both directions). Children WITH the pre-flight (no `BROOD_NO_CHECK`); the skip is
 ;; only asserted when the child materialised an image (the source-boot job has no footer).
 (defn- adr370-probe (extra-env)
-  (let (dir (path/dirname (or (os/exe-path) ""))
-        exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")] file/exists?))
+  (let (exe (sibling-binary "brood")
         prog (path/temp "imagesig-")
         _ (file/spit prog
             (string/join ["(defn go (x) (io/puts (str \"v=\" (string? (os/env x)))))"

@@ -13,7 +13,8 @@
 
 (defmodule stdimage-test
   (:use test)
-  (:use stdimage))
+  (:use stdimage)
+  (:use suite-helpers))
 
 (describe "stdlib image: fidelity"
   :isolated (test "a module's section names exactly what its source load defines"
@@ -52,11 +53,8 @@
   ;; the first test file runs (they are dependencies of what the tooling image loads), so
   ;; the in-process form of this test read `own` as empty of `*lineedit-keymap*` on every
   ;; scoped run while passing solo (KI-89, 2026-09-03 — it was filed as an orphan leak).
-  ;; `exe` is resolved as the race test below does: beside the runner or one level up.
   (test "a root global is attributed to the module that defines it, not to a dependent"
-    (let (dir (path/dirname (or (os/exe-path) ""))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "stdimage-attrib-")
           _ (file/spit prog
               ;; `%isolate-discard-loads`, as the builder itself probes (ADR-339): a plain
@@ -254,9 +252,7 @@
     ;; subcommand, exit 2.) A regression test for KI-72 that never executes is worse than no
     ;; test, so resolve the real binary: beside the runner (`brood --test`, `nest test`) or
     ;; one level up (`target/release/deps/` → `target/release/`), and skip if absent.
-    (let (dir (path/dirname (or (os/exe-path) (error "stdimage-test: no exe path")))
-          exe (first (seq/filter [(path/join dir "brood") (path/join dir ".." "brood")]
-                       file/exists?))
+    (let (exe (sibling-binary "brood")
           prog (path/temp "stdimage-race-")
           _ (file/spit prog
               (string/join ["(require-one 'stdimage) (stdimage/ensure)"
