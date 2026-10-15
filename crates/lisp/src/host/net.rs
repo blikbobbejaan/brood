@@ -64,6 +64,7 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 use rustls::{ClientConfig, ClientConnection, RootCertStore, ServerConfig, ServerConnection};
 
 use crate::core::value;
+use crate::host::dial::dial_tcp;
 use crate::host::owned::OwnedTable;
 use crate::process::{
     chunk_flush, chunk_payload, deliver, deliver_credited, CreditSource, DeliveryCredit, Message,
@@ -1778,25 +1779,6 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
 /// `[:tcp-connected …]` / `[:tcp-error …]`, not a worker stall.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Resolve `host:port` and connect to each address in turn with a per-address
-/// `timeout`, as `TcpStream::connect` does. Blocking — call it only off the scheduler's
-/// workers (`ToSocketAddrs` has no timeout of its own).
-fn dial(host: &str, port: u16, timeout: Duration) -> std::io::Result<std::net::TcpStream> {
-    let mut last_error: Option<std::io::Error> = None;
-    for address in std::net::ToSocketAddrs::to_socket_addrs(&(host, port))? {
-        match std::net::TcpStream::connect_timeout(&address, timeout) {
-            Ok(stream) => return Ok(stream),
-            Err(error) => last_error = Some(error),
-        }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("could not resolve any address for {host}:{port}"),
-        )
-    }))
-}
-
 /// Make a freshly dialled stream reactor-ready: non-blocking, Nagle off (a request
 /// body would otherwise go out one delayed-ACK per record — O(size) round trips).
 fn prepare_dialled(stream: &std::net::TcpStream) -> std::io::Result<()> {
@@ -1872,7 +1854,7 @@ pub fn connect(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     }
     let host = host.to_string();
     spawn_dialler(id, "brood-tcp-connect", move || {
-        let connected = dial(&host, port, CONNECT_TIMEOUT).and_then(|stream| {
+        let connected = dial_tcp(&host, port, CONNECT_TIMEOUT).and_then(|stream| {
             prepare_dialled(&stream)?;
             Ok(stream)
         });
@@ -2198,7 +2180,7 @@ pub fn tls_request(
             Ok(name) => name,
             Err(_) => return fail_dial(id, &owner, "tls: invalid server name"),
         };
-        let connected = dial(&host, port, TLS_CONNECT_TIMEOUT).and_then(|stream| {
+        let connected = dial_tcp(&host, port, TLS_CONNECT_TIMEOUT).and_then(|stream| {
             prepare_dialled(&stream)?;
             Ok(stream)
         });

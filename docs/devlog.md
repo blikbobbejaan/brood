@@ -17821,3 +17821,14 @@ Correlating the `AGE` lines with failures was exact, 4 for 4.
     `(nth positions 2)`, which may be nil, as an index.
   Neither red was pushed. Before a push now: `make prepush` over the whole unpushed range,
   not just the tests the edited files name.
+
+## 2026-10-15 (later) — one bounded TCP dial; one net-split cleanup
+
+- **`host::dial::dial_tcp`** is the one "resolve, then try each address" policy. Both
+  `dist` and `host::net` maintained it, and only dist bounded the DNS lookup (KI-97).
+  `tcp-connect` and `tls-connect` now get the 5 s resolve bound as well.
+  `split_host_port` takes dist's `host:port` / `[v6]:port` apart, so an IP literal of
+  either family still skips the resolver thread.
+- **`dist::sever_couplings`** names the net-split cleanup that `fire_nodedown` and the
+  duplicate-link eviction both run. The eviction used to re-inline `fire_nodedown`'s last
+  two calls.

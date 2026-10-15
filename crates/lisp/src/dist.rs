@@ -44,7 +44,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -1516,92 +1516,17 @@ fn forget_dial_routes(peer: Symbol) {
     crate::core::sync::write(&DIAL_ROUTES).retain(|_, routed| *routed != peer);
 }
 
-/// Bound on a **name resolution**, which `connect_timeout` does not cover.
-///
-/// `to_socket_addrs` is a blocking libc call with no timeout of its own, and it runs on
-/// whichever thread dialled — for `node/connect` that is a scheduler worker, which the
-/// scheduler cannot preempt while it sits in a syscall (ADR-059). An unreachable DNS
-/// server takes the resolver's own timeout (commonly tens of seconds, and longer with
-/// retries across several `nameserver` lines), so a few reconnect attempts against a bad
-/// name were enough to wedge a meaningful slice of the ~nproc pool. KI-97 item 2.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Resolve `hostport` with a wall-clock bound, off the calling thread.
-///
-/// The resolve happens on a throwaway thread and the caller waits on a channel, so a
-/// hung resolver costs *that* thread rather than the worker we were called on. The
-/// thread is deliberately left to finish on its own if we time out: there is no way to
-/// cancel a blocking `getaddrinfo`, and detaching it is what keeps the caller bounded.
-/// That is safe because it touches nothing after the send — a closed channel is simply
-/// a dropped result — and the rate is bounded by the caller (a user-initiated
-/// `node/connect`, or `reconnect/watch`'s exponential backoff), not by inbound traffic.
-fn resolve_timeout(hostport: &str) -> io::Result<Vec<std::net::SocketAddr>> {
-    // A literal `IP:port` needs no resolver at all — `to_socket_addrs` would parse it
-    // without touching DNS. Answer it inline: that is the overwhelmingly common address
-    // (every `127.0.0.1:port` in the suite, and most real deployments), and taking the
-    // fast path keeps a thread spawn off the dial path entirely.
-    if let Ok(sa) = hostport.parse::<std::net::SocketAddr>() {
-        return Ok(vec![sa]);
-    }
-    let (tx, rx) = mpsc::channel();
-    let owned = hostport.to_string();
-    if std::thread::Builder::new()
-        .name("dist-resolve".into())
-        .spawn(move || {
-            let _ = tx.send(owned.to_socket_addrs().map(|it| it.collect::<Vec<_>>()));
-        })
-        .is_err()
-    {
-        // Out of threads (EAGAIN under load). Falling back to an inline resolve is
-        // strictly better than failing the dial: it is exactly the old behaviour, so
-        // connectivity is preserved, and the unbounded wait it risks is the lesser of
-        // the two — refusing to connect because the machine is briefly thread-starved
-        // would be a new failure mode introduced by a hardening change.
-        return hostport.to_socket_addrs().map(|it| it.collect());
-    }
-    match rx.recv_timeout(RESOLVE_TIMEOUT) {
-        Ok(res) => res,
-        Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            format!("resolving {hostport} took longer than {RESOLVE_TIMEOUT:?}"),
-        )),
-        // The resolver thread vanished without answering (a panic in getaddrinfo's
-        // wrapper, say). Report it rather than hanging on a channel nobody will send to.
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(format!(
-            "resolver thread for {hostport} ended without a result"
-        ))),
-    }
-}
-
 /// Open the carrier for `addr`. Unix connects are local and effectively instant
-/// (or refuse immediately); TCP bounds **both** halves — the name resolution via
-/// [`resolve_timeout`] and then `connect_timeout` per resolved address — so neither a
-/// wedged resolver nor a silently-dropping peer can pin the dialing thread.
+/// (or refuse immediately); TCP goes through [`dial_tcp`](crate::host::dial::dial_tcp),
+/// which bounds **both** the name resolution and each connect — for `node/connect` the
+/// dialling thread is a scheduler worker, which cannot be preempted mid-syscall, so
+/// neither a wedged resolver nor a silently-dropping peer may pin it.
 fn dial(addr: &str) -> io::Result<Stream> {
     if let Some(path) = addr.strip_prefix("unix:") {
         dial_unix(path)
     } else if let Some(hostport) = addr.strip_prefix("tcp:") {
-        // `connect_timeout` requires a `SocketAddr`, so resolve here and try each
-        // address in turn — same multi-A-record behaviour as `TcpStream::connect`
-        // while bounding the wait per attempt.
-        let mut last_err: Option<io::Error> = None;
-        let stream =
-            resolve_timeout(hostport)?
-                .into_iter()
-                .find_map(
-                    |sa| match TcpStream::connect_timeout(&sa, CONNECT_TIMEOUT) {
-                        Ok(s) => Some(s),
-                        Err(e) => {
-                            last_err = Some(e);
-                            None
-                        }
-                    },
-                );
-        Ok(Stream::Tcp(stream.ok_or_else(|| {
-            last_err.unwrap_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "no addresses resolved")
-            })
-        })?))
+        let (host, port) = crate::host::dial::split_host_port(hostport)?;
+        crate::host::dial::dial_tcp(host, port, CONNECT_TIMEOUT).map(Stream::Tcp)
     } else {
         Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1754,13 +1679,10 @@ fn register_link(peer: Symbol, link: Conn) -> Option<bool> {
         // Its reader unblocks, and its `drop_link` no-ops on the new id.
         let _ = old.sock.shutdown(Shutdown::Both);
         // Whatever was queued on the evicted link dies with its writer, so nothing else
-        // would ever resolve the couplings made over it: run the net-split cleanup now —
-        // every pending remote monitor and link to `peer` gets its `:noconnection` (each
-        // once: the entries are claimed), and the peer's watchers on our pids are dropped.
-        // Done before this link's reader starts, so nothing it carries is swept. No
-        // `[:nodedown]`: the node is still connected, over the winner.
-        process::handle_node_down(peer);
-        process::handle_link_node_down(peer);
+        // would ever resolve the couplings made over it: sever them now, before this
+        // link's reader starts, so nothing it carries is swept. No `[:nodedown]`: the
+        // node is still connected, over the winner.
+        sever_couplings(peer);
     }
     Some(was_new)
 }
@@ -2053,9 +1975,16 @@ fn fire_nodedown(peer: Symbol) {
             process::deliver(w, msg.clone());
         }
     }
+    sever_couplings(peer);
+}
+
+/// The net-split cleanup for every coupling made over a link to `peer` that is gone:
+/// each pending remote monitor fires `:noconnection`, as does each cross-node link
+/// (ADR-067), and the watchers `peer` held on our pids are dropped. Each entry is claimed,
+/// so it fires once. A node-down runs it after `[:nodedown]`; an evicted duplicate link
+/// runs it alone, since the node is still up over the winner.
+fn sever_couplings(peer: Symbol) {
     process::handle_node_down(peer);
-    // Cross-node links over the dropped link fire `:noconnection` to their local
-    // peers (ADR-067), mirroring the monitor `:noconnection`-on-net-split above.
     process::handle_link_node_down(peer);
 }
 
@@ -2419,39 +2348,6 @@ mod tests {
         assert_eq!(COUNT.load(Ordering::Acquire), 1);
         drop(slot);
         assert_eq!(COUNT.load(Ordering::Acquire), 0);
-    }
-
-    /// KI-97 item 2: a name resolution is bounded, and the bound is enforced off the
-    /// calling thread.
-    ///
-    /// `connect_timeout` covers the connect but not the lookup, and `to_socket_addrs` is a
-    /// blocking libc call with no timeout — on a scheduler worker, which cannot be
-    /// preempted mid-syscall (ADR-059), an unreachable DNS server pinned a worker for the
-    /// resolver's own timeout. There is no way to make a real resolver hang on demand
-    /// here, so this asserts the two properties that matter and can be checked: a normal
-    /// name still resolves, and a bad one fails rather than hanging.
-    #[test]
-    fn resolving_is_bounded_and_still_works() {
-        let started = Instant::now();
-        let ok = resolve_timeout("127.0.0.1:9").expect("a literal address must resolve");
-        assert!(!ok.is_empty(), "expected at least one address");
-        assert!(
-            started.elapsed() < RESOLVE_TIMEOUT,
-            "a literal address must not go anywhere near the bound"
-        );
-
-        // A syntactically valid but unresolvable name: the point is that it RETURNS.
-        let started = Instant::now();
-        let bad = resolve_timeout("invalid.invalid.:9");
-        assert!(
-            bad.is_err(),
-            "an unresolvable name must be an error, not a hang"
-        );
-        assert!(
-            started.elapsed() < RESOLVE_TIMEOUT * 4,
-            "resolution must be bounded, took {:?}",
-            started.elapsed()
-        );
     }
 
     /// KI-97 item 1: a peer that **trickles** must not outlive the handshake
