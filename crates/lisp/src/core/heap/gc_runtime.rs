@@ -1648,24 +1648,9 @@ fn value_in_gen(v: Value, gen: usize) -> bool {
 /// [`value_in_gen`] that returns *which* generation rather than testing one — used
 /// by [`Heap::rehome_to_current`] to decide whether a value needs re-homing.
 fn runtime_gen_of(v: Value) -> Option<usize> {
-    let in_rt = |region: u8, gen: usize| (region == RUNTIME).then_some(gen);
-    match v.unpack() {
-        ValueRef::Pair(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Vector(id) | ValueRef::Range(id) | ValueRef::SeqView(id) => {
-            in_rt(id.region(), id.code_gen())
-        }
-        ValueRef::Map(id) | ValueRef::Set(id) | ValueRef::Failure(id) => {
-            in_rt(id.region(), id.code_gen())
-        }
-        ValueRef::Str(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::BigInt(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Decimal(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Ratio(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Bytes(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Rope(id) => in_rt(id.region(), id.code_gen()),
-        ValueRef::Fn(id) | ValueRef::Macro(id) => in_rt(id.region(), id.code_gen()),
-        _ => None,
-    }
+    v.heap_handle()
+        .filter(|handle| handle.region() == RUNTIME)
+        .map(|handle| handle.code_gen())
 }
 
 /// Copy a value's RUNTIME sub-graph into `new`, returning the value with its RUNTIME

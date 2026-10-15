@@ -17847,3 +17847,25 @@ Correlating the `AGE` lines with failures was exact, 4 for 4.
   `pub(super) sched_now`, each reds one test. Retyping `recv_deadline` back to `Instant`
   fails to compile.
 - `scripts/wasm-suite.sh`: 10/10, clock-domain case included.
+
+## 2026-10-15 (later) — one answer to "which values carry a heap handle"
+
+`Value::heap_handle()` returns a `HeapHandle` (`HandleKind` + region, index, epoch, age,
+code generation, all read from the one bit layout the `handle!` types share). Several
+switches over the variants are now derived from it:
+- `is_movable` and `needs_root_slot` (the rooting gate);
+- `freeze`'s `handle_key`;
+- `gc_runtime`'s `runtime_gen_of`;
+- the two debug scans.
+
+The debug scans had drifted. `dbg_value_stale` skipped bigint, decimal, ratio, bytes, range,
+seq-view, fn and macro handles, and `dbg_value_oob` knew four slabs, so `BROOD_JIT_VERIFY`
+and `BROOD_GC_VERIFY` passed over garbage of those kinds. Guarded by
+`handle_debug_tests::the_handle_debug_checks_see_every_kind` (dropping a kind from
+`heap_handle` reds it).
+
+`heap_handle` lists its atom variants instead of using `_`, so a new `Value` variant must
+say whether it carries a handle; writing that list immediately caught `Pid`.
+
+GC stress plus `BROOD_GC_VERIFY` on seven files are green, as is a 1650-program fuzz
+differential.

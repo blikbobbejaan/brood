@@ -446,6 +446,139 @@ handle!(NativeId);
 handle!(MapId);
 handle!(EnvId);
 
+/// Which kind of heap object a [`HeapHandle`] addresses: one per handle-carrying `Value`
+/// variant. Kinds that share a slab say so in [`slab`](Self::slab).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HandleKind {
+    Pair,
+    Vector,
+    Range,
+    SeqView,
+    Map,
+    Set,
+    Failure,
+    Str,
+    BigInt,
+    Decimal,
+    Ratio,
+    Bytes,
+    Rope,
+    Fn,
+    Macro,
+}
+
+impl HandleKind {
+    /// The kind's name, as diagnostics print it.
+    pub fn name(self) -> &'static str {
+        match self {
+            HandleKind::Pair => "pair",
+            HandleKind::Vector => "vector",
+            HandleKind::Range => "range",
+            HandleKind::SeqView => "seq-view",
+            HandleKind::Map => "map",
+            HandleKind::Set => "set",
+            HandleKind::Failure => "failure",
+            HandleKind::Str => "string",
+            HandleKind::BigInt => "bigint",
+            HandleKind::Decimal => "decimal",
+            HandleKind::Ratio => "ratio",
+            HandleKind::Bytes => "bytes",
+            HandleKind::Rope => "rope",
+            HandleKind::Fn => "fn",
+            HandleKind::Macro => "macro",
+        }
+    }
+
+    /// The slab the object lives in: a range and a seq-view are stored as vectors, a set
+    /// and a failure as maps, and a macro as a closure.
+    pub fn slab(self) -> HandleKind {
+        match self {
+            HandleKind::Range | HandleKind::SeqView => HandleKind::Vector,
+            HandleKind::Set | HandleKind::Failure => HandleKind::Map,
+            HandleKind::Macro => HandleKind::Fn,
+            kind => kind,
+        }
+    }
+}
+
+/// A heap handle with its type erased. Every `handle!` type shares one bit layout, so
+/// region, index, epoch and age read the same whatever the kind: the questions the
+/// collectors, the rooting gate and the debug checks ask of "any handle" are asked here,
+/// once, instead of in a switch over the variants that each copy must keep complete.
+#[derive(Clone, Copy, Debug)]
+pub struct HeapHandle {
+    pub kind: HandleKind,
+    raw: u64,
+}
+
+impl HeapHandle {
+    /// Which region the object lives in ([`LOCAL`]/[`PRELUDE`]/[`RUNTIME`]).
+    #[inline]
+    pub fn region(self) -> u8 {
+        (self.raw >> REGION_SHIFT) as u8
+    }
+    /// The slab index.
+    #[inline]
+    pub fn index(self) -> usize {
+        (self.raw & INDEX_MASK) as usize
+    }
+    /// The epoch a LOCAL handle was minted in.
+    #[inline]
+    pub fn generation(self) -> u32 {
+        ((self.raw >> GEN_SHIFT) & GEN_MASK) as u32
+    }
+    /// Whether a LOCAL handle addresses the old (tenured) generation.
+    #[inline]
+    pub fn is_old(self) -> bool {
+        (self.raw >> AGE_SHIFT) & 1 == 1
+    }
+    /// Which RUNTIME code generation the handle addresses; meaningful only for RUNTIME.
+    #[inline]
+    pub fn code_gen(self) -> usize {
+        ((self.raw >> GEN_SHIFT) & 1) as usize
+    }
+}
+
+impl Value {
+    /// The heap handle `self` carries, or `None` for an atom (and for a native, whose
+    /// table is never collected).
+    #[inline]
+    pub fn heap_handle(self) -> Option<HeapHandle> {
+        let (kind, raw) = match self {
+            Value::Pair(id) => (HandleKind::Pair, id.0),
+            Value::Vector(id) => (HandleKind::Vector, id.0),
+            Value::Range(id) => (HandleKind::Range, id.0),
+            Value::SeqView(id) => (HandleKind::SeqView, id.0),
+            Value::Map(id) => (HandleKind::Map, id.0),
+            Value::Set(id) => (HandleKind::Set, id.0),
+            Value::Failure(id) => (HandleKind::Failure, id.0),
+            Value::Str(id) => (HandleKind::Str, id.0),
+            Value::BigInt(id) => (HandleKind::BigInt, id.0),
+            Value::Decimal(id) => (HandleKind::Decimal, id.0),
+            Value::Ratio(id) => (HandleKind::Ratio, id.0),
+            Value::Bytes(id) => (HandleKind::Bytes, id.0),
+            Value::Rope(id) => (HandleKind::Rope, id.0),
+            Value::Fn(id) => (HandleKind::Fn, id.0),
+            Value::Macro(id) => (HandleKind::Macro, id.0),
+            // Listed, not `_`: a new variant must say here whether it carries a handle,
+            // or every collector and debug check would silently pass over it.
+            Value::Nil
+            | Value::Bool(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Sym(_)
+            | Value::Keyword(_)
+            | Value::Native(_)
+            | Value::Pid { .. }
+            | Value::Ref(_)
+            | Value::Socket(_)
+            | Value::Subprocess(_)
+            | Value::Table(_) => return None,
+        };
+        Some(HeapHandle { kind, raw })
+    }
+}
+
 impl EnvId {
     /// The runtime's global scope. Not a real frame — a sentinel that the
     /// environment routines special-case to the shared global bindings table

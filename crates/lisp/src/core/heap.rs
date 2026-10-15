@@ -1121,23 +1121,8 @@ pub(crate) fn rt_pos_key(idx: usize, code_gen: usize) -> u64 {
 /// operand-stack slot — see [`needs_root_slot`], which [`Heap::root`] uses.
 #[inline]
 pub fn is_movable(v: Value) -> bool {
-    match v.unpack() {
-        ValueRef::Pair(id) => id.region() == LOCAL,
-        ValueRef::Vector(id) => id.region() == LOCAL,
-        ValueRef::Range(id) => id.region() == LOCAL,
-        ValueRef::SeqView(id) => id.region() == LOCAL,
-        ValueRef::Map(id) => id.region() == LOCAL,
-        ValueRef::Set(id) => id.region() == LOCAL,
-        ValueRef::Failure(id) => id.region() == LOCAL,
-        ValueRef::Str(id) => id.region() == LOCAL,
-        ValueRef::BigInt(id) => id.region() == LOCAL,
-        ValueRef::Decimal(id) => id.region() == LOCAL,
-        ValueRef::Ratio(id) => id.region() == LOCAL,
-        ValueRef::Bytes(id) => id.region() == LOCAL,
-        ValueRef::Rope(id) => id.region() == LOCAL,
-        ValueRef::Fn(id) | ValueRef::Macro(id) => id.region() == LOCAL,
-        _ => false,
-    }
+    v.heap_handle()
+        .is_some_and(|handle| handle.region() == LOCAL)
 }
 
 /// True iff a handle to `v` held across a collection safepoint must take an
@@ -1154,24 +1139,8 @@ pub fn is_movable(v: Value) -> bool {
 /// compaction — the slab-OOB / silent-corruption class in `docs/known-issues.md`.
 #[inline]
 pub fn needs_root_slot(v: Value) -> bool {
-    let shared = |r| r == LOCAL || r == RUNTIME;
-    match v.unpack() {
-        ValueRef::Pair(id) => shared(id.region()),
-        ValueRef::Vector(id) => shared(id.region()),
-        ValueRef::Range(id) => shared(id.region()),
-        ValueRef::SeqView(id) => shared(id.region()),
-        ValueRef::Map(id) => shared(id.region()),
-        ValueRef::Set(id) => shared(id.region()),
-        ValueRef::Failure(id) => shared(id.region()),
-        ValueRef::Str(id) => shared(id.region()),
-        ValueRef::BigInt(id) => shared(id.region()),
-        ValueRef::Decimal(id) => shared(id.region()),
-        ValueRef::Ratio(id) => shared(id.region()),
-        ValueRef::Bytes(id) => shared(id.region()),
-        ValueRef::Rope(id) => shared(id.region()),
-        ValueRef::Fn(id) | ValueRef::Macro(id) => shared(id.region()),
-        _ => false,
-    }
+    v.heap_handle()
+        .is_some_and(|handle| matches!(handle.region(), LOCAL | RUNTIME))
 }
 
 /// A rooted value handle from [`Heap::root`]: either a truly-fixed value kept
@@ -2009,29 +1978,17 @@ impl Heap {
     /// Available in release (gated only by the caller) so the runtime `BROOD_JIT_VERIFY`
     /// scan can run without a debug-assertions build.
     pub fn dbg_value_stale(&self, v: Value) -> Option<(&'static str, u32, u32)> {
-        let (name, region, is_old, gen) = match v {
-            Value::Pair(id) => ("pair", id.region(), id.is_old(), id.generation()),
-            Value::Vector(id) => ("vector", id.region(), id.is_old(), id.generation()),
-            Value::Map(id) => ("map", id.region(), id.is_old(), id.generation()),
-            Value::Set(id) => ("set", id.region(), id.is_old(), id.generation()),
-            Value::Failure(id) => ("failure", id.region(), id.is_old(), id.generation()),
-            Value::Str(id) => ("string", id.region(), id.is_old(), id.generation()),
-            Value::Rope(id) => ("rope", id.region(), id.is_old(), id.generation()),
-            _ => return None,
-        };
-        if region != LOCAL {
-            return None;
-        }
-        let expected = Self::epoch_in_gen_width(if is_old {
+        let handle = v.heap_handle().filter(|handle| handle.region() == LOCAL)?;
+        let expected = Self::epoch_in_gen_width(if handle.is_old() {
             self.old_epoch
         } else {
             self.local_epoch
         });
-        if gen != expected {
-            Some((name, gen, expected))
-        } else {
-            None
-        }
+        (handle.generation() != expected).then_some((
+            handle.kind.name(),
+            handle.generation(),
+            expected,
+        ))
     }
 
     /// Is `v` a handle whose slab index is **out of bounds** for its region's slab — i.e.
@@ -2040,30 +1997,15 @@ impl Heap {
     /// `dbg_value_stale` misses (the garbage's region/epoch bits don't read as a clean
     /// LOCAL-stale handle). Returns `Some((kind, index, slab_len))` if OOB.
     pub fn dbg_value_oob(&self, v: Value) -> Option<(&'static str, usize, usize)> {
-        macro_rules! check {
-            ($id:expr, $name:expr, $field:ident) => {{
-                let id = $id;
-                let idx = id.index();
-                // Only LOCAL (nursery/old) — the bug-#2 garbage is young/local; PRELUDE/RUNTIME
-                // are stable boxcar slabs (different len API), skip.
-                let len = match id.region() {
-                    LOCAL if id.is_old() => self.old_opt().map_or(0, |o| o.$field.len()),
-                    LOCAL => self.local.$field.len(),
-                    _ => return None,
-                };
-                if idx >= len {
-                    return Some(($name, idx, len));
-                }
-            }};
-        }
-        match v {
-            Value::Pair(id) => check!(id, "pair", pairs),
-            Value::Vector(id) | Value::Range(id) => check!(id, "vector", vectors),
-            Value::Map(id) | Value::Set(id) | Value::Failure(id) => check!(id, "map", maps),
-            Value::Str(id) => check!(id, "string", strings),
-            _ => {}
-        }
-        None
+        // Only LOCAL (nursery/old) — the bug-#2 garbage is young/local; PRELUDE/RUNTIME
+        // are stable boxcar slabs (different len API), skipped.
+        let handle = v.heap_handle().filter(|handle| handle.region() == LOCAL)?;
+        let len = if handle.is_old() {
+            self.old_opt().map_or(0, |old| old.len_of(handle.kind))
+        } else {
+            self.local.len_of(handle.kind)
+        };
+        (handle.index() >= len).then_some((handle.kind.slab().name(), handle.index(), len))
     }
 
     // ===== Accessors — read LOCAL/PRELUDE/RUNTIME values =======================
@@ -2493,6 +2435,38 @@ mod def_atomicity_tests {
         assert_eq!(
             interp.heap.declared_sig_value(sym).and_then(|v| v.as_int()),
             Some(7),
+        );
+    }
+}
+
+#[cfg(test)]
+mod handle_debug_tests {
+    use super::*;
+    use crate::core::value::{BigIntId, BytesId};
+
+    /// `dbg_value_stale` and `dbg_value_oob` (the `BROOD_JIT_VERIFY` / `BROOD_GC_VERIFY`
+    /// scans) ask their question of every handle kind, through `Value::heap_handle`. Each
+    /// used to keep its own switch: the stale check skipped bigints, bytes, closures and
+    /// five more kinds, and the bounds check knew four slabs, so garbage of any other kind
+    /// sailed through both.
+    #[test]
+    fn the_handle_debug_checks_see_every_kind() {
+        let mut heap = Heap::new();
+        let Value::BigInt(id) = heap.alloc_bigint(num_bigint::BigInt::from(1u8) << 100) else {
+            panic!("a bigint allocates as a bigint handle")
+        };
+        let live = Heap::epoch_in_gen_width(heap.local_epoch);
+        let stale = Value::BigInt(BigIntId::local_gen(id.index(), live ^ 1));
+        assert_eq!(
+            heap.dbg_value_stale(stale),
+            Some(("bigint", live ^ 1, live))
+        );
+        assert_eq!(heap.dbg_value_stale(Value::BigInt(id)), None);
+
+        let past_the_slab = Value::Bytes(BytesId::local_gen(10_000, live));
+        assert_eq!(
+            heap.dbg_value_oob(past_the_slab),
+            Some(("bytes", 10_000, 0))
         );
     }
 }

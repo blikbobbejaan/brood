@@ -26,7 +26,7 @@ impl Heap {
     /// `fwd` collapses shared structure to one copy and terminates cycles: a
     /// closure/env reserves nothing here, but a DAG (the same string reached twice)
     /// must not be duplicated per edge. Keyed on the raw handle bits.
-    fn localize_for_freeze(&mut self, v: Value, fwd: &mut HashMap<(u8, u32, u8), Value>) -> Value {
+    fn localize_for_freeze(&mut self, v: Value, fwd: &mut HashMap<HandleKey, Value>) -> Value {
         // Bail out fast on the overwhelmingly common case: an atom or an
         // already-LOCAL handle whose children are LOCAL too. Checking "children
         // are LOCAL too" needs the walk, so only the region test is cheap here;
@@ -229,7 +229,7 @@ impl Heap {
             .copied()
             .collect();
         {
-            let mut fwd: HashMap<(u8, u32, u8), Value> = HashMap::new();
+            let mut fwd: HashMap<HandleKey, Value> = HashMap::new();
             let vars: Vec<(Symbol, Value)> = self.local.envs[root.index()].vars.to_vec();
             for (i, (_, v)) in vars.iter().enumerate() {
                 let lv = self.localize_for_freeze(*v, &mut fwd);
@@ -477,26 +477,11 @@ impl Heap {
 /// has no heap identity and never needs copying. Used by
 /// [`Heap::localize_for_freeze`] to collapse shared structure and to tell "already
 /// LOCAL, unchanged" from "copied".
-fn handle_key(v: Value) -> Option<(u8, u32, u8)> {
-    let (kind, idx, reg) = match v.unpack() {
-        ValueRef::Pair(id) => (0u8, id.index() as u32, id.region()),
-        ValueRef::Vector(id) => (1, id.index() as u32, id.region()),
-        ValueRef::Range(id) => (2, id.index() as u32, id.region()),
-        ValueRef::SeqView(id) => (3, id.index() as u32, id.region()),
-        ValueRef::Map(id) => (4, id.index() as u32, id.region()),
-        ValueRef::Set(id) => (5, id.index() as u32, id.region()),
-        ValueRef::Failure(id) => (24, id.index() as u32, id.region()),
-        ValueRef::Str(id) => (6, id.index() as u32, id.region()),
-        ValueRef::BigInt(id) => (7, id.index() as u32, id.region()),
-        ValueRef::Decimal(id) => (8, id.index() as u32, id.region()),
-        ValueRef::Ratio(id) => (13, id.index() as u32, id.region()),
-        ValueRef::Bytes(id) => (9, id.index() as u32, id.region()),
-        ValueRef::Fn(id) => (10, id.index() as u32, id.region()),
-        ValueRef::Macro(id) => (11, id.index() as u32, id.region()),
-        ValueRef::Rope(id) => (12, id.index() as u32, id.region()),
-        _ => return None,
-    };
-    Some((kind, idx, reg))
+type HandleKey = (crate::core::value::HandleKind, u32, u8);
+
+fn handle_key(v: Value) -> Option<HandleKey> {
+    v.heap_handle()
+        .map(|handle| (handle.kind, handle.index() as u32, handle.region()))
 }
 
 /// Re-tag a **LOCAL** handle as PRELUDE, preserving its slab index.

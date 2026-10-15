@@ -244,6 +244,25 @@ pub(super) struct Slabs {
 /// gen), which were identical sums. `natives` is excluded (it's never GC'd — see
 /// the byte-weighted [`slab_bytes`], which does count it for footprint).
 impl Slabs {
+    /// How many objects the slab holding `kind` has — the bound a valid handle's index
+    /// stays under.
+    pub(super) fn len_of(&self, kind: crate::core::value::HandleKind) -> usize {
+        use crate::core::value::HandleKind;
+        match kind.slab() {
+            HandleKind::Pair => self.pairs.len(),
+            HandleKind::Vector => self.vectors.len(),
+            HandleKind::Map => self.maps.len(),
+            HandleKind::Str => self.strings.len(),
+            HandleKind::BigInt => self.bigints.len(),
+            HandleKind::Decimal => self.decimals.len(),
+            HandleKind::Ratio => self.ratios.len(),
+            HandleKind::Bytes => self.bytes.len(),
+            HandleKind::Rope => self.ropes.len(),
+            HandleKind::Fn => self.closures.len(),
+            other => unreachable!("{} is not a slab of its own", other.name()),
+        }
+    }
+
     /// A fresh, empty `Slabs` whose per-slab `Vec`s carry the **capacity of
     /// `like`'s lengths** — the flip-side nursery allocator. A zero-capacity
     /// nursery would re-pay the full Vec-doubling ladder every cycle (each
