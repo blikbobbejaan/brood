@@ -545,6 +545,7 @@ pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, cen
 /// reaches here after a real safepoint (it is outside the JIT int-subset). A stale handle
 /// would be the bug #2 class (ADR-114) and corrupt, so debug builds enforce the invariant
 /// rather than leave it a silent assumption.
+#[cfg(feature = "jit")]
 fn fresh_frame_args(
     heap: &Heap,
     arm: &CompiledArm,
