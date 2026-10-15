@@ -151,18 +151,8 @@ jobs:
       - name: wasm32 behavioural suite (the cooperative scheduler actually runs)
         run: ./scripts/wasm-suite.sh
 
-  # Clippy runs ALONE, in parallel with the test job, and that is the point.
-  #
-  # The reason is SERIALISATION, not shared artifacts. `cargo clippy` runs `clippy-driver`
-  # and its outputs cannot be reused by a real build — so clippy's work was never going to
-  # feed nextest's, whatever features either names (verified 2026-08-27: matching the sets
-  # exactly, the next `cargo test` still recompiled the whole graph). While they shared a
-  # job, that unshareable ~120-140 s sat in front of every test step, in series.
-  #
-  # Split, it runs concurrently instead: `max(lint, test)` rather than `lint + test`. Full
-  # `--all-features` lint coverage is kept exactly as it was — narrowing clippy to the test
-  # features would have bought nothing, for the reason above, and would have stopped linting
-  # every gui/audio/sanitizer path.
+  # Clippy runs ALONE, in parallel with the test job: its output cannot feed a real build, so
+  # sharing a job only serialised it. Full --all-features coverage. See docs/build-and-ci.md.
   lint:
     name: clippy (all features)
     runs-on: ubuntu-latest
