@@ -169,15 +169,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev
+        run: scripts/ci/install-gui-deps.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -291,19 +283,9 @@ jobs:
 
       # System libraries for the --all-features surface: libasound2-dev for the
       # `audio` feature (rodio→cpal links libasound.so.2), and the windowing /
-      # GL / clipboard stack for `gui`/`gui-gpu` (winit, softbuffer, glutin+glow,
-      # arboard — X11 + Wayland + xkbcommon + OpenGL). A default build needs none
-      # of these; they're only for the all-features lint/test here.
+      # The GUI/audio system libraries, only for the all-features lint/test here.
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev
+        run: scripts/ci/install-gui-deps.sh
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -646,17 +628,9 @@ jobs:
           ref: ${{ env.BEDIT_REF }}
           path: bedit
 
-      # The GUI backend's system libraries (same block as the test job).
+      # The GUI backend's system libraries (same script as the test job).
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libasound2-dev \
-            libxkbcommon-dev \
-            libwayland-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev \
-            libgl1-mesa-dev
+        run: brood/scripts/ci/install-gui-deps.sh
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

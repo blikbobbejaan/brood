@@ -15,8 +15,7 @@ impl Heap {
 
     /// Should the next safepoint run a collection? Compares LOCAL live count
     /// against the adaptive threshold (recomputed by [`Self::collect`] as
-    /// `max(GC_FLOOR, 2 * live)`). Cheap: an addition over six small `usize`s
-    /// and a compare.
+    /// `max(GC_FLOOR, 2 * live)`). Cheap: a sum of the slab lengths and a compare.
     #[inline]
     pub fn gc_due(&self) -> bool {
         self.gc_enabled && self.local_live_count() >= self.gc_threshold
