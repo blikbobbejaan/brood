@@ -10,7 +10,7 @@ measure (and the traps) in [`benchmarking.md`](benchmarking.md). The dated secti
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-14)
+## State (2026-10-15)
 
 - **Released:** v0.38.0 (`CHANGELOG.md`). On `main` since, merged 2026-10-14 from a branch
   developed apart from the release: preemption reaches every shape of running code (ADR-400..405,
@@ -20,7 +20,9 @@ devlog entries of the same dates.
   it carry the old ones — the map is in the devlog entry "merged origin/main".
 - `known-issues.md` lists **no open or watching entry**. KI-247 (a bystander raising after a
   holder died) and KI-248 (a large allocation passing the hard limit when the live snapshot
-  had not seen an earlier large block) were found and fixed 2026-10-14 (night).
+  had not seen an earlier large block) were found and fixed 2026-10-14 (night); KI-250 (a native
+  tail call by name never hit its head's cache slot) and KI-251 (a memory-pressure test that
+  required the selector's stderr line when the culprit had raised in itself) 2026-10-15.
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
@@ -96,6 +98,14 @@ per run are `supervisor` 57k, `persistent-map` 50k, `base64` 48k, `json` 25k, `w
 every other row ~0 — at ~240 instructions saved each, ≤2% of any row. Worth it for user code
 built on higher-order loops, not for the benchmark column. `nqueens`' `solve` stays
 interpreted (it builds its loop closure; §7.1).
+
+**E. 2026-10-15 — `json`, picked apart by counters (KI-250 fixed).** A native tail call by
+name now caches its head (`primes` −6.4% instructions, `supervisor` −1.8%). Leads measured on
+`json` at N=20 000 and not yet taken: `env_get` still runs ~1M times a run (was 1.7M) — find the
+callers before guessing; `json/skip-ws`, `digits-run` and `json-object` never get their inlined
+native body (`[jit-bail] … reason=leaf-derivation-stale`): the leaf derivation is stamped with
+the epoch at compile time, a module loaded later moves the epoch, and nothing re-derives it;
+`hof_decline_queued` 19 872 — HOF callbacks declined while their compile is in flight.
 
 ### Older threads
 

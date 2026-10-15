@@ -938,7 +938,8 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
                 argc: 2,
                 tail: true,
                 pos: None,
-                site: NO_SITE,
+                // A named head always carries its call site (`emit.rs` asserts it).
+                site: 0,
                 head: Some(fb), // free-global head, elided from the stack
                 staged: false,
             }, // 14
@@ -950,8 +951,8 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
         optional_defaults: Box::new([]),
         rest_slot: None,
         nslots: 2,
-        nsites: 0,
-        ngsites: 0,
+        nsites: 1,
+        ngsites: super::ir::gsite_reservation(0, 1),
         uid: super::ir::next_arm_uid(),
         site_pos: Box::new([]),
         body: Node::Const(ConstVal::new(Value::nil())),
@@ -2831,5 +2832,97 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
          interprets it to the next back-edge boundary",
         misplaced.len(),
         &misplaced[..misplaced.len().min(4)]
+    );
+}
+
+/// Native code resolves the head of a tail call by name through the global-read cache, and
+/// it used the CALL site's number as the slot. Call sites and global reads are numbered
+/// separately, so that slot was another read's (here `limit`'s, and the two evicted each
+/// other) or lay past the arm's block, where the cache drops every write and each call
+/// walked the environment — `json`'s `string-acc` 100 000 times a run, `primes` 6% of its
+/// instructions. Nothing else could see it: the cache checks the symbol, so every answer
+/// stayed right. The arm now reserves a slot per call site after its reads
+/// (`gsite_reservation`), and both entries must be in the arm's own block side by side.
+#[cfg(feature = "jit")]
+#[test]
+fn a_native_tail_call_by_name_caches_its_head_in_its_own_slot() {
+    use std::sync::atomic::Ordering::Acquire;
+    // Below the native tier (`BROOD_TIER=0|1`, the tree-walker CI job) nothing goes native,
+    // so there is no native tail call to observe.
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    interp
+        .eval_str(
+            "(def limit 7)
+             (defn hop (n) (if (= n 0) limit (hop-on (- n 1))))
+             (defn hop-on (n) (hop n))
+             (defn warm (k) (if (< k 1) :ok (do (hop 1) (warm (- k 1)))))",
+        )
+        .expect("define");
+    let id = match interp.eval_str("hop").expect("read hop").unpack() {
+        ValueRef::Fn(id) => id,
+        _ => panic!("`hop` should be a closure"),
+    };
+    let arm = compiled_arm_for(&interp.heap, id, 1).expect("hop/1 compiles");
+    let arm = arm.arc().clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        interp.eval_str("(warm 200)").expect("warm");
+        let code = arm.jit_code.load(Acquire);
+        if !code.is_null() && code != crate::jit::BAILED && code != crate::jit::QUEUED {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "`hop` should have tiered up to native code"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let chunk = arm.chunk.as_ref().expect("hop has a chunk");
+    let limit = value::intern("limit");
+    let read_site = chunk
+        .code
+        .iter()
+        .find_map(|i| match i {
+            Inst::GlobalIc { sym, site } if *sym == limit => Some(*site),
+            _ => None,
+        })
+        .expect("`limit` is a cached global read");
+    let call_site = chunk
+        .code
+        .iter()
+        .find_map(|i| match i {
+            Inst::Call {
+                tail: true,
+                head: Some(_),
+                site,
+                ..
+            } => Some(*site),
+            _ => None,
+        })
+        .expect("`(hop-on …)` is a tail call by name");
+    // Native `hop(1)` caches `hop-on` as it tail-calls it; `hop(0)` then caches `limit`.
+    interp.eval_str("(hop 1)").expect("run hop natively");
+    let (_, gbase) = interp.heap.vm_arm_block(&arm);
+    let head_slot = arm.tail_head_gsite(call_site);
+    assert!(
+        head_slot < arm.ngsites,
+        "the head's slot is inside the arm's block"
+    );
+    assert_ne!(
+        head_slot, read_site,
+        "the head and `limit` have slots of their own"
+    );
+    assert_eq!(
+        interp.heap.dbg_global_ic_sym(gbase + head_slot),
+        Some(value::intern("hop-on")),
+        "the native tail call cached its head in the slot reserved for it"
+    );
+    assert_eq!(
+        interp.heap.dbg_global_ic_sym(gbase + read_site),
+        Some(limit),
+        "the head did not evict `limit`'s entry"
     );
 }

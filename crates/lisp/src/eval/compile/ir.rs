@@ -569,7 +569,9 @@ pub struct CompiledArm {
     /// ICs silently dead in every process but the compiling one.
     pub nsites: u32,
     /// Global-read IC slots, arm-relative from 0 — the `Node::GlobalIc` counterpart of
-    /// [`Self::nsites`], indexing `Heap::vm_global_ics` via `Heap::cur_gic_base`.
+    /// [`Self::nsites`], indexing `Heap::vm_global_ics` via `Heap::cur_gic_base`. Built by
+    /// [`gsite_reservation`]: the body's own global reads, then one slot per call site for
+    /// native code's tail-call head ([`Self::tail_head_gsite`]).
     pub ngsites: u32,
     /// Process-independent identity for this arm instance, from a global counter —
     /// the key under which each process tracks its IC block for this arm
@@ -868,7 +870,29 @@ pub struct LeafInline {
     pub epoch: u64,
 }
 
+/// The global-read slots an arm reserves for a body with `gsites` global reads and `sites`
+/// call sites: the reads first, then one per call site. Native code resolves the head of a
+/// tail call by name through the global-read cache ([`CompiledArm::tail_head_gsite`]); with
+/// the call site's own number as the slot, that index was another read's slot or past the
+/// arm's block, where the cache drops every write — each such call walked the environment
+/// (`json`'s `string-acc` 100 000 times a run).
+pub(crate) fn gsite_reservation(gsites: u32, sites: u32) -> u32 {
+    gsites + sites
+}
+
 impl CompiledArm {
+    /// The global-read slot native code resolves call site `call_site`'s head through when
+    /// it makes that call in tail position — past every slot the body's own global reads
+    /// use (see [`gsite_reservation`]).
+    pub(crate) fn tail_head_gsite(&self, call_site: u32) -> u32 {
+        debug_assert!(
+            call_site < self.nsites,
+            "call site {call_site} outside the arm's {} sites",
+            self.nsites
+        );
+        self.ngsites - self.nsites + call_site
+    }
+
     /// The arm's name for diagnostics: its `dbg_name`, or `<closure>` for an anonymous arm.
     pub(crate) fn dbg_label(&self) -> &'static str {
         self.dbg_name

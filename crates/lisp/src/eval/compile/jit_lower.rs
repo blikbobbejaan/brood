@@ -865,6 +865,12 @@ fn jit_lower_arm_inner(
                     } else {
                         (head, site)
                     };
+                    // Where a tail call by name resolves its head (see `tail_head_gsite`).
+                    let head_gsite = if *tail && head.is_some() {
+                        arm.tail_head_gsite(*site)
+                    } else {
+                        0
+                    };
                     match call::emit_call(
                         &mut b,
                         &mut stack,
@@ -873,6 +879,7 @@ fn jit_lower_arm_inner(
                         *tail,
                         *site,
                         *head,
+                        head_gsite,
                         spill_base,
                         reserve,
                         epoch_ptr,

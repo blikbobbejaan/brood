@@ -582,6 +582,14 @@ impl Heap {
         out
     }
 
+    /// **Test-only.** The symbol cached at absolute global-read slot `abs`, if any — for the
+    /// guard that a native tail call's head lands in its arm's own block.
+    #[cfg(test)]
+    pub fn dbg_global_ic_sym(&self, abs: u32) -> Option<Symbol> {
+        let t = self.vm_global_ics.borrow();
+        t.get(abs as usize)?.as_ref().map(|e| e.sym)
+    }
+
     /// The current activation's IC block bases — set by the drivers at every arm
     /// transition (call/tail/return/resume/native entry), read by every site-indexed
     /// method below. Returns the previous pair, for save/restore around a transition.

@@ -13395,6 +13395,54 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-251 — a memory-pressure test required the selector's stderr line when the culprit had raised in itself ✅ FIXED 2026-10-15
+
+**Symptom.** `cli::memory_pressure::a_leak_is_stopped_and_a_busy_worker_beside_it_is_not`
+failed in `make test-both`'s tree-walker half: `nothing on stderr named the stopped process`.
+Its first two assertions held — the culprit went down with `E0043`, the bystander was alive.
+Unloaded it passed 30 of 30 at tier 0; with `2 × nproc` busy loops beside it, 7 of 25 failed,
+every one on that assertion. Some failing runs had the culprit's `[crash]` report on stderr,
+some had nothing.
+**Cause.** The test. Whoever reaches a safepoint after the crossing decides. The test's comment
+said the leak "never notices the crossing itself", but it does reach safepoints, and under load
+the busy worker may not run first. The culprit is then the largest holder and raises the
+`E0043` in itself (`process/pressure.rs`, the case kept from before KI-229). That error is
+catchable, so the runtime prints nothing, and the default crash reporter writes asynchronously —
+the main process can print its verdict and exit before the report lands.
+**Fix.** The verdict prints the exit reason. If it is the selector's (`held the most memory`),
+the stderr line is still required — `stop` prints it before the exit is sent, so there is no
+race there. Otherwise the reason must be the self-raise (`allocated process-wide exceeds`).
+**Guard.** The case itself: 30 of 30 under the same load.
+
+## KI-250 — a native tail call by name resolved its head through a slot nothing had reserved ✅ FIXED 2026-10-15
+
+**Symptom.** `json` at N=20 000 under the counter build: `global_ic_hit` 186 625,
+`global_ic_miss` 179 843, and `env_get` 4% of the profile. Every miss named a function a
+native arm tail-calls by name — `json/string-acc` from `json-string` (99 600), `digits-run`
+from `int-end`, `%subvec` from `seq/subvec`. No answer was wrong.
+**Cause.** Native code does not stage a named tail call's head, so it resolves the head
+through the global-read inline cache (`brood_rt_global_ic`) before handing the call to the
+dispatcher — and passed the CALL site's number as the cache slot (`jit_lower/call.rs`). Call
+sites and global reads are numbered separately and an arm reserves only as many global-read
+slots as its body has reads. For `json-string` (one call site, no global read) slot 0 lay at
+the end of the process's table, where `vm_global_ic_put` refuses to grow past the reservation
+counter: every write dropped, every call an `env_get`. Where the arm did read a global, call
+site N and read N shared one entry and evicted each other; where a later arm's block followed,
+the write landed in that arm's slots. The entry checks the symbol, so the answer was always
+right — which is why no test saw it.
+**Why it survived.** Only a counter or a profile shows it, and the symptom (an environment
+walk per tail call) reads like ordinary interpretive overhead.
+**Fix.** `ir::gsite_reservation`: an arm reserves its global reads, then one slot per call
+site; `CompiledArm::tail_head_gsite` names the call site's slot and native code resolves the
+head there. Index space only — the table grows when a slot is first written. `json`
+misses 179 843 → 1 341. Instructions: `primes` −6.4%, `supervisor` −1.8%, `latency` −1.8%,
+`nqueens` −1.1%, `ring` −0.8%, the rest within ±0.4%.
+**Guard.** `eval::compile::tests::a_native_tail_call_by_name_caches_its_head_in_its_own_slot`:
+a function that reads a global and tail-calls by name, run natively — the head and the read
+must each hold their own entry in the arm's block. Sabotaged both ways: the lowering back to
+the call site's number (the head and `limit` collide, the head's slot is empty) and the
+reservation without the call-site slots (the slot falls outside the block) — each red.
+
 ## KI-249 — a module loaded inside a test file dropped out of `*features*` after it ✅ FIXED 2026-10-14
 
 **Symptom.** `nest test tests/registry_test.blsp tests/lazy_load_test.blsp` failed every

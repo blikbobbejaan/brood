@@ -525,7 +525,7 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
                 // throwaway arm needs the counts so `exec_value`'s activation resolves
                 // an IC block covering them.
                 nsites: scope.sites,
-                ngsites: scope.gsites,
+                ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
                 uid: next_arm_uid(),
                 site_pos: std::mem::take(&mut scope.site_pos).into_boxed_slice(),
                 body: node,

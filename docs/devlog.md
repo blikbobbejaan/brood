@@ -17554,3 +17554,27 @@ with live images and N 2M vs 10M — at 1M vs 3M with stale images the per-call 
 ±30 instructions, larger than the step being measured. Deep recursion through a computed head
 pinned: 200 000 levels complete and 2 000 000 raise, in a spawned process, both binaries alike.
 
+
+## 2026-10-15 — a native tail call by name caches its head (KI-250)
+
+**Picking `json` apart.** A `json` profile at N=20 000 had two Rust frames that do not belong
+on a hot path: `env_get` (4%) and `jit_tier_in_frame` (3%, the per-entry ceremony of VM→native
+calls, scattered — no single hot instruction). The counter build said why the first was there:
+the global-read cache hit 186 625 times and missed 179 843. Instrumenting the miss path named
+three functions, each tail-called BY NAME from native code, and the slot each was looked up in
+lay one past the end of the process's table.
+
+**KI-250.** Native code resolves a named tail call's head through the global-read cache, and
+passed the call SITE's number as the slot. An arm reserves only as many global-read slots as
+its body has reads, so the call-site number pointed past its block (the write refused, every
+call an `env_get`) or onto one of its own reads (the two evicting each other). The entry
+checks the symbol, so nothing was ever wrong but the cost. An arm now reserves one slot per
+call site after its reads, and native code uses that slot. Instructions: `primes` −6.4%,
+`supervisor` −1.8%, `latency` −1.8%, `nqueens` −1.1%, `ring` −0.8%; `json` only −0.35% at the
+benchmark's N=2 000 (the misses scale with the document; 18 000 a run there).
+
+**KI-251, a test flake found by the gate.** The tree-walker half of `make test-both` failed
+`a_leak_is_stopped_and_a_busy_worker_beside_it_is_not` once. With the CPU loaded it failed 7 runs
+in 25. The runtime was right every time: the culprit sometimes notices the crossing itself and
+raises in itself, which prints nothing on stderr. The test now checks which of the two errors
+the culprit died with, and wants the stderr line only from the selector.
