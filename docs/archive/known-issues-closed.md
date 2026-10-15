@@ -13849,3 +13849,21 @@ every deopting native exit reaches exactly once; the per-caller booking
 `BROOD_DEOPT_TRACE`. **Guard.** `tests/sysmon_test.blsp` "a deopt on the computed-head
 native path reaches the monitor": a worker deopts a tiered arm with a float under `apply`
 (the monitor reports on other processes only). Disabling the emit reds it.
+
+## KI-262 — an `unlink` + zero-timeout flush could leave an `[:EXIT]` behind ✅ FIXED 2026-10-15
+
+**Symptom.** A trapping process that `unlink`s a peer and then flushes with
+`(receive ([:EXIT ^p _] nil) (after 0 nil))` could still receive that peer's `[:EXIT]`
+afterwards: 10, 52 and 93 leaks in three runs of 80 000 rounds. **Cause.** The link half of
+KI-213. `links::notify_peers` took the dead process's peers out of `LINKS`, released the
+lock, then delivered each `[:EXIT]`. An `unlink` in that gap found no link to remove, the
+flush found no message, and the delivery landed after both. Found while writing the lock
+order down: the review had noted that monitors deliver under their lock and links did not,
+without proving either way. **Fix.** The local deliveries happen inside the same `LINKS`
+hold as the take, as KI-213's downs do under `MONITORS`. Safe to hold: delivery takes a
+registry shard (`LINKS` → `REGISTRY` is `link`'s order already), the peer's mailbox state
+and a scheduler queue, and nothing takes those and then `LINKS`; a kill only queues the
+peer, so `notify_peers` never re-enters. **Guard.** `crates/lisp/tests/unlink_race.rs`, the
+`demonitor_race.rs` shape with links, as the root process: red 3 of 3 before the fix, green
+5 of 5 after. The link, exit, supervisor, spawn-monitor and crash-report suites are green
+on tiers 0-2 and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.

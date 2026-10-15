@@ -28,8 +28,10 @@
 //! Lock ordering mirrors [`super::monitor`]: [`link`] takes LINKS then (nested)
 //! REGISTRY for its race-free liveness check; [`super::deregister`] takes its
 //! tables **sequentially** and never holds REGISTRY while reaching for LINKS, so
-//! the two pairings can't deadlock. REMOTE_LINKS is taken on its own (never nested
-//! under LINKS/REGISTRY), and any wire send / `deliver` happens after it's dropped.
+//! the two pairings can't deadlock. [`notify_peers`] delivers its LOCAL `[:EXIT]`s
+//! while still holding LINKS, as the monitor side pushes its downs under MONITORS
+//! (KI-213). REMOTE_LINKS is taken on its own (never nested under LINKS/REGISTRY), and
+//! any wire send happens after it's dropped. The whole table is in [`crate::process`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
@@ -111,8 +113,16 @@ pub fn set_trap_exit(pid: u64, on: bool) -> bool {
 /// **local and remote** — and clear the links. Called from [`super::deregister`]
 /// **after** monitors, with no other lock held.
 pub(super) fn notify_peers(dead: u64, reason: &Message) {
-    // Local peers: extract under LINKS, drop reverse edges, release, then deliver.
-    let local_peers = {
+    // Local peers: take them, drop the reverse edges and deliver, all under ONE hold of
+    // LINKS — the link half of KI-213. Released between the take and the deliveries, an
+    // `unlink` + `(receive ([:EXIT ^p _]) (after 0))` in the gap found no link and no
+    // message, and the `[:EXIT]` landed after (10-93 per 80 000 rounds,
+    // `tests/unlink_race.rs`). Safe to hold: delivery takes a registry shard (LINKS →
+    // REGISTRY is `link`'s order too), the peer's mailbox state and a scheduler queue, and
+    // nothing takes those and then LINKS. A kill only queues the peer; its own worker
+    // retires it, so this never re-enters `notify_peers`.
+    let dead_msg = Message::local_pid(dead);
+    {
         let mut links = lock(&LINKS);
         let peers = links.remove(&dead).unwrap_or_default();
         for &q in &peers {
@@ -120,11 +130,9 @@ pub(super) fn notify_peers(dead: u64, reason: &Message) {
                 s.remove(&dead);
             }
         }
-        peers
-    };
-    let dead_msg = Message::local_pid(dead);
-    for q in local_peers {
-        deliver_exit_to(q, dead_msg.clone(), reason.clone());
+        for q in peers {
+            deliver_exit_to(q, dead_msg.clone(), reason.clone());
+        }
     }
     // Remote peers: ship a link `Frame::Exit` to each peer's node. The remote
     // side delivers it to its local process and drops its reverse entry.

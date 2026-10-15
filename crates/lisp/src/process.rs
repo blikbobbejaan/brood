@@ -34,6 +34,40 @@
 //!   `drop_monitor`/`handle_node_down`/`fire_noconnection` surface).
 //! - [`timer`] — `(after ms expr)` deadlines: the min-heap + one OS
 //!   thread that calls back into the mailbox's `wake_for_timeout`.
+//!
+//! ## Lock order
+//!
+//! The process-wide locks, outer before inner. Each row is a nesting the code takes; a
+//! nesting not listed here is a new order, and belongs in this table before it lands.
+//!
+//! | outer | inner | where |
+//! |---|---|---|
+//! | `dist::NAMES` | `REGISTRY` shard | `spawn_or_get`, `register`, `unregister_dead_pid_while` |
+//! | `monitor::MONITORS` | `REGISTRY` shard | `add_monitor`'s liveness check |
+//! | `monitor::MONITORS` | mailbox `state`, run queue | the death path's local `[:down]` pushes (KI-213) |
+//! | `links::LINKS` | `REGISTRY` shard | `link`'s liveness check |
+//! | `links::LINKS` | `REGISTRY` shard, mailbox `state`, run queue | `notify_peers`' local `[:EXIT]`s (KI-262) |
+//! | `monitor::PENDING_REMOTE` | mailbox `state`, run queue | a remote monitor's `[:down]`, delivered by whoever removed its entry |
+//! | `timer::TIMERS` | `REGISTRY` shard | `compact` |
+//! | `dist::NODE_MONITORS` (write) | `dist::NODES` (read) | `monitor_node` |
+//! | `dist::NODES` | `dist::DIAL_ROUTES` | `linked_peer_for` |
+//! | net `SocketOwner` | mailbox `state` | socket delivery |
+//! | mailbox `state` | subprocess `OutputBudget` | an output refund |
+//!
+//! Two rules follow, and every row keeps them:
+//!
+//! - **A `REGISTRY` shard is innermost.** Never hold one while taking `NAMES`, `MONITORS`,
+//!   `LINKS`, `TIMERS` or the sysmon table, and never hold two shards at once.
+//!   `deregister` takes its tables one after another, never nested, for this reason.
+//! - **Delivery takes only the target's mailbox `state` and a run queue**, so a table may
+//!   deliver while held (`MONITORS`, `LINKS`, `PENDING_REMOTE`) as long as nothing takes a
+//!   mailbox lock and then that table. Holding it across the delivery is what makes
+//!   "removed from the table" and "message queued" one step to a concurrent `demonitor` or
+//!   `unlink`. `REMOTE_LINKS` is taken alone, and no wire send is made with a table held.
+//!
+//! The code region keeps its own order, documented where its locks live: `registry_lock`
+//! → the globals lock, the load journal or `promote_lock` (`core/heap/env_globals.rs`,
+//! `runtime_code.rs`), and `promote_lock` → the published table's lock (`promote.rs`).
 
 mod io_source;
 pub(crate) mod keywords;
