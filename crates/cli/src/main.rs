@@ -92,15 +92,7 @@ struct Cli {
 }
 
 fn main() {
-    // Default to a backtrace on panic — these are the dev/edit binaries, and a
-    // bare panic (e.g. a heap index, a use-after-GC) is far easier to triage with
-    // a trace than a one-line message. Set before any thread spawns (single-
-    // threaded here, so it's sound); an explicit RUST_BACKTRACE=0 still wins.
-    if std::env::var_os("RUST_BACKTRACE").is_none() {
-        std::env::set_var("RUST_BACKTRACE", "1");
-    }
-    // Capture any panic (use-after-GC tripwire, heap index, …) to .brood_crash_dump.
-    brood::cli_support::install_crash_dump();
+    brood::cli_support::install_panic_reporting();
     // A release bundle (`nest release`, ADR-038): this binary carries an app's
     // source appended to it. Boot the app and pass argv straight through to its
     // entry fn — *before* `Cli::parse`, so the app's own arguments/flags aren't
@@ -157,19 +149,13 @@ fn run(cli: Cli) {
         brood::diagnostics::debug_flags::print_catalogue();
         return;
     }
-    if let Some(n) = cli.max_parallel {
-        brood::process::set_max_parallel(n);
-    }
     // Hand the post-`--` arguments to the runtime before anything runs: only this
     // parser knows where brood's own arguments stop, so a script asking `%argv`
     // would otherwise have to re-derive it.
     brood::builtins::set_script_args(cli.script_args.clone());
-    // Honour BROOD_MEM_LIMIT / BROOD_MEM_SOFT_LIMIT for every mode; plain runs
-    // and the REPL stay unlimited unless the user opts in (ADR-043). `--test`
+    // Plain runs and the REPL stay unlimited unless the user opts in (ADR-043); `--test`
     // additionally defaults a ceiling on (see run_test_files).
-    brood::core::alloc::init_limits_from_env();
-    // Flag a stressed/retuned heap so a benchmark can't silently measure one.
-    brood::cli_support::warn_nondefault_gc_env();
+    brood::cli_support::init_runtime(cli.max_parallel);
 
     // A bare `brood new foo` (or run/test/... ) parses `new` as a FILE and dies
     // with a cryptic "cannot read new". Project tooling lives in `nest`, not

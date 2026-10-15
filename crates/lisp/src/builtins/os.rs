@@ -273,22 +273,12 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     }
     let mut stdin_text: Option<String> = None;
     let mut timeout: Option<std::time::Duration> = None;
+    let (cwd, env) = super::subprocesses::child_options(heap, "os/cmd", arg(args, 2))?;
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    crate::host::subprocess::apply_env(&mut cmd, &env);
     if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, kw("cwd")) {
-            if !matches!(v, Value::Nil) {
-                cmd.current_dir(expect_string(heap, "os/cmd :cwd", v)?);
-            }
-        }
-        if let Some(Value::Map(e)) = heap.map_get(opts, kw("env")) {
-            for (k, v) in heap.map_entries(e) {
-                let name = expect_string(heap, "os/cmd :env key", k)?;
-                if matches!(v, Value::Nil) {
-                    cmd.env_remove(name);
-                } else {
-                    cmd.env(name, expect_string(heap, "os/cmd :env value", v)?);
-                }
-            }
-        }
         if let Some(v) = heap.map_get(opts, kw("stdin")) {
             if !matches!(v, Value::Nil) {
                 stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?);

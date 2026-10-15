@@ -33,7 +33,9 @@
 //! `-j N` / `--max-parallel N` caps concurrent spawned processes. Hot reload
 //! lives in `nest run --watch <path>` (file or directory, repeatable).
 
-use brood::cli_support::{report_error, run_on_main_stack, FullTermGuard, RawTermGuard};
+use brood::cli_support::{
+    init_runtime, report_error, run_on_main_stack, FullTermGuard, RawTermGuard,
+};
 use brood::introspect::string_literal;
 use brood::Interp;
 use clap::{Parser, Subcommand};
@@ -189,14 +191,7 @@ fn ensure_stdimage(interp: &mut Interp) {
 }
 
 fn main() {
-    // Default to a backtrace on panic (see the matching note in
-    // `crates/cli/src/main.rs`) — set before any thread spawns; RUST_BACKTRACE=0
-    // still opts out.
-    if std::env::var_os("RUST_BACKTRACE").is_none() {
-        std::env::set_var("RUST_BACKTRACE", "1");
-    }
-    // Capture any panic (use-after-GC tripwire, heap index, …) to .brood_crash_dump.
-    brood::cli_support::install_crash_dump();
+    brood::cli_support::install_panic_reporting();
     // A subcommand implemented in Brood (`std/tool/nest.blsp`, ADR-322) is routed there
     // BEFORE clap sees argv: clap would reject its flags, which it no longer knows. The list
     // is the routing table; a name is in exactly one of it and the `Cmd` enum.
@@ -397,17 +392,6 @@ fn run_blsp(max_parallel: Option<usize>, argv: Vec<String>) {
     if let brood::core::value::Value::Int(code) = result {
         std::process::exit(code as i32);
     }
-}
-
-/// The process-wide setup every command shares, before any interpreter exists.
-fn init_runtime(max_parallel: Option<usize>) {
-    if let Some(n) = max_parallel {
-        brood::process::set_max_parallel(n);
-    }
-    // Honour BROOD_MEM_LIMIT for every command (ADR-043).
-    brood::core::alloc::init_limits_from_env();
-    // Flag a stressed/retuned heap so a benchmark can't silently measure one.
-    brood::cli_support::warn_nondefault_gc_env();
 }
 
 fn run_main(cli: Cli) {

@@ -124,7 +124,16 @@
     (let (p (os/spawn "sh" ["-c" "printf %s \"$MYVAR\""] {:env {"MYVAR" "hello"}}))
       (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
         (assert= out "hello")
-        (os/close p)))))
+        (os/close p))))
+  ;; One reading of `:env` for every child: os/cmd removed a nil-valued variable and
+  ;; os/spawn raised on it.
+  :isolated (test "a nil :env value removes the variable, in os/spawn as in os/cmd"
+    (let (script "printf %s \"${HOME-unset}\""
+          p (os/spawn "sh" ["-c" script] {:env {"HOME" nil}}))
+      (let (out (receive ([:proc ^p d] d) (after *test-wait-ms* :timeout)))
+        (assert= out "unset")
+        (os/close p))
+      (assert= (get (os/cmd "sh" ["-c" script] {:env {"HOME" nil}}) :stdout) "unset"))))
 
 (describe "proc: text mode reassembles a multi-byte char split across a read boundary"
   :isolated

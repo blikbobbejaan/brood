@@ -725,11 +725,26 @@ fn wait_for_exit(child: &ChildHandle) -> Option<i32> {
 /// inherits ours. `env` entries are added on top of the inherited environment.
 /// The stdout/stderr readers deliver to `subscriber`. Returns the handle id.
 /// Errors if the program can't be spawned (not found, not executable, …).
+/// One `:env` entry of a child's options: a value to set, or `None` to remove the variable
+/// from the environment the child inherits.
+pub type EnvEntry = (String, Option<String>);
+
+/// Apply `env` on top of the inherited environment — the one reading of `:env` that
+/// `os/spawn`, `os/spawn-pty` and `os/cmd` share.
+pub fn apply_env(command: &mut Command, env: &[EnvEntry]) {
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+}
+
 pub fn spawn(
     prog: &str,
     args: &[String],
     cwd: Option<&str>,
-    env: &[(String, String)],
+    env: &[EnvEntry],
     subscriber: u64,
 ) -> std::io::Result<u64> {
     let mut command = Command::new(prog);
@@ -750,9 +765,7 @@ pub fn spawn(
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
-    for (k, v) in env {
-        command.env(k, v);
-    }
+    apply_env(&mut command, env);
     // Before the spawn: once there is a child, every failure would have to clean it up.
     let lifecycle = Arc::new(Lifecycle::new(2)?);
     let ChildThreads {
@@ -1193,7 +1206,7 @@ pub fn spawn_pty(
     prog: &str,
     args: &[String],
     cwd: Option<&str>,
-    env: &[(String, String)],
+    env: &[EnvEntry],
     subscriber: u64,
     cols: u16,
     rows: u16,
@@ -1219,10 +1232,9 @@ pub fn spawn_pty(
     if let Some(dir) = cwd {
         command.current_dir(dir);
     }
-    for (k, v) in env {
-        command.env(k, v);
-    }
-    // A terminal-oriented program wants to know it has one.
+    apply_env(&mut command, env);
+    // A terminal-oriented program wants to know it has one — unless `:env` named `TERM`,
+    // to set it or (with nil) to remove it.
     if !env.iter().any(|(k, _)| k == "TERM") && std::env::var_os("TERM").is_none() {
         command.env("TERM", "xterm-256color");
     }
@@ -1320,7 +1332,7 @@ pub fn spawn_pty(
     _prog: &str,
     _args: &[String],
     _cwd: Option<&str>,
-    _env: &[(String, String)],
+    _env: &[EnvEntry],
     _subscriber: u64,
     _cols: u16,
     _rows: u16,

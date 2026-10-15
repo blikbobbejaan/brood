@@ -226,7 +226,7 @@ process with piped stdio. This spawns an OS-level child process — distinct fro
 kernel green-process `spawn` (the actor primitive); it returns a subprocess handle, not a
 pid. An optional opts map tunes the child: :cwd (a string) sets its working directory,
 :env (a map of string->string) adds environment variables on top of the inherited
-environment. Its stdout/stderr arrive at the calling process as [:proc handle data] /
+environment, a nil value removing one. Its stdout/stderr arrive at the calling process as [:proc handle data] /
 [:proc-err handle data] messages, then two end messages:
 
 - `[:proc-exit handle code]` the moment the child itself exits — `code` is its exit

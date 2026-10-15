@@ -17713,3 +17713,15 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
 - `gui/focus`, `grab`, `maximize`, `minimize`, `drag-move`, `drag-resize` and `fullscreen`
   were seven copies of "is the window live, headless is a no-op, send the event". They are
   now one `dispatch`.
+
+## 2026-10-15 (later) — one reading of a child's options; one start-up for both binaries
+
+- **`builtins::subprocesses::child_options`** reads `:cwd`/`:env` for `os/spawn`,
+  `os/spawn-pty` and `os/cmd`, and `host::subprocess::apply_env` applies it. A nil `:env`
+  value removed the variable under `os/cmd` and raised a type error under `os/spawn`. It
+  now removes it everywhere, as `os/cmd` documented. A pty child given `TERM nil` keeps
+  `TERM` unset instead of getting the `xterm-256color` default. Test in `proc_test`
+  (sabotage-verified).
+- **`cli_support::install_panic_reporting` and `init_runtime`:** `brood` and `nest` each
+  spelled out the backtrace default, the crash dump, the worker cap, the memory limits and
+  the GC-config warning.

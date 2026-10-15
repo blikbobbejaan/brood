@@ -5,6 +5,7 @@
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
+use crate::host::subprocess::EnvEntry;
 
 use super::bytes::send_payload;
 use super::numeric::{arg, expect_int, expect_string};
@@ -22,7 +23,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(2, 3),
         Sig::with_rest(vec![string, list_ty.union(vec_ty)], map_ty, subprocess_ty),
         &["prog", "args", "opts"],
-        "Spawn prog (a string) with args (a list/vector of strings) as a persistent child process with piped stdio. An optional opts map tunes the child: :cwd (a string) sets its working directory, :env (a map of string->string) adds environment variables on top of the inherited environment. Its stdout/stderr arrive at the calling process as [:proc handle data] / [:proc-err handle data] messages; [:proc-exit handle code] arrives the moment the child itself exits, after the output it wrote before exiting (code is the exit status, or nil if signalled), even while a background job it started still holds its stdout; and [:proc-closed handle code] is the last message, once the child has exited AND its output is at end of file (or os/close ended it). Returns a subprocess handle. Throws if prog can't be spawned.",
+        "Spawn prog (a string) with args (a list/vector of strings) as a persistent child process with piped stdio. An optional opts map tunes the child: :cwd (a string) sets its working directory, :env (a map of string->string) adds environment variables on top of the inherited environment, a nil value removing one. Its stdout/stderr arrive at the calling process as [:proc handle data] / [:proc-err handle data] messages; [:proc-exit handle code] arrives the moment the child itself exits, after the output it wrote before exiting (code is the exit status, or nil if signalled), even while a background job it started still holds its stdout; and [:proc-closed handle code] is the last message, once the child has exited AND its output is at end of file (or os/close ended it). Returns a subprocess handle. Throws if prog can't be spawned.",
         proc_spawn);
     // The same seam under a pseudo-terminal, for a child that expects to BE in a
     // terminal — a REPL, a shell, anything that asks `isatty` and drops its prompt,
@@ -93,7 +94,37 @@ struct SpawnSpec {
     prog: String,
     argv: Vec<String>,
     cwd: Option<String>,
-    env: Vec<(String, String)>,
+    env: Vec<EnvEntry>,
+}
+
+/// The `:cwd` and `:env` of a child-process options map — read the one way `os/spawn`,
+/// `os/spawn-pty` and `os/cmd` share. `:env` entries go on top of the inherited
+/// environment, and a nil value removes the variable. (`os/cmd` removed and `os/spawn`
+/// raised on a nil, from two copies of this.)
+pub(super) fn child_options(
+    heap: &Heap,
+    who: &str,
+    opts: Value,
+) -> Result<(Option<String>, Vec<EnvEntry>), LispError> {
+    let Value::Map(opts) = opts else {
+        return Ok((None, Vec::new()));
+    };
+    let cwd = match heap.map_get(opts, value::kw("cwd")) {
+        Some(Value::Nil) | None => None,
+        Some(v) => Some(expect_string(heap, &format!("{who} :cwd"), v)?),
+    };
+    let mut env = Vec::new();
+    if let Some(Value::Map(e)) = heap.map_get(opts, value::kw("env")) {
+        for (k, v) in heap.map_entries(e) {
+            let name = expect_string(heap, &format!("{who} :env key"), k)?;
+            let value = match v {
+                Value::Nil => None,
+                v => Some(expect_string(heap, &format!("{who} :env value"), v)?),
+            };
+            env.push((name, value));
+        }
+    }
+    Ok((cwd, env))
 }
 
 fn spawn_spec(heap: &Heap, who: &str, args: &[Value]) -> Result<SpawnSpec, LispError> {
@@ -102,23 +133,7 @@ fn spawn_spec(heap: &Heap, who: &str, args: &[Value]) -> Result<SpawnSpec, LispE
     for a in heap.seq_items(arg(args, 1))? {
         argv.push(expect_string(heap, who, a)?);
     }
-    let mut cwd: Option<String> = None;
-    let mut env: Vec<(String, String)> = Vec::new();
-    if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, value::kw("cwd")) {
-            if !matches!(v, Value::Nil) {
-                cwd = Some(expect_string(heap, &format!("{} :cwd", who), v)?);
-            }
-        }
-        if let Some(Value::Map(e)) = heap.map_get(opts, value::kw("env")) {
-            for (k, v) in heap.map_entries(e) {
-                env.push((
-                    expect_string(heap, &format!("{} :env key", who), k)?,
-                    expect_string(heap, &format!("{} :env value", who), v)?,
-                ));
-            }
-        }
-    }
+    let (cwd, env) = child_options(heap, who, arg(args, 2))?;
     Ok(SpawnSpec {
         prog,
         argv,

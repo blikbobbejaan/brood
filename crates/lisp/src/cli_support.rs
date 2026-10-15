@@ -48,6 +48,29 @@ fn fmt_utc_ms(ms: u128) -> String {
     format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02} UTC")
 }
 
+/// The first thing `brood`'s and `nest`'s `main` do: default to a backtrace on panic (an
+/// explicit `RUST_BACKTRACE=0` still wins) — a bare panic from a heap index or a
+/// use-after-GC tripwire is far easier to triage with one — and append every panic to
+/// `.brood_crash_dump` ([`install_crash_dump`]). Call before any thread spawns: setting an
+/// environment variable is only sound while the process is single-threaded.
+pub fn install_panic_reporting() {
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
+    install_crash_dump();
+}
+
+/// The process-wide setup every run shares, before any interpreter exists: the worker cap,
+/// `BROOD_MEM_LIMIT`/`BROOD_MEM_SOFT_LIMIT` (ADR-043), and a warning when the heap is
+/// stressed or retuned, so a benchmark cannot silently measure one.
+pub fn init_runtime(max_parallel: Option<usize>) {
+    if let Some(n) = max_parallel {
+        crate::process::set_max_parallel(n);
+    }
+    crate::core::alloc::init_limits_from_env();
+    warn_nondefault_gc_env();
+}
+
 /// The process arguments after argv[0], lossily decoded. For a binary that reads argv
 /// before clap validates it: `std::env::args()` panics outright on a non-UTF-8
 /// argument, which is a filename the OS allows.
