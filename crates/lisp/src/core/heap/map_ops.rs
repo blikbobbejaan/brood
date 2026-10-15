@@ -913,27 +913,17 @@ impl Heap {
         Value::bigint(BigIntId::local_gen(idx, self.local_epoch))
     }
 
-    /// Resolve a bignum handle to its `&num_bigint::BigInt`. LOCAL is the common
-    /// case; RUNTIME holds a bignum `def`'d to a global or baked into shared code;
-    /// PRELUDE a bignum literal frozen into the prelude (none today, but the path
-    /// mirrors `string`). Honours the GC epoch tripwire like every leaf.
-    pub fn bigint(&self, id: BigIntId) -> SlabRef<'_, num_bigint::BigInt> {
-        match id.region() {
-            LOCAL if id.is_old() => {
-                local_gc_check!(old, self, id, "bigint");
-                SlabRef::direct(&self.old().bigints[id.index()])
-            }
-            LOCAL => {
-                local_gc_check!(nursery, self, id, "bigint");
-                SlabRef::direct(&self.local.bigints[id.index()])
-            }
-            PRELUDE => SlabRef::direct(&self.prelude.slabs.bigints[id.index()]),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.bigints.get(id.index()).expect("runtime bigint handle")
-            }),
-            _ => unreachable!("invalid handle region"),
-        }
-    }
+    region_ref!(
+        /// Resolve a bignum handle to its `&num_bigint::BigInt`. LOCAL is the common
+        /// case; RUNTIME holds a bignum `def`'d to a global or baked into shared code;
+        /// PRELUDE a bignum literal frozen into the prelude (none today, but the path
+        /// mirrors `string`). Honours the GC epoch tripwire like every leaf.
+        bigint,
+        BigIntId,
+        bigints,
+        num_bigint::BigInt,
+        "runtime bigint handle"
+    );
 
     /// Materialise a `Value::Decimal` into LOCAL from an owned `bigdecimal::BigDecimal`
     /// (mirrors [`alloc_bigint`](Self::alloc_bigint)). Unlike a bignum there is no
@@ -944,25 +934,15 @@ impl Heap {
         Value::decimal(DecimalId::local_gen(idx, self.local_epoch))
     }
 
-    /// Resolve a decimal handle to its `&bigdecimal::BigDecimal` (mirrors
-    /// [`bigint`](Self::bigint)). Honours the GC epoch tripwire like every leaf.
-    pub fn decimal(&self, id: DecimalId) -> SlabRef<'_, bigdecimal::BigDecimal> {
-        match id.region() {
-            LOCAL if id.is_old() => {
-                local_gc_check!(old, self, id, "decimal");
-                SlabRef::direct(&self.old().decimals[id.index()])
-            }
-            LOCAL => {
-                local_gc_check!(nursery, self, id, "decimal");
-                SlabRef::direct(&self.local.decimals[id.index()])
-            }
-            PRELUDE => SlabRef::direct(&self.prelude.slabs.decimals[id.index()]),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.decimals.get(id.index()).expect("runtime decimal handle")
-            }),
-            _ => unreachable!("invalid handle region"),
-        }
-    }
+    region_ref!(
+        /// Resolve a decimal handle to its `&bigdecimal::BigDecimal` (mirrors
+        /// [`bigint`](Self::bigint)). Honours the GC epoch tripwire like every leaf.
+        decimal,
+        DecimalId,
+        decimals,
+        bigdecimal::BigDecimal,
+        "runtime decimal handle"
+    );
 
     /// Materialise an exact `Value::Ratio` from an owned `num_rational::BigRational`
     /// (mirrors [`alloc_decimal`](Self::alloc_decimal)). Enforces the normalize
@@ -980,25 +960,15 @@ impl Heap {
         Value::ratio(RatioId::local_gen(idx, self.local_epoch))
     }
 
-    /// Resolve a ratio handle to its `&num_rational::BigRational` (mirrors
-    /// [`decimal`](Self::decimal)). Honours the GC epoch tripwire like every leaf.
-    pub fn ratio(&self, id: RatioId) -> SlabRef<'_, num_rational::BigRational> {
-        match id.region() {
-            LOCAL if id.is_old() => {
-                local_gc_check!(old, self, id, "ratio");
-                SlabRef::direct(&self.old().ratios[id.index()])
-            }
-            LOCAL => {
-                local_gc_check!(nursery, self, id, "ratio");
-                SlabRef::direct(&self.local.ratios[id.index()])
-            }
-            PRELUDE => SlabRef::direct(&self.prelude.slabs.ratios[id.index()]),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.ratios.get(id.index()).expect("runtime ratio handle")
-            }),
-            _ => unreachable!("invalid handle region"),
-        }
-    }
+    region_ref!(
+        /// Resolve a ratio handle to its `&num_rational::BigRational` (mirrors
+        /// [`decimal`](Self::decimal)). Honours the GC epoch tripwire like every leaf.
+        ratio,
+        RatioId,
+        ratios,
+        num_rational::BigRational,
+        "runtime ratio handle"
+    );
 
     /// Read any *rationalisable* exact number (`Int`, `BigInt`, or `Ratio`) as an
     /// owned `num_rational::BigRational`, for the ratio arithmetic path. Returns
@@ -1023,26 +993,16 @@ impl Heap {
         Value::bytes(BytesId::local_gen(idx, self.local_epoch))
     }
 
-    /// Resolve a bytes handle to its `&Arc<SharedBlob>` (mirrors
-    /// [`bigint`](Self::bigint)). Honours the GC epoch tripwire. The
-    /// caller reads `.as_bytes()` — raw bytes, never decoded as UTF-8 text.
-    pub fn bytes(&self, id: BytesId) -> SlabRef<'_, Arc<SharedBlob>> {
-        match id.region() {
-            LOCAL if id.is_old() => {
-                local_gc_check!(old, self, id, "bytes");
-                SlabRef::direct(&self.old().bytes[id.index()])
-            }
-            LOCAL => {
-                local_gc_check!(nursery, self, id, "bytes");
-                SlabRef::direct(&self.local.bytes[id.index()])
-            }
-            PRELUDE => SlabRef::direct(&self.prelude.slabs.bytes[id.index()]),
-            RUNTIME => self.rt_slab_ref(id.code_gen(), |c| {
-                c.bytes.get(id.index()).expect("runtime bytes handle")
-            }),
-            _ => unreachable!("invalid handle region"),
-        }
-    }
+    region_ref!(
+        /// Resolve a bytes handle to its `&Arc<SharedBlob>` (mirrors
+        /// [`bigint`](Self::bigint)). Honours the GC epoch tripwire. The
+        /// caller reads `.as_bytes()` — raw bytes, never decoded as UTF-8 text.
+        bytes,
+        BytesId,
+        bytes,
+        Arc<SharedBlob>,
+        "runtime bytes handle"
+    );
 
     /// Read any integer `Value` (`Int` or `BigInt`) as an owned
     /// `num_bigint::BigInt`, promoting an `Int`. The bridge the arithmetic

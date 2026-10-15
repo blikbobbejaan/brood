@@ -57,7 +57,8 @@ use crate::error::LispError;
 /// all-three-region reference accessors share this; `pair` (returns by value)
 /// and the region-restricted `native`/`env_frame` stay hand-written.
 macro_rules! region_ref {
-    ($name:ident, $id:ty, $field:ident, $t:ty, $what:literal) => {
+    ($(#[$attribute:meta])* $name:ident, $id:ty, $field:ident, $t:ty, $what:literal) => {
+        $(#[$attribute])*
         pub fn $name(&self, id: $id) -> SlabRef<'_, $t> {
             match id.region() {
                 LOCAL if id.is_old() => {
