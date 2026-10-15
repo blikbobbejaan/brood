@@ -1746,3 +1746,28 @@ build, where a `usize` is four bytes. The JIT that reads +0/+8/+16 exists only o
 so the pin is now gated on `target_pointer_width = "64"`. Lesson: a `const` assertion about
 a layout must run the wasm check too.
 
+## 2026-10-15 (later) — two bugs (KI-262, KI-263), one formatter walk, the 2024 edition
+
+**KI-262.** `links::notify_peers` delivered a dead process's `[:EXIT]`s after releasing
+`LINKS`, so an `unlink` and a zero-timeout flush could both miss one that landed later
+(10-93 per 80 000 rounds). That is the link half of KI-213, and the deliveries now happen
+under the lock, as the monitor side's do. `process.rs` gains the one lock-order table that
+had been spread across ten files' comments. Guard: `tests/unlink_race.rs`.
+
+**The formatter's four child walkers** now read one item list (`layout-items`). The output
+is byte-identical on 2,100 inputs: every tracked file as written, unindented, with doubled
+newlines, and shifted right. **KI-263** was found doing that: the newline gap restarted at 0
+after a trailing comment, so `nest format` deleted the blank line under any line ending in
+one, top level included. It restarts at 1 now, and no tracked file changes.
+
+**The 2024 edition.** `unsafe fn` bodies are wrapped, the callbacks are
+`#[unsafe(no_mangle)]`, `set_var` carries SAFETY notes, `gen` became `generation`, and 356
+nested `if let`s are chains. rustfmt stays on `style_edition = "2021"`, so a whole-tree
+reformat can be its own commit. The edition build also found that `dispatch_identity_agrees`
+had not linked since its callback was deleted. Clippy never links, so nothing had said so.
+
+Also: one run-cap number; `bench.sh --quick` replaced `quickbench.sh`; `test-light` is the
+test target with knobs; tests for twelve public functions nothing referenced; the boot paths
+share their head and tail; a refused audio thread is retried; the scaffold's templates are
+data.
+
