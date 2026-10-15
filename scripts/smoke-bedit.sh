@@ -26,7 +26,7 @@
 #   NEST        which `nest` to use (default: the NEWEST of target/debug/nest,
 #               target/release/nest, target/release-fast/nest — a stale binary fails
 #               by agreeing with the baseline, so the choice and its build sha are printed)
-#   SMOKE_ULIMIT_KB  the `ulimit -v` cap in KB (default 16000000)
+#   SMOKE_ULIMIT_KB  the `ulimit -v` cap in KB (default: RUN_CAP_KB in scripts/lib/run-cap.sh)
 #
 # `--require` makes a missing BEDIT_DIR a failure (CI); by default it is a note and
 # exit 0, so `make green-all` still works on a machine without the sibling checkout.
@@ -54,7 +54,8 @@ done
 ci_yml=$root/.github/workflows/ci.yml
 
 BEDIT_DIR=${BEDIT_DIR:-$root/../bedit}
-SMOKE_ULIMIT_KB=${SMOKE_ULIMIT_KB:-16000000}
+. "$root/scripts/lib/run-cap.sh"
+SMOKE_ULIMIT_KB=${SMOKE_ULIMIT_KB:-$RUN_CAP_KB}
 
 fail=0
 red()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail+1)); }

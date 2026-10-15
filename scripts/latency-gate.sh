@@ -12,6 +12,7 @@
 # `:long-schedule`, so its count reads 0 — `BROOD_STALL_MS=1` saw nearly one per fat request.)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+. scripts/lib/run-cap.sh
 RUNS="${1:-5}"
 BIN="${BROOD:-target/release-fast/brood}"
 MAX_LONG="${MAX_LONG:-200}"
@@ -21,7 +22,7 @@ MAX_P99_US="${MAX_P99_US:-250}"
 fail=0
 worst_p99=0
 for i in $(seq 1 "$RUNS"); do
-    out=$( (ulimit -v 16000000; BENCH_N="${BENCH_N:-20000}" timeout 300 "$BIN" stress/latency_probe.blsp) 2>&1)
+    out=$( (ulimit -v "$RUN_CAP_KB"; BENCH_N="${BENCH_N:-20000}" timeout 300 "$BIN" stress/latency_probe.blsp) 2>&1)
     metric() { printf '%s\n' "$out" | sed -n "s/^#metric $1=\(-*[0-9][0-9]*\)$/\1/p" | tail -1; }
     p50=$(metric p50_us); p99=$(metric p99_us); p999=$(metric p999_us); max=$(metric max_us)
     long=$(metric long_schedules)

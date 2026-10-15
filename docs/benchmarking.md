@@ -16,7 +16,7 @@ separate.
 
 On a loaded or low-powered machine, **absolute** benchmark times drift ±10–20%
 between separate process runs. So comparing two builds (a git worktree A/B, or
-two `quickbench` invocations) is measuring background load, not your change. This
+two `make quickbench` invocations) is measuring background load, not your change. This
 is not hypothetical: it cost an afternoon — a VM change first looked like a
 flat-to-regression across separately-loaded runs, then a same-but-noisy bench read
 as a big win, before a load-robust measurement settled it.
@@ -71,7 +71,7 @@ that `defseq_map` replaced got caught — its `letrec_loop` predecessor deferred
 - Add a workload to the grid: a `#[divan::bench(args = engine_grid![...])]` fn in
   `crates/lisp/benches/eval.rs` (copy `letrec_loop`). That's what makes it
   measurable both ways in one process.
-- `scripts/quickbench.sh` (3 samples) stays for a *throwaway* directional read of
+- `make quickbench` (`scripts/bench.sh --quick`, 3 samples) stays for a *throwaway* directional read of
   a single configuration; `scripts/bench.sh` archives a full headline run to
   `docs/benchmarks/<timestamp>.md` — save that for a **quiet** machine.
 

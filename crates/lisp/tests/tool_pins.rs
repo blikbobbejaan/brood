@@ -100,3 +100,42 @@ fn no_workflow_installs_a_floating_nextest() {
         );
     }
 }
+
+/// The run cap is one number (`scripts/lib/run-cap.sh`); it was once hard-coded in five
+/// places, so a change to it would have missed some. Every place that applies it reads it.
+#[test]
+fn the_run_cap_is_spelled_once() {
+    let cap = include_str!("../../../scripts/lib/run-cap.sh")
+        .lines()
+        .find_map(|line| line.strip_prefix("RUN_CAP_KB="))
+        .expect("scripts/lib/run-cap.sh defines RUN_CAP_KB");
+    let readers = [
+        ("Makefile", include_str!("../../../Makefile")),
+        (
+            "scripts/git-hooks/pre-push",
+            include_str!("../../../scripts/git-hooks/pre-push"),
+        ),
+        (
+            "scripts/tier-audit.sh",
+            include_str!("../../../scripts/tier-audit.sh"),
+        ),
+        (
+            "scripts/latency-gate.sh",
+            include_str!("../../../scripts/latency-gate.sh"),
+        ),
+        (
+            "scripts/smoke-bedit.sh",
+            include_str!("../../../scripts/smoke-bedit.sh"),
+        ),
+    ];
+    for (file, text) in readers {
+        assert!(
+            !text.contains(cap),
+            "{file} hard-codes the run cap {cap}; read RUN_CAP_KB from scripts/lib/run-cap.sh"
+        );
+        assert!(
+            text.contains("run-cap.sh"),
+            "{file} no longer reads scripts/lib/run-cap.sh — where does its cap come from?"
+        );
+    }
+}

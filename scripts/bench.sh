@@ -4,8 +4,13 @@
 # meaningful alongside the machine and commit they came from — so every run is
 # stamped with arch, CPU, toolchain, and git state.
 #
-# Usage: scripts/bench.sh [extra args passed through to the bench binary]
+# Usage: scripts/bench.sh [--quick] [extra args passed through to the bench binary]
 #   e.g. scripts/bench.sh sum_tail      # only run benches matching "sum_tail"
+#
+# `--quick` is the directional read between changes ("did that get faster?"): 3 samples,
+# 0.3 s each, the whole run in ~10 s, and NOTHING archived — numbers from so few samples
+# are not reproducible enough to keep. (It replaced a separate `quickbench.sh`, which had
+# not forced debug assertions off as a comparable run must.)
 set -euo pipefail
 
 root="$(git rev-parse --show-toplevel)"
@@ -47,6 +52,18 @@ if printf '%s' "${RUSTFLAGS:-}" | grep -q 'debug-assertions=on'; then
   echo "scripts/bench.sh: ambient RUSTFLAGS has debug-assertions=on; forcing it OFF for this run." >&2
 else
   da_note="off (forced)"
+fi
+
+if [ "${1:-}" = "--quick" ]; then
+  shift
+  # The two named bench targets one at a time, so divan's flags do not leak into the lib's
+  # unit-test harness (`cargo bench --benches` passes them to every target).
+  for bench in eval library; do
+    NO_COLOR=1 RUSTFLAGS="$bench_rustflags" cargo bench --quiet --bench "$bench" -- \
+      --sample-count 3 --max-time 0.3 "$@" 2>&1 \
+      | sed -E 's/\x1b\[[0-9;]*m//g'
+  done
+  exit 0
 fi
 
 # --- run the benchmarks, capturing plain-text output ----------------------

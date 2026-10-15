@@ -95,7 +95,8 @@ BINARIES := brood nest brood-lsp
 # capped"): one runaway dies in seconds with its panic site named instead of eating the box.
 # 16 GB, not less — the runtime reserves ~3 GB before doing any work. Put it in front of the
 # RUN step only, never a build: the linker inherits it and dies with `LLVM ERROR: out of memory`.
-RUN_CAP := ulimit -v 16000000;
+RUN_CAP_KB := $(shell sed -n 's/^RUN_CAP_KB=//p' scripts/lib/run-cap.sh)
+RUN_CAP := ulimit -v $(RUN_CAP_KB);
 
 # The first recipe line of every target that runs the suite through cargo-nextest.
 REQUIRE_NEXTEST := @command -v cargo-nextest >/dev/null 2>&1 || { echo ">>> cargo-nextest not found — run 'make ensure-nextest' (or install from https://nexte.st)"; exit 1; }
@@ -319,7 +320,7 @@ benchmark: ## Run benchmarks; archive results to docs/benchmarks/<timestamp>.md
 	./scripts/bench.sh $(ARGS)
 
 quickbench: ## Fast (~10s) benchmark for iteration — no archive, few samples
-	./scripts/quickbench.sh $(ARGS)
+	./scripts/bench.sh --quick $(ARGS)
 
 ab: ## A/B the working tree against a git ref on the cross-language rows: make ab BASE=<ref> ROWS="fib pfib" N=7
 	./scripts/ab-bench.sh $(if $(BASE),-b $(BASE),) $(if $(N),-n $(N),) $(ROWS) $(ARGS)

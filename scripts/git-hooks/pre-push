@@ -114,7 +114,8 @@ if [ -z "$nest_bin" ]; then
     exit 0
 fi
 # Build uncapped, run capped (CLAUDE.md): one runaway is the whole spike.
-ulimit -v 16000000 2>/dev/null
+. scripts/lib/run-cap.sh
+ulimit -v "$RUN_CAP_KB" 2>/dev/null
 
 # ---- 5. nest format --check --------------------------------------------------------
 if [ "$blsp_touched" -gt 0 ]; then

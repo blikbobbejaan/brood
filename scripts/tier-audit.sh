@@ -26,6 +26,7 @@
 # release brood under target/ (or BROOD=); a missing checkout is a note, not a failure.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/scripts/lib/run-cap.sh"
 BENCH="${BENCH_DIR:-$("$ROOT/scripts/bench-dir.sh" "$ROOT")}"
 BIN="${BROOD:-$ROOT/target/release-fast/brood}"
 if [ ! -d "$BENCH/bench/brood" ]; then
@@ -37,7 +38,7 @@ for f in "$BENCH"/bench/brood/*.blsp; do
   row="$(basename "$f" .blsp)"
   case "$row" in http|startup) continue;; esac
   rows=$((rows+1))
-  hits="$( ( ulimit -v 16000000; BROOD_JIT_BAIL_TRACE=1 timeout 180 "$BIN" "$f" 2>&1 >/dev/null ) \
+  hits="$( ( ulimit -v "$RUN_CAP_KB"; BROOD_JIT_BAIL_TRACE=1 timeout 180 "$BIN" "$f" 2>&1 >/dev/null ) \
     | grep -E 'deopt-thrash-latched|suspend-latched|join-depth-mismatch|prepass-unmodelled-inst|cranelift-define-function' \
     | sed 's/ inlined=.*//; s/\[jit-bail\] //' | sort | uniq -c )"
   if [ -n "$hits" ]; then
