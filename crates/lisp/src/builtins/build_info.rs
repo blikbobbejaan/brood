@@ -32,6 +32,13 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Was this binary built with the stdlib startup image compiled in (`./configure --with-stdimage`, the default)? False for a build that must never touch a cache directory. The per-run switch is `BROOD_NO_STDIMAGE=1`; this is the build-time one, the same two layers the JIT has.",
         build_stdimage);
     primitives.def(
+        "%cache-dir",
+        Arity::exact(0),
+        Sig::nullary(string.union(nil_ty)),
+        &[],
+        "Brood's cache directory — `$XDG_CACHE_HOME/brood`, else `$HOME/.cache/brood` (a relative or empty `XDG_CACHE_HOME` ignored, as the XDG spec says) — or nil when neither gives one. The same rule the kernel's own caches use, so the stdlib image is written where every process looks for it.",
+        cache_dir);
+    primitives.def(
         "system/stdlib-id",
         Arity::exact(0),
         Sig::nullary(string),
@@ -139,6 +146,14 @@ pub(super) fn build_id(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// confounding the build.
 pub(super) fn build_stdimage(_: &[Value], _: EnvId, _heap: &mut Heap) -> LispResult {
     Ok(Value::Bool(cfg!(feature = "stdimage")))
+}
+
+/// `(%cache-dir)` — [`crate::boot::cache_dir`], for the Brood side's caches.
+pub(super) fn cache_dir(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    Ok(match crate::boot::cache_dir() {
+        Some(dir) => heap.alloc_string(&dir.to_string_lossy()),
+        None => Value::Nil,
+    })
 }
 
 pub(super) fn stdlib_id(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {

@@ -89,19 +89,15 @@ pub(crate) fn resolve_runtime(runtime: Option<&str>, target: Option<&str>) -> Ve
 /// Where a prebuilt lean runtime for `triple` lives in the local cache:
 /// `$XDG_CACHE_HOME/brood/runtimes/<triple>/brood` (falling back to
 /// `~/.cache`; `brood.exe` for Windows triples). `None` if no cache base can
-/// be determined. Mirrors `prelude_source_path` in `crates/lisp/src/lib.rs`.
+/// be determined ([`brood::boot::cache_dir`]).
 pub(crate) fn runtime_cache_path(triple: &str) -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    let dir = brood::boot::cache_dir()?;
     let bin = if triple.contains("windows") {
         "brood.exe"
     } else {
         "brood"
     };
-    Some(base.join("brood/runtimes").join(triple).join(bin))
+    Some(dir.join("runtimes").join(triple).join(bin))
 }
 
 /// Build the single lean `brood` runtime from the workspace this `nest` was

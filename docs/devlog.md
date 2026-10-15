@@ -17691,3 +17691,15 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
   cost — it should be identical (the same steps, inlined), but per `CLAUDE.md` the A/B
   belongs on the benchmark machine.
 - **KI-256:** `Message::for_each_child` fixes `message_bytes` ignoring closures.
+
+## 2026-10-15 (later) — one cache directory (KI-257); `Heap::new` is `with_regions`
+
+- **`boot::cache_dir`** replaces seven copies of "where Brood's cache lives". They
+  disagreed on a relative `XDG_CACHE_HOME`, and the stdlib image followed the Brood copies
+  (KI-257). The Brood side asks the kernel through `%cache-dir`.
+- **`Heap::new` is `with_regions`** plus its four GC overrides. The two constructors had
+  been written out field by field, about 90 each, differing in six; a field initialised
+  differently in one was invisible.
+- Two parameters named `seq/keep` (`project-check/project-cache-prune`,
+  `editor/buffer/collapse-whitespace`) were left behind by a rename wave that rewrote `keep`.
+  They bound fine as locals, which is why nothing noticed. Renamed.

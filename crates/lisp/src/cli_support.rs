@@ -744,14 +744,10 @@ pub const WALK_FLAGS: &[&str] = &[
 /// under `BROOD_NO_CHECK_CACHE`, or with no cache base to write under.
 fn run_check_cache_path(heap: &crate::core::heap::Heap, src: &str) -> Option<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
-    use std::path::PathBuf;
     if std::env::var_os("BROOD_NO_CHECK_CACHE").is_some() {
         return None;
     }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    let dir = crate::boot::cache_dir()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RUN_CHECK_CACHE_MAGIC.hash(&mut h);
     crate::builtins::build_id_string().hash(&mut h);
@@ -772,11 +768,7 @@ fn run_check_cache_path(heap: &crate::core::heap::Heap, src: &str) -> Option<std
         (name, v).hash(&mut h);
     }
     src.hash(&mut h);
-    Some(
-        base.join("brood")
-            .join("run-check")
-            .join(format!("{:016x}", h.finish())),
-    )
+    Some(dir.join("run-check").join(format!("{:016x}", h.finish())))
 }
 
 /// Best-effort prune of stale entries — every distinct program text a box ever ran leaves

@@ -28,14 +28,9 @@
   (:use file))
 
 (defn- cache-dir ()
-  "`$XDG_CACHE_HOME/brood` (or `~/.cache/brood`), or nil when neither is set."
-  (let (xdg (os/env "XDG_CACHE_HOME")
-        home (os/env "HOME")
-        base (cond
-               (and xdg (not (= xdg ""))) xdg
-               (and home (not (= home ""))) (path/join home ".cache")
-               else nil))
-    (when base (path/join base "brood"))))
+  "`$XDG_CACHE_HOME/brood` (or `~/.cache/brood`), or nil when neither is set — the kernel's
+rule, so the image is written where every process's boot looks for it."
+  (%cache-dir))
 
 (defn image-path ()
   "Where this binary's stdlib image lives, or nil if there is no cache directory.

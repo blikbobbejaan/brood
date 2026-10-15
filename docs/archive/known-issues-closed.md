@@ -13745,3 +13745,22 @@ stop early) keep their own match, over the same set, as its doc says. **Guard.**
 value, an optional default and a body of 100 kB each. Sabotage (the closure arm of
 `for_each_child` disabled) reds it with "a captured value of 100 kB went uncounted: 40
 bytes vs 40".
+
+## KI-257 — with a relative `XDG_CACHE_HOME` the stdlib image went where the kernel's caches did not ✅ FIXED 2026-10-15
+
+**Symptom.** With `XDG_CACHE_HOME=relative/cache`, `stdimage/image-path` answered
+`relative/cache/brood/std-image-….bin` (relative to whatever the cwd was), while the
+prelude image, the run-check cache and `nest release`'s runtimes went to
+`$HOME/.cache/brood`. **Cause.** "Where Brood's cache lives" was written out seven times:
+four in Rust (`boot.rs` twice, `cli_support.rs`, `nest/src/release.rs`) and three in Brood
+(the prelude's `%std-image-path`, `stdimage/cache-dir`, `project-check/project-cache-dir`).
+The Rust copies ignored a relative `XDG_CACHE_HOME`, as the XDG spec requires, but used an
+empty `HOME`. The Brood copies used a relative `XDG_CACHE_HOME` and ignored an empty
+`HOME`. So the stdlib image's location depended on the cwd. **Why it survived.** Every test
+sets an absolute `XDG_CACHE_HOME`. **Fix.** `boot::cache_dir` is the one rule (relative or
+empty `XDG_CACHE_HOME` ignored, empty `HOME` gives nothing). The Rust callers use it, and
+the Brood side asks it through `%cache-dir`. **Guard.** `crates/cli/tests/cache_dir.rs`
+runs `brood` with a relative and with an empty `XDG_CACHE_HOME` and requires the kernel's
+directory and the stdlib image path to agree. Sabotage (the old Brood rule restored in
+`%std-image-path`) reds it with "the stdlib image must live in the same directory, got
+relative/cache/brood/std-image-…".

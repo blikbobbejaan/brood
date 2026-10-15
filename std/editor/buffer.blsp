@@ -1512,14 +1512,14 @@ the original text out of it before touching anything."
       (text/skip-forward rope p *horizontal-space* true)]))
 (sig whitespace-run-at (buffer -> (tuple int int)))
 
-(defn collapse-whitespace (buf seq/keep)
+(defn collapse-whitespace (buf keep)
   "The run of spaces/tabs SURROUNDING point replaced by `keep` — `\" \"` for Emacs's
 `just-one-space` (M-SPC), `\"\"` for `delete-horizontal-space` (M-\\), and the squeeze
 step of `fixup-whitespace`. Scans both directions from point but never across a
 newline, so it collapses the gap you are standing in and leaves the line structure
 alone. Point lands just after `keep`."
   (let ([lo hi] (whitespace-run-at buf))
-    (replace-region buf lo hi seq/keep)))
+    (replace-region buf lo hi keep)))
 
 (def- buffer-close-delimiters [")" "]" "}"])
 (def- buffer-open-delimiters ["(" "[" "{"])

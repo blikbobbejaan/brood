@@ -905,14 +905,9 @@ Deliberately NOT `system/build-id`, which embeds the running binary's mtime: tha
   ;; nil for a build configured WITHOUT the image (`./configure --without-stdimage`),
   ;; which is the single choke point for that choice: no path means nothing installs and
   ;; nothing is written, so such a build never touches a cache directory at all.
-  (let (xdg (%getenv "XDG_CACHE_HOME")
-        home (%getenv "HOME")
-        base (cond
-               (not (%build-stdimage?)) nil
-               (and xdg (not (= xdg ""))) xdg
-               (and home (not (= home ""))) (str home "/.cache")
-               else nil))
-    (when base (str base "/brood/std-image-" (system/stdlib-id) ".bin"))))
+  ;; `%cache-dir` is the kernel's own rule, so this path agrees with every Rust-side cache.
+  (let (dir (when (%build-stdimage?) (%cache-dir)))
+    (when dir (str dir "/std-image-" (system/stdlib-id) ".bin"))))
 
 (defn- %std-image-install ()
   "Install this binary's stdlib image as an additional feature source, if one exists and is

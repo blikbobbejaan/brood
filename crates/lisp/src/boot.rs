@@ -112,17 +112,27 @@ pub fn boot_source() -> &'static str {
 /// inside the file is checked too, so a hash collision cannot serve another build's image.
 fn prelude_image_path() -> Option<std::path::PathBuf> {
     use std::hash::{Hash, Hasher};
-    use std::path::PathBuf;
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     builtins::build_id_string().hash(&mut h);
-    Some(
-        base.join("brood")
-            .join(format!("prelude-expanded-{:016x}.img", h.finish())),
-    )
+    Some(cache_dir()?.join(format!("prelude-expanded-{:016x}.img", h.finish())))
+}
+
+/// Brood's cache directory: `$XDG_CACHE_HOME/brood`, else `$HOME/.cache/brood`; `None`
+/// when neither gives one. A relative or empty `XDG_CACHE_HOME` is ignored, as the XDG
+/// spec says, and an empty `HOME` gives nothing.
+///
+/// The one rule for every cache Brood writes — the prelude image, its source copy, the
+/// run-check cache, `nest release`'s runtimes — and `std/tool/stdimage.blsp`'s
+/// `cache-dir` mirrors it. Five hand copies disagreed on relative and empty values, so
+/// one process could look for the stdlib image where another never wrote it.
+pub fn cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let set = |name| std::env::var_os(name).filter(|value| !value.is_empty());
+    set("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| set("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .map(|base| base.join("brood"))
 }
 
 /// Best-effort prune of OTHER builds' prelude images: keep the `MAX_KEEP` most recent,
@@ -420,13 +430,8 @@ pub fn is_prelude_source(file: &str) -> bool {
 /// navigation. Returns `None` only if neither can be written; the caller treats
 /// that as "stdlib navigation unavailable" and carries on.
 pub(crate) fn prelude_source_path() -> Option<String> {
-    use std::path::PathBuf;
-    let cache_base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")));
-    cache_base
-        .and_then(|base| write_prelude_copy(&base.join("brood")))
+    cache_dir()
+        .and_then(|dir| write_prelude_copy(&dir))
         .or_else(temp_dir_prelude_copy)
 }
 
