@@ -38,6 +38,15 @@ use super::walk::list_items;
 /// Curated stdlib sigs, keyed by interned `Symbol` (a `SymbolMap` probe, no spelling
 /// allocated per call). The last authored source [`sig_of`] consults — see its doc for
 /// the order — so it holds only names no other source types.
+///
+/// **Why these are not `(sig …)` lines in the prelude.** The original reason — the prelude
+/// could not carry a signature at all — no longer holds (it carries several). What does:
+/// a prelude `sig` is a runtime CONTRACT wherever contracts are armed (the `nest run` /
+/// `nest test` default, ADR-381), wrapping the name in a checking shim at boot. The names
+/// here are the hottest calls in the language (`map`, `fold`, `count`, `get`, `=`, `not`),
+/// so moving one is a per-call cost to be measured on the benchmark machine first, and a
+/// name the macro expander calls can blow its stack budget once wrapped (KI-81, why
+/// `reverse`/`append` are exempt). A curated entry is a checker fact with no runtime cost.
 static CURATED_SIGS: LazyLock<SymbolMap<Sig>> = LazyLock::new(|| {
     #[allow(non_upper_case_globals)]
     const int: Ty = Ty::of(Tag::Int);
@@ -4004,10 +4013,9 @@ pub(super) fn live_private_functions(
     )
 }
 
-/// Every curated name, for the construction gate that holds the curated skip sound
-/// (`check/tests/image_sigs.rs::a_curated_name_reads_the_same_loaded_or_not`). Test-only:
-/// nothing but that gate reads it, and `-D dead-code` under `--all-features` is CI's clippy.
-#[cfg(test)]
+/// Every curated name — for the construction gate that holds the curated skip sound
+/// (`check/tests/image_sigs.rs::a_curated_name_reads_the_same_loaded_or_not`) and for
+/// `tests/curated_sigs_exist.rs`, which once found the keys by string-splitting this file.
 pub(super) fn curated_names() -> Vec<Symbol> {
     CURATED_SIGS.keys().copied().collect()
 }

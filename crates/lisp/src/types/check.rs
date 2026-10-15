@@ -140,6 +140,17 @@ pub(crate) use sigs::cover_name_of;
 pub fn is_curated(name: &str) -> bool {
     sigs::curated_sig(value::intern(name)).is_some()
 }
+
+/// Every name with a curated signature — for `tests/curated_sigs_exist.rs`, which holds each
+/// to existing (a curated name is KNOWN to the checker, so a stale one silences its unbound
+/// lint).
+#[doc(hidden)]
+pub fn curated_sig_names() -> Vec<String> {
+    sigs::curated_names()
+        .into_iter()
+        .map(|sym| value::symbol_name_ref(sym).to_string())
+        .collect()
+}
 mod std_index;
 pub(crate) use std_index::{module_signature_index, std_signature_index};
 mod walk;

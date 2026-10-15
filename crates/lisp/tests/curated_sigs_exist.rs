@@ -11,47 +11,13 @@
 
 use brood::Interp;
 
-/// Names the checker curates, read out of the source of truth rather than re-listed here —
-/// a hand-copied list would drift from the table it is meant to police.
-fn curated_names() -> Vec<String> {
-    let src = include_str!("../src/types/check/sigs.rs");
-    let mut names = Vec::new();
-
-    // `put("name", …)` — the ordinary form.
-    for rest in src.split("put(").skip(1) {
-        let rest = rest.trim_start();
-        if let Some(inner) = rest.strip_prefix('"') {
-            if let Some(end) = inner.find('"') {
-                names.push(inner[..end].to_string());
-            }
-        }
-    }
-    // `for n in ["a", "b"] { put(n, …) }` — the grouped form.
-    for rest in src.split("for n in [").skip(1) {
-        if let Some(end) = rest.find(']') {
-            for token in rest[..end].split(',') {
-                let token = token.trim().trim_matches('"');
-                if !token.is_empty() {
-                    names.push(token.to_string());
-                }
-            }
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
-}
-
 #[test]
 fn every_curated_signature_names_something_that_exists() {
-    let names = curated_names();
-    // Anchored by name, not by count: the table shrinks as declarations replace entries,
-    // but a `put("…")` key and a `for n in [ … ]` key must both still parse.
+    // The table's own keys (`types::check::curated_sig_names`), not a hand-copied list.
+    let names = brood::types::check::curated_sig_names();
     assert!(
         names.iter().any(|n| n == "io/puts") && names.iter().any(|n| n == "seq/filter"),
-        "the reader did not find `io/puts` (a `for n in [ … ]` key) and `seq/filter` among \
-         {} parsed names — it has drifted from sigs.rs's shape, which would make this guard \
-         silently vacuous",
+        "the curated table no longer holds `io/puts` and `seq/filter` among its {} names",
         names.len()
     );
 
