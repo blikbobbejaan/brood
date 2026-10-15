@@ -11,6 +11,7 @@
 ;; diff helpers (`telemetry-absent`) — the ADR-146 @testable seam.
 (defmodule telemetry-metrics-test
   (:use test)
+  (:use suite-helpers)
   (:use telemetry)
   (:use-internals telemetry)
   (:use math :only [abs]))
@@ -209,7 +210,7 @@
     (let (me (self))
       ;; four workers each emit 25 ticks; the listener folds all 100 serially.
       (tmm-spawn-emitters me 4 25)
-      (tmm-await 4))
+      (await-done 4))
     (sync)
     (let (got (metric :total))
       (stop)
@@ -219,8 +220,6 @@
   (when (> workers 0)
     (spawn (do (tmm-emit-n [:tick] {} per) (send parent :done)))
     (tmm-spawn-emitters parent (- workers 1) per)))
-(defn tmm-await (n)
-  (if (= n 0) :ok (receive (:done (tmm-await (- n 1))) (after *test-wait-ms* :timeout))))
 
 ;; Node up/down through the telemetry stream (`watch-nodes`). A live two-node
 ;; cluster is exercised by the dist suite; here we test the deterministic core —

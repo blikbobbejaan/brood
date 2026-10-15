@@ -234,10 +234,6 @@
     acc
     (chaos-fan-in (+ got 1) total (receive (x (+ acc x))))))
 
-(defn chaos-drain (n)
-  (if (= n 0)
-    :ok (receive (:done (chaos-drain (- n 1))) (after *test-wait-ms* :timeout))))
-
 (describe "concurrent spawn/send chaos"
   :isolated (test "100 spawned processes each send a number; drain all of them"
     (chaos-fan-out 100 (self))
@@ -256,7 +252,7 @@
     (let (me (self))
       (dotimes (i 20)
         (spawn (send me :done))))
-    (assert= :ok (chaos-drain 20))))
+    (assert= :ok (await-done 20))))
 
 ;; ── 8. nil args to builtins ───────────────────────────────────────────────────
 

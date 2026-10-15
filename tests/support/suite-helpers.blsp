@@ -10,8 +10,8 @@ decided on it, `ascending?` is the span invariant every highlighter test checks,
 `queued-while-idle` (with `await-paused`, `take-chunks`, `queued-count` and
 `high-water-bound`) measures what a paused reader left queued in this process's mailbox,
 `late-messages` counts a socket's stragglers, `next-seed` steps a deterministic generator,
-and `expand-error`, `hint-of` and `checker-messages` read an error, a reader hint or the
-checker's diagnostics."
+`await-done` waits for workers' `:done`, and `expand-error`, `hint-of` and
+`checker-messages` read an error, a reader hint or the checker's diagnostics."
   (:use test))
 
 ;; ---- the JIT ----------------------------------------------------------------------
@@ -102,6 +102,17 @@ copied (`(* s 1103515245) + 12345 mod 2^31`) was not: its low bit alternated, so
 `(math/rem s 2)` choice took the same branch every other draw."
   (%rand-step (%rand-seed seed)))
 (sig next-seed (int -> int))
+
+;; ---- processes ----------------------------------------------------------------------
+
+(defn await-done (n)
+  "Wait for `n` `:done` messages, answering `:ok`. A message that has not arrived within
+`*test-wait-ms*` of the last raises, so a worker that died fails the test rather than
+passing it — whether or not the caller looks at the answer."
+  (if (= n 0)
+    :ok (receive
+      (:done (await-done (dec n)))
+      (after *test-wait-ms* (error (str "await-done: " n " :done message(s) never arrived"))))))
 
 ;; ---- errors, hints and checker output ---------------------------------------------
 
