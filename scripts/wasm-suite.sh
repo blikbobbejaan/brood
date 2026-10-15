@@ -11,7 +11,7 @@
 #   shape as the hole `%gui-compiled?` shipped through — a host build cannot see a hole in
 #   a cfg surface it never compiles.
 #
-#   `sched_clock_domain.rs` guards the clock as SOURCE TEXT (it greps the gate), and
+#   The clock domain is a type (`timer::SchedDeadline`, pinned by `sched_clock_domain.rs`), and
 #   `wasm-receive-timeout-repro.sh` checks one behaviour BY HAND. This runs the behaviour,
 #   automatically, over the mechanisms the cooperative scheduler is made of.
 #

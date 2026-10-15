@@ -435,7 +435,7 @@ pub(crate) struct Suspended {
     /// The `(receive … (after ms …))` absolute wake time, or `None` to wait forever —
     /// the scheduler arms a timer from this so a parked process still fires its
     /// `after` clause.
-    pub(crate) deadline: Option<web_time::Instant>,
+    pub(crate) deadline: Option<crate::process::SchedDeadline>,
 }
 
 impl Suspended {

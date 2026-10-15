@@ -24,12 +24,40 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::AtomicBool;
 use std::sync::{Condvar, LazyLock, Mutex};
+use std::time::Duration;
 use web_time::Instant;
+
+/// A `receive` deadline, on the scheduler clock ([`sched_now`]) — the only clock it can be
+/// minted from or compared with. On native that clock is real time; on wasm it is the
+/// logical clock [`fire_next_timer`] advances, and a deadline compared against real time
+/// there spins the pump forever (re-queued by one gate, "not yet" to the next). The
+/// `Instant` never leaves this module and `sched_now` is private to it, so mixing the two
+/// clocks does not compile — what `tests/sched_clock_domain.rs` once checked by reading
+/// source text.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct SchedDeadline(Instant);
+
+impl SchedDeadline {
+    /// `ms` milliseconds from now on the scheduler clock.
+    pub(super) fn after_millis(ms: u64) -> SchedDeadline {
+        SchedDeadline(sched_now() + Duration::from_millis(ms))
+    }
+
+    /// Has the scheduler clock reached this deadline?
+    pub(super) fn reached(self) -> bool {
+        sched_now() >= self.0
+    }
+
+    /// How long until the deadline on the scheduler clock; zero once it is reached.
+    pub(super) fn remaining(self) -> Duration {
+        self.0.saturating_duration_since(sched_now())
+    }
+}
 
 /// Min-heap of `(deadline, pid, gen)`: `Reverse` turns the max-heap into
 /// earliest-first. `gen` is the parking process's [`Mailbox::timer_gen`] at arm
 /// time — carried so the timer thread can detect (and skip) a superseded deadline.
-type TimerQueue = BinaryHeap<Reverse<(Instant, u64, u64)>>;
+type TimerQueue = BinaryHeap<Reverse<(SchedDeadline, u64, u64)>>;
 
 /// Pending `receive` deadlines for green processes. A dedicated thread wakes each at
 /// its deadline so it can fire its `after` clause.
@@ -61,7 +89,7 @@ static TIMER_THREADS_STARTED: AtomicUsize = AtomicUsize::new(0);
 /// deadlines. Lazily starts the timer thread on first use (programs that never use a
 /// `receive` timeout never spawn it). On wasm there is no timer thread — the cooperative
 /// scheduler pump fires due timers itself (`fire_next_timer`); we only record the deadline.
-pub(super) fn arm_timer(pid: u64, deadline: Instant, gen: u64) {
+pub(super) fn arm_timer(pid: u64, deadline: SchedDeadline, gen: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     ensure_timer_thread();
     let (lock, cv) = &*TIMERS;
@@ -116,7 +144,7 @@ fn compact_threshold() -> usize {
 fn compact(q: &mut TimerQueue) {
     let mut gens: HashMap<u64, Option<u64>> = HashMap::new();
     let before = q.len();
-    let kept: Vec<Reverse<(Instant, u64, u64)>> = std::mem::take(q)
+    let kept: Vec<Reverse<(SchedDeadline, u64, u64)>> = std::mem::take(q)
         .into_vec()
         .into_iter()
         .filter(|Reverse((_, pid, gen))| {
@@ -143,9 +171,10 @@ pub fn pending_timer_count() -> usize {
 /// clock. On wasm there is no timer thread, so real time never advances *while a snippet
 /// runs* — `fire_next_timer` advances this LOGICAL clock to the fired deadline instead, so
 /// a woken receive sees its deadline as reached and takes its `after` clause at once
-/// rather than re-parking and spinning the pump for the full real delay.
+/// rather than re-parking and spinning the pump for the full real delay. Private: outside
+/// this module the clock is read only through a [`SchedDeadline`].
 #[cfg(not(target_arch = "wasm32"))]
-pub(super) fn sched_now() -> Instant {
+fn sched_now() -> Instant {
     Instant::now()
 }
 
@@ -155,7 +184,7 @@ thread_local! {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(super) fn sched_now() -> Instant {
+fn sched_now() -> Instant {
     LOGICAL_NOW.with(|c| {
         let now = c.get().unwrap_or_else(Instant::now);
         c.set(Some(now));
@@ -176,7 +205,7 @@ pub(crate) fn fire_next_timer() -> bool {
     let (lock, _cv) = &*TIMERS;
     let next = crate::core::sync::lock(lock).pop();
     match next {
-        Some(Reverse((deadline, pid, gen))) => {
+        Some(Reverse((SchedDeadline(deadline), pid, gen))) => {
             LOGICAL_NOW.with(|c| {
                 if c.get().is_none_or(|now| deadline > now) {
                     c.set(Some(deadline));
@@ -235,16 +264,16 @@ fn timer_loop() {
             // exactly the cascade `core/sync.rs` exists to refuse (KI-97 item 3).
             None => q = cv.wait(q).unwrap_or_else(|e| e.into_inner()),
             Some(Reverse((deadline, _, _))) => {
-                let now = Instant::now();
-                if now < deadline {
+                let remaining = deadline.remaining();
+                if !remaining.is_zero() {
                     q = cv
-                        .wait_timeout(q, deadline - now)
+                        .wait_timeout(q, remaining)
                         .unwrap_or_else(|e| e.into_inner())
                         .0;
                 } else {
                     let mut due = Vec::new();
                     while let Some(&Reverse((d, pid, gen))) = q.peek() {
-                        if d <= now {
+                        if d.reached() {
                             q.pop();
                             due.push((pid, gen));
                         } else {
@@ -322,11 +351,7 @@ mod tests {
         // And timeouts still work end to end after all that.
         let (lock, _) = &*TIMERS;
         let before = crate::core::sync::lock(lock).len();
-        arm_timer(
-            u64::MAX,
-            Instant::now() + std::time::Duration::from_secs(3600),
-            0,
-        );
+        arm_timer(u64::MAX, SchedDeadline::after_millis(3_600_000), 0);
         assert!(
             crate::core::sync::lock(lock).len() > before,
             "arm_timer must still queue a deadline"
@@ -343,7 +368,7 @@ mod tests {
     /// the heap bounded.
     #[test]
     fn superseded_entries_are_compacted_not_left_until_their_deadline() {
-        let far = Instant::now() + std::time::Duration::from_secs(3600);
+        let far = SchedDeadline::after_millis(3_600_000);
         let dead_pid = u64::MAX - 7; // never in the process REGISTRY
         let armed = 4000;
         for gen in 0..armed {

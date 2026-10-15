@@ -54,6 +54,9 @@ mod timer;
 /// Pending `(after ms …)` deadline entries, runtime-wide — the leak/compaction test hook
 /// for `timer`'s lazy cancellation.
 pub use timer::pending_timer_count;
+/// A `receive` deadline on the scheduler clock — carried through the VM's suspend path
+/// (`Control::Suspend`). Opaque outside this module: nothing else can mint or read one.
+pub use timer::SchedDeadline;
 
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_gc_runs, process_mem,

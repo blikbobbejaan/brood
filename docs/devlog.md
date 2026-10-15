@@ -17832,3 +17832,18 @@ Correlating the `AGE` lines with failures was exact, 4 for 4.
 - **`dist::sever_couplings`** names the net-split cleanup that `fire_nodedown` and the
   duplicate-link eviction both run. The eviction used to re-inline `fire_nodedown`'s last
   two calls.
+
+## 2026-10-15 (later) — receive deadlines are a type, not a convention
+
+`SchedDeadline` (in `process/timer.rs`) replaces the bare `Instant` that carried a
+`receive` deadline through the mailbox, the timer heap, `Control::Suspend` and the VM's
+`Suspended`.
+- Its `Instant` is a private field, and `sched_now` is private to the timer module. Outside
+  it, a deadline can only be minted (`after_millis`), tested (`reached`) or waited on
+  (`remaining`) against the scheduler clock, so comparing one with real time no longer
+  compiles. That comparison is what spins the wasm pump.
+- `tests/sched_clock_domain.rs` had read three function bodies as text for that rule. It now
+  pins the two privacy facts and the carriers' types. Sabotage: a `pub` field, or a
+  `pub(super) sched_now`, each reds one test. Retyping `recv_deadline` back to `Instant`
+  fails to compile.
+- `scripts/wasm-suite.sh`: 10/10, clock-domain case included.

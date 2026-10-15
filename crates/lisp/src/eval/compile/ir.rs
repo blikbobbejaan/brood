@@ -1124,7 +1124,7 @@ pub(crate) enum ChunkExit {
     /// frame stack as a [`Suspended`] and returns it to the scheduler to park. Produced
     /// only by a clean top-level `receive` (a native-nested one blocks the worker, §7.4).
     Suspend {
-        deadline: Option<web_time::Instant>,
+        deadline: Option<crate::process::SchedDeadline>,
     },
     /// Hard `:kill` was pending at the inline `SelfCall` safepoint. The frame is already
     /// reset (ip=0, new args in slots); the driver retires the process.

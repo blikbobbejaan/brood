@@ -20,8 +20,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
-use std::time::Duration;
-use web_time::Instant;
 
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, MapId, Symbol, Value};
@@ -35,7 +33,7 @@ use super::message::{from_message, to_message_to_runtime, Message};
 #[cfg(feature = "dev-tools")]
 use super::message::to_message;
 use super::scheduler::{ensure_ctx, wake_enqueue, Ctx, Process};
-use super::timer::arm_timer;
+use super::timer::{arm_timer, SchedDeadline};
 
 /// Coarse run-status for `process-info` (ADR-051), stored as a lock-free cell on
 /// the mailbox (which is registry-reachable, unlike the `Process` itself). Set at
@@ -324,7 +322,7 @@ pub(super) struct MailboxState {
     /// reset — and never fire — the `after` timeout. The first entry stores the
     /// absolute deadline here; resumes reuse it; the matching/timeout exit clears it.
     /// Single slot: one `receive` runs at a time per process.
-    pub(super) recv_deadline: Option<Instant>,
+    pub(super) recv_deadline: Option<SchedDeadline>,
     /// **Deactivated one-shot reply aliases** — see [`DeadAliases`]. A message
     /// addressed to one of these refs is dropped *at delivery*, before it is ever
     /// queued. Empty for the overwhelming majority of processes, which is what makes
@@ -1265,13 +1263,14 @@ fn receive_match_timed(
                 // the receive was first entered (and actually fires), instead of being
                 // reset to `now + ms` on each wake. Cleared at every non-suspend exit.
                 let mut st = crate::core::sync::lock(&ctx.mailbox.state);
-                Some(*st.recv_deadline.get_or_insert_with(|| {
-                    super::timer::sched_now() + Duration::from_millis(ms as u64)
-                }))
+                Some(
+                    *st.recv_deadline
+                        .get_or_insert_with(|| SchedDeadline::after_millis(ms as u64)),
+                )
             } else {
                 // Coroutine/root: the `receive_match` loop holds the deadline across its
                 // waits (it never exits between scans), so compute it once here.
-                Some(super::timer::sched_now() + Duration::from_millis(ms as u64))
+                Some(SchedDeadline::after_millis(ms as u64))
             }
         }
         _ => {
@@ -1336,7 +1335,7 @@ fn receive_match_timed(
             Ok(None) => {
                 // Scanned every queued message with no match.
                 if let Some(d) = deadline {
-                    if super::timer::sched_now() >= d {
+                    if d.reached() {
                         // The receive completed via timeout — answer `nil` (the macro's
                         // `after` branch tests for it) and clear the persisted
                         // capture-mode deadline.
@@ -1803,16 +1802,14 @@ fn reinsert_candidate(ctx: &Ctx, i: usize, m: Envelope) -> usize {
 /// capture receive never gets here — it captures its continuation and returns instead
 /// (the gate in `receive_match`).
 ///
-/// **Clock domain.** The deadline was minted on the scheduler clock
-/// (`timer::sched_now()`), so the elapsed check below reads that same clock — never
-/// `Instant::now()` — or the wasm pump spins forever. Guarded by
-/// `crates/lisp/tests/sched_clock_domain.rs`.
+/// **Clock domain.** A [`SchedDeadline`] can only be measured on the scheduler clock it
+/// was minted on, so the wait below cannot mix in real time (which spins the wasm pump).
 ///
 /// **Known defect: this does not work on wasm32.** `std`'s `no_threads` `Condvar`
 /// panics in `wait`, an uncatchable trap there, and a native-nested receive (e.g.
 /// `(do (sleep 5) :slept)`) reaches it. The fix is a non-blocking park for the nested
 /// case on wasm.
-fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<Instant>) {
+fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<SchedDeadline>) {
     let st = crate::core::sync::lock(&ctx.mailbox.state);
     if st.queue.len() > i {
         return; // a message arrived between the scan and here — re-scan
@@ -1850,14 +1847,13 @@ fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<Instant>) {
     }
     match deadline {
         Some(d) => {
-            // The SCHEDULER clock — the one `d` was minted on. See the doc comment.
-            let now = super::timer::sched_now();
-            if now < d {
+            let remaining = d.remaining();
+            if !remaining.is_zero() {
                 st.cv_waiters += 1;
                 let (mut g, _timed_out) = ctx
                     .mailbox
                     .cv
-                    .wait_timeout(st, d - now)
+                    .wait_timeout(st, remaining)
                     .unwrap_or_else(|e| e.into_inner());
                 g.cv_waiters -= 1;
                 g.wake_pending = false;

@@ -1010,7 +1010,7 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
         wake_enqueue(proc);
     } else if st
         .recv_deadline
-        .is_some_and(|d| crate::process::timer::sched_now() >= d)
+        .is_some_and(crate::process::timer::SchedDeadline::reached)
     {
         // The receive deadline elapsed inside the suspend→park window: the timer fired
         // before we got here, found no `waiter`, and consumed its (current-gen) entry, so
@@ -1019,16 +1019,10 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
         // timer-fire and this check both serialise on `mailbox.state`, so exactly one of
         // them re-queues: either the timer saw a `waiter`, or we see the passed deadline.
         //
-        // Must read the **scheduler** clock ([`sched_now`]), not `Instant::now()`. On wasm
-        // the two are different clocks: `recv_deadline` was computed as `sched_now() + ms`
-        // on the FROZEN logical clock (there is no timer thread; `fire_next_timer` is the
-        // only thing that advances it), so comparing it against real time declares the
-        // deadline passed as soon as `ms` of wall-clock has elapsed. This branch would then
-        // re-queue while `receive_match`'s own `sched_now() >= d` gate still says "not
-        // yet" — suspend → park → re-queue forever, `pump_until_quiescent` seeing
-        // `ran_any = true` every sweep so it never reaches `fire_next_timer` to advance
-        // the clock. That is precisely the 100%-CPU spun tab the logical clock was added
-        // to fix. On native `sched_now()` *is* `Instant::now()`, so nothing changes there.
+        // `reached` reads the scheduler clock the deadline was minted on — the only clock
+        // a `SchedDeadline` can be compared with. On wasm that clock is logical; this gate
+        // on real time would re-queue while `receive_match`'s gate still said "not yet",
+        // forever, at 100% CPU (see `SchedDeadline`).
         drop(st);
         wake_enqueue(proc);
     } else {
