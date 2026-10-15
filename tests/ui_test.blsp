@@ -545,6 +545,11 @@
       (assert= (receive ([:saw x] x) (after 200 :none)) "z"))))
 
 (describe "ui-memo — memoised view fragments (ADR-336)"
+  (test "ui-memo-marker? names a [:ui/memo key deps ops] marker and nothing else"
+    (is (ui-memo-marker? [:ui/memo [:line 1] [:a] (list (text 1 0 "x"))]))
+    (refute (ui-memo-marker? [:text 1 0 "x"]))
+    (refute (ui-memo-marker? (list :ui/memo [:line 1] [:a] nil))))
+
   (test "outside a loop it is just the thunk: plain ops, no marker"
     (assert= (ui-memo [:line 1] [:a] (fn () (list (text 1 0 "x")))) (list [:text 1 0 "x"]))
     (is (nil? *ui-memo*)))

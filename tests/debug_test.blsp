@@ -111,6 +111,12 @@
           (let (root-pid (get root :pid)
                 child-pids (map (get root :children) (fn (c) (get c :pid))))
             (refute (any? child-pids (fn (p) (= p root-pid)))))))
+      ;; `print-causal` renders the same tree as an outline: the root, then its three
+      ;; children indented under it, each line tagged with its span's pid.
+      (let (lines (seq/reject (string/split (with-out-str (print-causal dbg)) "\n") string/blank?))
+        (assert= (count lines) 4)
+        (is (string/starts-with? (first lines) "root ["))
+        (is (every? (rest lines) (fn (line) (string/starts-with? line "  w")))))
       (dbg-stop dbg))))
 
 (describe "debugger — transparent causal propagation (kernel-propagated *trace-context*)"
@@ -236,7 +242,16 @@
 (defn tfn-add (a b) (+ a b))
 (defn tfn-redef (x) (* x 10)) ; redefined under a trace by the untrace-fn test
 (defn tfn-rewrap (x) (* x 10)) ; redefined under a trace, then traced again
+(defn tfn-held (x) (inc x)) ; held and released by the trace-hold test
 (describe "debugger — function-boundary instrumentation (trace-fn / break-fn)"
+  :isolated (test "trace-hold counts holders, trace-holds shows them, the last release untraces"
+    (trace-hold 'debug-test/tfn-held)
+    (trace-hold 'debug-test/tfn-held)
+    (assert= (get (trace-holds) 'debug-test/tfn-held) 2)
+    (assert= (trace-release 'debug-test/tfn-held) 1)
+    (assert= (trace-release 'debug-test/tfn-held) 0)
+    (is (nil? (get (trace-holds) 'debug-test/tfn-held)))
+    (assert= (tfn-held 1) 2))
   :isolated (test "trace-fn emits :call and :return through *spy-sink* and is value-transparent"
     (let (me (self))
       (trace-fn 'debug-test/tfn-square)

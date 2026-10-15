@@ -94,3 +94,16 @@
     (let (ns (dns/nameserver))
       (is (string? ns))
       (is (> (string/length ns) 0)))))
+
+(describe "dns/lookup-all"
+  (test "a name that cannot resolve is an empty list in both families"
+    (assert= [] (into [] (dns/lookup-all "no-such-host.invalid"))))
+
+  (test "an unreachable resolver is an empty list, not an error"
+    (assert= [] (into [] (dns/lookup-all "example.com" "127.0.0.1"))))
+
+  (test "every IPv6 address comes before every IPv4 one"
+    ;; whatever this machine's resolver returns for localhost: once a v4 address is
+    ;; seen, no v6 one may follow
+    (let (addrs (into [] (dns/lookup-all "localhost")))
+      (is (every? (drop-while addrs (fn (a) (includes? a ":"))) (fn (a) (not (includes? a ":"))))))))

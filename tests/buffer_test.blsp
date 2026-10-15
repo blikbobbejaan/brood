@@ -1456,3 +1456,26 @@ suite run. `*test-wait-ms*` is a failure deadline, reached only if a relay never
           undone (undo edited))
       (is (nil? (buffer-splices-since edited undone)))
       (is (nil? (buffer-splices-since (make-buffer "one") (make-buffer "two")))))))
+
+(describe "narrowing: which text may be edited"
+  (test "a fresh buffer is not narrowed; narrow-to narrows it and widen undoes that"
+    (let (b (make-buffer "hello world")
+          n (narrow-to b [[0 5]]))
+      (refute (narrowed? b))
+      (assert= (editable-regions b) nil)
+      (is (narrowed? n))
+      (refute (read-only? n))
+      (assert= (editable-regions n) [[0 5]])
+      (refute (narrowed? (widen n)))))
+  (test "narrowed to nothing is read-only, which is narrowed, not a fresh buffer"
+    ;; `'()` IS nil in Brood, so the regions must come back as a vector, or this buffer
+    ;; and an un-narrowed one would read the same.
+    (let (n (narrow-to (make-buffer "abc") '()))
+      (is (narrowed? n))
+      (is (read-only? n))
+      (assert= (editable-regions n) [])
+      (is (includes? (error-of (insert n "x")) "read-only"))))
+  (test "an insert inside an editable region goes through; outside one is refused"
+    (let (n (narrow-to (make-buffer "hello world") [[0 5]]))
+      (assert= (buffer-text (insert (goto-char n 2) "XY")) "heXYllo world")
+      (is (includes? (error-of (insert (goto-char n 8) "Z")) "read-only")))))

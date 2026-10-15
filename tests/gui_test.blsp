@@ -34,6 +34,21 @@
                 (catch e (error-message e))))
       (is (not (includes? msg "expected int"))))))
 
+(describe "gui/grab-cursor"
+  ;; No window here, so the call can only fail — but it must fail in the BACKEND (no such
+  ;; window, or no gui compiled in), which means the wrapper handed the primitive an int
+  ;; id and the flag in the right places. A swapped or dropped argument fails before that.
+  (test "reaches the backend with the id and the flag, and a non-int id is refused first"
+    (let (msg (try
+                (do (gui/grab-cursor 999999 true) "")
+                (catch e (error-message e))))
+      (is (not (includes? msg "expected int")))
+      (is (not (includes? msg "arity"))))
+    (is (includes? (try
+                     (check-allow :type-mismatch (gui/grab-cursor true 999999))
+                     (catch e (error-message e)))
+          "expected int"))))
+
 ;; --- the pixel-space layer: policy in Brood over the runtime's two quad ops -----------
 ;;
 ;; `gui/line`, `gui/sprite` and `gui/texture-size` are pure (no window), so they run

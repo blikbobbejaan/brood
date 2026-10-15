@@ -191,6 +191,17 @@
           after (get (dev/pos-stats) :local-forms))
       (is (>= after before)))))
 
+(describe "ic-stats"
+  (test "each of the four cache tables is [len capacity bytes], and the total sums their bytes"
+    (let (s (dev/ic-stats)
+          tables [:calls :links :globals :blocks])
+      (is (every? tables
+            (fn (k)
+              (let ([len cap bytes] (get s k))
+                (and (>= len 0) (>= cap len) (>= bytes 0))))))
+      (is (> (get s :call-entry-bytes) 0))
+      (assert= (get s :total-bytes) (fold tables 0 (fn (acc k) (+ acc (last (get s k)))))))))
+
 ;; docs/memory-review.md §7). gc-stats reports the *calling* process's own heap.
 (describe "gc-stats"
   (test "is a map with the documented counter keys"

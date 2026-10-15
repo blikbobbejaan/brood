@@ -92,6 +92,10 @@
       (list [:frect 4.93 2.93 10.14 4.14 {:bg :grey} 1.0 (+ 0.4 0.07)]
         [:frect 5.0 3.0 10.0 4.0 {:bg :blue} 1.0 0.4])))
 
+  (test "card-pill is a one-row rounded highlight inset inside its card"
+    (assert= (card-pill 2 4 10 {:bg :blue}) [:frect 4.2 2.08 9.6 0.84 {:bg :blue} 1.0 0.35])
+    (assert= (last (card-pill 2 4 10 {:bg :blue} {:radius 0.5})) 0.5))
+
   (test "tooltip stacks its lines over a card sized to the widest line, anchored above"
     ;; two lines, widest 5 chars → w = 7, n = 2; anchored above row 10 → top row 8.
     (assert= (tooltip 10 4 ["main" "clean"] {:bg :blue} {:fg :white} 80 24)

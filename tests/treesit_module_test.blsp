@@ -298,3 +298,10 @@
     (test "parse-tag drops the reason"
       (assert= (editor/treesit/parse-tag :ok) :ok)
       (assert= (editor/treesit/parse-tag [:err "boom"]) :err))))
+
+;; What a language registration checks before accepting a mode — bedit's `modes` calls it.
+(describe "missing-services"
+  (test "names each required service a layer lacks, in contract order; none when complete"
+    (assert= (editor/treesit/missing-services {}) '(:ts-lang :fontify :indent))
+    (assert= (editor/treesit/missing-services {:ts-lang :x :fontify identity}) '(:indent))
+    (is (empty? (editor/treesit/missing-services {:ts-lang :x :fontify identity :indent identity})))))
