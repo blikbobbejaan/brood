@@ -29,9 +29,10 @@ devlog entries of the same dates.
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
   `process_floor`/`doc_refs` Rust tests, and the pre-push steps (`nest check` and `--strict` at
   zero, the 45 test files the merge touches). `nest format --check` no longer reads
-  git-ignored files (`make prepush` used to stop on `stress/fuzz_out/fuzz_6.blsp`). Not run
-  since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
-  `breakagetests`.
+  git-ignored files (`make prepush` used to stop on `stress/fuzz_out/fuzz_6.blsp`). On
+  `0ba6c797` (2026-10-16): `test-both` 1882/1882 both engines, fuzz (four generators × 300,
+  `stale=0`), `gcstress`, `check-stress`, `check-examples`, `check-imaged`, `breakagetests`
+  (37/37) and `latency-gate` (worst p99 79 µs) all clean.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
   default their limits from the cap (hard = 3/4 of it), re-read every few seconds so a
   resized container moves them; elsewhere they stay unlimited. A table holding the memory is
