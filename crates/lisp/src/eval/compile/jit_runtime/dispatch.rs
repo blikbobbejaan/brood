@@ -427,6 +427,61 @@ pub(crate) fn jit_dispatch_call(
 /// native/tree-walked callee. The native stack never grows: the driver's loop is the
 /// trampoline. Mirrors the tail branch of the VM's `Inst::Call`.
 #[cfg(feature = "jit")]
+/// The tail call a native arm staged when it returned `outcome::TAIL`: `[callee, args…]`
+/// written ABOVE its frame top, `base + frame_nslots`. Both readers — the driver's
+/// [`jit_dispatch_tail`] and `dispatch`'s computed-head fast path — read it here.
+///
+/// `frame_nslots` is the size the frame was actually BUILT to, captured at native entry.
+/// **It must be passed, never re-derived** (KI-48): `frame_size_for_new_entry()` re-reads
+/// `inline_installed` — the KI-26 / ADR-210 anti-pattern — and the background inline upgrade
+/// can flip it between the native entering (small frame) and this read, after which the
+/// staged region is read at the wrong offset. That desync is how KI-48 was captured:
+/// `root_at(9)` on a len-8 stack.
+///
+/// An empty staged area is therefore a desync, never a legitimate TAIL, and panics naming
+/// the arm and both frame sizes. Two reasons it is checked rather than left to `root_at`'s
+/// own bounds check: the subtraction below underflows first on exactly this input (a
+/// wrapped `argc`), so the OOB panic is the *lucky* ordering — the other loops over a huge
+/// count — and `root_at`'s panic names neither the arm nor the sizes. (`dispatch`'s copy
+/// once fell back to re-running the arm on the VM instead, which repeats every effect the
+/// native body already performed.)
+pub(crate) fn read_staged_tail(
+    heap: &Heap,
+    arm: &CompiledArm,
+    base: usize,
+    frame_nslots: usize,
+) -> (Value, SmallVec<[Value; 4]>) {
+    let top = base + frame_nslots;
+    let n = heap.roots_len();
+    if top >= n {
+        panic!(
+            "KI-48: staged tail-call desync — arm={} base={base} frame_nslots={frame_nslots} \
+             (nslots={} inline_nslots={} inline_installed={}) top={top} roots_len={n}; the \
+             frame was built for a different body than the caller reported",
+            arm.dbg_label(),
+            arm.nslots,
+            arm.inline_nslots,
+            arm.inline_installed
+                .load(std::sync::atomic::Ordering::Acquire),
+        );
+    }
+    let argc = n - top - 1;
+    let callee = heap.root_at(top);
+    // Verify the staged tail-call args too (BROOD_JIT_VERIFY / _FN) — a tail-called callee
+    // (e.g. pong's lambda tail-calling `badge-ops`) stages its args here, not through
+    // jit_dispatch_call. The callee is a Value, so resolve its closure name for the `_FN`
+    // match (u32::MAX = anonymous → "<computed>").
+    if jit_verify_active() {
+        let head = match callee.unpack() {
+            crate::core::value::ValueRef::Fn(id) => heap.closure(id).name.unwrap_or(u32::MAX),
+            _ => u32::MAX,
+        };
+        jit_verify_staged(heap, top + 1, n, head, NO_SITE, argc);
+    }
+    let argv = (0..argc).map(|k| heap.root_at(top + 1 + k)).collect();
+    (callee, argv)
+}
+
 pub(crate) fn jit_dispatch_tail(
     heap: &mut Heap,
     base: usize,
@@ -442,52 +497,7 @@ pub(crate) fn jit_dispatch_tail(
     // deopt-resume helpers.
     frame_nslots: usize,
 ) -> Result<ChunkExit, LispError> {
-    // A tail call is staged by the native code ABOVE its own frame top.
-    let top = base + frame_nslots;
-    let n = heap.roots_len();
-    // KI-48 tripwire. `top` is the passed `frame_nslots`; it was once derived from
-    // `frame_size_for_new_entry()`, which re-reads `inline_installed` — the KI-26 / ADR-210
-    // anti-pattern — while the frame this native actually built was sized by whichever body
-    // was installed when it was ENTERED. If the background inline upgrade landed in that
-    // window, the two disagreed and `top` pointed past
-    // the staged `[callee, args…]` region, which is how KI-48 was captured: `root_at(9)` on
-    // a len-8 stack.
-    //
-    // Two reasons this is checked rather than left to `root_at`'s own bounds check. The
-    // subtraction below underflows first on exactly this input (`top >= n` ⇒ wrapped `argc`),
-    // so the OOB panic is the *lucky* ordering — the other one loops `root_at(top + 1 + k)`
-    // over a huge count. And `root_at`'s panic names neither the arm nor the frame sizes, so
-    // the original report could say only "index 9, len 8" and nothing about why.
-    if top >= n {
-        let name = arm.dbg_label();
-        panic!(
-            "KI-48: jit_dispatch_tail staged-area desync — arm={name} base={base} \
-             frame_nslots={frame_nslots} (nslots={} inline_nslots={} inline_installed={}) \
-             top={top} roots_len={n}; the frame was built for a different body than the \
-             caller reported",
-            arm.nslots,
-            arm.inline_nslots,
-            arm.inline_installed
-                .load(std::sync::atomic::Ordering::Acquire),
-        );
-    }
-    let argc = n - top - 1;
-    let callee = heap.root_at(top);
-    // Verify the staged tail-call args too (BROOD_JIT_VERIFY / _FN) — the tail path is
-    // separate from jit_dispatch_call, and a tail-called callee (e.g. pong's lambda
-    // tail-calling `badge-ops`) stages its args here. The callee is a Value, so resolve
-    // its closure name for the `_FN` match (u32::MAX = anonymous → "<computed>").
-    if jit_verify_active() {
-        let head = match callee.unpack() {
-            crate::core::value::ValueRef::Fn(id) => heap.closure(id).name.unwrap_or(u32::MAX),
-            _ => u32::MAX,
-        };
-        jit_verify_staged(heap, top + 1, n, head, NO_SITE, argc);
-    }
-    let mut argv: SmallVec<[Value; 4]> = SmallVec::with_capacity(argc);
-    for k in 0..argc {
-        argv.push(heap.root_at(top + 1 + k));
-    }
+    let (callee, argv) = read_staged_tail(heap, arm, base, frame_nslots);
     let env_id = heap.read_root_env(env);
     // `dispatch(.., tail = true, ..)` resolves a VM-closure callee to a `Step::Tail`
     // **without running it** (no native recursion) and runs a native/tree-walked callee
@@ -498,7 +508,7 @@ pub(crate) fn jit_dispatch_tail(
     // Success: drop the staged operands. The driver next truncates to `base` and rebuilds
     // the frame for the callee (reuse), so leaving them would be harmless — but truncating
     // keeps the root stack tight if the callee turned out native (`Done`).
-    heap.truncate_roots(top);
+    heap.truncate_roots(base + frame_nslots);
     Ok(match step {
         Step::Tail {
             compiled,

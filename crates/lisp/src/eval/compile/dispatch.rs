@@ -395,46 +395,16 @@ pub(crate) fn dispatch(
                         }
                         Some(outcome::TAIL) => {
                             crate::perf_bump!(jit_fast_tail4);
-                            // Tail call staged by the JIT: [callee, arg0..argN] sit
-                            // above the frame at roots[base+nslots..] (see KI-48 below).  These
-                            // were pushed *after* any GC that fired inside
-                            // jit_dispatch_call's safepoint, so they hold
-                            // current-epoch handles — unlike cur_argv which was captured
-                            // before jit_tier ran and may be stale.  Follow the staged
-                            // call directly instead of re-running this arm on the VM.
-                            // KI-48: the frame here is `push_frame`'s, which ALWAYS sizes to
-                            // `arm.nslots`, and this branch is gated on `!inline_installed`
-                            // besides. Re-reading `frame_size_for_new_entry()` (as this did) asks the flag
-                            // again — and the background inline swap can flip it in between,
-                            // after which `frame_top` names a different offset than the one the
-                            // staged `[callee, args…]` were written at. Unlike the sibling in
-                            // `jit_dispatch_tail`, the `n > frame_top` guard below means this
-                            // does not panic; it silently dispatches the WRONG callee, which is
-                            // the failure mode a forced desync reproduced as a hang.
-                            let frame_top = base + arm.nslots;
-                            let n = heap.roots_len();
+                            // Follow the staged call directly instead of re-running this arm
+                            // on the VM. The staged handles were pushed *after* any GC inside
+                            // the native's safepoints, so they are current-epoch — unlike
+                            // `cur_argv`. The frame here is `push_frame`'s, which ALWAYS sizes
+                            // to `arm.nslots` (KI-48: never re-derive it).
+                            let (callee, args) = read_staged_tail(heap, &arm, base, arm.nslots);
                             let callee_env2 = heap.read_root_env(env_root);
-                            if n > frame_top {
-                                let staged_callee = heap.root_at(frame_top);
-                                let staged_argc = n - frame_top - 1;
-                                let staged_argv: SmallVec<[Value; 4]> = (0..staged_argc)
-                                    .map(|k| heap.root_at(frame_top + 1 + k))
-                                    .collect();
-                                heap.truncate_roots(base);
-                                heap.truncate_env_roots(env_base);
-                                return Ok(Step::Done(apply_value(
-                                    heap,
-                                    staged_callee,
-                                    &staged_argv,
-                                    callee_env2,
-                                )?));
-                            }
-                            // Staged area is empty (shouldn't happen for outcome 4,
-                            // but fall back gracefully).
-                            let fresh_argv = fresh_frame_args(heap, &arm, base, cur_argv);
                             heap.truncate_roots(base);
                             heap.truncate_env_roots(env_base);
-                            return Ok(Step::Done(vm_apply(heap, arm, &fresh_argv, callee_env2)?));
+                            return Ok(Step::Done(apply_value(heap, callee, &args, callee_env2)?));
                         }
                         _ => {
                             crate::perf_bump!(jit_fast_deopt);
