@@ -36,8 +36,7 @@ use crate::process::keywords as pk;
 
 use super::links;
 use super::mailbox::{
-    clear_parked, parked_count, set_status, wake_parked, Mailbox, REGISTRY, ST_RUNNABLE,
-    ST_RUNNING, ST_WAITING,
+    clear_parked, parked_count, set_status, Mailbox, REGISTRY, ST_RUNNABLE, ST_RUNNING, ST_WAITING,
 };
 use super::message::Message;
 use super::monitor;

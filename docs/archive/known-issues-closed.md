@@ -13727,3 +13727,21 @@ function, `%`-prefixed where that is what the function's own checks say. `termin
 domain, not a function, and is now `terminal I/O failed: {e}`. **Guard.**
 `builtins_error_message_prefixes_name_callable_functions` reads the leading `name:` of every
 `LispError::runtime`/`type_err` message in `builtins/`. It was red on the 52 before the fix.
+
+## KI-256 — a queued closure weighed nothing to the memory-pressure victim choice ✅ FIXED 2026-10-15
+
+**Symptom.** None observed; found by reading. `message_bytes` measured a closure carrying
+100 kB of captured data at 40 bytes, the same as an empty closure. **Cause.**
+`process/message.rs` `message_bytes` lists the container variants itself and stopped at
+`Message::Closure`, while `Drop`'s `take_children` walks a closure's captured values,
+optional defaults and arm bodies. `pressure.rs` sizes queued wire messages with it to choose
+which process to stop, and `table.rs` uses it for table accounting. So a process whose
+mailbox held closures over large data under-reported what it held. **Why it survived.**
+Each walker over `Message` re-lists the variants, and nothing compares the lists. **Fix.**
+`Message::for_each_child` is the one list of what a message contains, closures included,
+and `message_bytes` walks it. `take_children` (which moves) and `message_fits` (which must
+stop early) keep their own match, over the same set, as its doc says. **Guard.**
+`message_bytes_tests::a_closure_weighs_what_it_captures_and_carries` checks a captured
+value, an optional default and a body of 100 kB each. Sabotage (the closure arm of
+`for_each_child` disabled) reds it with "a captured value of 100 kB went uncounted: 40
+bytes vs 40".

@@ -245,29 +245,25 @@ fn exit_with(pid: u64, reason: Message, hard: bool) {
     // If the target is waiting in `receive` it isn't running, so it'll never reach a
     // `tick` (preempt) or re-enter `receive` on its own — we must rouse it. Two waiting
     // shapes, woken the same way `deliver` wakes them for a message:
-    //   * a **green waiter** (a captured, parked continuation): `wake_parked` re-queues
-    //     it, and `park_on_receive` retires it on `kill_pending` when it runs.
-    //   * a **cv-blocked** native-nested `receive` (or the root thread): no green waiter,
-    //     so `wake_parked` is `None` and we `cv.notify_one()` (the `else` below); it wakes
-    //     in `wait_for_message`, and `receive_match` unwinds with `Control::Kill`.
+    //   * a **green waiter** (a captured, parked continuation): the `Wake` re-queues it,
+    //     and `park_on_receive` retires it on `kill_pending` when it runs.
+    //   * a **cv-blocked** native-nested `receive` (or the root thread): the `Wake`'s
+    //     condvar notify wakes it in `wait_for_message`, and `receive_match` unwinds with
+    //     `Control::Kill`.
     // Taking the waiter under the state lock serialises with `run_one`'s park: either we
     // take an already-parked process here, or `run_one` sees `kill_pending` and retires it
     // instead of parking (exactly one wins). `request_kill` publishes `kill_pending`
     // *before* this lock, so a `wait_for_message` that locks after us sees it and won't
     // block through a lost `notify`.
-    let (parked, cv_waiter) = {
-        let mut st = crate::core::sync::lock(&mailbox.state);
-        st.wake_pending = true;
-        (wake_parked(&mut st), st.cv_waiters > 0)
-    };
-    // Both paths, unconditionally (`mailbox::wake_both`). The `else` this replaces assumed a
+    let wake = crate::core::sync::lock(&mailbox.state).take_wake();
+    // Both paths, unconditionally (`mailbox::Wake`). The `else` this replaces assumed a
     // target is reachable by exactly one of them; a green process inside a native-nested
     // `receive` is reachable by both, and having a `waiter` suppressed the notify — so the
     // kill sat until some unrelated message happened to arrive, which for a process parked on
     // a `receive` nothing will ever send to is never. The cv wake is what makes the blocked
     // receiver see `kill_pending` and unwind with `Control::Kill` (`wait_for_message` /
     // `receive_match`); the re-queue is what retires an already-parked continuation.
-    crate::process::mailbox::wake_both(&mailbox, parked, cv_waiter);
+    wake.fire(&mailbox);
 }
 
 /// `(%spawn thunk)` — run `thunk` (a 0-arg function) as a new green process.

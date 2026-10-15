@@ -762,26 +762,51 @@ fn with_mailbox<T>(pid: u64, f: impl FnOnce(&Arc<Mailbox>) -> T) -> Option<T> {
     Some(f(&mailbox))
 }
 
-/// **The wakeup protocol, in one place.** Take the parked green waiter (if any)
-/// out of `st` and re-queue it onto its owning worker, so it resumes, re-scans its
-/// mailbox, and proceeds. Returns `true` iff a green process was woken this way.
+/// **The wakeup protocol, in one place.** A wake decided under the mailbox state lock and
+/// [`fire`](Wake::fire)d after it is released: the parked green waiter to re-queue (if
+/// any) and whether a thread is blocked on the condvar.
 ///
-/// This is the single step shared by every site that must wake a parked process:
-/// `deliver` (a message arrived), `wake_for_timeout` (a `receive` deadline passed),
-/// and `exit` (an exit signal must rouse a parked target so it self-kills). Route
-/// all three through here so the take-and-enqueue stays identical.
+/// Every site that must wake a process goes through this: `deliver` (a message arrived),
+/// the L1 local delivery, `wake_for_timeout` (a `receive` deadline passed) and `exit` (an
+/// exit signal must rouse its target). Each used to spell the steps out by hand, and two
+/// of them once did half of it — one never notified the condvar, one woke only one path.
+/// Built by [`MailboxState::take_wake`], so setting `wake_pending`, taking the waiter and
+/// reading `cv_waiters` cannot come apart; `#[must_use]`, so it cannot be built and dropped.
 ///
-/// **Caller holds the mailbox state lock** (`st` is the live guard). The take
-/// happens under that lock, which serialises with `run_one`'s park: either we take
-/// an already-parked process, or `run_one` hasn't parked it yet and will observe
-/// the new state (message / `kill_pending`) when it does — exactly one path wins,
-/// so a process can't end up parked-with-work-pending and stuck. The caller drops
-/// the lock *before* the returned `proc` is enqueued (enqueue grabs the worker's
-/// queue lock); callers that follow the lock-ordering do this by dropping `st`
-/// after this returns. A `None` return means no green waiter — the caller decides
-/// whether to wake a root thread blocked on the condvar instead.
-pub(super) fn wake_parked(st: &mut MailboxState) -> Option<Box<Process>> {
-    st.waiter.take()
+/// The take happens under the lock, which serialises with `run_one`'s park: either it
+/// takes an already-parked process, or `run_one` has not parked yet and will observe the
+/// new state (message / `kill_pending`) when it does — exactly one path wins, so a process
+/// cannot end up parked with work pending. `fire` runs with the lock released, because
+/// re-queueing takes the worker's queue lock.
+#[must_use = "a Wake does nothing until `fire`d, after the state lock is dropped"]
+pub(super) struct Wake {
+    parked: Option<Box<Process>>,
+    cv_waiter: bool,
+}
+
+impl Wake {
+    /// Signal both wake paths (see [`wake_both`]). Call with the state lock released.
+    pub(super) fn fire(self, mb: &Mailbox) {
+        wake_both(mb, self.parked, self.cv_waiter);
+    }
+}
+
+impl MailboxState {
+    /// Mark this mailbox as needing a re-scan and take what must be woken for it.
+    pub(super) fn take_wake(&mut self) -> Wake {
+        let parked = self.waiter.take();
+        self.wake_with(parked)
+    }
+
+    /// [`take_wake`](Self::take_wake) for a caller that has already taken the waiter out
+    /// (the L1 delivery takes it first, to copy into its heap).
+    pub(super) fn wake_with(&mut self, parked: Option<Box<Process>>) -> Wake {
+        self.wake_pending = true;
+        Wake {
+            parked,
+            cv_waiter: self.cv_waiters > 0,
+        }
+    }
 }
 
 /// Push a (already-`Send`) message into local process `pid`'s mailbox and wake it;
@@ -941,13 +966,12 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
         credit: None,
     });
     mb.note_mailbox_bound(st.queue.len());
-    st.wake_pending = true;
-    let cv_waiter = st.cv_waiters > 0;
-    drop(st);
     // Both paths, for the reason `wake_both` documents: taking a `waiter` here does not prove
     // the receiver is *only* reachable by re-queue. This path never notified the condvar at
     // all, so a receiver that was both parked and cv-blocked was unreachable through it.
-    wake_both(&mb, Some(proc), cv_waiter);
+    let wake = st.wake_with(Some(proc));
+    drop(st);
+    wake.fire(&mb);
     l1_stats::bump(&l1_stats::HIT);
     LocalDelivery::Delivered
 }
@@ -974,11 +998,9 @@ fn deliver_envelope_timed(pid: u64, env: Envelope) {
         }
         st.push(env);
         mb.note_mailbox_bound(st.queue.len());
-        let parked = wake_parked(&mut st);
-        st.wake_pending = true;
-        let cv_waiter = st.cv_waiters > 0;
+        let wake = st.take_wake();
         drop(st);
-        wake_both(&mb, parked, cv_waiter);
+        wake.fire(&mb);
     }
 }
 
@@ -1801,7 +1823,7 @@ fn wait_for_message(ctx: &Ctx, i: usize, deadline: Option<Instant>) {
     // file-runner thread there's no such driver (a `Control::Kill` would just leak as
     // an error), and that thread isn't a killable process, so it keeps the old
     // behaviour: block normally, ignoring `kill_pending`. `exit` sets `kill_pending`
-    // *before* it takes this state lock (in `wake_parked`), so a kill that fully
+    // *before* it takes this state lock (in `take_wake`), so a kill that fully
     // completed before we got here is visible now under the lock — without this check
     // its `cv.notify_one()` would have been lost (no waiter yet) and we'd block forever.
     // The caller (`receive_match`) re-checks and unwinds; serialised with `exit` by
@@ -1878,17 +1900,13 @@ pub(super) fn wake_for_timeout(pid: u64, gen: u64) {
         if mb.timer_gen.load(Ordering::Relaxed) != gen {
             return;
         }
-        let mut st = crate::core::sync::lock(&mb.state);
-        let parked = wake_parked(&mut st);
-        st.wake_pending = true;
-        let cv_waiter = st.cv_waiters > 0;
-        drop(st);
-        // Both paths (`wake_both`). This site had **no** condvar notify at all — alone among
+        // Both paths (`Wake`). This site once had **no** condvar notify at all — alone among
         // the wake sites — which was survivable only because a cv-blocked receiver with a
         // deadline sits in `wait_timeout` and self-wakes at the same instant. That made the
         // timer thread's wake redundant *for that shape* and missing for any other; leaving
         // one wake site with different reachability is how the either/or bug above got in.
-        wake_both(&mb, parked, cv_waiter); // timer wake (capture-mode → may migrate)
+        let wake = crate::core::sync::lock(&mb.state).take_wake();
+        wake.fire(&mb); // timer wake (capture-mode → may migrate)
     }
 }
 

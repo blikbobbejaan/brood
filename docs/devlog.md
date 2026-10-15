@@ -17669,3 +17669,25 @@ because it splits on `": "`. Grep for the joined form after any such rewrite.
     matched `(old` inside strings and comments, did not skip `;` inside a form, and split
     `#b"…"` in two. None of that can happen on syntax-tree nodes; tests in `codemod_test`
     cover all three (sabotage-verified).
+
+## 2026-10-15 (later) — one arm rule for both tiers; one wake; one list of a message's children
+
+- **`core::value::select_arm_by`** is now the single multi-arity rule. `Closure::select_arm`
+  (tree-walker) and `CompiledClosure::arm_for` (VM) each had their own copy, and a one-sided
+  change would have run a different arm at tier 1 only. One sabotage of the shared tie-break
+  now reds the precedence test on both tiers at once.
+- **linmap:** the rewrite maps ops through the probe's own `linmap_update_op`/`linmap_read_op`
+  instead of a hand copy, and `linmap_fold_walk` (a verbatim copy of `pipeline_walk`) is gone.
+- **Flags read once:** `BROOD_TRACE_GCBLOCK` was read from the environment on every eval
+  entry and exit under debug assertions, and `BROOD_LINMAP` on every top-level form. They and
+  five trace flags now go through cached `debug_flags` readers.
+- **`mailbox::Wake`:** four wake sites (deliver, L1 delivery, timer, exit) each hand-spelled
+  "set `wake_pending`, take the waiter, read `cv_waiters`, drop the lock, wake both". Two of
+  them had once done half of it. `MailboxState::take_wake` builds a `#[must_use]` `Wake` under
+  the lock, and `fire` runs after it is released. Verified: `wake_both_paths` 5/5,
+  `root_exit_signal`/`read_line_parks`/`hosts_receive_fence`, eleven process test files 3×
+  each plus once at tier 0, two of them under `BROOD_GC_STRESS`+`VERIFY`, `distribution`
+  and `memory_pressure` (the latter twice more at tier 0). Not measured: the deliver path's
+  cost — it should be identical (the same steps, inlined), but per `CLAUDE.md` the A/B
+  belongs on the benchmark machine.
+- **KI-256:** `Message::for_each_child` fixes `message_bytes` ignoring closures.

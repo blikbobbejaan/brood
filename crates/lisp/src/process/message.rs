@@ -177,18 +177,9 @@ pub(crate) fn message_bytes(message: &Message) -> usize {
             }
             Message::Str(text) => total += text.capacity(),
             Message::StrShared(blob) | Message::Bytes(blob) => total += blob.len(),
-            Message::List(items, _)
-            | Message::Dotted(items)
-            | Message::Vector(items)
-            | Message::Set(items) => pending.extend(items.iter()),
-            Message::Map(entries) | Message::Failure(entries) => {
-                for (key, value) in entries {
-                    pending.push(key);
-                    pending.push(value);
-                }
-            }
             _ => {}
         }
+        next.for_each_child(|child| pending.push(child));
     }
     total
 }
@@ -205,6 +196,41 @@ impl Message {
     /// A container (or a shipped closure, whose arms and captures are nested messages):
     /// a recursive walk over it takes its step under [`grow`], since a message is nested
     /// as deep as the sender built it. A leaf pays nothing.
+    /// Visit every message directly inside this one: a container's elements, a map's keys
+    /// and values, and a closure's captured values, optional defaults and arm bodies.
+    ///
+    /// The one list of what a message contains, for the walkers that only read. `Drop`'s
+    /// `take_children` moves the same children out and `message_fits` must stop early, so
+    /// each keeps its own match — but over this same set. `message_bytes` once stopped at a
+    /// closure, so a queued closure's captured data went uncounted by the memory-pressure
+    /// victim choice.
+    pub(crate) fn for_each_child<'a>(&'a self, mut visit: impl FnMut(&'a Message)) {
+        match self {
+            Message::List(items, _)
+            | Message::Dotted(items)
+            | Message::Vector(items)
+            | Message::Set(items) => items.iter().for_each(visit),
+            Message::Map(entries) | Message::Failure(entries) => {
+                for (key, value) in entries {
+                    visit(key);
+                    visit(value);
+                }
+            }
+            Message::Closure(closure) => {
+                for (_, value) in &closure.captured {
+                    visit(value);
+                }
+                for arm in &closure.arms {
+                    for (_, default) in &arm.optionals {
+                        visit(default);
+                    }
+                    arm.body.iter().for_each(&mut visit);
+                }
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn nests(&self) -> bool {
         matches!(
             self,
@@ -1645,8 +1671,8 @@ pub(crate) fn chunk_flush(carry: &mut Vec<u8>) -> Option<Message> {
 //
 // Two invariants make this sound, both verified in the code rather than assumed:
 //
-//  * **Exclusive access.** Only ever called with the receiver *parked*: `wake_parked`
-//    hands the sender its `Box<Process>` under the mailbox state lock, so nothing else
+//  * **Exclusive access.** Only ever called with the receiver *parked*: the L1 delivery
+//    takes its `Box<Process>` out of the mailbox under the state lock, so nothing else
 //    can touch that heap for the duration. A *running* receiver falls back to `Message`.
 //  * **No incremental rooting needed.** Allocation never collects in this runtime
 //    (collection runs at eval safepoints), so children accumulated in an ordinary Rust
@@ -2535,5 +2561,51 @@ mod decline_tests {
             error.code,
             Some(crate::error::error_codes::MESSAGE_TOO_DEEP)
         );
+    }
+}
+
+#[cfg(test)]
+mod message_bytes_tests {
+    use super::{message_bytes, ClosureArmMsg, ClosureMsg, Message};
+
+    /// A queued closure's captured values, optional defaults and body are memory the
+    /// pressure victim choice must see. `message_bytes` stopped at a closure, so a closure
+    /// holding a megabyte weighed the same as an empty one.
+    #[test]
+    fn a_closure_weighs_what_it_captures_and_carries() {
+        let big = || Message::Str("x".repeat(100_000));
+        let closure = |captured, default, body| {
+            Message::Closure(Box::new(ClosureMsg {
+                name: None,
+                arms: vec![ClosureArmMsg {
+                    params: Vec::new(),
+                    optionals: vec![(crate::core::value::intern("o"), default)],
+                    rest: None,
+                    body: vec![body],
+                }],
+                doc: None,
+                captured: vec![(crate::core::value::intern("c"), captured)],
+                modules: Vec::new(),
+                module: None,
+            }))
+        };
+        let empty = message_bytes(&closure(Message::Nil, Message::Nil, Message::Nil));
+        for (what, message) in [
+            (
+                "a captured value",
+                closure(big(), Message::Nil, Message::Nil),
+            ),
+            (
+                "an optional default",
+                closure(Message::Nil, big(), Message::Nil),
+            ),
+            ("the body", closure(Message::Nil, Message::Nil, big())),
+        ] {
+            assert!(
+                message_bytes(&message) >= empty + 100_000,
+                "{what} of 100 kB went uncounted: {} bytes vs {empty} for an empty closure",
+                message_bytes(&message)
+            );
+        }
     }
 }

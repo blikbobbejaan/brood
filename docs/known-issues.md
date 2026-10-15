@@ -74,6 +74,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-256 | **a queued closure weighed nothing to the memory-pressure victim choice** — `message_bytes` stopped at `Message::Closure`, so 100 kB of captured data measured 40 bytes | ✅ **FIXED 2026-10-15** — `Message::for_each_child` lists every child, closures included. Guard: `message_bytes_tests::a_closure_weighs_what_it_captures_and_carries` (sabotage-verified) |
 | KI-255 | **52 error messages named functions that do not exist** — `byte-at:`, `subbytes:`, `floor:`, `proc-send:` and others, typed by hand into `LispError::runtime` and stale after renames; the label test only checked `who: &str` labels | ✅ **FIXED 2026-10-15** — every prefix names the callable function. Guard: `builtins_error_message_prefixes_name_callable_functions` (red on the 52 before) |
 | KI-254 | **completion and the reload watcher followed symlinked directories round a cycle** — copies of `file/walk-files` without its symlink rule listed and watched each file once per level | ✅ **FIXED 2026-10-15** — both copies skip a symlinked directory. Guards: a cycle test per walker in `file_test`, `complete_test`, `reload_watch_test` (each sabotage-verified) |
 | KI-253 | **one panicking wake would have ended every receive timeout** — the timer thread caught no panic and `TIMER_STARTED` stayed set | ✅ **FIXED 2026-10-15** — each wake runs under `catch_unwind`. Guard: by construction |
