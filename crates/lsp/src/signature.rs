@@ -91,10 +91,10 @@ fn enclosing_list(node: &Node, offset: u32) -> Option<&Node> {
     let contains = |n: &Node| n.span.start <= offset && offset <= n.span.end;
     let mut best = (node.kind == NodeKind::List && contains(node)).then_some(node);
     for child in &node.children {
-        if contains(child) {
-            if let Some(inner) = enclosing_list(child, offset) {
-                best = Some(inner);
-            }
+        if contains(child)
+            && let Some(inner) = enclosing_list(child, offset)
+        {
+            best = Some(inner);
         }
     }
     best

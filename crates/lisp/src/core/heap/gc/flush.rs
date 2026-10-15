@@ -579,18 +579,18 @@ pub(super) fn flush_nursery_old_refs(
             let v = nursery.envs[i].vars[j].1;
             nursery.envs[i].vars[j].1 = flush_value(old_src, dest, forward, v);
         }
-        if let Some(parent) = nursery.envs[i].parent {
-            if forward.copies(parent.region(), parent.is_old()) {
-                nursery.envs[i].parent = Some(flush_env(old_src, dest, forward, parent));
-            }
+        if let Some(parent) = nursery.envs[i].parent
+            && forward.copies(parent.region(), parent.is_old())
+        {
+            nursery.envs[i].parent = Some(flush_env(old_src, dest, forward, parent));
         }
     }
     // Closures: captured env, per-arm optional defaults, per-arm body literals.
     for i in 0..nursery.closures.len() {
-        if let Some(env) = nursery.closures[i].env {
-            if forward.copies(env.region(), env.is_old()) {
-                nursery.closures[i].env = Some(flush_env(old_src, dest, forward, env));
-            }
+        if let Some(env) = nursery.closures[i].env
+            && forward.copies(env.region(), env.is_old())
+        {
+            nursery.closures[i].env = Some(flush_env(old_src, dest, forward, env));
         }
         // A *shared* arms comes only from the RUNTIME-keyed template cache, so every
         // handle it holds is RUNTIME — which a minor collection never relocates. So

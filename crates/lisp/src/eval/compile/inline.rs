@@ -577,16 +577,16 @@ pub(crate) fn linmap_linear(node: &Node, s: usize, sink: LinSink, idiom: Option<
                     if let Some(rest) = i.read_args(h, args, s) {
                         return rest_linear(rest);
                     }
-                    if sink != LinSink::No {
-                        if let Some((key, addend, _)) = i.fused_add(h, args, s) {
-                            // The key is a local or a constant (never s); the addend may
-                            // READ s — `(+ (get acc k 0) (get acc j 0))` — but not consume it.
-                            return linmap_linear(key, s, LinSink::No, idiom)
-                                && match addend {
-                                    LinAddend::Node(e) => linmap_linear(e, s, LinSink::No, idiom),
-                                    LinAddend::One => true,
-                                };
-                        }
+                    if sink != LinSink::No
+                        && let Some((key, addend, _)) = i.fused_add(h, args, s)
+                    {
+                        // The key is a local or a constant (never s); the addend may
+                        // READ s — `(+ (get acc k 0) (get acc j 0))` — but not consume it.
+                        return linmap_linear(key, s, LinSink::No, idiom)
+                            && match addend {
+                                LinAddend::Node(e) => linmap_linear(e, s, LinSink::No, idiom),
+                                LinAddend::One => true,
+                            };
                     }
                 }
             }
@@ -661,16 +661,13 @@ fn linmap_yields_acc(node: &Node, s: usize, idiom: Option<LinIdiom>) -> bool {
 /// Does `s` appear as the first arg of an UPDATE op anywhere? (Only then is the
 /// rewrite a win — a read-only accumulator gains nothing.)
 pub(crate) fn linmap_has_update(node: &Node, s: usize, idiom: Option<LinIdiom>) -> bool {
-    if let Node::Call { callee, args, .. } = node {
-        if first_arg_is_local(args, s) {
-            if let Some(h) = call_head_sym(callee) {
-                if linmap_update_op(h).is_some()
-                    || idiom.is_some_and(|i| i.fused_add(h, args, s).is_some())
-                {
-                    return true;
-                }
-            }
-        }
+    if let Node::Call { callee, args, .. } = node
+        && first_arg_is_local(args, s)
+        && let Some(h) = call_head_sym(callee)
+        && (linmap_update_op(h).is_some()
+            || idiom.is_some_and(|i| i.fused_add(h, args, s).is_some()))
+    {
+        return true;
     }
     let mut found = false;
     walk_children(node, |c| found = found || linmap_has_update(c, s, idiom));
@@ -783,13 +780,12 @@ pub(crate) fn is_inlinable_self_call(node: &Node, defn_name: Symbol, nrequired: 
         tail: false,
         ..
     } = node
+        && args.len() == nrequired
     {
-        if args.len() == nrequired {
-            return matches!(
-                &**callee,
-                Node::Global(s) | Node::GlobalIc { sym: s, .. } if *s == defn_name
-            );
-        }
+        return matches!(
+            &**callee,
+            Node::Global(s) | Node::GlobalIc { sym: s, .. } if *s == defn_name
+        );
     }
     false
 }
@@ -1187,17 +1183,17 @@ pub(crate) fn jit_verify_staged(
     let log_args = crate::diagnostics::debug_flags::jit_verify_function() == Some(head_name);
     for k in lo..hi {
         let v = heap.root_at(k);
-        if crate::diagnostics::debug_flags::jit_verify() {
-            if let Some((kind, g, e)) = heap.dbg_value_stale(v) {
-                // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
-                let raw = unsafe { v.raw_words() };
-                eprintln!(
+        if crate::diagnostics::debug_flags::jit_verify()
+            && let Some((kind, g, e)) = heap.dbg_value_stale(v)
+        {
+            // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
+            let raw = unsafe { v.raw_words() };
+            eprintln!(
                     "[jit-verify] STALE {kind} (gen {g} != live {e}) staged at roots[{k}] BY arm \
                      '{}' for call to '{head_name}' (site={site}, argc={argc}); raw=[{:#x},{:#x},{:#x}]",
                     crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),
                     raw[0], raw[1], raw[2],
                 );
-            }
         }
         if log_args {
             // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).

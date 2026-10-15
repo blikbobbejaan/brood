@@ -553,10 +553,10 @@ pub(crate) fn compile_captures(
 /// gate the direct self-recursion path (only a fn-valued binder can be its own
 /// recursive callee).
 pub(crate) fn is_fn_form(heap: &Heap, form: Value) -> bool {
-    if let ValueRef::Pair(p) = form.unpack() {
-        if let ValueRef::Sym(h) = heap.pair(p).0.unpack() {
-            return value::symbol_is(h, kw::FN);
-        }
+    if let ValueRef::Pair(p) = form.unpack()
+        && let ValueRef::Sym(h) = heap.pair(p).0.unpack()
+    {
+        return value::symbol_is(h, kw::FN);
     }
     false
 }
@@ -1053,19 +1053,19 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 }
                 // `(%try (fn () body…) (fn (e) handler…))` — inline try/catch:
                 // run body and handler in the current frame without closure allocation.
-                if value::symbol_is(h, kw::TRY_PRIM) {
-                    if let Some(node) = compile_try_catch(heap, &items, scope) {
-                        return Some(node);
-                    }
-                    // Non-canonical shape: fall through to generic call (try_catch native handles it)
+                if value::symbol_is(h, kw::TRY_PRIM)
+                    && let Some(node) = compile_try_catch(heap, &items, scope)
+                {
+                    return Some(node);
                 }
+                // Non-canonical shape: fall through to generic call (try_catch native handles it)
                 // `(%binding '(n…) [v…] (fn () body…))` — the `binding` macro's expansion —
                 // inline (ADR-402): the body runs in this frame instead of as a thunk the
                 // `%binding` native evaluates nested.
-                if value::symbol_name_ref(h) == "%binding" {
-                    if let Some(node) = compile_binding(heap, &items, scope) {
-                        return Some(node);
-                    }
+                if value::symbol_name_ref(h) == "%binding"
+                    && let Some(node) = compile_binding(heap, &items, scope)
+                {
+                    return Some(node);
                 }
                 // `(%scope)` / `(%locals)` — the debugger locals intrinsic (ADR-174
                 // path B). Compile it straight from the live lexical-scope table into a
@@ -1155,30 +1155,28 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                         });
                     }
                 }
-                if items.len() == 3 && scope.lookup(h).is_none() {
-                    if let Some((op, map)) = resolve_prim(heap, h) {
-                        let a = compile_node(heap, items[1], scope, false)?;
-                        let b = compile_node(heap, items[2], scope, false)?;
-                        // `a`'s value needs a root slot across `b`'s eval only
-                        // if `b` can reach a safepoint (see the field doc).
-                        let broot = !matches!(
-                            b,
-                            Node::Const(_)
-                                | Node::Local(_)
-                                | Node::Global(_)
-                                | Node::GlobalIc { .. }
-                        );
-                        return Some(Node::Prim2 {
-                            op,
-                            a: Box::new(a),
-                            b: Box::new(b),
-                            map: [map[0] as u8, map[1] as u8],
-                            head: h,
-                            guard: AtomicU64::new(heap.global_epoch()),
-                            pos: heap.form_pos_only(form),
-                            broot,
-                        });
-                    }
+                if items.len() == 3
+                    && scope.lookup(h).is_none()
+                    && let Some((op, map)) = resolve_prim(heap, h)
+                {
+                    let a = compile_node(heap, items[1], scope, false)?;
+                    let b = compile_node(heap, items[2], scope, false)?;
+                    // `a`'s value needs a root slot across `b`'s eval only
+                    // if `b` can reach a safepoint (see the field doc).
+                    let broot = !matches!(
+                        b,
+                        Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. }
+                    );
+                    return Some(Node::Prim2 {
+                        op,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                        map: [map[0] as u8, map[1] as u8],
+                        head: h,
+                        guard: AtomicU64::new(heap.global_epoch()),
+                        pos: heap.form_pos_only(form),
+                        broot,
+                    });
                 }
                 // 3-arg inlinable primitive (`table-put`): same guard discipline as the
                 // 2-arg prims, and the same thin-wrapper following — `head` stays the
@@ -1187,21 +1185,22 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // probe (`linmap_probe`, run from the `def` expander) match `(get acc k 0)`
                 // and `(assoc acc k …)` as CALL shapes, so they stay calls through every
                 // Node pass and become `Prim3` last, in `inline::lower_map_prim3`.
-                if items.len() == 4 && scope.lookup(h).is_none() {
-                    if let Some(op3 @ PrimOp3::TablePut) = resolve_prim3(heap, h) {
-                        let a = compile_node(heap, items[1], scope, false)?;
-                        let b = compile_node(heap, items[2], scope, false)?;
-                        let c = compile_node(heap, items[3], scope, false)?;
-                        return Some(Node::Prim3 {
-                            op: op3,
-                            a: Box::new(a),
-                            b: Box::new(b),
-                            c: Box::new(c),
-                            head: h,
-                            guard: AtomicU64::new(heap.global_epoch()),
-                            pos: heap.form_pos_only(form),
-                        });
-                    }
+                if items.len() == 4
+                    && scope.lookup(h).is_none()
+                    && let Some(op3 @ PrimOp3::TablePut) = resolve_prim3(heap, h)
+                {
+                    let a = compile_node(heap, items[1], scope, false)?;
+                    let b = compile_node(heap, items[2], scope, false)?;
+                    let c = compile_node(heap, items[3], scope, false)?;
+                    return Some(Node::Prim3 {
+                        op: op3,
+                        a: Box::new(a),
+                        b: Box::new(b),
+                        c: Box::new(c),
+                        head: h,
+                        guard: AtomicU64::new(heap.global_epoch()),
+                        pos: heap.form_pos_only(form),
+                    });
                 }
                 // N-ary associative arithmetic (`(+ a b c …)`, `(* …)`) whose head is a
                 // free reference to the prelude operator: left-fold into nested 2-ary
@@ -1212,33 +1211,33 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // as `%add`/`%mul` promote to BigInt, so results stay identical. Restricted
                 // to the associative reducers with the in-order map `[0,1]` — never a
                 // comparison (`<`/`=` chain pairwise, not fold) or a swapped wrapper.
-                if items.len() > 3 && scope.lookup(h).is_none() {
-                    if let Some((op, [0, 1])) = resolve_prim(heap, h) {
-                        if matches!(op, PrimOp::Add | PrimOp::Mul) {
-                            let mut acc = compile_node(heap, items[1], scope, false)?;
-                            for &arg in &items[2..] {
-                                let b = compile_node(heap, arg, scope, false)?;
-                                let broot = !matches!(
-                                    b,
-                                    Node::Const(_)
-                                        | Node::Local(_)
-                                        | Node::Global(_)
-                                        | Node::GlobalIc { .. }
-                                );
-                                acc = Node::Prim2 {
-                                    op,
-                                    a: Box::new(acc),
-                                    b: Box::new(b),
-                                    map: [0, 1],
-                                    head: h,
-                                    guard: AtomicU64::new(heap.global_epoch()),
-                                    pos: heap.form_pos_only(form),
-                                    broot,
-                                };
-                            }
-                            return Some(acc);
-                        }
+                if items.len() > 3
+                    && scope.lookup(h).is_none()
+                    && let Some((op, [0, 1])) = resolve_prim(heap, h)
+                    && matches!(op, PrimOp::Add | PrimOp::Mul)
+                {
+                    let mut acc = compile_node(heap, items[1], scope, false)?;
+                    for &arg in &items[2..] {
+                        let b = compile_node(heap, arg, scope, false)?;
+                        let broot = !matches!(
+                            b,
+                            Node::Const(_)
+                                | Node::Local(_)
+                                | Node::Global(_)
+                                | Node::GlobalIc { .. }
+                        );
+                        acc = Node::Prim2 {
+                            op,
+                            a: Box::new(acc),
+                            b: Box::new(b),
+                            map: [0, 1],
+                            head: h,
+                            guard: AtomicU64::new(heap.global_epoch()),
+                            pos: heap.form_pos_only(form),
+                            broot,
+                        };
                     }
+                    return Some(acc);
                 }
                 // Multi-pair `(assoc coll k1 v1 k2 v2 …)` (ADR-368 follow-up, handoff item 2):
                 // unrolled at compile time into nested single-pair calls, `(assoc (assoc coll
@@ -1290,22 +1289,22 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             // loop (a `Call` through the captured closure, far slower than a `defn` loop).
             // A `let` that rebinds the name inside the body still
             // resolves to ITS slot, not `self_slot`, and still declines.
-            if tail {
-                if let (ValueRef::Sym(h), Some((name, arity))) = (head.unpack(), scope.self_call) {
-                    let bound = scope.lookup(h);
-                    if h == name
-                        && (bound.is_none() || bound == scope.self_slot)
-                        && items.len() - 1 == arity
-                    {
-                        let mut args = Vec::with_capacity(arity);
-                        for &a in &items[1..] {
-                            args.push(compile_node(heap, a, scope, false)?);
-                        }
-                        return Some(Node::SelfCall {
-                            args: args.into_boxed_slice(),
-                            pos: heap.form_pos_only(form),
-                        });
+            if tail
+                && let (ValueRef::Sym(h), Some((name, arity))) = (head.unpack(), scope.self_call)
+            {
+                let bound = scope.lookup(h);
+                if h == name
+                    && (bound.is_none() || bound == scope.self_slot)
+                    && items.len() - 1 == arity
+                {
+                    let mut args = Vec::with_capacity(arity);
+                    for &a in &items[1..] {
+                        args.push(compile_node(heap, a, scope, false)?);
                     }
+                    return Some(Node::SelfCall {
+                        args: args.into_boxed_slice(),
+                        pos: heap.form_pos_only(form),
+                    });
                 }
             }
             // Function call: compile the callee and every argument (value position).
@@ -1325,10 +1324,10 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             // ADR-182: an ability op call whose first argument's identity is provable skips
             // the op's `%identity-of`. The rewritten head is computed, so it takes the
             // NO_SITE path below.
-            if let Node::Global(op) = callee {
-                if let Some(direct) = inline::mono_devirtualize(heap, scope, op, &args) {
-                    callee = direct;
-                }
+            if let Node::Global(op) = callee
+                && let Some(direct) = inline::mono_devirtualize(heap, scope, op, &args)
+            {
+                callee = direct;
             }
             // A free-global callee gets a call-site inline-cache id (ADR-096);
             // a local/computed callee can resolve to a different function per
@@ -1355,13 +1354,11 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             let staged = site != NO_SITE
                 && args.iter().any(node_runs_user_code)
                 && !matches!(callee, Node::Global(sym) if heap.is_reserved_global(sym));
-            if staged {
-                if let Node::Global(sym) = callee {
-                    callee = Node::GlobalIc {
-                        sym,
-                        site: scope.gsite_alloc(),
-                    };
-                }
+            if staged && let Node::Global(sym) = callee {
+                callee = Node::GlobalIc {
+                    sym,
+                    site: scope.gsite_alloc(),
+                };
             }
             let (pos, file) = match heap.form_pos(form) {
                 Some((p, f)) => (Some(p), f),

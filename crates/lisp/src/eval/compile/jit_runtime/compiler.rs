@@ -157,10 +157,10 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
                 .map(|a| a.params.len())
                 .collect();
             for argc in arities {
-                if let Some(callee) = cached_arm_for(heap, id, argc) {
-                    if let Some(c) = callee.chunk.as_ref() {
-                        globals_of(c, &mut syms);
-                    }
+                if let Some(callee) = cached_arm_for(heap, id, argc)
+                    && let Some(c) = callee.chunk.as_ref()
+                {
+                    globals_of(c, &mut syms);
                 }
             }
         }
@@ -251,27 +251,25 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
     // that instead of blocking on the module lock (held across every compile) to
     // lower it again. This is the spinning-loop escape hatch: any valid native
     // pointer ends the spin.
-    if let Some(key) = arm.share_key {
-        if let Some((ptr, epoch)) = heap.jit_shared_lookup(key) {
-            if epoch == heap.global_epoch()
-                && !ptr.is_null()
-                && ptr != crate::jit::BAILED
-                && ptr != crate::jit::QUEUED
-                && ActiveBackend::may_adopt_shared_code(arm)
-            {
-                {
-                    if crate::diagnostics::debug_flags::jit_bail_trace() {
-                        let name = arm.dbg_label();
-                        eprintln!("[jit-ir] arm={name} adopted-shared-code-compile-now nslots={} (not lowered here, emits no IR dump)", arm.nslots);
-                    }
-                }
-                arm.compile_epoch.store(epoch, Release);
-                arm.jit_code.store(ptr, Release);
-                arm.shared_published
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                return;
+    if let Some(key) = arm.share_key
+        && let Some((ptr, epoch)) = heap.jit_shared_lookup(key)
+        && epoch == heap.global_epoch()
+        && !ptr.is_null()
+        && ptr != crate::jit::BAILED
+        && ptr != crate::jit::QUEUED
+        && ActiveBackend::may_adopt_shared_code(arm)
+    {
+        {
+            if crate::diagnostics::debug_flags::jit_bail_trace() {
+                let name = arm.dbg_label();
+                eprintln!("[jit-ir] arm={name} adopted-shared-code-compile-now nslots={} (not lowered here, emits no IR dump)", arm.nslots);
             }
         }
+        arm.compile_epoch.store(epoch, Release);
+        arm.jit_code.store(ptr, Release);
+        arm.shared_published
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        return;
     }
     // Snapshot the live frame's slot tags exactly as jit_tier's enqueuer does
     // (used to type-specialize float arms).
@@ -469,11 +467,11 @@ pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::La
                     } else {
                         &published
                     };
-                    if let Some(&(ptr, epoch)) = map.get(&(rt_tag, key, poly)) {
-                        if epoch == lowered_at {
-                            install(ptr as *mut u8);
-                            return;
-                        }
+                    if let Some(&(ptr, epoch)) = map.get(&(rt_tag, key, poly))
+                        && epoch == lowered_at
+                    {
+                        install(ptr as *mut u8);
+                        return;
                     }
                 }
                 let mut jit = crate::jit::GLOBAL_JIT

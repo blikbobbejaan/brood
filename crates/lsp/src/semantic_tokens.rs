@@ -252,14 +252,15 @@ fn push_symbol(
     // Split on the *last* `/` (ADR-085): a hierarchical module `gui/window` with
     // a def `draw` is the symbol `gui/window/draw`, so the whole `gui/window`
     // path is the namespace and `draw` the name.
-    if let Some(i) = name.rfind('/') {
-        if i > 0 && i + 1 < name.len() {
-            let start = node.span.start;
-            let slash = start + i as u32;
-            emit_span(start, slash, src, index, T_NAMESPACE, 0, out);
-            emit_span(slash + 1, node.span.end, src, index, ttype, tmods, out);
-            return;
-        }
+    if let Some(i) = name.rfind('/')
+        && i > 0
+        && i + 1 < name.len()
+    {
+        let start = node.span.start;
+        let slash = start + i as u32;
+        emit_span(start, slash, src, index, T_NAMESPACE, 0, out);
+        emit_span(slash + 1, node.span.end, src, index, ttype, tmods, out);
+        return;
     }
     emit(node, src, index, ttype, tmods, out);
 }

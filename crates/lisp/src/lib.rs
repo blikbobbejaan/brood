@@ -166,15 +166,15 @@ impl Interp {
         // a day (a `bytes` handle staged for a native across the load). Loading once at boot
         // keeps the whole win — an unarmed run still never reads the module — and puts the
         // collection where every boot already has one.
-        if builtins::contracts::contracts_armed() {
-            if let Err(e) = interp.eval_str("(require-one 'contract)") {
-                eprintln!("[contracts] the contract machinery could not be loaded: {e}");
-            }
+        if builtins::contracts::contracts_armed()
+            && let Err(e) = interp.eval_str("(require-one 'contract)")
+        {
+            eprintln!("[contracts] the contract machinery could not be loaded: {e}");
         }
-        if builtins::contracts::prelude_contracts_armed() {
-            if let Err(e) = builtins::contracts::sweep(&mut interp.heap, None) {
-                eprintln!("[contracts] the prelude's contracts could not be installed: {e}");
-            }
+        if builtins::contracts::prelude_contracts_armed()
+            && let Err(e) = builtins::contracts::sweep(&mut interp.heap, None)
+        {
+            eprintln!("[contracts] the prelude's contracts could not be installed: {e}");
         }
         interp
     }

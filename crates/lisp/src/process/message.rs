@@ -852,15 +852,13 @@ impl CopyTarget for IntoMessage {
         id: ClosureId,
         depth: u32,
     ) -> Result<Message, LispError> {
-        if let Some(tag) = self.dest_runtime {
-            if share_fn_enabled()
-                && id.region() == crate::core::value::RUNTIME
-                && tag == src.runtime_tag()
-            {
-                if let Some(pin) = src.pin_gen_of(id) {
-                    return Ok(Message::FnShared { bits: id.0, pin });
-                }
-            }
+        if let Some(tag) = self.dest_runtime
+            && share_fn_enabled()
+            && id.region() == crate::core::value::RUNTIME
+            && tag == src.runtime_tag()
+            && let Some(pin) = src.pin_gen_of(id)
+        {
+            return Ok(Message::FnShared { bits: id.0, pin });
         }
         Ok(Message::Closure(Box::new(closure_to_message(
             self,
@@ -1160,14 +1158,12 @@ fn collect_qualified_syms(heap: &Heap, form: Value, out: &mut Vec<Symbol>) {
         }
         Value::Pair(_) => {
             // `(quote x)` / `(quasiquote x)` is data — skip the whole subtree.
-            if let Value::Pair(id) = form {
-                if let Value::Sym(h) = heap.pair(id).0 {
-                    if value::symbol_is(h, crate::core::keywords::QUOTE)
-                        || value::symbol_is(h, crate::core::keywords::QUASIQUOTE)
-                    {
-                        return;
-                    }
-                }
+            if let Value::Pair(id) = form
+                && let Value::Sym(h) = heap.pair(id).0
+                && (value::symbol_is(h, crate::core::keywords::QUOTE)
+                    || value::symbol_is(h, crate::core::keywords::QUASIQUOTE))
+            {
+                return;
             }
             let mut cur = form;
             while let Value::Pair(id) = cur {

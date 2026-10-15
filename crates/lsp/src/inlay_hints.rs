@@ -85,18 +85,17 @@ fn walk(
     if node.span.end < range.0 || node.span.start > range.1 {
         return;
     }
-    if node.kind == NodeKind::List {
-        if let Some(head) = node.forms().next() {
-            if head.kind == NodeKind::Symbol {
-                let name = head.text(text);
-                if name == "defn" || name == "defn-" {
-                    hint_for_defn(node, text, index, range, sigs, out);
-                } else {
-                    hints_for_call(
-                        interp, root, node, head, text, scope, index, range, cache, out,
-                    );
-                }
-            }
+    if node.kind == NodeKind::List
+        && let Some(head) = node.forms().next()
+        && head.kind == NodeKind::Symbol
+    {
+        let name = head.text(text);
+        if name == "defn" || name == "defn-" {
+            hint_for_defn(node, text, index, range, sigs, out);
+        } else {
+            hints_for_call(
+                interp, root, node, head, text, scope, index, range, cache, out,
+            );
         }
     }
     for child in &node.children {

@@ -177,10 +177,10 @@ impl fmt::Display for Ty {
         }
         // A named cover (ADR-299) with two or more records in it reads better as its name
         // than as the list; with one record, `number | t/usd` says more than `numeric`.
-        if let Some((name, records)) = super::check::cover_name_of(self) {
-            if records >= 2 {
-                return f.write_str(name);
-            }
+        if let Some((name, records)) = super::check::cover_name_of(self)
+            && records >= 2
+        {
+            return f.write_str(name);
         }
         if *self == Ty::SEQABLE {
             return f.write_str("seqable");
@@ -212,19 +212,19 @@ impl fmt::Display for Ty {
         // (e.g. a `(map …)` result is `nil | list<E>`), so the rendering names
         // every tag the value can actually have.
         // A pure map type with a known key/value type: `map<K, V>`.
-        if let Some((k, v)) = self.map_kv() {
-            if self.tags == MAP_BIT {
-                // Beside a record shape the term is the INTERSECTION of the two, and
-                // printing the `map<K, V>` half alone named a wider type.
-                if self.fields.is_some() {
-                    let shape = Ty {
-                        map_kv: None,
-                        ..self.clone()
-                    };
-                    return write!(f, "({shape} and map<{k}, {v}>)");
-                }
-                return write!(f, "map<{k}, {v}>");
+        if let Some((k, v)) = self.map_kv()
+            && self.tags == MAP_BIT
+        {
+            // Beside a record shape the term is the INTERSECTION of the two, and
+            // printing the `map<K, V>` half alone named a wider type.
+            if self.fields.is_some() {
+                let shape = Ty {
+                    map_kv: None,
+                    ..self.clone()
+                };
+                return write!(f, "({shape} and map<{k}, {v}>)");
             }
+            return write!(f, "map<{k}, {v}>");
         }
         // A record shape riding in a wider term — `number | usd`, the domain of `+` once a
         // record has a `num/add` method. The term's map member IS the record, and only the
@@ -246,61 +246,61 @@ impl fmt::Display for Ty {
         // optional field. `fields` is keyed by interned `Symbol` (intern
         // order, not alphabetical — same trap `lit` avoids below), so sort
         // by spelling for a stable rendering.
-        if let Some(fields) = self.record_fields() {
-            if self.tags == MAP_BIT {
-                // A record's NAME is its type. `{__id__: :shapes/circle, ...}` renders the
-                // REPRESENTATION: `:__id__` is how nominal identity is *carried*, not
-                // something anyone writes, so a mismatch read
-                //   expects {__id__: :t/circle, ...}, got {__id__: :t/square, ...}
-                // — which buries the one word that matters, twice, behind punctuation. Lead
-                // with the identity in the spelling a `sig` takes (`expects t/circle, got
-                // t/square`), and keep only the fields that say something the declaration
-                // does not, so a refined shape still shows its refinement.
-                if let Some(names) = nominal_ids(fields) {
-                    let mut refined: Vec<String> = fields
-                        .iter()
-                        .filter(|(name, (ty, _))| {
-                            value::symbol_name_ref(**name) != "__id__" && *ty != Ty::ANY
-                        })
-                        .map(|(name, (ty, required))| {
-                            let mark = if *required { "" } else { "?" };
-                            format!("{}{mark}: {ty}", value::symbol_name_ref(*name))
-                        })
-                        .collect();
-                    refined.sort();
-                    let joined = names.join(" | ");
-                    if refined.is_empty() {
-                        return write!(f, "{joined}");
-                    }
-                    return write!(f, "{joined}{{{}}}", refined.join(", "));
-                }
-                let mut parts: Vec<String> = fields
+        if let Some(fields) = self.record_fields()
+            && self.tags == MAP_BIT
+        {
+            // A record's NAME is its type. `{__id__: :shapes/circle, ...}` renders the
+            // REPRESENTATION: `:__id__` is how nominal identity is *carried*, not
+            // something anyone writes, so a mismatch read
+            //   expects {__id__: :t/circle, ...}, got {__id__: :t/square, ...}
+            // — which buries the one word that matters, twice, behind punctuation. Lead
+            // with the identity in the spelling a `sig` takes (`expects t/circle, got
+            // t/square`), and keep only the fields that say something the declaration
+            // does not, so a refined shape still shows its refinement.
+            if let Some(names) = nominal_ids(fields) {
+                let mut refined: Vec<String> = fields
                     .iter()
+                    .filter(|(name, (ty, _))| {
+                        value::symbol_name_ref(**name) != "__id__" && *ty != Ty::ANY
+                    })
                     .map(|(name, (ty, required))| {
                         let mark = if *required { "" } else { "?" };
                         format!("{}{mark}: {ty}", value::symbol_name_ref(*name))
                     })
                     .collect();
-                parts.sort();
-                // An **open** shape says so (ADR-264) — without the marker `{a: int}`
-                // would read as "exactly this", which is what the *closed* shape means.
-                if self.record_is_open() == Some(true) {
-                    parts.push("...".to_string());
+                refined.sort();
+                let joined = names.join(" | ");
+                if refined.is_empty() {
+                    return write!(f, "{joined}");
                 }
-                return write!(f, "{{{}}}", parts.join(", "));
+                return write!(f, "{joined}{{{}}}", refined.join(", "));
             }
+            let mut parts: Vec<String> = fields
+                .iter()
+                .map(|(name, (ty, required))| {
+                    let mark = if *required { "" } else { "?" };
+                    format!("{}{mark}: {ty}", value::symbol_name_ref(*name))
+                })
+                .collect();
+            parts.sort();
+            // An **open** shape says so (ADR-264) — without the marker `{a: int}`
+            // would read as "exactly this", which is what the *closed* shape means.
+            if self.record_is_open() == Some(true) {
+                parts.push("...".to_string());
+            }
+            return write!(f, "{{{}}}", parts.join(", "));
         }
         // A tuple shape: `(tuple int, string)` — matches the annotation
         // grammar directly, unlike a record's `{ }` shorthand.
-        if let Some(elems) = self.tuple_elems() {
-            if self.tags == VECTOR_BIT {
-                let joined = elems
-                    .iter()
-                    .map(Ty::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return write!(f, "(tuple {joined})");
-            }
+        if let Some(elems) = self.tuple_elems()
+            && self.tags == VECTOR_BIT
+        {
+            let joined = elems
+                .iter()
+                .map(Ty::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return write!(f, "(tuple {joined})");
         }
         // A list shape: `(list int, string)` — the positional list, `(list a b)`'s type.
         if let Some(elems) = self.list_shape_elems() {
@@ -311,28 +311,28 @@ impl fmt::Display for Ty {
                 .join(", ");
             return write!(f, "(list {joined})");
         }
-        if let Some(elem) = self.elem_ty() {
-            if self.tags & !(SEQ_BITS | (1u32 << bit(Tag::Nil))) == 0 {
-                let kinds: Vec<&str> = [
-                    (Tag::Pair, "list"),
-                    (Tag::Vector, "vector"),
-                    (Tag::Set, "set"),
-                ]
-                .iter()
-                .filter(|(tag, _)| self.contains_tag(*tag))
-                .map(|(_, name)| *name)
-                .collect();
-                let nil = if self.contains_tag(Tag::Nil) && !kinds.is_empty() {
-                    "nil | "
-                } else {
-                    ""
-                };
-                let len = self.len_suffix();
-                match kinds.as_slice() {
-                    [] => {}
-                    [one] => return write!(f, "{nil}{one}<{elem}>{len}"),
-                    many => return write!(f, "{nil}({})<{elem}>{len}", many.join(" | ")),
-                }
+        if let Some(elem) = self.elem_ty()
+            && self.tags & !(SEQ_BITS | (1u32 << bit(Tag::Nil))) == 0
+        {
+            let kinds: Vec<&str> = [
+                (Tag::Pair, "list"),
+                (Tag::Vector, "vector"),
+                (Tag::Set, "set"),
+            ]
+            .iter()
+            .filter(|(tag, _)| self.contains_tag(*tag))
+            .map(|(_, name)| *name)
+            .collect();
+            let nil = if self.contains_tag(Tag::Nil) && !kinds.is_empty() {
+                "nil | "
+            } else {
+                ""
+            };
+            let len = self.len_suffix();
+            match kinds.as_slice() {
+                [] => {}
+                [one] => return write!(f, "{nil}{one}<{elem}>{len}"),
+                many => return write!(f, "{nil}({})<{elem}>{len}", many.join(" | ")),
             }
         }
         // A literal type: the enumerated keywords (`:a | :b`), ints (`5 | 6`),
@@ -536,10 +536,10 @@ impl fmt::Display for Ty {
                 // A sequence member of a MIXED term still carries the term's element
                 // type: `nil | number | vector<X>` is what a recursive value type's body
                 // is, and printing `vector` there hid the reference that makes it one.
-                if (1u32 << bit(tag)) & SEQ_BITS != 0 {
-                    if let Some(elem) = self.elem.as_deref() {
-                        write!(f, "<{elem}>")?;
-                    }
+                if (1u32 << bit(tag)) & SEQ_BITS != 0
+                    && let Some(elem) = self.elem.as_deref()
+                {
+                    write!(f, "<{elem}>")?;
                 }
                 // …and its interval: an int's, a countable member's length (ADR-350).
                 f.write_str(&self.range_suffix_for(tag))?;
@@ -745,14 +745,14 @@ impl Ty {
                 return Some(format!("(record{open} {})", parts.join(" ")));
             }
         }
-        if self.tags == VECTOR_BIT {
-            if let Some(elems) = self.tuple_elems() {
-                let parts: Vec<String> = elems
-                    .iter()
-                    .map(Ty::to_source)
-                    .collect::<Option<Vec<_>>>()?;
-                return Some(format!("(tuple {})", parts.join(" ")));
-            }
+        if self.tags == VECTOR_BIT
+            && let Some(elems) = self.tuple_elems()
+        {
+            let parts: Vec<String> = elems
+                .iter()
+                .map(Ty::to_source)
+                .collect::<Option<Vec<_>>>()?;
+            return Some(format!("(tuple {})", parts.join(" ")));
         }
         // A list shape of two or more positions is `(list T U …)` in the grammar; ONE
         // position has no spelling of its own (`(list T)` is the uniform list, and the

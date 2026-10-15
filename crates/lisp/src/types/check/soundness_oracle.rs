@@ -19,18 +19,18 @@ fn value_member_of(heap: &Heap, v: Value, ty: &Ty) -> bool {
         return false;
     }
     // **Int intervals** (ADR-350): `contains_tag` passes `-1` against `int[0..]`.
-    if let (Value::Int(n), Some(r)) = (v, ty.int_range()) {
-        if !crate::types::Range::subset(crate::types::Range::point(n), r) {
-            return false;
-        }
+    if let (Value::Int(n), Some(r)) = (v, ty.int_range())
+        && !crate::types::Range::subset(crate::types::Range::point(n), r)
+    {
+        return false;
     }
     // **Lengths** (`with_len`): a claimed length interval must hold the value's count.
     // Strings and bytes are left out (their count is not one heap walk here), and so is a
     // `defrecord` value, whose count hides its identity key.
-    if let (Some(count), Some(r)) = (counted_length(heap, v), ty.count_range()) {
-        if !crate::types::Range::subset(crate::types::Range::point(count), r) {
-            return false;
-        }
+    if let (Some(count), Some(r)) = (counted_length(heap, v), ty.count_range())
+        && !crate::types::Range::subset(crate::types::Range::point(count), r)
+    {
+        return false;
     }
     if let Some(elem) = ty.elem_ty() {
         match v {
@@ -68,31 +68,31 @@ fn value_member_of(heap: &Heap, v: Value, ty: &Ty) -> bool {
     // and is skipped, which is the conservative direction.
     match v {
         Value::Int(n) => {
-            if let Some(set) = ty.as_lit_int() {
-                if !set.contains(&n) {
-                    return false;
-                }
+            if let Some(set) = ty.as_lit_int()
+                && !set.contains(&n)
+            {
+                return false;
             }
         }
         Value::Keyword(k) => {
-            if let Some(set) = ty.as_lit() {
-                if !set.contains(&k) {
-                    return false;
-                }
+            if let Some(set) = ty.as_lit()
+                && !set.contains(&k)
+            {
+                return false;
             }
         }
         Value::Bool(b) => {
-            if let Some(set) = ty.as_lit_bool() {
-                if !set.contains(&b) {
-                    return false;
-                }
+            if let Some(set) = ty.as_lit_bool()
+                && !set.contains(&b)
+            {
+                return false;
             }
         }
         Value::Str(id) => {
-            if let Some(set) = ty.as_lit_str() {
-                if !set.contains(heap.string(id)) {
-                    return false;
-                }
+            if let Some(set) = ty.as_lit_str()
+                && !set.contains(heap.string(id))
+            {
+                return false;
             }
         }
         _ => {}

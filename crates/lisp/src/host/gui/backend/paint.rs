@@ -804,10 +804,10 @@ pub(super) fn render_ops(
 ) {
     let fb_h = canvas.h;
     for op in ops {
-        if let Some((top, bottom)) = op_band(op, scroll_dy, oy, ch) {
-            if bottom <= canvas.y0 as isize || top >= canvas.y1 as isize {
-                continue;
-            }
+        if let Some((top, bottom)) = op_band(op, scroll_dy, oy, ch)
+            && (bottom <= canvas.y0 as isize || top >= canvas.y1 as isize)
+        {
+            continue;
         }
         match op {
             Op::Clear => canvas.fill_rows(0, fb_h, bg0),

@@ -89,7 +89,7 @@ static TIMER_THREADS_STARTED: AtomicUsize = AtomicUsize::new(0);
 /// deadlines. Lazily starts the timer thread on first use (programs that never use a
 /// `receive` timeout never spawn it). On wasm there is no timer thread — the cooperative
 /// scheduler pump fires due timers itself (`fire_next_timer`); we only record the deadline.
-pub(super) fn arm_timer(pid: u64, deadline: SchedDeadline, gen: u64) {
+pub(super) fn arm_timer(pid: u64, deadline: SchedDeadline, generation: u64) {
     #[cfg(not(target_arch = "wasm32"))]
     ensure_timer_thread();
     let (lock, cv) = &*TIMERS;
@@ -105,7 +105,7 @@ pub(super) fn arm_timer(pid: u64, deadline: SchedDeadline, gen: u64) {
     let earliest = q
         .peek()
         .is_none_or(|Reverse((head, _, _))| deadline < *head);
-    q.push(Reverse((deadline, pid, gen)));
+    q.push(Reverse((deadline, pid, generation)));
     if q.len() >= compact_threshold() {
         compact(&mut q);
     }
@@ -147,11 +147,11 @@ fn compact(q: &mut TimerQueue) {
     let kept: Vec<Reverse<(SchedDeadline, u64, u64)>> = std::mem::take(q)
         .into_vec()
         .into_iter()
-        .filter(|Reverse((_, pid, gen))| {
+        .filter(|Reverse((_, pid, generation))| {
             *gens
                 .entry(*pid)
                 .or_insert_with(|| super::mailbox::current_timer_gen(*pid))
-                == Some(*gen)
+                == Some(*generation)
         })
         .collect();
     let live = kept.len();
@@ -205,13 +205,13 @@ pub(crate) fn fire_next_timer() -> bool {
     let (lock, _cv) = &*TIMERS;
     let next = crate::core::sync::lock(lock).pop();
     match next {
-        Some(Reverse((SchedDeadline(deadline), pid, gen))) => {
+        Some(Reverse((SchedDeadline(deadline), pid, generation))) => {
             LOGICAL_NOW.with(|c| {
                 if c.get().is_none_or(|now| deadline > now) {
                     c.set(Some(deadline));
                 }
             });
-            super::mailbox::wake_for_timeout(pid, gen);
+            super::mailbox::wake_for_timeout(pid, generation);
             true
         }
         None => false,
@@ -272,10 +272,10 @@ fn timer_loop() {
                         .0;
                 } else {
                     let mut due = Vec::new();
-                    while let Some(&Reverse((d, pid, gen))) = q.peek() {
+                    while let Some(&Reverse((d, pid, generation))) = q.peek() {
                         if d.reached() {
                             q.pop();
-                            due.push((pid, gen));
+                            due.push((pid, generation));
                         } else {
                             break;
                         }
@@ -288,9 +288,10 @@ fn timer_loop() {
                     // fires deadlines, and `TIMER_STARTED` stays set if it dies, so one
                     // panicking wake would otherwise end every timeout in the runtime —
                     // and silently. The panic hook has already reported the panic.
-                    for (pid, gen) in due {
-                        let _ =
-                            std::panic::catch_unwind(|| super::mailbox::wake_for_timeout(pid, gen));
+                    for (pid, generation) in due {
+                        let _ = std::panic::catch_unwind(|| {
+                            super::mailbox::wake_for_timeout(pid, generation)
+                        });
                     }
                     q = crate::core::sync::lock(lock);
                 }
@@ -371,8 +372,8 @@ mod tests {
         let far = SchedDeadline::after_millis(3_600_000);
         let dead_pid = u64::MAX - 7; // never in the process REGISTRY
         let armed = 4000;
-        for gen in 0..armed {
-            arm_timer(dead_pid, far, gen);
+        for generation in 0..armed {
+            arm_timer(dead_pid, far, generation);
         }
         let pending = pending_timer_count();
         assert!(

@@ -78,33 +78,33 @@ pub(crate) fn jit_dispatch_call(
     // `Arc::clone` (the one atomic-RMW per call the older cloning path below pays ~30M
     // times). Args are already staged at `[stage_base, stage_base+argc)`. Mirrors the
     // cloning path's frame setup + outcome handling; deopt (rare) re-probes for the arm.
-    if elided && !link_over_cap {
-        if let Some((code, nslots, callee_env, callee_bases)) =
+    if elided
+        && !link_over_cap
+        && let Some((code, nslots, callee_env, callee_bases)) =
             heap.vm_call_ic_fast_link(site, head, argc as u32, epoch)
-        {
-            // This entry hands back a `Value`, so it owns the destination: a stack local,
-            // which is where the result would have been copied to anyway.
-            let mut ret = Value::Nil;
-            match jit_run_fast_link(
-                heap,
-                argc,
-                site,
-                head,
-                epoch,
-                stage_base,
-                code as usize,
-                nslots,
-                callee_env,
-                callee_bases,
-                &mut ret as *mut Value,
-                unwind,
-            ) {
-                FastLinkOutcome::Done => return Some(ret),
-                FastLinkOutcome::Error => return None,
-                // IC changed under us (astronomically rare): the args were re-staged at
-                // `[stage_base, ..)` — fall through to the slow path below.
-                FastLinkOutcome::Fallthrough => {}
-            }
+    {
+        // This entry hands back a `Value`, so it owns the destination: a stack local,
+        // which is where the result would have been copied to anyway.
+        let mut ret = Value::Nil;
+        match jit_run_fast_link(
+            heap,
+            argc,
+            site,
+            head,
+            epoch,
+            stage_base,
+            code as usize,
+            nslots,
+            callee_env,
+            callee_bases,
+            &mut ret as *mut Value,
+            unwind,
+        ) {
+            FastLinkOutcome::Done => return Some(ret),
+            FastLinkOutcome::Error => return None,
+            // IC changed under us (astronomically rare): the args were re-staged at
+            // `[stage_base, ..)` — fall through to the slow path below.
+            FastLinkOutcome::Fallthrough => {}
         }
     }
 

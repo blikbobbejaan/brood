@@ -1145,15 +1145,14 @@ pub(super) fn bit_shift_left(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
     // i64 fast path: stay an `Int` when the shift fits, else promote. (Unlike the
     // old wrapping shift, an i64 result that would lose bits past the top now
     // promotes to BigInt — the conventional arbitrary-width left shift.)
-    if let Value::Int(x) = a {
-        if amount < 64 {
-            if let Some(r) = x.checked_shl(amount as u32) {
-                // checked_shl only guards the *shift amount*, not value overflow;
-                // verify the shift is lossless before keeping the i64 result.
-                if (r >> amount) == x {
-                    return Ok(Value::int(r));
-                }
-            }
+    if let Value::Int(x) = a
+        && amount < 64
+        && let Some(r) = x.checked_shl(amount as u32)
+    {
+        // checked_shl only guards the *shift amount*, not value overflow;
+        // verify the shift is lossless before keeping the i64 result.
+        if (r >> amount) == x {
+            return Ok(Value::int(r));
         }
     }
     let x = expect_bigint(heap, "bit/shift-left", a)?;

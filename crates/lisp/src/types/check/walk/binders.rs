@@ -148,10 +148,10 @@ pub(super) fn check_fn_bound_indexed(
         } else {
             scope.bind(p, ty)
         };
-        if i == 0 {
-            if let Some(xs) = indexes.filter(|xs| scope.is_lexical_local(*xs)) {
-                scope = scope.add_index_bound(p, xs, 0);
-            }
+        if i == 0
+            && let Some(xs) = indexes.filter(|xs| scope.is_lexical_local(*xs))
+        {
+            scope = scope.add_index_bound(p, xs, 0);
         }
     }
     let body_start = match (items.get(2), items.get(3)) {
@@ -288,11 +288,11 @@ pub(super) fn check_fn_seeded(
         };
         let mut scope = ctx.clone();
         for &clause in forms {
-            if let Some(citems) = list_items(heap, clause) {
-                if let Some(&plist) = citems.first() {
-                    for p in fn_params(heap, plist) {
-                        scope = scope.bind(p, None);
-                    }
+            if let Some(citems) = list_items(heap, clause)
+                && let Some(&plist) = citems.first()
+            {
+                for p in fn_params(heap, plist) {
+                    scope = scope.bind(p, None);
                 }
             }
         }
@@ -337,54 +337,55 @@ pub(super) fn check_fn_seeded(
     // relation only warns on a body type provably disjoint from `R` — never on a
     // widened guess (a `number`-returning body declared `int` defers). A precise
     // literal return uses `⊆`. Only fires with a seeded (sig-matched) sig.
-    if let Some(s) = sig {
-        if let Some(&ret_form) = items[body_start..].last() {
-            let g = gradual_of(heap, ret_form, &scope);
-            // A body that yields `never` **never returns** — it always throws — so it is
-            // consistent with every declared return, including `never` itself. Without
-            // this skip the dynamic half of `consistent_with` (`∩ ≠ ⊥`) reads `never` as
-            // disjoint from everything, since it is: an empty set shares no value with
-            // any set, itself included. The result was a false positive on every
-            // always-throwing function that carried a `(sig …)` — `declared return type
-            // string but the body yields never` — and, at its silliest, on a function
-            // declared `never` whose body yields `never`. It stayed hidden only because
-            // so few signatures were declared; adopting them across `std/` surfaced it.
-            // The argument check has carried the same skip, for the same reason, all
-            // along.
-            let who = name
-                .map(|n| format!("{}: ", name_of(n)))
-                .unwrap_or_default();
-            if !g.bound.is_never()
-                && !g.consistent_with_mode(s.ret.clone(), ctx.strict())
-                && !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH)
-            {
-                out.push((
-                    heap.form_pos_only(ret_form),
-                    format!(
-                        "{}declared return type {} but the body yields {}",
-                        who,
-                        crate::types::check::annot::display_ty(&s.ret),
-                        crate::types::check::annot::display_ty(&g.bound)
-                    ),
-                ));
-            } else if ctx.strict()
-                && !s.ret.is_any()
-                && g.dynamic
-                && !g.bound.is_never()
-                && g.bound
-                    .terms_vec()
-                    .iter()
-                    .all(|term| term.is_any() || term.is_known_only_by_exclusion())
-                && !ctx.is_suppressed(
-                    crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH
-                        | crate::types::check::ctx::SUPPRESS_TRUSTED,
-                )
-            {
-                // The declaration is TRUSTED here, not verified: the body's result is the
-                // unknown, so nothing was checked against the declared return, and every
-                // caller reads it as fact (ADR-259). Outside contracts mode that is the one
-                // way a wrong declaration goes unreported; strict says so.
-                out.push((
+    if let Some(s) = sig
+        && let Some(&ret_form) = items[body_start..].last()
+    {
+        let g = gradual_of(heap, ret_form, &scope);
+        // A body that yields `never` **never returns** — it always throws — so it is
+        // consistent with every declared return, including `never` itself. Without
+        // this skip the dynamic half of `consistent_with` (`∩ ≠ ⊥`) reads `never` as
+        // disjoint from everything, since it is: an empty set shares no value with
+        // any set, itself included. The result was a false positive on every
+        // always-throwing function that carried a `(sig …)` — `declared return type
+        // string but the body yields never` — and, at its silliest, on a function
+        // declared `never` whose body yields `never`. It stayed hidden only because
+        // so few signatures were declared; adopting them across `std/` surfaced it.
+        // The argument check has carried the same skip, for the same reason, all
+        // along.
+        let who = name
+            .map(|n| format!("{}: ", name_of(n)))
+            .unwrap_or_default();
+        if !g.bound.is_never()
+            && !g.consistent_with_mode(s.ret.clone(), ctx.strict())
+            && !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH)
+        {
+            out.push((
+                heap.form_pos_only(ret_form),
+                format!(
+                    "{}declared return type {} but the body yields {}",
+                    who,
+                    crate::types::check::annot::display_ty(&s.ret),
+                    crate::types::check::annot::display_ty(&g.bound)
+                ),
+            ));
+        } else if ctx.strict()
+            && !s.ret.is_any()
+            && g.dynamic
+            && !g.bound.is_never()
+            && g.bound
+                .terms_vec()
+                .iter()
+                .all(|term| term.is_any() || term.is_known_only_by_exclusion())
+            && !ctx.is_suppressed(
+                crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH
+                    | crate::types::check::ctx::SUPPRESS_TRUSTED,
+            )
+        {
+            // The declaration is TRUSTED here, not verified: the body's result is the
+            // unknown, so nothing was checked against the declared return, and every
+            // caller reads it as fact (ADR-259). Outside contracts mode that is the one
+            // way a wrong declaration goes unreported; strict says so.
+            out.push((
                     heap.form_pos_only(ret_form),
                     format!(
                         "{}declared return type {} is trusted, not verified — the body's result is unknown to the checker",
@@ -392,7 +393,6 @@ pub(super) fn check_fn_seeded(
                         crate::types::check::annot::display_ty(&s.ret),
                     ),
                 ));
-            }
         }
     }
 }
@@ -437,18 +437,18 @@ pub(super) fn check_def(
         let declared = ctx
             .declared_sig(name)
             .or_else(|| declared_heap_sig(heap, name));
-        if let Some(sig) = declared {
-            if let Some(fn_items) = fn_form_items(heap, value_form) {
-                // The `sig!` SHIM — the `def` that rebinds the name to the runtime contract
-                // — is not the function: its result is whatever `apply` answers, so under
-                // strict it read as a declaration trusted, not verified (A5). It IS the
-                // verification. The function's own `def` was checked just above it.
-                if is_contract_shim(heap, &fn_items) {
-                    return;
-                }
-                check_fn_seeded(heap, &fn_items, ctx, out, Some(&sig), Some(name), true);
+        if let Some(sig) = declared
+            && let Some(fn_items) = fn_form_items(heap, value_form)
+        {
+            // The `sig!` SHIM — the `def` that rebinds the name to the runtime contract
+            // — is not the function: its result is whatever `apply` answers, so under
+            // strict it read as a declaration trusted, not verified (A5). It IS the
+            // verification. The function's own `def` was checked just above it.
+            if is_contract_shim(heap, &fn_items) {
                 return;
             }
+            check_fn_seeded(heap, &fn_items, ctx, out, Some(&sig), Some(name), true);
+            return;
         }
         // A declared OVERLOAD (ADR-116) is an intersection: the body must satisfy every
         // arm, so it is walked once under each arm's domain and its return checked
@@ -459,54 +459,54 @@ pub(super) fn check_def(
             .declared_overload(name)
             .cloned()
             .or_else(|| declared_heap_overload(heap, name));
-        if let Some(arms) = overload {
-            if let Some(fn_items) = fn_form_items(heap, value_form) {
-                let mut seen: std::collections::HashSet<(Option<Pos>, String)> =
-                    std::collections::HashSet::new();
-                for arm in &arms {
-                    let mut findings = Vec::new();
-                    check_fn_seeded(
-                        heap,
-                        &fn_items,
-                        ctx,
-                        &mut findings,
-                        Some(arm),
-                        Some(name),
-                        false,
-                    );
-                    for finding in findings {
-                        if seen.insert(finding.clone()) {
-                            out.push(finding);
-                        }
+        if let Some(arms) = overload
+            && let Some(fn_items) = fn_form_items(heap, value_form)
+        {
+            let mut seen: std::collections::HashSet<(Option<Pos>, String)> =
+                std::collections::HashSet::new();
+            for arm in &arms {
+                let mut findings = Vec::new();
+                check_fn_seeded(
+                    heap,
+                    &fn_items,
+                    ctx,
+                    &mut findings,
+                    Some(arm),
+                    Some(name),
+                    false,
+                );
+                for finding in findings {
+                    if seen.insert(finding.clone()) {
+                        out.push(finding);
                     }
                 }
-                return;
             }
+            return;
         }
         // A module-PRIVATE function with no declaration: its parameters are what its
         // callers in this file hand it (the caller-derived parameter pass, ADR-341) — bound plainly, not as a
         // sig-authoritative contract, so a defensive guard the callers never exercise
         // is not reported as a dead clause.
-        if let Some(derived) = ctx.derived_params(name).cloned() {
-            if let Some(fn_items) = fn_form_items(heap, value_form) {
-                let params = fn_params(heap, fn_items[1]);
-                if params.len() == derived.len()
-                    && !crate::eval::macros::fn_is_arity_multi_clause(heap, &fn_items)
-                {
-                    let mut scope = ctx.clone();
-                    for (p, ty) in params.iter().zip(derived) {
-                        scope = scope.bind_derived(*p, ty);
-                    }
-                    scope = scope.with_derived_count_aliases(name, &params);
-                    let body_start = match (fn_items.get(2), fn_items.get(3)) {
-                        (Some(Value::Str(_)), Some(_)) => 3,
-                        _ => 2,
-                    };
-                    for &body_form in &fn_items[body_start..] {
-                        check_into(heap, body_form, &scope, out);
-                    }
-                    return;
+        if let Some(derived) = ctx.derived_params(name).cloned()
+            && let Some(fn_items) = fn_form_items(heap, value_form)
+        {
+            let params = fn_params(heap, fn_items[1]);
+            if params.len() == derived.len()
+                && !crate::eval::macros::fn_is_arity_multi_clause(heap, &fn_items)
+            {
+                let mut scope = ctx.clone();
+                for (p, ty) in params.iter().zip(derived) {
+                    scope = scope.bind_derived(*p, ty);
                 }
+                scope = scope.with_derived_count_aliases(name, &params);
+                let body_start = match (fn_items.get(2), fn_items.get(3)) {
+                    (Some(Value::Str(_)), Some(_)) => 3,
+                    _ => 2,
+                };
+                for &body_form in &fn_items[body_start..] {
+                    check_into(heap, body_form, &scope, out);
+                }
+                return;
             }
         }
         // …and one whose callers are not all here (escaped, or public): its parameters
@@ -518,23 +518,23 @@ pub(super) fn check_def(
         // the `number` an unknown `i` reads. Only the self-call's arguments see it: read
         // anywhere else, the domain — an over-approximation — would be taken by strict
         // inclusion as positive knowledge of a parameter nothing here constrains.
-        if let Some(demands) = demand_domains(heap, name, value_form, ctx) {
-            if let Some(fn_items) = fn_form_items(heap, value_form) {
-                let params = fn_params(heap, fn_items[1]);
-                let mut scope = ctx.clone();
-                for &p in &params {
-                    scope = scope.bind(p, None);
-                }
-                scope = scope.with_self_demands(name, params.into_iter().zip(demands).collect());
-                let body_start = match (fn_items.get(2), fn_items.get(3)) {
-                    (Some(Value::Str(_)), Some(_)) => 3,
-                    _ => 2,
-                };
-                for &body_form in &fn_items[body_start..] {
-                    check_into(heap, body_form, &scope, out);
-                }
-                return;
+        if let Some(demands) = demand_domains(heap, name, value_form, ctx)
+            && let Some(fn_items) = fn_form_items(heap, value_form)
+        {
+            let params = fn_params(heap, fn_items[1]);
+            let mut scope = ctx.clone();
+            for &p in &params {
+                scope = scope.bind(p, None);
             }
+            scope = scope.with_self_demands(name, params.into_iter().zip(demands).collect());
+            let body_start = match (fn_items.get(2), fn_items.get(3)) {
+                (Some(Value::Str(_)), Some(_)) => 3,
+                _ => 2,
+            };
+            for &body_form in &fn_items[body_start..] {
+                check_into(heap, body_form, &scope, out);
+            }
+            return;
         }
         // Gradual-assignment check (the first `GradualTy` consumer): when `name`
         // carries a non-arrow `(sig name T)`, the assigned value must be
@@ -663,17 +663,14 @@ pub(super) fn check_if(
     // flagged the ordinary shape "take this when a condition holds, else the usual `:ok`".
     if !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_UNREACHABLE)
         && !guarded_clause(heap, then_form, else_form)
+        && let Some((sym, lit)) = literal_eq_test_raw(heap, test)
+        && let Some(dup) = find_redundant_clause(heap, else_form, sym, lit)
     {
-        if let Some((sym, lit)) = literal_eq_test_raw(heap, test) {
-            if let Some(dup) = find_redundant_clause(heap, else_form, sym, lit) {
-                let label =
-                    render_literal_pattern(heap, lit).unwrap_or_else(|| "this value".to_string());
-                out.push((
-                    heap.form_pos_only(dup),
-                    format!("match: unreachable clause — {label} is already handled above"),
-                ));
-            }
-        }
+        let label = render_literal_pattern(heap, lit).unwrap_or_else(|| "this value".to_string());
+        out.push((
+            heap.form_pos_only(dup),
+            format!("match: unreachable clause — {label} is already handled above"),
+        ));
     }
 
     // **Truthy-failure lint.** A `failure` is TRUTHY in Brood, so `(if (string/->number s) …)`
@@ -687,24 +684,24 @@ pub(super) fn check_if(
     // Positively-known failures only, the ADR-310 rule: a bound known merely by exclusion
     // (`any`, or a guard's `(not nil)`) admits failure the way it admits everything and says
     // nothing, and reading that as "can fail" would fire on every unannotated parameter.
-    if !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH) {
-        if let Some(ty) = crate::types::check::infer::expr_ty(heap, test, ctx) {
-            if ty.contains_tag(crate::types::Tag::Failure) && !ty.is_known_only_by_exclusion() {
-                // The test is often a bare symbol or a macro-expanded form with no position
-                // of its own; the enclosing `if` always has one, and a warning without a
-                // line is a warning nobody can act on.
-                let pos = heap
-                    .form_pos_only(test)
-                    .or_else(|| heap.form_pos_only(form));
-                out.push((
-                    pos,
-                    "a failure value is TRUTHY, so this tests as true when the operation \
+    if !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_TYPE_MISMATCH)
+        && let Some(ty) = crate::types::check::infer::expr_ty(heap, test, ctx)
+        && ty.contains_tag(crate::types::Tag::Failure)
+        && !ty.is_known_only_by_exclusion()
+    {
+        // The test is often a bare symbol or a macro-expanded form with no position
+        // of its own; the enclosing `if` always has one, and a warning without a
+        // line is a warning nobody can act on.
+        let pos = heap
+            .form_pos_only(test)
+            .or_else(|| heap.form_pos_only(form));
+        out.push((
+            pos,
+            "a failure value is TRUTHY, so this tests as true when the operation \
                      FAILED — narrow with the type you want (`int?`, `bytes?`, `string?`) \
                      or test `(failure? …)` explicitly"
-                        .to_string(),
-                ));
-            }
-        }
+                .to_string(),
+        ));
     }
 
     // **Constant-condition lint** (ADR-373). Brood's falsy set is exactly `nil` and `false`, so a test
@@ -720,39 +717,39 @@ pub(super) fn check_if(
     // a bound known merely by exclusion (`any`, or a guard's `(not nil)`) is exactly the
     // `truthy` type itself, and re-testing a value an outer guard already narrowed is
     // ordinary defensive code, not a mistake.
-    if !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_CONSTANT_COND) {
-        if let Some(ty) = crate::types::check::infer::expr_ty(heap, test, ctx) {
-            // A LITERAL test is deliberate, not a slip: `:else` is how `cond` spells its
-            // default and `(if true …)` is how a test pins a branch. Only a COMPUTED test
-            // — a CALL — is the bug this looks for.
-            //
-            // That also means `or` and `and` are out of scope, deliberately: they desugar to
-            // a `let` whose `if` tests the BINDING, so admitting bare symbols would reach
-            // them — and would then flag every defensive `(or x "")` on a value the checker
-            // already knows is non-nil. That is a true statement (the fallback is dead) and
-            // a useless one (the value is used either way): it fired 33 times in this
-            // repo's own tests against 2 real findings. A dead `or` fallback is a weaker
-            // claim than a constant BRANCH and wants its own lint, not this one.
-            // A `failure` is truthy too, but the lint above says so far better — this one
-            // would only repeat it in vaguer words.
-            if matches!(test, Value::Pair(_))
-                && !ty.contains_tag(crate::types::Tag::Failure)
-                && !ty.is_never()
-                && !ty.is_known_only_by_exclusion()
-                && ty.is_subtype(&crate::types::Ty::truthy())
-            {
-                let pos = heap
-                    .form_pos_only(test)
-                    .or_else(|| heap.form_pos_only(form));
-                out.push((
-                    pos,
-                    format!(
-                        "this test is always true — only nil and false are falsy, and \
+    if !ctx.is_suppressed(crate::types::check::ctx::SUPPRESS_CONSTANT_COND)
+        && let Some(ty) = crate::types::check::infer::expr_ty(heap, test, ctx)
+    {
+        // A LITERAL test is deliberate, not a slip: `:else` is how `cond` spells its
+        // default and `(if true …)` is how a test pins a branch. Only a COMPUTED test
+        // — a CALL — is the bug this looks for.
+        //
+        // That also means `or` and `and` are out of scope, deliberately: they desugar to
+        // a `let` whose `if` tests the BINDING, so admitting bare symbols would reach
+        // them — and would then flag every defensive `(or x "")` on a value the checker
+        // already knows is non-nil. That is a true statement (the fallback is dead) and
+        // a useless one (the value is used either way): it fired 33 times in this
+        // repo's own tests against 2 real findings. A dead `or` fallback is a weaker
+        // claim than a constant BRANCH and wants its own lint, not this one.
+        // A `failure` is truthy too, but the lint above says so far better — this one
+        // would only repeat it in vaguer words.
+        if matches!(test, Value::Pair(_))
+            && !ty.contains_tag(crate::types::Tag::Failure)
+            && !ty.is_never()
+            && !ty.is_known_only_by_exclusion()
+            && ty.is_subtype(&crate::types::Ty::truthy())
+        {
+            let pos = heap
+                .form_pos_only(test)
+                .or_else(|| heap.form_pos_only(form));
+            out.push((
+                pos,
+                format!(
+                    "this test is always true — only nil and false are falsy, and \
                          {ty} is neither. A function answering a SENTINEL (-1 for \
                          \"not found\") needs the sentinel tested for, not the value"
-                    ),
-                ));
-            }
+                ),
+            ));
         }
     }
 
@@ -920,10 +917,11 @@ pub(in crate::types::check) fn let_bind_scope(
     {
         scope = scope.bind_let_fn_sig(name, sig);
     }
-    if let Some(g) = rhs_guard {
-        if !g.then_only && !g.else_only {
-            scope = scope.add_guard(name, g.sym, g.ty, g.else_ty, false);
-        }
+    if let Some(g) = rhs_guard
+        && !g.then_only
+        && !g.else_only
+    {
+        scope = scope.add_guard(name, g.sym, g.ty, g.else_ty, false);
     }
     // A `when`-shaped binding — `(let (src (when k (lookup k))) …)`, which is `(if k E nil)`
     // once expanded — is a guard on `k`: a truthy `src` proves `k` truthy (a falsy `k` makes
@@ -931,10 +929,12 @@ pub(in crate::types::check) fn let_bind_scope(
     // `src` proves nothing (`E` may be nil), hence then-only. Only for a lexical local `k`.
     if let Some(items) = list_items(heap, rhs) {
         let when_shaped = items.len() == 3 || (items.len() == 4 && matches!(items[3], Value::Nil));
-        if let (Some(Value::Sym(head)), Some(Value::Sym(k))) = (items.first(), items.get(1)) {
-            if when_shaped && value::symbol_is(*head, kw::IF) && scope.is_lexical_local(*k) {
-                scope = scope.add_guard(name, *k, Ty::truthy(), None, true);
-            }
+        if let (Some(Value::Sym(head)), Some(Value::Sym(k))) = (items.first(), items.get(1))
+            && when_shaped
+            && value::symbol_is(*head, kw::IF)
+            && scope.is_lexical_local(*k)
+        {
+            scope = scope.add_guard(name, *k, Ty::truthy(), None, true);
         }
     }
     if let Value::Sym(target) = rhs {
@@ -945,10 +945,11 @@ pub(in crate::types::check) fn let_bind_scope(
     // which retains the tuple alternative the clause matched, so the clause's later
     // `(%vector-ref m 1)` reads THAT arm's second position rather than the union over
     // every arm (`[:ok got conn]` read `got` as `int | map` beside an `[:error 502 msg]`).
-    if let Some((base, keys)) = crate::types::check::guards::path_of(heap, rhs) {
-        if !keys.is_empty() && scope.is_lexical_local(base) {
-            scope = scope.add_path_alias(name, base, keys);
-        }
+    if let Some((base, keys)) = crate::types::check::guards::path_of(heap, rhs)
+        && !keys.is_empty()
+        && scope.is_lexical_local(base)
+    {
+        scope = scope.add_path_alias(name, base, keys);
     }
     // `(let (n (count xs)) …)`: `n` is the length of `xs` for the scope (ADR-350), so a
     // guard on `n` narrows `xs`'s length and bounds an index of it. Shared with the other
@@ -1011,10 +1012,10 @@ pub(super) fn check_let(
         // scope, so an eager forward reference in a non-closure RHS still surfaces.
         let mut j = 0;
         while j < binds.len() {
-            if let Value::Sym(name) = binds[j] {
-                if fn_form_items(heap, binds[j + 1]).is_some() {
-                    scope = scope.bind(name, None);
-                }
+            if let Value::Sym(name) = binds[j]
+                && fn_form_items(heap, binds[j + 1]).is_some()
+            {
+                scope = scope.bind(name, None);
             }
             j += 2;
         }
@@ -1080,15 +1081,14 @@ pub(super) fn check_let(
         // Dead-clause lint eligibility: a surface (non-gensym), precisely-typed
         // `let`-local joins the set the dead-clause lint may flag, so a later guard
         // that narrows it to `never` is caught — `(let (x 5) (cond (string? x) …))`.
-        if let Value::Sym(name) = pat {
-            if rhs_precise
-                && rhs_ty.as_ref().is_some_and(|t| !t.is_never())
-                && !is_gensym_sym(name)
-                && heap.form_pos_only(form).is_some()
-                && !heap.is_synthetic(form)
-            {
-                scope.mark_dead_clause_local(name);
-            }
+        if let Value::Sym(name) = pat
+            && rhs_precise
+            && rhs_ty.as_ref().is_some_and(|t| !t.is_never())
+            && !is_gensym_sym(name)
+            && heap.form_pos_only(form).is_some()
+            && !heap.is_synthetic(form)
+        {
+            scope.mark_dead_clause_local(name);
         }
         i += 2;
     }
@@ -1141,10 +1141,10 @@ pub(super) fn check_let(
                         // match/pattern expansion) are exempt: their names are user-chosen
                         // but the "unused" status is an expansion artifact. Generated code
                         // carries its source form's position, so ask `is_synthetic`.
-                        if !heap.is_synthetic(form) {
-                            if let Some(pos) = heap.form_pos_only(form) {
-                                out.push((Some(pos), format!("unused let binding: {}", nm)));
-                            }
+                        if !heap.is_synthetic(form)
+                            && let Some(pos) = heap.form_pos_only(form)
+                        {
+                            out.push((Some(pos), format!("unused let binding: {}", nm)));
                         }
                     }
                 }
@@ -1514,40 +1514,40 @@ fn collect_let_lambda_sites(
                 &super::calls::literal_fits(heap),
             );
             for (i, &it) in items.iter().enumerate() {
-                if let Some((idx, sig)) = &handed {
-                    if *idx == i {
-                        sites.push(sig.params.iter().cloned().map(Some).collect());
-                        continue;
-                    }
+                if let Some((idx, sig)) = &handed
+                    && *idx == i
+                {
+                    sites.push(sig.params.iter().cloned().map(Some).collect());
+                    continue;
                 }
                 if i == 0 && matches!(it, Value::Sym(_)) {
                     continue;
                 }
-                if let Some((idx, sig)) = &seeded_literal {
-                    if *idx == i {
-                        let Some(lit) = fn_form_items(heap, it) else {
-                            return false;
-                        };
-                        let Some(&plist) = lit.get(1) else {
-                            return false;
-                        };
-                        let params = fn_params(heap, plist);
-                        if params.contains(&name) {
-                            return false;
-                        }
-                        let mut inner = scope.clone();
-                        for (k, param) in params.into_iter().enumerate() {
-                            inner = inner.bind(param, sig.params.get(k).cloned());
-                        }
-                        if !lit
-                            .iter()
-                            .skip(2)
-                            .all(|&b| collect_let_lambda_sites(heap, name, arity, b, &inner, sites))
-                        {
-                            return false;
-                        }
-                        continue;
+                if let Some((idx, sig)) = &seeded_literal
+                    && *idx == i
+                {
+                    let Some(lit) = fn_form_items(heap, it) else {
+                        return false;
+                    };
+                    let Some(&plist) = lit.get(1) else {
+                        return false;
+                    };
+                    let params = fn_params(heap, plist);
+                    if params.contains(&name) {
+                        return false;
                     }
+                    let mut inner = scope.clone();
+                    for (k, param) in params.into_iter().enumerate() {
+                        inner = inner.bind(param, sig.params.get(k).cloned());
+                    }
+                    if !lit
+                        .iter()
+                        .skip(2)
+                        .all(|&b| collect_let_lambda_sites(heap, name, arity, b, &inner, sites))
+                    {
+                        return false;
+                    }
+                    continue;
                 }
                 if !collect_let_lambda_sites(heap, name, arity, it, scope, sites) {
                     return false;

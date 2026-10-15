@@ -152,23 +152,23 @@ fn walk(heap: &Heap, form: Value, scope: &HashSet<String>, out: &mut Vec<(Option
             Some("defn" | "defmacro") if is_when_kw(items.get(3)) => Some(4),
             _ => None,
         };
-        if let Some(i) = guard_index {
-            if let Some(&guard) = items.get(i) {
-                lint_guard(heap, guard, &inner, out);
-            }
+        if let Some(i) = guard_index
+            && let Some(&guard) = items.get(i)
+        {
+            lint_guard(heap, guard, &inner, out);
         }
         let clause_form = head_name.is_some_and(|name| CLAUSE_FORMS.contains(&name));
         for (index, &it) in items.iter().enumerate() {
             // A clause `(pattern body…)` of a `match`: its pattern binds for its body.
-            if clause_form && index >= 2 {
-                if let Some(clause) = list_items(heap, it) {
-                    if let Some(&pattern) = clause.first() {
-                        let mut clause_scope = inner.clone();
-                        collect_symbols(heap, pattern, &mut clause_scope);
-                        walk(heap, it, &clause_scope, out);
-                        continue;
-                    }
-                }
+            if clause_form
+                && index >= 2
+                && let Some(clause) = list_items(heap, it)
+                && let Some(&pattern) = clause.first()
+            {
+                let mut clause_scope = inner.clone();
+                collect_symbols(heap, pattern, &mut clause_scope);
+                walk(heap, it, &clause_scope, out);
+                continue;
             }
             walk(heap, it, &inner, out);
         }

@@ -633,11 +633,11 @@ fn cmd_release(
 fn smoke_test(out: &std::path::Path, triple: Option<&str>) {
     // A cross-target binary cannot execute here. Say so — a smoke test that
     // quietly does nothing is the gate-that-cannot-fail shape (KI-68/70).
-    if let Some(t) = triple {
-        if t != release::HOST_TRIPLE {
-            println!("  smoke: skipped for {t} (not this host — run it on the target)");
-            return;
-        }
+    if let Some(t) = triple
+        && t != release::HOST_TRIPLE
+    {
+        println!("  smoke: skipped for {t} (not this host — run it on the target)");
+        return;
     }
     // `./out`, not `out`: a bare relative name is not a command on any shell's PATH,
     // and `Command` inherits that rule.

@@ -14,22 +14,22 @@ impl Heap {
     /// Record the source position of a LOCAL list form (no-op for atoms and
     /// forms in the shared regions). Called by the reader as it builds lists.
     pub fn set_form_pos(&mut self, v: Value, pos: crate::error::Pos) {
-        if let Some(id) = v.as_pair() {
-            if id.region() == crate::core::value::LOCAL {
-                // Clone the pre-shared `Arc` (a refcount bump), never `Arc::from(&str)` —
-                // that allocated and copied the path on every single form. See
-                // `ColdHeap::current_file_arc`.
-                let cold = self.cold_mut();
-                let file = cold.current_file_arc.clone();
-                cold.form_pos.insert(
-                    form_pos_key(id),
-                    FormPos {
-                        pos,
-                        file,
-                        synthetic: false,
-                    },
-                );
-            }
+        if let Some(id) = v.as_pair()
+            && id.region() == crate::core::value::LOCAL
+        {
+            // Clone the pre-shared `Arc` (a refcount bump), never `Arc::from(&str)` —
+            // that allocated and copied the path on every single form. See
+            // `ColdHeap::current_file_arc`.
+            let cold = self.cold_mut();
+            let file = cold.current_file_arc.clone();
+            cold.form_pos.insert(
+                form_pos_key(id),
+                FormPos {
+                    pos,
+                    file,
+                    synthetic: false,
+                },
+            );
         }
     }
 
@@ -45,17 +45,17 @@ impl Heap {
         pos: crate::error::Pos,
         file: Option<Arc<str>>,
     ) {
-        if let Some(id) = v.as_pair() {
-            if id.region() == crate::core::value::LOCAL {
-                self.cold_mut().form_pos.insert(
-                    form_pos_key(id),
-                    FormPos {
-                        pos,
-                        file,
-                        synthetic: false,
-                    },
-                );
-            }
+        if let Some(id) = v.as_pair()
+            && id.region() == crate::core::value::LOCAL
+        {
+            self.cold_mut().form_pos.insert(
+                form_pos_key(id),
+                FormPos {
+                    pos,
+                    file,
+                    synthetic: false,
+                },
+            );
         }
     }
 
@@ -63,12 +63,11 @@ impl Heap {
     /// have a position — the expander stamps one first — so the mark rides that entry and
     /// `promote` carries both together.
     pub fn mark_synthetic(&mut self, v: Value) {
-        if let Some(id) = v.as_pair() {
-            if id.region() == crate::core::value::LOCAL {
-                if let Some(e) = self.cold_mut().form_pos.get_mut(&form_pos_key(id)) {
-                    e.synthetic = true;
-                }
-            }
+        if let Some(id) = v.as_pair()
+            && id.region() == crate::core::value::LOCAL
+            && let Some(e) = self.cold_mut().form_pos.get_mut(&form_pos_key(id))
+        {
+            e.synthetic = true;
         }
     }
 

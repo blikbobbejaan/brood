@@ -268,12 +268,11 @@ fn qq_seq(
 fn tagged(heap: &Heap, v: Value, name: &str) -> Option<Value> {
     if let ValueRef::Pair(p) = v.unpack() {
         let (head, tail) = heap.pair(p);
-        if let ValueRef::Sym(s) = head.unpack() {
-            if value::symbol_is(s, name) {
-                if let ValueRef::Pair(p2) = tail.unpack() {
-                    return Some(heap.car(p2));
-                }
-            }
+        if let ValueRef::Sym(s) = head.unpack()
+            && value::symbol_is(s, name)
+            && let ValueRef::Pair(p2) = tail.unpack()
+        {
+            return Some(heap.car(p2));
         }
     }
     None
@@ -625,12 +624,11 @@ fn template_introduces_binder_inner(heap: &Heap, v: Value) -> bool {
                 }
                 if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
                     let binds_form = items.get(1).copied().unwrap_or(Value::nil());
-                    if !hyg_is_unquote(heap, binds_form) {
-                        if let Some(binds) = heap.list_or_vector_items(binds_form) {
-                            if binds.iter().step_by(2).any(hyg_binder_renamable) {
-                                return true;
-                            }
-                        }
+                    if !hyg_is_unquote(heap, binds_form)
+                        && let Some(binds) = heap.list_or_vector_items(binds_form)
+                        && binds.iter().step_by(2).any(hyg_binder_renamable)
+                    {
+                        return true;
                     }
                 }
                 if value::symbol_is(h, kw::FN) && fn_has_renamable_param(heap, &items) {
@@ -1203,26 +1201,25 @@ fn scan_def_form(
         return;
     }
     let hn = value::symbol_name_ref(h);
-    if matches!(
+    if (matches!(
         hn,
         kw::DEF | kw::DEF_PRIVATE | kw::DEFN | kw::DEFN_PRIVATE | kw::DEFMACRO | kw::DEFDYN
-    ) || defines_by_convention(hn)
+    ) || defines_by_convention(hn))
+        && let Some(ValueRef::Sym(name)) = items.get(1).map(|v| v.unpack())
     {
-        if let Some(ValueRef::Sym(name)) = items.get(1).map(|v| v.unpack()) {
-            // An AMBIENT name is never namespaced, so it must not be pre-recorded as
-            // a namespace-local name — that would qualify every reference in the file
-            // to `ns/*name*` and lose the single root binding. Two ways to be
-            // ambient: this form is the `defdyn` that declares it (the scan runs
-            // before evaluation, so the runtime mark isn't set yet), or the name was
-            // already declared dynamic elsewhere — e.g. `(def *load-path* …)` in a
-            // module, rebinding the prelude's knob.
-            if hn == kw::DEFDYN || heap.is_dynamic(name) {
-                ambient.insert(name);
-            } else if !value::symbol_name_ref(name).contains('/') {
-                // Only bare names get pre-recorded; an already-qualified def head
-                // needs no forward-ref help.
-                names.insert(name);
-            }
+        // An AMBIENT name is never namespaced, so it must not be pre-recorded as
+        // a namespace-local name — that would qualify every reference in the file
+        // to `ns/*name*` and lose the single root binding. Two ways to be
+        // ambient: this form is the `defdyn` that declares it (the scan runs
+        // before evaluation, so the runtime mark isn't set yet), or the name was
+        // already declared dynamic elsewhere — e.g. `(def *load-path* …)` in a
+        // module, rebinding the prelude's knob.
+        if hn == kw::DEFDYN || heap.is_dynamic(name) {
+            ambient.insert(name);
+        } else if !value::symbol_name_ref(name).contains('/') {
+            // Only bare names get pre-recorded; an already-qualified def head
+            // needs no forward-ref help.
+            names.insert(name);
         }
     }
     // Recurse so a def nested in a top-level `(do …)`/`(when …)` is still found.
@@ -1765,10 +1762,8 @@ fn resolve_let(
         let rhs_r = resolve_walk(heap, binds[i + 1], ns_name, &scope);
         new_binds.push(target); // binder verbatim
         new_binds.push(rhs_r);
-        if !letrec {
-            if let ValueRef::Sym(s) = target.unpack() {
-                scope.push(s);
-            }
+        if !letrec && let ValueRef::Sym(s) = target.unpack() {
+            scope.push(s);
         }
         i += 2;
     }
@@ -2282,10 +2277,10 @@ fn substitute_symbol(heap: &mut Heap, form: Value, from: value::Symbol, to: Valu
             let Ok(items) = heap.list_to_vec(form) else {
                 return form;
             };
-            if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
-                if value::symbol_is(h, kw::QUOTE) {
-                    return form;
-                }
+            if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
+                && value::symbol_is(h, kw::QUOTE)
+            {
+                return form;
             }
             let out: Vec<Value> = items
                 .iter()
@@ -2333,10 +2328,10 @@ fn form_has_quote(heap: &Heap, form: Value, depth: usize) -> bool {
     let Ok(items) = heap.list_to_vec(form) else {
         return false;
     };
-    if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack()) {
-        if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
-            return true;
-        }
+    if let Some(ValueRef::Sym(h)) = items.first().map(|v| v.unpack())
+        && (value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE))
+    {
+        return true;
     }
     items.iter().any(|&it| form_has_quote(heap, it, depth + 1))
 }
@@ -2955,10 +2950,10 @@ fn macroexpand_all_depth_step_inner(
                     // shares, so both the VM and tree-walker report it) with the
                     // flatten hint. The literal-value guard keeps a genuine bare-list
                     // destructure like `(let ((a b) '(1 2)) …)` untouched.
-                    if let Some(binds) = items.get(1).and_then(|&b| heap.list_or_vector_items(b)) {
-                        if crate::eval::even_bindings_look_scheme(heap, &binds) {
-                            return Err(crate::eval::scheme_binding_error(heap, "let", &binds));
-                        }
+                    if let Some(binds) = items.get(1).and_then(|&b| heap.list_or_vector_items(b))
+                        && crate::eval::even_bindings_look_scheme(heap, &binds)
+                    {
+                        return Err(crate::eval::scheme_binding_error(heap, "let", &binds));
                     }
                     if let Some(lowered) = lower_let(heap, &items) {
                         return macroexpand_all_depth(heap, lowered, env, depth + 1);
@@ -3314,10 +3309,10 @@ fn form_binds_any(heap: &Heap, form: Value, names: &[value::Symbol], depth: usiz
             return false;
         }
         if value::symbol_is(h, kw::LET) || value::symbol_is(h, kw::LETREC) {
-            if let Some(bs) = items.get(1).and_then(|&b| heap.list_or_vector_items(b)) {
-                if bs.iter().step_by(2).any(|&b| binds(b)) {
-                    return true;
-                }
+            if let Some(bs) = items.get(1).and_then(|&b| heap.list_or_vector_items(b))
+                && bs.iter().step_by(2).any(|&b| binds(b))
+            {
+                return true;
             }
         } else if value::symbol_is(h, kw::FN) {
             // `(fn (params) …)`, or `(fn ((params) …) ((params) …))`.
@@ -3333,10 +3328,10 @@ fn form_binds_any(heap: &Heap, form: Value, names: &[value::Symbol], depth: usiz
                 items.get(1).copied().into_iter().collect()
             };
             for c in clauses {
-                if let Some(ps) = heap.list_or_vector_items(c) {
-                    if ps.iter().any(|&p| binds(p)) {
-                        return true;
-                    }
+                if let Some(ps) = heap.list_or_vector_items(c)
+                    && ps.iter().any(|&p| binds(p))
+                {
+                    return true;
                 }
             }
         }
@@ -3623,15 +3618,15 @@ fn linmap_rewrite_form(
                     vec![value::sym(kw::TABLE_GET), items[1], key, default],
                 );
             }
-            if value::symbol_is(h, "assoc") && items.len() == 4 {
-                if let Some((addend, sub)) = linmap_fused_addend(heap, acc, items[2], items[3]) {
-                    let key = linmap_rewrite_form(heap, items[2], name, inner, acc);
-                    let addend = linmap_rewrite_form(heap, addend, name, inner, acc);
-                    let op = if sub { kw::TABLE_SUB } else { kw::TABLE_ADD };
-                    let mutate =
-                        rebuild_list(heap, form, vec![value::sym(op), items[1], key, addend]);
-                    return rebuild_list(heap, form, vec![value::sym(kw::DO), mutate, items[1]]);
-                }
+            if value::symbol_is(h, "assoc")
+                && items.len() == 4
+                && let Some((addend, sub)) = linmap_fused_addend(heap, acc, items[2], items[3])
+            {
+                let key = linmap_rewrite_form(heap, items[2], name, inner, acc);
+                let addend = linmap_rewrite_form(heap, addend, name, inner, acc);
+                let op = if sub { kw::TABLE_SUB } else { kw::TABLE_ADD };
+                let mutate = rebuild_list(heap, form, vec![value::sym(op), items[1], key, addend]);
+                return rebuild_list(heap, form, vec![value::sym(kw::DO), mutate, items[1]]);
             }
         }
         if h == name {

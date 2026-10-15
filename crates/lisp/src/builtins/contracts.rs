@@ -545,10 +545,10 @@ fn contract_force_prim(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
     contract_apply(heap, name, OnShim::Keep)?;
     if let (Some(alias), Some(current)) =
         (uncontracted_alias(name), heap.env_get(EnvId::GLOBAL, name))
+        && shim_original(heap, current).is_some()
+        && heap.env_get(EnvId::GLOBAL, alias).is_some()
     {
-        if shim_original(heap, current).is_some() && heap.env_get(EnvId::GLOBAL, alias).is_some() {
-            heap.env_define(EnvId::GLOBAL, alias, current);
-        }
+        heap.env_define(EnvId::GLOBAL, alias, current);
     }
     Ok(Value::symbol(name))
 }

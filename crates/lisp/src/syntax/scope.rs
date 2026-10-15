@@ -281,16 +281,14 @@ fn collect_globals(node: &Node, src: &str, out: &mut Vec<Binding>) {
                 | kw::DEFRECORD
                 | kw::DEFABILITY
                 | kw::DEFDYN
-        ) {
-            if let Some(name) = node.forms().nth(1) {
-                if name.kind == NodeKind::Symbol {
-                    out.push(Binding {
-                        name: name.text(src).to_string(),
-                        def: name.span,
-                        kind: BindingKind::Global,
-                    });
-                }
-            }
+        ) && let Some(name) = node.forms().nth(1)
+            && name.kind == NodeKind::Symbol
+        {
+            out.push(Binding {
+                name: name.text(src).to_string(),
+                def: name.span,
+                kind: BindingKind::Global,
+            });
         }
     }
     for c in &node.children {
@@ -436,16 +434,16 @@ fn build_let(node: &Node, src: &str, current: usize, tree: &mut ScopeTree) {
 /// Non-symbol targets (patterns) are skipped (deferred).
 fn let_names(node: &Node, src: &str) -> Vec<Binding> {
     let mut out = Vec::new();
-    if let Some(binds) = node.forms().nth(1) {
-        if matches!(binds.kind, NodeKind::List | NodeKind::Vector) {
-            for (i, item) in binds.forms().enumerate() {
-                if i % 2 == 0 && item.kind == NodeKind::Symbol {
-                    out.push(Binding {
-                        name: item.text(src).to_string(),
-                        def: item.span,
-                        kind: BindingKind::Local,
-                    });
-                }
+    if let Some(binds) = node.forms().nth(1)
+        && matches!(binds.kind, NodeKind::List | NodeKind::Vector)
+    {
+        for (i, item) in binds.forms().enumerate() {
+            if i % 2 == 0 && item.kind == NodeKind::Symbol {
+                out.push(Binding {
+                    name: item.text(src).to_string(),
+                    def: item.span,
+                    kind: BindingKind::Local,
+                });
             }
         }
     }
@@ -477,14 +475,14 @@ fn param_names(node: &Node, src: &str, idx: usize) -> Vec<Binding> {
             }
             // An `&optional` group `(name default)` — the binder is the head.
             NodeKind::List => {
-                if let Some(n) = item.forms().next() {
-                    if n.kind == NodeKind::Symbol {
-                        out.push(Binding {
-                            name: n.text(src).to_string(),
-                            def: n.span,
-                            kind: BindingKind::Local,
-                        });
-                    }
+                if let Some(n) = item.forms().next()
+                    && n.kind == NodeKind::Symbol
+                {
+                    out.push(Binding {
+                        name: n.text(src).to_string(),
+                        def: n.span,
+                        kind: BindingKind::Local,
+                    });
                 }
             }
             _ => {} // a vector/other pattern target — deferred

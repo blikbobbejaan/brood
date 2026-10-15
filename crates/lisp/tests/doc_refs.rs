@@ -83,12 +83,12 @@ fn defined(root: &Path, files: &[&str], prefix: &str) -> BTreeSet<u32> {
         };
         for line in text.lines() {
             let line = line.trim_start();
-            if let Some(rest) = line.strip_prefix("## ") {
-                if let Some(num) = rest.strip_prefix(prefix) {
-                    let digits: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    if let Ok(n) = digits.parse::<u32>() {
-                        out.insert(n);
-                    }
+            if let Some(rest) = line.strip_prefix("## ")
+                && let Some(num) = rest.strip_prefix(prefix)
+            {
+                let digits: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(n) = digits.parse::<u32>() {
+                    out.insert(n);
                 }
             }
         }
@@ -127,13 +127,12 @@ fn no_two_entries_claim_the_same_number() {
                 continue;
             };
             for line in text.lines() {
-                if let Some(rest) = line.trim_start().strip_prefix("## ") {
-                    if let Some(num) = rest.strip_prefix(prefix) {
-                        let digits: String =
-                            num.chars().take_while(|c| c.is_ascii_digit()).collect();
-                        if let Ok(n) = digits.parse::<u32>() {
-                            *seen.entry(n).or_insert(0) += 1;
-                        }
+                if let Some(rest) = line.trim_start().strip_prefix("## ")
+                    && let Some(num) = rest.strip_prefix(prefix)
+                {
+                    let digits: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(n) = digits.parse::<u32>() {
+                        *seen.entry(n).or_insert(0) += 1;
                     }
                 }
             }
@@ -146,7 +145,7 @@ fn no_two_entries_claim_the_same_number() {
         );
         let dupes: Vec<String> = seen
             .iter()
-            .filter(|(_, &count)| count > 1)
+            .filter(|&(_, &count)| count > 1)
             .map(|(n, count)| format!("  {prefix}{n} has {count} sections"))
             .collect();
         assert!(
@@ -269,10 +268,10 @@ fn ki_index_row_status_agrees_with_its_section() {
     let first_glyph = |s: &str| -> Option<&'static str> {
         let mut best: Option<(usize, &'static str)> = None;
         for g in CLOSED.iter().chain(OPEN.iter()) {
-            if let Some(i) = s.find(g) {
-                if best.is_none_or(|(bi, _)| i < bi) {
-                    best = Some((i, g));
-                }
+            if let Some(i) = s.find(g)
+                && best.is_none_or(|(bi, _)| i < bi)
+            {
+                best = Some((i, g));
             }
         }
         best.map(|(_, g)| g)
@@ -294,10 +293,10 @@ fn ki_index_row_status_agrees_with_its_section() {
             // the heading's glyph is its CURRENT status (the last one on the line)
             let mut last: Option<(usize, &'static str)> = None;
             for g in CLOSED.iter().chain(OPEN.iter()) {
-                if let Some(i) = rest.rfind(g) {
-                    if last.is_none_or(|(li, _)| i > li) {
-                        last = Some((i, g));
-                    }
+                if let Some(i) = rest.rfind(g)
+                    && last.is_none_or(|(li, _)| i > li)
+                {
+                    last = Some((i, g));
                 }
             }
             if let Some((_, g)) = last {

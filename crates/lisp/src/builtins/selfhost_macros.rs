@@ -326,10 +326,10 @@ pub(super) fn register_meta(args: &[Value], _env: EnvId, heap: &mut Heap) -> Lis
             meta.deprecated = text(v);
         } else if value::symbol_is(k, "beta") {
             meta.beta = text(v);
-        } else if value::symbol_is(k, "use") {
-            if let Value::Sym(s) = v {
-                meta.use_instead = Some(s);
-            }
+        } else if value::symbol_is(k, "use")
+            && let Value::Sym(s) = v
+        {
+            meta.use_instead = Some(s);
         }
     }
     heap.set_name_meta(name, meta);

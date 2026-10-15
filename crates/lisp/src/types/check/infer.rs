@@ -145,10 +145,10 @@ pub(super) fn expr_ty(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
         Value::Pair(id) => Some((id, ctx.id())),
         _ => None,
     };
-    if let Some(k) = key {
-        if let Some(hit) = EXPR_MEMO.with(|m| m.borrow().get(&k).cloned()) {
-            return hit;
-        }
+    if let Some(k) = key
+        && let Some(hit) = EXPR_MEMO.with(|m| m.borrow().get(&k).cloned())
+    {
+        return hit;
     }
     let owner = !EXPR_MEMO_OWNED.with(|o| o.replace(true));
     // The cap bounds the DEPTH; the frame's SIZE is the compiler's, and a debug frame of
@@ -328,16 +328,15 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
             // the base's type at that point, so the narrowing alone can be wider than the
             // read — `(if (:n state) …)` recorded `false | nil` for the else branch where
             // the field is `nil | int`. Occurrence typing is the meet of the two.
-            if let Some((base, keys)) = path_of(heap, form) {
-                if !keys.is_empty() {
-                    if let Some(t) = ctx.path_ty(base, &keys) {
-                        let structural = expr_ty(heap, form, &ctx.without_path(base, &keys));
-                        return Some(match structural {
-                            Some(s) => s.intersect(t),
-                            None => t,
-                        });
-                    }
-                }
+            if let Some((base, keys)) = path_of(heap, form)
+                && !keys.is_empty()
+                && let Some(t) = ctx.path_ty(base, &keys)
+            {
+                let structural = expr_ty(heap, form, &ctx.without_path(base, &keys));
+                return Some(match structural {
+                    Some(s) => s.intersect(t),
+                    None => t,
+                });
             }
             // **Immediate application** `((fn (x) …) 1)`: the lambda's body typed with the
             // actual argument types — the same inference a callback gets from a HOF.
@@ -549,10 +548,10 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         // Sound: the checker already warns when an impl's body doesn't
                         // conform to this return (`walk::check_impl_returns`), so the
                         // declared type is a contract, not a guess.
-                        if let Some(info) = ctx.ability() {
-                            if let Some(ret) = info.op_ret_of(s) {
-                                return Some(ret.clone());
-                            }
+                        if let Some(info) = ctx.ability()
+                            && let Some(ret) = info.op_ret_of(s)
+                        {
+                            return Some(ret.clone());
                         }
                         // The same handle for a MULTIMETHOD's declared `:-> RET`. A
                         // `defmulti` generic is a `defn` whose body is the dispatch
@@ -560,10 +559,10 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                         // op's, and the declaration is the only thing that can type
                         // `(compare-to a b)` at a call site. Sound for the same reason:
                         // `check_method_returns` warns when a method body does not conform.
-                        if let Some(info) = ctx.multi() {
-                            if let Some(ret) = info.ret_of(s) {
-                                return Some(ret.clone());
-                            }
+                        if let Some(info) = ctx.multi()
+                            && let Some(ret) = info.ret_of(s)
+                        {
+                            return Some(ret.clone());
                         }
                     }
                     // Sequence-aware refinements (`list`/`vector` constructors,
@@ -615,10 +614,10 @@ fn expr_ty_inner(heap: &Heap, form: Value, ctx: &Ctx) -> Option<Ty> {
                     // `fuzzy/match` declares `(or nil map)` and callers get exactly that). A
                     // declared `any` says nothing, and the body is read as for an undeclared
                     // function — `assoc` declares `-> any` and types `vector | map` at a call.
-                    if let Some(sg) = super::sigs::declared_heap_sig(heap, s) {
-                        if !sg.ret.is_any() {
-                            return Some(sg.ret);
-                        }
+                    if let Some(sg) = super::sigs::declared_heap_sig(heap, s)
+                        && !sg.ret.is_any()
+                    {
+                        return Some(sg.ret);
                     }
                     match sig_of(heap, s).map(|sig| sig.ret) {
                         Some(t) if !t.is_unrefined_collection() => Some(t),
@@ -825,10 +824,11 @@ fn control_flow_ty(heap: &Heap, head: Symbol, items: &[Value], ctx: &Ctx) -> Opt
                     if let Value::Sym(target) = binds[i + 1] {
                         scope = scope.add_alias(name, target);
                     }
-                    if let Some((base, keys)) = path_of(heap, binds[i + 1]) {
-                        if !keys.is_empty() && scope.is_lexical_local(base) {
-                            scope = scope.add_path_alias(name, base, keys);
-                        }
+                    if let Some((base, keys)) = path_of(heap, binds[i + 1])
+                        && !keys.is_empty()
+                        && scope.is_lexical_local(base)
+                    {
+                        scope = scope.add_path_alias(name, base, keys);
                     }
                     // …and the COUNT alias (`guards::count_alias_target`, ADR-350): two
                     // symbol compares per binding, so it is not the re-inferring half of
@@ -1265,10 +1265,11 @@ pub(super) fn numeric_result(head: Symbol, tys: &[Ty]) -> Option<Ty> {
     }
     // A division the checker can decide exactly — narrow before the `int | ratio`
     // fallback, which is the honest answer only where the split is undecidable.
-    if is_division && all_int_or_ratio {
-        if let Some(t) = division_result(tys) {
-            return Some(t);
-        }
+    if is_division
+        && all_int_or_ratio
+        && let Some(t) = division_result(tys)
+    {
+        return Some(t);
     }
     // Ratios close over `+ - *` exactly as ints do, and `/` is exact over them too
     // (`(/ 3/2 1/2)` → 3). The declared signature — widened to `number | map` for `Num`
@@ -1543,12 +1544,11 @@ fn list_literal_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
 /// exactly the element (a tuple position when the index is literal).
 fn vector_ref_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
     let collection_ty = expr_ty(heap, items[1], ctx)?;
-    if let Value::Int(n) = items[2] {
-        if n >= 0 {
-            if let Some(elem) = collection_ty.tuple_elem_at(n as usize) {
-                return Some(elem);
-            }
-        }
+    if let Value::Int(n) = items[2]
+        && n >= 0
+        && let Some(elem) = collection_ty.tuple_elem_at(n as usize)
+    {
+        return Some(elem);
     }
     collection_ty.elem_ty()
 }
@@ -1587,35 +1587,35 @@ fn positional_read_ty(heap: &Heap, head: &str, items: &[Value], ctx: &Ctx) -> Op
         // A computed `nth` index whose INTERVAL lies inside the arity reads the union of
         // the positions it can name — `(nth [10 20] (bit/and i 1))` is `10 | 20`, present
         // (ADR-350's interval, applied to a shape rather than a length).
-        if is_nth && items.len() == 3 {
-            if let Some(range) = expr_ty(heap, items[2], ctx).and_then(|t| t.int_range()) {
-                if let (Some(lo), Some(hi)) = (range.lo, range.hi) {
-                    if lo >= 0 && (hi as usize) < elems.len() {
-                        let mut out = elems[lo as usize].clone();
-                        for t in &elems[lo as usize + 1..=hi as usize] {
-                            out = out.union(t.clone());
-                        }
-                        return Some(out);
-                    }
-                }
+        if is_nth
+            && items.len() == 3
+            && let Some(range) = expr_ty(heap, items[2], ctx).and_then(|t| t.int_range())
+            && let (Some(lo), Some(hi)) = (range.lo, range.hi)
+            && lo >= 0
+            && (hi as usize) < elems.len()
+        {
+            let mut out = elems[lo as usize].clone();
+            for t in &elems[lo as usize + 1..=hi as usize] {
+                out = out.union(t.clone());
             }
+            return Some(out);
         }
     }
     // Over a UNION of shapes and sequences — `(tuple :error string) | (tuple :ok map)`,
     // the tagged pair every parser returns — the read is answered term by term (a shape
     // by its position), never by the union of every element. A guard on another position
     // has already dropped the alternatives it rules out (`Ctx::narrow_path`).
-    if collection_ty.alt_terms().is_some() {
-        if let Some(index) = positional_index(head, items) {
-            // An `nth` default answers wherever a term runs off its end.
-            if is_nth && items.len() == 4 {
-                let default = nth_default().unwrap_or(Ty::ANY);
-                return collection_ty
-                    .element_at_over_union(index)
-                    .map(|t| t.union(default));
-            }
-            return collection_ty.element_at_over_union(index);
+    if collection_ty.alt_terms().is_some()
+        && let Some(index) = positional_index(head, items)
+    {
+        // An `nth` default answers wherever a term runs off its end.
+        if is_nth && items.len() == 4 {
+            let default = nth_default().unwrap_or(Ty::ANY);
+            return collection_ty
+                .element_at_over_union(index)
+                .map(|t| t.union(default));
         }
+        return collection_ty.element_at_over_union(index);
     }
     // A read from exactly `nil` — the then-branch of `(nil? xs)` — is `nil`, or the `nth`
     // default (ADR-350), as the runtime answers.
@@ -2248,13 +2248,12 @@ fn get_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
         _ => None,
     };
     if let Value::Keyword(key) = items[2] {
-        if let Some(d) = default_ty.as_ref() {
-            if let Some(fty) = map_ty
+        if let Some(d) = default_ty.as_ref()
+            && let Some(fty) = map_ty
                 .as_ref()
                 .and_then(|t| t.record_field_ty_with_default(key, d))
-            {
-                return Some(fty);
-            }
+        {
+            return Some(fty);
         }
         if let Some(fty) = map_ty.as_ref().and_then(|t| t.record_field_ty(key)) {
             return Some(fty);
@@ -2452,28 +2451,27 @@ fn assoc_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
         .as_ref()
         .filter(|t| t.alts.is_some())
         .map(Ty::terms_vec)
+        && let Some(updates) = literal_keyword_pairs(&items[2..])
     {
-        if let Some(updates) = literal_keyword_pairs(&items[2..]) {
-            let values: Vec<(value::Symbol, Ty)> = updates
-                .into_iter()
-                .map(|(name, form)| (name, expr_ty(heap, form, ctx).unwrap_or(Ty::ANY)))
-                .collect();
-            let updated = terms.iter().try_fold(Ty::NEVER, |out, term| {
-                let shape = record_shape_of(Some(term))?;
-                let mut fields = shape.fields;
-                for (name, vty) in &values {
-                    fields.insert(*name, (vty.clone(), true));
-                }
-                Some(out.union(if shape.open {
-                    Ty::record_of_open(fields)
-                } else {
-                    Ty::record_of(fields)
-                }))
-            });
-            // A term that is not a record shape leaves this to the rules below.
-            if let Some(updated) = updated {
-                return Some(updated);
+        let values: Vec<(value::Symbol, Ty)> = updates
+            .into_iter()
+            .map(|(name, form)| (name, expr_ty(heap, form, ctx).unwrap_or(Ty::ANY)))
+            .collect();
+        let updated = terms.iter().try_fold(Ty::NEVER, |out, term| {
+            let shape = record_shape_of(Some(term))?;
+            let mut fields = shape.fields;
+            for (name, vty) in &values {
+                fields.insert(*name, (vty.clone(), true));
             }
+            Some(out.union(if shape.open {
+                Ty::record_of_open(fields)
+            } else {
+                Ty::record_of(fields)
+            }))
+        });
+        // A term that is not a record shape leaves this to the rules below.
+        if let Some(updated) = updated {
+            return Some(updated);
         }
     }
     // On a record shape with literal-keyword keys, carry the SHAPE forward with the
@@ -2646,11 +2644,11 @@ fn reduce_ty(heap: &Heap, is_reduce: bool, items: &[Value], ctx: &Ctx) -> Option
     // so with `init` and every element in a closed set the result is in it too —
     // `(reduce + 0 ints)` is an `int`, not the `number | map` the accumulator-as-`any`
     // path below produces from `+`'s declared signature.
-    if let (Value::Sym(operator), Some(init), Some(element)) = (f, &init_ty, &elem) {
-        if let Some(t) = numeric_result(operator, &[init.clone(), element.clone()]) {
-            // The closure class; one step's interval is not the fold's (ADR-350).
-            return Some(t.without_int_interval());
-        }
+    if let (Value::Sym(operator), Some(init), Some(element)) = (f, &init_ty, &elem)
+        && let Some(t) = numeric_result(operator, &[init.clone(), element.clone()])
+    {
+        // The closure class; one step's interval is not the fold's (ADR-350).
+        return Some(t.without_int_interval());
     }
     // Seed the accumulator from `init` and take one step to a fixpoint: with `acc₁ =
     // init ∪ f(init, e)`, if `f(acc₁, e) ⊆ acc₁` then by induction every iterate is in
@@ -2745,10 +2743,10 @@ fn provably_non_empty(t: &Ty) -> bool {
     // one is defensive, since a union with nil currently widens a tuple shape away
     // (`a_union_with_nil_widens_a_tuple_shape_away` pins that, so the day it stops the
     // gate is already there and the pin says why).
-    if t.is_subtype(&Ty::of(Tag::Vector)) {
-        if let Some(elems) = t.tuple_elems() {
-            return !elems.is_empty();
-        }
+    if t.is_subtype(&Ty::of(Tag::Vector))
+        && let Some(elems) = t.tuple_elems()
+    {
+        return !elems.is_empty();
     }
     // (A `defrecord` value walks its `Seqable` view, not its keys — see `may_carry_identity`.)
     if t.is_subtype(&Ty::of(Tag::Map))
@@ -2833,10 +2831,10 @@ pub(super) fn callback_ret(heap: &Heap, f: Value, inputs: &[Option<Ty>], ctx: &C
             // A numeric operator as the callback — `(map inc xs)`, `(reduce + 0 xs)` — with
             // every input known: the same closure rules a direct call gets, instead of the
             // operator's declared signature (widened to `number | map` for `Num` records).
-            if let Some(tys) = inputs.iter().cloned().collect::<Option<Vec<Ty>>>() {
-                if let Some(t) = numeric_result(s, &tys) {
-                    return Some(t);
-                }
+            if let Some(tys) = inputs.iter().cloned().collect::<Option<Vec<Ty>>>()
+                && let Some(t) = numeric_result(s, &tys)
+            {
+                return Some(t);
             }
             // A flat `any` answer is where the callback's own body says nothing about its
             // result FROM ITS OWN PARAMS — `(defn step (acc v) (conj acc …))` reads `any`
@@ -2888,10 +2886,10 @@ pub(super) fn callback_ret(heap: &Heap, f: Value, inputs: &[Option<Ty>], ctx: &C
             }
             // …and a declared single arrow that says anything is the contract, not re-typed
             // (ADR-259); a declared `any` is read as no declaration.
-            if let Some(sg) = super::sigs::declared_heap_sig(heap, s) {
-                if !sg.ret.is_any() {
-                    return Some(sg.ret);
-                }
+            if let Some(sg) = super::sigs::declared_heap_sig(heap, s)
+                && !sg.ret.is_any()
+            {
+                return Some(sg.ret);
             }
             specialize(sig_of(heap, s).map(|sig| sig.ret))
         }

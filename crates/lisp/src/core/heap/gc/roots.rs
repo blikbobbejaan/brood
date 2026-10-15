@@ -54,13 +54,15 @@ impl Heap {
     /// answer the tests catch — instead of as garbage with a valid-looking tag.
     #[cfg(feature = "jit")]
     pub(crate) unsafe fn push_roots_room(&mut self, n: usize) -> *mut Value {
-        let old = self.roots.len();
-        self.roots.reserve(n);
-        let dst = self.roots.as_mut_ptr().add(old);
-        #[cfg(debug_assertions)]
-        std::ptr::write_bytes(dst, 0, n);
-        self.roots.set_len(old + n);
-        dst
+        unsafe {
+            let old = self.roots.len();
+            self.roots.reserve(n);
+            let dst = self.roots.as_mut_ptr().add(old);
+            #[cfg(debug_assertions)]
+            std::ptr::write_bytes(dst, 0, n);
+            self.roots.set_len(old + n);
+            dst
+        }
     }
 
     /// Raw byte pointer to the LOCAL nursery pair slab (the flat `Vec<(Value, Value)>` backing

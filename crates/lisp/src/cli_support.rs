@@ -55,7 +55,9 @@ fn fmt_utc_ms(ms: u128) -> String {
 /// environment variable is only sound while the process is single-threaded.
 pub fn install_panic_reporting() {
     if std::env::var_os("RUST_BACKTRACE").is_none() {
-        std::env::set_var("RUST_BACKTRACE", "1");
+        // SAFETY: both binaries call this first in `main`, before any thread exists that
+        // could read the environment concurrently (see the doc above).
+        unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
     install_crash_dump();
 }
@@ -127,12 +129,11 @@ pub fn install_crash_dump() {
             .create(true)
             .append(true)
             .open(".brood_crash_dump")
+            && f.write_all(body.as_bytes()).is_ok()
         {
-            if f.write_all(body.as_bytes()).is_ok() {
-                // Point the user at the dump (the panic message itself already
-                // went to stderr via `prior`).
-                eprintln!("brood: crash report appended to .brood_crash_dump");
-            }
+            // Point the user at the dump (the panic message itself already
+            // went to stderr via `prior`).
+            eprintln!("brood: crash report appended to .brood_crash_dump");
         }
     }));
 }
@@ -258,17 +259,16 @@ pub fn report_error(e: &LispError) {
     } else {
         out.push_str(&format!("{located}\n"));
     }
-    if let (Some(file), Some(pos)) = (&e.file, e.pos) {
-        if let Ok(src) = std::fs::read_to_string(file) {
-            if let Some(line) = src.lines().nth(pos.line.saturating_sub(1) as usize) {
-                out.push_str(&format!("    {line}\n"));
-                let pad = " ".repeat(pos.col.saturating_sub(1) as usize);
-                if color {
-                    out.push_str(&format!("    {pad}{C_ERR}^{C_RESET}\n"));
-                } else {
-                    out.push_str(&format!("    {pad}^\n"));
-                }
-            }
+    if let (Some(file), Some(pos)) = (&e.file, e.pos)
+        && let Ok(src) = std::fs::read_to_string(file)
+        && let Some(line) = src.lines().nth(pos.line.saturating_sub(1) as usize)
+    {
+        out.push_str(&format!("    {line}\n"));
+        let pad = " ".repeat(pos.col.saturating_sub(1) as usize);
+        if color {
+            out.push_str(&format!("    {pad}{C_ERR}^{C_RESET}\n"));
+        } else {
+            out.push_str(&format!("    {pad}^\n"));
         }
     }
     // Surface the fix hint (the C-style-call nudge, the deep-recursion suggestion,
@@ -349,10 +349,10 @@ pub fn write_stdout(s: &str) {
 }
 
 fn write_stream(w: &mut impl std::io::Write, s: &str) {
-    if let Err(e) = w.write_all(s.as_bytes()).and_then(|_| w.flush()) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            std::process::exit(0);
-        }
+    if let Err(e) = w.write_all(s.as_bytes()).and_then(|_| w.flush())
+        && e.kind() == std::io::ErrorKind::BrokenPipe
+    {
+        std::process::exit(0);
     }
 }
 

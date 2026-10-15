@@ -22,10 +22,10 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
     // Line coverage (ADR-148 tier 2): when armed, prefix each positioned node with a
     // `RecordLine`. Compile-time rather than a runtime check per instruction, so a
     // normal run's bytecode is unchanged — nothing to pay for when coverage is off.
-    if crate::diagnostics::coverage::enabled() {
-        if let Some(pos) = node_pos(node) {
-            code.push(Inst::RecordLine(pos.line));
-        }
+    if crate::diagnostics::coverage::enabled()
+        && let Some(pos) = node_pos(node)
+    {
+        code.push(Inst::RecordLine(pos.line));
     }
     match node {
         // A fresh `ConstVal` cloned from the node's (atoms inline; a movable RUNTIME

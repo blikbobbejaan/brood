@@ -1373,10 +1373,10 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 w: iw,
                 h: ih,
             } => {
-                if let Some(win) = self.ids.get(&id).and_then(|wid| self.wins.get(wid)) {
-                    if let Ok(ic) = Icon::from_rgba(rgba, iw, ih) {
-                        win.window.set_window_icon(Some(ic));
-                    }
+                if let Some(win) = self.ids.get(&id).and_then(|wid| self.wins.get(wid))
+                    && let Ok(ic) = Icon::from_rgba(rgba, iw, ih)
+                {
+                    win.window.set_window_icon(Some(ic));
                 }
             }
             // A sprite texture lives on the GPU target; the CPU target has no sprite
@@ -1413,11 +1413,11 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                 }
             }
             UserEvent::InputMode { id, pixels } => {
-                if let Some(win) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid)) {
-                    if win.pixel_input != pixels {
-                        win.pixel_input = pixels;
-                        publish_size(win);
-                    }
+                if let Some(win) = self.ids.get(&id).and_then(|wid| self.wins.get_mut(wid))
+                    && win.pixel_input != pixels
+                {
+                    win.pixel_input = pixels;
+                    publish_size(win);
                 }
             }
             UserEvent::Sound { id, snd, data } => {
@@ -1444,10 +1444,10 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                     // the frame arrives — not on repaints, and (by the equality above) not
                     // for a frame that repeats the last one verbatim.
                     for op in &ops {
-                        if let Op::Sound { id: snd, vol } = op {
-                            if let Some(data) = w.sounds.get(snd) {
-                                crate::host::audio::play(data, *vol);
-                            }
+                        if let Op::Sound { id: snd, vol } = op
+                            && let Some(data) = w.sounds.get(snd)
+                        {
+                            crate::host::audio::play(data, *vol);
                         }
                     }
                     // Refresh the cursor hot-zones from this frame, then store it. The walk

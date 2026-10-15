@@ -1946,7 +1946,7 @@ impl Heap {
     /// debug-gated accessors call it, so it's `cfg(debug_assertions)` too (no
     /// release dead-code).
     #[cfg(debug_assertions)]
-    fn check_epoch_aged(&self, is_old: bool, gen: u32, index: usize, what: &str, raw: u64) {
+    fn check_epoch_aged(&self, is_old: bool, generation: u32, index: usize, what: &str, raw: u64) {
         let (expected, space) = if is_old {
             (self.old_epoch, "OLD")
         } else {
@@ -1955,14 +1955,14 @@ impl Heap {
         // Compare in the handle's truncated GEN width — see `epoch_in_gen_width`.
         let expected = Self::epoch_in_gen_width(expected);
         debug_assert!(
-            gen == expected,
+            generation == expected,
             "use-after-GC: {} handle ({} slot {}) is from epoch {}, but that generation is \
              now epoch {} — a handle held across a collection without being re-rooted \
              (handle {:#x}). [current JIT arm: '{}']",
             what,
             space,
             index,
-            gen,
+            generation,
             expected,
             raw,
             crate::core::value::symbol_name_opt(self.jit_dbg_fn).unwrap_or("<none/computed>"),

@@ -104,10 +104,10 @@ impl Heap {
                 // unless a `binding` is in scope, so this costs nothing on the
                 // ordinary path; when active it shadows only at the global level
                 // (dynamic vars are never lexically bound).
-                if !self.dynamics.is_empty() {
-                    if let Some(&(_, v)) = self.dynamics.iter().rev().find(|&&(s, _)| s == sym) {
-                        return Some(v);
-                    }
+                if !self.dynamics.is_empty()
+                    && let Some(&(_, v)) = self.dynamics.iter().rev().find(|&&(s, _)| s == sym)
+                {
+                    return Some(v);
                 }
                 return self.global_lookup_cached(sym);
             }
@@ -185,10 +185,10 @@ impl Heap {
     #[inline]
     fn global_lookup_cached(&self, sym: Symbol) -> Option<Value> {
         let cur = self.runtime.version.load(Ordering::Relaxed);
-        if let Some(&(ver, val)) = self.global_ic.borrow().get(&sym) {
-            if ver == cur {
-                return Some(val);
-            }
+        if let Some(&(ver, val)) = self.global_ic.borrow().get(&sym)
+            && ver == cur
+        {
+            return Some(val);
         }
         // KI-135 / ADR-344: a name this process's OPEN module load has defined but not yet
         // published — checked BEFORE the table, because a load may REBIND a live name (the
@@ -237,7 +237,7 @@ impl Heap {
     }
 
     /// Address of the global-epoch counter (`runtime.version`), so JIT'd code can read the
-    /// epoch with a **raw load** instead of a `brood_rt_global_epoch` FFI *call* on every loop
+    /// epoch with a **raw load** instead of an FFI *call* on every loop
     /// back-edge / linked call (the call was ~20% of a hoisted-global loop like `loop`). The
     /// counter is an `AtomicU64` living in the `Arc<RuntimeCode>` — a stable address for the
     /// process (`runtime_collect` mutates `version` in place via `Arc::get_mut`, never replaces
@@ -402,10 +402,10 @@ impl Heap {
                 .collect();
             let mut view = base.unwrap_or(Value::nil());
             for w in ops {
-                if let LoadWrite::Registry { op, path, val, .. } = w {
-                    if let Some(next) = self.registry_next(view, op, &path, val) {
-                        view = next;
-                    }
+                if let LoadWrite::Registry { op, path, val, .. } = w
+                    && let Some(next) = self.registry_next(view, op, &path, val)
+                {
+                    view = next;
                 }
             }
             let view = self.promote(view);
@@ -1603,10 +1603,9 @@ impl Heap {
             .borrow()
             .as_ref()
             .and_then(|c| c.known_ns.as_ref())
+            && *c == shape
         {
-            if *c == shape {
-                return std::sync::Arc::clone(arc);
-            }
+            return std::sync::Arc::clone(arc);
         }
         let mut set = std::collections::HashSet::new();
         for sym in self.global_symbols() {
@@ -1660,10 +1659,9 @@ impl Heap {
             .borrow_mut()
             .as_mut()
             .and_then(|c| c.dep_rec.as_mut())
+            && !d.known_ns.contains(prefix)
         {
-            if !d.known_ns.contains(prefix) {
-                d.known_ns.insert(prefix.to_string());
-            }
+            d.known_ns.insert(prefix.to_string());
         }
     }
     /// Record a `mod/` prefix whose export set was read.
@@ -1673,10 +1671,9 @@ impl Heap {
             .borrow_mut()
             .as_mut()
             .and_then(|c| c.dep_rec.as_mut())
+            && !d.exports.contains(prefix)
         {
-            if !d.exports.contains(prefix) {
-                d.exports.insert(prefix.to_string());
-            }
+            d.exports.insert(prefix.to_string());
         }
     }
     /// Record that the `*protocols*` table was consulted.
@@ -1748,10 +1745,10 @@ impl Heap {
             .load(std::sync::atomic::Ordering::Acquire);
         {
             let cache = self.type_alias_cache.borrow();
-            if cache.0 == version {
-                if let Some(hit) = cache.1.get(&name) {
-                    return *hit;
-                }
+            if cache.0 == version
+                && let Some(hit) = cache.1.get(&name)
+            {
+                return *hit;
             }
         }
         let suffix = format!("/{}", crate::core::value::symbol_name(name));

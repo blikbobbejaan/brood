@@ -157,12 +157,11 @@ static I64_TOO_DEEP_ANY: std::sync::atomic::AtomicUsize = std::sync::atomic::Ato
 /// Record that `sym`'s recursion overflowed the i64 worker's depth cap — switch it to boxed.
 #[cfg(feature = "jit")]
 pub(crate) fn i64_mark_too_deep(sym: Symbol) {
-    if let Ok(mut g) = I64_TOO_DEEP.lock() {
-        if g.get_or_insert_with(std::collections::HashSet::new)
+    if let Ok(mut g) = I64_TOO_DEEP.lock()
+        && g.get_or_insert_with(std::collections::HashSet::new)
             .insert(sym)
-        {
-            I64_TOO_DEEP_ANY.fetch_add(1, std::sync::atomic::Ordering::Release);
-        }
+    {
+        I64_TOO_DEEP_ANY.fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 }
 

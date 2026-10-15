@@ -52,14 +52,13 @@ pub(crate) fn node_has_rt_handles(node: &Node) -> bool {
 /// and `b` a constant index in `0..nelems`? Such a use consumes only an *element* of the
 /// vector in `slot`, never the vector itself, so it doesn't make the vector escape.
 pub(crate) fn is_elem_read(a: &Node, b: &Node, slot: usize, nelems: usize) -> Option<usize> {
-    if let (Node::Local(k), Node::Const(cv)) = (a, b) {
-        if *k == slot {
-            if let ValueRef::Int(idx) = cv.load().unpack() {
-                if idx >= 0 && (idx as usize) < nelems {
-                    return Some(idx as usize);
-                }
-            }
-        }
+    if let (Node::Local(k), Node::Const(cv)) = (a, b)
+        && *k == slot
+        && let ValueRef::Int(idx) = cv.load().unpack()
+        && idx >= 0
+        && (idx as usize) < nelems
+    {
+        return Some(idx as usize);
     }
     None
 }
@@ -190,10 +189,9 @@ pub(crate) fn local_escapes(node: &Node, slot: usize, nelems: usize) -> bool {
         b,
         ..
     } = node
+        && is_elem_read(a, b, slot, nelems).is_some()
     {
-        if is_elem_read(a, b, slot, nelems).is_some() {
-            return local_escapes(b, slot, nelems); // `a` consumed safely; `b` is the const index
-        }
+        return local_escapes(b, slot, nelems); // `a` consumed safely; `b` is the const index
     }
     if let Node::Local(k) = node {
         return *k == slot;
@@ -215,11 +213,10 @@ pub(crate) fn rewrite_elem_reads(node: &mut Node, slot: usize, base: usize, nele
         b,
         ..
     } = node
+        && let Some(k) = is_elem_read(a, b, slot, nelems)
     {
-        if let Some(k) = is_elem_read(a, b, slot, nelems) {
-            *node = Node::Local(base + k);
-            return;
-        }
+        *node = Node::Local(base + k);
+        return;
     }
     walk_children_mut(node, |child| rewrite_elem_reads(child, slot, base, nelems));
 }
@@ -237,29 +234,29 @@ pub(crate) fn ea_scalar_replace(node: &mut Node, next_slot: &mut usize) -> bool 
     walk_children_mut(node, |child| {
         changed |= ea_scalar_replace(child, next_slot);
     });
-    if let Node::LetBind { binds, body } = node {
-        if binds.len() == 1 {
-            let slot = binds[0].0;
-            let n = match &binds[0].1 {
-                Node::Vector(e) => e.len(),
-                _ => 0,
+    if let Node::LetBind { binds, body } = node
+        && binds.len() == 1
+    {
+        let slot = binds[0].0;
+        let n = match &binds[0].1 {
+            Node::Vector(e) => e.len(),
+            _ => 0,
+        };
+        if (1..=MAX_ELEMS).contains(&n) && !local_escapes(body, slot, n) {
+            let base = *next_slot;
+            *next_slot += n;
+            rewrite_elem_reads(body, slot, base, n);
+            let elems = match &mut binds[0].1 {
+                Node::Vector(e) => std::mem::replace(e, Box::new([])),
+                _ => unreachable!(),
             };
-            if (1..=MAX_ELEMS).contains(&n) && !local_escapes(body, slot, n) {
-                let base = *next_slot;
-                *next_slot += n;
-                rewrite_elem_reads(body, slot, base, n);
-                let elems = match &mut binds[0].1 {
-                    Node::Vector(e) => std::mem::replace(e, Box::new([])),
-                    _ => unreachable!(),
-                };
-                *binds = elems
-                    .into_vec()
-                    .into_iter()
-                    .enumerate()
-                    .map(|(k, e)| (base + k, e))
-                    .collect();
-                changed = true;
-            }
+            *binds = elems
+                .into_vec()
+                .into_iter()
+                .enumerate()
+                .map(|(k, e)| (base + k, e))
+                .collect();
+            changed = true;
         }
     }
     changed

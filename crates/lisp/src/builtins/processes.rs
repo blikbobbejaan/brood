@@ -833,10 +833,9 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                         m.deopt = sel(heap, "deopt");
                         if let Some(Value::Int(n)) =
                             heap.map_get(opts, value::kw("gc-min-pause-us"))
+                            && n > 0
                         {
-                            if n > 0 {
-                                m.gc_min_pause_us = n as u64;
-                            }
+                            m.gc_min_pause_us = n as u64;
                         }
                         // Selected by its threshold: `:long-schedule-us n`, n > 0.
                         m.long_schedule_us = match heap.map_get(opts, value::kw("long-schedule-us"))

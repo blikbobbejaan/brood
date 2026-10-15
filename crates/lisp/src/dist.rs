@@ -1499,10 +1499,10 @@ fn linked_peer_for(claimed: Symbol, addr: &str) -> Option<Symbol> {
     if nodes.contains_key(&claimed) {
         return Some(claimed);
     }
-    if let Some(&routed) = crate::core::sync::read(&DIAL_ROUTES).get(addr) {
-        if nodes.contains_key(&routed) {
-            return Some(routed);
-        }
+    if let Some(&routed) = crate::core::sync::read(&DIAL_ROUTES).get(addr)
+        && nodes.contains_key(&routed)
+    {
+        return Some(routed);
     }
     nodes
         .iter()
@@ -1869,10 +1869,10 @@ fn broadcast_peer_table() {
         if peers.is_empty() {
             continue;
         }
-        if let Ok(bytes) = encode_payload(&Frame::Peers { peers }) {
-            if s.tx.try_send(Arc::from(bytes)).is_err() {
-                let _ = s.sock.shutdown(Shutdown::Both);
-            }
+        if let Ok(bytes) = encode_payload(&Frame::Peers { peers })
+            && s.tx.try_send(Arc::from(bytes)).is_err()
+        {
+            let _ = s.sock.shutdown(Shutdown::Both);
         }
     }
 }

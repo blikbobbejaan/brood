@@ -70,10 +70,10 @@ pub(super) fn plan_hoists(code: &[Inst], lower_body: &Node, nrequired: usize) ->
                 slot_a,
                 ..
             } = i
+                && invariant.get(*slot_a).copied().unwrap_or(false)
+                && !slots.contains(slot_a)
             {
-                if invariant.get(*slot_a).copied().unwrap_or(false) && !slots.contains(slot_a) {
-                    slots.push(*slot_a);
-                }
+                slots.push(*slot_a);
             }
         }
     }
@@ -84,10 +84,10 @@ pub(super) fn plan_hoists(code: &[Inst], lower_body: &Node, nrequired: usize) ->
     let mut scalar_globals: HashSet<Symbol> = HashSet::new();
     if hoist_safe {
         for i in code.iter() {
-            if let Inst::Global(s) | Inst::GlobalIc { sym: s, .. } = i {
-                if !globals.contains(s) {
-                    scalar_globals.insert(*s);
-                }
+            if let Inst::Global(s) | Inst::GlobalIc { sym: s, .. } = i
+                && !globals.contains(s)
+            {
+                scalar_globals.insert(*s);
             }
         }
     }

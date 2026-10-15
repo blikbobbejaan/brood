@@ -71,15 +71,15 @@ impl Heap {
             // event build/deliver touches only Rust data, never this heap. The
             // subscriber's own collections are excluded inside emit_gc (its
             // event traffic would otherwise re-trigger itself forever).
-            if crate::process::sysmon::armed() {
-                if let Some(pid) = crate::process::current_pid() {
-                    crate::process::sysmon::emit_gc(
-                        pid,
-                        ns,
-                        self.gc_runs,
-                        self.local_live_count() as u64,
-                    );
-                }
+            if crate::process::sysmon::armed()
+                && let Some(pid) = crate::process::current_pid()
+            {
+                crate::process::sysmon::emit_gc(
+                    pid,
+                    ns,
+                    self.gc_runs,
+                    self.local_live_count() as u64,
+                );
             }
         }
     }
@@ -539,15 +539,15 @@ impl Heap {
             work.push(Pending::Value(v, 0));
         }
         for &frame_id in &self.remembered {
-            if frame_id.is_old() {
-                if let Some(frame) = self.old_opt().and_then(|o| o.envs.get(frame_id.index())) {
-                    work.extend(
-                        frame
-                            .vars
-                            .iter()
-                            .map(|&(_, v)| Pending::Value(v, frame_id.0)),
-                    );
-                }
+            if frame_id.is_old()
+                && let Some(frame) = self.old_opt().and_then(|o| o.envs.get(frame_id.index()))
+            {
+                work.extend(
+                    frame
+                        .vars
+                        .iter()
+                        .map(|&(_, v)| Pending::Value(v, frame_id.0)),
+                );
             }
         }
 

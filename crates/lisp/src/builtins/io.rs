@@ -167,13 +167,13 @@ pub(super) fn write_stdout(s: &str) -> Result<(), LispError> {
 pub(super) fn write_stderr(s: &str) {
     use std::io::Write;
     let mut err = std::io::stderr();
-    if let Err(e) = err.write_all(s.as_bytes()).and_then(|_| err.flush()) {
-        if e.kind() == std::io::ErrorKind::BrokenPipe {
-            restore_terminal_on_exit();
-            std::process::exit(0);
-        }
-        // Other errors: nothing useful to do from a print primitive; drop it.
+    if let Err(e) = err.write_all(s.as_bytes()).and_then(|_| err.flush())
+        && e.kind() == std::io::ErrorKind::BrokenPipe
+    {
+        restore_terminal_on_exit();
+        std::process::exit(0);
     }
+    // Other errors: nothing useful to do from a print primitive; drop it.
 }
 
 pub(super) fn eprint(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {

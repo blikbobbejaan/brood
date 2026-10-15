@@ -138,14 +138,14 @@ pub(crate) fn prim2_inline_exec(
     // (`VectorRef`/`Cons` never have `(Int, Int)` operands, so they skip this and
     // are handled on the cold path below — keeping this hot path branch-free of
     // them.)
-    if let (ValueRef::Int(a), ValueRef::Int(b)) = (x.unpack(), y.unpack()) {
-        if let Some(v) = prim2_int_fast(op, a, b) {
-            crate::perf_bump!(prim2_inline);
-            return Ok(Some(v));
-        }
-        // Int overflow, an inexact or ÷0 `%div`, or Cons with Int operands → the
-        // native owns it (prim_apply's Int×Int arm is this same table).
+    if let (ValueRef::Int(a), ValueRef::Int(b)) = (x.unpack(), y.unpack())
+        && let Some(v) = prim2_int_fast(op, a, b)
+    {
+        crate::perf_bump!(prim2_inline);
+        return Ok(Some(v));
     }
+    // Int overflow, an inexact or ÷0 `%div`, or Cons with Int operands → the
+    // native owns it (prim_apply's Int×Int arm is this same table).
     // Interned-immediate `=` fast path: `(%eq (type-of x) :kw)` is the single most
     // common non-int comparison in Brood — every type predicate (`empty?`/`nil?`/
     // `cond`/…) runs it, and `type-of` yields a `Keyword`. Comparing two keywords
@@ -179,11 +179,12 @@ pub(crate) fn prim2_inline_exec(
         // `(Vector, Int)` case; non-vector / non-int / out-of-range defer
         // (`Ok(None)`) to the native, which owns the exact bounds + type errors.
         None if op == PrimOp::VectorRef => {
-            if let (ValueRef::Vector(id), ValueRef::Int(n)) = (x.unpack(), y.unpack()) {
-                if n >= 0 && (n as usize) < heap.vector(id).len() {
-                    crate::perf_bump!(prim2_inline);
-                    return Ok(Some(heap.vector(id)[n as usize]));
-                }
+            if let (ValueRef::Vector(id), ValueRef::Int(n)) = (x.unpack(), y.unpack())
+                && n >= 0
+                && (n as usize) < heap.vector(id).len()
+            {
+                crate::perf_bump!(prim2_inline);
+                return Ok(Some(heap.vector(id)[n as usize]));
             }
             Ok(None)
         }
@@ -196,11 +197,11 @@ pub(crate) fn prim2_inline_exec(
         // only so a frame suspended inside that call can be recognised by its resume point.
         None if op == PrimOp::ContractAwait => Ok(Some(y)),
         None if op == PrimOp::MapGet => {
-            if let ValueRef::Map(id) = x.unpack() {
-                if let Some(v) = heap.map_get_inline(id, y) {
-                    crate::perf_bump!(prim2_inline);
-                    return Ok(Some(v));
-                }
+            if let ValueRef::Map(id) = x.unpack()
+                && let Some(v) = heap.map_get_inline(id, y)
+            {
+                crate::perf_bump!(prim2_inline);
+                return Ok(Some(v));
             }
             Ok(None)
         }

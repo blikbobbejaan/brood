@@ -135,12 +135,12 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
         }
         // No exact match: take this language's most recent text — the buffer being typed
         // in — and derive the edit that turns it into this one.
-        if let Some((_, old_src, old_tree)) = cache.iter().rev().find(|(l, _, _)| l == lang) {
-            if let Some(edit) = derive_edit(old_src, src) {
-                let mut t = old_tree.clone();
-                t.edit(&edit);
-                reuse = Some(t);
-            }
+        if let Some((_, old_src, old_tree)) = cache.iter().rev().find(|(l, _, _)| l == lang)
+            && let Some(edit) = derive_edit(old_src, src)
+        {
+            let mut t = old_tree.clone();
+            t.edit(&edit);
+            reuse = Some(t);
         }
     }
     let language = language_for(lang)?;

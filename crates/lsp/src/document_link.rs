@@ -53,12 +53,11 @@ fn collect_module_names<'a>(node: &'a Node, src: &str, out: &mut Vec<&'a Node>) 
         return;
     }
     // `(:use foo …)` / `(:alias foo …)` — the form right after the keyword.
-    if matches!(node.head_keyword(src), Some(":use" | ":alias")) {
-        if let Some(name) = node.forms().nth(1) {
-            if name.kind == NodeKind::Symbol {
-                out.push(name);
-            }
-        }
+    if matches!(node.head_keyword(src), Some(":use" | ":alias"))
+        && let Some(name) = node.forms().nth(1)
+        && name.kind == NodeKind::Symbol
+    {
+        out.push(name);
     }
     for child in &node.children {
         collect_module_names(child, src, out);

@@ -309,10 +309,8 @@ fn implements_claims(heap: &Heap, forms: &[Value]) -> Vec<(String, Option<Pos>)>
                 continue;
             };
             let is_implements = matches!(citems.first(), Some(&Value::Keyword(k)) if value::symbol_is(k, "implements"));
-            if is_implements {
-                if let Some(name) = citems.get(1).and_then(|&v| sym_name(v)) {
-                    out.push((name, pos));
-                }
+            if is_implements && let Some(name) = citems.get(1).and_then(|&v| sym_name(v)) {
+                out.push((name, pos));
             }
         }
     }
@@ -350,11 +348,11 @@ fn collect_arity_inner(heap: &Heap, form: Value, out: &mut HashMap<String, Optio
         return;
     }
     // `defn` has expanded to `(def name (fn …))` by now; `defmacro` stays itself.
-    if value::symbol_is(head, "def") {
-        if let Some(&Value::Sym(name)) = items.get(1) {
-            let arity = items.get(2).and_then(|&v| fn_arity(heap, v));
-            out.insert(head_name(name), arity);
-        }
+    if value::symbol_is(head, "def")
+        && let Some(&Value::Sym(name)) = items.get(1)
+    {
+        let arity = items.get(2).and_then(|&v| fn_arity(heap, v));
+        out.insert(head_name(name), arity);
     }
     for &item in items.get(1..).unwrap_or(&[]) {
         collect_arity(heap, item, out);
@@ -378,13 +376,13 @@ fn fn_arity(heap: &Heap, v: Value) -> Option<usize> {
     let params = *rest.first()?;
     // Multi-arity: the "param list" is really a clause `((a) body…)` whose head is
     // itself a param list/vector → can't pin one arity.
-    if let Some(pitems) = list_items(heap, params) {
-        if matches!(
+    if let Some(pitems) = list_items(heap, params)
+        && matches!(
             pitems.first(),
             Some(Value::Pair(_)) | Some(Value::Vector(_))
-        ) {
-            return None;
-        }
+        )
+    {
+        return None;
     }
     param_count(heap, params)
 }
@@ -445,14 +443,14 @@ fn find_op_key(heap: &Heap, form: Value) -> Option<(String, String)> {
             } else {
                 None
             };
-            if let Some(idx) = opkey_idx {
-                if let Some(Value::Vector(vid)) = items.get(idx).and_then(|&v| unquote(heap, v)) {
-                    let vec = heap.vector(vid);
-                    if let (Some(&a), Some(&o)) = (vec.first(), vec.get(1)) {
-                        if let (Some(an), Some(on)) = (sym_name(a), sym_name(o)) {
-                            return Some((an, on));
-                        }
-                    }
+            if let Some(idx) = opkey_idx
+                && let Some(Value::Vector(vid)) = items.get(idx).and_then(|&v| unquote(heap, v))
+            {
+                let vec = heap.vector(vid);
+                if let (Some(&a), Some(&o)) = (vec.first(), vec.get(1))
+                    && let (Some(an), Some(on)) = (sym_name(a), sym_name(o))
+                {
+                    return Some((an, on));
                 }
             }
         }
@@ -497,23 +495,23 @@ fn collect_register_impls(
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_IMPL) {
-                let a = items
-                    .get(1)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name);
-                let op = items
-                    .get(2)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name);
-                let id = items.get(3).copied().and_then(sym_name);
-                if let (Some(a), Some(op), Some(id)) = (a, op, id) {
-                    if id == "default" {
-                        defaults.insert((a, op));
-                    } else {
-                        impls.insert((a, op, id));
-                    }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_IMPL)
+        {
+            let a = items
+                .get(1)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name);
+            let op = items
+                .get(2)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name);
+            let id = items.get(3).copied().and_then(sym_name);
+            if let (Some(a), Some(op), Some(id)) = (a, op, id) {
+                if id == "default" {
+                    defaults.insert((a, op));
+                } else {
+                    impls.insert((a, op, id));
                 }
             }
         }
@@ -533,16 +531,16 @@ fn collect_derive_into(heap: &Heap, form: Value, out: &mut Vec<(String, String)>
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::DERIVE_INTO) {
-                let a = items
-                    .get(1)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name);
-                let id = items.get(2).copied().and_then(sym_name);
-                if let (Some(a), Some(id)) = (a, id) {
-                    out.push((a, id));
-                }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::DERIVE_INTO)
+        {
+            let a = items
+                .get(1)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name);
+            let id = items.get(2).copied().and_then(sym_name);
+            if let (Some(a), Some(id)) = (a, id) {
+                out.push((a, id));
             }
         }
         for &item in items.get(1..).unwrap_or(&[]) {
@@ -960,37 +958,36 @@ fn collect_register_ability(
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_ABILITY) {
-                if let (Some(a), Some(ops_form)) = (
-                    items
-                        .get(1)
-                        .and_then(|&v| unquote(heap, v))
-                        .and_then(sym_name),
-                    items.get(2).and_then(|&v| unquote(heap, v)),
-                ) {
-                    let mut ops = Vec::new();
-                    for &spec in list_items(heap, ops_form).unwrap_or_default().iter() {
-                        let Some(op) = list_items(heap, spec)
-                            .and_then(|it| it.first().copied())
-                            .and_then(sym_name)
-                        else {
-                            continue;
-                        };
-                        if let Some(ret) = spec_ret_form(heap, spec) {
-                            rets.entry((a.clone(), op.clone())).or_insert(ret);
-                        }
-                        if let Some(ptys) = spec_param_types(heap, spec) {
-                            params.entry((a.clone(), op.clone())).or_insert(ptys);
-                        }
-                        if spec_has_body(heap, spec) {
-                            provided.insert((a.clone(), op.clone()));
-                        }
-                        ops.push(op);
-                    }
-                    out.insert(a, ops);
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_ABILITY)
+            && let (Some(a), Some(ops_form)) = (
+                items
+                    .get(1)
+                    .and_then(|&v| unquote(heap, v))
+                    .and_then(sym_name),
+                items.get(2).and_then(|&v| unquote(heap, v)),
+            )
+        {
+            let mut ops = Vec::new();
+            for &spec in list_items(heap, ops_form).unwrap_or_default().iter() {
+                let Some(op) = list_items(heap, spec)
+                    .and_then(|it| it.first().copied())
+                    .and_then(sym_name)
+                else {
+                    continue;
+                };
+                if let Some(ret) = spec_ret_form(heap, spec) {
+                    rets.entry((a.clone(), op.clone())).or_insert(ret);
                 }
+                if let Some(ptys) = spec_param_types(heap, spec) {
+                    params.entry((a.clone(), op.clone())).or_insert(ptys);
+                }
+                if spec_has_body(heap, spec) {
+                    provided.insert((a.clone(), op.clone()));
+                }
+                ops.push(op);
             }
+            out.insert(a, ops);
         }
         for &item in items.get(1..).unwrap_or(&[]) {
             collect_register_ability(heap, item, out, rets, params, provided);
@@ -1004,26 +1001,25 @@ fn collect_register_sealed(heap: &Heap, form: Value, out: &mut HashMap<String, V
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_SEALED) {
-                if let (Some(a), Some(&list_form)) = (
-                    items
-                        .get(1)
-                        .and_then(|&v| unquote(heap, v))
-                        .and_then(sym_name),
-                    items.get(2),
-                ) {
-                    // the members are the args of the `(list :id …)` form
-                    if let Some(litems) = list_items(heap, list_form) {
-                        let members = litems
-                            .get(1..)
-                            .unwrap_or(&[])
-                            .iter()
-                            .filter_map(|&m| sym_name(m))
-                            .collect();
-                        out.insert(a, members);
-                    }
-                }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_SEALED)
+            && let (Some(a), Some(&list_form)) = (
+                items
+                    .get(1)
+                    .and_then(|&v| unquote(heap, v))
+                    .and_then(sym_name),
+                items.get(2),
+            )
+        {
+            // the members are the args of the `(list :id …)` form
+            if let Some(litems) = list_items(heap, list_form) {
+                let members = litems
+                    .get(1..)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter_map(|&m| sym_name(m))
+                    .collect();
+                out.insert(a, members);
             }
         }
         for &item in items.get(1..).unwrap_or(&[]) {
@@ -1043,26 +1039,24 @@ fn collect_register_ability_requires(
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_ABILITY_REQUIRES) {
-                if let (Some(a), Some(&list_form)) = (
-                    items
-                        .get(1)
-                        .and_then(|&v| unquote(heap, v))
-                        .and_then(sym_name),
-                    items.get(2),
-                ) {
-                    if let Some(litems) = list_items(heap, list_form) {
-                        let reqs = litems
-                            .get(1..)
-                            .unwrap_or(&[])
-                            .iter()
-                            .filter_map(|&r| unquote(heap, r).and_then(sym_name))
-                            .collect();
-                        out.insert(a, reqs);
-                    }
-                }
-            }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_ABILITY_REQUIRES)
+            && let (Some(a), Some(&list_form)) = (
+                items
+                    .get(1)
+                    .and_then(|&v| unquote(heap, v))
+                    .and_then(sym_name),
+                items.get(2),
+            )
+            && let Some(litems) = list_items(heap, list_form)
+        {
+            let reqs = litems
+                .get(1..)
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|&r| unquote(heap, r).and_then(sym_name))
+                .collect();
+            out.insert(a, reqs);
         }
         for &item in items.get(1..).unwrap_or(&[]) {
             collect_register_ability_requires(heap, item, out);
@@ -1253,12 +1247,11 @@ fn collect_record_registers(heap: &Heap, form: Value, out: &mut std::collections
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, "%record-register") {
-                if let Some(name) = items.get(1).copied().and_then(sym_name) {
-                    out.insert(name);
-                }
-            }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, "%record-register")
+            && let Some(name) = items.get(1).copied().and_then(sym_name)
+        {
+            out.insert(name);
         }
         for &item in items.get(1..).unwrap_or(&[]) {
             collect_record_registers(heap, item, out);
@@ -1509,17 +1502,15 @@ impl DispatchFacts<'_> {
         items: &[Value],
         out: &mut Vec<(Option<Pos>, String)>,
     ) {
-        if let Some((ability, op)) = self.abilities.op_of(head) {
-            if let Some(&arg) = items.get(1) {
-                if let Some(id) = arg_identity(heap, arg, &self.abilities.ctors) {
-                    if self.abilities.missing(ability, op, &id) {
-                        out.push((
-                            heap.form_pos_only(form),
-                            format!("ability {ability}: no impl of `{op}` for :{id}"),
-                        ));
-                    }
-                }
-            }
+        if let Some((ability, op)) = self.abilities.op_of(head)
+            && let Some(&arg) = items.get(1)
+            && let Some(id) = arg_identity(heap, arg, &self.abilities.ctors)
+            && self.abilities.missing(ability, op, &id)
+        {
+            out.push((
+                heap.form_pos_only(form),
+                format!("ability {ability}: no impl of `{op}` for :{id}"),
+            ));
         }
         if let Some(name) = self.multis.generics.get(&head) {
             let args = items.get(1..).unwrap_or(&[]);
@@ -1532,13 +1523,13 @@ impl DispatchFacts<'_> {
                 .iter()
                 .map(|&arg| arg_identity(heap, arg, &self.multis.ctors))
                 .collect();
-            if let Some(tuple) = tuple {
-                if self.multis.missing(name, &tuple) {
-                    out.push((
-                        heap.form_pos_only(form),
-                        multi_missing_warning(name, &tuple),
-                    ));
-                }
+            if let Some(tuple) = tuple
+                && self.multis.missing(name, &tuple)
+            {
+                out.push((
+                    heap.form_pos_only(form),
+                    multi_missing_warning(name, &tuple),
+                ));
             }
         }
     }
@@ -1594,10 +1585,10 @@ impl DispatchDefs {
                 if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
                     return;
                 }
-                if value::symbol_is(head, kw::DEF) {
-                    if let (Some(&Value::Sym(name)), Some(&rhs)) = (items.get(1), items.get(2)) {
-                        self.record_def(heap, form, name, rhs);
-                    }
+                if value::symbol_is(head, kw::DEF)
+                    && let (Some(&Value::Sym(name)), Some(&rhs)) = (items.get(1), items.get(2))
+                {
+                    self.record_def(heap, form, name, rhs);
                 }
             }
             for &item in &items {
@@ -1653,13 +1644,13 @@ pub(super) fn check_ability_call_inferred(
     let Some((a, op)) = info.op_of(head) else {
         return;
     };
-    if let Some(id) = ty_record_id(arg_ty) {
-        if info.missing(a, op, &id) {
-            out.push((
-                pos,
-                format!("ability {}: no impl of `{}` for :{}", a, op, id),
-            ));
-        }
+    if let Some(id) = ty_record_id(arg_ty)
+        && info.missing(a, op, &id)
+    {
+        out.push((
+            pos,
+            format!("ability {}: no impl of `{}` for :{}", a, op, id),
+        ));
     }
 }
 
@@ -1778,16 +1769,14 @@ fn multi_missing_warning(mname: &str, tuple: &[String]) -> String {
 fn find_multi_name(heap: &Heap, form: Value) -> Option<String> {
     crate::stack::maybe_grow(64 * 1024, 1024 * 1024, || {
         let items = list_items(heap, form)?;
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::MULTI_RESOLVE) {
-                if let Some(name) = items
-                    .get(1)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name)
-                {
-                    return Some(name);
-                }
-            }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::MULTI_RESOLVE)
+            && let Some(name) = items
+                .get(1)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name)
+        {
+            return Some(name);
         }
         items.iter().find_map(|&item| find_multi_name(heap, item))
     })
@@ -1805,25 +1794,23 @@ fn collect_register_methods(
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_METHOD) {
-                if let Some(mname) = items
-                    .get(1)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name)
-                {
-                    match items.get(2).copied() {
-                        Some(Value::Keyword(k)) if value::symbol_is(k, "default") => {
-                            defaults.insert(mname);
-                        }
-                        Some(key) => {
-                            if let Some(tuple) = key_tuple(heap, unquote(heap, key)) {
-                                methods.entry(mname).or_default().insert(tuple);
-                            }
-                        }
-                        None => {}
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_METHOD)
+            && let Some(mname) = items
+                .get(1)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name)
+        {
+            match items.get(2).copied() {
+                Some(Value::Keyword(k)) if value::symbol_is(k, "default") => {
+                    defaults.insert(mname);
+                }
+                Some(key) => {
+                    if let Some(tuple) = key_tuple(heap, unquote(heap, key)) {
+                        methods.entry(mname).or_default().insert(tuple);
                     }
                 }
+                None => {}
             }
         }
         for &item in items.get(1..).unwrap_or(&[]) {
@@ -1869,30 +1856,29 @@ fn read_methods_registry(
     // `[mname key] → Some(ns)` for a registration made inside a namespace, `None` for one
     // made at the root (the prelude's).
     let mut from: HashMap<(String, Vec<String>), Option<String>> = HashMap::new();
-    if visible.is_some() {
-        if let Some(Value::Map(fid)) = obs_registry(heap, reg::METHOD_FROM) {
-            for (prov, ns) in heap.map_entries(fid) {
-                let Value::Vector(pid) = prov else {
-                    continue;
-                };
-                let parts = heap.vector(pid);
-                let (Some(&mname_v), Some(&Value::Vector(kid))) = (parts.first(), parts.get(1))
-                else {
-                    continue;
-                };
-                let Some(mname) = sym_name(mname_v) else {
-                    continue;
-                };
-                let Some(key) = heap
-                    .vector(kid)
-                    .iter()
-                    .map(|&e| sym_name(e))
-                    .collect::<Option<Vec<String>>>()
-                else {
-                    continue;
-                };
-                from.insert((mname, key), sym_name(ns));
-            }
+    if visible.is_some()
+        && let Some(Value::Map(fid)) = obs_registry(heap, reg::METHOD_FROM)
+    {
+        for (prov, ns) in heap.map_entries(fid) {
+            let Value::Vector(pid) = prov else {
+                continue;
+            };
+            let parts = heap.vector(pid);
+            let (Some(&mname_v), Some(&Value::Vector(kid))) = (parts.first(), parts.get(1)) else {
+                continue;
+            };
+            let Some(mname) = sym_name(mname_v) else {
+                continue;
+            };
+            let Some(key) = heap
+                .vector(kid)
+                .iter()
+                .map(|&e| sym_name(e))
+                .collect::<Option<Vec<String>>>()
+            else {
+                continue;
+            };
+            from.insert((mname, key), sym_name(ns));
         }
     }
     let registered_by = |mname: &str, key: &[String]| -> Option<Option<String>> {
@@ -1924,10 +1910,9 @@ fn read_methods_registry(
                     if let Some(tuple) = tuple {
                         if let (Some(visible), Some(Some(ns))) =
                             (visible, registered_by(&mname, &tuple))
+                            && !visible.contains(&ns)
                         {
-                            if !visible.contains(&ns) {
-                                continue;
-                            }
+                            continue;
                         }
                         methods.entry(mname.clone()).or_default().insert(tuple);
                     }
@@ -1950,28 +1935,26 @@ fn collect_register_multi(
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(h)) = items.first() {
-            if value::symbol_is(h, kw::REGISTER_MULTI) {
-                if let Some(mname) = items
-                    .get(1)
-                    .and_then(|&v| unquote(heap, v))
-                    .and_then(sym_name)
-                {
-                    if let Some(alg) = items.get(2).and_then(|&v| sym_name(v)) {
-                        algebras.insert(mname.clone(), alg);
-                    }
-                    // arg 3 is the quoted `:-> RET` form, and it is ABSENT — not nil —
-                    // when none was declared: `defmulti` emits a two-argument call in that
-                    // case, so `get(3)` answers the question on its own. Treating a nil
-                    // *value* as "undeclared" here would make `:-> nil` unenforceable, and
-                    // `nil` is a legal return type (`parse_type` maps it to `Tag::Nil`,
-                    // and both `sig` and `defability` accept it).
-                    if let Some(form) = items.get(3).and_then(|&v| unquote(heap, v)) {
-                        if let Some(ty) = super::annot::parse_type(heap, form) {
-                            rets.insert(mname, ty);
-                        }
-                    }
-                }
+        if let Some(&Value::Sym(h)) = items.first()
+            && value::symbol_is(h, kw::REGISTER_MULTI)
+            && let Some(mname) = items
+                .get(1)
+                .and_then(|&v| unquote(heap, v))
+                .and_then(sym_name)
+        {
+            if let Some(alg) = items.get(2).and_then(|&v| sym_name(v)) {
+                algebras.insert(mname.clone(), alg);
+            }
+            // arg 3 is the quoted `:-> RET` form, and it is ABSENT — not nil —
+            // when none was declared: `defmulti` emits a two-argument call in that
+            // case, so `get(3)` answers the question on its own. Treating a nil
+            // *value* as "undeclared" here would make `:-> nil` unenforceable, and
+            // `nil` is a legal return type (`parse_type` maps it to `Tag::Nil`,
+            // and both `sig` and `defability` accept it).
+            if let Some(form) = items.get(3).and_then(|&v| unquote(heap, v))
+                && let Some(ty) = super::annot::parse_type(heap, form)
+            {
+                rets.insert(mname, ty);
             }
         }
         for &item in items.get(1..).unwrap_or(&[]) {
@@ -2198,10 +2181,10 @@ pub(super) fn check_multi_call_inferred(
         .iter()
         .map(|&a| multi_arg_identity(heap, a, info, ctx))
         .collect();
-    if let Some(tuple) = tuple {
-        if info.missing(mname, &tuple) {
-            out.push((pos, multi_missing_warning(mname, &tuple)));
-        }
+    if let Some(tuple) = tuple
+        && info.missing(mname, &tuple)
+    {
+        out.push((pos, multi_missing_warning(mname, &tuple)));
     }
 }
 

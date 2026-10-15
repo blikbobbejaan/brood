@@ -784,10 +784,10 @@ pub(super) fn gradual_of(heap: &Heap, expr: Value, ctx: &Ctx) -> GradualTy {
     // (literals, sig-params, integer-closed arithmetic) is `stat` (checked `⊆`,
     // catching a merely-wider body), while any over-approximated call branch makes
     // the join `dynamic` (the ∩-relation, which never over-warns on a widened type).
-    if matches!(expr, Value::Pair(_)) {
-        if let Some(g) = gradual_of_compound(heap, expr, ctx) {
-            return g;
-        }
+    if matches!(expr, Value::Pair(_))
+        && let Some(g) = gradual_of_compound(heap, expr, ctx)
+    {
+        return g;
     }
     match expr_ty(heap, expr, ctx) {
         // A bare literal (not a call) is exact → static.
@@ -914,10 +914,10 @@ pub(super) fn gradual_of_compound(heap: &Heap, expr: Value, ctx: &Ctx) -> Option
                     // positive on every tagged-tuple dispatch with a declared result.
                     if let Some((base, keys)) =
                         crate::types::check::guards::path_of(heap, binds[i + 1])
+                        && !keys.is_empty()
+                        && scope.is_lexical_local(base)
                     {
-                        if !keys.is_empty() && scope.is_lexical_local(base) {
-                            scope = scope.add_path_alias(name, base, keys);
-                        }
+                        scope = scope.add_path_alias(name, base, keys);
                     }
                 }
                 pat => {
@@ -976,15 +976,14 @@ pub(super) fn gradual_of_compound(heap: &Heap, expr: Value, ctx: &Ctx) -> Option
     // `let` local over one carries an over-approximated interval, and the arithmetic
     // over it is exactly as over-approximated — `(- (count (keys m)) 1)` reads
     // `int[-1..]` without being able to be `-1`.
-    if let Some(t) = expr_ty(heap, expr, ctx) {
-        if is_int_closed_op(head)
-            && t.is_subtype(&Ty::of(value::Tag::Int))
-            && items[1..]
-                .iter()
-                .all(|&operand| !gradual_of(heap, operand, ctx).dynamic)
-        {
-            return Some(GradualTy::stat(t));
-        }
+    if let Some(t) = expr_ty(heap, expr, ctx)
+        && is_int_closed_op(head)
+        && t.is_subtype(&Ty::of(value::Tag::Int))
+        && items[1..]
+            .iter()
+            .all(|&operand| !gradual_of(heap, operand, ctx).dynamic)
+    {
+        return Some(GradualTy::stat(t));
     }
     None
 }

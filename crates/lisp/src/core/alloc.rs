@@ -289,46 +289,52 @@ fn report_hard_limit(size: usize) {
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if would_exceed_hard(layout.size()) {
-            // Null tells Rust the allocation failed; the default handler then
-            // aborts the process. The host survives; the brood process doesn't.
-            report_hard_limit(layout.size());
-            return std::ptr::null_mut();
-        }
-        let ptr = BACKEND.alloc(layout);
-        if !ptr.is_null() {
-            record_alloc(layout.size());
-            if layout.size() >= LARGE_ALLOCATION {
-                large_allocation_made(layout.size());
+        unsafe {
+            if would_exceed_hard(layout.size()) {
+                // Null tells Rust the allocation failed; the default handler then
+                // aborts the process. The host survives; the brood process doesn't.
+                report_hard_limit(layout.size());
+                return std::ptr::null_mut();
             }
+            let ptr = BACKEND.alloc(layout);
+            if !ptr.is_null() {
+                record_alloc(layout.size());
+                if layout.size() >= LARGE_ALLOCATION {
+                    large_allocation_made(layout.size());
+                }
+            }
+            ptr
         }
-        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        BACKEND.dealloc(ptr, layout);
-        record_dealloc(layout.size());
+        unsafe {
+            BACKEND.dealloc(ptr, layout);
+            record_dealloc(layout.size());
+        }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        // Only a *growth* can cross the limit; a shrink is always allowed.
-        if new_size > layout.size() && would_exceed_hard(new_size - layout.size()) {
-            report_hard_limit(new_size - layout.size());
-            return std::ptr::null_mut();
-        }
-        let new_ptr = BACKEND.realloc(ptr, layout, new_size);
-        if !new_ptr.is_null() {
-            let old = layout.size();
-            if new_size >= old {
-                record_alloc(new_size - old);
-                if new_size - old >= LARGE_ALLOCATION {
-                    large_allocation_made(new_size - old);
-                }
-            } else {
-                record_dealloc(old - new_size);
+        unsafe {
+            // Only a *growth* can cross the limit; a shrink is always allowed.
+            if new_size > layout.size() && would_exceed_hard(new_size - layout.size()) {
+                report_hard_limit(new_size - layout.size());
+                return std::ptr::null_mut();
             }
+            let new_ptr = BACKEND.realloc(ptr, layout, new_size);
+            if !new_ptr.is_null() {
+                let old = layout.size();
+                if new_size >= old {
+                    record_alloc(new_size - old);
+                    if new_size - old >= LARGE_ALLOCATION {
+                        large_allocation_made(new_size - old);
+                    }
+                } else {
+                    record_dealloc(old - new_size);
+                }
+            }
+            new_ptr
         }
-        new_ptr
     }
 }
 
@@ -699,7 +705,7 @@ mod tests {
         );
     }
 
-    fn files(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+    fn files(entries: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
         let entries: Vec<(String, String)> = entries
             .iter()
             .map(|&(path, text)| (path.to_string(), text.to_string()))

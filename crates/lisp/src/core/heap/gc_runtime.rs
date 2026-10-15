@@ -569,8 +569,8 @@ impl Heap {
     /// them when it frees a generation (as [`runtime_collect`] already does) rather
     /// than treating a cached handle as a live pin. Only the live VM arms — which
     /// are mid-execution and can't be cleared — are scanned.
-    pub fn runtime_gen_referenced(&self, gen: usize) -> bool {
-        self.runtime_gen_referenced_impl(gen, true)
+    pub fn runtime_gen_referenced(&self, generation: usize) -> bool {
+        self.runtime_gen_referenced_impl(generation, true)
     }
 
     /// The **private-only** reachability probe: like [`runtime_gen_referenced`] but
@@ -582,9 +582,9 @@ impl Heap {
     /// them is O(globals) cost with no effect. The only way a process can genuinely pin
     /// the generation is a handle it captured *privately* before the migration, which
     /// this probe still catches.
-    fn runtime_gen_referenced_private(&self, gen: usize) -> bool {
+    fn runtime_gen_referenced_private(&self, generation: usize) -> bool {
         // An empty generation slot is trivially dead — the common case.
-        if self.runtime.gens[gen].load().is_empty() {
+        if self.runtime.gens[generation].load().is_empty() {
             return false;
         }
         let mut visited: HashSet<(usize, usize)> = HashSet::new();
@@ -624,7 +624,7 @@ impl Heap {
             }
         }
         if self.seed_phase1_and_walk(
-            gen,
+            generation,
             false,
             &mut work,
             &mut env_work,
@@ -658,7 +658,7 @@ impl Heap {
         // promptness). The stale-dirty short-circuit itself is hoisted to the TOP of this
         // function; see the comment there for why.
         let dirty = self.seed_phase2_and_walk(
-            gen,
+            generation,
             &mut work,
             &mut env_work,
             &mut visited,
@@ -682,10 +682,10 @@ impl Heap {
     /// The authoritative reachability probe used by the drain-completion / free path
     /// ([`runtime_gen_referenced`]): both phases, seeding the shared globals + `(sig …)`
     /// roots too, and **never throttled** — it decides an actual free, so it always walks.
-    fn runtime_gen_referenced_impl(&self, gen: usize, include_shared: bool) -> bool {
+    fn runtime_gen_referenced_impl(&self, generation: usize, include_shared: bool) -> bool {
         // An empty generation slot is trivially dead — the common case (normal runs
         // never age, so `gens[1]` stays empty and this short-circuits).
-        if self.runtime.gens[gen].load().is_empty() {
+        if self.runtime.gens[generation].load().is_empty() {
             return false;
         }
         // `visited` keys on (gen, index): the two generations share one index space,
@@ -695,14 +695,14 @@ impl Heap {
         let mut work: Vec<Value> = Vec::new();
         let mut env_work: Vec<EnvId> = Vec::new();
         self.seed_phase1_and_walk(
-            gen,
+            generation,
             include_shared,
             &mut work,
             &mut env_work,
             &mut visited,
             &mut visited_env,
         ) || self.seed_phase2_and_walk(
-            gen,
+            generation,
             &mut work,
             &mut env_work,
             &mut visited,
@@ -720,7 +720,7 @@ impl Heap {
     /// carry across so Phase 2 never re-walks Phase 1's graph.
     fn seed_phase1_and_walk(
         &self,
-        gen: usize,
+        generation: usize,
         include_shared: bool,
         work: &mut Vec<Value>,
         env_work: &mut Vec<EnvId>,
@@ -783,7 +783,7 @@ impl Heap {
                 v
             });
         }
-        self.walk_reaches_gen(gen, work, env_work, visited, visited_env)
+        self.walk_reaches_gen(generation, work, env_work, visited, visited_env)
     }
 
     /// **Phase 2** of the RUNTIME-generation reachability probe — the LOCAL heap (both
@@ -793,7 +793,7 @@ impl Heap {
     /// is never gen-tagged RUNTIME, so the walk only ever follows RUNTIME sub-handles).
     fn seed_phase2_and_walk(
         &self,
-        gen: usize,
+        generation: usize,
         work: &mut Vec<Value>,
         env_work: &mut Vec<EnvId>,
         visited: &mut HashSet<(usize, usize)>,
@@ -829,7 +829,7 @@ impl Heap {
                 }
             }
         }
-        self.walk_reaches_gen(gen, work, env_work, visited, visited_env)
+        self.walk_reaches_gen(generation, work, env_work, visited, visited_env)
     }
 
     /// Drive the transitive reachability walk over the seeded `work`/`env_work` lists to
@@ -838,7 +838,7 @@ impl Heap {
     /// (the `visited` sets carry across phases so Phase 2 never re-walks Phase 1's graph).
     fn walk_reaches_gen(
         &self,
-        gen: usize,
+        generation: usize,
         work: &mut Vec<Value>,
         env_work: &mut Vec<EnvId>,
         visited: &mut HashSet<(usize, usize)>,
@@ -851,7 +851,7 @@ impl Heap {
                 if env == EnvId::GLOBAL || env.region() != RUNTIME {
                     continue;
                 }
-                if env.code_gen() == gen {
+                if env.code_gen() == generation {
                     return true;
                 }
                 if visited_env.insert((env.code_gen(), env.index())) {
@@ -865,7 +865,7 @@ impl Heap {
             let Some(v) = work.pop() else { break };
             match v.unpack() {
                 ValueRef::Fn(id) | ValueRef::Macro(id) if id.region() == RUNTIME => {
-                    if id.code_gen() == gen {
+                    if id.code_gen() == generation {
                         return true;
                     }
                     if visited.insert((id.code_gen(), id.index())) {
@@ -880,7 +880,7 @@ impl Heap {
                     }
                 }
                 ValueRef::Pair(id) if id.region() == RUNTIME => {
-                    if id.code_gen() == gen {
+                    if id.code_gen() == generation {
                         return true;
                     }
                     if visited.insert((id.code_gen(), id.index())) {
@@ -890,7 +890,7 @@ impl Heap {
                     }
                 }
                 ValueRef::Vector(id) if id.region() == RUNTIME => {
-                    if id.code_gen() == gen {
+                    if id.code_gen() == generation {
                         return true;
                     }
                     if visited.insert((id.code_gen(), id.index())) {
@@ -900,7 +900,7 @@ impl Heap {
                 ValueRef::Map(id) | ValueRef::Set(id) | ValueRef::Failure(id)
                     if id.region() == RUNTIME =>
                 {
-                    if id.code_gen() == gen {
+                    if id.code_gen() == generation {
                         return true;
                     }
                     if visited.insert((id.code_gen(), id.index())) {
@@ -1022,8 +1022,8 @@ impl Heap {
     pub fn drain_identity(&self) -> (u64, usize) {
         let rt = &self.runtime;
         let epoch = rt.drain_epoch.load(Ordering::Relaxed);
-        let gen = rt.drain_gen.load(Ordering::Relaxed);
-        (epoch, gen)
+        let generation = rt.drain_gen.load(Ordering::Relaxed);
+        (epoch, generation)
     }
 
     pub fn drain_gen(&self) -> usize {
@@ -1081,7 +1081,7 @@ impl Heap {
         if self.acked_drain_epoch.get() == epoch {
             return;
         }
-        let gen = rt.drain_gen.load(Ordering::Relaxed);
+        let generation = rt.drain_gen.load(Ordering::Relaxed);
         // Use the **private** reachability probe (this process's own roots / local heap /
         // live arms only), NOT the full one that also seeds every shared global + `(sig)`.
         // The drain armed only *after* `migrate_live_globals` moved every value off the
@@ -1094,7 +1094,7 @@ impl Heap {
         // state), so a pinning process's per-safepoint report is cheap and no throttle is
         // needed — and it still catches the only way a process can actually pin the
         // generation: a handle it captured privately before the migration.
-        let clean = !self.runtime_gen_referenced_private(gen);
+        let clean = !self.runtime_gen_referenced_private(generation);
         if clean {
             {
                 let mut acks = rt.drain_acks.write().unwrap_or_else(|e| e.into_inner());
@@ -1639,8 +1639,8 @@ impl RuntimeForward {
 /// handle — not transitive.) Used by [`Heap::migrate_live_globals`] to snapshot the
 /// globals still living in the aged-out generation and to detect a concurrent
 /// redefinition (which moves the binding to the current generation) at reconcile.
-fn value_in_gen(v: Value, gen: usize) -> bool {
-    runtime_gen_of(v) == Some(gen)
+fn value_in_gen(v: Value, generation: usize) -> bool {
+    runtime_gen_of(v) == Some(generation)
 }
 
 /// Which RUNTIME generation a value's handle lives in, or `None` if it isn't a
@@ -2053,10 +2053,10 @@ fn verify_rt_slabs(s: &CodeSlabs) -> bool {
                     return false;
                 }
             }
-            if let Some(e) = cl.env {
-                if !env_ok(e) {
-                    return false;
-                }
+            if let Some(e) = cl.env
+                && !env_ok(e)
+            {
+                return false;
             }
         }
     }
@@ -2065,10 +2065,10 @@ fn verify_rt_slabs(s: &CodeSlabs) -> bool {
             if !fr.vars.iter().all(|&(_, v)| ok(v)) {
                 return false;
             }
-            if let Some(p) = fr.parent {
-                if !env_ok(p) {
-                    return false;
-                }
+            if let Some(p) = fr.parent
+                && !env_ok(p)
+            {
+                return false;
             }
         }
     }

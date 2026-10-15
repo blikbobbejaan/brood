@@ -1195,10 +1195,10 @@ pub(super) fn register_sig_props(args: &[Value], _: EnvId, heap: &mut Heap) -> L
     let qualified = crate::eval::macros::resolve_reference(heap, name);
     let mut props = sig_props_of(heap, heap.declared_sig_value(qualified));
     for p in heap.list_to_vec(arg(args, 1))? {
-        if let Value::Keyword(k) = p {
-            if !props.contains(&k) {
-                props.push(k);
-            }
+        if let Value::Keyword(k) = p
+            && !props.contains(&k)
+        {
+            props.push(k);
         }
     }
     let type_value = sig_type_of(heap, heap.declared_sig_value(qualified)).unwrap_or(Value::Nil);
@@ -1642,15 +1642,15 @@ pub(super) fn alias(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let module = expect_symbol(heap, "%alias", arg(args, 0))?;
     let short = expect_symbol(heap, "%alias", arg(args, 1))?;
     let key = value::intern(&format!("{}/", value::symbol_name(short)));
-    if let Some(prev) = heap.import_of(key) {
-        if prev != module {
-            return Err(LispError::runtime(format!(
+    if let Some(prev) = heap.import_of(key)
+        && prev != module
+    {
+        return Err(LispError::runtime(format!(
                 "alias `{}` is already bound to `{}` — can't also alias `{}`; give one an explicit `:as` name",
                 value::symbol_name(short),
                 value::symbol_name(prev),
                 value::symbol_name(module),
             )));
-        }
     }
     heap.add_import(key, module);
     Ok(Value::nil())

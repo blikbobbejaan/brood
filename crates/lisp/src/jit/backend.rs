@@ -190,12 +190,14 @@ impl JitCallCtx {
     /// entered with (its fourth argument), which its caller keeps alive across the call.
     #[inline]
     pub(crate) unsafe fn assert_into(ctx: *const JitCallCtx, heap: &mut crate::core::heap::Heap) {
-        let c = &*ctx;
-        heap.jit_call_env = c.env;
-        heap.set_ic_bases((c.ic_base, c.gic_base));
-        heap.jit_native_depth = c.depth as u32;
-        heap.cur_native_gateway = c.gateway;
-        heap.jit_dbg_fn = c.dbg_fn;
+        unsafe {
+            let c = &*ctx;
+            heap.jit_call_env = c.env;
+            heap.set_ic_bases((c.ic_base, c.gic_base));
+            heap.jit_native_depth = c.depth as u32;
+            heap.cur_native_gateway = c.gateway;
+            heap.jit_dbg_fn = c.dbg_fn;
+        }
     }
 
     /// May the activations a native arm calls through a runtime callback preempt by
@@ -205,8 +207,10 @@ impl JitCallCtx {
     /// As [`JitCallCtx::assert_into`].
     #[inline]
     pub(crate) unsafe fn children_may_unwind(ctx: *const JitCallCtx) -> bool {
-        let c = &*ctx;
-        c.unwind != 0 && c.no_child_unwind == 0
+        unsafe {
+            let c = &*ctx;
+            c.unwind != 0 && c.no_child_unwind == 0
+        }
     }
 
     /// The two fields a builtin that re-enters the evaluator or parks would read from the
@@ -216,18 +220,22 @@ impl JitCallCtx {
         ctx: *const JitCallCtx,
         heap: &mut crate::core::heap::Heap,
     ) {
-        let c = &*ctx;
-        heap.jit_native_depth = c.depth as u32;
-        heap.cur_native_gateway = c.gateway;
+        unsafe {
+            let c = &*ctx;
+            heap.jit_native_depth = c.depth as u32;
+            heap.cur_native_gateway = c.gateway;
+        }
     }
 
     /// What a global read needs: the env to resolve in and the global-IC cursor. Resolution
     /// never re-enters the evaluator (a global is a binding lookup), so no depth/gateway.
     #[inline]
     pub(crate) unsafe fn assert_global(ctx: *const JitCallCtx, heap: &mut crate::core::heap::Heap) {
-        let c = &*ctx;
-        heap.jit_call_env = c.env;
-        heap.set_gic_base(c.gic_base);
+        unsafe {
+            let c = &*ctx;
+            heap.jit_call_env = c.env;
+            heap.set_gic_base(c.gic_base);
+        }
     }
 }
 

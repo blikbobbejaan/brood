@@ -223,19 +223,18 @@ pub(super) fn scan_source_extract(args: &[Value], _: EnvId, heap: &mut Heap) -> 
     let mut privs: Vec<Value> = Vec::new();
     for &f in &forms {
         scan_count_syms(heap, f, &mut counts);
-        if let Some((h, n)) = scan_head2(heap, f) {
-            if let (Some(head), Some(name)) = (scan_sym_name(h), scan_sym_name(n)) {
-                if SCAN_DEF_HEADS.contains(&head) {
-                    let qual = scan_qualify(heap, ns.as_deref(), head, name);
-                    let qv = heap.alloc_string(&qual);
-                    def_names.push(qv);
-                    // A `defn-`/`def-` head marks a module-private (ADR-146); the name
-                    // itself is clean, so privacy is read from the def form, not the name.
-                    if head == "defn-" || head == "def-" {
-                        let bv = heap.alloc_string(name);
-                        privs.push(heap.alloc_vector(vec![bv, qv]));
-                    }
-                }
+        if let Some((h, n)) = scan_head2(heap, f)
+            && let (Some(head), Some(name)) = (scan_sym_name(h), scan_sym_name(n))
+            && SCAN_DEF_HEADS.contains(&head)
+        {
+            let qual = scan_qualify(heap, ns.as_deref(), head, name);
+            let qv = heap.alloc_string(&qual);
+            def_names.push(qv);
+            // A `defn-`/`def-` head marks a module-private (ADR-146); the name
+            // itself is clean, so privacy is read from the def form, not the name.
+            if head == "defn-" || head == "def-" {
+                let bv = heap.alloc_string(name);
+                privs.push(heap.alloc_vector(vec![bv, qv]));
             }
         }
     }

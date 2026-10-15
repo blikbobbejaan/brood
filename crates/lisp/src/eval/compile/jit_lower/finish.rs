@@ -106,10 +106,10 @@ pub(super) fn define_and_finalize(
     inlined: bool,
 ) -> Option<*const u8> {
     let defined = module.define_function(id, context);
-    if let Err(e) = &defined {
-        if crate::diagnostics::debug_flags::jit_bail_trace() {
-            eprintln!("[jit-bail] cranelift-define-function: {e:?}");
-        }
+    if let Err(e) = &defined
+        && crate::diagnostics::debug_flags::jit_bail_trace()
+    {
+        eprintln!("[jit-bail] cranelift-define-function: {e:?}");
     }
     defined.ok().or_bail("cranelift-define-function")?;
     #[cfg(debug_assertions)]

@@ -293,17 +293,17 @@ pub(super) fn git_clone(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     reject_option_like("%git-clone", "ref", &gref)?;
     reject_option_like("%git-clone", "commit", &commit)?;
 
-    if let Some(parent) = std::path::Path::new(&dest).parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                LispError::runtime(format!(
-                    "%git-clone: cannot create {}: {}",
-                    parent.display(),
-                    e
-                ))
-                .with_code(error_codes::FILE_IO)
-            })?;
-        }
+    if let Some(parent) = std::path::Path::new(&dest).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            LispError::runtime(format!(
+                "%git-clone: cannot create {}: {}",
+                parent.display(),
+                e
+            ))
+            .with_code(error_codes::FILE_IO)
+        })?;
     }
 
     git_or_err(&["init", "-q", &dest], None)?;

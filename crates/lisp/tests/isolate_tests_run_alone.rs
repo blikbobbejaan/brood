@@ -94,15 +94,16 @@ fn every_test_that_calls_isolate_is_marked_isolated() {
         // toward reporting rather than missing.
         let mut current: Option<(bool, String, usize)> = None;
         let flush = |cur: Option<(bool, String, usize)>, offenders: &mut Vec<String>| {
-            if let Some((isolated, body, line_no)) = cur {
-                if !isolated && body.contains("(%isolate") {
-                    offenders.push(format!(
-                        "{}:{}: {}",
-                        path.file_name().unwrap().to_string_lossy(),
-                        line_no,
-                        body.lines().next().unwrap_or("").trim()
-                    ));
-                }
+            if let Some((isolated, body, line_no)) = cur
+                && !isolated
+                && body.contains("(%isolate")
+            {
+                offenders.push(format!(
+                    "{}:{}: {}",
+                    path.file_name().unwrap().to_string_lossy(),
+                    line_no,
+                    body.lines().next().unwrap_or("").trim()
+                ));
             }
         };
         for (i, line) in text.lines().enumerate() {

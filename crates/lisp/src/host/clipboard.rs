@@ -27,10 +27,10 @@ mod enabled {
     }
 
     pub fn set_text(s: &str) {
-        if let Some(m) = handle() {
-            if let Ok(mut cb) = m.lock() {
-                let _ = cb.set_text(s.to_owned());
-            }
+        if let Some(m) = handle()
+            && let Ok(mut cb) = m.lock()
+        {
+            let _ = cb.set_text(s.to_owned());
         }
     }
 
@@ -43,14 +43,14 @@ mod enabled {
 
     /// Put an RGBA8 image on the clipboard; silently nothing when unavailable.
     pub fn set_image(width: usize, height: usize, rgba: Vec<u8>) {
-        if let Some(mutex) = handle() {
-            if let Ok(mut clipboard) = mutex.lock() {
-                let _ = clipboard.set_image(ImageData {
-                    width,
-                    height,
-                    bytes: rgba.into(),
-                });
-            }
+        if let Some(mutex) = handle()
+            && let Ok(mut clipboard) = mutex.lock()
+        {
+            let _ = clipboard.set_image(ImageData {
+                width,
+                height,
+                bytes: rgba.into(),
+            });
         }
     }
 }

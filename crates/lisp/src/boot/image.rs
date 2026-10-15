@@ -408,10 +408,10 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
         let name = expect_string(heap, "%image-write", pair[0])?;
         let syms = seq_items(heap, pair[1])?;
         for nv in &syms {
-            if let value::ValueRef::Sym(s) = nv.unpack() {
-                if let Some(Value::Macro(_)) = heap.env_get(heap.global(), s) {
-                    macro_names.push(value::symbol_name(s));
-                }
+            if let value::ValueRef::Sym(s) = nv.unpack()
+                && let Some(Value::Macro(_)) = heap.env_get(heap.global(), s)
+            {
+                macro_names.push(value::symbol_name(s));
             }
         }
         // The unnamed root/project section takes every sig; a named one takes its own.

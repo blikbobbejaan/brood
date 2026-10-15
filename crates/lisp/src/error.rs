@@ -14,12 +14,11 @@ use crate::core::value::Value;
 /// if the cwd or canonicalization is unavailable.
 pub(crate) fn display_path(path: &str) -> String {
     let p = Path::new(path);
-    if p.is_absolute() {
-        if let Ok(cwd) = std::env::current_dir() {
-            if let Ok(rel) = p.strip_prefix(&cwd) {
-                return rel.to_string_lossy().into_owned();
-            }
-        }
+    if p.is_absolute()
+        && let Ok(cwd) = std::env::current_dir()
+        && let Ok(rel) = p.strip_prefix(&cwd)
+    {
+        return rel.to_string_lossy().into_owned();
     }
     path.to_string()
 }

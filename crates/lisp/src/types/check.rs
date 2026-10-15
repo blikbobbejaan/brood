@@ -345,25 +345,25 @@ pub fn materialise_referenced_modules(heap: &mut Heap) {
                 continue;
             }
             let text = value::symbol_name_ref(name);
-            if let Some(slash) = text.rfind('/') {
-                if slash > 0 {
-                    let module = value::intern(&text[..slash]);
-                    // The insert is the LOAD SET — it must not sit behind the trace flag.
-                    // ADR-370's first shape wrote `trace && wanted.insert(module)`, and the
-                    // short-circuit made the whole transitive scan a no-op in every process
-                    // that did not set `BROOD_IMAGE_TRACE` (KI-171): the one test of it ran its
-                    // child WITH the trace. `transitive_scan_loads_without_the_trace` pins it.
-                    wanted.insert(module);
-                    // The question KI-150 took days to answer by experiment — WHICH
-                    // references made the check load a module — printed per name in sorted
-                    // order: every one is a name to declare a signature for, and the load
-                    // stays until the LAST of them has one.
-                    if trace
-                        && heap.env_get(global_env, module).is_none()
-                        && !feature_loaded(heap, &text[..slash])
-                    {
-                        eprintln!("[image] check materialises {} for {text}", &text[..slash]);
-                    }
+            if let Some(slash) = text.rfind('/')
+                && slash > 0
+            {
+                let module = value::intern(&text[..slash]);
+                // The insert is the LOAD SET — it must not sit behind the trace flag.
+                // ADR-370's first shape wrote `trace && wanted.insert(module)`, and the
+                // short-circuit made the whole transitive scan a no-op in every process
+                // that did not set `BROOD_IMAGE_TRACE` (KI-171): the one test of it ran its
+                // child WITH the trace. `transitive_scan_loads_without_the_trace` pins it.
+                wanted.insert(module);
+                // The question KI-150 took days to answer by experiment — WHICH
+                // references made the check load a module — printed per name in sorted
+                // order: every one is a name to declare a signature for, and the load
+                // stays until the LAST of them has one.
+                if trace
+                    && heap.env_get(global_env, module).is_none()
+                    && !feature_loaded(heap, &text[..slash])
+                {
+                    eprintln!("[image] check materialises {} for {text}", &text[..slash]);
                 }
             }
         }
@@ -460,11 +460,11 @@ fn qualify_decl_name(heap: &Heap, ctx: &Ctx, file_ns: Option<&str>, name: Symbol
 /// reconstructed from `%register-sig` in the expanded tree.
 fn register_declared_sig(heap: &Heap, ctx: &mut Ctx, file_ns: Option<&str>, form: Value) {
     // The property keywords — `:pure`, `:total` — of any sig shape (ADR-351).
-    if let Some((name, _, props)) = annot::sig_decl_head(heap, form) {
-        if !props.is_empty() {
-            let qn = qualify_decl_name(heap, ctx, file_ns, name);
-            ctx.add_declared_props(qn, &props);
-        }
+    if let Some((name, _, props)) = annot::sig_decl_head(heap, form)
+        && !props.is_empty()
+    {
+        let qn = qualify_decl_name(heap, ctx, file_ns, name);
+        ctx.add_declared_props(qn, &props);
     }
     if let Some((name, sig)) = annot::parse_sig_decl(heap, form) {
         let qn = qualify_decl_name(heap, ctx, file_ns, name);
@@ -637,19 +637,18 @@ fn lint_fn_pattern_clauses(heap: &Heap, items: &[Value], out: &mut Vec<(Option<P
         if ps
             .iter()
             .any(|p| matches!(p, Value::Keyword(k) if value::symbol_is(*k, "when")))
+            && let Some(pos) = heap.form_pos_only(clause)
         {
-            if let Some(pos) = heap.form_pos_only(clause) {
-                out.push((
-                    Some(pos),
-                    concat!(
-                        "`:when` belongs after the head list, not inside it — ",
-                        "write `((a b) :when (guard a) body…)`. Inside, it is two more ",
-                        "parameters, so the clause stops matching and every call fails ",
-                        "with a match error",
-                    )
-                    .to_string(),
-                ));
-            }
+            out.push((
+                Some(pos),
+                concat!(
+                    "`:when` belongs after the head list, not inside it — ",
+                    "write `((a b) :when (guard a) body…)`. Inside, it is two more ",
+                    "parameters, so the clause stops matching and every call fails ",
+                    "with a match error",
+                )
+                .to_string(),
+            ));
         }
     }
     // A clause whose head holds a non-symbol is a PATTERN clause (the whole `fn` is then
@@ -759,10 +758,10 @@ fn record_fn_literal_clauses(heap: &Heap, form: Value, ctx: &mut Ctx) {
                     {
                         continue;
                     }
-                    if walk::is_fn_head(head) {
-                        if let Some((key, arms, printed)) = pattern_fn_literal(heap, &items) {
-                            ctx.add_fn_literal_clauses(key, arms, printed);
-                        }
+                    if walk::is_fn_head(head)
+                        && let Some((key, arms, printed)) = pattern_fn_literal(heap, &items)
+                    {
+                        ctx.add_fn_literal_clauses(key, arms, printed);
                     }
                 }
                 work.extend(items);
@@ -1101,22 +1100,21 @@ fn extract_clause_modules(heap: &Heap, forms: &[Value], keywords: &[&str]) -> Ve
         while let Value::Pair(p) = cur {
             let (clause, next) = heap.pair(p);
             // Each (:use mod …) / (:use-internals mod …) clause starts with its keyword.
-            if let Some(items) = list_items(heap, clause) {
-                if let Some(Value::Keyword(kw_sym)) = items.first() {
-                    if keywords.iter().any(|k| value::symbol_is(*kw_sym, k)) {
-                        if value::symbol_is(*kw_sym, "load") {
-                            // `(:load a b …)` names several modules (ADR-335); every symbol
-                            // after the keyword is one. The other clauses take one module
-                            // and may carry a symbol that is NOT a module (`:alias m :as short`).
-                            for item in items.iter().skip(1) {
-                                if let Value::Sym(mod_sym) = item {
-                                    result.push(value::symbol_name(*mod_sym).to_string());
-                                }
-                            }
-                        } else if let Some(&Value::Sym(mod_sym)) = items.get(1) {
-                            result.push(value::symbol_name(mod_sym).to_string());
+            if let Some(items) = list_items(heap, clause)
+                && let Some(Value::Keyword(kw_sym)) = items.first()
+                && keywords.iter().any(|k| value::symbol_is(*kw_sym, k))
+            {
+                if value::symbol_is(*kw_sym, "load") {
+                    // `(:load a b …)` names several modules (ADR-335); every symbol
+                    // after the keyword is one. The other clauses take one module
+                    // and may carry a symbol that is NOT a module (`:alias m :as short`).
+                    for item in items.iter().skip(1) {
+                        if let Value::Sym(mod_sym) = item {
+                            result.push(value::symbol_name(*mod_sym).to_string());
                         }
                     }
+                } else if let Some(&Value::Sym(mod_sym)) = items.get(1) {
+                    result.push(value::symbol_name(mod_sym).to_string());
                 }
             }
             cur = next;
@@ -2375,10 +2373,11 @@ fn infer_global_value_types(heap: &Heap, expanded: &[Value], ctx: &mut Ctx) {
         {
             continue;
         }
-        if let Some(ty) = infer::expr_ty(heap, rhs, ctx) {
-            if !ty.contains_tag(value::Tag::Fn) && !ty.contains_tag(value::Tag::Native) {
-                ctx.add_inferred_value_ty(name, ty);
-            }
+        if let Some(ty) = infer::expr_ty(heap, rhs, ctx)
+            && !ty.contains_tag(value::Tag::Fn)
+            && !ty.contains_tag(value::Tag::Native)
+        {
+            ctx.add_inferred_value_ty(name, ty);
         }
     }
 }
@@ -2532,10 +2531,10 @@ fn infer_same_file_functions(
     // A candidate whose return stayed deferred (e.g. it returns an ability op) still gets
     // its parameter demands with an `any` return, so its callers are argument-checked.
     for &(name, rhs) in &candidates {
-        if ctx.inferred_fn_sig(name).is_none() {
-            if let Some(demands) = sigs::infer_params_from_form(heap, rhs, ctx) {
-                ctx.add_inferred_fn_sig(name, demands.into_sig(Ty::ANY));
-            }
+        if ctx.inferred_fn_sig(name).is_none()
+            && let Some(demands) = sigs::infer_params_from_form(heap, rhs, ctx)
+        {
+            ctx.add_inferred_fn_sig(name, demands.into_sig(Ty::ANY));
         }
     }
     candidates
@@ -2657,10 +2656,11 @@ fn derive_caller_params(
         timing.rounds += 1;
         // A derivation that declined leaves every parameter unknown for the rest of this
         // file: say so, once.
-        if let Some(why) = sigs::take_derivation_decline() {
-            if !derivation_declined {
-                derivation_declined = true;
-                out.push((
+        if let Some(why) = sigs::take_derivation_decline()
+            && !derivation_declined
+        {
+            derivation_declined = true;
+            out.push((
                     None,
                     match why {
                         sigs::DeriveDecline::Opaque => "checker gave up: an unexpanded macro call keeps every caller-derived parameter unknown in this file".to_string(),
@@ -2670,7 +2670,6 @@ fn derive_caller_params(
                         ),
                     },
                 ));
-            }
         }
         let mut moved_now: HashSet<Symbol> = derived
             .keys()
@@ -2720,12 +2719,12 @@ fn derive_caller_params(
             // nothing left to lift is the fixpoint.
             let mut lifted = false;
             for (&name, sig) in &original {
-                if let Some(sig) = sig {
-                    if at_floor(ctx, &typed, name, sig) {
-                        ctx.add_inferred_fn_sig(name, sig.clone());
-                        lifted = true;
-                        moved_now.insert(name);
-                    }
+                if let Some(sig) = sig
+                    && at_floor(ctx, &typed, name, sig)
+                {
+                    ctx.add_inferred_fn_sig(name, sig.clone());
+                    lifted = true;
+                    moved_now.insert(name);
                 }
             }
             if !lifted {
@@ -2768,10 +2767,10 @@ fn derive_caller_params(
     // A candidate that was not derived, or whose return never typed (still at the floor):
     // give it its demand-based answer back.
     for (&name, sig) in &original {
-        if let Some(sig) = sig {
-            if ctx.derived_params(name).is_none() || at_floor(ctx, &typed, name, sig) {
-                ctx.add_inferred_fn_sig(name, sig.clone());
-            }
+        if let Some(sig) = sig
+            && (ctx.derived_params(name).is_none() || at_floor(ctx, &typed, name, sig))
+        {
+            ctx.add_inferred_fn_sig(name, sig.clone());
         }
     }
     // …and the candidates that were NOT derived (no site, or an escape), whose returns were
@@ -3074,17 +3073,15 @@ fn collect_bound_guards(heap: &Heap, form: Value, out: &mut HashSet<Symbol>) {
         let Some(items) = list_items(heap, form) else {
             return;
         };
-        if let Some(&Value::Sym(head)) = items.first() {
-            if value::symbol_is(head, "bound?") {
-                // `(bound? 'name)` reads as `(bound? (quote name))` in the expanded tree.
-                if let Some(quoted) = items.get(1).copied().and_then(|q| list_items(heap, q)) {
-                    if matches!(quoted.first(), Some(&Value::Sym(q)) if value::symbol_is(q, kw::QUOTE))
-                    {
-                        if let Some(&Value::Sym(name)) = quoted.get(1) {
-                            out.insert(name);
-                        }
-                    }
-                }
+        if let Some(&Value::Sym(head)) = items.first()
+            && value::symbol_is(head, "bound?")
+        {
+            // `(bound? 'name)` reads as `(bound? (quote name))` in the expanded tree.
+            if let Some(quoted) = items.get(1).copied().and_then(|q| list_items(heap, q))
+                && matches!(quoted.first(), Some(&Value::Sym(q)) if value::symbol_is(q, kw::QUOTE))
+                && let Some(&Value::Sym(name)) = quoted.get(1)
+            {
+                out.insert(name);
             }
         }
         for &item in items.iter() {
@@ -3111,10 +3108,10 @@ fn count_defs(heap: &Heap, form: Value, counts: &mut HashMap<Symbol, usize>) {
         if value::symbol_is(head, kw::QUOTE) || value::symbol_is(head, kw::QUASIQUOTE) {
             return;
         }
-        if value::symbol_is(head, kw::DEF) {
-            if let Some(&Value::Sym(name)) = items.get(1) {
-                *counts.entry(name).or_insert(0) += 1;
-            }
+        if value::symbol_is(head, kw::DEF)
+            && let Some(&Value::Sym(name)) = items.get(1)
+        {
+            *counts.entry(name).or_insert(0) += 1;
         }
         for &item in items.get(1..).unwrap_or(&[]) {
             count_defs(heap, item, counts);
@@ -3184,15 +3181,15 @@ fn refresh_returns(heap: &Heap, candidates: &[(Symbol, Value)], ctx: &mut Ctx) {
     for _ in 0..MAX_RETURN_ROUNDS {
         let mut changed = false;
         for &(name, rhs) in candidates {
-            if let Some(ret) = sigs::infer_return_from_form(heap, rhs, Some(name), ctx) {
-                if ctx.inferred_fn_sig(name).map(|s| s.ret) != Some(ret.clone()) {
-                    let sig = match sigs::infer_params_from_form(heap, rhs, ctx) {
-                        Some(demands) => demands.into_sig(ret),
-                        None => crate::types::Sig::new(Vec::new(), ret),
-                    };
-                    ctx.add_inferred_fn_sig(name, sig);
-                    changed = true;
-                }
+            if let Some(ret) = sigs::infer_return_from_form(heap, rhs, Some(name), ctx)
+                && ctx.inferred_fn_sig(name).map(|s| s.ret) != Some(ret.clone())
+            {
+                let sig = match sigs::infer_params_from_form(heap, rhs, ctx) {
+                    Some(demands) => demands.into_sig(ret),
+                    None => crate::types::Sig::new(Vec::new(), ret),
+                };
+                ctx.add_inferred_fn_sig(name, sig);
+                changed = true;
             }
         }
         if !changed {

@@ -841,10 +841,8 @@ fn drive(
             let Some(listener) = slot.as_mut() else {
                 return true; // `close` shut it; its `Cmd::Close` removes the entry too
             };
-            if readable {
-                if let Some(error) = accept_ready(id, listener, owner, None, accepted) {
-                    starved.push((id, error));
-                }
+            if readable && let Some(error) = accept_ready(id, listener, owner, None, accepted) {
+                starved.push((id, error));
             }
             false
         }
@@ -857,12 +855,11 @@ fn drive(
             let Some(listener) = slot.as_mut() else {
                 return true;
             };
-            if readable {
-                if let Some(error) =
+            if readable
+                && let Some(error) =
                     accept_ready(id, listener, owner, Some(config.clone()), accepted)
-                {
-                    starved.push((id, error));
-                }
+            {
+                starved.push((id, error));
             }
             false
         }
@@ -1680,10 +1677,10 @@ fn housekeep(conns: &mut HashMap<u64, Rx>, registry: &mio::Registry) {
     for (&id, rx) in conns.iter() {
         match rx {
             Rx::Plain(c) => {
-                if let Some(t) = c.accepted_at {
-                    if now.duration_since(t) >= ACCEPT_REAP_AFTER {
-                        doomed.push(id);
-                    }
+                if let Some(t) = c.accepted_at
+                    && now.duration_since(t) >= ACCEPT_REAP_AFTER
+                {
+                    doomed.push(id);
                 }
                 if let Some(deadline) = c.closing {
                     if now >= deadline {

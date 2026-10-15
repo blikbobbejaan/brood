@@ -940,12 +940,11 @@ fn handle_notification(
                 return Ok(());
             };
             let uri = saved.text_document.uri;
-            if let Some(path) = uri_to_path(&uri) {
-                if path.file_name().and_then(|n| n.to_str()) == Some("project.blsp") {
-                    if let Some(root) = path.parent() {
-                        bootstrapped.remove(root);
-                    }
-                }
+            if let Some(path) = uri_to_path(&uri)
+                && path.file_name().and_then(|n| n.to_str()) == Some("project.blsp")
+                && let Some(root) = path.parent()
+            {
+                bootstrapped.remove(root);
             }
             // Re-publish diagnostics against the (possibly re-bootstrapped)
             // image so the user sees the effect of their save right away.
@@ -1117,21 +1116,21 @@ fn typecheck_diagnostics(
     let mut out = Vec::new();
     let checkpoint = interp.heap.checkpoint();
     let read = reader::read_all_positioned(&mut interp.heap, text);
-    if let Err(error) = &read {
-        if !syntax_reported {
-            let offset = error
-                .pos
-                .map(|pos| index.offset_of_char_pos(text, pos))
-                .unwrap_or(0);
-            let range = Range::new(
-                index.position(text, offset),
-                index.position(text, index.next_char(text, offset)),
-            );
-            let mut diag = Diagnostic::new_simple(range, format!("cannot read: {}", error.message));
-            diag.severity = Some(DiagnosticSeverity::ERROR);
-            diag.source = Some("brood".to_string());
-            out.push(diag);
-        }
+    if let Err(error) = &read
+        && !syntax_reported
+    {
+        let offset = error
+            .pos
+            .map(|pos| index.offset_of_char_pos(text, pos))
+            .unwrap_or(0);
+        let range = Range::new(
+            index.position(text, offset),
+            index.position(text, index.next_char(text, offset)),
+        );
+        let mut diag = Diagnostic::new_simple(range, format!("cannot read: {}", error.message));
+        diag.severity = Some(DiagnosticSeverity::ERROR);
+        diag.source = Some("brood".to_string());
+        out.push(diag);
     }
     if let Ok(positioned) = read {
         let forms: Vec<Value> = positioned.into_iter().map(|(f, _)| f).collect();

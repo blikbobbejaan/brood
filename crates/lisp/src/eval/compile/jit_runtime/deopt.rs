@@ -314,10 +314,10 @@ pub(crate) fn jit_any_deopt_feedback(heap: &Heap, arm: &CompiledArm) {
     use std::sync::atomic::Ordering::Relaxed;
     arm.jit_deopts_total.fetch_add(1, Relaxed);
     // Deopts are rare, so the armed() check runs only on this already-cold path.
-    if crate::process::sysmon::armed() {
-        if let Some(pid) = crate::process::current_pid() {
-            crate::process::sysmon::emit_deopt(pid, arm.dbg_name);
-        }
+    if crate::process::sysmon::armed()
+        && let Some(pid) = crate::process::current_pid()
+    {
+        crate::process::sysmon::emit_deopt(pid, arm.dbg_name);
     }
     let slot = match DeoptReason::decode(heap.jit_deopt_reason()) {
         // An integer-path tag guard (payload = the OBSERVED tag, KI-49) that saw a float.

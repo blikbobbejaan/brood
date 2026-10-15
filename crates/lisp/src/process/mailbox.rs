@@ -916,12 +916,11 @@ fn try_deliver_local(src: &Heap, pid: u64, v: Value) -> LocalDelivery {
     // dropped here — before the cross-heap copy, before the queue, before any wake.
     // `is_empty` is the whole cost when nothing is deactivated, which is every ordinary
     // process; we already hold the lock, so it is a field read on a hot line.
-    if !st.dead_aliases.is_empty() {
-        if let Some(id) = value_alias(src, v) {
-            if st.dead_aliases.take(id) {
-                return LocalDelivery::Delivered; // silently swallowed, like a send to a dead pid
-            }
-        }
+    if !st.dead_aliases.is_empty()
+        && let Some(id) = value_alias(src, v)
+        && st.dead_aliases.take(id)
+    {
+        return LocalDelivery::Delivered; // silently swallowed, like a send to a dead pid
     }
     // Not parked → we have no safe access to its heap.
     let Some(mut proc) = st.waiter.take() else {
@@ -985,14 +984,12 @@ fn deliver_envelope_timed(pid: u64, env: Envelope) {
         // One-shot reply alias (OTP 24) — the wire-path twin of the check in
         // `try_deliver_local`. Dropped here, so it never occupies a queue slot and no
         // later selective receive ever re-scans it. See `DeadAliases`.
-        if !st.dead_aliases.is_empty() {
-            if let Payload::Wire(msg) = &env.msg {
-                if let Some(id) = message_alias(msg) {
-                    if st.dead_aliases.take(id) {
-                        return;
-                    }
-                }
-            }
+        if !st.dead_aliases.is_empty()
+            && let Payload::Wire(msg) = &env.msg
+            && let Some(id) = message_alias(msg)
+            && st.dead_aliases.take(id)
+        {
+            return;
         }
         st.push(env);
         mb.note_mailbox_bound(st.queue.len());
@@ -1055,14 +1052,13 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
     // Reused below as the shared-handle destination (ADR-208) when L1 declines, so the
     // registry is consulted once for both purposes.
     let mut dest_runtime: Option<u64> = None;
-    if !has_trace {
-        if let Value::Pid { node, id } = target_val {
-            if crate::dist::is_local(node) {
-                match try_deliver_local(heap, id, msg_val) {
-                    LocalDelivery::Delivered => return Ok(()),
-                    LocalDelivery::Declined { runtime_tag } => dest_runtime = runtime_tag,
-                }
-            }
+    if !has_trace
+        && let Value::Pid { node, id } = target_val
+        && crate::dist::is_local(node)
+    {
+        match try_deliver_local(heap, id, msg_val) {
+            LocalDelivery::Delivered => return Ok(()),
+            LocalDelivery::Declined { runtime_tag } => dest_runtime = runtime_tag,
         }
     }
     // `dest_runtime` was filled in by the declining L1 attempt above (one registry lookup for
@@ -1074,12 +1070,12 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
     // receiver adopts it on pop. Context is per-runtime, so it never crosses nodes;
     // remote / name-addressed / no-context sends fall through to the normal route.
     #[cfg(feature = "dev-tools")]
-    if let (Value::Pid { node, id }, Some(ctx)) = (target_val, heap.trace_context()) {
-        if crate::dist::is_local(node) {
-            let trace = to_message(heap, ctx)?;
-            deliver_traced(id, msg, Some(trace));
-            return Ok(());
-        }
+    if let (Value::Pid { node, id }, Some(ctx)) = (target_val, heap.trace_context())
+        && crate::dist::is_local(node)
+    {
+        let trace = to_message(heap, ctx)?;
+        deliver_traced(id, msg, Some(trace));
+        return Ok(());
     }
     let (routed, node) = match target_val {
         Value::Pid { node, id } => (
@@ -1398,8 +1394,8 @@ fn scan_until_answered(
                     }
                     set_self_status(ctx, ST_WAITING);
                     if let Some(d) = deadline {
-                        let gen = ctx.mailbox.timer_gen.fetch_add(1, Ordering::Relaxed) + 1;
-                        arm_timer(ctx.pid, d, gen);
+                        let generation = ctx.mailbox.timer_gen.fetch_add(1, Ordering::Relaxed) + 1;
+                        arm_timer(ctx.pid, d, generation);
                     }
                     return Err(LispError::suspend(deadline));
                 }
@@ -1535,16 +1531,16 @@ fn scan_mailbox(
             // Receive-mark: skip straight past every message that predates the pinned ref.
             // The queue is ordered by `seq`, so this is a binary search, and it runs only
             // while `*i` is still pointing at an older message (i.e. once per receive).
-            if let Some(m) = mark {
-                if st.queue[*i].seq < m {
-                    let lo = st.queue.partition_point(|e| e.seq < m);
-                    if lo > *i {
-                        *i = lo;
-                        optimistic = false; // the head is no longer the candidate
-                    }
-                    if *i >= st.queue.len() {
-                        return Ok(None);
-                    }
+            if let Some(m) = mark
+                && st.queue[*i].seq < m
+            {
+                let lo = st.queue.partition_point(|e| e.seq < m);
+                if lo > *i {
+                    *i = lo;
+                    optimistic = false; // the head is no longer the candidate
+                }
+                if *i >= st.queue.len() {
+                    return Ok(None);
                 }
             }
             // Leading-keyword filter: reject a candidate no clause could match without
@@ -1708,10 +1704,10 @@ fn scan_mailbox(
                     j.and_then(|j| st.queue.remove(j))
                 }
             };
-            if let Some(env) = consumed.as_ref() {
-                if let Payload::Local { slot, .. } = &env.msg {
-                    heap.msg_root_take(*slot);
-                }
+            if let Some(env) = consumed.as_ref()
+                && let Payload::Local { slot, .. } = &env.msg
+            {
+                heap.msg_root_take(*slot);
             }
             // Adopt the message's causal context (ADR-174 send-level) so this receive —
             // and anything it then spawns or sends — runs in the sender's causal context.
@@ -1876,12 +1872,12 @@ pub(super) fn current_timer_gen(pid: u64) -> Option<u64> {
 /// so we drop it without waking — lazy timer cancellation (see `Mailbox::timer_gen`).
 /// A no-op too if `send` already woke it. The process always re-validates its own
 /// deadline, so even a wakeup that slips through is harmless (at most one spurious).
-pub(super) fn wake_for_timeout(pid: u64, gen: u64) {
+pub(super) fn wake_for_timeout(pid: u64, generation: u64) {
     let mailbox = REGISTRY.get(pid);
     if let Some(mb) = mailbox {
         // Stale entry — the process has re-parked (or moved on) since this timer
         // was armed. Skip it: the live deadline has its own, current-gen entry.
-        if mb.timer_gen.load(Ordering::Relaxed) != gen {
+        if mb.timer_gen.load(Ordering::Relaxed) != generation {
             return;
         }
         // Both paths (`Wake`). This site once had **no** condvar notify at all — alone among

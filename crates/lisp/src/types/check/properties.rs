@@ -126,10 +126,11 @@ pub(super) fn check_properties(
                 ));
             }
         }
-        if has_prop(heap, ctx, name, "total") && !allows("total") {
-            if let Some(msg) = non_decreasing_self_call(heap, ctx, name, fn_form) {
-                out.push((pos, msg));
-            }
+        if has_prop(heap, ctx, name, "total")
+            && !allows("total")
+            && let Some(msg) = non_decreasing_self_call(heap, ctx, name, fn_form)
+        {
+            out.push((pos, msg));
         }
     }
     for &form in expanded {
@@ -201,15 +202,13 @@ fn collect_fn_defs_inner(
         }
         return;
     }
-    if value::symbol_is(head, kw::DEF) {
-        if let (Some(&Value::Sym(name)), Some(&value)) = (items.get(1), items.get(2)) {
-            if matches!(list_items(heap, value).as_deref(), Some([Value::Sym(h), ..]) if is_fn_head(*h))
-            {
-                out.insert(name, value);
-                if !under.is_empty() {
-                    allowed.insert(name, under.to_vec());
-                }
-            }
+    if value::symbol_is(head, kw::DEF)
+        && let (Some(&Value::Sym(name)), Some(&value)) = (items.get(1), items.get(2))
+        && matches!(list_items(heap, value).as_deref(), Some([Value::Sym(h), ..]) if is_fn_head(*h))
+    {
+        out.insert(name, value);
+        if !under.is_empty() {
+            allowed.insert(name, under.to_vec());
         }
     }
 }
@@ -389,10 +388,10 @@ impl Purity<'_> {
             let mut inner = locals.clone();
             if let Some(binds) = items.get(1).and_then(|&b| super::walk::bindings(heap, b)) {
                 for pair in binds.chunks(2) {
-                    if let Some(&rhs) = pair.get(1) {
-                        if let Some(e) = self.effect_in(rhs, &inner) {
-                            return Some(e);
-                        }
+                    if let Some(&rhs) = pair.get(1)
+                        && let Some(e) = self.effect_in(rhs, &inner)
+                    {
+                        return Some(e);
                     }
                     if let Some(&pat) = pair.first() {
                         collect_pattern_names(heap, pat, &mut inner);
@@ -410,10 +409,10 @@ impl Purity<'_> {
         }
         // A call. Its head first, then each argument — where a `fn` literal argument IS
         // walked: a callback handed to a call runs.
-        if !locals.contains(&head) {
-            if let Some(e) = self.effect_of_global(head) {
-                return Some(e);
-            }
+        if !locals.contains(&head)
+            && let Some(e) = self.effect_of_global(head)
+        {
+            return Some(e);
         }
         for &arg in &items[1..] {
             let found = match list_items(heap, arg).as_deref() {

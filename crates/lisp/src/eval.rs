@@ -582,17 +582,15 @@ fn eval_tail_loop(
                     if let Some(old) = heap.env_get(root, name) {
                         if let (Some(old_a), Some(new_a)) =
                             (value_arity(heap, old), value_arity(heap, val))
+                            && (old_a.min != new_a.min || old_a.max != new_a.max)
+                            && reload_diagnostics_enabled(heap, root)
                         {
-                            if (old_a.min != new_a.min || old_a.max != new_a.max)
-                                && reload_diagnostics_enabled(heap, root)
-                            {
-                                eprintln!(
-                                    "[reload] arity changed for {}: {} -> {}",
-                                    value::symbol_name(name),
-                                    arity_to_string(old_a),
-                                    arity_to_string(new_a),
-                                );
-                            }
+                            eprintln!(
+                                "[reload] arity changed for {}: {} -> {}",
+                                value::symbol_name(name),
+                                arity_to_string(old_a),
+                                arity_to_string(new_a),
+                            );
                         }
                         // Macro-redefinition diagnostic (hot reload): redefining a
                         // macro does *not* re-expand callers already compiled with
@@ -2145,10 +2143,8 @@ pub(crate) fn make_closure_cached(
     // promote-and-dedup untouched, so an identical redefinition still dedups (no spurious RUNTIME
     // version). Only a literal in a loop pays the one-time promote, on its way to reuse.
     let is_const = env == crate::core::value::EnvId::GLOBAL;
-    if is_const {
-        if let Some(c) = heap.lookup_const_closure(key) {
-            return Ok(c);
-        }
+    if is_const && let Some(c) = heap.lookup_const_closure(key) {
+        return Ok(c);
     }
     // Promote on the Nth sighting, not the second: a spawned process that evaluates a
     // `receive` twice also sees its matcher twice, and promoting then would grow the

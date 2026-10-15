@@ -59,10 +59,10 @@ fn check_value_leaf(
         if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
             out.push((heap.form_pos_only(parent), unbound_msg(&name_of(s))));
         }
-        if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED) {
-            if let Some(msg) = stability_msg(heap, s) {
-                out.push((heap.form_pos_only(parent), msg));
-            }
+        if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED)
+            && let Some(msg) = stability_msg(heap, s)
+        {
+            out.push((heap.form_pos_only(parent), msg));
         }
     }
 }
@@ -345,24 +345,23 @@ fn check_into_inner(heap: &Heap, form: Value, ctx: &Ctx, out: &mut Vec<(Option<P
     // redundant `match` clause under test) can silence exactly that lint without
     // a comment (the reader strips those before the checker runs). We still walk
     // the body for every *other* lint.
-    if let Value::Sym(s) = head {
-        if value::symbol_is(s, "%lint-allow") {
-            // `:generated` — the compiler's own copy of code it checks elsewhere (the
-            // linear-map rewrite keeps the loop as written behind its seed check, ADR-360).
-            // Not walked at all: every diagnostic it could raise is raised by the copy the
-            // author's positions belong to, and the pre-run check of `brood file` pays
-            // ~12M instructions per definition it walks (KI-150's class).
-            if matches!(items.get(1), Some(&Value::Keyword(k)) if value::symbol_is(k, "generated"))
-            {
-                return;
-            }
-            let mask = lint_allow_mask(items.get(1).copied());
-            let inner = ctx.with_suppressed(mask);
-            for &arg in &items[1..] {
-                check_into(heap, arg, &inner, out);
-            }
+    if let Value::Sym(s) = head
+        && value::symbol_is(s, "%lint-allow")
+    {
+        // `:generated` — the compiler's own copy of code it checks elsewhere (the
+        // linear-map rewrite keeps the loop as written behind its seed check, ADR-360).
+        // Not walked at all: every diagnostic it could raise is raised by the copy the
+        // author's positions belong to, and the pre-run check of `brood file` pays
+        // ~12M instructions per definition it walks (KI-150's class).
+        if matches!(items.get(1), Some(&Value::Keyword(k)) if value::symbol_is(k, "generated")) {
             return;
         }
+        let mask = lint_allow_mask(items.get(1).copied());
+        let inner = ctx.with_suppressed(mask);
+        for &arg in &items[1..] {
+            check_into(heap, arg, &inner, out);
+        }
+        return;
     }
 
     match head {
@@ -486,43 +485,43 @@ fn check_dispatch_hooks(
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     let shadowed = ctx.is_lexical_local(head);
-    if let (Some(info), false) = (ctx.ability(), shadowed) {
-        if let Some((ability, op)) = info.op_of(head) {
-            if let Some(&Value::Sym(_)) = items.get(1) {
-                if let Some(ty) = super::infer::expr_ty(heap, items[1], ctx) {
-                    super::protocol::check_ability_call_inferred(
-                        info,
-                        head,
-                        &ty,
-                        heap.form_pos_only(form),
-                        out,
-                    );
-                }
-            }
-            // Param `i` corresponds to argument `items[i + 1]` (`self` is param 0).
-            for (i, param_ty) in info.op_params_of(head).into_iter().flatten().enumerate() {
-                let Some(param_ty) = param_ty else { continue };
-                let Some(&arg) = items.get(i + 1) else { break };
-                let gradual = gradual_of(heap, arg, ctx);
-                if !gradual.bound.is_never()
-                    && !gradual
-                        .clone()
-                        .consistent_with_mode(relax_param_for_arg(param_ty), ctx.strict())
-                    && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                {
-                    out.push((
-                        arg_pos(heap, arg, form),
-                        format!(
-                            "ability {}/{}: argument {} expects {}, got {} ({})",
-                            ability,
-                            op,
-                            i + 1,
-                            param_ty,
-                            gradual.bound,
-                            crate::syntax::printer::print(heap, arg),
-                        ),
-                    ));
-                }
+    if let (Some(info), false) = (ctx.ability(), shadowed)
+        && let Some((ability, op)) = info.op_of(head)
+    {
+        if let Some(&Value::Sym(_)) = items.get(1)
+            && let Some(ty) = super::infer::expr_ty(heap, items[1], ctx)
+        {
+            super::protocol::check_ability_call_inferred(
+                info,
+                head,
+                &ty,
+                heap.form_pos_only(form),
+                out,
+            );
+        }
+        // Param `i` corresponds to argument `items[i + 1]` (`self` is param 0).
+        for (i, param_ty) in info.op_params_of(head).into_iter().flatten().enumerate() {
+            let Some(param_ty) = param_ty else { continue };
+            let Some(&arg) = items.get(i + 1) else { break };
+            let gradual = gradual_of(heap, arg, ctx);
+            if !gradual.bound.is_never()
+                && !gradual
+                    .clone()
+                    .consistent_with_mode(relax_param_for_arg(param_ty), ctx.strict())
+                && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+            {
+                out.push((
+                    arg_pos(heap, arg, form),
+                    format!(
+                        "ability {}/{}: argument {} expects {}, got {} ({})",
+                        ability,
+                        op,
+                        i + 1,
+                        param_ty,
+                        gradual.bound,
+                        crate::syntax::printer::print(heap, arg),
+                    ),
+                ));
             }
         }
     }
@@ -741,10 +740,10 @@ fn check_named_call(
     // Compute it lazily.
     // A CALLED name gets the same stability diagnostic a referenced one does — the
     // call is the commoner shape by far, and the value-slot check above never sees it.
-    if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED) {
-        if let Some(msg) = stability_msg(heap, s) {
-            out.push((heap.form_pos_only(form), msg));
-        }
+    if !ctx.is_suppressed(super::ctx::SUPPRESS_DEPRECATED)
+        && let Some(msg) = stability_msg(heap, s)
+    {
+        out.push((heap.form_pos_only(form), msg));
     }
     if is_unbound(heap, ctx, s) && !ctx.is_suppressed(super::ctx::SUPPRESS_UNBOUND) {
         out.push((heap.form_pos_only(form), unbound_msg(&name_of(s))));
@@ -817,20 +816,19 @@ fn check_named_call(
     }
     if is_output_sink(s) {
         for &arg in &items[1..] {
-            if let Value::Sym(a) = arg {
-                if !ctx.is_local(a)
+            if let Value::Sym(a) = arg
+                && !ctx.is_local(a)
                         && !ctx.is_file_global(a) // a file redefinition supersedes the heap's arity
                         && matches!(arity_of(heap, a), Some(ar) if ar.min == 0 && ar.max == Some(0))
-                {
-                    let n = name_of(a);
-                    out.push((
+            {
+                let n = name_of(a);
+                out.push((
                             heap.form_pos_only(form),
                             format!(
                                 "{n}: function used as a value — did you mean ({n})? \
                                  the bare zero-arg function stringifies as #<fn {n}>, not its result"
                             ),
                         ));
-                }
             }
         }
     }
@@ -941,10 +939,10 @@ fn check_named_call(
     // call is the TEST of a branch the dead-clause lint proves dead, the finding is the
     // dead clause instead: `drop_unwanted_dead_clause` drops this warning and reports
     // the clause once, naming the symbol the author tested, under `:unreachable-clause`.
-    if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH) {
-        if let Some(message) = never_true_predicate(heap, items, ctx) {
-            out.push((arg_pos(heap, items[1], form), message));
-        }
+    if !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+        && let Some(message) = never_true_predicate(heap, items, ctx)
+    {
+        out.push((arg_pos(heap, items[1], form), message));
     }
 
     if let Some(sig) = sig {
@@ -984,89 +982,89 @@ fn check_args_against_sig(
         // arity is *known* (a named global fn, or a simple single-clause
         // lambda literal); a local, variadic, or multi-clause callback is
         // skipped — no false positives.
-        if let Some(expected) = param.as_arrow() {
-            if expected.rest.is_none() {
-                let wanted = expected.params.len();
-                if let Some(cb) = callback_arity(heap, arg, ctx) {
-                    if !cb.accepts(wanted) {
-                        let msg = format!(
-                            "{}: argument {} is a callback called with {} \
+        if let Some(expected) = param.as_arrow()
+            && expected.rest.is_none()
+        {
+            let wanted = expected.params.len();
+            if let Some(cb) = callback_arity(heap, arg, ctx)
+                && !cb.accepts(wanted)
+            {
+                let msg = format!(
+                    "{}: argument {} is a callback called with {} \
                                      argument{}, but {} takes {}",
-                            name_of(s),
-                            i + 1,
-                            wanted,
-                            if wanted == 1 { "" } else { "s" },
-                            callback_desc(arg),
-                            arity_str(cb),
-                        );
-                        out.push((arg_pos(heap, arg, form), msg));
-                    }
-                }
-                // Callback **parameter-type** check. The arity check above asks
-                // whether the callback can be called at all; this asks whether it
-                // can accept what it will be handed. A `sig`-declared higher-order
-                // parameter (`(sig g (((int -> int)) -> int))`) was annotated and
-                // then not enforced — passing `string/length` to it was silent.
-                //
-                // Disjointness only, per position, and never on the *result*: an
-                // inferred return over-approximates, so comparing results would
-                // false-positive at every call site (a `(any) -> any` callback is
-                // not a subtype of `(int) -> int`, but it is perfectly valid).
-                // Sound with an inferred callback sig too: an inferred parameter
-                // demand is a *superset* of what the function really accepts, so
-                // disjoint-from-the-superset is disjoint from the truth.
-                if let Some(cb) = callback_sig(heap, arg, ctx)
-                    .or_else(|| lambda_sig_under(heap, arg, expected, ctx))
-                {
-                    for (k, wanted) in expected.params.iter().enumerate() {
-                        let Some(accepts) = cb.param(k) else { continue };
-                        if wanted.is_never()
-                            || accepts.is_never()
-                            || !wanted.is_disjoint(&accepts)
-                            || ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-                        {
-                            continue;
-                        }
-                        let msg = format!(
-                            "{}: argument {} is a callback handed {} at position {}, \
-                                     but {} takes {} there",
-                            name_of(s),
-                            i + 1,
-                            wanted,
-                            k + 1,
-                            callback_desc(arg),
-                            accepts,
-                        );
-                        out.push((arg_pos(heap, arg, form), msg));
-                    }
-                    // …and the **result**. This was left out on the grounds that
-                    // an inferred return over-approximates, so comparing it by
-                    // *subtyping* would false-positive at every call site — a
-                    // `(any) -> any` callback is not a subtype of `(int) -> int`
-                    // and is perfectly valid. Disjointness has no such problem
-                    // and is sound in the same way the parameter direction is:
-                    // the inferred return is a superset of the truth, so if the
-                    // superset shares nothing with what the caller will do with
-                    // it, neither does the truth.
-                    let (wants, gives) = (&expected.ret, &cb.ret);
-                    if !wants.is_any()
-                        && !gives.is_any()
-                        && !wants.is_never()
-                        && !gives.is_never()
-                        && wants.is_disjoint(gives)
-                        && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+                    name_of(s),
+                    i + 1,
+                    wanted,
+                    if wanted == 1 { "" } else { "s" },
+                    callback_desc(arg),
+                    arity_str(cb),
+                );
+                out.push((arg_pos(heap, arg, form), msg));
+            }
+            // Callback **parameter-type** check. The arity check above asks
+            // whether the callback can be called at all; this asks whether it
+            // can accept what it will be handed. A `sig`-declared higher-order
+            // parameter (`(sig g (((int -> int)) -> int))`) was annotated and
+            // then not enforced — passing `string/length` to it was silent.
+            //
+            // Disjointness only, per position, and never on the *result*: an
+            // inferred return over-approximates, so comparing results would
+            // false-positive at every call site (a `(any) -> any` callback is
+            // not a subtype of `(int) -> int`, but it is perfectly valid).
+            // Sound with an inferred callback sig too: an inferred parameter
+            // demand is a *superset* of what the function really accepts, so
+            // disjoint-from-the-superset is disjoint from the truth.
+            if let Some(cb) =
+                callback_sig(heap, arg, ctx).or_else(|| lambda_sig_under(heap, arg, expected, ctx))
+            {
+                for (k, wanted) in expected.params.iter().enumerate() {
+                    let Some(accepts) = cb.param(k) else { continue };
+                    if wanted.is_never()
+                        || accepts.is_never()
+                        || !wanted.is_disjoint(&accepts)
+                        || ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
                     {
-                        let msg = format!(
-                            "{}: argument {} is a callback whose result is used as \
-                                     {}, but {} returns {}",
-                            name_of(s),
-                            i + 1,
-                            wants,
-                            callback_desc(arg),
-                            gives,
-                        );
-                        out.push((arg_pos(heap, arg, form), msg));
+                        continue;
                     }
+                    let msg = format!(
+                        "{}: argument {} is a callback handed {} at position {}, \
+                                     but {} takes {} there",
+                        name_of(s),
+                        i + 1,
+                        wanted,
+                        k + 1,
+                        callback_desc(arg),
+                        accepts,
+                    );
+                    out.push((arg_pos(heap, arg, form), msg));
+                }
+                // …and the **result**. This was left out on the grounds that
+                // an inferred return over-approximates, so comparing it by
+                // *subtyping* would false-positive at every call site — a
+                // `(any) -> any` callback is not a subtype of `(int) -> int`
+                // and is perfectly valid. Disjointness has no such problem
+                // and is sound in the same way the parameter direction is:
+                // the inferred return is a superset of the truth, so if the
+                // superset shares nothing with what the caller will do with
+                // it, neither does the truth.
+                let (wants, gives) = (&expected.ret, &cb.ret);
+                if !wants.is_any()
+                    && !gives.is_any()
+                    && !wants.is_never()
+                    && !gives.is_never()
+                    && wants.is_disjoint(gives)
+                    && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
+                {
+                    let msg = format!(
+                        "{}: argument {} is a callback whose result is used as \
+                                     {}, but {} returns {}",
+                        name_of(s),
+                        i + 1,
+                        wants,
+                        callback_desc(arg),
+                        gives,
+                    );
+                    out.push((arg_pos(heap, arg, form), msg));
                 }
             }
         }
@@ -1086,8 +1084,8 @@ fn check_overload_call(
     ctx: &Ctx,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    if !ctx.is_lexical_local(s) {
-        if let Some(arms) = ctx
+    if !ctx.is_lexical_local(s)
+        && let Some(arms) = ctx
             .declared_overload(s)
             .cloned()
             .or_else(|| declared_heap_overload(heap, s))
@@ -1100,21 +1098,19 @@ fn check_overload_call(
                     .then(|| infer_overload_of(heap, s))
                     .flatten()
             })
+    {
+        let arg_tys: Vec<Option<Ty>> = items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
+        if overload_arg_mismatch(&arms, &arg_tys)
+            && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
         {
-            let arg_tys: Vec<Option<Ty>> =
-                items[1..].iter().map(|&a| expr_ty(heap, a, ctx)).collect();
-            if overload_arg_mismatch(&arms, &arg_tys)
-                && !ctx.is_suppressed(super::ctx::SUPPRESS_TYPE_MISMATCH)
-            {
-                out.push((
-                    heap.form_pos_only(form),
-                    format!(
-                        "{}: no clause accepts these arguments — the clauses take {}",
-                        name_of(s),
-                        clause_domains_desc(&arms, items.len() - 1),
-                    ),
-                ));
-            }
+            out.push((
+                heap.form_pos_only(form),
+                format!(
+                    "{}: no clause accepts these arguments — the clauses take {}",
+                    name_of(s),
+                    clause_domains_desc(&arms, items.len() - 1),
+                ),
+            ));
         }
     }
 }
@@ -1222,10 +1218,8 @@ fn walk_operands(
                 }
                 _ => check_into(heap, item, item_ctx, out),
             }
-            if is_body {
-                if let Some(next) = diverging_guard_scope(heap, item, &seq_ctx) {
-                    seq_ctx = next;
-                }
+            if is_body && let Some(next) = diverging_guard_scope(heap, item, &seq_ctx) {
+                seq_ctx = next;
             }
         }
     }

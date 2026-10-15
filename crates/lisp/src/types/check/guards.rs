@@ -461,10 +461,11 @@ fn guard_assertion_inner(heap: &Heap, test: Value, ctx: &Ctx) -> Option<Guard> {
     // **`then_only`:** a falsy `and` may have failed on a later conjunct, so the
     // else-branch must NOT be narrowed to `¬E` (that was a real false positive —
     // an else-branch `(vector-ref m i)` on a value that *is* a longer vector).
-    if head_name == kw::LET && items.len() == 3 {
-        if let Some(g) = and_first_conjunct_guard(heap, items[1], items[2], ctx) {
-            return Some(g);
-        }
+    if head_name == kw::LET
+        && items.len() == 3
+        && let Some(g) = and_first_conjunct_guard(heap, items[1], items[2], ctx)
+    {
+        return Some(g);
     }
     if items.len() != 2 {
         return None;
@@ -734,16 +735,16 @@ pub(super) fn and_conjunct_guards(heap: &Heap, test: Value, ctx: &Ctx) -> Vec<Gu
     // A bare local bound `when`-shaped — `(let (src (when k E)) (if src …))` — proves its
     // condition `k` truthy in the then-branch, beside its own truthiness (which
     // `guard_assertion` states). Then-only: a falsy `src` may be `E`'s own nil.
-    if let Value::Sym(s) = test {
-        if let Some((k, ty, _, true)) = ctx.guard(s) {
-            out.push(Guard {
-                sym: k,
-                ty,
-                then_only: true,
-                else_only: false,
-                else_ty: None,
-            });
-        }
+    if let Value::Sym(s) = test
+        && let Some((k, ty, _, true)) = ctx.guard(s)
+    {
+        out.push(Guard {
+            sym: k,
+            ty,
+            then_only: true,
+            else_only: false,
+            else_ty: None,
+        });
     }
     let mut cur = test;
     let mut matched = false;
@@ -762,13 +763,12 @@ pub(super) fn and_conjunct_guards(heap: &Heap, test: Value, ctx: &Ctx) -> Vec<Gu
             None => {
                 // The last conjunct is a bare guard expression (only counted once we've
                 // seen at least one `and` link, so a non-`and` test yields nothing).
-                if matched {
-                    if let Some(g) = guard_assertion(heap, cur, ctx).filter(|g| !g.else_only) {
-                        out.push(Guard {
-                            then_only: true,
-                            ..g
-                        });
-                    }
+                if matched && let Some(g) = guard_assertion(heap, cur, ctx).filter(|g| !g.else_only)
+                {
+                    out.push(Guard {
+                        then_only: true,
+                        ..g
+                    });
                 }
                 break;
             }
@@ -852,14 +852,13 @@ pub(super) fn or_disjunct_guards(heap: &Heap, test: Value, ctx: &Ctx) -> Vec<Gua
                 cur = rest;
             }
             None => {
-                if matched {
-                    if let Some(g) = guard_assertion(heap, cur, ctx).filter(|g| !g.then_only) {
-                        out.push(Guard {
-                            else_only: true,
-                            else_ty: None,
-                            ..g
-                        });
-                    }
+                if matched && let Some(g) = guard_assertion(heap, cur, ctx).filter(|g| !g.then_only)
+                {
+                    out.push(Guard {
+                        else_only: true,
+                        else_ty: None,
+                        ..g
+                    });
                 }
                 break;
             }
@@ -1449,11 +1448,9 @@ fn comparison_facts(heap: &Heap, test: Value, ctx: &Ctx) -> Option<CmpFacts> {
             facts.then_index.push((i, xs, k.saturating_sub(1)));
         }
     }
-    if !strict {
-        if let (Some(xs), Some((i, k))) = (counted_collection(&l, ctx), index_side(&r)) {
-            // `(<= (count xs) (i + k))` false ⇒ `i + k < (count xs)`.
-            facts.else_index.push((i, xs, k));
-        }
+    if !strict && let (Some(xs), Some((i, k))) = (counted_collection(&l, ctx), index_side(&r)) {
+        // `(<= (count xs) (i + k))` false ⇒ `i + k < (count xs)`.
+        facts.else_index.push((i, xs, k));
     }
     (!facts.is_empty()).then_some(facts)
 }
@@ -1475,10 +1472,11 @@ fn test_comparison_facts_inner(heap: &Heap, test: Value, ctx: &Ctx) -> CmpFacts 
     let Some(items) = list_items(heap, test) else {
         return CmpFacts::default();
     };
-    if let Some(&Value::Sym(head)) = items.first() {
-        if items.len() == 2 && value::symbol_is(head, kw::NOT) {
-            return test_comparison_facts(heap, items[1], ctx).swapped();
-        }
+    if let Some(&Value::Sym(head)) = items.first()
+        && items.len() == 2
+        && value::symbol_is(head, kw::NOT)
+    {
+        return test_comparison_facts(heap, items[1], ctx).swapped();
     }
     let mut out = CmpFacts::default();
     let mut cur = test;

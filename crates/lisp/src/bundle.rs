@@ -483,9 +483,9 @@ mod tests {
 #[doc(hidden)]
 pub fn fuzz_parse(bytes: &[u8]) {
     let _ = strip_existing(bytes);
-    if let Some((start, len)) = footer(bytes) {
-        if let Some(archive) = bytes.get(start..start + len) {
-            let _ = parse_archive(archive);
-        }
+    if let Some((start, len)) = footer(bytes)
+        && let Some(archive) = bytes.get(start..start + len)
+    {
+        let _ = parse_archive(archive);
     }
 }

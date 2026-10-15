@@ -279,16 +279,16 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     }
     crate::host::subprocess::apply_env(&mut cmd, &env);
     if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, kw("stdin")) {
-            if !matches!(v, Value::Nil) {
-                stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?);
-            }
+        if let Some(v) = heap.map_get(opts, kw("stdin"))
+            && !matches!(v, Value::Nil)
+        {
+            stdin_text = Some(expect_string(heap, "os/cmd :stdin", v)?);
         }
-        if let Some(v) = heap.map_get(opts, kw("timeout-ms")) {
-            if !matches!(v, Value::Nil) {
-                let ms = expect_int(heap, "os/cmd :timeout-ms", v)?;
-                timeout = Some(std::time::Duration::from_millis(ms.max(0) as u64));
-            }
+        if let Some(v) = heap.map_get(opts, kw("timeout-ms"))
+            && !matches!(v, Value::Nil)
+        {
+            let ms = expect_int(heap, "os/cmd :timeout-ms", v)?;
+            timeout = Some(std::time::Duration::from_millis(ms.max(0) as u64));
         }
     }
     cmd.stdin(if stdin_text.is_some() {

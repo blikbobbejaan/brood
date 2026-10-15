@@ -327,15 +327,14 @@ fn project_sources<'a>(interp: &mut Interp, docs: &'a Documents, current: &Uri) 
         // Ensure the open `current` document is covered (a scratch buffer outside
         // the project, or a path the project list spelled differently). Matches
         // the original: a `current` with no decoded path is *not* added here.
-        if let Some(cur_path) = crate::uri_to_path(current) {
-            if seen.insert(cur_path) {
-                if let Some(doc) = docs.get(current) {
-                    out.push(Source::Open {
-                        uri: current.clone(),
-                        doc,
-                    });
-                }
-            }
+        if let Some(cur_path) = crate::uri_to_path(current)
+            && seen.insert(cur_path)
+            && let Some(doc) = docs.get(current)
+        {
+            out.push(Source::Open {
+                uri: current.clone(),
+                doc,
+            });
         }
     })
 }
@@ -351,10 +350,10 @@ pub(crate) fn all_sources<'a>(interp: &mut Interp, docs: &'a Documents) -> Vec<S
         for (uri, doc) in docs {
             // A `file:` path already in the project set is skipped; a non-`file:`
             // scratch URI (no path) is always included.
-            if let Some(p) = crate::uri_to_path(uri) {
-                if !seen.insert(p) {
-                    continue;
-                }
+            if let Some(p) = crate::uri_to_path(uri)
+                && !seen.insert(p)
+            {
+                continue;
             }
             out.push(Source::Open {
                 uri: uri.clone(),

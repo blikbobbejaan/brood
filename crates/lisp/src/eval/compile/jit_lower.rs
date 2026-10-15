@@ -196,10 +196,10 @@ pub(crate) fn jit_lower_arm(
     // scalar worker wins biggest on. Consult the gate first and they silently stop lowering:
     // still *correct* (they run on the VM), so the JIT differential stays green and only a
     // benchmark notices. Keep the scalar attempt first.
-    if jit_i64_enabled() {
-        if let Some(p) = jit_lower_i64_arm(jit, arm) {
-            return Some(p);
-        }
+    if jit_i64_enabled()
+        && let Some(p) = jit_lower_i64_arm(jit, arm)
+    {
+        return Some(p);
     }
     // Whether the general lowering is worth doing at all is a backend-independent decision:
     // it lives in `jit_plan` with the measurement that justifies it, and a refusal is

@@ -37,9 +37,9 @@ fn mentions(interp: &Interp, form: Value, symbol: &str) -> bool {
 
 #[test]
 fn a_module_the_check_loads_is_expanded_with_the_rewrites() {
-    // SAFETY-free: `set_var` before any thread reads it is the documented pattern in this
-    // suite; the runtime reads it at boot.
-    std::env::set_var("BROOD_NO_STDIMAGE", "1");
+    // SAFETY: nextest runs this test alone in its own process, and the runtime's threads
+    // start in `Interp::new` below, so nothing reads the environment concurrently.
+    unsafe { std::env::set_var("BROOD_NO_STDIMAGE", "1") };
     let mut interp = Interp::new();
     let loaded = |interp: &mut Interp| -> bool {
         let v = interp

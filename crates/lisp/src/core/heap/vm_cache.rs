@@ -687,12 +687,12 @@ impl Heap {
             _ => return self.dispatch_resolve(impls, op_key, id),
         };
         let epoch = self.global_epoch();
-        if let Some(e) = self.dispatch_ics.borrow().get(&key) {
-            if e.epoch == epoch {
-                for i in 0..e.len as usize {
-                    if e.ids[i] == id_sym {
-                        return e.callees[i];
-                    }
+        if let Some(e) = self.dispatch_ics.borrow().get(&key)
+            && e.epoch == epoch
+        {
+            for i in 0..e.len as usize {
+                if e.ids[i] == id_sym {
+                    return e.callees[i];
                 }
             }
         }
@@ -774,10 +774,10 @@ impl Heap {
     pub fn dispatch_identity(&self, v: Value) -> Value {
         if let Value::Map(mid) = v {
             let key = Value::keyword(crate::core::value::intern(kw::RECORD_ID));
-            if let Some(id) = self.map_get(mid, key) {
-                if crate::eval::truthy(id) {
-                    return id;
-                }
+            if let Some(id) = self.map_get(mid, key)
+                && crate::eval::truthy(id)
+            {
+                return id;
             }
         }
         Value::keyword(crate::core::value::tag(v).keyword())
@@ -976,20 +976,19 @@ impl Heap {
         // every caller is safe by construction.
         {
             let fls = self.vm_fast_links.borrow();
-            if let Some(fl) = fls.get(abs) {
-                if fl.code != 0
-                    && fl.nslots != u32::MAX
-                    && fl.epoch == epoch
-                    && fl.sym == sym
-                    && fl.argc == argc
-                {
-                    return Some((
-                        fl.code as *const u8,
-                        fl.nslots as usize,
-                        EnvId(fl.env),
-                        (fl.callee_ic_base, fl.callee_gic_base),
-                    ));
-                }
+            if let Some(fl) = fls.get(abs)
+                && fl.code != 0
+                && fl.nslots != u32::MAX
+                && fl.epoch == epoch
+                && fl.sym == sym
+                && fl.argc == argc
+            {
+                return Some((
+                    fl.code as *const u8,
+                    fl.nslots as usize,
+                    EnvId(fl.env),
+                    (fl.callee_ic_base, fl.callee_gic_base),
+                ));
             }
         }
         let (code, active_ns, env, callee_bases) =
@@ -1253,10 +1252,11 @@ impl Heap {
         if is_movable(entry.callee) {
             return;
         }
-        if let Some((_, env)) = &entry.arm {
-            if *env != EnvId::GLOBAL && env.region() == LOCAL {
-                return;
-            }
+        if let Some((_, env)) = &entry.arm
+            && *env != EnvId::GLOBAL
+            && env.region() == LOCAL
+        {
+            return;
         }
         // Resolve the callee arm's IC block BEFORE borrowing the table below —
         // `vm_arm_block` may grow `vm_call_ics` (a nested mutable borrow otherwise).

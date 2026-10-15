@@ -109,15 +109,16 @@ pub(crate) fn soft_limit_crossed(heap: &Heap, live: usize) -> Option<LispError> 
     {
         return None;
     }
-    if let Some((pid, since)) = pressure.raised {
-        if since.elapsed() < STOP_GRACE && Some(pid) != me {
-            return None;
-        }
+    if let Some((pid, since)) = pressure.raised
+        && since.elapsed() < STOP_GRACE
+        && Some(pid) != me
+    {
+        return None;
     }
-    if let Some((since, table)) = pressure.unattributable {
-        if since.elapsed() < PERIOD {
-            return Some(unattributable_error(live, table));
-        }
+    if let Some((since, table)) = pressure.unattributable
+        && since.elapsed() < PERIOD
+    {
+        return Some(unattributable_error(live, table));
     }
     let stuck: Vec<u64> = pressure.stopped.iter().map(|&(pid, _)| pid).collect();
     match largest_holder(&stuck) {

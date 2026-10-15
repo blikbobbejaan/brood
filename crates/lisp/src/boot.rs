@@ -50,11 +50,11 @@ pub(crate) static SHARED: LazyLock<SharedBundle> = LazyLock::new(|| {
     // image restores bindings only, so every such fact (the gensym floor, the registry
     // set, …) is carried explicitly, and `prelude_image_matches_source.rs` compares image
     // against source.
-    if std::env::var_os("BROOD_NO_PRELUDE_IMAGE").is_none() {
-        if let Some(bundle) = boot_from_prelude_image() {
-            set_boot_source(BOOT_PRELUDE_IMAGE);
-            return bundle;
-        }
+    if std::env::var_os("BROOD_NO_PRELUDE_IMAGE").is_none()
+        && let Some(bundle) = boot_from_prelude_image()
+    {
+        set_boot_source(BOOT_PRELUDE_IMAGE);
+        return bundle;
     }
     set_boot_source(BOOT_SOURCE);
     boot_from_source()
@@ -331,22 +331,20 @@ fn boot_from_source() -> SharedBundle {
     // cold boot is allowed to be slow — it runs once per binary build — so this is pure
     // addition; every later boot skips the read+eval this one just did. Best-effort: a
     // failure leaves the next boot on the source path, which is where it was before.
-    if write_image {
-        if let Some(image_path) = prelude_image_path() {
-            let _ = image::write_prelude_image(
-                &mut heap,
-                root,
-                &builtin_names,
-                &image_path,
-                &builtins::build_id_string(),
-                core::value::gensym_counter(),
-            )
-            .map(|()| {
-                image_path
-                    .parent()
-                    .map(|directory| prelude_image_prune(directory, &image_path))
-            });
-        }
+    if write_image && let Some(image_path) = prelude_image_path() {
+        let _ = image::write_prelude_image(
+            &mut heap,
+            root,
+            &builtin_names,
+            &image_path,
+            &builtins::build_id_string(),
+            core::value::gensym_counter(),
+        )
+        .map(|()| {
+            image_path
+                .parent()
+                .map(|directory| prelude_image_prune(directory, &image_path))
+        });
     }
     let bundle = finish_bundle(heap, root);
     let t_freeze = t_mark.elapsed();
@@ -529,10 +527,10 @@ mod prelude_hygiene {
             }
             ValueRef::Pair(p) => {
                 let (car, cdr) = heap.pair(p);
-                if let ValueRef::Sym(s) = car.unpack() {
-                    if value::symbol_name(s) == "quote" {
-                        return;
-                    }
+                if let ValueRef::Sym(s) = car.unpack()
+                    && value::symbol_name(s) == "quote"
+                {
+                    return;
                 }
                 collect_qualified(heap, car, out);
                 collect_qualified(heap, cdr, out);

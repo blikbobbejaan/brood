@@ -527,11 +527,11 @@ pub(super) fn span_runs_push(
     // keeps the relative index non-negative even if a caller ever violated that,
     // so the host can't panic on an underflow.
     let lhi = hi.saturating_sub(base) as usize;
-    if let Some(last) = runs.last_mut() {
-        if heap.equal(last.2, face) {
-            last.1 = lhi;
-            return;
-        }
+    if let Some(last) = runs.last_mut()
+        && heap.equal(last.2, face)
+    {
+        last.1 = lhi;
+        return;
     }
     runs.push((lo.saturating_sub(base) as usize, lhi, face));
 }

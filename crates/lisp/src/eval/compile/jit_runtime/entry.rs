@@ -298,15 +298,13 @@ pub(crate) fn finish_nested(
             // of this frame. Flag-free by construction (KI-26).
             if matches!(outcome, outcome::DEOPT | outcome::PREEMPT)
                 && jit_frame_shape_matches(&arm, frame.nslots)
-            {
-                if let Some((resume, rip, depth)) =
+                && let Some((resume, rip, depth)) =
                     jit_ckpt_resume(heap, arm.arc(), frame.base, frame.nslots)
-                {
-                    let r = jit_native_reenter(heap, frame.native_depth, |h| {
-                        vm_resume_deopt(h, resume, frame.base, env, rip, depth)
-                    });
-                    return reenter_result(heap, r);
-                }
+            {
+                let r = jit_native_reenter(heap, frame.native_depth, |h| {
+                    vm_resume_deopt(h, resume, frame.base, env, rip, depth)
+                });
+                return reenter_result(heap, r);
             }
             heap.truncate_roots(frame.stage_base);
             let r = jit_native_reenter(heap, frame.native_depth, |h| vm_apply(h, arm, &argv, env));

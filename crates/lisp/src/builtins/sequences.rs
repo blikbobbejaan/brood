@@ -868,15 +868,15 @@ impl Reducer {
         x: Value,
         env: EnvId,
     ) -> Result<(Value, bool), LispError> {
-        if let Some(op) = self.prim {
-            if let Some(v) = crate::eval::compile::prim_apply(op, acc, x)? {
-                return Ok((v, true));
-            }
+        if let Some(op) = self.prim
+            && let Some(v) = crate::eval::compile::prim_apply(op, acc, x)?
+        {
+            return Ok((v, true));
         }
-        if let Some(h) = &self.hof {
-            if let Some(r) = crate::eval::compile::hof_apply_step(heap, h, f, &[acc, x]) {
-                return Ok((r?, false));
-            }
+        if let Some(h) = &self.hof
+            && let Some(r) = crate::eval::compile::hof_apply_step(heap, h, f, &[acc, x])
+        {
+            return Ok((r?, false));
         }
         let v = if self.use_vm {
             crate::eval::compile::apply_value(heap, f, &[acc, x], env)?

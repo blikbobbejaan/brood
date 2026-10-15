@@ -53,18 +53,20 @@ pub(crate) fn compile_arm(
     // re-runs this arm verbatim. With optionals/rest the frame-fill differs per
     // call, so such calls fall back to the regular env-resolved path (correct,
     // just unoptimized).
-    if let Some(name) = self_name {
-        if noptional == 0 && rest.is_none() {
-            scope.self_call = Some((name, nrequired));
-        }
+    if let Some(name) = self_name
+        && noptional == 0
+        && rest.is_none()
+    {
+        scope.self_call = Some((name, nrequired));
     }
     // `defn` tail self-calls get the same inline frame-reset via SelfCall. The
     // in-flight call holds an Arc to its own compiled arm, so it correctly runs
     // the current compiled version even if the global is redefined mid-call.
-    if let Some(name) = defn_name {
-        if noptional == 0 && rest.is_none() {
-            scope.self_call = Some((name, nrequired));
-        }
+    if let Some(name) = defn_name
+        && noptional == 0
+        && rest.is_none()
+    {
+        scope.self_call = Some((name, nrequired));
     }
     for &p in required {
         scope.bind(p);
@@ -99,10 +101,10 @@ pub(crate) fn compile_arm(
     let capture_names = capture_names.into_boxed_slice();
     // The self-name rides in as a capture too (the frame binds it to the closure); mark
     // its slot so a tail self-call through that name is a `SelfCall`, not a shadowed call.
-    if let Some(name) = self_name {
-        if capture_names.contains(&name) {
-            scope.self_slot = scope.lookup(name);
-        }
+    if let Some(name) = self_name
+        && capture_names.contains(&name)
+    {
+        scope.self_slot = scope.lookup(name);
     }
     let mut body = compile_body(heap, body, &mut scope, true)?;
     // Escape-analysis scalar replacement (lever 2): eliminate non-escaping `(let (p […]) …)`
@@ -123,30 +125,30 @@ pub(crate) fn compile_arm(
     // Line coverage (ADR-148 tier 2): register this arm's instrumented lines as they
     // are compiled. This is the report's DENOMINATOR — see `coverage.rs` for why it
     // cannot be inferred from the source text instead.
-    if crate::diagnostics::coverage::enabled() {
-        if let (Some(chunk), Some(file)) = (
+    if crate::diagnostics::coverage::enabled()
+        && let (Some(chunk), Some(file)) = (
             chunk.as_ref(),
             body_first_form
                 .and_then(|f| heap.form_pos(f))
                 .and_then(|(_, file)| file),
-        ) {
-            crate::diagnostics::coverage::note_instrumented(
-                &file,
-                chunk.code.iter().filter_map(|inst| match inst {
-                    Inst::RecordLine(line) => Some(*line),
-                    _ => None,
-                }),
-            );
-            // The branch denominator: each distinct `(line, col)` decision point (both
-            // edges of one `if` carry the same site, so the set dedups them).
-            crate::diagnostics::coverage::note_branches(
-                &file,
-                chunk.code.iter().filter_map(|inst| match inst {
-                    Inst::RecordBranch(line, col, _) => Some((*line, *col)),
-                    _ => None,
-                }),
-            );
-        }
+        )
+    {
+        crate::diagnostics::coverage::note_instrumented(
+            &file,
+            chunk.code.iter().filter_map(|inst| match inst {
+                Inst::RecordLine(line) => Some(*line),
+                _ => None,
+            }),
+        );
+        // The branch denominator: each distinct `(line, col)` decision point (both
+        // edges of one `if` carry the same site, so the set dedups them).
+        crate::diagnostics::coverage::note_branches(
+            &file,
+            chunk.code.iter().filter_map(|inst| match inst {
+                Inst::RecordBranch(line, col, _) => Some((*line, *col)),
+                _ => None,
+            }),
+        );
     }
     // Reserve a few extra frame slots (above the compiler's `scope.max`) when the arm
     // has ≥2 non-tail calls, so a JIT-lowered version can spill call-result handles
@@ -539,12 +541,10 @@ pub(crate) fn cache_key(heap: &Heap, id: ClosureId) -> Option<VmCacheKey> {
         .first()
         .and_then(|a| a.body.first())
         .copied()
+        && let ValueRef::Pair(p) = first.unpack()
+        && p.region() != value::LOCAL
     {
-        if let ValueRef::Pair(p) = first.unpack() {
-            if p.region() != value::LOCAL {
-                return Some(VmCacheKey::Body(p.0));
-            }
-        }
+        return Some(VmCacheKey::Body(p.0));
     }
     match id.region() {
         value::RUNTIME | value::PRELUDE => Some(VmCacheKey::Runtime(id.0)),
@@ -581,20 +581,20 @@ pub(crate) fn probe_arm_for(heap: &Heap, id: ClosureId, argc: usize) -> Option<A
     // A hit whose bindings a module load has since staled (ADR-366) is not what a caller
     // would run next — fall through to a fresh throwaway, exactly as the call path will
     // recompile it; the eviction itself is the call path's, this probe installs nothing.
-    if let Some(hit) = heap.vm_cache_arm(key, argc) {
-        if !hit.as_ref().is_some_and(|arm| {
+    if let Some(hit) = heap.vm_cache_arm(key, argc)
+        && !hit.as_ref().is_some_and(|arm| {
             arm.stale_bindings
                 .load(std::sync::atomic::Ordering::Acquire)
-        }) {
-            return hit;
-        }
+        })
+    {
+        return hit;
     }
     // Read-only peek at the cross-process cache — an entry there was compiled by a real
     // call, so it carries its own metadata and is safe to use (and not ours to install).
-    if let Some(cc) = heap.shared_closure_lookup(key.shared_bits()) {
-        if !cc.stale_bindings() {
-            return cc.arm_for(argc).cloned();
-        }
+    if let Some(cc) = heap.shared_closure_lookup(key.shared_bits())
+        && !cc.stale_bindings()
+    {
+        return cc.arm_for(argc).cloned();
     }
     compile_closure(heap, id).and_then(|cc| cc.arm_for(argc).cloned())
 }
@@ -875,10 +875,10 @@ pub(crate) fn hof_apply_step(
     // shape) or deopts.
     // `BROOD_NO_HOF_JIT=1` opts out of the native fast frame alone.
     #[cfg(feature = "jit")]
-    if crate::diagnostics::debug_flags::higher_order_native() {
-        if let Some(r) = hof_apply_native(heap, hof.arm.arc(), args, cenv, hof.bases) {
-            return Some(r);
-        }
+    if crate::diagnostics::debug_flags::higher_order_native()
+        && let Some(r) = hof_apply_native(heap, hof.arm.arc(), args, cenv, hof.bases)
+    {
+        return Some(r);
     }
     Some(vm_apply(heap, hof.arm.clone(), args, cenv))
 }

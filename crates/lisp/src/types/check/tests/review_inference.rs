@@ -248,10 +248,10 @@ fn rule_heads_are_bound() {
             rest = &rest[at + "symbol_is(".len()..];
             let Some(close) = rest.find(')') else { break };
             let call = &rest[..close];
-            if let Some((_, quoted)) = call.split_once(", \"") {
-                if let Some(name) = quoted.strip_suffix('"') {
-                    names.push(name.to_string());
-                }
+            if let Some((_, quoted)) = call.split_once(", \"")
+                && let Some(name) = quoted.strip_suffix('"')
+            {
+                names.push(name.to_string());
             }
         }
     }

@@ -707,18 +707,18 @@ pub fn put(heap: &mut Heap, id: u64, key: Value, val: Value) -> LispResult {
     let store = lookup(id)?;
     // Dense fast path: int key in range + tagged-scalar value → ONE atomic swap
     // on the key's slot. Lock-free; see the migration protocol on `Store`.
-    if store.dense.load(Ordering::Acquire) {
-        if let (Some(i), Some(word)) = (dense_idx(key), slot_enc(val)) {
-            store.cover(i);
-            let old = store.slots.slot_or_map(i)?.swap(word, Ordering::SeqCst);
-            if old != SLOT_MOVED && store.dense.load(Ordering::SeqCst) {
-                if old == SLOT_EMPTY {
-                    store.dense_count.fetch_add(1, Ordering::Relaxed);
-                }
-                return Ok(Value::table(id));
+    if store.dense.load(Ordering::Acquire)
+        && let (Some(i), Some(word)) = (dense_idx(key), slot_enc(val))
+    {
+        store.cover(i);
+        let old = store.slots.slot_or_map(i)?.swap(word, Ordering::SeqCst);
+        if old != SLOT_MOVED && store.dense.load(Ordering::SeqCst) {
+            if old == SLOT_EMPTY {
+                store.dense_count.fetch_add(1, Ordering::Relaxed);
             }
-            // A migration raced us — re-apply on the map (idempotent overwrite).
+            return Ok(Value::table(id));
         }
+        // A migration raced us — re-apply on the map (idempotent overwrite).
     }
     // Hashed path (migrating first if still dense — an out-of-shape key/value
     // leaves the dense world for good).
@@ -856,10 +856,10 @@ pub fn incr(heap: &mut Heap, id: u64, key: Value, delta: i64) -> LispResult {
 /// concurrent writer on the same key: this op serves a table no one else holds; the
 /// concurrent counter is `incr`.
 pub fn add(heap: &mut Heap, id: u64, key: Value, delta: Value) -> LispResult {
-    if let Value::Int(d) = delta {
-        if let Ok(next) = incr_int(heap, id, key, d)? {
-            return Ok(Value::int(next));
-        }
+    if let Value::Int(d) = delta
+        && let Ok(next) = incr_int(heap, id, key, d)?
+    {
+        return Ok(Value::int(next));
     }
     let old = get(heap, id, key, Value::int(0))?;
     let next = crate::builtins::numeric::add_values(heap, old, delta)?;
@@ -872,12 +872,11 @@ pub fn add(heap: &mut Heap, id: u64, key: Value, delta: Value) -> LispResult {
 /// (or with `dec`). Same paths, same non-atomic general half; `-` rather than a negated
 /// `+` so a non-number raises `-`'s own error, as the source did.
 pub fn sub(heap: &mut Heap, id: u64, key: Value, delta: Value) -> LispResult {
-    if let Value::Int(d) = delta {
-        if let Some(neg) = d.checked_neg() {
-            if let Ok(next) = incr_int(heap, id, key, neg)? {
-                return Ok(Value::int(next));
-            }
-        }
+    if let Value::Int(d) = delta
+        && let Some(neg) = d.checked_neg()
+        && let Ok(next) = incr_int(heap, id, key, neg)?
+    {
+        return Ok(Value::int(next));
     }
     let old = get(heap, id, key, Value::int(0))?;
     let next = crate::builtins::numeric::sub_values(heap, old, delta)?;
@@ -895,48 +894,48 @@ fn incr_int(
     delta: i64,
 ) -> Result<Result<i64, IncrMiss>, LispError> {
     let store = lookup(id)?;
-    if store.dense.load(Ordering::Acquire) {
-        if let Some(i) = dense_idx(key) {
-            store.cover(i);
-            let slot = store.slots.slot_or_map(i)?;
-            let mut cur = slot.load(Ordering::SeqCst);
-            loop {
-                let (cur_int, was_empty) = match cur {
-                    SLOT_EMPTY => (0i64, true),
-                    SLOT_MOVED => break, // migration in flight → hashed path
-                    s if s & INT_TAG != 0 => ((s as i64) >> 3, false),
-                    _ => return Ok(Err(IncrMiss::NotInt)),
-                };
-                let Some(next) = cur_int.checked_add(delta) else {
-                    return Ok(Err(IncrMiss::Overflow));
-                };
-                let Some(word) = slot_enc(Value::int(next)) else {
-                    break; // leaves the 61-bit tagged range → migrate below
-                };
-                match slot.compare_exchange_weak(cur, word, Ordering::SeqCst, Ordering::SeqCst) {
-                    Ok(_) => {
-                        if store.dense.load(Ordering::SeqCst) {
-                            if was_empty {
-                                store.dense_count.fetch_add(1, Ordering::Relaxed);
-                            }
-                            return Ok(Ok(next));
+    if store.dense.load(Ordering::Acquire)
+        && let Some(i) = dense_idx(key)
+    {
+        store.cover(i);
+        let slot = store.slots.slot_or_map(i)?;
+        let mut cur = slot.load(Ordering::SeqCst);
+        loop {
+            let (cur_int, was_empty) = match cur {
+                SLOT_EMPTY => (0i64, true),
+                SLOT_MOVED => break, // migration in flight → hashed path
+                s if s & INT_TAG != 0 => ((s as i64) >> 3, false),
+                _ => return Ok(Err(IncrMiss::NotInt)),
+            };
+            let Some(next) = cur_int.checked_add(delta) else {
+                return Ok(Err(IncrMiss::Overflow));
+            };
+            let Some(word) = slot_enc(Value::int(next)) else {
+                break; // leaves the 61-bit tagged range → migrate below
+            };
+            match slot.compare_exchange_weak(cur, word, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => {
+                    if store.dense.load(Ordering::SeqCst) {
+                        if was_empty {
+                            store.dense_count.fetch_add(1, Ordering::Relaxed);
                         }
-                        // CAS landed but a migration started: resolve under its
-                        // lock. MOVED in the slot ⟹ the migrator captured our
-                        // incremented word (done); anything else ⟹ it skipped
-                        // this slot as EMPTY before our CAS ⟹ re-execute on the
-                        // map (`incr` commutes, so re-executing linearizes).
-                        let mut guard = lock(&store.hashed);
-                        if slot.load(Ordering::SeqCst) == SLOT_MOVED {
-                            return Ok(Ok(next));
-                        }
-                        // (A DROP also flips `dense` and clears the slot to EMPTY:
-                        // `hashed_or_migrate` reports it rather than migrating.)
-                        let map = store.hashed_or_migrate(&mut guard)?;
-                        return incr_hashed(heap, map, key, delta);
+                        return Ok(Ok(next));
                     }
-                    Err(actual) => cur = actual,
+                    // CAS landed but a migration started: resolve under its
+                    // lock. MOVED in the slot ⟹ the migrator captured our
+                    // incremented word (done); anything else ⟹ it skipped
+                    // this slot as EMPTY before our CAS ⟹ re-execute on the
+                    // map (`incr` commutes, so re-executing linearizes).
+                    let mut guard = lock(&store.hashed);
+                    if slot.load(Ordering::SeqCst) == SLOT_MOVED {
+                        return Ok(Ok(next));
+                    }
+                    // (A DROP also flips `dense` and clears the slot to EMPTY:
+                    // `hashed_or_migrate` reports it rather than migrating.)
+                    let map = store.hashed_or_migrate(&mut guard)?;
+                    return incr_hashed(heap, map, key, delta);
                 }
+                Err(actual) => cur = actual,
             }
         }
     }

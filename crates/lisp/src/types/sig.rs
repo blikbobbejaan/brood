@@ -185,10 +185,10 @@ impl Sig {
         // Past every explicit position, two variadic tails meet: whatever extra arguments
         // `other` may pass, `self`'s tail must accept. The loop above stops at the longest
         // explicit arity, so without this `(& int -> r)` read as a subtype of `(& any -> r)`.
-        if let (Some(own_rest), Some(other_rest)) = (&self.rest, &other.rest) {
-            if !other_rest.is_subtype(own_rest) {
-                return false;
-            }
+        if let (Some(own_rest), Some(other_rest)) = (&self.rest, &other.rest)
+            && !other_rest.is_subtype(own_rest)
+        {
+            return false;
         }
         true
     }

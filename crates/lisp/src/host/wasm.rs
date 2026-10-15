@@ -447,16 +447,16 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
             // (the byte-oriented calls — hashing, compression, codecs, binary parsing —
             // pass bytes, not an int vector). Lower each octet to `u8` in one pass; a
             // vector/list of ints still lowers via the generic path below.
-            if matches!(elem, Type::U8) {
-                if let Value::Bytes(id) = v {
-                    let out = heap
-                        .bytes(id)
-                        .as_bytes()
-                        .iter()
-                        .map(|&b| Val::U8(b))
-                        .collect();
-                    return Ok(Val::List(out));
-                }
+            if matches!(elem, Type::U8)
+                && let Value::Bytes(id) = v
+            {
+                let out = heap
+                    .bytes(id)
+                    .as_bytes()
+                    .iter()
+                    .map(|&b| Val::U8(b))
+                    .collect();
+                return Ok(Val::List(out));
             }
             let items = seq_items(heap, who, v)?;
             let mut out = Vec::with_capacity(items.len());

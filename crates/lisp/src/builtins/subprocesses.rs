@@ -170,15 +170,15 @@ pub(super) fn pty_spawn(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
     let mut cols: u16 = 80;
     let mut rows: u16 = 24;
     if let Value::Map(opts) = arg(args, 2) {
-        if let Some(v) = heap.map_get(opts, value::kw("cols")) {
-            if !matches!(v, Value::Nil) {
-                cols = expect_int(heap, "os/spawn-pty :cols", v)?.clamp(1, 10_000) as u16;
-            }
+        if let Some(v) = heap.map_get(opts, value::kw("cols"))
+            && !matches!(v, Value::Nil)
+        {
+            cols = expect_int(heap, "os/spawn-pty :cols", v)?.clamp(1, 10_000) as u16;
         }
-        if let Some(v) = heap.map_get(opts, value::kw("rows")) {
-            if !matches!(v, Value::Nil) {
-                rows = expect_int(heap, "os/spawn-pty :rows", v)?.clamp(1, 10_000) as u16;
-            }
+        if let Some(v) = heap.map_get(opts, value::kw("rows"))
+            && !matches!(v, Value::Nil)
+        {
+            rows = expect_int(heap, "os/spawn-pty :rows", v)?.clamp(1, 10_000) as u16;
         }
     }
     let owner = crate::process::self_pid();

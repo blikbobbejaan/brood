@@ -143,10 +143,10 @@ pub fn symbol_hash(sym: Symbol) -> u64 {
     let idx = sym as usize;
     // `try_with`: like `intern`, this can run from a thread-local destructor after the
     // cache is gone; the global table answers then.
-    if let Ok(Some(h)) = HASH_CACHE.try_with(|c| c.borrow().get(idx).copied()) {
-        if h != 0 {
-            return h;
-        }
+    if let Ok(Some(h)) = HASH_CACHE.try_with(|c| c.borrow().get(idx).copied())
+        && h != 0
+    {
+        return h;
     }
     symbol_hash_slow(idx, sym)
 }
@@ -288,13 +288,13 @@ macro_rules! handle {
             /// heap's current epoch). The debug-assert catches a slab growing
             /// past `2^32` (where the index would collide with the gen bits).
             #[inline]
-            pub fn local_gen(index: usize, gen: u32) -> Self {
+            pub fn local_gen(index: usize, generation: u32) -> Self {
                 debug_assert!(
                     index < (1usize << GEN_SHIFT),
                     "handle index {} overflows the 32-bit index field",
                     index,
                 );
-                let h = $name((index as u64) | (((gen as u64) & GEN_MASK) << GEN_SHIFT));
+                let h = $name((index as u64) | (((generation as u64) & GEN_MASK) << GEN_SHIFT));
                 debug_assert!(
                     h.region() < REGION_RESERVED,
                     "region 0b11 is reserved for EnvId::GLOBAL"
@@ -305,13 +305,15 @@ macro_rules! handle {
             /// old-space epoch `gen`. Same index space as the nursery but the
             /// [`AGE_OLD`] bit routes accessors / `check_epoch` to the old slabs.
             #[inline]
-            pub fn local_old_gen(index: usize, gen: u32) -> Self {
+            pub fn local_old_gen(index: usize, generation: u32) -> Self {
                 debug_assert!(
                     index < (1usize << GEN_SHIFT),
                     "handle index {} overflows the 32-bit index field",
                     index,
                 );
-                let h = $name((index as u64) | (((gen as u64) & GEN_MASK) << GEN_SHIFT) | AGE_OLD);
+                let h = $name(
+                    (index as u64) | (((generation as u64) & GEN_MASK) << GEN_SHIFT) | AGE_OLD,
+                );
                 debug_assert!(
                     h.region() < REGION_RESERVED,
                     "region 0b11 is reserved for EnvId::GLOBAL"
@@ -1526,7 +1528,7 @@ impl Value {
     /// for diagnostics (the debug dumps print these words). Never branch on the padding.
     #[cfg(feature = "jit")]
     pub(crate) unsafe fn raw_words(self) -> [i64; 3] {
-        std::mem::transmute::<Value, [i64; 3]>(self)
+        unsafe { std::mem::transmute::<Value, [i64; 3]>(self) }
     }
 
     /// The value native code hands back as three words.
@@ -1536,7 +1538,7 @@ impl Value {
     /// [`raw_words`](Self::raw_words)) — any other bit pattern is an invalid enum.
     #[cfg(feature = "jit")]
     pub(crate) unsafe fn from_raw_words(words: [i64; 3]) -> Value {
-        std::mem::transmute::<[i64; 3], Value>(words)
+        unsafe { std::mem::transmute::<[i64; 3], Value>(words) }
     }
 }
 

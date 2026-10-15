@@ -60,21 +60,18 @@ fn check_recursion_inner(heap: &Heap, form: Value, out: &mut Vec<(Option<Pos>, S
     // the wrapped defs deliberately recurse non-tail (JIT depth-cliff torture
     // tests) and the author has opted out. A marker for a *different* category
     // falls through and is walked normally.
-    if let Some(&Value::Keyword(cat)) = items.get(1) {
-        if matches!(items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "%lint-allow"))
-            && value::symbol_is(cat, "non-tail-recursion")
-        {
-            return;
-        }
+    if let Some(&Value::Keyword(cat)) = items.get(1)
+        && matches!(items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "%lint-allow"))
+        && value::symbol_is(cat, "non-tail-recursion")
+    {
+        return;
     }
-    if let (Some(&Value::Sym(head)), true) = (items.first(), items.len() >= 3) {
-        if value::symbol_is(head, kw::DEF) {
-            if let Value::Sym(name) = items[1] {
-                if is_fn_form(heap, items[2]) {
-                    analyze_fn(heap, name, items[2], heap.form_pos_only(form), out);
-                }
-            }
-        }
+    if let (Some(&Value::Sym(head)), true) = (items.first(), items.len() >= 3)
+        && value::symbol_is(head, kw::DEF)
+        && let Value::Sym(name) = items[1]
+        && is_fn_form(heap, items[2])
+    {
+        analyze_fn(heap, name, items[2], heap.form_pos_only(form), out);
     }
     // Recurse so nested definitions (a `defn` inside `do` / `test` / `describe`,
     // a closure-defining `def` in a body) are covered too.

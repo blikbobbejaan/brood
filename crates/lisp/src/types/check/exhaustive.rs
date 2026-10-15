@@ -42,12 +42,11 @@ pub(super) fn check_matches(
 ) {
     let mut namespace: Option<String> = None;
     for &form in forms {
-        if let Some(items) = list_items(heap, form) {
-            if matches!(items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "defmodule")) {
-                if let Some(&Value::Sym(module)) = items.get(1) {
-                    namespace = Some(value::symbol_name(module));
-                }
-            }
+        if let Some(items) = list_items(heap, form)
+            && matches!(items.first(), Some(&Value::Sym(h)) if value::symbol_is(h, "defmodule"))
+            && let Some(&Value::Sym(module)) = items.get(1)
+        {
+            namespace = Some(value::symbol_name(module));
         }
         walk(heap, form, ctx, namespace.as_deref(), out);
     }
@@ -174,12 +173,12 @@ fn walk_def(
     namespace: Option<&str>,
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
-    if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2)) {
-        if let Some(value_items) = fn_form_items(heap, val) {
-            let sig = sig_of(heap, ctx, name, namespace);
-            walk_fn_seeded(heap, &value_items, ctx, namespace, out, sig.as_ref());
-            return;
-        }
+    if let (Some(&Value::Sym(name)), Some(&val)) = (items.get(1), items.get(2))
+        && let Some(value_items) = fn_form_items(heap, val)
+    {
+        let sig = sig_of(heap, ctx, name, namespace);
+        walk_fn_seeded(heap, &value_items, ctx, namespace, out, sig.as_ref());
+        return;
     }
     recurse_rest(heap, items, ctx, namespace, out);
 }
@@ -233,23 +232,23 @@ fn walk_let(
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     let mut scope = ctx.clone();
-    if let Some(&binds_form) = items.get(1) {
-        if let Some(binds) = list_items(heap, binds_form) {
-            let mut i = 0;
-            while i + 1 < binds.len() {
-                let target = binds[i];
-                let rhs = binds[i + 1];
-                walk(heap, rhs, &scope, namespace, out);
-                if let Value::Sym(s) = target {
-                    let ty = expr_ty(heap, rhs, &scope);
-                    scope = scope.bind(s, ty);
-                } else {
-                    // A destructuring target rebinds every name in it, to a type this
-                    // pass does not derive.
-                    scope = forget_symbols_in(heap, &scope, &[target]);
-                }
-                i += 2;
+    if let Some(&binds_form) = items.get(1)
+        && let Some(binds) = list_items(heap, binds_form)
+    {
+        let mut i = 0;
+        while i + 1 < binds.len() {
+            let target = binds[i];
+            let rhs = binds[i + 1];
+            walk(heap, rhs, &scope, namespace, out);
+            if let Value::Sym(s) = target {
+                let ty = expr_ty(heap, rhs, &scope);
+                scope = scope.bind(s, ty);
+            } else {
+                // A destructuring target rebinds every name in it, to a type this
+                // pass does not derive.
+                scope = forget_symbols_in(heap, &scope, &[target]);
             }
+            i += 2;
         }
     }
     for &b in items.get(2..).unwrap_or(&[]) {
@@ -280,10 +279,10 @@ fn analyze_match(
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     if let Some(&scrutinee) = items.get(1) {
-        if let Some(ty) = expr_ty(heap, scrutinee, ctx) {
-            if let Some(ids) = record_id_set(&ty) {
-                check_coverage(heap, &items[2..], &ids, heap.form_pos_only(form), out);
-            }
+        if let Some(ty) = expr_ty(heap, scrutinee, ctx)
+            && let Some(ids) = record_id_set(&ty)
+        {
+            check_coverage(heap, &items[2..], &ids, heap.form_pos_only(form), out);
         }
         walk(heap, scrutinee, ctx, namespace, out);
         for &clause in &items[2..] {
@@ -294,10 +293,8 @@ fn analyze_match(
                 // The pattern's binders shadow the enclosing scope for the guard and body
                 // (`((record c {:x s}) (match s …))` matches the FIELD, not the outer `s`).
                 let clause_scope = forget_symbols_in(heap, ctx, &clause_items[..1]);
-                if guarded {
-                    if let Some(&g) = clause_items.get(2) {
-                        walk(heap, g, &clause_scope, namespace, out);
-                    }
+                if guarded && let Some(&g) = clause_items.get(2) {
+                    walk(heap, g, &clause_scope, namespace, out);
                 }
                 for &b in clause_items.get(body_start..).unwrap_or(&[]) {
                     walk(heap, b, &clause_scope, namespace, out);

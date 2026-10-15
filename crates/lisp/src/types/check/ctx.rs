@@ -851,17 +851,16 @@ impl Ctx {
         // A narrowing of `n` where `n` is `(count xs)` is a narrowing of `xs`'s LENGTH
         // (ADR-350): `(>= n 4)` proves `xs` has at least four elements — and no `nil`,
         // when the interval excludes 0.
-        if let Some(xs) = c.count_aliases.get(&sym).copied() {
-            if let Some(r) = ty.int_range() {
-                if !r.is_all() {
-                    let base = if crate::types::Range::subset(crate::types::Range::point(0), r) {
-                        Ty::ANY
-                    } else {
-                        Ty::ANY.difference(Ty::of(Tag::Nil))
-                    };
-                    c.narrow_chain(xs, base.with_len(r));
-                }
-            }
+        if let Some(xs) = c.count_aliases.get(&sym).copied()
+            && let Some(r) = ty.int_range()
+            && !r.is_all()
+        {
+            let base = if crate::types::Range::subset(crate::types::Range::point(0), r) {
+                Ty::ANY
+            } else {
+                Ty::ANY.difference(Ty::of(Tag::Nil))
+            };
+            c.narrow_chain(xs, base.with_len(r));
         }
         c
     }
@@ -885,36 +884,36 @@ impl Ctx {
         // positional shape's read at `k` is its element there, or `nil` past its end — and
         // it is what lets the whole value `r` (returned, or passed on) carry the dispatch,
         // not only the reads of that position. A term without a positional shape is kept.
-        if let [PathKey::Index(k)] = keys.as_slice() {
-            if let Some(base_ty) = c.types.get(&base).cloned() {
-                let retained = base_ty.retain_terms(|term| match term.positional_elems() {
-                    Some(elems) => {
-                        let at = elems.get(*k).cloned().unwrap_or(Ty::of(Tag::Nil));
-                        !at.is_disjoint(&known)
-                    }
-                    None => true,
-                });
-                // A binder already holding ANOTHER position of the base — `v` in
-                // `(let ([tag v] r) (if (= tag :ok) … v …))` — was bound before the guard,
-                // from the union over every alternative. The alternatives the guard kept say
-                // what that position holds now, so narrow it to that. Read
-                // only when every kept term answers the position; a term that does not
-                // (`element_at_over_union` → `None`) leaves the binder as it was.
-                let siblings: Vec<(Symbol, usize)> = c
-                    .path_aliases
-                    .iter()
-                    .filter_map(|(alias, (b, ks))| match ks.as_slice() {
-                        [PathKey::Index(j)] if *b == base && j != k => Some((*alias, *j)),
-                        _ => None,
-                    })
-                    .collect();
-                for (alias, j) in siblings {
-                    if let Some(at) = retained.element_at_over_union(Some(j)) {
-                        c.narrow_chain(alias, at);
-                    }
+        if let [PathKey::Index(k)] = keys.as_slice()
+            && let Some(base_ty) = c.types.get(&base).cloned()
+        {
+            let retained = base_ty.retain_terms(|term| match term.positional_elems() {
+                Some(elems) => {
+                    let at = elems.get(*k).cloned().unwrap_or(Ty::of(Tag::Nil));
+                    !at.is_disjoint(&known)
                 }
-                c.types.insert(base, retained);
+                None => true,
+            });
+            // A binder already holding ANOTHER position of the base — `v` in
+            // `(let ([tag v] r) (if (= tag :ok) … v …))` — was bound before the guard,
+            // from the union over every alternative. The alternatives the guard kept say
+            // what that position holds now, so narrow it to that. Read
+            // only when every kept term answers the position; a term that does not
+            // (`element_at_over_union` → `None`) leaves the binder as it was.
+            let siblings: Vec<(Symbol, usize)> = c
+                .path_aliases
+                .iter()
+                .filter_map(|(alias, (b, ks))| match ks.as_slice() {
+                    [PathKey::Index(j)] if *b == base && j != k => Some((*alias, *j)),
+                    _ => None,
+                })
+                .collect();
+            for (alias, j) in siblings {
+                if let Some(at) = retained.element_at_over_union(Some(j)) {
+                    c.narrow_chain(alias, at);
+                }
             }
+            c.types.insert(base, retained);
         }
         // …and a guard on one FIELD rules out every CLOSED record alternative whose read
         // of that field cannot be what the guard established: under `(if (:ok r) …)` over
@@ -925,30 +924,30 @@ impl Ctx {
         // declare reads `nil` only where no `Lookup` impl can answer the miss, so a
         // `defrecord` value (one carrying `:__id__`) keeps its alternative for an
         // undeclared field; an OPEN shape is kept likewise. An optional field may be absent.
-        if let [PathKey::Field(field)] = keys.as_slice() {
-            if let Some(base_ty) = c.types.get(&base).cloned() {
-                let identity = crate::core::value::intern("__id__");
-                let retained = base_ty.retain_terms(|term| {
-                    if term.record_is_open() != Some(false) {
-                        return true;
-                    }
-                    let Some(fields) = term.record_fields() else {
-                        return true;
-                    };
-                    let read = match fields.get(field) {
-                        Some((ty, true)) => ty.clone(),
-                        Some((ty, false)) => ty.clone().union(Ty::of(Tag::Nil)),
-                        None if fields.contains_key(&identity) => return true,
-                        None => Ty::of(Tag::Nil),
-                    };
-                    !read.is_disjoint(&known)
-                });
-                // Selecting among alternatives only: a guard that rules out EVERY one is
-                // about a branch the shape says cannot run, which is the dead-clause
-                // lint's question, not a narrowing's.
-                if !retained.is_never() {
-                    c.types.insert(base, retained);
+        if let [PathKey::Field(field)] = keys.as_slice()
+            && let Some(base_ty) = c.types.get(&base).cloned()
+        {
+            let identity = crate::core::value::intern("__id__");
+            let retained = base_ty.retain_terms(|term| {
+                if term.record_is_open() != Some(false) {
+                    return true;
                 }
+                let Some(fields) = term.record_fields() else {
+                    return true;
+                };
+                let read = match fields.get(field) {
+                    Some((ty, true)) => ty.clone(),
+                    Some((ty, false)) => ty.clone().union(Ty::of(Tag::Nil)),
+                    None if fields.contains_key(&identity) => return true,
+                    None => Ty::of(Tag::Nil),
+                };
+                !read.is_disjoint(&known)
+            });
+            // Selecting among alternatives only: a guard that rules out EVERY one is
+            // about a branch the shape says cannot run, which is the dead-clause
+            // lint's question, not a narrowing's.
+            if !retained.is_never() {
+                c.types.insert(base, retained);
             }
         }
         c.path_types.insert((base, keys), known);
@@ -1029,12 +1028,12 @@ impl Ctx {
         c.sig_params.retain(|p| *p != sym);
         c.let_fn_sigs.remove(&sym);
         c.derived_locals.remove(&sym);
-        if let Some(hypothesis) = &c.self_demands {
-            if hypothesis.1.iter().any(|(param, _)| *param == sym) {
-                let (name, params) = &**hypothesis;
-                let kept = params.iter().filter(|(param, _)| *param != sym).cloned();
-                c.self_demands = Some(Arc::new((*name, kept.collect())));
-            }
+        if let Some(hypothesis) = &c.self_demands
+            && hypothesis.1.iter().any(|(param, _)| *param == sym)
+        {
+            let (name, params) = &**hypothesis;
+            let kept = params.iter().filter(|(param, _)| *param != sym).cloned();
+            c.self_demands = Some(Arc::new((*name, kept.collect())));
         }
         c.dead_clause_locals.retain(|p| *p != sym);
         if let Some(neighbours) = c.aliases.remove(&sym) {

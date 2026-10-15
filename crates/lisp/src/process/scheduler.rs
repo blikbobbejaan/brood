@@ -824,10 +824,10 @@ impl Process {
         #[cfg(feature = "jit")]
         crate::eval::compile::stamp_stack_limit(&mut self.heap);
         let resume = self.resume.take();
-        if super::scheduler::pool::sched_dbg() {
-            if let Some(r) = &resume {
-                eprintln!("[sched] resume pid={} {}", self.pid, r.dbg_line());
-            }
+        if super::scheduler::pool::sched_dbg()
+            && let Some(r) = &resume
+        {
+            eprintln!("[sched] resume pid={} {}", self.pid, r.dbg_line());
         }
         match self.program.as_mut() {
             // The root program process (ADR-135): drive the top-level forms.
@@ -908,8 +908,8 @@ pub fn self_pid() -> u64 {
 /// caller is about to take the same lock to `send` anyway.
 pub fn self_mailbox_seq() -> u64 {
     let mb = ensure_ctx().mailbox;
-    let seq = crate::core::sync::lock(&mb.state).next_seq;
-    seq
+
+    crate::core::sync::lock(&mb.state).next_seq
 }
 
 /// This process's pid **without** minting a context — `None` if it has none yet.
@@ -1060,11 +1060,11 @@ pub fn free_drained_gen(heap: &Heap) -> bool {
     // validating was the TOCTOU: another process can complete the free, end the drain and
     // arm a new one for the *other* generation in between, leaving this call to free a
     // generation that is neither drained nor dead. See `Heap::free_runtime_gen`.
-    let (epoch, gen) = heap.drain_identity();
+    let (epoch, generation) = heap.drain_identity();
     if !old_gen_drained(heap) {
         return false;
     }
-    heap.free_runtime_gen(gen, epoch)
+    heap.free_runtime_gen(generation, epoch)
 }
 
 /// Are we currently running inside a **green** (spawned) process — as opposed to the

@@ -627,31 +627,34 @@ pub struct GlobalsSnapshot {
 /// enforces it instead of a reviewer.
 pub struct GenPin {
     pub(super) runtime: Arc<RuntimeCode>,
-    pub(super) gen: usize,
+    pub(super) generation: usize,
 }
 
 impl GenPin {
-    pub(super) fn new(runtime: Arc<RuntimeCode>, gen: usize) -> Self {
-        runtime.gen_inflight[gen].fetch_add(1, Ordering::AcqRel);
-        GenPin { runtime, gen }
+    pub(super) fn new(runtime: Arc<RuntimeCode>, generation: usize) -> Self {
+        runtime.gen_inflight[generation].fetch_add(1, Ordering::AcqRel);
+        GenPin {
+            runtime,
+            generation,
+        }
     }
 }
 
 impl Clone for GenPin {
     fn clone(&self) -> Self {
-        GenPin::new(Arc::clone(&self.runtime), self.gen)
+        GenPin::new(Arc::clone(&self.runtime), self.generation)
     }
 }
 
 impl Drop for GenPin {
     fn drop(&mut self) {
-        self.runtime.gen_inflight[self.gen].fetch_sub(1, Ordering::AcqRel);
+        self.runtime.gen_inflight[self.generation].fetch_sub(1, Ordering::AcqRel);
     }
 }
 
 impl std::fmt::Debug for GenPin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "GenPin(gen={})", self.gen)
+        write!(f, "GenPin(gen={})", self.generation)
     }
 }
 

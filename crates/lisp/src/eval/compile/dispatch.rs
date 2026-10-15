@@ -44,57 +44,56 @@ pub(crate) fn exec_call(
     let mut fast: Option<(Arc<ArmHandle>, EnvId, (u32, u32))> = None;
     let cv: Value;
     'resolve: {
-        if site != NO_SITE {
-            if let Node::Global(sym) = callee {
-                if heap.is_global(heap.read_root_env(genv)) {
-                    let argc = args.len() as u32;
-                    if let Some((v, payload)) = heap.vm_call_ic_probe(site, *sym, argc, probe_epoch)
-                    {
-                        crate::perf_bump!(call_ic_hit);
-                        cv = v;
-                        fast = payload;
-                        break 'resolve;
-                    }
-                    crate::perf_bump!(call_ic_miss);
-                    // Miss: resolve (exactly what `exec_value` on the callee
-                    // would do), then install. A *dynamic* symbol is never
-                    // cached — a `binding` re-binds it without bumping the
-                    // epoch, so a cached resolution would bypass it. (A
-                    // later `defdyn` of a cached symbol bumps the epoch, so
-                    // the entry self-invalidates and the re-install refuses.)
-                    let env = heap.read_root_env(genv);
-                    let v = match heap.env_get(env, *sym) {
-                        Some(v) => v,
-                        None => {
-                            // Autoload (ADR-335): the load collects and bumps the epoch,
-                            // so install nothing — the next call fills the IC. Nothing
-                            // else read so far is a heap handle (`args` are still nodes).
-                            cv = crate::eval::derive::global_miss(heap, env, *sym).map_err(tag)?;
-                            break 'resolve;
-                        }
-                    };
-                    if !heap.is_dynamic(*sym) {
-                        let arm = call_site_arm(heap, v, args.len());
-                        fast = arm
-                            .as_ref()
-                            .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
-                        // Mirror vm_call_ic_put's LOCAL-env guard: arg eval below can
-                        // trigger a LOCAL minor collect that moves the env without
-                        // bumping the global epoch, so the epoch check at the fast-path
-                        // use site wouldn't catch a stale LOCAL cenv.  Clear fast now.
-                        // (The bytecode loop has its arguments evaluated already, so it
-                        // needs no such guard.)
-                        if let Some((_, cenv, _)) = &fast {
-                            if *cenv != EnvId::GLOBAL && cenv.region() == value::LOCAL {
-                                fast = None;
-                            }
-                        }
-                        heap.vm_call_ic_install(site, *sym, argc, probe_epoch, v, arm);
-                    }
-                    cv = v;
+        if site != NO_SITE
+            && let Node::Global(sym) = callee
+            && heap.is_global(heap.read_root_env(genv))
+        {
+            let argc = args.len() as u32;
+            if let Some((v, payload)) = heap.vm_call_ic_probe(site, *sym, argc, probe_epoch) {
+                crate::perf_bump!(call_ic_hit);
+                cv = v;
+                fast = payload;
+                break 'resolve;
+            }
+            crate::perf_bump!(call_ic_miss);
+            // Miss: resolve (exactly what `exec_value` on the callee
+            // would do), then install. A *dynamic* symbol is never
+            // cached — a `binding` re-binds it without bumping the
+            // epoch, so a cached resolution would bypass it. (A
+            // later `defdyn` of a cached symbol bumps the epoch, so
+            // the entry self-invalidates and the re-install refuses.)
+            let env = heap.read_root_env(genv);
+            let v = match heap.env_get(env, *sym) {
+                Some(v) => v,
+                None => {
+                    // Autoload (ADR-335): the load collects and bumps the epoch,
+                    // so install nothing — the next call fills the IC. Nothing
+                    // else read so far is a heap handle (`args` are still nodes).
+                    cv = crate::eval::derive::global_miss(heap, env, *sym).map_err(tag)?;
                     break 'resolve;
                 }
+            };
+            if !heap.is_dynamic(*sym) {
+                let arm = call_site_arm(heap, v, args.len());
+                fast = arm
+                    .as_ref()
+                    .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
+                // Mirror vm_call_ic_put's LOCAL-env guard: arg eval below can
+                // trigger a LOCAL minor collect that moves the env without
+                // bumping the global epoch, so the epoch check at the fast-path
+                // use site wouldn't catch a stale LOCAL cenv.  Clear fast now.
+                // (The bytecode loop has its arguments evaluated already, so it
+                // needs no such guard.)
+                if let Some((_, cenv, _)) = &fast
+                    && *cenv != EnvId::GLOBAL
+                    && cenv.region() == value::LOCAL
+                {
+                    fast = None;
+                }
+                heap.vm_call_ic_install(site, *sym, argc, probe_epoch, v, arm);
             }
+            cv = v;
+            break 'resolve;
         }
         // No IC for this site/shape: evaluate the callee node as before.
         cv = exec_value(heap, callee, frame_base, genv).map_err(tag)?;
@@ -129,21 +128,21 @@ pub(crate) fn exec_call(
     // but NOT the un-registered `fast` arm's node tree or its env
     // handle) — either bumps the epoch, so the stale fast path is
     // dropped and the rooted callee takes the generic path below.
-    if let Some((arm, cenv, bases)) = fast {
-        if heap.global_epoch() == probe_epoch {
-            let result = if tail {
-                Ok(Step::Tail {
-                    compiled: arm,
-                    args: argv,
-                    genv: cenv,
-                    bases,
-                })
-            } else {
-                vm_apply(heap, arm, &argv, cenv).map(Step::Done)
-            };
-            heap.truncate_roots(save);
-            return result.map_err(tag);
-        }
+    if let Some((arm, cenv, bases)) = fast
+        && heap.global_epoch() == probe_epoch
+    {
+        let result = if tail {
+            Ok(Step::Tail {
+                compiled: arm,
+                args: argv,
+                genv: cenv,
+                bases,
+            })
+        } else {
+            vm_apply(heap, arm, &argv, cenv).map(Step::Done)
+        };
+        heap.truncate_roots(save);
+        return result.map_err(tag);
     }
     // The *current* env (read fresh post-collection) is what a native callee
     // runs in; a VM-eligible closure callee instead runs in its own captured
@@ -240,39 +239,40 @@ pub(crate) fn dispatch(
         // Mirrors the TW's inline unfolding (eval.rs `while let Native … "apply"`).
         // After unfolding, `continue 'apply` re-runs passthrough on the real callee.
         // If the callee is not `apply`, or arity < 2, break and dispatch normally.
-        if let ValueRef::Native(id) = cur_callee.unpack() {
-            if heap.native(id).name == "apply" && cur_argv.len() >= 2 {
-                let list = cur_argv
-                    .pop()
-                    .expect("cur_argv non-empty (len >= 2, checked)");
-                let mut real = cur_argv.remove(0);
-                // A lazy seq-view as the spliced arg list must realise first —
-                // `seq_items` can't run its transducer. The realise re-enters `eval`
-                // (a GC safepoint that relocates LOCAL handles), so the callee `real`
-                // and the remaining leading args must be rooted across it and re-read
-                // after — never trusted as pre-safepoint copies (ADR-114 re-read
-                // discipline; mirrors `realize_seqviews`/`prim_eq`). Without this,
-                // `(apply <local-closure> … <seq-view>)` derefs a stale closure/arg
-                // handle → use-after-GC.
-                let list = if matches!(list.unpack(), ValueRef::SeqView(_)) {
-                    heap.root_scope(|heap| -> Result<Value, LispError> {
-                        let real_r = heap.root(real);
-                        let arg_roots: SmallVec<[_; 4]> =
-                            cur_argv.iter().map(|&v| heap.root(v)).collect();
-                        let realized = crate::builtins::realize_seqview(heap, genv, list)?;
-                        real = heap.read_root(real_r);
-                        for (slot, &r) in cur_argv.iter_mut().zip(arg_roots.iter()) {
-                            *slot = heap.read_root(r);
-                        }
-                        Ok(realized)
-                    })?
-                } else {
-                    list
-                };
-                cur_argv.extend(heap.seq_items(list)?);
-                cur_callee = real;
-                continue 'apply;
-            }
+        if let ValueRef::Native(id) = cur_callee.unpack()
+            && heap.native(id).name == "apply"
+            && cur_argv.len() >= 2
+        {
+            let list = cur_argv
+                .pop()
+                .expect("cur_argv non-empty (len >= 2, checked)");
+            let mut real = cur_argv.remove(0);
+            // A lazy seq-view as the spliced arg list must realise first —
+            // `seq_items` can't run its transducer. The realise re-enters `eval`
+            // (a GC safepoint that relocates LOCAL handles), so the callee `real`
+            // and the remaining leading args must be rooted across it and re-read
+            // after — never trusted as pre-safepoint copies (ADR-114 re-read
+            // discipline; mirrors `realize_seqviews`/`prim_eq`). Without this,
+            // `(apply <local-closure> … <seq-view>)` derefs a stale closure/arg
+            // handle → use-after-GC.
+            let list = if matches!(list.unpack(), ValueRef::SeqView(_)) {
+                heap.root_scope(|heap| -> Result<Value, LispError> {
+                    let real_r = heap.root(real);
+                    let arg_roots: SmallVec<[_; 4]> =
+                        cur_argv.iter().map(|&v| heap.root(v)).collect();
+                    let realized = crate::builtins::realize_seqview(heap, genv, list)?;
+                    real = heap.read_root(real_r);
+                    for (slot, &r) in cur_argv.iter_mut().zip(arg_roots.iter()) {
+                        *slot = heap.read_root(r);
+                    }
+                    Ok(realized)
+                })?
+            } else {
+                list
+            };
+            cur_argv.extend(heap.seq_items(list)?);
+            cur_callee = real;
+            continue 'apply;
         }
         break;
     }
@@ -394,20 +394,19 @@ pub(crate) fn dispatch(
                             // resume arm is always `arm` itself here.
                             // Deopt AND preempt, consistent with the other three consumers —
                             // see `jit_run_fast_link` (KI-18).
-                            if matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT)) {
-                                if let Some((resume, rip, depth)) =
+                            if matches!(jit_outcome, Some(outcome::DEOPT | outcome::PREEMPT))
+                                && let Some((resume, rip, depth)) =
                                     jit_ckpt_resume(heap, arm.arc(), base, arm.nslots)
-                                {
-                                    heap.truncate_env_roots(env_base);
-                                    return Ok(Step::Done(vm_resume_deopt(
-                                        heap,
-                                        resume,
-                                        base,
-                                        callee_env2,
-                                        rip,
-                                        depth,
-                                    )?));
-                                }
+                            {
+                                heap.truncate_env_roots(env_base);
+                                return Ok(Step::Done(vm_resume_deopt(
+                                    heap,
+                                    resume,
+                                    base,
+                                    callee_env2,
+                                    rip,
+                                    depth,
+                                )?));
                             }
                             let fresh_argv = fresh_frame_args(heap, &arm, base, cur_argv);
                             heap.truncate_roots(base);

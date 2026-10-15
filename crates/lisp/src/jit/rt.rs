@@ -48,37 +48,39 @@ use crate::core::heap::{FastLink, Heap};
 /// # Safety
 /// `heap` is a live heap; the limit peeks read it only. `ctx` is the running activation's
 /// context, which its caller keeps alive across the call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_tick_n(
     heap: *mut Heap,
     n: i64,
     ctx: *const crate::jit::JitCallCtx,
 ) -> u8 {
-    match crate::core::alloc::soft_limit_state() {
-        crate::core::alloc::SoftLimit::Clear => {}
-        // A native loop near the limit measures itself like an interpreted one, or the
-        // choice of whom to stop at the crossing never sees it (KI-229).
-        crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(&*heap),
-        crate::core::alloc::SoftLimit::Over(_) => return 2,
-    }
-    if (*heap).proc_limit_pending() || crate::process::current_mailbox_overflow_pending() {
-        return 2;
-    }
-    use crate::process::NativePoll;
-    match crate::process::native_poll(n as u32, (*ctx).unwind != 0) {
-        NativePoll::Run => 0,
-        NativePoll::Preempt => 1,
-        NativePoll::Leave => 2,
-        NativePoll::RunOnFreshQuantum => {
-            // The sampling profiler records at interpreter frame boundaries, and this loop
-            // will not reach one until it finishes. Sample it here instead, once per
-            // profiler tick, by the running arm's name.
-            if crate::diagnostics::profile::armed() {
-                sample_native_activation(&*ctx);
+    unsafe {
+        match crate::core::alloc::soft_limit_state() {
+            crate::core::alloc::SoftLimit::Clear => {}
+            // A native loop near the limit measures itself like an interpreted one, or the
+            // choice of whom to stop at the crossing never sees it (KI-229).
+            crate::core::alloc::SoftLimit::Near => crate::process::near_soft_limit(&*heap),
+            crate::core::alloc::SoftLimit::Over(_) => return 2,
+        }
+        if (*heap).proc_limit_pending() || crate::process::current_mailbox_overflow_pending() {
+            return 2;
+        }
+        use crate::process::NativePoll;
+        match crate::process::native_poll(n as u32, (*ctx).unwind != 0) {
+            NativePoll::Run => 0,
+            NativePoll::Preempt => 1,
+            NativePoll::Leave => 2,
+            NativePoll::RunOnFreshQuantum => {
+                // The sampling profiler records at interpreter frame boundaries, and this loop
+                // will not reach one until it finishes. Sample it here instead, once per
+                // profiler tick, by the running arm's name.
+                if crate::diagnostics::profile::armed() {
+                    sample_native_activation(&*ctx);
+                }
+                // The once-per-quantum checks a native loop does not reach otherwise.
+                crate::core::alloc::refresh_container_limits();
+                0
             }
-            // The once-per-quantum checks a native loop does not reach otherwise.
-            crate::core::alloc::refresh_container_limits();
-            0
         }
     }
 }
@@ -107,15 +109,17 @@ fn sample_native_activation(ctx: &crate::jit::JitCallCtx) {
 /// # Safety
 /// `heap` must be the live, pinned context pointer for the current JIT'd call, with no
 /// live `Value`s outside `Heap::roots` (the no-stack-map invariant, ADR-101 §6.2).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_gc_safepoint(heap: *mut Heap) {
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::jit_callback_trace() {
-        eprintln!("[jit-cb] brood_rt_gc_safepoint()");
-    }
-    let h = &mut *heap;
-    if !crate::process::macro_block_active() && h.gc_due() {
-        h.collect(&mut [], &mut []);
+    unsafe {
+        #[cfg(debug_assertions)]
+        if crate::diagnostics::debug_flags::jit_callback_trace() {
+            eprintln!("[jit-cb] brood_rt_gc_safepoint()");
+        }
+        let h = &mut *heap;
+        if !crate::process::macro_block_active() && h.gc_due() {
+            h.collect(&mut [], &mut []);
+        }
     }
 }
 
@@ -131,7 +135,7 @@ pub unsafe extern "C" fn brood_rt_gc_safepoint(heap: *mut Heap) {
 // can't go stale mid-`cons`; no `roots` is touched, so `roots_base` stays valid.
 #[inline]
 unsafe fn words_to_val(w0: i64, w1: i64, w2: i64) -> crate::core::value::Value {
-    crate::core::value::Value::from_raw_words([w0, w1, w2])
+    unsafe { crate::core::value::Value::from_raw_words([w0, w1, w2]) }
 }
 
 /// The status a value-producing callback returns to native code — one protocol for all of
@@ -159,14 +163,16 @@ unsafe fn answer_or_park(
     out: *mut crate::core::value::Value,
     result: crate::error::LispResult,
 ) -> i64 {
-    match result {
-        Ok(value) => {
-            *out = value;
-            status::DONE
-        }
-        Err(error) => {
-            heap.jit_pending_error = Some(error);
-            status::ERROR
+    unsafe {
+        match result {
+            Ok(value) => {
+                *out = value;
+                status::DONE
+            }
+            Err(error) => {
+                heap.jit_pending_error = Some(error);
+                status::ERROR
+            }
         }
     }
 }
@@ -183,10 +189,12 @@ unsafe fn unary_fallback(
     words: [i64; 3],
     without_eval: fn(&mut Heap, crate::core::value::Value) -> Option<crate::error::LispResult>,
 ) -> i64 {
-    let h = &mut *heap;
-    match without_eval(h, words_to_val(words[0], words[1], words[2])) {
-        None => status::DEOPT,
-        Some(result) => answer_or_park(h, out, result),
+    unsafe {
+        let h = &mut *heap;
+        match without_eval(h, words_to_val(words[0], words[1], words[2])) {
+            None => status::DEOPT,
+            Some(result) => answer_or_park(h, out, result),
+        }
     }
 }
 
@@ -194,7 +202,7 @@ unsafe fn unary_fallback(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triples are bytes the JIT read out of real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_cons(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -205,10 +213,12 @@ pub unsafe extern "C" fn brood_rt_cons(
     d1: i64,
     d2: i64,
 ) {
-    let h = &mut *heap;
-    let car = words_to_val(c0, c1, c2);
-    let cdr = words_to_val(d0, d1, d2);
-    *out = h.alloc_pair(car, cdr);
+    unsafe {
+        let h = &mut *heap;
+        let car = words_to_val(c0, c1, c2);
+        let cdr = words_to_val(d0, d1, d2);
+        *out = h.alloc_pair(car, cdr);
+    }
 }
 
 /// Allocate a 2-element vector and hand back a pointer to its element storage, for the
@@ -222,14 +232,16 @@ pub unsafe extern "C" fn brood_rt_cons(
 /// # Safety
 /// `heap` live; `out` writable. The caller must write both elements before anything can
 /// allocate or collect — see [`Heap::alloc_vector2_room`], whose doc carries the invariant.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vec2_room(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
 ) -> *mut crate::core::value::Value {
-    let (handle, items) = (*heap).alloc_vector2_room();
-    *out = handle;
-    items
+    unsafe {
+        let (handle, items) = (*heap).alloc_vector2_room();
+        *out = handle;
+        items
+    }
 }
 
 /// Build an `n`-element vector from `n` `Value`s staged contiguously at `elems`
@@ -245,20 +257,22 @@ pub unsafe extern "C" fn brood_rt_vec2_room(
 ///
 /// # Safety
 /// `heap`/`out` live; `elems` points at `n` consecutive, fully-initialised `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_make_vector_n(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
     elems: *const crate::core::value::Value,
     n: i64,
 ) {
-    let h = &mut *heap;
-    let n = n as usize;
-    let mut items = Vec::with_capacity(n);
-    for i in 0..n {
-        items.push(std::ptr::read(elems.add(i)));
+    unsafe {
+        let h = &mut *heap;
+        let n = n as usize;
+        let mut items = Vec::with_capacity(n);
+        for i in 0..n {
+            items.push(std::ptr::read(elems.add(i)));
+        }
+        *out = h.alloc_vector(items);
     }
-    *out = h.alloc_vector(items);
 }
 
 /// Build a map from `npairs` key/value `Value` pairs staged contiguously at `elems`
@@ -270,23 +284,25 @@ pub unsafe extern "C" fn brood_rt_make_vector_n(
 ///
 /// # Safety
 /// `heap`/`out` live; `elems` points at `2·npairs` consecutive, fully-initialised `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_make_map_n(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
     elems: *const crate::core::value::Value,
     npairs: i64,
 ) {
-    let h = &mut *heap;
-    let npairs = npairs as usize;
-    let mut pairs = Vec::with_capacity(npairs);
-    for i in 0..npairs {
-        pairs.push((
-            std::ptr::read(elems.add(2 * i)),
-            std::ptr::read(elems.add(2 * i + 1)),
-        ));
+    unsafe {
+        let h = &mut *heap;
+        let npairs = npairs as usize;
+        let mut pairs = Vec::with_capacity(npairs);
+        for i in 0..npairs {
+            pairs.push((
+                std::ptr::read(elems.add(2 * i)),
+                std::ptr::read(elems.add(2 * i + 1)),
+            ));
+        }
+        *out = h.map_from_pairs(pairs);
     }
-    *out = h.map_from_pairs(pairs);
 }
 
 /// `first` of a `Value` (by word-triple), writing its car to `*out`. The JIT **tag-checks
@@ -295,7 +311,7 @@ pub unsafe extern "C" fn brood_rt_make_map_n(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triple is a real `Value::Pair`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_car(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -303,11 +319,13 @@ pub unsafe extern "C" fn brood_rt_car(
     w1: i64,
     w2: i64,
 ) {
-    let h = &mut *heap;
-    *out = match words_to_val(w0, w1, w2) {
-        crate::core::value::Value::Pair(id) => h.pair(id).0,
-        _ => crate::core::value::Value::Nil,
-    };
+    unsafe {
+        let h = &mut *heap;
+        *out = match words_to_val(w0, w1, w2) {
+            crate::core::value::Value::Pair(id) => h.pair(id).0,
+            _ => crate::core::value::Value::Nil,
+        };
+    }
 }
 
 /// `first` of a non-pair, for the JIT's inline `first` whose tag check failed — the
@@ -319,7 +337,7 @@ pub unsafe extern "C" fn brood_rt_car(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triple is bytes the JIT read out of a real `Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_first(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -327,14 +345,14 @@ pub unsafe extern "C" fn brood_rt_first(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    unary_fallback(heap, out, [w0, w1, w2], crate::builtins::first_without_eval)
+    unsafe { unary_fallback(heap, out, [w0, w1, w2], crate::builtins::first_without_eval) }
 }
 
 /// `rest` of a non-pair — see [`brood_rt_first`].
 ///
 /// # Safety
 /// As [`brood_rt_first`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_rest(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -342,7 +360,7 @@ pub unsafe extern "C" fn brood_rt_rest(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    unary_fallback(heap, out, [w0, w1, w2], crate::builtins::rest_without_eval)
+    unsafe { unary_fallback(heap, out, [w0, w1, w2], crate::builtins::rest_without_eval) }
 }
 
 /// `empty?` of a non-nil, non-pair — the inline `empty?`'s tag-check miss, as a
@@ -354,7 +372,7 @@ pub unsafe extern "C" fn brood_rt_rest(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triple is bytes the JIT read out of a real `Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_is_empty(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -362,12 +380,14 @@ pub unsafe extern "C" fn brood_rt_is_empty(
     w1: i64,
     w2: i64,
 ) -> i64 {
-    unary_fallback(
-        heap,
-        out,
-        [w0, w1, w2],
-        crate::builtins::is_empty_without_eval,
-    )
+    unsafe {
+        unary_fallback(
+            heap,
+            out,
+            [w0, w1, w2],
+            crate::builtins::is_empty_without_eval,
+        )
+    }
 }
 
 /// Byte pointer to the LOCAL nursery pair slab (`Vec<(Value, Value)>`). Called once at JIT
@@ -377,9 +397,9 @@ pub unsafe extern "C" fn brood_rt_is_empty(
 ///
 /// # Safety
 /// `heap` must be the live context pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_pair_nursery_base(heap: *mut Heap) -> *const u8 {
-    (*heap).local_pair_nursery_base()
+    unsafe { (*heap).local_pair_nursery_base() }
 }
 
 /// Byte pointer to the LOCAL old-generation pair slab. Companion to
@@ -387,9 +407,9 @@ pub unsafe extern "C" fn brood_rt_pair_nursery_base(heap: *mut Heap) -> *const u
 ///
 /// # Safety
 /// `heap` must be the live context pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_pair_old_base(heap: *mut Heap) -> *const u8 {
-    (*heap).local_pair_old_base()
+    unsafe { (*heap).local_pair_old_base() }
 }
 
 /// Byte pointer to the LOCAL nursery **vector** slab, so a JIT arm can inline a
@@ -398,9 +418,9 @@ pub unsafe extern "C" fn brood_rt_pair_old_base(heap: *mut Heap) -> *const u8 {
 ///
 /// # Safety
 /// `heap` must be the live context pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vec_nursery_base(heap: *mut Heap) -> *const u8 {
-    (*heap).local_vec_nursery_base()
+    unsafe { (*heap).local_vec_nursery_base() }
 }
 
 /// Byte pointer to the LOCAL old-generation vector slab. Companion to
@@ -408,16 +428,16 @@ pub unsafe extern "C" fn brood_rt_vec_nursery_base(heap: *mut Heap) -> *const u8
 ///
 /// # Safety
 /// `heap` must be the live context pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vec_old_base(heap: *mut Heap) -> *const u8 {
-    (*heap).local_vec_old_base()
+    unsafe { (*heap).local_vec_old_base() }
 }
 
 /// `rest` counterpart of [`brood_rt_car`] — writes the pair's cdr to `*out`.
 ///
 /// # Safety
 /// `heap`/`out` live; the word triple is a real `Value::Pair`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_cdr(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -425,11 +445,13 @@ pub unsafe extern "C" fn brood_rt_cdr(
     w1: i64,
     w2: i64,
 ) {
-    let h = &mut *heap;
-    *out = match words_to_val(w0, w1, w2) {
-        crate::core::value::Value::Pair(id) => h.pair(id).1,
-        _ => crate::core::value::Value::Nil,
-    };
+    unsafe {
+        let h = &mut *heap;
+        *out = match words_to_val(w0, w1, w2) {
+            crate::core::value::Value::Pair(id) => h.pair(id).1,
+            _ => crate::core::value::Value::Nil,
+        };
+    }
 }
 
 /// `vector-ref` / `nth` of a dense vector by an `Int` index, writing the element to
@@ -441,7 +463,7 @@ pub unsafe extern "C" fn brood_rt_cdr(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triples are real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vector_ref(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -452,18 +474,20 @@ pub unsafe extern "C" fn brood_rt_vector_ref(
     i1: i64,
     i2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let (vid, idx) = match (words_to_val(v0, v1, v2), words_to_val(i0, i1, i2)) {
-        (Value::Vector(id), Value::Int(n)) => (id, n),
-        _ => return 1,
-    };
-    let v = h.vector(vid);
-    if idx < 0 || idx as usize >= v.len() {
-        return 1;
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let (vid, idx) = match (words_to_val(v0, v1, v2), words_to_val(i0, i1, i2)) {
+            (Value::Vector(id), Value::Int(n)) => (id, n),
+            _ => return 1,
+        };
+        let v = h.vector(vid);
+        if idx < 0 || idx as usize >= v.len() {
+            return 1;
+        }
+        *out = v[idx as usize];
+        0
     }
-    *out = v[idx as usize];
-    0
 }
 
 /// `(%vector-length v)` from JIT'd code (the `PrimOp1::VectorLen` lowering): the
@@ -473,12 +497,14 @@ pub unsafe extern "C" fn brood_rt_vector_ref(
 ///
 /// # Safety
 /// `heap` live; the word triple is a real `Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vector_len(heap: *mut Heap, v0: i64, v1: i64, v2: i64) -> i64 {
-    use crate::core::value::Value;
-    match words_to_val(v0, v1, v2) {
-        Value::Vector(id) => (*heap).vector(id).len() as i64,
-        _ => -1,
+    unsafe {
+        use crate::core::value::Value;
+        match words_to_val(v0, v1, v2) {
+            Value::Vector(id) => (*heap).vector(id).len() as i64,
+            _ => -1,
+        }
     }
 }
 
@@ -490,7 +516,7 @@ pub unsafe extern "C" fn brood_rt_vector_len(heap: *mut Heap, v0: i64, v1: i64, 
 ///
 /// # Safety
 /// `heap` must be the live context pointer and `out` a writable `*mut Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_table_has(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -501,15 +527,17 @@ pub unsafe extern "C" fn brood_rt_table_has(
     k1: i64,
     k2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Table(id) = words_to_val(t0, t1, t2) else {
-        return 1;
-    };
-    let key = words_to_val(k0, k1, k2);
-    let result = crate::core::table::check_key("table/has?", key)
-        .and_then(|()| crate::core::table::has(h, id, key).map(Value::Bool));
-    answer_or_park(h, out, result)
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Table(id) = words_to_val(t0, t1, t2) else {
+            return 1;
+        };
+        let key = words_to_val(k0, k1, k2);
+        let result = crate::core::table::check_key("table/has?", key)
+            .and_then(|()| crate::core::table::has(h, id, key).map(Value::Bool));
+        answer_or_park(h, out, result)
+    }
 }
 
 /// 2-arg `(%table-get t k)` from JIT'd code (the `PrimOp::TableGet` lowering) — nil
@@ -521,7 +549,7 @@ pub unsafe extern "C" fn brood_rt_table_has(
 ///
 /// # Safety
 /// `heap` must be the live context pointer and `out` a writable `*mut Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_table_get2(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -532,15 +560,17 @@ pub unsafe extern "C" fn brood_rt_table_get2(
     k1: i64,
     k2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Table(id) = words_to_val(t0, t1, t2) else {
-        return 1;
-    };
-    let key = words_to_val(k0, k1, k2);
-    let result = crate::core::table::check_key("table/get", key)
-        .and_then(|()| crate::core::table::get(h, id, key, Value::Nil));
-    answer_or_park(h, out, result)
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Table(id) = words_to_val(t0, t1, t2) else {
+            return 1;
+        };
+        let key = words_to_val(k0, k1, k2);
+        let result = crate::core::table::check_key("table/get", key)
+            .and_then(|()| crate::core::table::get(h, id, key, Value::Nil));
+        answer_or_park(h, out, result)
+    }
 }
 
 /// `(%table-put t k v)` from JIT'd code (the `PrimOp3::TablePut` lowering). Same
@@ -551,7 +581,7 @@ pub unsafe extern "C" fn brood_rt_table_get2(
 ///
 /// # Safety
 /// `heap` must be the live context pointer and `out` a writable `*mut Value`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_table_put(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -565,16 +595,18 @@ pub unsafe extern "C" fn brood_rt_table_put(
     v1: i64,
     v2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Table(id) = words_to_val(t0, t1, t2) else {
-        return 1;
-    };
-    let key = words_to_val(k0, k1, k2);
-    let val = words_to_val(v0, v1, v2);
-    let result = crate::core::table::check_key("table/put", key)
-        .and_then(|()| crate::core::table::put(h, id, key, val));
-    answer_or_park(h, out, result)
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Table(id) = words_to_val(t0, t1, t2) else {
+            return 1;
+        };
+        let key = words_to_val(k0, k1, k2);
+        let val = words_to_val(v0, v1, v2);
+        let result = crate::core::table::check_key("table/put", key)
+            .and_then(|()| crate::core::table::put(h, id, key, val));
+        answer_or_park(h, out, result)
+    }
 }
 
 /// Loop-invariant-hoist support for the JIT (matmul LICM): resolve a vector value's
@@ -595,7 +627,7 @@ pub unsafe extern "C" fn brood_rt_table_put(
 /// # Safety
 /// `heap` must be the live context pointer; `out_len` a writable `*mut i64`; the word
 /// triple is bytes the JIT read out of a real `Value` (an invariant frame slot).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_vector_base(
     heap: *mut Heap,
     w0: i64,
@@ -603,17 +635,19 @@ pub unsafe extern "C" fn brood_rt_vector_base(
     w2: i64,
     out_len: *mut i64,
 ) -> *const u8 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    match words_to_val(w0, w1, w2) {
-        Value::Vector(id) => {
-            let v = h.vector(id);
-            *out_len = v.len() as i64;
-            v.as_ptr() as *const u8
-        }
-        _ => {
-            *out_len = 0;
-            std::ptr::null()
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        match words_to_val(w0, w1, w2) {
+            Value::Vector(id) => {
+                let v = h.vector(id);
+                *out_len = v.len() as i64;
+                v.as_ptr() as *const u8
+            }
+            _ => {
+                *out_len = 0;
+                std::ptr::null()
+            }
         }
     }
 }
@@ -636,15 +670,17 @@ pub unsafe extern "C" fn brood_rt_table_dense_base(
     w2: i64,
     out_flag: *mut i64,
 ) -> *const u8 {
-    use crate::core::value::Value;
-    if let Value::Table(id) = words_to_val(w0, w1, w2) {
-        if let Some((slots, flag)) = crate::core::table::jit_dense_base(id) {
+    unsafe {
+        use crate::core::value::Value;
+        if let Value::Table(id) = words_to_val(w0, w1, w2)
+            && let Some((slots, flag)) = crate::core::table::jit_dense_base(id)
+        {
             *out_flag = flag as i64;
             return slots as *const u8;
         }
+        *out_flag = 0;
+        std::ptr::null()
     }
-    *out_flag = 0;
-    std::ptr::null()
 }
 
 /// `(get m k default)` on a CHAMP map — the native half of `PrimOp3::MapGet3` (ADR-368).
@@ -654,7 +690,7 @@ pub unsafe extern "C" fn brood_rt_table_dense_base(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triples are bytes the JIT read out of real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_map_get3(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -668,17 +704,19 @@ pub unsafe extern "C" fn brood_rt_map_get3(
     d1: i64,
     d2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Map(id) = words_to_val(m0, m1, m2) else {
-        return 1;
-    };
-    match h.map_get3_inline(id, words_to_val(k0, k1, k2), words_to_val(d0, d1, d2)) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Map(id) = words_to_val(m0, m1, m2) else {
+            return 1;
+        };
+        match h.map_get3_inline(id, words_to_val(k0, k1, k2), words_to_val(d0, d1, d2)) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
         }
-        None => 1,
     }
 }
 
@@ -691,7 +729,7 @@ pub unsafe extern "C" fn brood_rt_map_get3(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triples are bytes the JIT read out of real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_map_assoc(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -705,13 +743,15 @@ pub unsafe extern "C" fn brood_rt_map_assoc(
     v1: i64,
     v2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Map(id) = words_to_val(m0, m1, m2) else {
-        return 1;
-    };
-    *out = h.map_assoc(id, words_to_val(k0, k1, k2), words_to_val(v0, v1, v2));
-    0
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Map(id) = words_to_val(m0, m1, m2) else {
+            return 1;
+        };
+        *out = h.map_assoc(id, words_to_val(k0, k1, k2), words_to_val(v0, v1, v2));
+        0
+    }
 }
 
 /// `(get m k)` on a CHAMP map — the native half of [`PrimOp::MapGet`].
@@ -726,7 +766,7 @@ pub unsafe extern "C" fn brood_rt_map_assoc(
 ///
 /// # Safety
 /// `heap`/`out` live; the word triples are bytes the JIT read out of real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_map_get(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -737,17 +777,19 @@ pub unsafe extern "C" fn brood_rt_map_get(
     k1: i64,
     k2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &mut *heap;
-    let Value::Map(id) = words_to_val(m0, m1, m2) else {
-        return 1;
-    };
-    match h.map_get_inline(id, words_to_val(k0, k1, k2)) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        use crate::core::value::Value;
+        let h = &mut *heap;
+        let Value::Map(id) = words_to_val(m0, m1, m2) else {
+            return 1;
+        };
+        match h.map_get_inline(id, words_to_val(k0, k1, k2)) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
         }
-        None => 1,
     }
 }
 
@@ -763,7 +805,7 @@ pub unsafe extern "C" fn brood_rt_map_get(
 ///
 /// # Safety
 /// `heap` lives; the word triples are bytes the JIT read out of real `Value`s.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_equal(
     heap: *mut Heap,
     a0: i64,
@@ -773,14 +815,16 @@ pub unsafe extern "C" fn brood_rt_equal(
     b1: i64,
     b2: i64,
 ) -> i64 {
-    use crate::core::value::Value;
-    let h = &*heap;
-    let a = words_to_val(a0, a1, a2);
-    let b = words_to_val(b0, b1, b2);
-    if matches!(a, Value::SeqView(_)) || matches!(b, Value::SeqView(_)) {
-        return 2;
+    unsafe {
+        use crate::core::value::Value;
+        let h = &*heap;
+        let a = words_to_val(a0, a1, a2);
+        let b = words_to_val(b0, b1, b2);
+        if matches!(a, Value::SeqView(_)) || matches!(b, Value::SeqView(_)) {
+            return 2;
+        }
+        h.equal(a, b) as i64
     }
-    h.equal(a, b) as i64
 }
 
 /// Address of the global-rebind epoch counter ([`Heap::global_epoch`]), so JIT'd code reads
@@ -791,9 +835,9 @@ pub unsafe extern "C" fn brood_rt_equal(
 ///
 /// # Safety
 /// `heap` must be live; the returned pointer is valid for the process lifetime.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_global_epoch_ptr(heap: *mut Heap) -> *const u64 {
-    (*heap).global_epoch_ptr()
+    unsafe { (*heap).global_epoch_ptr() }
 }
 
 /// Address of the unboxed-`i64` fast path's overflow sentinel ([`Heap::jit_i64_overflow`]),
@@ -805,9 +849,9 @@ pub unsafe extern "C" fn brood_rt_global_epoch_ptr(heap: *mut Heap) -> *const u6
 ///
 /// # Safety
 /// `heap` must be live; the returned pointer is valid for the arm's duration.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_i64_overflow_ptr(heap: *mut Heap) -> *mut u8 {
-    &mut (*heap).jit_i64_overflow as *mut bool as *mut u8
+    unsafe { &mut (*heap).jit_i64_overflow as *mut bool as *mut u8 }
 }
 
 /// Reserve `n` argument slots at the top of `roots` and hand back a pointer to them, for the
@@ -818,12 +862,12 @@ pub unsafe extern "C" fn brood_rt_i64_overflow_ptr(heap: *mut Heap) -> *mut u8 {
 /// `heap` live. The caller must store `n` valid `Value`s into the returned slots **before
 /// anything can allocate or collect** — see [`Heap::push_roots_room`], whose doc carries the
 /// full invariant.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_push_room(
     heap: *mut Heap,
     n: i64,
 ) -> *mut crate::core::value::Value {
-    (*heap).push_roots_room(n as usize)
+    unsafe { (*heap).push_roots_room(n as usize) }
 }
 
 /// An arm's error path, leaving while a call is in flight: `packed` is `(resume ip << 16) |
@@ -834,16 +878,18 @@ pub unsafe extern "C" fn brood_rt_push_room(
 /// # Safety
 /// `heap` live. On a non-null return the caller must store `depth` valid `Value`s into the
 /// room before anything can allocate or collect — as for [`brood_rt_push_room`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_in_call_journal(
     heap: *mut Heap,
     packed: i64,
 ) -> *mut crate::core::value::Value {
-    crate::eval::compile::begin_in_call_journal(
-        &mut *heap,
-        (packed >> 16) as usize,
-        (packed & 0xFFFF) as usize,
-    )
+    unsafe {
+        crate::eval::compile::begin_in_call_journal(
+            &mut *heap,
+            (packed >> 16) as usize,
+            (packed & 0xFFFF) as usize,
+        )
+    }
 }
 
 /// Direct builtin call from the IR fast-link path (the native flat cell): `func`
@@ -864,7 +910,7 @@ pub unsafe extern "C" fn brood_rt_in_call_journal(
 /// path anything hot takes.
 const INLINE_ARGV: usize = 6;
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_call_native_fl(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -873,67 +919,69 @@ pub unsafe extern "C" fn brood_rt_call_native_fl(
     argc: u32,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1, the hottest callback (every builtin call from native code): the env the
-    // builtin receives is READ from the activation context, not stored into the heap; only
-    // the two fields a builtin that re-enters or parks would read from the heap — the
-    // depth KI-11 bounds and the gateway token a dirty park records — are asserted.
-    crate::jit::JitCallCtx::assert_depth_gateway(ctx, &mut *heap);
-    let h = &mut *heap;
-    let f: crate::core::value::NativeFnPtr = std::mem::transmute(func as usize);
-    // COPY, don't borrow: `args` points into `roots` (the arm stages in place — see
-    // `brood_rt_push_room`), and a native is free to push roots, which reallocates the
-    // buffer and would dangle a borrowed slice mid-call ("a native receives unrooted
-    // copies").
-    //
-    // **Copied with a `match` on the arity, not `SmallVec::from(slice)`.** That goes through
-    // `copy_from_slice` → libc `memcpy`, and at an arity's worth of bytes (24–72) the
-    // size-class dispatch costs far more than the move (a double-digit regression on
-    // builtin-heavy code).
-    let n = argc as usize;
-    let mut buf = [crate::core::value::Value::Nil; INLINE_ARGV];
-    let spill;
-    let slice: &[crate::core::value::Value] = if n <= INLINE_ARGV {
-        match n {
-            0 => {}
-            1 => buf[0] = *args,
-            2 => {
-                buf[0] = *args;
-                buf[1] = *args.add(1);
-            }
-            3 => {
-                buf[0] = *args;
-                buf[1] = *args.add(1);
-                buf[2] = *args.add(2);
-            }
-            _ => {
-                for (i, b) in buf.iter_mut().enumerate().take(n) {
-                    *b = *args.add(i);
+    unsafe {
+        // Rung A1, the hottest callback (every builtin call from native code): the env the
+        // builtin receives is READ from the activation context, not stored into the heap; only
+        // the two fields a builtin that re-enters or parks would read from the heap — the
+        // depth KI-11 bounds and the gateway token a dirty park records — are asserted.
+        crate::jit::JitCallCtx::assert_depth_gateway(ctx, &mut *heap);
+        let h = &mut *heap;
+        let f: crate::core::value::NativeFnPtr = std::mem::transmute(func as usize);
+        // COPY, don't borrow: `args` points into `roots` (the arm stages in place — see
+        // `brood_rt_push_room`), and a native is free to push roots, which reallocates the
+        // buffer and would dangle a borrowed slice mid-call ("a native receives unrooted
+        // copies").
+        //
+        // **Copied with a `match` on the arity, not `SmallVec::from(slice)`.** That goes through
+        // `copy_from_slice` → libc `memcpy`, and at an arity's worth of bytes (24–72) the
+        // size-class dispatch costs far more than the move (a double-digit regression on
+        // builtin-heavy code).
+        let n = argc as usize;
+        let mut buf = [crate::core::value::Value::Nil; INLINE_ARGV];
+        let spill;
+        let slice: &[crate::core::value::Value] = if n <= INLINE_ARGV {
+            match n {
+                0 => {}
+                1 => buf[0] = *args,
+                2 => {
+                    buf[0] = *args;
+                    buf[1] = *args.add(1);
+                }
+                3 => {
+                    buf[0] = *args;
+                    buf[1] = *args.add(1);
+                    buf[2] = *args.add(2);
+                }
+                _ => {
+                    for (i, b) in buf.iter_mut().enumerate().take(n) {
+                        *b = *args.add(i);
+                    }
                 }
             }
-        }
-        &buf[..n]
-    } else {
-        spill = std::slice::from_raw_parts(args, n).to_vec();
-        &spill[..]
-    };
-    let env = h.read_root_env((*ctx).env);
-    // The emitting arm batch-staged these argc args onto `roots` too (uniform with
-    // every fallback path) — they anchor the arg values for any GC the native
-    // triggers, exactly like the VM keeps call operands rooted during dispatch.
-    // No callee frame consumes them here, so drop them once the native returns.
-    let base = h.roots_len() - argc as usize;
-    let r = f(slice, env, h);
-    h.truncate_roots(base);
-    // A builtin that made a large allocation near or over the soft limit: run the check the
-    // VM runs once per quantum now, not at the back-edge poll up to 128 iterations later —
-    // a megabyte an iteration covers the soft limit's headroom to the hard one in fewer.
-    let r = match r {
-        Ok(v) if crate::core::alloc::take_soft_attention() => soft_limit_check(h).map(|()| v),
-        r => r,
-    };
-    // ERROR, not the DEOPT a builtin's own failure would read as under the shared status
-    // protocol: a builtin's error is the answer, and the arm exits via its error block.
-    answer_or_park(h, out, r)
+            &buf[..n]
+        } else {
+            spill = std::slice::from_raw_parts(args, n).to_vec();
+            &spill[..]
+        };
+        let env = h.read_root_env((*ctx).env);
+        // The emitting arm batch-staged these argc args onto `roots` too (uniform with
+        // every fallback path) — they anchor the arg values for any GC the native
+        // triggers, exactly like the VM keeps call operands rooted during dispatch.
+        // No callee frame consumes them here, so drop them once the native returns.
+        let base = h.roots_len() - argc as usize;
+        let r = f(slice, env, h);
+        h.truncate_roots(base);
+        // A builtin that made a large allocation near or over the soft limit: run the check the
+        // VM runs once per quantum now, not at the back-edge poll up to 128 iterations later —
+        // a megabyte an iteration covers the soft limit's headroom to the hard one in fewer.
+        let r = match r {
+            Ok(v) if crate::core::alloc::take_soft_attention() => soft_limit_check(h).map(|()| v),
+            r => r,
+        };
+        // ERROR, not the DEOPT a builtin's own failure would read as under the shared status
+        // protocol: a builtin's error is the answer, and the arm exits via its error block.
+        answer_or_park(h, out, r)
+    }
 }
 
 /// The soft-limit half of the VM's `quantum_checks`, for a native arm: measure this process
@@ -970,25 +1018,27 @@ fn soft_limit_check(heap: &Heap) -> Result<(), crate::error::LispError> {
 ///
 /// # Safety
 /// `heap` must be the live context pointer.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_i64_throw(heap: *mut Heap, bits: i64, is_float: i64) -> i64 {
-    let h = &mut *heap;
-    let sym = crate::core::value::intern("throw");
-    let is_builtin = matches!(
-        h.env_get(h.global(), sym).map(|v| v.unpack()),
-        Some(crate::core::value::ValueRef::Native(id)) if h.native(id).name == "throw"
-    );
-    if !is_builtin {
-        return 1;
+    unsafe {
+        let h = &mut *heap;
+        let sym = crate::core::value::intern("throw");
+        let is_builtin = matches!(
+            h.env_get(h.global(), sym).map(|v| v.unpack()),
+            Some(crate::core::value::ValueRef::Native(id)) if h.native(id).name == "throw"
+        );
+        if !is_builtin {
+            return 1;
+        }
+        let payload = if is_float != 0 {
+            crate::core::value::Value::Float(f64::from_bits(bits as u64))
+        } else {
+            crate::core::value::Value::int(bits)
+        };
+        let e = crate::error::LispError::thrown(payload, h);
+        h.jit_pending_error = Some(e);
+        3
     }
-    let payload = if is_float != 0 {
-        crate::core::value::Value::Float(f64::from_bits(bits as u64))
-    } else {
-        crate::core::value::Value::int(bits)
-    };
-    let e = crate::error::LispError::thrown(payload, h);
-    h.jit_pending_error = Some(e);
-    3
 }
 
 // DEBUG ONLY: the call site currently staging its args (set by `brood_rt_dbg_set_staging`
@@ -1008,7 +1058,7 @@ thread_local! {
 /// A JIT runtime callback: `_heap` is the (unused here) `Heap` pointer the
 /// trampoline passes by ABI; callers must invoke it only from JIT'd code.
 #[cfg(debug_assertions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_dbg_set_staging(_heap: *mut Heap, site: u32) {
     DBG_STAGING.with(|s| s.set(site));
     DBG_PUSH_IDX.with(|s| s.set(0));
@@ -1023,7 +1073,7 @@ pub unsafe extern "C" fn brood_rt_dbg_set_staging(_heap: *mut Heap, site: u32) {
 /// `heap` must be a valid, live `Heap` pointer (it is dereferenced); a JIT
 /// runtime callback invoked only from JIT'd code, which upholds that.
 #[cfg(debug_assertions)]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_dbg_check_slot(
     heap: *mut Heap,
     w0: i64,
@@ -1031,20 +1081,21 @@ pub unsafe extern "C" fn brood_rt_dbg_check_slot(
     w2: i64,
     abs_idx: i64,
 ) {
-    let h = &*heap;
-    let tag = (w0 as u64 & 0xff) as u8;
-    // Invalid tag byte → definitely garbage. Value's max discriminant is `Ratio` (25).
-    let bad_tag = tag > 25;
-    // Reconstruct the full Value and check for a stale/garbage LOCAL handle (a handle
-    // whose generation epoch doesn't match the live epoch, or whose slab index is OOB —
-    // i.e. read from a freed/wrong location). This catches the bug-#2 garbage that the
-    // tag-only check misses (a valid tag byte over a garbage payload).
-    let v = words_to_val(w0, w1, w2);
-    let stale = h.dbg_value_stale(v);
-    let oob = h.dbg_value_oob(v);
-    if bad_tag || stale.is_some() || oob.is_some() {
-        let site = DBG_STAGING.with(|s| s.get());
-        eprintln!(
+    unsafe {
+        let h = &*heap;
+        let tag = (w0 as u64 & 0xff) as u8;
+        // Invalid tag byte → definitely garbage. Value's max discriminant is `Ratio` (25).
+        let bad_tag = tag > 25;
+        // Reconstruct the full Value and check for a stale/garbage LOCAL handle (a handle
+        // whose generation epoch doesn't match the live epoch, or whose slab index is OOB —
+        // i.e. read from a freed/wrong location). This catches the bug-#2 garbage that the
+        // tag-only check misses (a valid tag byte over a garbage payload).
+        let v = words_to_val(w0, w1, w2);
+        let stale = h.dbg_value_stale(v);
+        let oob = h.dbg_value_oob(v);
+        if bad_tag || stale.is_some() || oob.is_some() {
+            let site = DBG_STAGING.with(|s| s.get());
+            eprintln!(
             "[slot-read] GARBAGE/STALE read at roots[{abs_idx}] tag={tag:#x} w0={w0:#x} w1={w1:#x} w2={w2:#x} \
              stale={stale:?} oob={oob:?}; roots_len={} (in_frame={}) jit_native_depth={} last_staging_site={site} loc={}",
             h.roots_len(),
@@ -1052,6 +1103,7 @@ pub unsafe extern "C" fn brood_rt_dbg_check_slot(
             h.jit_native_depth,
             h.dbg_site_loc(site),
         );
+        }
     }
 }
 
@@ -1063,34 +1115,36 @@ pub unsafe extern "C" fn brood_rt_dbg_check_slot(
 ///
 /// # Safety
 /// `cv` must point to a live [`crate::eval::compile::ConstVal`]; `out` must be valid.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_const_load(
     cv: *const crate::eval::compile::ConstVal,
     out: *mut crate::core::value::Value,
 ) {
-    let v = (*cv).load();
-    // DEBUG (bug #2): a ConstVal must hold a RUNTIME/PRELUDE handle or an atom — NEVER a
-    // LOCAL handle, and never an invalid tag. A LOCAL/garbage value here means the baked
-    // `cv` points at a freed/relocated chunk (use-after-free of a recompiled CompiledArm),
-    // which would feed garbage into the arm (e.g. a garbage map_get key).
-    // `BROOD_DBG_CONST`.
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::debug_constants() {
-        use crate::core::value::ValueRef;
-        let bad = match v.unpack() {
-            ValueRef::Pair(id) => Some(("pair", id.region())),
-            ValueRef::Vector(id) | ValueRef::Range(id) | ValueRef::SeqView(id) => {
-                Some(("vector", id.region()))
-            }
-            ValueRef::Map(id) => Some(("map", id.region())),
-            ValueRef::Str(id) => Some(("string", id.region())),
-            ValueRef::BigInt(id) => Some(("bigint", id.region())),
-            ValueRef::Rope(id) => Some(("rope", id.region())),
-            ValueRef::Fn(id) | ValueRef::Macro(id) => Some(("fn", id.region())),
-            _ => None,
-        };
-        if let Some((kind, region)) = bad {
-            if region == crate::core::value::LOCAL {
+    unsafe {
+        let v = (*cv).load();
+        // DEBUG (bug #2): a ConstVal must hold a RUNTIME/PRELUDE handle or an atom — NEVER a
+        // LOCAL handle, and never an invalid tag. A LOCAL/garbage value here means the baked
+        // `cv` points at a freed/relocated chunk (use-after-free of a recompiled CompiledArm),
+        // which would feed garbage into the arm (e.g. a garbage map_get key).
+        // `BROOD_DBG_CONST`.
+        #[cfg(debug_assertions)]
+        if crate::diagnostics::debug_flags::debug_constants() {
+            use crate::core::value::ValueRef;
+            let bad = match v.unpack() {
+                ValueRef::Pair(id) => Some(("pair", id.region())),
+                ValueRef::Vector(id) | ValueRef::Range(id) | ValueRef::SeqView(id) => {
+                    Some(("vector", id.region()))
+                }
+                ValueRef::Map(id) => Some(("map", id.region())),
+                ValueRef::Str(id) => Some(("string", id.region())),
+                ValueRef::BigInt(id) => Some(("bigint", id.region())),
+                ValueRef::Rope(id) => Some(("rope", id.region())),
+                ValueRef::Fn(id) | ValueRef::Macro(id) => Some(("fn", id.region())),
+                _ => None,
+            };
+            if let Some((kind, region)) = bad
+                && region == crate::core::value::LOCAL
+            {
                 let raw = v.raw_words();
                 eprintln!(
                     "[const-garbage] const_load returned a LOCAL {kind} handle (cv={:p}) raw=[{:#x},{:#x},{:#x}] — \
@@ -1099,8 +1153,8 @@ pub unsafe extern "C" fn brood_rt_const_load(
                 );
             }
         }
+        *out = v;
     }
-    *out = v;
 }
 
 /// Resolve a free global `sym` (a JIT'd call's callee-loading `Inst::Global`/`GlobalIc`,
@@ -1111,59 +1165,63 @@ pub unsafe extern "C" fn brood_rt_const_load(
 ///
 /// # Safety
 /// `heap`/`out` must be live; `sym` is an interned [`crate::core::value::Symbol`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_global_probe(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
     sym: u32,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
-    // Speculative sibling of `brood_rt_global` for the **entry hoist**: resolves without
-    // parking an error, because the caller's answer to "unbound" is to deopt, not to raise.
-    //
-    // The hoist resolves every global the arm mentions at entry, including ones only a cold
-    // branch reads — so raising there would report `unbound symbol` for a branch the VM
-    // never evaluates (`(if (< n 0) never-defined-global (+ n 1))` would throw once hot).
-    // Deopting instead hands the arm to the VM, which evaluates only
-    // the branch actually taken and raises only if that branch really reads the name. A
-    // parked error would then be a lie left in the heap, hence this non-parking form.
-    let h = &mut *heap;
-    let env = h.read_root_env(h.jit_call_env);
-    match h.env_get(env, sym) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
+        // Speculative sibling of `brood_rt_global` for the **entry hoist**: resolves without
+        // parking an error, because the caller's answer to "unbound" is to deopt, not to raise.
+        //
+        // The hoist resolves every global the arm mentions at entry, including ones only a cold
+        // branch reads — so raising there would report `unbound symbol` for a branch the VM
+        // never evaluates (`(if (< n 0) never-defined-global (+ n 1))` would throw once hot).
+        // Deopting instead hands the arm to the VM, which evaluates only
+        // the branch actually taken and raises only if that branch really reads the name. A
+        // parked error would then be a lie left in the heap, hence this non-parking form.
+        let h = &mut *heap;
+        let env = h.read_root_env(h.jit_call_env);
+        match h.env_get(env, sym) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
         }
-        None => 1,
     }
 }
 
 /// # Safety
 /// `heap`/`out` must be live; `sym` is an interned [`crate::core::value::Symbol`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_global(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
     sym: u32,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::jit_callback_trace() {
-        eprintln!(
-            "[jit-cb] brood_rt_global(sym={})",
-            crate::core::value::symbol_name(sym)
-        );
-    }
-    match crate::eval::compile::jit_resolve_global(&mut *heap, sym) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
+        #[cfg(debug_assertions)]
+        if crate::diagnostics::debug_flags::jit_callback_trace() {
+            eprintln!(
+                "[jit-cb] brood_rt_global(sym={})",
+                crate::core::value::symbol_name(sym)
+            );
         }
-        None => 1,
+        match crate::eval::compile::jit_resolve_global(&mut *heap, sym) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
+        }
     }
 }
 
@@ -1178,7 +1236,7 @@ pub unsafe extern "C" fn brood_rt_global(
 ///
 /// # Safety
 /// `heap`/`out` must be live; `sym` is an interned [`crate::core::value::Symbol`].
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_global_ic(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -1186,22 +1244,24 @@ pub unsafe extern "C" fn brood_rt_global_ic(
     site: u32,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::jit_callback_trace() {
-        eprintln!(
-            "[jit-cb] brood_rt_global_ic(sym={}, site={})",
-            crate::core::value::symbol_name(sym),
-            site
-        );
-    }
-    match crate::eval::compile::jit_resolve_global_ic(&mut *heap, sym, site) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_global(ctx, &mut *heap);
+        #[cfg(debug_assertions)]
+        if crate::diagnostics::debug_flags::jit_callback_trace() {
+            eprintln!(
+                "[jit-cb] brood_rt_global_ic(sym={}, site={})",
+                crate::core::value::symbol_name(sym),
+                site
+            );
         }
-        None => 1,
+        match crate::eval::compile::jit_resolve_global_ic(&mut *heap, sym, site) {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
+        }
     }
 }
 
@@ -1217,7 +1277,7 @@ pub unsafe extern "C" fn brood_rt_global_ic(
 ///
 /// # Safety
 /// `heap`/`out` must be live; `argc` callee+args are staged on `roots`.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_call_slow(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -1226,19 +1286,22 @@ pub unsafe extern "C" fn brood_rt_call_slow(
     head: u32,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
-    #[cfg(debug_assertions)]
-    if crate::diagnostics::debug_flags::jit_callback_trace() {
-        eprintln!("[jit-cb] brood_rt_call_slow(argc={})", argc);
-    }
-    let unwind = crate::jit::JitCallCtx::children_may_unwind(ctx);
-    match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head, unwind) {
-        Some(v) => {
-            *out = v;
-            0
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
+        #[cfg(debug_assertions)]
+        if crate::diagnostics::debug_flags::jit_callback_trace() {
+            eprintln!("[jit-cb] brood_rt_call_slow(argc={})", argc);
         }
-        None => 1,
+        let unwind = crate::jit::JitCallCtx::children_may_unwind(ctx);
+        match crate::eval::compile::jit_dispatch_call(&mut *heap, argc as usize, site, head, unwind)
+        {
+            Some(v) => {
+                *out = v;
+                0
+            }
+            None => 1,
+        }
     }
 }
 
@@ -1258,29 +1321,31 @@ pub unsafe extern "C" fn brood_rt_call_slow(
 /// `heap` must be the live context pointer; `arm` the `CompiledArm` whose native code is
 /// running — pinned for the process lifetime by `JIT_ARM_KEEPALIVE`, so the pointer the
 /// lowering embedded as a constant cannot dangle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_trace_push(
     heap: *mut Heap,
     arm: *const crate::eval::compile::CompiledArm,
 ) {
-    let h = &mut *heap;
-    let Some(e) = h.jit_pending_error.as_mut() else {
-        return;
-    };
-    // `push_trace` drops the frame once the trace is capped or the error is a control
-    // signal — but only AFTER we have built one, and building one clones the arm's file
-    // name. A 50-frame unwind therefore paid 50 allocations to keep 32. The VM's own
-    // walker (`attach_vm_trace_callers`) consults `trace_full()` for exactly this reason;
-    // this callback, added for KI-117, did not, which cost `errors-deep` 61%.
-    if e.is_control() || e.trace_full() {
-        return;
+    unsafe {
+        let h = &mut *heap;
+        let Some(e) = h.jit_pending_error.as_mut() else {
+            return;
+        };
+        // `push_trace` drops the frame once the trace is capped or the error is a control
+        // signal — but only AFTER we have built one, and building one clones the arm's file
+        // name. A 50-frame unwind therefore paid 50 allocations to keep 32. The VM's own
+        // walker (`attach_vm_trace_callers`) consults `trace_full()` for exactly this reason;
+        // this callback, added for KI-117, did not, which cost `errors-deep` 61%.
+        if e.is_control() || e.trace_full() {
+            return;
+        }
+        let arm = &*arm;
+        e.push_trace(crate::error::TraceFrame {
+            name: arm.fn_name.map(crate::core::value::symbol_name_ref),
+            file: arm.src_file.clone(),
+            pos: None,
+        });
     }
-    let arm = &*arm;
-    e.push_trace(crate::error::TraceFrame {
-        name: arm.fn_name.map(crate::core::value::symbol_name_ref),
-        file: arm.src_file.clone(),
-        pos: None,
-    });
 }
 
 /// Record *why* the JIT is about to deopt. Called from the shared deopt block with a
@@ -1293,30 +1358,34 @@ pub unsafe extern "C" fn brood_rt_trace_push(
 ///
 /// # Safety
 /// `heap` must be a live `*mut Heap` from the JIT calling convention.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_note_deopt(heap: *mut Heap, reason: u32) {
-    (*heap).note_jit_deopt_reason(reason);
+    unsafe {
+        (*heap).note_jit_deopt_reason(reason);
+    }
 }
 
 /// Base pointer + length of the IR-readable [`FastLink`] mirror (Track B / Technique A).
 /// The JIT loads this at a call site, bounds-checks `site < *out_len`, then reads the
 /// slot's `(epoch, code, nslots, env)` with raw loads — replacing the IC probe +
 /// `RefCell` borrow [`brood_rt_call_slow`] pays. Re-fetched after each Brood→Brood call
-/// (like [`brood_rt_roots_base`]), since a cold nested call may grow + realloc the table.
+/// (like the roots table's base), since a cold nested call may grow + realloc the table.
 ///
 /// # Safety
 /// `heap`/`out_len` must be live; the returned pointer is valid until the table next grows.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_fastlink_base(
     heap: *mut Heap,
     out_len: *mut u64,
     ctx: *const crate::jit::JitCallCtx,
 ) -> *const FastLink {
-    // Rung A1: per call site, so it writes nothing — the block cursor is read from the
-    // activation context the arm was entered with.
-    let (base, len) = (*heap).vm_fast_links_base_for((*ctx).ic_base);
-    *out_len = len as u64;
-    base
+    unsafe {
+        // Rung A1: per call site, so it writes nothing — the block cursor is read from the
+        // activation context the arm was entered with.
+        let (base, len) = (*heap).vm_fast_links_base_for((*ctx).ic_base);
+        *out_len = len as u64;
+        base
+    }
 }
 
 /// The JIT's in-IR fast call path (Track B / Technique A) — the hottest callback in the
@@ -1336,7 +1405,7 @@ pub unsafe extern "C" fn brood_rt_fastlink_base(
 /// # Safety
 /// `heap` live; `out` writable for one `Value`; `slot` points at a live `FastLink` in this
 /// process's table, validated by the IR's guard as described above.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_fast_frame(
     heap: *mut Heap,
     out: *mut crate::core::value::Value,
@@ -1344,35 +1413,37 @@ pub unsafe extern "C" fn brood_rt_fast_frame(
     slot: *const crate::core::heap::FastLink,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
-    use crate::eval::compile::FastLinkOutcome;
-    // Copy the whole slot BY VALUE before anything can run: the dispatch below can compile
-    // and publish, which grows `vm_fast_links` and reallocates the buffer `slot` points
-    // into. A `&*slot` reference here would be sound today only because NLL ends the borrow
-    // at its last use — one refactor that moves a read past the dispatch away from UB. The
-    // copy makes the discipline structural instead of positional.
-    let fl: FastLink = std::ptr::read(slot);
-    let (head, argc, nslots, code, env) = (fl.sym, fl.argc, fl.nslots, fl.code, fl.env);
-    let bases = (fl.callee_ic_base, fl.callee_gic_base);
-    // `out` goes straight down to the native callee, which writes the result into it
-    // directly — no store/load round trip through `roots[base]` and no copy here. This is
-    // the path that made the change worth making; see `crate::jit::JitArmFn`.
-    match crate::eval::compile::jit_dispatch_fast_frame(
-        &mut *heap,
-        site,
-        head,
-        argc as usize,
-        nslots as usize,
-        code as usize,
-        env,
-        bases,
-        out,
-        crate::jit::JitCallCtx::children_may_unwind(ctx),
-    ) {
-        FastLinkOutcome::Done => 0,
-        FastLinkOutcome::Error => 1,
-        FastLinkOutcome::Fallthrough => 2,
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
+        use crate::eval::compile::FastLinkOutcome;
+        // Copy the whole slot BY VALUE before anything can run: the dispatch below can compile
+        // and publish, which grows `vm_fast_links` and reallocates the buffer `slot` points
+        // into. A `&*slot` reference here would be sound today only because NLL ends the borrow
+        // at its last use — one refactor that moves a read past the dispatch away from UB. The
+        // copy makes the discipline structural instead of positional.
+        let fl: FastLink = std::ptr::read(slot);
+        let (head, argc, nslots, code, env) = (fl.sym, fl.argc, fl.nslots, fl.code, fl.env);
+        let bases = (fl.callee_ic_base, fl.callee_gic_base);
+        // `out` goes straight down to the native callee, which writes the result into it
+        // directly — no store/load round trip through `roots[base]` and no copy here. This is
+        // the path that made the change worth making; see `crate::jit::JitArmFn`.
+        match crate::eval::compile::jit_dispatch_fast_frame(
+            &mut *heap,
+            site,
+            head,
+            argc as usize,
+            nslots as usize,
+            code as usize,
+            env,
+            bases,
+            out,
+            crate::jit::JitCallCtx::children_may_unwind(ctx),
+        ) {
+            FastLinkOutcome::Done => 0,
+            FastLinkOutcome::Error => 1,
+            FastLinkOutcome::Fallthrough => 2,
+        }
     }
 }
 
@@ -1382,7 +1453,7 @@ pub unsafe extern "C" fn brood_rt_fast_frame(
 ///
 /// # Safety
 /// `heap` live.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_xcall_latch(
     heap: *mut Heap,
     code: i64,
@@ -1391,18 +1462,20 @@ pub unsafe extern "C" fn brood_rt_xcall_latch(
     epoch: i64,
     ctx: *const crate::jit::JitCallCtx,
 ) {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
-    let site = (site_head >> 32) as u32;
-    let head = site_head as u32;
-    crate::eval::compile::jit_latch_dirty_blocked(
-        &mut *heap,
-        code as usize,
-        site,
-        head,
-        argc as usize,
-        epoch as u64,
-    );
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
+        let site = (site_head >> 32) as u32;
+        let head = site_head as u32;
+        crate::eval::compile::jit_latch_dirty_blocked(
+            &mut *heap,
+            code as usize,
+            site,
+            head,
+            argc as usize,
+            epoch as u64,
+        );
+    }
 }
 
 /// The non-Done outcome funnel for the inline fast-frame path — deopt / preempt /
@@ -1412,7 +1485,7 @@ pub unsafe extern "C" fn brood_rt_xcall_latch(
 ///
 /// # Safety
 /// `heap` live; `out` a valid slot for the call's result (written only on status 0).
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn brood_rt_xcall_cold(
     heap: *mut Heap,
     outcome: i64,
@@ -1423,28 +1496,30 @@ pub unsafe extern "C" fn brood_rt_xcall_cold(
     stage_base: i64,
     ctx: *const crate::jit::JitCallCtx,
 ) -> i64 {
-    // Rung A1: this callback consults activation state, so it asserts its own first.
-    crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
-    let site = (site_head >> 32) as u32;
-    let head = site_head as u32;
-    let argc = (argc_nslots >> 32) as usize;
-    let nslots = (argc_nslots as u32) as usize;
-    // `jit_force_vm` is set only by a native prologue's stack-limit trip, which deopts
-    // at once — so it can change only under a cold outcome, and it is scoped here (the
-    // inline call path does not save and restore it per call; rung A1).
-    let saved_force_vm = (*heap).jit_force_vm;
-    let r = crate::eval::compile::jit_xcall_cold_outcome(
-        &mut *heap,
-        outcome,
-        argc,
-        site,
-        head,
-        epoch as u64,
-        stage_base as usize,
-        nslots,
-        out,
-        crate::jit::JitCallCtx::children_may_unwind(ctx),
-    );
-    (*heap).jit_force_vm = saved_force_vm;
-    r
+    unsafe {
+        // Rung A1: this callback consults activation state, so it asserts its own first.
+        crate::jit::JitCallCtx::assert_into(ctx, &mut *heap);
+        let site = (site_head >> 32) as u32;
+        let head = site_head as u32;
+        let argc = (argc_nslots >> 32) as usize;
+        let nslots = (argc_nslots as u32) as usize;
+        // `jit_force_vm` is set only by a native prologue's stack-limit trip, which deopts
+        // at once — so it can change only under a cold outcome, and it is scoped here (the
+        // inline call path does not save and restore it per call; rung A1).
+        let saved_force_vm = (*heap).jit_force_vm;
+        let r = crate::eval::compile::jit_xcall_cold_outcome(
+            &mut *heap,
+            outcome,
+            argc,
+            site,
+            head,
+            epoch as u64,
+            stage_base as usize,
+            nslots,
+            out,
+            crate::jit::JitCallCtx::children_may_unwind(ctx),
+        );
+        (*heap).jit_force_vm = saved_force_vm;
+        r
+    }
 }

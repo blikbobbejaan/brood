@@ -73,10 +73,10 @@ fn file_namespace<'s>(root: &Node, text: &'s str) -> Option<&'s str> {
         if form.head_symbol(text) != Some("defmodule") {
             continue;
         }
-        if let Some(name) = form.forms().nth(1) {
-            if name.kind == NodeKind::Symbol {
-                return Some(name.text(text));
-            }
+        if let Some(name) = form.forms().nth(1)
+            && name.kind == NodeKind::Symbol
+        {
+            return Some(name.text(text));
         }
     }
     None

@@ -973,10 +973,10 @@ pub(super) fn self_call_sites(
             if !then_scope.is_dead() {
                 walk(heap, items[2], sym, arity, &then_scope, out);
             }
-            if let Some(&else_form) = items.get(3) {
-                if !else_scope.is_dead() {
-                    walk(heap, else_form, sym, arity, &else_scope, out);
-                }
+            if let Some(&else_form) = items.get(3)
+                && !else_scope.is_dead()
+            {
+                walk(heap, else_form, sym, arity, &else_scope, out);
             }
             return;
         }
@@ -1113,11 +1113,9 @@ fn recovered_literal_arms(
                     && super::walk::unquote(heap, elems[1]).is_some_and(
                         |t| matches!(t, Value::Keyword(k) if value::symbol_name_ref(k) == "fn"),
                     );
-                if is_match_error {
-                    if let Some(heads) = super::walk::unquote(heap, elems[3]) {
-                        let key = crate::syntax::printer::print(heap, heads);
-                        return ctx.fn_literal_clauses(&key).cloned();
-                    }
+                if is_match_error && let Some(heads) = super::walk::unquote(heap, elems[3]) {
+                    let key = crate::syntax::printer::print(heap, heads);
+                    return ctx.fn_literal_clauses(&key).cloned();
                 }
                 work.extend(elems);
             }
@@ -2396,15 +2394,15 @@ fn domain_of_inner(
                 None
             };
             if let Some(f_sig) = f_sig {
-                if let Some(pos) = param_index(items[2], params, scope) {
-                    if let Some(p0) = f_sig.param(0) {
-                        acc[pos] = acc[pos].clone().intersect(p0);
-                    }
+                if let Some(pos) = param_index(items[2], params, scope)
+                    && let Some(p0) = f_sig.param(0)
+                {
+                    acc[pos] = acc[pos].clone().intersect(p0);
                 }
-                if let Some(pos) = param_index(coll_arg, params, scope) {
-                    if let Some(p1) = f_sig.param(1) {
-                        acc[pos] = acc[pos].clone().intersect(seqable_of(p1));
-                    }
+                if let Some(pos) = param_index(coll_arg, params, scope)
+                    && let Some(p1) = f_sig.param(1)
+                {
+                    acc[pos] = acc[pos].clone().intersect(seqable_of(p1));
                 }
             }
         }
@@ -2414,10 +2412,10 @@ fn domain_of_inner(
             if let Some(expected) = callee_sig.as_ref().and_then(|s| s.param(i)) {
                 acc[pos] = acc[pos].clone().intersect(expected);
             }
-            if i == 0 {
-                if let Some(dom) = op_domain.clone() {
-                    acc[pos] = acc[pos].clone().intersect(dom);
-                }
+            if i == 0
+                && let Some(dom) = op_domain.clone()
+            {
+                acc[pos] = acc[pos].clone().intersect(dom);
             }
         }
         acc = meet(acc, domain_of(heap, arg, params, scope, ctx));
@@ -3617,12 +3615,11 @@ fn collect_form_sites(
                 // The pre-binding `check_let` does: `letrec` every name, `let` its
                 // `fn`-valued ones (a closure resolves its own name by late lookup).
                 for pair in binds.chunks(2) {
-                    if let (Some(&Value::Sym(n)), Some(&rhs)) = (pair.first(), pair.get(1)) {
-                        if value::symbol_is(head, kw::LETREC)
-                            || super::walk::fn_form_items(heap, rhs).is_some()
-                        {
-                            inner = inner.bind(n, None);
-                        }
+                    if let (Some(&Value::Sym(n)), Some(&rhs)) = (pair.first(), pair.get(1))
+                        && (value::symbol_is(head, kw::LETREC)
+                            || super::walk::fn_form_items(heap, rhs).is_some())
+                    {
+                        inner = inner.bind(n, None);
                     }
                 }
                 // A `fn`-valued binder's parameters are derived from its callers — the
@@ -3828,11 +3825,11 @@ fn collect_form_sites(
                             .push(Site::Handover(sig.params.clone()));
                     }
                     _ => {
-                        if let Some((index, sig)) = &literal {
-                            if *index == i {
-                                self.pending_fn_params =
-                                    Some(sig.params.iter().cloned().map(Some).collect());
-                            }
+                        if let Some((index, sig)) = &literal
+                            && *index == i
+                        {
+                            self.pending_fn_params =
+                                Some(sig.params.iter().cloned().map(Some).collect());
                         }
                         self.walk(it, scope, None);
                         self.pending_fn_params = None;

@@ -1057,10 +1057,10 @@ fn is_param_marker(v: Value) -> bool {
 /// `None` — a plain, required field type.
 fn unwrap_optional(heap: &Heap, form: Value) -> Option<Value> {
     let items = list_items(heap, form)?;
-    if let [Value::Sym(h), inner] = items[..] {
-        if value::symbol_is(h, "optional") {
-            return Some(inner);
-        }
+    if let [Value::Sym(h), inner] = items[..]
+        && value::symbol_is(h, "optional")
+    {
+        return Some(inner);
     }
     None
 }
@@ -1101,10 +1101,10 @@ fn parse_arrow(heap: &Heap, items: &[Value], pos: usize) -> Option<Sig> {
         .position(|v| matches!(v, Value::Sym(s) if value::symbol_is(*s, "&optional")));
 
     // `&` before `&optional` is a malformed order (rest must trail everything).
-    if let (Some(a), Some(o)) = (amp, amp_opt) {
-        if a < o {
-            return None;
-        }
+    if let (Some(a), Some(o)) = (amp, amp_opt)
+        && a < o
+    {
+        return None;
     }
 
     let parse_all = |types: &[Value]| -> Option<Vec<Ty>> {

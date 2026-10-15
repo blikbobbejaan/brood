@@ -267,21 +267,20 @@ pub(crate) fn jit_tier_in_frame(
         return None;
     }
     // `BROOD_NO_JIT_COMPUTED=1` (bisect): keep arms with a computed-head non-tail call on the VM.
-    if crate::diagnostics::debug_flags::no_jit_computed() {
-        if let Some(c) = arm.chunk.as_ref() {
-            if c.code.iter().any(|i| {
-                matches!(
-                    i,
-                    Inst::Call {
-                        tail: false,
-                        head: None,
-                        ..
-                    }
-                )
-            }) {
-                return None;
-            }
-        }
+    if crate::diagnostics::debug_flags::no_jit_computed()
+        && let Some(c) = arm.chunk.as_ref()
+        && c.code.iter().any(|i| {
+            matches!(
+                i,
+                Inst::Call {
+                    tail: false,
+                    head: None,
+                    ..
+                }
+            )
+        })
+    {
+        return None;
     }
     let mut code = arm.jit_code.load(Acquire);
     if code == crate::jit::BAILED {
@@ -302,35 +301,33 @@ pub(crate) fn jit_tier_in_frame(
     // either way — the background dequeue skips any resolved slot, and if it races a
     // concurrent store of this copy's own pointer, both pointers are valid code for
     // the same epoch (each kept alive by its compiler's keepalive push).
-    if (code.is_null() || code == crate::jit::QUEUED) && ActiveBackend::may_adopt_shared_code(arm) {
-        if let Some(key) = arm.share_key {
-            if let Some((ptr, epoch)) = heap.jit_shared_lookup(key) {
-                if epoch == heap.global_epoch()
-                    && !ptr.is_null()
-                    && ptr != crate::jit::BAILED
-                    && ptr != crate::jit::QUEUED
-                {
-                    arm.compile_epoch.store(epoch, Release);
-                    // Trace the ADOPT path: this arm installs a peer's compiled pointer
-                    // WITHOUT lowering, so it never reaches the `BROOD_JIT_DUMP_IR` dump.
-                    // Without this trace an arm can hold native code, deopt out of it, and
-                    // still be absent from every IR dump.
-                    {
-                        if crate::diagnostics::debug_flags::jit_bail_trace() {
-                            let name = arm.dbg_label();
-                            eprintln!(
-                                "[jit-ir] arm={name} adopted-shared-code nslots={} (not lowered \
+    if (code.is_null() || code == crate::jit::QUEUED)
+        && ActiveBackend::may_adopt_shared_code(arm)
+        && let Some(key) = arm.share_key
+        && let Some((ptr, epoch)) = heap.jit_shared_lookup(key)
+        && epoch == heap.global_epoch()
+        && !ptr.is_null()
+        && ptr != crate::jit::BAILED
+        && ptr != crate::jit::QUEUED
+    {
+        arm.compile_epoch.store(epoch, Release);
+        // Trace the ADOPT path: this arm installs a peer's compiled pointer
+        // WITHOUT lowering, so it never reaches the `BROOD_JIT_DUMP_IR` dump.
+        // Without this trace an arm can hold native code, deopt out of it, and
+        // still be absent from every IR dump.
+        {
+            if crate::diagnostics::debug_flags::jit_bail_trace() {
+                let name = arm.dbg_label();
+                eprintln!(
+                    "[jit-ir] arm={name} adopted-shared-code nslots={} (not lowered \
                                  here, so it emits no IR dump)",
-                                arm.nslots
-                            );
-                        }
-                    }
-                    arm.jit_code.store(ptr, Release);
-                    arm.shared_published.store(true, Relaxed); // already in the cache
-                    code = ptr;
-                }
+                    arm.nslots
+                );
             }
         }
+        arm.jit_code.store(ptr, Release);
+        arm.shared_published.store(true, Relaxed); // already in the cache
+        code = ptr;
     }
     if code == crate::jit::QUEUED {
         return None; // compile in flight, nothing published yet — run the VM
@@ -530,23 +527,21 @@ pub(crate) fn jit_tier_in_frame(
             // branch below swaps it in with OUR (deterministic, identical) `inline_nslots`.
             // This is what lets a short parallel fan-out (`pfib`) pick up the inlined win —
             // one compile serves every process instead of each racing its own to completion.
-            if let Some(key) = arm.share_key.filter(|_| arm.inline_name.is_some()) {
-                if let Some((ptr, epoch)) = heap.jit_inline_lookup(key) {
-                    if epoch == heap.global_epoch()
-                        && !ptr.is_null()
-                        && ptr != crate::jit::BAILED
-                        && ptr != crate::jit::QUEUED
-                    {
-                        {
-                            if crate::diagnostics::debug_flags::jit_bail_trace() {
-                                let name = arm.dbg_label();
-                                eprintln!("[jit-ir] arm={name} adopted-inline-code-from-cache nslots={} (not lowered here, emits no IR dump)", arm.nslots);
-                            }
-                        }
-                        arm.inline_code.store(ptr, Release);
-                        return None; // next entry swaps it in
+            if let Some(key) = arm.share_key.filter(|_| arm.inline_name.is_some())
+                && let Some((ptr, epoch)) = heap.jit_inline_lookup(key)
+                && epoch == heap.global_epoch()
+                && !ptr.is_null()
+                && ptr != crate::jit::BAILED
+                && ptr != crate::jit::QUEUED
+            {
+                {
+                    if crate::diagnostics::debug_flags::jit_bail_trace() {
+                        let name = arm.dbg_label();
+                        eprintln!("[jit-ir] arm={name} adopted-inline-code-from-cache nslots={} (not lowered here, emits no IR dump)", arm.nslots);
                     }
                 }
+                arm.inline_code.store(ptr, Release);
+                return None; // next entry swaps it in
             }
             // Not shared yet. Elect a single enqueuer via the queued flag.
             if !arm.inline_queued.swap(true, AcqRel) {
@@ -670,12 +665,11 @@ pub(crate) fn jit_tier_in_frame(
     // NB the reason is the *publishing channel*, not process locality: since ADR-215 peers
     // share this very `CompiledArm` (`compiled_arm_for` → `shared_closures`), so there is no
     // "peer copy with `inline_installed == false`". Guard on `inline_installed`.
-    if !arm.inline_installed.load(Acquire) {
-        if let Some(key) = arm.share_key {
-            if !arm.shared_published.swap(true, Relaxed) {
-                heap.jit_shared_publish(key, code, arm.compile_epoch.load(Acquire));
-            }
-        }
+    if !arm.inline_installed.load(Acquire)
+        && let Some(key) = arm.share_key
+        && !arm.shared_published.swap(true, Relaxed)
+    {
+        heap.jit_shared_publish(key, code, arm.compile_epoch.load(Acquire));
     }
     // Frame-size agreement (KI-48 family, see `jit_tier_in_frame`). The caller built the
     // frame BEFORE this function re-loaded `jit_code`, so the two can disagree: a peer

@@ -327,10 +327,10 @@ fn header_imported_modules(root: &Node, src: &str) -> Vec<String> {
         if matches!(kw, ":use" | ":alias" | ":use-internals") {
             let mut it = clause.forms();
             it.next(); // the keyword
-            if let Some(m) = it.next() {
-                if m.kind == NodeKind::Symbol {
-                    mods.push(m.text(src).to_string());
-                }
+            if let Some(m) = it.next()
+                && m.kind == NodeKind::Symbol
+            {
+                mods.push(m.text(src).to_string());
             }
         }
     }
@@ -394,10 +394,10 @@ fn call_head_argc(root: &Node, offset: u32) -> Option<usize> {
             continue;
         }
         let mut forms = node.forms();
-        if let Some(head) = forms.next() {
-            if head.span.contains(offset) {
-                return Some(forms.count());
-            }
+        if let Some(head) = forms.next()
+            && head.span.contains(offset)
+        {
+            return Some(forms.count());
         }
     }
     None

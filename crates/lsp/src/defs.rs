@@ -96,10 +96,10 @@ pub fn top_level<'s>(root: &Node, src: &'s str) -> Vec<Def<'s>> {
 /// [`scope`](brood::syntax::scope)), so hover must locate it even when it isn't a
 /// direct child of the root.
 pub fn find_def<'s>(node: &Node, src: &'s str, name_span: Span) -> Option<Def<'s>> {
-    if let Some(d) = parse_def(node, src) {
-        if d.name_span == name_span {
-            return Some(d);
-        }
+    if let Some(d) = parse_def(node, src)
+        && d.name_span == name_span
+    {
+        return Some(d);
     }
     node.children
         .iter()

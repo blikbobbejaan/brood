@@ -1213,10 +1213,11 @@ impl Ty {
     /// regression against the pre-shape behaviour, which consulted `map_kv`.
     fn term_field_ty(&self, key: Symbol) -> Option<Ty> {
         let shape = self.fields.as_deref()?;
-        if !shape.fields.contains_key(&key) && shape.is_open() {
-            if let Some((_, v)) = self.map_kv.as_deref() {
-                return Some(v.clone().union(Ty::of(Tag::Nil)));
-            }
+        if !shape.fields.contains_key(&key)
+            && shape.is_open()
+            && let Some((_, v)) = self.map_kv.as_deref()
+        {
+            return Some(v.clone().union(Ty::of(Tag::Nil)));
         }
         Some(shape.field_ty(key))
     }
@@ -1478,10 +1479,10 @@ impl Ty {
 
     /// One term's effective int interval (see [`Ty::int_range`]).
     fn int_range_eff(&self) -> Range {
-        if let Some(LitSet::In(set)) = self.lit_int.as_deref() {
-            if let (Some(lo), Some(hi)) = (set.iter().next(), set.iter().next_back()) {
-                return Range::new(Some(*lo), Some(*hi));
-            }
+        if let Some(LitSet::In(set)) = self.lit_int.as_deref()
+            && let (Some(lo), Some(hi)) = (set.iter().next(), set.iter().next_back())
+        {
+            return Range::new(Some(*lo), Some(*hi));
         }
         self.int_range.unwrap_or(Range::ALL)
     }
@@ -1541,10 +1542,10 @@ impl Ty {
             return Range::point(0);
         }
         // A positional shape IS its arity, when it is the only countable member.
-        if self.tags & COUNT_BITS == VECTOR_BIT {
-            if let Some(ts) = &self.tuple {
-                return Range::point(ts.len() as i64);
-            }
+        if self.tags & COUNT_BITS == VECTOR_BIT
+            && let Some(ts) = &self.tuple
+        {
+            return Range::point(ts.len() as i64);
         }
         if self.tags & COUNT_BITS == PAIR_BIT {
             if let Some(ts) = &self.list_shape {
@@ -1554,12 +1555,12 @@ impl Ty {
         }
         // A string literal set knows its lengths — chars, as `string/length` counts — so
         // `"abc"` fits `(len string _ 3)` and `(into [] "abc")` has a length.
-        if self.tags & COUNT_BITS == STR_BIT {
-            if let Some(LitSet::In(set)) = self.lit_str.as_deref() {
-                let lengths = set.iter().map(|s| s.chars().count() as i64);
-                if let (Some(lo), Some(hi)) = (lengths.clone().min(), lengths.max()) {
-                    return Range::new(Some(lo), Some(hi));
-                }
+        if self.tags & COUNT_BITS == STR_BIT
+            && let Some(LitSet::In(set)) = self.lit_str.as_deref()
+        {
+            let lengths = set.iter().map(|s| s.chars().count() as i64);
+            if let (Some(lo), Some(hi)) = (lengths.clone().min(), lengths.max()) {
+                return Range::new(Some(lo), Some(hi));
             }
         }
         Range::at_least(0)
@@ -1679,12 +1680,12 @@ impl Ty {
             (&mut out.tuple, &other.tuple),
             (&mut out.list_shape, &other.list_shape),
         ] {
-            if let (Some(ts), Some(ps)) = (mine.as_deref(), theirs.as_deref()) {
-                if ts.len() == ps.len() {
-                    *mine = Some(Arc::new(
-                        ts.iter().zip(ps.iter()).map(|(t, p)| f(t, p)).collect(),
-                    ));
-                }
+            if let (Some(ts), Some(ps)) = (mine.as_deref(), theirs.as_deref())
+                && ts.len() == ps.len()
+            {
+                *mine = Some(Arc::new(
+                    ts.iter().zip(ps.iter()).map(|(t, p)| f(t, p)).collect(),
+                ));
             }
         }
         out
@@ -2902,10 +2903,11 @@ impl Ty {
         // The head of a union doubles as its container, and a container flagged `mu` is a
         // binder over the WHOLE union. A closed recursive alternative must therefore not
         // sit at the head beside others, or its binder would come to range over them.
-        if merged.len() > 1 && merged[0].mu {
-            if let Some(plain) = merged.iter().position(|t| !t.mu) {
-                merged.swap(0, plain);
-            }
+        if merged.len() > 1
+            && merged[0].mu
+            && let Some(plain) = merged.iter().position(|t| !t.mu)
+        {
+            merged.swap(0, plain);
         }
         let mut head = merged.remove(0);
         if !merged.is_empty() {
@@ -3246,65 +3248,65 @@ impl Ty {
                 }
             }
         }
-        if self.tags & SEQ_BITS != 0 {
-            if let Some(b) = &other.elem {
-                // A tuple has no plain `elem`, but its per-position types taken
-                // together are exactly as good a bound: a `tuple<int,int>` IS a
-                // `vector<int>` (every element is an int), so derive an
-                // equivalent uniform element type from `tuple` when `elem`
-                // itself is absent, rather than rejecting outright.
-                // …and the same for a list shape on the pair member. Each sequence member
-                // `self` admits must be covered — a `(tuple int) | pair` has a bound for its
-                // vector and none for its pair, so it has none at all.
-                let self_elem = self.elem.clone().or_else(|| {
-                    let mut bound = Ty::NEVER;
-                    for (bit, shape) in [(VECTOR_BIT, &self.tuple), (PAIR_BIT, &self.list_shape)] {
-                        if self.tags & bit == 0 {
-                            continue;
-                        }
-                        let elems = shape.as_ref()?;
-                        bound = elems.iter().cloned().fold(bound, |acc, t| acc.union(t));
+        if self.tags & SEQ_BITS != 0
+            && let Some(b) = &other.elem
+        {
+            // A tuple has no plain `elem`, but its per-position types taken
+            // together are exactly as good a bound: a `tuple<int,int>` IS a
+            // `vector<int>` (every element is an int), so derive an
+            // equivalent uniform element type from `tuple` when `elem`
+            // itself is absent, rather than rejecting outright.
+            // …and the same for a list shape on the pair member. Each sequence member
+            // `self` admits must be covered — a `(tuple int) | pair` has a bound for its
+            // vector and none for its pair, so it has none at all.
+            let self_elem = self.elem.clone().or_else(|| {
+                let mut bound = Ty::NEVER;
+                for (bit, shape) in [(VECTOR_BIT, &self.tuple), (PAIR_BIT, &self.list_shape)] {
+                    if self.tags & bit == 0 {
+                        continue;
                     }
-                    if self.tags & SEQ_BITS & !(VECTOR_BIT | PAIR_BIT) != 0 {
-                        return None; // a set member with no element bound
-                    }
-                    Some(Arc::new(bound))
-                });
-                match &self_elem {
-                    Some(a) => {
-                        if !a.is_subtype(b) {
-                            return false;
-                        }
-                    }
-                    None => return false, // self = "any elements" ⊄ a specific elem
+                    let elems = shape.as_ref()?;
+                    bound = elems.iter().cloned().fold(bound, |acc, t| acc.union(t));
                 }
+                if self.tags & SEQ_BITS & !(VECTOR_BIT | PAIR_BIT) != 0 {
+                    return None; // a set member with no element bound
+                }
+                Some(Arc::new(bound))
+            });
+            match &self_elem {
+                Some(a) => {
+                    if !a.is_subtype(b) {
+                        return false;
+                    }
+                }
+                None => return false, // self = "any elements" ⊄ a specific elem
             }
         }
-        if self.tags & VECTOR_BIT != 0 {
-            if let Some(b) = &other.tuple {
-                match &self.tuple {
-                    Some(a) => {
-                        if !tuple_is_subtype(a, b) {
-                            return false;
-                        }
+        if self.tags & VECTOR_BIT != 0
+            && let Some(b) = &other.tuple
+        {
+            match &self.tuple {
+                Some(a) => {
+                    if !tuple_is_subtype(a, b) {
+                        return false;
                     }
-                    // self has no specific positional shape (a plain vector, or
-                    // only a uniform `elem`) — can't prove it matches an exact
-                    // per-position shape `other` requires.
-                    None => return false,
                 }
+                // self has no specific positional shape (a plain vector, or
+                // only a uniform `elem`) — can't prove it matches an exact
+                // per-position shape `other` requires.
+                None => return false,
             }
         }
-        if self.tags & PAIR_BIT != 0 {
-            if let Some(b) = &other.list_shape {
-                match &self.list_shape {
-                    Some(a) => {
-                        if !tuple_is_subtype(a, b) {
-                            return false;
-                        }
+        if self.tags & PAIR_BIT != 0
+            && let Some(b) = &other.list_shape
+        {
+            match &self.list_shape {
+                Some(a) => {
+                    if !tuple_is_subtype(a, b) {
+                        return false;
                     }
-                    None => return false,
                 }
+                None => return false,
             }
         }
         if self.tags & MAP_BIT != 0 {
@@ -3460,10 +3462,10 @@ impl Ty {
                     t.list_shape.as_deref().map(Vec::len)
                 }
             };
-            if let (Some(a), Some(b)) = (shape_of(self), shape_of(other)) {
-                if a != b {
-                    return true;
-                }
+            if let (Some(a), Some(b)) = (shape_of(self), shape_of(other))
+                && a != b
+            {
+                return true;
             }
             let Some(arity) = shape_of(self).or_else(|| shape_of(other)) else {
                 continue;
@@ -3481,10 +3483,9 @@ impl Ty {
             if let (Some(a), Some(b)) = (
                 member_positions(&self.positive(), member, arity),
                 member_positions(&other.positive(), member, arity),
-            ) {
-                if a.iter().zip(b.iter()).any(|(x, y)| x.is_disjoint(y)) {
-                    return true;
-                }
+            ) && a.iter().zip(b.iter()).any(|(x, y)| x.is_disjoint(y))
+            {
+                return true;
             }
         }
         // Two NON-EMPTY lists are provably disjoint when their element types are: a
@@ -3493,26 +3494,24 @@ impl Ty {
         // both an `int` and a `string`. The same fact `intersect` states by making
         // `list<int> ∩ list<string>` the uninhabited `list<never>`; the two must agree
         // or the argument check (`!is_disjoint`) and the lattice contradict each other.
-        if shared == (1u32 << bit(Tag::Pair)) {
-            if let (Some(a), Some(b)) = (self.elem_ty(), other.elem_ty()) {
-                if a.is_disjoint(&b) {
-                    return true;
-                }
-            }
+        if shared == (1u32 << bit(Tag::Pair))
+            && let (Some(a), Some(b)) = (self.elem_ty(), other.elem_ty())
+            && a.is_disjoint(&b)
+        {
+            return true;
         }
         // Two vectors (sets) whose element types are disjoint share only the EMPTY one —
         // so they share nothing when either side's length excludes 0. (`intersect` reads
         // `vector<string> ∩ vector<int>[2]` as `vector<never>[2]`, which is empty.)
         let set_bit = 1u32 << bit(Tag::Set);
-        if shared & !(VECTOR_BIT | set_bit) == 0 {
-            if let (Some(a), Some(b)) = (self.elem.as_deref(), other.elem.as_deref()) {
-                let zero = Range::point(0);
-                if a.is_disjoint(b)
-                    && (!Range::subset(zero, self.len_eff())
-                        || !Range::subset(zero, other.len_eff()))
-                {
-                    return true;
-                }
+        if shared & !(VECTOR_BIT | set_bit) == 0
+            && let (Some(a), Some(b)) = (self.elem.as_deref(), other.elem.as_deref())
+        {
+            let zero = Range::point(0);
+            if a.is_disjoint(b)
+                && (!Range::subset(zero, self.len_eff()) || !Range::subset(zero, other.len_eff()))
+            {
+                return true;
             }
         }
         // Two record shapes are provably disjoint if they both constrain some
@@ -3524,12 +3523,11 @@ impl Ty {
         // disjointness (the other side permits the extra field freely). This is
         // what lets a guard-refined base — `(record :age int)` from
         // `(if (int? (get r :age)) …)` — flag a call wanting `(record :age string)`.
-        if shared == MAP_BIT {
-            if let (Some(a), Some(b)) = (&self.fields, &other.fields) {
-                if records_are_disjoint(a, b) {
-                    return true;
-                }
-            }
+        if shared == MAP_BIT
+            && let (Some(a), Some(b)) = (&self.fields, &other.fields)
+            && records_are_disjoint(a, b)
+        {
+            return true;
         }
         // Subtractions (ADR-288): `(Pa ∖ Na) ∩ (Pb ∖ Nb)` is empty exactly when what the
         // positives share is wholly subtracted — `vector<int> ∩ ¬vector<int>` is the
@@ -3672,14 +3670,14 @@ impl Ty {
                 } else {
                     &mut self.list_shape
                 };
-                if let Some(shape) = slot.as_deref() {
-                    if !shape.iter().all(|t| t.is_subtype(&elem)) {
-                        let met: Vec<Ty> = shape
-                            .iter()
-                            .map(|t| t.clone().intersect(elem.as_ref().clone()))
-                            .collect();
-                        *slot = Some(Arc::new(met));
-                    }
+                if let Some(shape) = slot.as_deref()
+                    && !shape.iter().all(|t| t.is_subtype(&elem))
+                {
+                    let met: Vec<Ty> = shape
+                        .iter()
+                        .map(|t| t.clone().intersect(elem.as_ref().clone()))
+                        .collect();
+                    *slot = Some(Arc::new(met));
                 }
             }
             let seq = self.tags & SEQ_BITS;
@@ -3757,22 +3755,22 @@ impl Ty {
         // A string-literal set knows its lengths (`len_eff`), so a stored bound is either
         // redundant or a FILTER on the set: keep the members it admits and drop it, so one
         // type has one representation (`"b"` from a meet and `"b"` from a literal are `==`).
-        if self.tags & COUNT_BITS == STR_BIT {
-            if let (Some(bound), Some(LitSet::In(set))) = (self.len, self.lit_str.as_deref()) {
-                let kept: BTreeSet<String> = set
-                    .iter()
-                    .filter(|s| Range::subset(Range::point(s.chars().count() as i64), bound))
-                    .cloned()
-                    .collect();
-                if kept.is_empty() {
-                    // No literal fits the bound: there is no string here at all.
-                    self.tags &= !STR_BIT;
-                    self.lit_str = None;
-                } else {
-                    self.lit_str = Some(Arc::new(LitSet::In(kept)));
-                }
-                self.len = None;
+        if self.tags & COUNT_BITS == STR_BIT
+            && let (Some(bound), Some(LitSet::In(set))) = (self.len, self.lit_str.as_deref())
+        {
+            let kept: BTreeSet<String> = set
+                .iter()
+                .filter(|s| Range::subset(Range::point(s.chars().count() as i64), bound))
+                .cloned()
+                .collect();
+            if kept.is_empty() {
+                // No literal fits the bound: there is no string here at all.
+                self.tags &= !STR_BIT;
+                self.lit_str = None;
+            } else {
+                self.lit_str = Some(Arc::new(LitSet::In(kept)));
             }
+            self.len = None;
         }
         self
     }
@@ -3820,20 +3818,20 @@ impl Ty {
     /// element, a key or value, a field, a position, an arrow's parameter or result, a
     /// subtracted term? (One level; the caller recurses.)
     fn each_nested(&self, pred: &mut dyn FnMut(&Ty) -> bool) -> bool {
-        if let Some(e) = &self.elem {
-            if pred(e) {
-                return true;
-            }
+        if let Some(e) = &self.elem
+            && pred(e)
+        {
+            return true;
         }
-        if let Some(kv) = &self.map_kv {
-            if pred(&kv.0) || pred(&kv.1) {
-                return true;
-            }
+        if let Some(kv) = &self.map_kv
+            && (pred(&kv.0) || pred(&kv.1))
+        {
+            return true;
         }
-        if let Some(f) = &self.fields {
-            if f.fields.values().any(|(t, _)| pred(t)) || pred(&f.rest) {
-                return true;
-            }
+        if let Some(f) = &self.fields
+            && (f.fields.values().any(|(t, _)| pred(t)) || pred(&f.rest))
+        {
+            return true;
         }
         for shape in [&self.tuple, &self.list_shape].into_iter().flatten() {
             if shape.iter().any(&mut *pred) {
@@ -3854,10 +3852,10 @@ impl Ty {
                 return true;
             }
         }
-        if let Some(negs) = &self.neg {
-            if negs.iter().any(&mut *pred) {
-                return true;
-            }
+        if let Some(negs) = &self.neg
+            && negs.iter().any(&mut *pred)
+        {
+            return true;
         }
         false
     }
@@ -4535,51 +4533,51 @@ fn term_is_subtype_of_union(a: &Ty, others: &[Ty]) -> bool {
         // for a single j, which the check above already asked: an arbitrary-length vector
         // can hold one element outside B₁ and another outside B₂, so it escapes both.
         // The fixed arity is exactly what makes the product case different.
-        if tag_bit == VECTOR_BIT {
-            if let Some(elems) = part.tuple_elems() {
-                let candidates: Vec<Vec<Ty>> = others
-                    .iter()
-                    .filter_map(|b| member_positions(b, VECTOR_BIT, elems.len()))
-                    // A different arity shares no value with this one.
-                    .filter(|c| c.len() == elems.len())
-                    .collect();
-                if tuple_covered_by(elems, &candidates) {
-                    continue;
-                }
+        if tag_bit == VECTOR_BIT
+            && let Some(elems) = part.tuple_elems()
+        {
+            let candidates: Vec<Vec<Ty>> = others
+                .iter()
+                .filter_map(|b| member_positions(b, VECTOR_BIT, elems.len()))
+                // A different arity shares no value with this one.
+                .filter(|c| c.len() == elems.len())
+                .collect();
+            if tuple_covered_by(elems, &candidates) {
+                continue;
             }
         }
         // A list shape is a product too.
-        if tag_bit == PAIR_BIT {
-            if let Some(elems) = part.list_shape_elems() {
-                let candidates: Vec<Vec<Ty>> = others
-                    .iter()
-                    .filter_map(|b| member_positions(b, PAIR_BIT, elems.len()))
-                    .filter(|c| c.len() == elems.len())
-                    .collect();
-                if tuple_covered_by(elems, &candidates) {
-                    continue;
-                }
+        if tag_bit == PAIR_BIT
+            && let Some(elems) = part.list_shape_elems()
+        {
+            let candidates: Vec<Vec<Ty>> = others
+                .iter()
+                .filter_map(|b| member_positions(b, PAIR_BIT, elems.len()))
+                .filter(|c| c.len() == elems.len())
+                .collect();
+            if tuple_covered_by(elems, &candidates) {
+                continue;
             }
         }
         // And a record shape (C9): its declared keys are the positions of a
         // product, so `{a: int|string}` is covered by `{a: int} | {a: string}` the way a
         // 1-tuple is. The undeclared remainder is not a position — see `record_covered_by`.
-        if tag_bit == MAP_BIT {
-            if let Some(shape) = part.fields.as_deref() {
-                // A candidate whose map member ALSO carries `map<K, V>` is the intersection of
-                // the two, and the covering rule reads shapes alone: counted as its shape it
-                // over-accepted — `{a: int, b: string}` read as covered by `(and (record
-                // &open :a int) (map keyword int))`, so a union absorbed that record into a
-                // term whose values cannot be strings, and a read of `:b` lost its string.
-                // Left out, it can only fail to help cover (incomplete, never unsound).
-                let candidates: Vec<&RecordShape> = others
-                    .iter()
-                    .filter(|b| b.tags & MAP_BIT != 0 && b.map_kv.is_none())
-                    .filter_map(|b| b.fields.as_deref())
-                    .collect();
-                if record_covered_by(shape, &candidates) {
-                    continue;
-                }
+        if tag_bit == MAP_BIT
+            && let Some(shape) = part.fields.as_deref()
+        {
+            // A candidate whose map member ALSO carries `map<K, V>` is the intersection of
+            // the two, and the covering rule reads shapes alone: counted as its shape it
+            // over-accepted — `{a: int, b: string}` read as covered by `(and (record
+            // &open :a int) (map keyword int))`, so a union absorbed that record into a
+            // term whose values cannot be strings, and a read of `:b` lost its string.
+            // Left out, it can only fail to help cover (incomplete, never unsound).
+            let candidates: Vec<&RecordShape> = others
+                .iter()
+                .filter(|b| b.tags & MAP_BIT != 0 && b.map_kv.is_none())
+                .filter_map(|b| b.fields.as_deref())
+                .collect();
+            if record_covered_by(shape, &candidates) {
+                continue;
             }
         }
         return false;
@@ -4604,10 +4602,10 @@ fn member_positions(term: &Ty, member: u32, arity: usize) -> Option<Vec<Ty>> {
     if term.tags & member == 0 || term.neg.is_some() || term.rec_ref || term.mu {
         return None;
     }
-    if let Some(len) = term.len {
-        if !Range::subset(Range::point(arity as i64), len) {
-            return None;
-        }
+    if let Some(len) = term.len
+        && !Range::subset(Range::point(arity as i64), len)
+    {
+        return None;
     }
     let shape = if member == VECTOR_BIT {
         term.tuple.as_deref()
