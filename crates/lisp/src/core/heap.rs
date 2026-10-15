@@ -954,8 +954,11 @@ pub struct Heap {
     /// `(call-site base, global-site base)` this process allocated for that arm in
     /// the tables above. Blocks are contiguous, lazily allocated on first activation
     /// ([`Heap::vm_arm_block`]), and never individually freed — a `runtime_collect`
-    /// table clear drops the whole map in lockstep with the tables.
-    arm_ic_blocks: RefCell<SmallMap<u64, (u32, u32), std::hash::RandomState>>,
+    /// table clear drops the whole map in lockstep with the tables. Read on every VM frame
+    /// push, so it hashes the `uid` (a counter) with [`SymbolHasher`]'s one multiply, not
+    /// SipHash: past eight arms the map is hashed, and SipHash there was ~4% of a native →
+    /// interpreted → native round trip.
+    arm_ic_blocks: RefCell<SmallMap<u64, (u32, u32), std::hash::BuildHasherDefault<SymbolHasher>>>,
     /// The **currently executing arm's** IC block bases (call sites / global sites).
     /// Set by the VM/JIT drivers at every arm transition; every site-indexed IC
     /// method resolves `base + arm-relative site` through these. Plain `Cell`s: the

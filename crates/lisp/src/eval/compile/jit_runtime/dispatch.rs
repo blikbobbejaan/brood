@@ -107,6 +107,9 @@ pub(crate) fn jit_dispatch_call(
         }
     }
 
+    // The callee's arm when the resolve below found one it could not link (not native yet,
+    // an optional or rest parameter, over the cap): the slow path runs it as it is.
+    let mut vm_arm: Option<(Arc<ArmHandle>, EnvId)> = None;
     // ---- Native-to-native call linking ----
     // Link straight to the callee's installed, epoch-current native code — set up its frame
     // at `stage_base` and call its entry — skipping `dispatch → vm_apply → vm_run_bc →
@@ -324,31 +327,44 @@ pub(crate) fn jit_dispatch_call(
                     Nested::Raised | Nested::Unresolved => None,
                 };
             }
+            vm_arm = Some((arm, callee_env));
         }
     }
 
-    // ---- Slow path ---- (not linkable: not yet native, over the cap, or a non-closure /
-    // unbound callee). Resolve the callee (elided: the call IC, which the resolve above has
-    // just filled for a closure it could not link, else `env_get`; computed: the staged
-    // slot) and run it on the VM. The args are the top `argc` operands either way. Walking
-    // the environment every time cost `json` 590 000 walks a run for `(nth s i -1)` alone:
-    // `nth`'s default arm takes a rest parameter, so no call to it ever links.
-    let callee = if elided {
-        match heap.vm_call_ic_probe(site, head, argc as u32, epoch) {
-            Some((v, _)) => v,
-            None => {
-                let cenv = heap.read_root_env(heap.jit_call_env);
-                match heap.env_get(cenv, head) {
-                    Some(v) => v,
-                    None => {
-                        heap.jit_pending_error = Some(crate::eval::unbound_error(heap, head));
-                        return None;
+    // ---- Slow path ---- (not linkable: not yet native, an optional or rest parameter, over
+    // the cap, or a non-closure / unbound callee). Run it on the VM. The args are the top
+    // `argc` operands either way.
+    //
+    // A closure the resolve above already has the arm of runs that arm: `dispatch` would end
+    // in the same `vm_apply`, after looking the arm up again by closure — a hash lookup, the
+    // closure read and its IC block, ~13% of a native → interpreted → native round trip
+    // (`json` makes 470 000 a run at N=20 000). An arm a module load has staled (ADR-366)
+    // goes the long way, where the lookup recompiles it.
+    let ready_arm = vm_arm.filter(|(arm, _)| {
+        !arm.stale_bindings
+            .load(std::sync::atomic::Ordering::Acquire)
+    });
+    // Otherwise resolve the callee value (elided: the call IC, else `env_get`; computed: the
+    // staged slot). Walking the environment for every call cost `json` 590 000 walks a run
+    // for `(nth s i -1)` alone, when `nth`'s default arm took a rest parameter.
+    let callee = match (&ready_arm, elided) {
+        (Some(_), _) => None,
+        (None, true) => Some(
+            match heap.vm_call_ic_probe(site, head, argc as u32, epoch) {
+                Some((v, _)) => v,
+                None => {
+                    let cenv = heap.read_root_env(heap.jit_call_env);
+                    match heap.env_get(cenv, head) {
+                        Some(v) => v,
+                        None => {
+                            heap.jit_pending_error = Some(crate::eval::unbound_error(heap, head));
+                            return None;
+                        }
                     }
                 }
-            }
-        }
-    } else {
-        heap.root_at(stage_base)
+            },
+        ),
+        (None, false) => Some(heap.root_at(stage_base)),
     };
     let mut argv: SmallVec<[Value; 4]> = SmallVec::with_capacity(argc);
     for k in 0..argc {
@@ -371,16 +387,22 @@ pub(crate) fn jit_dispatch_call(
     // native path above. Same answer: the compiled body resolves its inner head by the
     // same late-bound name, and applies the contract boundary at compile time (ADR-383)
     // where the redirect re-creates it by value.
-    let wrapper_arm = match callee.unpack() {
-        ValueRef::Fn(id) if crate::eval::passthrough_arm(heap, id, argc).is_some() => {
+    let direct_arm = ready_arm.or_else(|| match callee.map(|c| c.unpack()) {
+        Some(ValueRef::Fn(id)) if crate::eval::passthrough_arm(heap, id, argc).is_some() => {
             compiled_arm_for(heap, id, argc)
                 .map(|a| (a, heap.closure(id).env.unwrap_or_else(|| heap.global())))
         }
         _ => None,
-    };
-    let result = match wrapper_arm {
+    });
+    let result = match direct_arm {
         Some((arm, cenv)) => vm_apply(heap, arm, &argv, cenv),
-        None => match dispatch(heap, callee, argv, false, env) {
+        None => match dispatch(
+            heap,
+            callee.expect("resolved whenever no arm was ready"),
+            argv,
+            false,
+            env,
+        ) {
             Ok(Step::Done(v)) => Ok(v),
             Ok(Step::Tail {
                 compiled,

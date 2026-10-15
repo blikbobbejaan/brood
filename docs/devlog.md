@@ -17618,3 +17618,36 @@ benchmark rows decline at most 6 273 times a run, so this is for long folds, not
 `errors-deep`, `supervisor`, `wordcount` and `sort` read +0.3–0.5% on six repeats each; their
 traces show identical tiering decisions on both binaries (no leaf upgrade runs there), so that is
 layout. `ring` is bimodal on both (7.33G / 7.52G).
+
+## 2026-10-15 (evening) — the native → interpreted → native round trip, 23% cheaper
+
+**The lead, and why not the gate.** What is left on `json` is ~470 000 calls a run (N=20 000)
+into functions the native compiler refuses (`call-mediated-boxed`: `json-value`, `enc-key`,
+`reverse`, …). Compute-frontier §7.1 admitted that class three ways and lost every time, so
+the gate stays; the cost to cut is the BOUNDARY. A per-arm tally of interpreted instructions
+put ~1.2M short activations (4–22 instructions each) on the row — per-call cost, not loops.
+A microbenchmark of `json`'s shape — a native loop calling a refused dispatcher that calls a
+native leaf — paid ~3 130 instructions an element against ~495 with the middle function
+native.
+
+**Four cuts, all in the plumbing:**
+- `jit_dispatch_call`'s slow path ran the callee through `dispatch`, which looked its arm up
+  again by closure (a hash lookup, the closure read, its IC block) though the resolve above
+  had just found it in the call IC. It now runs that arm with `vm_apply` — what `dispatch`
+  ends in — unless a module load has staled it (ADR-366), and resolves the callee value only
+  for the `dispatch` fallback. −520, then −45 an element.
+- `arm_ic_blocks`, read on every VM frame push, hashed its `uid` with SipHash; past eight arms
+  it is a real hash map (`json` runs ~240). Now `SymbolHasher`'s one multiply, as the other
+  per-call maps already were. −145.
+- The interpreter's call into a native callee cloned the call IC's arm handle a second time;
+  every outcome after it returns, so it is moved. Two atomic refcount writes a call — cycles,
+  not instructions.
+- `jit_tier_in_frame` tested the global xcall switch (a call) on every native entry before the
+  arm's cached "has a non-tail named call" answer, which ends the test for a leaf. −33.
+
+Round trip 9.80G → 7.56G instructions (−23%) and 3.4G → 2.6G cycles at N=3M. Rows against
+`985f97fd`: `nqueens` −3.9%, `nbody` −2.0%, `json` −1.4%, `regex` −1.3%, `startup` −1.0%;
+`spawn` and `latency` read +1.3% / +1.0% once and overlap fully on six repeats each (noise).
+What remains of the round trip is the trampoline itself (`vm_run_bc` per nested entry, the
+frame's arm refcount) and `jit_tier_in_frame`'s entry ceremony — handoff's "the rest of the
+VM call", structural.

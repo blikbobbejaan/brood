@@ -526,7 +526,9 @@ pub(crate) fn jit_tier_in_frame(
         // save. `nslots` is that live state's size: the winners sit at 3–5 slots, the
         // loser (nbody's `advance-body`) at 20, and 8 leaves margin on both sides.
         && arm.nslots <= XCALL_RELOWER_MAX_NSLOTS
-        && super::xcall_relower_enabled()
+        // The arm's own answer first: it is cached, and for an arm with no non-tail named
+        // call (a leaf) it ends the test here, where the global switch below is a call —
+        // on every native entry.
         && *arm.xcall_wanted.get_or_init(|| {
             arm.chunk.as_ref().is_some_and(|c| {
                 c.code.iter().any(|inst| {
@@ -540,7 +542,8 @@ pub(crate) fn jit_tier_in_frame(
                     )
                 })
             })
-        });
+        })
+        && super::xcall_relower_enabled();
     if (arm.inline_name.is_some() || xcall_relower)
         && !arm.inline_installed.load(Acquire)
         && !ActiveBackend::declines_inline_upgrade(arm)

@@ -108,7 +108,11 @@ default is a fixed parameter, and a queued callback compiles synchronously after
 build): `vm_apply` ~470 000 — the functions the native compiler refuses
 (`call-mediated-boxed`: `json-value`, `json-slice`, `enc-key`, `enc-string`, `->string`,
 `reverse`; `chunk-outside-jit-subset`: `enc-escapes`, `count`), each called from native code
-through the slow path. That is the next lead: why each is refused, one at a time.
+through the slow path. Followed 2026-10-15 (evening): the gate is right (§7.1), so the
+boundary was cut instead — a native → interpreted → native round trip −23% (devlog). Left:
+the nested `vm_run_bc` trampoline per crossing and `jit_tier_in_frame`'s entry ceremony
+(older thread 2), and `fast_link_from_entry` re-checking a callee that is not native on
+every call.
 
 ### Older threads
 
