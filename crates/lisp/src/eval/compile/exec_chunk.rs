@@ -1434,6 +1434,16 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
 /// to a captured `me`).
 #[inline]
 fn reset_frame_keep_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, argv: &[Value]) {
+    // No captures to keep — nearly every loop: the frame is nil but for the args, which is one
+    // bulk fill, not a test per slot (the call sites have truncated `roots` to the frame top).
+    if arm.capture_names.is_empty() {
+        heap.truncate_roots(base);
+        heap.extend_roots_to_nil(base + arm.nslots);
+        for (i, &a) in argv.iter().enumerate().take(arm.nrequired) {
+            heap.set_root_at(base + i, a);
+        }
+        return;
+    }
     let capture_lo = arm.nrequired;
     let capture_hi = capture_lo + arm.capture_names.len();
     for i in 0..arm.nslots {

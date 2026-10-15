@@ -17732,3 +17732,51 @@ upgrade is pending reds `an_unrelated_def_does_not_cost_a_leaf_derivation_its_in
 dropping the swap's settle reds the stress test. Gates: `test-both` 1882/1882 both engines,
 fuzz (tier_transition, metamorphic, pipeline, arithmetic × 300, stale=0) clean, `gcstress`
 clean.
+
+## 2026-10-16 — the interpreted call, 10% cheaper; three cuts measured and NOT taken
+
+**The constant.** The interpreted → interpreted call (the `drv_*` microbenchmarks at
+`BROOD_TIER=1`): ~771 instructions. Precise sampling: ~325 in `vm_run_bc`'s frame push/pop and
+loop top, the rest spread through `exec_chunk`'s `Call`/`Return` handling and its two entries
+per call — the shape the 2026-09-25 entry found, whose structural fix (frame push/pop inside
+`exec_chunk`) regressed `ring`/`ackermann` on L1i and stays dropped.
+
+**Shipped — two cuts that are equivalent by construction:**
+- `fill_captures` was `#[inline]` but too big to inline, so every `CallInPlace` frame paid a
+  call to find an arm with no captures; the fill is split out and the emptiness test inlines.
+- A self-tail loop's frame reset (`reset_frame_keep_captures`) tested every slot for being a
+  capture; an arm with none (nearly every loop) truncates and nil-fills in one write. It
+  showed because a call in a loop body gives the loop's frame spill slots (`drive`: 6 slots
+  against 2), all reset per iteration.
+
+Call 771 → 691 instructions (−10%). Rows, instructions, median of 5 against `fec73f3f`: at
+`BROOD_TIER=1` `fib` −3.4%, `spawn` −3.3%, `bintree` −2.6%, `json` −2.4%, `latency` −2.2%,
+`ackermann` −1.9%, `nbody` −1.8%, every row ≤ 0 but `sort` (+0.04%); at the default ceiling
+`ring` −3.3%, `nbody` −1.3%, `supervisor` −0.7%, `json` (20 a side, both modes) flat.
+
+**Measured and dropped:**
+- **One thread-local for the quantum state** (`REDUCTIONS` + `OWED`, each access an
+  out-of-line accessor call here): 691 → 688. Not worth the reshuffle.
+- **The fast-link table's base from a heap mirror** instead of `brood_rt_fastlink_base` (a
+  callback per native→native call site): −4 instructions on a ~255-instruction call, inside
+  the noise — against five sync points whose one omission reads freed memory.
+- **`brood_rt_push_room` inlined in IR** (bump `RootsBuf`'s length when it has the room, call
+  only to grow): −9 instructions and −3% cycles per native→native call, `bintree` −2.9% — and
+  `json` +2.5% in both its modes (20 runs a side; bisected to this change alone). The extra
+  blocks and the join parameter at every call site cost the big call-heavy arms more than the
+  callback did. A regression on a row is stop-the-world, so it is not in.
+
+**Where the native→native call goes** (a self-tail loop calling a recursive — so unspliced —
+callee, after the xcall re-lowering installs: ~255 instructions): the caller's in-IR sequence
+~139 (the fast-link guards, nine `JitCallCtx` stores, the gateway bump, the checkpoint journal
+written after the call), the callee's boxed entry wrapper ~39 around its i64 worker ~21. The
+structural lever is a direct i64-convention call into the worker when the caller knows its
+operands are ints, skipping the wrapper both ways.
+
+**Two things learned about measuring here.** (1) The first run of a freshly built binary boots
+the prelude from source (a new build id), +1.6G instructions on `json`: yesterday's
+"unreproducible 2 896M outlier" was exactly that, so it is closed — discard the first run after
+any build. (2) `cli::stdimage_reporting` went red in the tree-walker half of a `test-both`
+because a `cargo build` (debug) in another shell relinked `target/debug/brood` between the
+test's two steps; reproduced on demand by rebuilding mid-test. Never build the debug profile
+while a suite runs.

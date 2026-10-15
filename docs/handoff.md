@@ -119,6 +119,10 @@ The middle one is now 434 (devlog 2026-10-15 late: settled arms skip the tier-up
 atomic writes are gone); what is left of it is `exec_chunk`'s call-site share (IC probe + its
 `Arc` clone, the frame fill), `enter_native`'s save/restore and the stack stamp. Next: the
 768 of an interpreted call, then native to native.
+The interpreted call is now 691 (devlog 2026-10-16; the quantum TLS merge, a fast-link base
+mirror and an in-IR `push_room` were measured and dropped there — the last moved `json` +2.5%).
+Native to native is ~255 once the xcall re-lowering lands; its structural lever is a direct
+i64-convention call that skips the callee's boxed wrapper.
 
 ### Older threads
 
