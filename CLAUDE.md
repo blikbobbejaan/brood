@@ -221,7 +221,7 @@ make help                         # every target
   **count the calls** before optimising anything; attribute with `make perf-brood` +
   `(perf/summary)` (its own profile, `target/release-perf/`, never the timing binary). Run
   `make doctor` first — a stale binary fails by agreeing with the baseline. Never benchmark
-  on this machine; see `docs/perf-handoff.md`.
+  on this machine; see `docs/benchmarking.md` §7 for what this machine can still answer.
 
 ### Debug tooling
 

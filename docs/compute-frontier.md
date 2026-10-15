@@ -132,7 +132,8 @@
 >   Up from **6.0× / 4th** at 2026-06-20. Also fixed the `pfib` parallel-scaling cascade (per-process
 >   fast-link invalidation + shared inlined native) — green scheduling now ~93% of the machine ceiling.
 >
-> - **Next levers** (profiled; details in `todo.md`):
+> - **Next levers** (profiled; the detail lived in the since-retired `todo.md` — see git
+>   history before 2026-10-15):
 >   1. ~~**Capturing-closure fast-link / lean HOF call**~~ — **KILLED for `pipeline` by profiling,
 >      2026-07-03. Do not re-attempt on this evidence.** The lever as written ("`eduction`'s
 >      transducer step closures capture → `vm_call_ic_fast_link` bails on

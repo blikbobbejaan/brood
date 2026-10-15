@@ -1462,7 +1462,7 @@ each lands; this section is the working list, `handoff.md` points at it.
 
 ### Off this box
 
-- [x] Tier-2 monomorphization — `perf-handoff.md` Task 5, answered 2026-09-17: no, the
+- [x] Tier-2 monomorphization — `archive/perf-handoff.md` Task 5, answered 2026-09-17: no, the
       ceiling exists and the sites do not.
 - [ ] The bedit `--bump` smoke — needs a box that runs the full suite.
 

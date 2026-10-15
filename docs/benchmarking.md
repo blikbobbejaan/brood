@@ -329,3 +329,48 @@ INSTALL_FEATURES='$(RUN_FEATURES)'`. The harness runs whatever `brood` is on `PA
 `RUN_FEATURES` is what `make ab` measures and `nest release` embeds — one build for all three.
 (Lean and dev-tools startup measured identical, 10 ms / 18.8 MB: the DEV_MODULES load on demand.)
 Reinstall with plain `make install` to get `nest test`/`repl` back.
+
+## 7. Traps that cost a verdict across sessions
+
+Carried over from the retired cross-session task list (`docs/archive/perf-handoff.md`, whose
+tasks are all answered). Each of these has cost a wrong verdict in this repo.
+
+- **`--floor` bounds error WITHIN one `ab-bench` run, not ACROSS runs.** A bisect built from
+  one-baseline-per-run deltas (2026-09-11, KI-128) manufactured a smooth ramp and "converged" on a
+  commit that changed four lines of markdown. To compare several commits, put them all in ONE
+  session, interleaved, with the same binary measured twice as a control.
+- **Every arm must be `:state :live`, and you must check.** A hand-rolled harness compared
+  source-booting baselines against an imaged HEAD — ~10 ms on a 146 ms row, in exactly the
+  direction that erases a HEAD slowdown — and produced a confident retraction of a true finding.
+  `ab-bench` refuses this (`stdimage MISMATCH`); hand-rolling around it reintroduces the bias.
+  Probe each binary with `(io/inspect (stdimage/status))`.
+- **`stdimage` keeps at most four images** (`max-keep 4`), so at most four baselines + HEAD
+  compare imaged in one session; a fifth silently evicts the earliest into a source boot.
+- **A rebuild colds the prelude image**, and **a `std/` edit or a new commit moves the stdlib
+  image id**: the first runs after either boot from source (1.5 billion instructions against
+  78 M on a one-line file — it looks exactly like a catastrophic regression). Run the binary two
+  or three times after a build, and assert `:state :live` in the same shell as the measurement.
+  **If a revert does not reproduce the number you started from, the rig is wrong, not the code.**
+- **The bench corpus only reaches as far back as its names do.** A row may only use names and
+  argument orders as old as the oldest baseline anyone will measure against: ADR-302/308's
+  data-first reorder made 12 of 31 rows unrunnable against any pre-2026-09-02 commit, and
+  brood-benchmarks' CI (built from `main`) cannot notice.
+
+**What a busy box CAN answer.** Deferring to a benchmark box is right for a *magnitude* claim and
+wrong for a *mechanism* one. In order: turn it into a structural question first (did the arm
+lower — `BROOD_JIT_DUMP_IR=1`; refused, and why — `BROOD_JIT_BAIL_TRACE=1`; lowered then fell
+back — `BROOD_DEOPT_TRACE=1`, needs `perf-stats`), which is binary and load-immune; trust large
+ratios only (spreads of 5–12% were measured on the dev box); use within-process adjacency
+(`crates/lisp/benches/eval.rs` runs both arms in one process) for anything smaller; count the
+calls before optimising; and check `cat /proc/loadavg` and `pgrep -af 'while :'` before believing
+any number (twelve orphaned spinners once inflated every number ~2.5x for four days).
+
+**Instruction counts.** `perf stat -e instructions:u -x, -r 3 <cmd>` when
+`/proc/sys/kernel/perf_event_paranoid` allows it — read the sysctl each time, it has moved
+between 1 and 4 with no reboot — else `valgrind --tool=callgrind --callgrind-out-file=/dev/null
+<cmd>`, which counts deterministically at ~50x wall time. Quote a number with the instrument that
+took it.
+
+**Reporting.** Results go in `docs/devlog.md` with the date, the exact `make ab` invocation, N,
+whether rows were pinned, and the floor for every row quoted. A delta without its floor is not a
+result.

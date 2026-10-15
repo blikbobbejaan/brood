@@ -357,7 +357,7 @@ form, conventionally below the `defn`, with an ordering constraint that only bit
 under `BROOD_CONTRACTS=1` (the sig must be in scope when the contract shim wraps).
 The frequently-proposed "modern" alternative is to fold the types into `defn`'s
 parameter list — `(defn f ((x int) -> int) …)` — the ML/Rust/TypeScript/Elixir-`@spec`
-shape. Tracked in ROADMAP.md and roadmap-for-v1.md as an ADR-082 revision.
+shape. Tracked in ROADMAP.md (and the archived roadmap-for-v1.md) as an ADR-082 revision.
 
 **Why it's deferred (and the specific doubt).** It's purely additive, so it costs a
 version number to wait (ADR-011). But the deeper reservation — recorded here as the

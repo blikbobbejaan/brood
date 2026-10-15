@@ -5,8 +5,9 @@ narrative and the measurements live in [`devlog.md`](devlog.md) (dated entries, 
 bottom); decisions in [`decisions.md`](decisions.md); bugs in
 [`known-issues.md`](known-issues.md); the perf option book in
 [`runtime-frontier.md`](runtime-frontier.md) and [`compute-frontier.md`](compute-frontier.md);
-perf work that needs a quiet benchmark box in [`perf-handoff.md`](perf-handoff.md); how to
-measure (and the traps) in [`benchmarking.md`](benchmarking.md). The dated sections this file
+how to measure, the traps, and what needs a quiet benchmark box in
+[`benchmarking.md`](benchmarking.md) (§7; the answered cross-session tasks are in
+[`archive/perf-handoff.md`](archive/perf-handoff.md)). The dated sections this file
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 

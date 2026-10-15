@@ -18,11 +18,10 @@ Legend: ✅ done · 🟡 in progress · ⬜ not started · ❌ tried and reverte
 > under [`docs/`](docs/) (ADRs in [`docs/decisions.md`](docs/decisions.md), a
 > dated history in [`docs/devlog.md`](docs/devlog.md)).
 >
-> **For the 1.0 language freeze specifically, read
-> [`docs/roadmap-for-v1.md`](docs/roadmap-for-v1.md)** — the short list of what must
-> change on the language *surface* before 1.0 (three items), what is deliberately
-> deferred because it is purely additive, and the draft freeze list of what Brood
-> permanently is not. This file remains the superset; that one is the release gate.
+> **The 1.0 language-freeze gate is closed** (all three surface items shipped by 2026-08-29;
+> the list of what Brood permanently is not is ADR-170). Its document is archived at
+> [`docs/archive/roadmap-for-v1.md`](docs/archive/roadmap-for-v1.md); the items it deferred
+> as purely additive and still open are in the "Still open" list below.
 
 ---
 
@@ -492,6 +491,21 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       hit only image → image, the image carries def sites now and an unchanged project
       replays its verdict); whole-project `nest check` is still single-threaded and
       O(project) in memory, and an edit still rebuilds the whole image. Three items left.
+- [ ] **Inline `sig` signatures** — `(defn f ((x int) -> int) …)`; an ADR-082 revision (defn,
+      `sig_of`, defrecord's sigs, `sig!`). Detail under "Syntax review" below
+      (from the archived `docs/archive/roadmap-for-v1.md`).
+- [ ] **Seq protocol on abilities — the Prim1 half** — `first`/`rest`/`empty?`/`nth` don't route
+      through `Seqable`; plus an optional `Counted`. The read/build halves shipped.
+- [ ] **Stateful transducer stages** — `xtake` needs a completion arity; `reduced` itself shipped
+      (ADR-376).
+- [ ] **Rope-level grapheme cursor** — cache segmentation for large buffers; size it against a
+      real editor workload.
+- [ ] **A plain `assert`** — only the test framework's `assert=`/`assert-error` exist; additive.
+- [ ] **Concurrency teaching note** — how to parallelise a cellular automaton (spatial tiling +
+      halo exchange), not "spawn per generation" (from the retired `todo.md`, 2026-05-30 GoL
+      findings).
+- [ ] **Perf levers parked in `docs/compute-frontier.md`** — unboxed arrays (`matmul`), and a
+      fast frame for the VM `dispatch` computed-head branch (`pipeline`).
 
 > Numbers below **re-measured 2026-08-29** with `scripts/stdlib-audit.blsp` rather than
 > carried forward. Three of this list's claims had gone stale in the reader's favour — an
@@ -759,7 +773,7 @@ Shipped as ADRs:
       target as a value — a seed, an exemplar, a receiver. The door left open: a multimethod
       keyed on a type designator, if a library ever asks.
     - 📥 *perf queue* — **Tier-2 monomorphization** (an inferred receiver devirtualized) is
-      `perf-handoff.md` Task 5: it earns its checker→compiler channel only with a row that
+      `archive/perf-handoff.md` Task 5: it earns its checker→compiler channel only with a row that
       moves, and Tier 1's ceiling is the first number to take.
   - ✅ **Checker gap (resolved, note was stale):** a `:use`d ability op from a *loose
     disk* module used to be flagged `unbound symbol` though it ran. No longer reproduces
@@ -911,9 +925,8 @@ What that review consciously left OPEN, with the reasoning:
   in at definition, so two record shapes dispatch apart. The rejected `:type`-field
   axis stays rejected: it would silently reroute any map carrying a `:type` key, where
   a `defrecord` identity is explicit and construction-time.
-- ⬜ **Transducer early termination** (`reduced`) and stateful-stage lifecycle.
-  ADR-161 ships the one-arity contract `fold` needs; `take`-as-a-stage wants a
-  `reduced` sentinel threaded through `fold`, the library's hottest function.
+- ✅ **Transducer early termination** (`reduced`) — shipped as ADR-376. The stateful-stage
+  lifecycle (`xtake`'s completion arity) is still open, in the "Still open" list.
   **[Brood]**
 - ⬜ **A rope-level grapheme cursor.** ADR-159's three accessors unblock correctness
   everywhere; a large buffer still wants a cursor that caches the segmentation.

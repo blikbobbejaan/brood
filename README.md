@@ -443,8 +443,8 @@ docs/          architecture, language reference, roadmap, decisions, dev log
 - [docs/architecture.md](docs/architecture.md) — the design and the "one runtime
   that can also be a server" approach
 - [docs/language.md](docs/language.md) — the language reference
-- [docs/roadmap-for-v1.md](docs/roadmap-for-v1.md) — what must change before the 1.0
-  language freeze, and the list of what Brood permanently *is not*
+- [docs/archive/roadmap-for-v1.md](docs/archive/roadmap-for-v1.md) — the 1.0 language-freeze
+  gate (closed 2026-08-29); the list of what Brood permanently *is not* is ADR-170
 - [ROADMAP.md](ROADMAP.md) — milestones and status
 - [docs/benchmarking.md](docs/benchmarking.md) — how performance is measured;
   archived runs in [docs/benchmarks/](docs/benchmarks/)
