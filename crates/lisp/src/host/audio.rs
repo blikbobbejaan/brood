@@ -117,55 +117,65 @@ mod backend {
     /// The channel to the audio thread, started on first use. `None` when muted or
     /// the thread couldn't start; the audio thread itself exits quietly if there's
     /// no output device, after which sends are harmless no-ops.
+    ///
+    /// Only a STARTED thread is kept: the OS can refuse one (`EAGAIN` under a thread
+    /// limit), and caching that refusal would mute the process for good. The next sound
+    /// tries again, as the timer and the network reactor do. `STARTING` keeps two first
+    /// callers from starting two threads.
     fn sender() -> Option<&'static Sender<Cmd>> {
-        static S: OnceLock<Option<Sender<Cmd>>> = OnceLock::new();
-        S.get_or_init(|| {
-            if muted() {
-                return None;
-            }
-            let (tx, rx) = mpsc::channel::<Cmd>();
-            let started = std::thread::Builder::new()
-                .name("brood-audio".into())
-                .spawn(move || {
-                    // Own the device for the thread's life (the sink must stay alive).
-                    let stream = match DeviceSinkBuilder::open_default_sink() {
-                        Ok(s) => s,
-                        Err(_) => return,
-                    };
-                    let mixer = stream.mixer();
-                    while let Ok(cmd) = rx.recv() {
-                        // `add` mixes concurrently, so overlapping sounds stack.
-                        match cmd {
-                            Cmd::Beep { freq, ms, vol } => {
-                                let tone = SineWave::new(freq)
-                                    .take_duration(Duration::from_millis(ms))
-                                    .amplify(vol);
-                                mixer.add(tone);
-                            }
-                            Cmd::Play { sound, vol } => {
-                                let (Some(channels), Some(rate)) = (
-                                    std::num::NonZeroU16::new(sound.channels),
-                                    std::num::NonZeroU32::new(sound.rate),
-                                ) else {
-                                    continue;
-                                };
-                                let buffer = rodio::buffer::SamplesBuffer::new(
-                                    channels,
-                                    rate,
-                                    sound.samples.to_vec(),
-                                )
+        static SENDER: OnceLock<Sender<Cmd>> = OnceLock::new();
+        static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        if let Some(sender) = SENDER.get() {
+            return Some(sender);
+        }
+        if muted() {
+            return None;
+        }
+        let _starting = crate::core::sync::lock(&STARTING);
+        if let Some(sender) = SENDER.get() {
+            return Some(sender);
+        }
+        let (tx, rx) = mpsc::channel::<Cmd>();
+        let started = std::thread::Builder::new()
+            .name("brood-audio".into())
+            .spawn(move || {
+                // Own the device for the thread's life (the sink must stay alive).
+                let stream = match DeviceSinkBuilder::open_default_sink() {
+                    Ok(s) => s,
+                    Err(_) => return,
+                };
+                let mixer = stream.mixer();
+                while let Ok(cmd) = rx.recv() {
+                    // `add` mixes concurrently, so overlapping sounds stack.
+                    match cmd {
+                        Cmd::Beep { freq, ms, vol } => {
+                            let tone = SineWave::new(freq)
+                                .take_duration(Duration::from_millis(ms))
                                 .amplify(vol);
-                                mixer.add(buffer);
-                            }
+                            mixer.add(tone);
+                        }
+                        Cmd::Play { sound, vol } => {
+                            let (Some(channels), Some(rate)) = (
+                                std::num::NonZeroU16::new(sound.channels),
+                                std::num::NonZeroU32::new(sound.rate),
+                            ) else {
+                                continue;
+                            };
+                            let buffer = rodio::buffer::SamplesBuffer::new(
+                                channels,
+                                rate,
+                                sound.samples.to_vec(),
+                            )
+                            .amplify(vol);
+                            mixer.add(buffer);
                         }
                     }
-                });
-            match started {
-                Ok(_) => Some(tx),
-                Err(_) => None,
-            }
-        })
-        .as_ref()
+                }
+            });
+        match started {
+            Ok(_) => Some(SENDER.get_or_init(|| tx)),
+            Err(_) => None,
+        }
     }
 
     pub fn beep(freq: f32, ms: u64, vol: f32) {
