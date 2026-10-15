@@ -687,7 +687,7 @@ pub(crate) fn node_any<F: Fn(&Node) -> bool>(node: &Node, pred: &F) -> bool {
 
 /// Probe whether `(fn (params…) body…)` folds a **linear** immutable-map
 /// accumulator through a self-tail loop, returning that accumulator's param index
-/// if so. Backs the macroexpand-time wrapper-split (`eval/macros.rs`): it compiles
+/// if so. Backs the macroexpand-time wrapper-split (`eval/macros/linmap.rs`): it compiles
 /// a throwaway `Node` (like `self_inline_probe`) and runs the reachability analysis
 /// on it, so the soundness rule lives in exactly one place. Only a simple
 /// fixed-arity, no-capture top-level `defn` qualifies; anything else → `None`.

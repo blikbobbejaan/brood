@@ -54,7 +54,7 @@ pub const TRY_PRIM: &str = "%try";
 pub const EQ_PRIM: &str = "%eq";
 // Table (ETS) primitive names. Shared across five sites — the `def` registration
 // (builtins.rs), the IR PrimOp fast-path (compile/ir.rs), the linmap rewrite's
-// emitted call heads (compile/inline.rs, eval/macros.rs), and the checker's effect
+// emitted call heads (compile/inline.rs, eval/macros/linmap.rs), and the checker's effect
 // list (types/check/guard_effects.rs) — so renaming one is a single edit the compiler
 // then enforces at every site. A bare string here once desynced silently (a rename hit
 // the registration but not the linmap emitter → `%table-snapshot` unbound at runtime).
@@ -70,7 +70,7 @@ pub const TABLE_COUNT: &str = "%table-count";
 pub const TABLE_SNAPSHOT: &str = "%table-snapshot";
 pub const TABLE_DROP: &str = "%table-drop";
 // The immutable-map ops the linmap rewrite recognizes on the SOURCE side (compile/inline.rs
-// + eval/macros.rs) and rewrites into the Table ops above. Shared so a map-op rename stays
+// + eval/macros/linmap.rs) and rewrites into the Table ops above. Shared so a map-op rename stays
 // in step with the rewrite that pattern-matches it.
 pub const MAP_GET: &str = "%map-get";
 pub const MAP_COUNT: &str = "%map-count";

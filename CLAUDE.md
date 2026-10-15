@@ -126,7 +126,8 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
                inline (Node->Node passes), jit_plan (backend-independent lowering
                decisions), jit_runtime/ (tiering glue: compiler thread, link, dispatch,
                deopt), jit_lower (the Cranelift lowering); macros.rs (quasiquote,
-               macroexpand, pattern lowering)
+               macroexpand) + macros/ (hygiene, resolve: namespaces and `compile`,
+               pipeline and linmap: the loop rewrites, patterns: pattern lowering)
   types.rs + types/   the set-theoretic lattice, sig, display, and check/ (the advisory
                checker: walk/ dispatch, sigs, infer, and its tests)
   builtins.rs + builtins/   the primitive kernel, one file per domain; EVERY domain file
