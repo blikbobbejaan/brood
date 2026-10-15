@@ -657,7 +657,7 @@ pub fn image_sigs_enabled() -> bool {
 /// Record the signature index an opened image holds — `(qualified name, type text, min
 /// arity, max arity)` per function. Additive like the kind index.
 pub fn register_image_sigs(entries: Vec<(String, String, u32, u32)>) {
-    if std::env::var_os("BROOD_IMAGE_TRACE").is_some() {
+    if crate::diagnostics::debug_flags::image_trace() {
         let typed = entries
             .iter()
             .filter(|(_, text, _, _)| !text.is_empty())
@@ -719,7 +719,7 @@ fn ensure_module_indexed(heap: &Heap, sym: Symbol) {
     let mut scratch = Heap::with_regions(heap.prelude_arc(), heap.runtime_arc());
     scratch.set_global(EnvId::GLOBAL);
     let entries = crate::types::check::module_signature_index(&mut scratch, key, source);
-    if std::env::var_os("BROOD_IMAGE_TRACE").is_some() {
+    if crate::diagnostics::debug_flags::image_trace() {
         eprintln!(
             "[image] signature index: no image — {key} scanned from its embedded source ({} names)",
             entries.len()
@@ -751,7 +751,7 @@ fn ensure_std_index(heap: &Heap) {
             .into_iter()
             .map(|e| (e.name, e.text, e.min, e.max))
             .collect();
-    if std::env::var_os("BROOD_IMAGE_TRACE").is_some() {
+    if crate::diagnostics::debug_flags::image_trace() {
         eprintln!("[image] signature index: no image — computed from the embedded sources");
     }
     register_image_sigs(entries);

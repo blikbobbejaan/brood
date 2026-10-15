@@ -684,6 +684,51 @@ pub fn map_assoc_lowering() -> bool {
     !is_set(&OFF, "BROOD_NO_MAPASSOC")
 }
 
+/// `BROOD_IMAGE_TRACE` is set — read once. Where stdlib-image time goes, by phase.
+pub fn image_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_IMAGE_TRACE")
+}
+
+/// `BROOD_BOOT_TRACE` is set — read once. Boot timings, per slow prelude form.
+pub fn boot_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_BOOT_TRACE")
+}
+
+/// `BROOD_SCOPE_DBG` is set — read once. The module-scope tracer (KI-120's class).
+pub fn scope_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_SCOPE_DBG")
+}
+
+/// `BROOD_DERIVE_DBG` is set — read once. Where a file's check spent its time.
+pub fn derive_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_DERIVE_DBG")
+}
+
+/// `BROOD_DEVIRT_DBG` is set — read once. Devirtualisation decisions.
+pub fn devirt_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_DEVIRT_DBG")
+}
+
+/// `BROOD_TRACE_GCBLOCK` is set — read once. Checked on every eval entry and exit under
+/// debug assertions, where an uncached read took the environment lock on the hottest path
+/// of exactly the builds used to hunt races.
+pub fn trace_gcblock() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    is_set(&ON, "BROOD_TRACE_GCBLOCK")
+}
+
+/// The linear-map rewrites — pipeline and range-fold fusion, and the in-place table
+/// tally; `BROOD_LINMAP=0` opts out. Read at every top-level form's expansion, so cached.
+pub fn linmap() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    !*OFF.get_or_init(|| std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0"))
+}
+
 /// The in-IR call-site fast link; `BROOD_NO_JIT_ICALL` opts out.
 pub fn jit_inline_call() -> bool {
     static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

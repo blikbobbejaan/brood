@@ -210,7 +210,7 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     // `stdlib-id`, so a rebuild with different module coverage reuses the same PATH with
     // different offsets, and every section read lands on garbage (KI-105). The trace line is
     // emitted here because the prelude's own Brood `when` form never runs on this path.
-    let trace = std::env::var_os("BROOD_IMAGE_TRACE").is_some();
+    let trace = crate::diagnostics::debug_flags::image_trace();
     let install_started = web_time::Instant::now();
     let sections = replay_std_image_install(&mut heap, root)?;
     if trace {
@@ -231,7 +231,7 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
     let name_meta = heap.name_meta_snapshot();
     let before_freeze = started.elapsed();
     let (code, bindings) = heap.freeze_as_shared_code(root);
-    if std::env::var_os("BROOD_BOOT_TRACE").is_some() {
+    if crate::diagnostics::debug_flags::boot_trace() {
         eprintln!(
             "[boot] register={:?} image={:?} ({entries} entries) freeze={:?} — total={:?} (prelude image)",
             registered,
@@ -296,7 +296,7 @@ fn boot_from_source() -> SharedBundle {
             // "unbound symbol: x" without the form that reached `x` is a bisection.
             .unwrap_or_else(|e| panic!("prelude expand: {} (form at {:?})", e, pos));
         let d = t_e.elapsed();
-        if d.as_micros() > 300 && std::env::var_os("BROOD_BOOT_TRACE").is_some() {
+        if d.as_micros() > 300 && crate::diagnostics::debug_flags::boot_trace() {
             eprintln!("[boot-form] {:?} at {:?}", d, pos);
         }
         t_expand += d;
@@ -333,7 +333,7 @@ fn boot_from_source() -> SharedBundle {
     }
     let (code, bindings) = heap.freeze_as_shared_code(root);
     let t_freeze = t_mark.elapsed();
-    if std::env::var_os("BROOD_BOOT_TRACE").is_some() {
+    if crate::diagnostics::debug_flags::boot_trace() {
         eprintln!(
             "[boot] builtins={:?} read={:?} expand={:?} eval={:?} freeze={:?} total={:?} (source boot{})",
             t_builtins,

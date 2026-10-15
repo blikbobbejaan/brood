@@ -2415,9 +2415,7 @@ fn form_has_call(
 /// Does `form` hold a stage chain under a `fold`/`reduce`? The cheap pre-check.
 fn form_has_pipeline(heap: &Heap, form: Value) -> bool {
     form_has_call(heap, form, 0, &|head, items| {
-        (value::symbol_is(head, "fold") || value::symbol_is(head, "reduce"))
-            && items.len() == 4
-            && peel_stages(heap, items[1]).is_some()
+        is_fold_head(head) && items.len() == 4 && peel_stages(heap, items[1]).is_some()
     })
 }
 
@@ -2425,7 +2423,7 @@ fn form_has_pipeline(heap: &Heap, form: Value) -> bool {
 /// `(let (c C s1 S1 … init INIT rf RF) (fold c init (fn (acc e0) BODY)))` — see the section
 /// comment. Declined for the whole form when a binder in it shadows a name read here.
 fn pipeline_fuse_rewrite(heap: &mut Heap, form: Value) -> Value {
-    if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
+    if !crate::diagnostics::debug_flags::linmap() {
         return form;
     }
     if !form_has_pipeline(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
@@ -2436,8 +2434,9 @@ fn pipeline_fuse_rewrite(heap: &mut Heap, form: Value) -> Value {
     })
 }
 
-/// The shared bottom-up walk: children first (so nested shapes are handled on their own),
-/// `quote`d data and `:generated` code left alone, then `at` on the rebuilt call.
+/// The shared bottom-up walk of the pipeline and linmap fusions: children first (so nested
+/// shapes are handled on their own), `quote`d data and `:generated` code left alone (a
+/// rewritten fold's slow copy is generated), then `at` on the rebuilt call.
 fn pipeline_walk(
     heap: &mut Heap,
     form: Value,
@@ -2473,7 +2472,7 @@ fn pipeline_fuse_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<V
     let ValueRef::Sym(h) = items[0].unpack() else {
         return None;
     };
-    if !(value::symbol_is(h, "fold") || value::symbol_is(h, "reduce")) || items.len() != 4 {
+    if !is_fold_head(h) || items.len() != 4 {
         return None;
     }
     let (base, stages) = peel_stages(heap, items[1])?;
@@ -2605,7 +2604,7 @@ fn is_fold_head(h: value::Symbol) -> bool {
 /// `reduce` — into a counted `letrec` loop over the range's bounds, with the ordinary
 /// `fold` kept for a non-range (an empty range is nil). See the section comment.
 fn range_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
-    if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
+    if !crate::diagnostics::debug_flags::linmap() {
         return form;
     }
     if !form_has_range_fold(heap, form) || form_binds_any(heap, form, &pipeline_names(), 0) {
@@ -3370,49 +3369,18 @@ fn linmap_fold_rewrite(heap: &mut Heap, form: Value) -> Value {
     if !form_has_fold_literal(heap, form) || form_binds_any(heap, form, &names, 0) {
         return form;
     }
-    linmap_fold_walk(heap, form, 0)
+    pipeline_walk(heap, form, 0, &linmap_fold_call)
 }
 
 /// Is there a `(fold … (fn …))` / `reduce` anywhere in `form`? The cheap pre-check that
 /// keeps the binder scan and the rebuilding walk off every ordinary top-level form.
 fn form_has_fold_literal(heap: &Heap, form: Value) -> bool {
     form_has_call(heap, form, 0, &|head, items| {
-        (value::symbol_is(head, "fold") || value::symbol_is(head, "reduce"))
+        is_fold_head(head)
             && items.len() == 4
             && matches!(heap.list_to_vec(items[3]).ok().and_then(|f| f.first().map(|v| v.unpack())),
                 Some(ValueRef::Sym(f)) if value::symbol_is(f, kw::FN))
     })
-}
-
-fn linmap_fold_walk(heap: &mut Heap, form: Value, depth: usize) -> Value {
-    if depth > 256 {
-        return form;
-    }
-    let items = match heap.list_to_vec(form) {
-        Ok(v) if !v.is_empty() => v,
-        _ => return form,
-    };
-    if let ValueRef::Sym(h) = items[0].unpack() {
-        if value::symbol_is(h, kw::QUOTE) || value::symbol_is(h, kw::QUASIQUOTE) {
-            return form;
-        }
-        // Generated code is the compiler's own; a rewritten fold's slow copy lives here.
-        if value::symbol_is(h, "%lint-allow")
-            && matches!(items.get(1), Some(&Value::Keyword(k)) if value::symbol_is(k, "generated"))
-        {
-            return form;
-        }
-    }
-    // Children first, so a fold nested in a fold's collection or body is handled on its own.
-    let rebuilt: Vec<Value> = items
-        .iter()
-        .map(|&it| linmap_fold_walk(heap, it, depth + 1))
-        .collect();
-    let form = rebuild_list(heap, form, rebuilt.clone());
-    if let Some(out) = linmap_fold_call(heap, form, &rebuilt) {
-        return out;
-    }
-    form
 }
 
 /// The rewrite of one `(fold COLL INIT (fn (acc x…) BODY…))` call, or `None` when `items` is
@@ -3421,7 +3389,7 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
     let ValueRef::Sym(h) = items[0].unpack() else {
         return None;
     };
-    if !(value::symbol_is(h, "fold") || value::symbol_is(h, "reduce")) || items.len() != 4 {
+    if !is_fold_head(h) || items.len() != 4 {
         return None;
     }
     let fn_items = heap.list_to_vec(items[3]).ok()?;
@@ -3600,8 +3568,9 @@ fn form_has_quasiquote(heap: &Heap, form: Value, depth: usize) -> bool {
 /// Source rewrite for the inner loop of a wrapper-split: turn the self-recursion
 /// head `name → inner`, and each whitelisted map op whose first arg is the
 /// accumulator `acc` into its in-place table op (updates yield the table via a
-/// `do`; reads pass straight through). Must stay in lockstep with `linmap_probe`'s
-/// whitelist — the probe only admits a body whose every `acc` use is one of these.
+/// `do`; reads pass straight through). The `%`-op mapping is `linmap_update_op` /
+/// `linmap_read_op`, the probe's own whitelist; the idiom spellings below must stay in
+/// lockstep with `LinIdiom`.
 fn linmap_rewrite_form(
     heap: &mut Heap,
     form: Value,
@@ -3620,14 +3589,8 @@ fn linmap_rewrite_form(
         let second_is_acc =
             matches!(items.get(1).map(|v| v.unpack()), Some(ValueRef::Sym(s)) if s == acc);
         if second_is_acc {
-            let update = if value::symbol_is(h, kw::MAP_INT_ADD) {
-                Some(kw::TABLE_ADD)
-            } else if value::symbol_is(h, kw::MAP_DISSOC) {
-                Some(kw::TABLE_DELETE)
-            } else {
-                None
-            };
-            if let Some(t) = update {
+            // The probe's own op tables, so the rewrite maps exactly the ops it admits.
+            if let Some(t) = crate::eval::compile::linmap_update_op(h) {
                 // (op acc rest…) → (do (table-op acc rest…) acc) — mutate, yield table.
                 let mut c = vec![value::sym(t), items[1]];
                 for &a in &items[2..] {
@@ -3636,14 +3599,7 @@ fn linmap_rewrite_form(
                 let mutate = rebuild_list(heap, form, c);
                 return rebuild_list(heap, form, vec![value::sym(kw::DO), mutate, items[1]]);
             }
-            let read = if value::symbol_is(h, kw::MAP_GET) {
-                Some(kw::TABLE_GET)
-            } else if value::symbol_is(h, kw::MAP_COUNT) {
-                Some(kw::TABLE_COUNT)
-            } else {
-                None
-            };
-            if let Some(t) = read {
+            if let Some(t) = crate::eval::compile::linmap_read_op(h) {
                 let mut c = vec![value::sym(t), items[1]];
                 for &a in &items[2..] {
                     c.push(linmap_rewrite_form(heap, a, name, inner, acc));

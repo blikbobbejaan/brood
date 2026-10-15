@@ -281,7 +281,7 @@ pub(super) fn mono_devirtualize(
     {
         return None;
     }
-    if std::env::var_os("BROOD_DEVIRT_DBG").is_some() {
+    if crate::diagnostics::debug_flags::devirt_debug() {
         let ValueRef::Vector(key_vector) = op_key.unpack() else {
             unreachable!("ability_op_key answers a vector");
         };
@@ -700,7 +700,7 @@ pub(crate) fn linmap_probe(
     params: &[Symbol],
     body: &[Value],
 ) -> Option<usize> {
-    if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
+    if !crate::diagnostics::debug_flags::linmap() {
         return None; // opt-out escape hatch
     }
     let mut scope = Scope::with_params_enclosing(&[], Vec::new());
@@ -727,7 +727,7 @@ pub(crate) fn linmap_probe(
 /// shape does not hold, when nothing updates `acc` (nothing to win), or under
 /// `BROOD_LINMAP=0`.
 pub(crate) fn linmap_probe_fn(heap: &Heap, params: &[Symbol], body: &[Value]) -> Option<()> {
-    if std::env::var_os("BROOD_LINMAP").is_some_and(|v| v == "0") {
+    if !crate::diagnostics::debug_flags::linmap() {
         return None;
     }
     let mut scope = Scope::with_params_enclosing(&[], Vec::new());

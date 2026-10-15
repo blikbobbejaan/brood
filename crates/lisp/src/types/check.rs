@@ -309,7 +309,7 @@ pub fn materialise_referenced_modules(heap: &mut Heap) {
         // checker reads its type from the footer. A name without one (an undeclared
         // function, a value, a module no image describes) still brings its module in, so
         // the body walk that infers it has the leaf.
-        let trace = std::env::var_os("BROOD_IMAGE_TRACE").is_some();
+        let trace = crate::diagnostics::debug_flags::image_trace();
         let mut names: Vec<Symbol> = names.into_iter().collect();
         names.sort_by_key(|s| value::symbol_name(*s));
         for name in names {
@@ -1993,7 +1993,7 @@ struct DeriveTiming {
 }
 
 fn derive_debug() -> bool {
-    std::env::var_os("BROOD_DERIVE_DBG").is_some()
+    crate::diagnostics::debug_flags::derive_debug()
 }
 
 /// Every pass of a file check, in the order they run. Each pass reads what the ones

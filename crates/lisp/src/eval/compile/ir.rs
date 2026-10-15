@@ -939,8 +939,12 @@ pub(super) struct ArmSpec {
 }
 
 impl ArmSpec {
-    pub(super) fn accepts(&self, argc: usize) -> bool {
-        argc >= self.nrequired && (self.has_rest || argc <= self.nrequired + self.noptional)
+    fn shape(&self) -> crate::core::value::ArmShape {
+        crate::core::value::ArmShape {
+            required: self.nrequired,
+            optional: self.noptional,
+            rest: self.has_rest,
+        }
     }
 }
 
@@ -950,12 +954,6 @@ pub struct CompiledClosure {
 }
 
 impl CompiledClosure {
-    /// The compiled arm to run for `argc`, or `None` to defer to the tree-walker.
-    /// Mirrors `Closure::select_arm`: among accepting arms, prefer a fixed (no-rest)
-    /// arm, then the most required params, then the FEWEST optional slots; ties
-    /// resolve to the later arm (Rust's `max_by_key`, same as eval). Returns the
-    /// winner's compiled body iff it was
-    /// VM-eligible — otherwise `None`, so the tree-walker runs the *same* arm.
     /// **Test-only.** Every compiled arm of this closure, for invariant tests that need
     /// a corpus of real chunks rather than the one arm a given argc selects.
     #[cfg(test)]
@@ -974,22 +972,14 @@ impl CompiledClosure {
         })
     }
 
+    /// The compiled arm to run for `argc`, or `None` to defer to the tree-walker. The arm
+    /// is chosen by the tree-walker's own rule ([`crate::core::value::select_arm_by`]);
+    /// its compiled body is returned iff it was VM-eligible — otherwise `None`, so the
+    /// tree-walker runs the *same* arm.
     pub(crate) fn arm_for(&self, argc: usize) -> Option<&Arc<CompiledArm>> {
-        // Fast path: a single-arity closure (the common case) — skip the filter +
-        // `max_by_key` scan, one per VM call. Identical result for one arm.
-        if let [only] = self.arms.as_slice() {
-            return if only.accepts(argc) {
-                only.compiled.as_ref()
-            } else {
-                None
-            };
-        }
-        let winner = self
-            .arms
-            .iter()
-            .filter(|a| a.accepts(argc))
-            .max_by_key(|a| (!a.has_rest, a.nrequired, std::cmp::Reverse(a.noptional)))?;
-        winner.compiled.as_ref()
+        crate::core::value::select_arm_by(&self.arms, argc, ArmSpec::shape)?
+            .compiled
+            .as_ref()
     }
 }
 

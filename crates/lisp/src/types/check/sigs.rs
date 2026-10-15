@@ -3130,7 +3130,7 @@ pub(super) fn caller_derived_params(
             .copied()
             .filter(|name| next.get(name) != derived.get(name))
             .collect();
-        if std::env::var_os("BROOD_DERIVE_DBG").is_some() {
+        if crate::diagnostics::debug_flags::derive_debug() {
             for name in &changed {
                 let shown: Vec<String> = next
                     .get(name)
@@ -3149,7 +3149,7 @@ pub(super) fn caller_derived_params(
         moved = Some(changed);
         older = std::mem::replace(&mut derived, next);
     }
-    if std::env::var_os("BROOD_DERIVE_DBG").is_some() {
+    if crate::diagnostics::debug_flags::derive_debug() {
         eprintln!("[derive] NO FIXPOINT");
     }
     DERIVATION_GAVE_UP.with(|c| c.set(Some(DeriveDecline::NoFixpoint)));
@@ -3741,7 +3741,7 @@ fn collect_form_sites(
             if super::walk::resolves_to_macro(heap, self.ctx, head) {
                 // Syntax the expander left as written: it may construct a call the walk
                 // cannot see, so the file's closed-caller premise is gone.
-                if std::env::var_os("BROOD_DERIVE_DBG").is_some() {
+                if crate::diagnostics::debug_flags::derive_debug() {
                     eprintln!(
                         "[derive] OPAQUE: unexpanded macro call ({} …)",
                         value::symbol_name_ref(head)

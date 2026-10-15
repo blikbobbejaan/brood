@@ -1054,8 +1054,59 @@ impl ClosureArm {
     }
     /// Does this arm accept a call of `argc` arguments?
     pub fn accepts(&self, argc: usize) -> bool {
-        argc >= self.min_arity() && self.max_arity().is_none_or(|m| argc <= m)
+        self.shape().accepts(argc)
     }
+    /// The arity shape [`select_arm_by`] ranks this arm by.
+    pub(crate) fn shape(&self) -> ArmShape {
+        ArmShape {
+            required: self.params.len(),
+            optional: self.optionals.len(),
+            rest: self.rest.is_some(),
+        }
+    }
+}
+
+/// An arm's arity: what [`select_arm_by`] needs to decide whether it accepts a call and
+/// how specific it is.
+#[derive(Clone, Copy)]
+pub(crate) struct ArmShape {
+    pub required: usize,
+    pub optional: usize,
+    pub rest: bool,
+}
+
+impl ArmShape {
+    pub(crate) fn accepts(self, argc: usize) -> bool {
+        argc >= self.required && (self.rest || argc <= self.required + self.optional)
+    }
+}
+
+/// The arm a call of `argc` arguments runs, or `None` (an arity error). The ONE rule the
+/// tree-walker ([`Closure::select_arm`]) and the VM (`CompiledClosure::arm_for`) both
+/// apply, each over its own arm type, so the tiers cannot run different arms of one
+/// function.
+///
+/// Among accepting arms: a fixed arity (no `&` rest) beats a variadic one; then the most
+/// required parameters (most specific); then the FEWEST optional slots. Without the last
+/// term, `((x) …) ((x &optional y) …)` tied on the first two and `max_by_key`'s last-wins
+/// tie-break picked the `&optional` arm for `(f 1)`, so the answer depended on clause
+/// ORDER. Remaining ties resolve to the later arm.
+pub(crate) fn select_arm_by<T>(
+    arms: &[T],
+    argc: usize,
+    shape: impl Fn(&T) -> ArmShape,
+) -> Option<&T> {
+    // Fast path: a single-arity function — the overwhelming majority, one select per
+    // call. Skips the filter + `max_by_key` machinery; identical in result.
+    if let [only] = arms {
+        return shape(only).accepts(argc).then_some(only);
+    }
+    arms.iter()
+        .filter(|arm| shape(arm).accepts(argc))
+        .max_by_key(|arm| {
+            let s = shape(arm);
+            (!s.rest, s.required, std::cmp::Reverse(s.optional))
+        })
 }
 
 /// A user-defined function. Captures its defining environment (an [`EnvId`]) for
@@ -1158,35 +1209,10 @@ impl Closure {
         }
     }
 
-    /// Select the arm to run for a call of `argc` arguments. Prefers an exact
-    /// fixed-arity arm (no `&` rest) over a variadic one; among matching arms,
-    /// the one with the most required params (most specific). `None` if no arm
-    /// accepts `argc` (an arity error). A single-arity closure always returns its
-    /// sole arm when `argc` fits.
+    /// The arm to run for a call of `argc` arguments, by [`select_arm_by`]'s rule.
+    /// `None` if no arm accepts `argc` (an arity error).
     pub fn select_arm(&self, argc: usize) -> Option<&ClosureArm> {
-        // Fast path: a single-arity closure — the overwhelming majority. Skip the
-        // filter + `max_by_key` iterator machinery (a measurable slice of call-heavy
-        // code like `nbody` — one arm-select per call). A direct arity check on the
-        // lone arm is identical in result.
-        if let [only] = &self.arms[..] {
-            return if only.accepts(argc) { Some(only) } else { None };
-        }
-        self.arms
-            .iter()
-            .filter(|a| a.accepts(argc))
-            // Exact fixed match beats variadic; then most-specific (most required
-            // params); then *fewest optional slots*. Without the last term, an arm
-            // pair like `((x) …) ((x &optional y) …)` tied on the first two keys and
-            // `max_by_key`'s last-wins tie-break silently picked the `&optional` arm
-            // for `(f 1)` — so the answer depended on clause ORDER and contradicted
-            // the documented "an exact fixed arity beats a variadic one".
-            .max_by_key(|a| {
-                (
-                    a.rest.is_none(),
-                    a.params.len(),
-                    std::cmp::Reverse(a.optionals.len()),
-                )
-            })
+        select_arm_by(&self.arms, argc, ClosureArm::shape)
     }
 }
 

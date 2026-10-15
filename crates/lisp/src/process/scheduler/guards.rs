@@ -51,7 +51,7 @@ pub fn gc_block_depth() -> u32 {
 pub(super) fn gc_block_set(n: u32) {
     GC_BLOCK.with(|d| d.set(n));
     #[cfg(debug_assertions)]
-    if std::env::var_os("BROOD_TRACE_GCBLOCK").is_some() {
+    if crate::diagnostics::debug_flags::trace_gcblock() {
         eprintln!(
             "[gcblock] SET({}) thread={:?}",
             n,
@@ -109,7 +109,7 @@ impl GcBlockGuard {
             n
         });
         #[cfg(debug_assertions)]
-        if std::env::var_os("BROOD_TRACE_GCBLOCK").is_some() {
+        if crate::diagnostics::debug_flags::trace_gcblock() {
             eprintln!(
                 "[gcblock] enter -> {} thread={:?}",
                 new,
@@ -131,7 +131,7 @@ impl Drop for GcBlockGuard {
             n
         });
         #[cfg(debug_assertions)]
-        if std::env::var_os("BROOD_TRACE_GCBLOCK").is_some() {
+        if crate::diagnostics::debug_flags::trace_gcblock() {
             eprintln!(
                 "[gcblock] drop -> {} thread={:?}",
                 new,

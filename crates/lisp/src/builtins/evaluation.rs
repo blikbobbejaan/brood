@@ -809,7 +809,7 @@ fn wait_for_inflight_loads(heap: &Heap) {
     let mut spins = 0u32;
     while inflight(heap) {
         if std::time::Instant::now() >= deadline {
-            if std::env::var_os("BROOD_SCOPE_DBG").is_some() {
+            if crate::diagnostics::debug_flags::scope_debug() {
                 eprintln!(
                     "[scope] RESTORE by {} proceeding with a module load still in flight after 5s",
                     crate::process::self_pid()
@@ -995,7 +995,7 @@ fn isolate_impl(args: &[Value], env: EnvId, heap: &mut Heap, replay_loads: bool)
     }
     // DIAGNOSTIC (BROOD_SCOPE_DBG): what is still alive as we roll the globals back. Anything
     // here that is not an ancestor is a process about to see its bindings vanish — KI-89.
-    if std::env::var_os("BROOD_SCOPE_DBG").is_some() {
+    if crate::diagnostics::debug_flags::scope_debug() {
         let mut ancestors = std::collections::HashSet::new();
         let mut cur = me;
         for _ in 0..10_000 {

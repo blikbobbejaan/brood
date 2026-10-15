@@ -146,8 +146,7 @@ const KIND_DEF_SITE: u8 = 5;
 /// question for making this faster is how much of the cost is the tree versus the bytes.
 /// Cheap to keep: one cached bool.
 fn trace() -> bool {
-    static T: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    crate::diagnostics::debug_flags::is_set(&T, "BROOD_IMAGE_TRACE")
+    crate::diagnostics::debug_flags::image_trace()
 }
 
 /// A list or a vector — callers naturally write `['a 'b]`.

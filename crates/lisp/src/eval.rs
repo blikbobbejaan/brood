@@ -1642,7 +1642,7 @@ pub(crate) fn unbound_error(heap: &Heap, sym: Symbol) -> LispError {
     // because the `process N died:` one-liner that follows carries neither.
     if let Some(slash) = name.rfind('/') {
         let m = &name[..slash];
-        if std::env::var_os("BROOD_SCOPE_DBG").is_some()
+        if crate::diagnostics::debug_flags::scope_debug()
             && crate::builtins::modules::is_embedded_module(m)
             && crate::builtins::modules::module_is_provided(heap, m)
         {

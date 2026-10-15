@@ -436,7 +436,7 @@ impl Heap {
                 c.env,
             );
         }
-        if scrubbed > 0 && std::env::var_os("BROOD_BOOT_TRACE").is_some() {
+        if scrubbed > 0 && crate::diagnostics::debug_flags::boot_trace() {
             eprintln!("[boot] freeze scrubbed {scrubbed} dead boot-intermediate closure env(s)");
         }
         slabs.envs = Vec::new(); // the prelude region has no env frames
