@@ -113,6 +113,7 @@ SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
 .PHONY: ab ab-clean ab-pin ab-vm asan benchmark breakagetests build check check-corpora \
 	check-cost check-examples check-imaged check-stress clean clippy configure doctor \
 	enable-perf-check ensure-nextest fmt fuzz gcstress green green-all help hooks install \
+	install-features \
 	latency-gate loom perf-brood perf-symbols prepush quickbench release release-brood repl \
 	runtime-soak smoke-bedit stress suite test test-both test-light tier-audit tsan \
 	uninstall wasm-test
@@ -425,10 +426,17 @@ repl: ## Start the REPL
 	$(CLI)
 
 configure: ## Show current build options (./configure --with-gui to enable the GUI)
-	@echo "PREFIX   = $(PREFIX)"
-	@echo "WITH_GUI = $(WITH_GUI)$(if $(GUI_FEATURES), (GUI backend on),)"
-	@echo "WITH_AUDIO = $(WITH_AUDIO)$(if $(AUDIO_FEATURES), (audio-beep on),)"
+	@echo "PREFIX        = $(PREFIX)"
+	@echo "WITH_GUI      = $(WITH_GUI)"
+	@echo "WITH_GUI_GPU  = $(WITH_GUI_GPU)"
+	@echo "WITH_AUDIO    = $(WITH_AUDIO)"
+	@echo "WITH_JIT      = $(WITH_JIT)"
+	@echo "WITH_STDIMAGE = $(WITH_STDIMAGE)"
+	@echo "install features: $(INSTALL_FEATURES)"
 	@echo "Run ./configure --with-gui to enable the native window; ./configure --help for more."
+
+install-features: ## Print INSTALL_FEATURES — what CI builds the `make install` toolchain with, so the set is spelled once
+	@echo $(INSTALL_FEATURES)
 
 release-brood: ## Build ONLY the `brood` binary into $(RELEASE_DIR) — the perf-A/B build step (skips nest + brood-lsp)
 	# Exactly the flags `release` uses for the binary that RUNS user code, and

@@ -192,6 +192,18 @@ if [ -d target/ab ]; then
 else
   ok "no make-ab worktrees"
 fi
+# Every other linked worktree — agent checkouts, scratch baselines — that nobody removed.
+# Each pins a branch and usually carries a multi-GB target/ of its own. Reported, never
+# removed: one may hold someone's uncommitted work.
+linked=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2}' \
+  | tail -n +2 | grep -v '/target/ab/' || true)
+n_linked=$(printf '%s' "$linked" | grep -c . || true)
+if [ "${n_linked:-0}" -gt 0 ]; then
+  note "$n_linked linked git worktree(s) besides make-ab's — \`git worktree list\`; \`git worktree remove <path>\` once one is done with:"
+  printf '%s\n' "$linked" | sed 's/^/      /'
+else
+  ok "no other linked worktrees"
+fi
 n_tmp=$(find /tmp -maxdepth 1 -name 'brood-*' 2>/dev/null | wc -l | tr -d ' ')
 if [ "${n_tmp:-0}" -gt 200 ]; then
   note "$n_tmp /tmp/brood-* entries — the KI-30 shape; check the temp-dir purge still runs"

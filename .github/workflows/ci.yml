@@ -665,14 +665,14 @@ jobs:
           cache-on-failure: true
 
       # Build UNCAPPED (the linker dies under an address-space cap), run capped — the script
-      # applies the cap. `--no-default-features` + the explicit list is `INSTALL_FEATURES`
-      # spelled out; keep it in step with the Makefile's feature variables.
+      # applies the cap. The feature set is the Makefile's `INSTALL_FEATURES`, asked of the
+      # Makefile so it is spelled in one place (gui on; gpu and audio pinned off).
       - name: Build brood + nest (INSTALL_FEATURES — the `make install` toolchain, with gui)
         working-directory: brood
         run: |
-          cargo build --release -p cli -p nest --no-default-features \
-            --features brood/gui --features brood/treesit-grammars --features brood/jit \
-            --features brood/stdimage --features brood/dev-tools
+          features=$(make -s WITH_GUI=1 WITH_GUI_GPU=0 WITH_AUDIO=0 install-features)
+          echo "features: $features"
+          cargo build --release -p cli -p nest $features
 
       - name: Smoke bedit (nest check, nest run --check-boot, nest test)
         working-directory: brood
