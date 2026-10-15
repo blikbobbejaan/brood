@@ -53,9 +53,22 @@ of the two explicitly."
   "The lines of corpus file `path`. Only the file's own trailing newline is dropped
 — interior blank lines survive, since some corpora (CommonMark) are whitespace-
 significant and the rest ignore them anyway."
-  (let (s (file/slurp path))
-    (string/split (if (string/ends-with? s "\n") (string/substring s 0 (dec (string/length s))) s)
-      "\n")))
+  (string/split (string/drop-suffix (file/slurp path) "\n") "\n"))
+
+(defn corpus-tally (lines check)
+  "Run `check` over `lines`, answering `[ran failures]`. `check` returns nil to skip a
+line (not a case), true for a case that passes, and anything else is that case's
+failure record — kept, in line order, for the report."
+  (let ([ran failures] (fold lines
+                         [0 nil]
+                         (fn (tally line)
+                           (let ([ran failures] tally
+                                 outcome (check line))
+                             (cond
+                               (nil? outcome) tally
+                               (= outcome true) [(inc ran) failures]
+                               else [(inc ran) (cons outcome failures)])))))
+    [ran (reverse failures)]))
 
 (defn corpus-forms (path)
   "Every s-expression in corpus file `path`, as a list. For the corpora whose data

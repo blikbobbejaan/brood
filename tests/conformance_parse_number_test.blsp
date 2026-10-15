@@ -35,24 +35,10 @@
         (= (bit/float-> n) want) nil
         else [input (string/substring line 14 30) (bit/float-> n)]))))
 
-;; Fold one file into [checked mismatches]; mismatches accumulate in reverse.
-(defn- pn-scan-lines (lines checked bad)
-  (if (nil? lines)
-    [checked bad]
-    (let (m (pn-mismatch (first lines)))
-      (pn-scan-lines (rest lines)
-        (if (< (string/length (first lines)) 32) checked (inc checked))
-        (if m (cons m bad) bad)))))
-
-(defn- pn-scan-files (files checked bad)
-  (if (nil? files)
-    [checked (reverse bad)]
-    (let ([c b] (pn-scan-lines (corpus-lines (first files)) checked bad))
-      (pn-scan-files (rest files) c b))))
-
 (defn- pn-scan ()
   "Every vendored case as [cases-checked mismatches]."
-  (pn-scan-files (corpus-files "parse-number") 0 nil))
+  (corpus-tally (apply append (map (corpus-files "parse-number") corpus-lines))
+    (fn (line) (if (< (string/length line) 32) nil (or (pn-mismatch line) true)))))
 
 (describe "parse-number-fxx: decimal text -> binary64 is bit-exact"
   :tags [:conformance :slow]
@@ -69,7 +55,18 @@
       (is (> checked 30000))
       ;; Show the first few offenders rather than just a count.
       (assert= (take bad 5) ())
-      (assert= (count bad) 0))))
+      (assert= (count bad) 0)))
+
+  ;; Every sweep above reports through `corpus-tally`; a tally that dropped failures
+  ;; would leave each of them green over a broken implementation.
+  (test "corpus-tally counts cases and keeps every failure, in line order"
+    (assert= (corpus-tally ["skip" "pass" "first" "pass" "second"]
+               (fn (line)
+                 (cond
+                   (= line "skip") nil
+                   (= line "pass") true
+                   else line)))
+      [4 '("first" "second")])))
 
 ;; The cases worth naming: each of these broke a shipped implementation. They are
 ;; in the corpus too, but spelled out here they document what the sweep protects.

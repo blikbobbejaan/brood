@@ -127,21 +127,11 @@
                 expect (dt-expected op want))
             (if (= got expect) [:ok] [id op args expect got])))))))
 
-(defn- dt-scan-lines (lines ran bad)
-  (if (nil? lines)
-    [ran bad]
-    (let (c (dt-case (dt-words (first lines))))
-      (dt-scan-lines (rest lines)
-        (if c (inc ran) ran)
-        (if (and c (not (= c [:ok]))) (cons c bad) bad)))))
-
-(defn- dt-scan-files (files ran bad)
-  (if (nil? files)
-    [ran (reverse bad)]
-    (let ([r b] (dt-scan-lines (corpus-lines (first files)) ran bad))
-      (dt-scan-files (rest files) r b))))
-
-(defn- dt-scan () (dt-scan-files (corpus-files "dectest") 0 nil))
+(defn- dt-scan ()
+  (corpus-tally (apply append (map (corpus-files "dectest") corpus-lines))
+    (fn (line)
+      (let (c (dt-case (dt-words line)))
+        (if (= c [:ok]) true c)))))
 
 (describe "dectest: exact decimal arithmetic"
   :tags [:conformance]

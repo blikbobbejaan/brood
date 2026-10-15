@@ -70,19 +70,13 @@
       (let (clusters (gb-fold toks nil nil))
         [(apply str clusters) (into [] clusters)]))))
 
-(defn- gb-scan (lines ran bad)
-  (if (nil? lines)
-    [ran (reverse bad)]
-    (let (c (gb-case (first lines)))
-      (cond
-        (nil? c) (gb-scan (rest lines) ran bad)
-        (= (first c) gb-upstream-gap) (gb-scan (rest lines) ran bad)
-        else
-          (let ([input want] c
-                got (string/->graphemes input))
-            (gb-scan (rest lines)
-              (inc ran)
-              (if (= got want) bad (cons [(pr-str input) want got] bad))))))))
+(defn- gb-check (line)
+  (let (c (gb-case line))
+    (if (or (nil? c) (= (first c) gb-upstream-gap))
+      nil
+      (let ([input want] c
+            got (string/->graphemes input))
+        (or (= got want) [(pr-str input) want got])))))
 
 (def- gb-lines
   (corpus-lines (or (ucd-file "GraphemeBreakTest.txt")
@@ -276,7 +270,7 @@
       "16.0.0"))
 
   (test "string->graphemes segments every GraphemeBreakTest case"
-    (let ([ran bad] (gb-scan gb-lines 0 nil))
+    (let ([ran bad] (corpus-tally gb-lines gb-check))
       (is (> ran 600))
       (assert= (take bad 3) ())
       (assert= (count bad) 0))))
