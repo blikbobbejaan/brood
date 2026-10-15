@@ -125,35 +125,7 @@ pub(super) struct PathGuard {
     pub(super) then_only: bool,
 }
 
-/// The unary primitives a guard may narrow **through** — a call to one of these is a
-/// [`PathKey::Call`] step, so `(if (failure? (string/->number s)) d (string/->number s))`
-/// types the second occurrence as `number`, not `number | failure`.
-///
-/// The soundness argument is the one `path_types` already rests on: Brood data is
-/// immutable, so an argument cannot change between two evaluations, and each of these is a
-/// function of its argument alone — the two occurrences denote one value. Every entry here
-/// is a *parser*, which is not a coincidence: these are the functions that answer
-/// `T | failure` (ADR-310), so they are the ones people guard and re-evaluate.
-///
-/// **An allow-list, deliberately.** The opposite polarity — "narrow through anything not
-/// known to be effectful" — would silently admit `os/env`, `now`, `random` and every
-/// primitive added later, each of which can answer differently the second time; that is
-/// the direction that makes the bound stop being an upper bound. An unlisted head simply
-/// does not narrow, which costs precision and nothing else.
-pub(super) const DETERMINISTIC_UNARY: &[&str] = &[
-    "string/->number",
-    "encoding/hex-decode",
-    "encoding/hex-decode-bytes",
-    "encoding/base64-decode",
-    "encoding/base64-url-decode",
-    "encoding/base64-decode-bytes",
-    "encoding/base64-url-decode-bytes",
-    "datetime/parse-date",
-    "datetime/parse-time",
-    "datetime/parse-iso8601",
-    "url/percent-decode",
-    "url/query-decode",
-];
+use super::known_ops::DETERMINISTIC_UNARY;
 
 /// Is this path's base a GLOBAL — a `def`/`defdyn` name rather than a local binding?
 ///

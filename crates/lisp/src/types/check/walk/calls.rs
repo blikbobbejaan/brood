@@ -339,10 +339,7 @@ pub(super) fn callback_desc(arg: Value) -> String {
 /// (ansi-clear))` slip. Four lock-free `symbol_is` compares, only reached on
 /// the generic-call path (so no `symbol_name` allocation on the hot path).
 pub(super) fn is_output_sink(s: Symbol) -> bool {
-    value::symbol_is(s, "io/puts")
-        || value::symbol_is(s, "io/write")
-        || value::symbol_is(s, "str")
-        || value::symbol_is(s, "string/format")
+    crate::types::check::known_ops::is_one_of(s, crate::types::check::known_ops::OUTPUT_SINKS)
 }
 
 /// The arity a signature describes: `&` rest → unbounded, `&optional` → a range, else an
@@ -1010,16 +1007,14 @@ pub(super) fn gradual_join(heap: &Heap, forms: &[Value], ctx: &Ctx) -> Option<Gr
     acc
 }
 
-/// Is `head` one of the integer-closed arithmetic ops whose result on integer
-/// operands is precisely `int` (mirrors `guards::numeric_call_ty`)? `/` is excluded
-/// (int/int can be a float).
+/// Is `head` one of the integer-closed arithmetic ops whose result on integer operands is
+/// precisely `int`, for a declared return type? See [`known_ops::RETURN_INT_CLOSED`] for
+/// why this set is narrower than `infer::numeric_op_kind`'s.
+///
+/// [`known_ops::RETURN_INT_CLOSED`]: crate::types::check::known_ops::RETURN_INT_CLOSED
 pub(super) fn is_int_closed_op(head: Symbol) -> bool {
-    value::symbol_is(head, "+")
-        || value::symbol_is(head, "-")
-        || value::symbol_is(head, "*")
-        // `math/` since ADR-227 (mirrors `infer.rs`). The integer divisions are
-        // deliberately NOT here: a `(math/mod x 100)` interval is read by overlap in plain
-        // mode and by inclusion only under strict —
-        // `declarations::an_over_approximated_return_mismatch_is_strict_only` pins that.
-        || value::symbol_is(head, "math/abs")
+    crate::types::check::known_ops::is_one_of(
+        head,
+        crate::types::check::known_ops::RETURN_INT_CLOSED,
+    )
 }

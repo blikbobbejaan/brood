@@ -384,7 +384,7 @@ pub(super) enum PathKey {
     Field(Symbol),
     Index(usize),
     /// A **deterministic unary call** — `(string/->number s)` and the other parsers in
-    /// [`super::guards::DETERMINISTIC_UNARY`]. The same immutability argument the field
+    /// [`super::known_ops::DETERMINISTIC_UNARY`]. The same immutability argument the field
     /// and index steps rest on: the argument cannot change between two evaluations, and
     /// these primitives are functions of their argument alone, so the two occurrences in
     /// `(if (failure? (parse s)) d (parse s))` denote one value and a guard on the first

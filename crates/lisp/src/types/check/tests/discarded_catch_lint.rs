@@ -124,7 +124,7 @@ fn a_guard_narrows_across_every_shape_and_value_form() {
     let base = "(defmodule t)\n\
                 (sig mine (string -> (or string failure)))\n(defn mine (s) s)\n";
     // How the guarded value is denoted. A LOCAL always works; a repeated CALL works only
-    // where the callee is known deterministic (`guards::DETERMINISTIC_UNARY`).
+    // where the callee is known deterministic (`known_ops::DETERMINISTIC_UNARY`).
     let values: [(&str, &str, &str, Expect); 3] = [
         ("local", "v", "(let (v (string/->number s))", Silent),
         ("listed-path", "(string/->number s)", "(do", Silent),

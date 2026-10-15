@@ -126,6 +126,7 @@ mod exhaustive;
 mod guard_effects;
 mod guards;
 mod infer;
+mod known_ops;
 mod properties;
 mod protocol;
 mod recursion;

@@ -2,6 +2,7 @@
 //! (extracted from guards.rs, file-organization split).
 use super::ctx::{resolve_clause_overload_ret, resolve_overload_ret, Ctx};
 use super::guards::path_of;
+use super::known_ops::{self, is_one_of};
 use super::sigs::{declared_heap_overload, sig_of};
 use super::walk::{bindings, is_fn_head, list_items};
 use crate::core::heap::Heap;
@@ -1110,20 +1111,14 @@ fn is_qualified(sym: Symbol) -> bool {
 /// value computed from them. One definition, read by both the form-level
 /// [`numeric_call_ty`] and the type-level [`numeric_result`] a callback goes through.
 fn is_extremum(head: Symbol) -> bool {
-    value::symbol_is(head, "math/max")
-        || value::symbol_is(head, "math/min")
-        || value::symbol_is(head, "%max")
-        || value::symbol_is(head, "%min")
+    is_one_of(head, known_ops::EXTREMUM)
 }
 
 /// The **additive** ring operators — `+ - inc dec`, i.e. the ring minus `*`. What sets
 /// them apart for [`numeric_result`] is that shifting a value by whole numbers cannot
 /// change whether it has a denominator, which multiplication can (`(* 2 1/2)` is `1`).
 fn is_additive(head: Symbol) -> bool {
-    value::symbol_is(head, "+")
-        || value::symbol_is(head, "-")
-        || value::symbol_is(head, "inc")
-        || value::symbol_is(head, "dec")
+    is_one_of(head, known_ops::ADDITIVE)
 }
 
 /// What a numeric operator is, for [`numeric_result`]: `(contagious, int_closed, ring,
@@ -1132,25 +1127,9 @@ fn numeric_op_kind(head: Symbol) -> Option<(bool, bool, bool, bool)> {
     let is_division = value::symbol_is(head, "/");
     // `inc`/`dec` are `(+ n 1)` / `(- n 1)` in the prelude, so they close exactly as `+`
     // and `-` do — over ints, over floats (contagion), over ratios.
-    // …and the binary kernel primitives those are written over: the prelude's own `inc` is
-    // `(%add n 1)`, so a call re-typed through its body under an int argument reads
-    // `%add`, which must not answer the primitive's flat `number`.
-    let is_ring = value::symbol_is(head, "+")
-        || value::symbol_is(head, "-")
-        || value::symbol_is(head, "*")
-        || value::symbol_is(head, "%add")
-        || value::symbol_is(head, "%sub")
-        || value::symbol_is(head, "%mul")
-        || value::symbol_is(head, "inc")
-        || value::symbol_is(head, "dec");
+    let is_ring = is_one_of(head, known_ops::RING);
     let is_contagious = is_ring || is_division;
-    let is_int_closed = is_ring
-        // `math/` since ADR-227 — see the `math/sqrt` note above. The bare integer
-        // divisions are gone (unbound), so only the `math/` spellings are keyed.
-        || value::symbol_is(head, "math/abs")
-        || value::symbol_is(head, "math/quot")
-        || value::symbol_is(head, "math/rem")
-        || value::symbol_is(head, "math/mod");
+    let is_int_closed = is_ring || is_one_of(head, known_ops::INT_CLOSED_BEYOND_RING);
     (is_contagious || is_int_closed).then_some((is_contagious, is_int_closed, is_ring, is_division))
 }
 
