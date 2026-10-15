@@ -60,7 +60,7 @@ use crate::core::value::{self, EnvId, Symbol, Value, ValueRef};
 use crate::error::{LispError, LispResult};
 use crate::eval::compile::apply_engine;
 
-use super::numeric::{arg, expect_string, expect_symbol};
+use super::args::{arg, expect_string, expect_symbol};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {

@@ -21,7 +21,7 @@
 //! instead, so they cannot. On the paths, symbols and command names anything ranks, the two
 //! agree exactly.
 
-use super::numeric::{expect_int, expect_string_ref};
+use super::args::{arg, expect_int, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value, ValueRef};
 use crate::error::{LispError, LispResult};
@@ -156,11 +156,11 @@ fn score_candidate(query: &[char], clow: &[char], cand: &[char]) -> Option<i64> 
 /// `(%fuzzy-top query cands &optional limit)` — see the registration.
 fn fuzzy_top(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let who = "%fuzzy-top";
-    let query: Vec<char> = expect_string_ref(heap, who, super::numeric::arg(args, 0))?
+    let query: Vec<char> = expect_string_ref(heap, who, arg(args, 0))?
         .chars()
         .map(lower_char)
         .collect();
-    let cands_value = super::numeric::arg(args, 1);
+    let cands_value = arg(args, 1);
     let Some(cands) = heap.list_or_vector_items(cands_value) else {
         return Err(LispError::wrong_type(
             heap,

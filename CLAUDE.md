@@ -131,7 +131,8 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
                checker: walk/ dispatch, sigs, infer, and its tests)
   builtins.rs + builtins/   the primitive kernel, one file per domain; EVERY domain file
                owns both its implementations and its `register(&mut Primitives)`, so a
-               primitive is a one-file edit. signature_types.rs holds the `Ty` shorthands.
+               primitive is a one-file edit. signature_types.rs holds the `Ty` shorthands;
+               args.rs the argument readers (`arg`, `expect_int`, `expect_string`, …).
   boot.rs + boot/   the shared prelude bundle, the two boot paths (prelude image ADR-314 /
                source), boot/image.rs (the stdlib startup image, ADR-218)
   introspect.rs, cli_support.rs, renames.rs (the rename ledger, ADR-304), error.rs, lib.rs

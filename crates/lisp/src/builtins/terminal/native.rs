@@ -2,9 +2,10 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
+use crate::builtins::args::{arg, expect_bigint, expect_int, expect_string};
 use crate::builtins::bytes::collect_bytes;
 use crate::builtins::io::capture_write;
-use crate::builtins::numeric::{arg, expect_bigint, expect_int, expect_string, num_to_f64};
+use crate::builtins::numeric::num_to_f64;
 // The thin crossterm seam: enter/leave the alternate screen, read keys, and
 // paint a *frame* — a Brood vector of render ops. The protocol's meaning is
 // data (the ops); these primitives are the in-process frontend that interprets

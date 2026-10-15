@@ -1,5 +1,5 @@
 // OS / environment / subprocess builtins — extracted from io.rs (file-organization split).
-use super::numeric::{arg, expect_int, expect_string};
+use super::args::{arg, expect_int, expect_string};
 use crate::core::heap::Heap;
 use crate::core::value::{self, kw, EnvId, Value};
 use crate::error::{LispError, LispResult};

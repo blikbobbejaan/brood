@@ -7,7 +7,7 @@ use crate::core::heap::{Heap, ImportEntry};
 use crate::core::value::{self, EnvId, Symbol, Value};
 use crate::error::{LispError, LispResult};
 
-use super::numeric::{arg, expect_symbol};
+use super::args::{arg, expect_symbol};
 use crate::core::registries as reg;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.

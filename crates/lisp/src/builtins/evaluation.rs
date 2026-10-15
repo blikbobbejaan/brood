@@ -9,7 +9,7 @@ use crate::error::{LispError, LispResult};
 use crate::eval::compile::apply_engine;
 use crate::syntax::reader;
 
-use super::numeric::{arg, expect_string};
+use super::args::{arg, expect_string};
 use super::realize_seqview;
 use crate::core::registries as reg;
 

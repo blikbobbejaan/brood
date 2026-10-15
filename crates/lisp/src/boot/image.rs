@@ -39,7 +39,7 @@
 
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
-use crate::builtins::numeric::{arg, expect_string};
+use crate::builtins::args::{arg, expect_string};
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::dist::wire::{decode_msg, encode_msg};

@@ -7,9 +7,9 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
+use super::args::{arg, expect_int, expect_string};
 use super::bytes::{bytes_to_value, collect_bytes};
 use super::filesystem::{decode_untrusted_image, fit_within, IMAGE_MAX_ALLOC, IMAGE_MAX_SIDE};
-use super::numeric::{arg, expect_int, expect_string};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {

@@ -36,6 +36,7 @@ macro_rules! expect {
 // a `register(&mut Primitives)` listing every name, arity, signature, arglist and
 // docstring it contributes — so a primitive is a one-file edit and `register` below is
 // only the roll-call. `pub(crate)` where another layer reads a helper directly.
+pub(crate) mod args;
 mod build_info;
 mod bytes;
 mod clipboard;

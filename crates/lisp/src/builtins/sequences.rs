@@ -1,4 +1,4 @@
-use super::numeric::{arg, expect_int, expect_rope_ref, expect_symbol, two};
+use super::args::{arg, expect_int, expect_map, expect_rope_ref, expect_set, expect_symbol, two};
 use super::realize_seqview;
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Symbol, Value};
@@ -1258,13 +1258,6 @@ pub(super) fn subvec(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 
 // ---------- map ----------
 
-/// Require a map; otherwise a self-identifying type error attributed to `who`.
-pub(super) fn expect_map(heap: &Heap, who: &str, v: Value) -> Result<value::MapId, LispError> {
-    expect!(heap, who, v, "map",
-        Value::Map(id) => id,
-    )
-}
-
 /// `(hash-map k v k v …)` — build a map from alternating key/value args (the
 /// programmatic form of the `{ }` literal). Errors on an odd count; last-wins on
 /// duplicate keys.
@@ -1519,12 +1512,6 @@ pub(super) fn map_pairs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 pub(super) fn map_count(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_map(heap, "%map-count", arg(args, 0))?;
     Ok(Value::int(heap.map_size(id) as i64))
-}
-
-pub(super) fn expect_set(heap: &Heap, who: &str, v: Value) -> Result<value::MapId, LispError> {
-    expect!(heap, who, v, "set",
-        Value::Set(id) => id,
-    )
 }
 
 /// Re-wrap the `MapId` a map op just produced as a **set** (both share the CHAMP

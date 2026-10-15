@@ -18,7 +18,7 @@
 //! it. Both halves of that rule live in `fold_char`, and the search uses the same function,
 //! so a match can never land on the wrong characters.
 
-use super::numeric::{arg, expect_int, expect_rope_ref, expect_string_ref};
+use super::args::{arg, expect_int, expect_rope_ref, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
 use crate::error::LispResult;

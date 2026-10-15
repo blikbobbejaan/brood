@@ -1,4 +1,4 @@
-use super::numeric::{arg, expect_string, expect_symbol};
+use super::args::{arg, expect_string, expect_symbol};
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, EnvId, Value};

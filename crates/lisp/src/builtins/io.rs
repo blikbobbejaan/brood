@@ -3,7 +3,7 @@
 //! stdin reader behind `read-line`. Files, sockets, tables and child processes are their
 //! own domains beside this one.
 
-use super::numeric::{arg, expect_string};
+use super::args::{arg, expect_string};
 use super::sequences::realize_seqviews;
 use super::terminal::restore_terminal_on_exit;
 use crate::core::heap::Heap;

@@ -30,7 +30,7 @@
 //! to every worker thread — a fresh `Regex` per call would rebuild its lazy DFA from
 //! nothing each time, which is most of the cost this module exists to remove.
 
-use super::numeric::{arg, expect_int, expect_string_ref};
+use super::args::{arg, expect_int, expect_string_ref};
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, StrId, Value};
 use crate::error::{LispError, LispResult};

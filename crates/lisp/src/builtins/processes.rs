@@ -6,8 +6,8 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
+use super::args::{arg, expect_keyword};
 use super::nodes::expect_node_name;
-use super::numeric::arg;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {
@@ -412,10 +412,7 @@ pub(super) fn hibernate_proc(_args: &[Value], _: EnvId, heap: &mut Heap) -> Lisp
 }
 
 pub(super) fn process_flag(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let flag = match arg(args, 0) {
-        Value::Keyword(k) => k,
-        other => return Err(LispError::wrong_type(heap, "proc/flag", "keyword", other)),
-    };
+    let flag = expect_keyword(heap, "proc/flag", arg(args, 0))?;
     match value::symbol_name_ref(flag) {
         "max-heap" => {
             let prev = if args.len() < 2 {

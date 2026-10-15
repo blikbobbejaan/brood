@@ -7,7 +7,7 @@ use crate::core::value::{self, EnvId, Value};
 use crate::error::LispResult;
 use crate::syntax::{cst, reader};
 
-use super::numeric::{arg, expect_string};
+use super::args::{arg, expect_string};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {

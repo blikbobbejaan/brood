@@ -6,8 +6,7 @@ use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
 use crate::error::{LispError, LispResult};
 
-use super::numeric::{arg, expect_int, expect_string};
-use super::numeric::{expect_rope, expect_rope_ref};
+use super::args::{arg, expect_int, expect_rope, expect_rope_ref, expect_string};
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.
 pub(super) fn register(primitives: &mut super::Primitives) {

@@ -7,13 +7,13 @@ use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
 use crate::error::{LispError, LispResult};
 
-use super::numeric::{arg, expect_int, expect_string};
+use super::args::{arg, expect_int, expect_string, expect_string_ref};
 use super::realize_seqview;
 use crate::core::heap::SlabRef;
 use crate::core::value::StrId;
 use crate::syntax::printer;
 
-use super::numeric::{expect_string_ref, num_to_f64};
+use super::numeric::num_to_f64;
 use super::sequences::realize_seqviews;
 
 /// Every primitive this file contributes: name, arity, signature, arglist, docstring.

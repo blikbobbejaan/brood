@@ -14,7 +14,7 @@
 //! `string/display-width`, the cells -> chars half of the editor's mouse-column mapping —
 //! were appended later, for the same order reason.
 
-use super::numeric::arg;
+use super::args::arg;
 use super::sequences::tab_layout;
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value, ValueRef};
