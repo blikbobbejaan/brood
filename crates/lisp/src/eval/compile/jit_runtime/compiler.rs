@@ -302,6 +302,20 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
     }
 }
 
+/// [`jit_compile_now`] for an arm about to be called with `args` rather than one whose
+/// frame is already built — a higher-order callback (`hof_apply_native`). The args are
+/// staged as a frame only so the slot profile reads their types, then dropped.
+#[cfg(feature = "jit")]
+pub(crate) fn jit_compile_now_with_args(heap: &mut Heap, arm: &Arc<CompiledArm>, args: &[Value]) {
+    let base = heap.roots_len();
+    for a in args {
+        heap.push_root(*a);
+    }
+    heap.extend_roots_to_nil(base + arm.nslots);
+    jit_compile_now(heap, arm, base);
+    heap.truncate_roots(base);
+}
+
 /// Announce that a lowering attempt came back `Ok(None)`. Every refusal inside
 /// `jit_lower_arm` that travels out through a `?` on a helper bypasses the reasoned
 /// traces, so without this the only visible evidence is the arm silently being BAILED.

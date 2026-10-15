@@ -328,15 +328,23 @@ pub(crate) fn jit_dispatch_call(
     }
 
     // ---- Slow path ---- (not linkable: not yet native, over the cap, or a non-closure /
-    // unbound callee). Resolve the callee (elided: via `env_get`; computed: the staged slot)
-    // and run it on the VM. The args are the top `argc` operands either way.
+    // unbound callee). Resolve the callee (elided: the call IC, which the resolve above has
+    // just filled for a closure it could not link, else `env_get`; computed: the staged
+    // slot) and run it on the VM. The args are the top `argc` operands either way. Walking
+    // the environment every time cost `json` 590 000 walks a run for `(nth s i -1)` alone:
+    // `nth`'s default arm takes a rest parameter, so no call to it ever links.
     let callee = if elided {
-        let cenv = heap.read_root_env(heap.jit_call_env);
-        match heap.env_get(cenv, head) {
-            Some(v) => v,
+        match heap.vm_call_ic_probe(site, head, argc as u32, epoch) {
+            Some((v, _)) => v,
             None => {
-                heap.jit_pending_error = Some(crate::eval::unbound_error(heap, head));
-                return None;
+                let cenv = heap.read_root_env(heap.jit_call_env);
+                match heap.env_get(cenv, head) {
+                    Some(v) => v,
+                    None => {
+                        heap.jit_pending_error = Some(crate::eval::unbound_error(heap, head));
+                        return None;
+                    }
+                }
             }
         }
     } else {

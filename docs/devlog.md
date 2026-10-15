@@ -17585,3 +17585,36 @@ benchmark's N=2 000 (the misses scale with the document; 18 000 a run there).
 in 25. The runtime was right every time: the culprit sometimes notices the crossing itself and
 raises in itself, which prints nothing on stderr. The test now checks which of the two errors
 the culprit died with, and wants the stderr line only from the selector.
+
+## 2026-10-15 (later) — the three `json` leads: stale leaf derivations (KI-252), the slow path's environment walk, a queued callback
+
+**A stale leaf derivation (KI-252).** At `4d1cdbda` `json`'s `skip-ws`, `digits-run` and
+`json-object` never got their inlined body: derived at epoch 96, tiered at 113. On the next
+commit they did, by timing. The tier-up now re-validates a derivation whose epoch moved — the
+closures it spliced, a new runtime count of code-handle relocations, the spliced primitives —
+and moves its stamp forward; only a real rebind of a spliced callee recompiles the arm. The
+first cut recompiled on any stale stamp and churned (`%match-bind-sym?` 58 times in one run).
+
+**The environment walks.** A `#[track_caller]` tally on `env_get` put ~1M of `json`'s 1.03M (N=20 000)
+at one line: `jit_dispatch_call`'s slow path, resolving a named callee native code could not
+link. 588 000 were `(nth s i -1)`: `nth`'s 3-argument arm was `(coll i & default)`, and a rest arm
+never links, so every call walked the environment, dispatched on the VM and allocated a rest list.
+Two fixes: the slow path takes the callee from the call IC the resolve above it has just filled
+(every unlinkable named call), and `nth`'s default is a fixed third parameter, as its `sig`
+already said — a fourth argument is now an arity error (the checker warned on it before).
+Warm, `json` at N=20 000 does ~40 000 walks, from 1.7M this morning. An earlier tally that put
+54 000 walks in the tree-walker was a cold run: the first run after a prelude edit re-expands
+the prelude into its cache.
+
+**A callback whose compile is queued.** A spinning loop compiles synchronously after 2 048
+back-edges spent waiting for its queued compile (`JIT_QUEUED_SYNC_EDGES`); a callback has no
+back-edge, so a fold over a cold callback behind a backed-up queue ran entirely interpreted —
+`json`'s closing `reduce` at N=20 000, all 19 872 elements. `hof_apply_native` now counts the
+calls it declines while queued and compiles on the same threshold: 19 872 → 1 919. The
+benchmark rows decline at most 6 273 times a run, so this is for long folds, not the column.
+
+**Measured** against `1d7adbb6` (KI-250 already in), min of 3: `json` −5.1%, `errors` −2.1%,
+`primes` −1.6%, `latency` −1.4%, `regex` −1.1%, `base64` −1.0%, `nqueens` and `pipeline` −0.8%.
+`errors-deep`, `supervisor`, `wordcount` and `sort` read +0.3–0.5% on six repeats each; their
+traces show identical tiering decisions on both binaries (no leaf upgrade runs there), so that is
+layout. `ring` is bimodal on both (7.33G / 7.52G).

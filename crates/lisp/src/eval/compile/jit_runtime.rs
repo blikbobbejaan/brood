@@ -414,6 +414,30 @@ pub(crate) fn jit_tier_in_frame(
                 return None;
             }
         }
+        // A leaf derivation is valid only at the epoch it is stamped with, and the compiler
+        // thread refuses a stale one for good (`leaf-derivation-stale`): one `def` or module
+        // load between an arm's compile and this tier-up kept its small native for the life
+        // of the program — `json`'s `skip-ws`, `digits-run` and `json-object` on every run.
+        // Nearly always the epoch moved for something the derivation does not read, so check
+        // what it does read and move its stamp forward. Only a callee or primitive actually
+        // rebound costs a recompile, which derives afresh at the next activation.
+        if let Some(leaf) = arm.leaf.as_ref() {
+            let epoch = heap.global_epoch();
+            if leaf.epoch.load(Acquire) != epoch {
+                if leaf.still_valid(heap) {
+                    leaf.epoch.store(epoch, Release);
+                } else {
+                    heap.mark_arm_stale(arm);
+                    if crate::diagnostics::debug_flags::trace_compile() {
+                        let name = arm.dbg_label();
+                        eprintln!(
+                            "[compile] stale-leaf arm={name}: a callee its leaf derivation spliced was rebound; recompiles at its next activation"
+                        );
+                    }
+                    return None;
+                }
+            }
+        }
         arm.compile_epoch.store(heap.global_epoch(), Release);
         if arm
             .jit_code

@@ -1423,13 +1423,13 @@ thread_local! {
 
 /// Resolve a call head `sym`/`argc` to a spliceable callee arm: the global must be a
 /// plain fixed-arity, non-capturing closure whose selected arm's body
-/// [qualifies](leaf_body_qualifies). `None` = leave the call alone.
+/// [qualifies](leaf_body_qualifies), with the closure it is. `None` = leave the call alone.
 #[cfg(feature = "jit")]
 pub(crate) fn leaf_resolve_callee(
     heap: &Heap,
     sym: Symbol,
     argc: usize,
-) -> Option<Arc<CompiledArm>> {
+) -> Option<(Arc<CompiledArm>, ClosureId)> {
     let v = heap.env_get(heap.global(), sym)?;
     let id = match v.unpack() {
         ValueRef::Fn(id) => id,
@@ -1447,7 +1447,7 @@ pub(crate) fn leaf_resolve_callee(
     {
         return None;
     }
-    Some(arm)
+    Some((arm, id))
 }
 
 /// Replace, in place, each qualifying non-tail static-head call in `node` with the
@@ -1463,67 +1463,68 @@ pub(crate) fn leaf_inline_splice(
     next_base: &mut usize,
     blocks: &mut usize,
     self_name: Option<Symbol>,
+    callees: &mut Vec<ir::LeafCallee>,
 ) -> usize {
     let mut count = 0;
     match node {
         Node::Const(_) | Node::Local(_) | Node::Global(_) | Node::GlobalIc { .. } => {}
         Node::If(a, b, c) => {
-            count += leaf_inline_splice(heap, a, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, b, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, c, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, a, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, b, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, c, next_base, blocks, self_name, callees);
         }
         Node::Do(xs) | Node::Vector(xs) => {
             for n in xs.iter_mut() {
-                count += leaf_inline_splice(heap, n, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, n, next_base, blocks, self_name, callees);
             }
         }
         Node::Map(kvs) => {
             for (k, v) in kvs.iter_mut() {
-                count += leaf_inline_splice(heap, k, next_base, blocks, self_name);
-                count += leaf_inline_splice(heap, v, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, k, next_base, blocks, self_name, callees);
+                count += leaf_inline_splice(heap, v, next_base, blocks, self_name, callees);
             }
         }
         Node::Call { callee, args, .. } => {
-            count += leaf_inline_splice(heap, callee, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, callee, next_base, blocks, self_name, callees);
             for n in args.iter_mut() {
-                count += leaf_inline_splice(heap, n, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, n, next_base, blocks, self_name, callees);
             }
         }
         Node::SelfCall { args, .. } => {
             for n in args.iter_mut() {
-                count += leaf_inline_splice(heap, n, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, n, next_base, blocks, self_name, callees);
             }
         }
         Node::LetBind { binds, body } => {
             for (_, n) in binds.iter_mut() {
-                count += leaf_inline_splice(heap, n, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, n, next_base, blocks, self_name, callees);
             }
-            count += leaf_inline_splice(heap, body, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, body, next_base, blocks, self_name, callees);
         }
         Node::MakeClosure { captures, .. } => {
             for (_, n) in captures.iter_mut() {
-                count += leaf_inline_splice(heap, n, next_base, blocks, self_name);
+                count += leaf_inline_splice(heap, n, next_base, blocks, self_name, callees);
             }
         }
         Node::Prim2 { a, b, .. } => {
-            count += leaf_inline_splice(heap, a, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, b, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, a, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, b, next_base, blocks, self_name, callees);
         }
         Node::Prim3 { a, b, c, .. } => {
-            count += leaf_inline_splice(heap, a, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, b, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, c, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, a, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, b, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, c, next_base, blocks, self_name, callees);
         }
         Node::Prim1 { a, .. } => {
-            count += leaf_inline_splice(heap, a, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, a, next_base, blocks, self_name, callees);
         }
         Node::TryCatch { body, handler, .. } => {
-            count += leaf_inline_splice(heap, body, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, handler, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, body, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, handler, next_base, blocks, self_name, callees);
         }
         Node::Binding { vals, body, .. } => {
-            count += leaf_inline_splice(heap, vals, next_base, blocks, self_name);
-            count += leaf_inline_splice(heap, body, next_base, blocks, self_name);
+            count += leaf_inline_splice(heap, vals, next_base, blocks, self_name, callees);
+            count += leaf_inline_splice(heap, body, next_base, blocks, self_name, callees);
         }
     }
     // Children handled; now this node. A tail call is left alone (replacing it would
@@ -1547,12 +1548,16 @@ pub(crate) fn leaf_inline_splice(
         if Some(sym) == self_name {
             return count;
         }
-        let Some(callee_arm) = leaf_resolve_callee(heap, sym, args.len()) else {
+        let Some((callee_arm, closure)) = leaf_resolve_callee(heap, sym, args.len()) else {
             return count;
         };
         let base = *next_base;
         *next_base += callee_arm.nslots;
         *blocks += 1;
+        callees.push(ir::LeafCallee {
+            sym,
+            closure: closure.0,
+        });
         let args = match node {
             Node::Call { args, .. } => std::mem::take(args),
             _ => unreachable!(),
@@ -1584,6 +1589,8 @@ pub(crate) struct LeafDerivation {
     pub nslots: usize,
     /// This layout's own journal slot, or `u32::MAX` when the spliced chunk needs none.
     pub ckpt_slot: u32,
+    /// The callees spliced in — what the derivation depends on besides the primitives.
+    pub callees: Vec<ir::LeafCallee>,
 }
 
 /// Probe + derive leaf-callee inlining for a caller arm, or `None` if nothing qualifies.
@@ -1644,11 +1651,19 @@ pub(crate) fn leaf_inline_probe(
         return None;
     }
     // Splice once from the tight base to find out whether a journal is needed at all.
-    let splice = |base: usize| -> Option<(Node, Chunk, usize, usize)> {
+    let splice = |base: usize| -> Option<(Node, Chunk, usize, usize, Vec<ir::LeafCallee>)> {
         let mut spliced = shift_slots(body, 0);
         let mut next_base = base;
         let mut blocks = 0usize;
-        let n = leaf_inline_splice(heap, &mut spliced, &mut next_base, &mut blocks, self_name);
+        let mut callees = Vec::new();
+        let n = leaf_inline_splice(
+            heap,
+            &mut spliced,
+            &mut next_base,
+            &mut blocks,
+            self_name,
+            &mut callees,
+        );
         if n == 0 {
             declined("no-qualifying-callee");
             return None;
@@ -1659,9 +1674,9 @@ pub(crate) fn leaf_inline_probe(
             declined("spliced-ops-not-native");
             return None;
         }
-        Some((spliced, chunk, next_base, n))
+        Some((spliced, chunk, next_base, n, callees))
     };
-    let (mut spliced, mut chunk, mut next_base, n) = splice(locals_max)?;
+    let (mut spliced, mut chunk, mut next_base, n, mut callees) = splice(locals_max)?;
     // Does anything in the spliced chunk have an effect a from-ip-0 re-run would
     // repeat? A completed non-tail call and a `table-put` are the two (the callee
     // bodies contribute neither — `leaf_body_qualifies` rejects both — so these are
@@ -1680,10 +1695,11 @@ pub(crate) fn leaf_inline_probe(
     };
     let needs_journal = if needs_journal(&chunk) {
         // Re-splice clear of the small layout's own reserves (see doc above).
-        let (s2, c2, nb2, _) = splice(full_nslots)?;
+        let (s2, c2, nb2, _, cs2) = splice(full_nslots)?;
         spliced = s2;
         chunk = c2;
         next_base = nb2;
+        callees = cs2;
         true
     } else {
         false
@@ -1723,5 +1739,6 @@ pub(crate) fn leaf_inline_probe(
         chunk,
         nslots,
         ckpt_slot,
+        callees,
     })
 }

@@ -2926,3 +2926,83 @@ fn a_native_tail_call_by_name_caches_its_head_in_its_own_slot() {
         "the head did not evict `limit`'s entry"
     );
 }
+
+/// A leaf derivation is stamped with the epoch it was derived at, and the compiler thread
+/// refuses a stale one for good. One `def` of anything between an arm's compile and its
+/// tier-up therefore kept the arm on its small native for the rest of the program — `json`'s
+/// `skip-ws`, `digits-run` and `json-object` whenever a module loaded mid-run. The tier-up
+/// now checks what the derivation reads (its spliced callees and primitives) and moves the
+/// stamp forward when nothing it reads changed, so the inlined body still installs.
+#[cfg(feature = "jit")]
+#[test]
+fn an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body() {
+    use std::sync::atomic::Ordering::Acquire;
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    interp
+        .eval_str(
+            "(def unrelated 0)
+             (defn leaf-sq (x) (* x x))
+             (defn sum-sq (n acc) (if (= n 0) acc (sum-sq (- n 1) (+ acc (leaf-sq n)))))
+             (defn warm (k) (if (< k 1) :ok (do (sum-sq 20 0) (warm (- k 1)))))",
+        )
+        .expect("define");
+    // Compile `sum-sq` (deriving its leaf splice of `leaf-sq`) with one call, THEN move the
+    // epoch by rebinding a global it does not read (a new name does not move it).
+    assert_eq!(
+        interp
+            .eval_str("(sum-sq 3 0)")
+            .expect("first call")
+            .as_int(),
+        Some(14)
+    );
+    let id = match interp.eval_str("sum-sq").expect("read sum-sq").unpack() {
+        ValueRef::Fn(id) => id,
+        _ => panic!("`sum-sq` should be a closure"),
+    };
+    let arm = compiled_arm_for(&interp.heap, id, 2).expect("sum-sq/2 compiles");
+    let arm = arm.arc().clone();
+    let leaf = arm.leaf.as_ref().expect(
+        "`sum-sq` should carry a leaf derivation splicing `leaf-sq`, or this test checks nothing",
+    );
+    let derived_at = leaf.epoch.load(Acquire);
+    interp.eval_str("(def unrelated 1)").expect("def");
+    assert_ne!(
+        interp.heap.global_epoch(),
+        derived_at,
+        "the def moved the epoch"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !arm.inline_installed.load(Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "`sum-sq`'s inlined body never installed after an unrelated def"
+        );
+        interp.eval_str("(warm 200)").expect("warm");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        interp
+            .eval_str("(sum-sq 20 0)")
+            .expect("run inlined")
+            .as_int(),
+        Some(2870)
+    );
+    // The other direction: rebinding the callee the derivation spliced must not let the
+    // tier-up re-stamp it — the old body would keep running. Warm past a re-tier and the
+    // new definition must be what runs.
+    interp
+        .eval_str("(def leaf-sq (fn (x) (* x 10)))")
+        .expect("rebind the spliced callee");
+    for _ in 0..50 {
+        interp.eval_str("(warm 200)").expect("warm");
+        assert_eq!(
+            interp.eval_str("(sum-sq 20 0)").expect("run").as_int(),
+            Some(2100),
+            "a re-tier after rebinding `leaf-sq` ran the body spliced before the rebind"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}

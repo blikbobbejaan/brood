@@ -13395,6 +13395,35 @@ native-nested `receive` must (the §7.4 carve-out). **Guard.**
 `reflect/eval` counts exactly 1 directly, inside `try`, inside a `map` callback, and a
 spawn-then-receive spawns one child; all four red with the guard removed.
 
+## KI-252 — a stale leaf derivation cost an arm its inlined body for good ✅ FIXED 2026-10-15
+
+**Symptom.** `BROOD_JIT_BAIL_TRACE=1 brood json.blsp` at `4d1cdbda`, every run:
+`[jit-bail] arm=json/skip-ws reason=leaf-derivation-stale`, the same for `digits-run` and
+`json-object`. They kept their small native for the life of the program. On the next commit
+the same run installed all three — by timing, not by design: the arms happened to be
+recompiled late enough.
+**Cause.** A leaf derivation (ADR-210: a callee's body spliced into its caller) is stamped with
+the epoch it was derived at, and the compiler thread — which has no heap to re-check anything —
+refuses to lower one whose stamp differs from the arm's compile epoch. Any rebind or module load
+between `compile_arm` and the tier-up moved the epoch (96 → 113 in the failing run), and nothing
+re-derived it: "the caller re-derives fresh only when its closure is recompiled", which a healthy
+arm never is. A hot-reload `def` after tiering did the same to every leaf-inlined arm.
+**Fix.** The derivation records each spliced callee's closure handle and
+`heap.code_relocations()` (a new runtime counter bumped when generation migration, a freed
+generation or compaction rewrites code handles). At the tier-up — on the main thread, with the
+heap — a derivation whose epoch moved is re-validated (`LeafInline::still_valid`): no
+relocation, every head still names the same non-LOCAL closure (a spliced callee captures
+nothing, so the same closure is the same body), and the spliced chunk's primitives are still
+native. If so its stamp moves forward; if a callee really was rebound the arm is marked stale
+and recompiles at its next activation. A first cut recompiled on every stale stamp: the prelude
+helper `%match-bind-sym?` recompiled 58 times in one run as `def`s kept landing between its
+recompile and its next tier-up.
+**Guard.** `eval::compile::tests::an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body`:
+derive, rebind an unrelated global, warm — the inlined body must install; then rebind the spliced
+callee — every run must use the new definition. Sabotaged: without the re-stamp, the first half
+times out; with `still_valid` ignoring callees, the second half reads `2870` (the old body)
+where `2100` is right.
+
 ## KI-251 — a memory-pressure test required the selector's stderr line when the culprit had raised in itself ✅ FIXED 2026-10-15
 
 **Symptom.** `cli::memory_pressure::a_leak_is_stopped_and_a_busy_worker_beside_it_is_not`

@@ -236,6 +236,13 @@ impl Heap {
         self.runtime.code_epoch.load(Ordering::Relaxed)
     }
 
+    /// How many times RUNTIME code handles have been rewritten in this runtime (see
+    /// `RuntimeCode::relocations`): equal readings bracket a span in which a recorded code
+    /// handle kept denoting the same object.
+    pub fn code_relocations(&self) -> u64 {
+        self.runtime.relocations.load(Ordering::Acquire)
+    }
+
     /// Address of the global-epoch counter (`runtime.version`), so JIT'd code can read the
     /// epoch with a **raw load** instead of a `brood_rt_global_epoch` FFI *call* on every loop
     /// back-edge / linked call (the call was ~20% of a hoisted-global loop like `loop`). The

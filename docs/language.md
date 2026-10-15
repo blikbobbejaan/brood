@@ -2788,7 +2788,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
 > below cover them all; the enum ones just need the import.
 
 - `first`/`rest` of `nil` are `nil`. `nth` takes an optional default:
-  `(nth coll i default)`.
+  `(nth coll i default)` — one value; a fourth argument is an arity error.
 - **`reduce-while`** is the early-terminating fold: `(reduce-while f init coll)`
   where `(f acc x)` returns `[:cont acc']` to continue or `[:halt acc']` to stop,
   returning the last accumulator. `(reduce-while (fn (a x) (if (> a 100) [:halt a]

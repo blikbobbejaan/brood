@@ -865,9 +865,49 @@ pub struct LeafInline {
     /// addresses of this chunk's `ConstVal`s into itself, and `JIT_ARM_KEEPALIVE`
     /// retains the caller arm (hence this `Arc`) for the process lifetime.
     pub resume: Arc<CompiledArm>,
-    /// `heap.global_epoch()` at derivation. Lowering requires `compile_epoch ==`
-    /// this — i.e. no `def`/compaction between derivation and lowering.
-    pub epoch: u64,
+    /// The epoch the derivation is known valid at: `heap.global_epoch()` when derived, and
+    /// moved forward by the tier-up when [`Self::still_valid`] finds nothing it depends on
+    /// changed. Lowering requires `compile_epoch ==` this.
+    pub epoch: std::sync::atomic::AtomicU64,
+    /// The callees spliced in, as resolved at derivation.
+    pub callees: Vec<LeafCallee>,
+    /// `heap.code_relocations()` at derivation: the recorded closure handles mean what they
+    /// meant then only while this is unchanged.
+    pub relocations: u64,
+}
+
+/// One callee a leaf derivation spliced in: the call head and the closure it named.
+#[cfg(feature = "jit")]
+pub struct LeafCallee {
+    pub sym: Symbol,
+    /// The closure's handle bits (`ClosureId.0`), compared, never dereferenced.
+    pub closure: u64,
+}
+
+#[cfg(feature = "jit")]
+impl LeafInline {
+    /// Is the derivation still what deriving it now would give? No code handle has been
+    /// rewritten since, each head still names the closure that was spliced (a spliced
+    /// callee captures nothing, so the same closure is the same body), and the spliced
+    /// chunk's primitives are still native. A rebind of anything else, or a module load,
+    /// leaves all three true — and the epoch moving for that reason no longer costs the
+    /// arm its inlined body for good.
+    pub(crate) fn still_valid(&self, heap: &crate::core::heap::Heap) -> bool {
+        heap.code_relocations() == self.relocations
+            && self.callees.iter().all(|c| {
+                // A LOCAL handle is recycled by the minor collector, which counts no
+                // relocation, so only a shared one can be trusted by identity.
+                heap.env_get(heap.global(), c.sym).is_some_and(|v| {
+                    matches!(v.unpack(), ValueRef::Fn(id)
+                        if id.0 == c.closure && id.region() != crate::core::value::LOCAL)
+                })
+            })
+            && self
+                .resume
+                .chunk
+                .as_ref()
+                .is_some_and(|chunk| super::chunk_ops_native(heap, chunk))
+    }
 }
 
 /// The global-read slots an arm reserves for a body with `gsites` global reads and `sites`

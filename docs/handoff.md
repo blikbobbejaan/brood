@@ -22,7 +22,8 @@ devlog entries of the same dates.
   holder died) and KI-248 (a large allocation passing the hard limit when the live snapshot
   had not seen an earlier large block) were found and fixed 2026-10-14 (night); KI-250 (a native
   tail call by name never hit its head's cache slot) and KI-251 (a memory-pressure test that
-  required the selector's stderr line when the culprit had raised in itself) 2026-10-15.
+  required the selector's stderr line when the culprit had raised in itself) and KI-252 (a stale
+  leaf derivation refused for good) 2026-10-15.
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
@@ -99,13 +100,15 @@ every other row ~0 — at ~240 instructions saved each, ≤2% of any row. Worth 
 built on higher-order loops, not for the benchmark column. `nqueens`' `solve` stays
 interpreted (it builds its loop closure; §7.1).
 
-**E. 2026-10-15 — `json`, picked apart by counters (KI-250 fixed).** A native tail call by
-name now caches its head (`primes` −6.4% instructions, `supervisor` −1.8%). Leads measured on
-`json` at N=20 000 and not yet taken: `env_get` still runs ~1M times a run (was 1.7M) — find the
-callers before guessing; `json/skip-ws`, `digits-run` and `json-object` never get their inlined
-native body (`[jit-bail] … reason=leaf-derivation-stale`): the leaf derivation is stamped with
-the epoch at compile time, a module loaded later moves the epoch, and nothing re-derives it;
-`hof_decline_queued` 19 872 — HOF callbacks declined while their compile is in flight.
+**E. DONE (2026-10-15) — `json`, picked apart by counters.** KI-250 (a native tail call by
+name caches its head), KI-252 (a stale leaf derivation is re-validated, not refused for good),
+the unlinkable-call slow path reads the call IC instead of walking the environment, `nth`'s
+default is a fixed parameter, and a queued callback compiles synchronously after 2 048 declines.
+`json` −5.1% instructions on top of KI-250's rows. What is left on `json` (N=20 000, counter
+build): `vm_apply` ~470 000 — the functions the native compiler refuses
+(`call-mediated-boxed`: `json-value`, `json-slice`, `enc-key`, `enc-string`, `->string`,
+`reverse`; `chunk-outside-jit-subset`: `enc-escapes`, `count`), each called from native code
+through the slow path. That is the next lead: why each is refused, one at a time.
 
 ### Older threads
 
