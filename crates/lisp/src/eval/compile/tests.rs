@@ -134,6 +134,7 @@ fn rewrite_arm_handles_rewrites_every_embedded_handle() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -280,6 +281,7 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -495,6 +497,7 @@ fn jit_lowers_and_runs_a_straight_line_int_arm() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -591,6 +594,7 @@ fn jit_lowers_and_runs_an_if_with_comparison() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -698,6 +702,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -886,6 +891,7 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -975,6 +981,7 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1061,6 +1068,7 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1146,6 +1154,7 @@ fn jit_lowers_fused_prims_map_and_overflow() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1314,6 +1323,7 @@ fn jit_tier_compiles_a_hot_arm_then_runs_native() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1521,6 +1531,7 @@ fn vm_run_bc_runs_a_tiered_arm_via_the_hook() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1661,6 +1672,7 @@ fn jit_speedup_vs_vm() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1795,6 +1807,7 @@ fn ki26_arm(nslots: usize, inline_nslots: usize) -> CompiledArm {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -1947,6 +1960,7 @@ fn tiering_advisories_route_to_the_predicate_they_name() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -2462,6 +2476,7 @@ fn jit_tier_declines_the_inlined_body_when_the_frame_was_built_small() {
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(true),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: None,
         src_file: None,
         module: None,
@@ -2933,6 +2948,75 @@ fn a_native_tail_call_by_name_caches_its_head_in_its_own_slot() {
 /// `skip-ws`, `digits-run` and `json-object` whenever a module loaded mid-run. The tier-up
 /// now checks what the derivation reads (its spliced callees and primitives) and moves the
 /// stamp forward when nothing it reads changed, so the inlined body still installs.
+/// An arm entered from the interpreter SETTLES on its installed pointer once the tier-up has
+/// nothing left to do for it, so later entries take `jit_tier_in_frame`'s fast path. This
+/// build has debug assertions, which keep the xcall re-lowering off, so `g` settles on its
+/// first body here; the re-lowered case is `stress/jit_settle_test.blsp`, run on a release
+/// build by `make check-stress`.
+#[cfg(feature = "jit")]
+#[test]
+fn an_interpreted_callers_native_callees_settle_on_their_code() {
+    use std::sync::atomic::Ordering::Acquire;
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    // `drive` stays interpreted (the `binding` keeps it off the JIT), so its calls to `g` and
+    // `leaf` are the interpreter-to-native entries that settle. `g` is a native loop with a
+    // non-tail named call to a non-leaf `h`: the shape a release build re-lowers.
+    interp
+        .eval_str(
+            "(defn h (x) (if (< x 2) x (+ (h (- x 1)) 1)))
+             (defn g (n acc) (if (= n 0) acc (g (- n 1) (+ acc (h (bit/and n 3))))))
+             (defn leaf (x) (+ x 1))
+             (defdyn *k* 1)
+             (defn drive (i acc)
+               (if (>= i 2000) acc (drive (+ i 1) (binding (*k* 1) (+ acc (g 3 0) (leaf i))))))",
+        )
+        .expect("define");
+    let arm_of = |interp: &mut crate::Interp, name: &str, argc: usize| {
+        let id = match interp.eval_str(name).expect("read").unpack() {
+            ValueRef::Fn(id) => id,
+            _ => panic!("`{name}` should be a closure"),
+        };
+        compiled_arm_for(&interp.heap, id, argc)
+            .expect("compiles")
+            .arc()
+            .clone()
+    };
+    interp.eval_str("(drive 0 0)").expect("first run");
+    let g = arm_of(&mut interp, "g", 2);
+    let leaf = arm_of(&mut interp, "leaf", 1);
+    let settled = |arm: &CompiledArm| {
+        let code = arm.jit_code.load(Acquire);
+        !code.is_null()
+            && code != crate::jit::BAILED
+            && code != crate::jit::QUEUED
+            && arm.settled_code.load(Acquire) == code
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !(settled(&g) && settled(&leaf)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never settled: g={} (inline_installed={}, inline_queued={}) leaf={}",
+            settled(&g),
+            g.inline_installed.load(Acquire),
+            g.inline_queued.load(Acquire),
+            settled(&leaf)
+        );
+        interp.eval_str("(drive 0 0)").expect("warm");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        interp
+            .eval_str("(drive 0 0)")
+            .expect("run settled")
+            .as_int(),
+        // `(g 3 0)` is h(3) + h(2) + h(1) = 6; `(leaf i)` is i + 1.
+        Some(2000 * 6 + (1..=2000).sum::<i64>()),
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body() {

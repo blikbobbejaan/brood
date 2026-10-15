@@ -17683,3 +17683,52 @@ themselves — 768 for an interpreted call, 640 into native code, ~410 native to
 BEAM pays tens. The resumable native frame stays the design for compiled `receive` loops (it
 is the only way a native frame can park), and it is judged on the process rows, not on
 these; it will want the cheaper entry either way.
+
+## 2026-10-15 (late) — the call into native code, 32% cheaper: an arm that has settled skips the tier-up
+
+**The constant.** The spike left three per-call constants as the compute lever; this takes the
+middle one, an interpreted caller entering native code (640 instructions, the
+`drv_base`/`drv_leaf` microbenchmarks: an interpreted driver kept off the JIT by a `binding`,
+with and without a call to a native leaf). Precise sampling (`instructions:upp`; plain
+`perf record` here is capped at 1 000 samples/s and skids onto the instruction after an
+atomic) split it into `jit_tier_in_frame` ~227, the call site in `exec_chunk`, `enter_native`'s
+ceremony, `native_feedback` and the stack stamp.
+
+**Cuts:**
+- `shared_published.swap(true)` ran on EVERY native entry of an arm without an installed
+  inlined body — a locked RMW on a `CompiledArm` all of a runtime's processes share, so each
+  entry wrote that cache line and a fan-out bounced it between cores. Now a plain load first;
+  `inline_queued.swap` the same (it ran on every entry while a deferred compile waited — a
+  spawn storm's whole run).
+- An arm that has nothing left for the tier-up to do records the code pointer it SETTLED on
+  (`CompiledArm::settled_code`); `jit_tier_in_frame` is now an inline fast path for that
+  pointer — the drain, the ceiling, the epoch and its re-load, the frame size, then the entry —
+  and everything else is `jit_tier_in_frame_slow`. Keyed on the pointer, so every writer of
+  `jit_code` voids it unawares; `reset_native_state` clears it (the same pointer can be
+  re-adopted from the shared cache at an unchanged epoch). Only a BAILED upgrade slot counts as
+  finished: a null one may be a deferred compile in flight, so the xcall re-lowering's swap
+  (which nulls the slot) settles its own pointer. Skipping the slow path can only miss an
+  upgrade, never run wrong code.
+- `enter_native` re-rooted an env its driver caller had already rooted (`EntryEnv::Rooted`).
+- The direct call site copied the args into a `SmallVec` and pushed them back to the slots
+  they came from; now they stay put (a staged head shifts them down one, in place).
+- `native_feedback` returns inline on a clean exit with nothing blocked and no deopt streak.
+
+Not taken: caching the stack stamp per thread (~25 instructions) — lowering runs under
+`stacker::maybe_grow`, so a macro can enter native code at depth 0 on a heap segment whose
+limit a cached value would get wrong, silently switching the overflow guard off.
+
+**Measured.** The call: 636 → 434 instructions (−32%), ~148 → ~84 cycles (−43%). Rows,
+instructions against `d35af1a1` (a proper `target/ab` baseline — a hand-copied binary booted
+without its stdlib image and read −30..−80% everywhere): `json` −1.6% in each of its two
+modes (30 runs a side), `nbody` −2.9%, `regex` −3.2%, `spawn` −3.3%, `latency` ~−2% (10 a
+side), `persistent-map` −1.5%, `bintree` −1.3%, the rest within ±1%. Watch: one `json` run
+of 40 read 2 896M (the first of its batch); 0/150 on either binary since — not reproducible.
+
+**Guards.** `an_interpreted_callers_native_callees_settle_on_their_code` (Rust, debug build)
+and `stress/jit_settle_test.blsp` (release, `make check-stress`; the debug build never
+re-lowers) via the new `:settled` key of `%jit-arm-state`. Sabotaged: settling while an
+upgrade is pending reds `an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body`;
+dropping the swap's settle reds the stress test. Gates: `test-both` 1882/1882 both engines,
+fuzz (tier_transition, metamorphic, pipeline, arithmetic × 300, stale=0) clean, `gcstress`
+clean.

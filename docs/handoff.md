@@ -115,6 +115,10 @@ the nested `vm_run_bc` trampoline per crossing and `jit_tier_in_frame`'s entry c
 every call. A spike (devlog 2026-10-15 night) measured that resuming native code through the
 driver instead of nesting would be break-even for compute: the lever is the per-call
 constants — 768 instructions an interpreted call, 640 into native code, ~410 native to native.
+The middle one is now 434 (devlog 2026-10-15 late: settled arms skip the tier-up, the shared
+atomic writes are gone); what is left of it is `exec_chunk`'s call-site share (IC probe + its
+`Arc` clone, the frame fill), `enter_native`'s save/restore and the stack stamp. Next: the
+768 of an interpreted call, then native to native.
 
 ### Older threads
 

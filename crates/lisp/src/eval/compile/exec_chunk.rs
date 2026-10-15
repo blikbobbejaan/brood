@@ -685,11 +685,6 @@ pub(crate) fn exec_chunk(
                         }
                     }
                 }
-                let n = heap.roots_len();
-                argv = SmallVec::with_capacity(argc);
-                for k in 0..argc {
-                    argv.push(heap.root_at(n - argc + k));
-                }
                 // VM→native DIRECT call (`docs/compute-frontier.md` §7.12). On the
                 // call-heavy rows the interpreter's dominant "call" is not a VM-level apply
                 // but an entry into a callee that is ALREADY native — a gate-refused arm's
@@ -721,9 +716,16 @@ pub(crate) fn exec_chunk(
                     // out rather than cloned (two atomic refcount writes a call).
                     let (arm, cenv, bases) = fast.take().expect("matched Some above");
                     {
-                        heap.truncate_roots(drop_base);
-                        for a in &argv {
-                            heap.push_root(*a);
+                        // The args already lie where the frame starts, but for a staged
+                        // head's callee value below them: shift them down over it, in
+                        // place (forward-safe — each write is below its read).
+                        let n = heap.roots_len();
+                        if drop_base + argc < n {
+                            for k in 0..argc {
+                                let v = heap.root_at(drop_base + 1 + k);
+                                heap.set_root_at(drop_base + k, v);
+                            }
+                            heap.truncate_roots(drop_base + argc);
                         }
                         let (r, frame_nslots) = vm_call_native_direct(
                             heap, &arm, argc, drop_base, cenv, bases, capture,
@@ -820,6 +822,11 @@ pub(crate) fn exec_chunk(
                             }
                         }
                     }
+                }
+                let n = heap.roots_len();
+                argv = SmallVec::with_capacity(argc);
+                for k in 0..argc {
+                    argv.push(heap.root_at(n - argc + k));
                 }
                 // Inline fast-path: IC hit for the exact same arm, same captured env, no
                 // optional/rest params, and GC is not yet due. Covers the common

@@ -295,7 +295,7 @@ pub(crate) fn jit_dispatch_call(
                     NativeEntry {
                         code,
                         base: stage_base,
-                        env: callee_env,
+                        env: EntryEnv::Bare(callee_env),
                         dbg_fn: head,
                         ic_bases: Some(callee_bases),
                         from: EntryFrom::Native,

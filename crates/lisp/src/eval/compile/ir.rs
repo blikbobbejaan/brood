@@ -741,6 +741,14 @@ pub struct CompiledArm {
     /// arm-instance, not one per call. Reset when the arm is epoch-invalidated so the
     /// recompiled code re-publishes.
     pub shared_published: std::sync::atomic::AtomicBool,
+    /// The code pointer this arm has SETTLED on: the tier-up work [`jit_tier_in_frame`]
+    /// does around an installed pointer — the inlined or re-lowered upgrade, the shared
+    /// publish — is finished for it, so an entry that finds `jit_code` equal to this runs
+    /// only the checks every entry needs and enters. Null until the slow path settles it.
+    /// Keyed on the pointer rather than a flag, so every writer of `jit_code` voids it
+    /// without knowing it exists; [`deopt::reset_native_state`], which can see the same
+    /// pointer re-adopted from the shared cache, clears it explicitly.
+    pub settled_code: std::sync::atomic::AtomicPtr<u8>,
     /// Captured enclosing-lexical names, in capture-slot order (#3 lexical addressing).
     /// Empty for a top-level / non-capturing arm. When non-empty, each name occupies a
     /// **capture slot** at `[capture_base + k]` where `capture_base = nrequired +

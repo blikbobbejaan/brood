@@ -156,7 +156,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![callable, int], map_ty),
         &["f", "argc"],
-        "The JIT tier of `f`'s `argc`-ary arm, as a map: `:state` one of `:native` (its native code is installed), `:queued` (hot, compile in flight), `:bailed` (refused, or latched off the native tier by deopt thrash / a suspend), `:untried` (not hot yet), `:no-arm` (nothing compiled — `f` was never called with `argc` args, or is not a VM-compiled closure), or `:no-jit` (this binary/ceiling has no native tier); plus `:deopts`, the arm's consecutive type-deopt count (the feedback's, which moves only for a deopt-watched arm — never a `SelfCall` loop), and `:deopts-total`, every type-deopt the arm ever took, watched or not — the one to assert on for a loop arm. Reads the shared arm's own atomics, so it says what the runtime DID — the probe a test needs to assert an arm stayed native (or was latched) rather than infer it from a timing. Dev-tools only.",
+        "The JIT tier of `f`'s `argc`-ary arm, as a map: `:state` one of `:native` (its native code is installed), `:queued` (hot, compile in flight), `:bailed` (refused, or latched off the native tier by deopt thrash / a suspend), `:untried` (not hot yet), `:no-arm` (nothing compiled — `f` was never called with `argc` args, or is not a VM-compiled closure), or `:no-jit` (this binary/ceiling has no native tier); plus `:deopts`, the arm's consecutive type-deopt count (the feedback's, which moves only for a deopt-watched arm — never a `SelfCall` loop), and `:deopts-total`, every type-deopt the arm ever took, watched or not — the one to assert on for a loop arm; and `:settled`, true when the arm's installed native code is the code it has settled on — the tier-up has nothing left to do for it, so an entry from the interpreter takes the fast path. Reads the shared arm's own atomics, so it says what the runtime DID — the probe a test needs to assert an arm stayed native (or was latched) rather than infer it from a timing. Dev-tools only.",
         jit_arm_state);
     #[cfg(feature = "dev-tools")]
     primitives.def(
@@ -577,7 +577,7 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
     let argc = arm_argc(heap, "%jit-arm-state", args[1])?;
     let state = |s: &str| value::kw(s);
     // The arm's state, with its consecutive and total deopt counts (0 where there is none).
-    let (st, deopts, deopts_total) = match f {
+    let (st, deopts, deopts_total, settled) = match f {
         Value::Fn(id) => {
             #[cfg(feature = "jit")]
             {
@@ -586,10 +586,10 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
                     crate::eval::compile::Tier::Native
                 );
                 if !native_tier {
-                    (state("no-jit"), 0, 0)
+                    (state("no-jit"), 0, 0, false)
                 } else {
                     match crate::eval::compile::probe_arm_for(heap, id, argc) {
-                        None => (state("no-arm"), 0, 0),
+                        None => (state("no-arm"), 0, 0, false),
                         Some(arm) => {
                             use std::sync::atomic::Ordering::Acquire;
                             let p = arm.jit_code.load(Acquire);
@@ -602,10 +602,15 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
                             } else {
                                 state("native")
                             };
+                            let settled = !p.is_null()
+                                && p != crate::jit::BAILED
+                                && p != crate::jit::QUEUED
+                                && arm.settled_code.load(Acquire) == p;
                             (
                                 st,
                                 arm.jit_deopts.load(Acquire) as i64,
                                 arm.jit_deopts_total.load(Acquire) as i64,
+                                settled,
                             )
                         }
                     }
@@ -614,15 +619,16 @@ pub(super) fn jit_arm_state(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
             #[cfg(not(feature = "jit"))]
             {
                 let _ = (id, argc, heap as &Heap);
-                (state("no-jit"), 0, 0)
+                (state("no-jit"), 0, 0, false)
             }
         }
-        _ => (state("no-arm"), 0, 0),
+        _ => (state("no-arm"), 0, 0, false),
     };
     Ok(heap.map_from_pairs(vec![
         (value::kw("state"), st),
         (value::kw("deopts"), Value::int(deopts)),
         (value::kw("deopts-total"), Value::int(deopts_total)),
+        (value::kw("settled"), Value::boolean(settled)),
     ]))
 }
 

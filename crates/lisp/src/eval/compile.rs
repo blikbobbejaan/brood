@@ -550,6 +550,7 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
                 stale_bindings: std::sync::atomic::AtomicBool::new(false),
                 share_key: None,
                 shared_published: std::sync::atomic::AtomicBool::new(false),
+                settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
                 fn_name: None,
                 src_file: None,
                 module: None,

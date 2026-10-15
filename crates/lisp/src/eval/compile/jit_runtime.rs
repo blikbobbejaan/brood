@@ -242,7 +242,13 @@ pub(crate) fn jit_tier_declines(heap: &Heap, arm: &CompiledArm) -> bool {
 /// (The other native entries — `jit_dispatch_call`, `hof_apply_native`, `jit_run_fast_link` —
 /// do not come through here: each loads the code pointer itself and sizes from THAT, via
 /// [`frame_size_for_code`], which is the same rule spelled the other way round.)
+///
+/// An arm [settled](CompiledArm::settled_code) on its installed pointer takes the inline
+/// fast path: the guards every entry needs (the drain, the tier ceiling, the epoch and its
+/// re-load, the frame size) and the entry. Everything else — tiering, adoption, the
+/// upgrades, publishing — is [`jit_tier_in_frame_slow`], which is also where an arm settles.
 #[cfg(feature = "jit")]
+#[inline]
 pub(crate) fn jit_tier_in_frame(
     arm: &Arc<CompiledArm>,
     heap: &mut Heap,
@@ -251,6 +257,34 @@ pub(crate) fn jit_tier_in_frame(
     frame_nslots: usize,
     out: *mut Value,
     // May the activation preempt by unwinding (ADR-401)? Only a top-level driver says yes.
+    unwind: bool,
+) -> Option<i64> {
+    use std::sync::atomic::Ordering::{Acquire, Relaxed};
+    let code = arm.jit_code.load(Acquire);
+    if !code.is_null()
+        && code == arm.settled_code.load(Relaxed)
+        && !heap.jit_force_vm
+        && arm.compile_epoch.load(Acquire) == heap.global_epoch()
+        // The slow path's re-load (a peer's reset + re-election between the two reads).
+        && arm.jit_code.load(Acquire) == code
+        && tier_ceiling() >= Tier::Native
+        && !crate::diagnostics::debug_flags::no_jit_computed()
+        && !(frame_nslots < arm.inline_nslots && frame_nslots < frame_size_for_code(arm, code))
+    {
+        return run_installed(arm, heap, base, env, frame_nslots, out, unwind, code);
+    }
+    jit_tier_in_frame_slow(arm, heap, base, env, frame_nslots, out, unwind)
+}
+
+#[cfg(feature = "jit")]
+#[inline(never)]
+fn jit_tier_in_frame_slow(
+    arm: &Arc<CompiledArm>,
+    heap: &mut Heap,
+    base: usize,
+    env: EnvRoot,
+    frame_nslots: usize,
+    out: *mut Value,
     unwind: bool,
 ) -> Option<i64> {
     use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release};
@@ -575,8 +609,10 @@ pub(crate) fn jit_tier_in_frame(
                     }
                 }
             }
-            // Not shared yet. Elect a single enqueuer via the queued flag.
-            if !arm.inline_queued.swap(true, AcqRel) {
+            // Not shared yet. Elect a single enqueuer via the queued flag — loaded first, so
+            // the entries that run while the deferred compile waits (a spawn storm's whole
+            // run) do not each write this shared arm's cache line.
+            if !arm.inline_queued.load(Relaxed) && !arm.inline_queued.swap(true, AcqRel) {
                 let slot_tags = profile_slot_tags(heap, arm, base);
                 // Deferred (low-priority). On a full queue, un-set `inline_queued` so a
                 // later call re-attempts — but DON'T disturb the running small native.
@@ -601,6 +637,10 @@ pub(crate) fn jit_tier_in_frame(
                 // true, which is the once-per-epoch latch against re-enqueueing.
                 arm.inline_code.store(std::ptr::null_mut(), Release);
                 arm.jit_code.store(ic, Release);
+                // Nothing is left to swap for the re-lowered body, but its slot now reads null
+                // like a compile in flight, which the settle test below must treat as pending
+                // — so it settles here. Its publish was the small body's (the flag stays set).
+                arm.settled_code.store(ic, Relaxed);
                 if let Some(sym) = arm.dbg_name {
                     heap.invalidate_fast_links_for(sym);
                 }
@@ -687,7 +727,10 @@ pub(crate) fn jit_tier_in_frame(
     // Publish freshly-compiled native code to the shared cache so the runtime's other
     // processes install it directly instead of recompiling (the spawn lever). The
     // `swap` guard makes this one lock acquire per arm-instance, not one per call; a
-    // process that installed the code *from* the cache already has the flag set.
+    // process that installed the code *from* the cache already has the flag set. The plain
+    // load in front keeps the `swap` itself — a locked RMW on a `CompiledArm` every process
+    // of the runtime shares — off the per-call path once the flag is set: without it every
+    // native entry wrote the arm's cache line, and a fan-out bounced it between cores.
     // NEVER publish an INLINED arm to the *small*-code `(id, argc)` cache: an adopter installs
     // what it finds there straight into `jit_code` without touching `inline_installed`, so the
     // inlined body would then be entered against small-`nslots` frames → frame undersize /
@@ -699,7 +742,7 @@ pub(crate) fn jit_tier_in_frame(
     // "peer copy with `inline_installed == false`". Guard on `inline_installed`.
     if !arm.inline_installed.load(Acquire) {
         if let Some(key) = arm.share_key {
-            if !arm.shared_published.swap(true, Relaxed) {
+            if !arm.shared_published.load(Relaxed) && !arm.shared_published.swap(true, Relaxed) {
                 heap.jit_shared_publish(key, code, arm.compile_epoch.load(Acquire));
             }
         }
@@ -715,6 +758,41 @@ pub(crate) fn jit_tier_in_frame(
     if frame_nslots < arm.inline_nslots && frame_nslots < frame_size_for_code(arm, code) {
         return None;
     }
+    // Settle on this pointer once nothing above has work left for it: no inlined or
+    // re-lowered upgrade still to come, and the shared publish done. Only a BAILED upgrade
+    // slot is finished: a null one is either unqueued or a deferred compile in flight, whose
+    // pointer lands in the slot for a LATER entry to swap in — so it must keep looking. (The
+    // re-lowered body's swap nulls the slot too; it settles its new pointer itself.)
+    {
+        let upgrade_pending = (arm.inline_name.is_some() || xcall_relower)
+            && !arm.inline_installed.load(Acquire)
+            && !ActiveBackend::declines_inline_upgrade(arm)
+            && arm.inline_code.load(Acquire) != crate::jit::BAILED;
+        let publish_pending = !arm.inline_installed.load(Acquire)
+            && arm.share_key.is_some()
+            && !arm.shared_published.load(Relaxed);
+        if !upgrade_pending && !publish_pending {
+            arm.settled_code.store(code, Relaxed);
+        }
+    }
+    run_installed(arm, heap, base, env, frame_nslots, out, unwind, code)
+}
+
+/// Enter `arm`'s installed `code` in the frame the caller built, and take its outcome — the
+/// tail both tier-in paths share.
+#[cfg(feature = "jit")]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn run_installed(
+    arm: &Arc<CompiledArm>,
+    heap: &mut Heap,
+    base: usize,
+    env: EnvRoot,
+    frame_nslots: usize,
+    out: *mut Value,
+    unwind: bool,
+    code: *mut u8,
+) -> Option<i64> {
     // The driver installed this frame's IC cursors, so the entry keeps them (`None`). The
     // name is best-effort for the staged-stale diagnostic (recursive defns carry
     // `inline_name`; others reset to MAX so the value is never misleadingly stale).
@@ -723,7 +801,7 @@ pub(crate) fn jit_tier_in_frame(
         NativeEntry {
             code,
             base,
-            env: heap.read_root_env(env),
+            env: EntryEnv::Rooted(env),
             dbg_fn: arm.dbg_name.unwrap_or(u32::MAX),
             ic_bases: None,
             from: EntryFrom::Driver,
@@ -739,13 +817,20 @@ pub(crate) fn jit_tier_in_frame(
     // drop the installed i64 wrapper, and re-tier promptly (→ boxed). Run this activation on the
     // VM. Without this a deep non-tail recursion would deopt-and-re-tier per level (~100× thrash).
     if outcome == 5 {
-        if let Some(sym) = arm.dbg_name {
-            ActiveBackend::note_depth_bail(sym);
-        }
-        arm.jit_code.store(std::ptr::null_mut(), Release);
-        arm.jit_calls.store(TIER_THRESHOLD, Release);
-        arm.shared_published.store(false, Relaxed);
+        depth_bail_to_boxed(arm);
         return None;
     }
     Some(outcome)
+}
+
+#[cfg(feature = "jit")]
+#[cold]
+fn depth_bail_to_boxed(arm: &CompiledArm) {
+    use std::sync::atomic::Ordering::{Relaxed, Release};
+    if let Some(sym) = arm.dbg_name {
+        ActiveBackend::note_depth_bail(sym);
+    }
+    arm.jit_code.store(std::ptr::null_mut(), Release);
+    arm.jit_calls.store(TIER_THRESHOLD, Release);
+    arm.shared_published.store(false, Relaxed);
 }

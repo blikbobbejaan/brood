@@ -291,6 +291,9 @@ pub(crate) fn compile_arm(
                                     // is reachable only through its caller's derivation.
                                     share_key: None,
                                     shared_published: std::sync::atomic::AtomicBool::new(false),
+                                    settled_code: std::sync::atomic::AtomicPtr::new(
+                                        std::ptr::null_mut(),
+                                    ),
                                     fn_name: trace_name,
                                     src_file: src_file.clone(),
                                     module: scope.module,
@@ -387,6 +390,7 @@ pub(crate) fn compile_arm(
         stale_bindings: std::sync::atomic::AtomicBool::new(false),
         share_key: None,
         shared_published: std::sync::atomic::AtomicBool::new(false),
+        settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
         fn_name: trace_name,
         // The file the body was read from — trace entries name it as the call
         // site's file (a fn's calls are in its own source). Cold: once per arm
@@ -1060,7 +1064,7 @@ pub(crate) fn hof_apply_native(
         NativeEntry {
             code,
             base,
-            env: cenv,
+            env: EntryEnv::Bare(cenv),
             dbg_fn: dbg_sym,
             ic_bases: Some(bases),
             from: EntryFrom::Native,
