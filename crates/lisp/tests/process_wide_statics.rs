@@ -68,6 +68,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("builtins/io.rs", "STDIN_READER", OneMachine),
     // The net reactor multiplexes every socket in the OS process on one thread.
     ("host/net.rs", "STARTING", OneMachine),
+    // One audio thread owns the output device for the whole OS process.
+    ("host/audio.rs", "STARTING", OneMachine),
     ("builtins/filesystem.rs", "LOCK", OneMachine),
     // The allocator's count, and so the soft memory limit, is the OS process's.
     ("process/pressure.rs", "PRESSURE", OneMachine),
