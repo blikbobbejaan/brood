@@ -442,6 +442,28 @@ impl Store {
         **guard = Some(map);
     }
 
+    /// The lock-free dense read both `get` and `has` start with. `Some(slot)` is the
+    /// answer: the encoded slot (`SLOT_EMPTY` when `key` is absent), or `SLOT_EMPTY` for a
+    /// key that can't be dense at all. `None` means read through the hashed path — the
+    /// store is not dense, or a migration is moving the slot under us (checked after the
+    /// slot load, so a value read before the move is never returned once the dense flag
+    /// has dropped).
+    fn dense_read(&self, key: Value) -> Option<u64> {
+        if !self.dense.load(Ordering::Acquire) {
+            return None;
+        }
+        // An out-of-shape key can't be present in a dense store.
+        let Some(i) = dense_idx(key) else {
+            return Some(SLOT_EMPTY);
+        };
+        // An unmapped chunk: no dense write ever reached this key's range.
+        let s = self
+            .slots
+            .slot(i)
+            .map_or(SLOT_EMPTY, |slot| slot.load(Ordering::SeqCst));
+        (s != SLOT_MOVED && self.dense.load(Ordering::SeqCst)).then_some(s)
+    }
+
     /// The held-lock hashed map, migrating first if this store is still dense — or
     /// an error if the table was dropped. `drop_table` tombstones and empties the
     /// store under this same lock, so an op that passed `lookup` before the drop and
@@ -717,22 +739,8 @@ pub fn put(heap: &mut Heap, id: u64, key: Value, val: Value) -> LispResult {
 /// `(%table-get t k [default])` — a fresh copy of the value under `k`, or `default`.
 pub fn get(heap: &mut Heap, id: u64, key: Value, default: Value) -> LispResult {
     let store = lookup(id)?;
-    if store.dense.load(Ordering::Acquire) {
-        match dense_idx(key) {
-            Some(i) => {
-                // An unmapped chunk: no dense write ever reached this key's range.
-                let s = store
-                    .slots
-                    .slot(i)
-                    .map_or(SLOT_EMPTY, |slot| slot.load(Ordering::SeqCst));
-                if s != SLOT_MOVED && store.dense.load(Ordering::SeqCst) {
-                    return Ok(slot_dec(s).unwrap_or(default));
-                }
-                // Migration in flight: read through the hashed path below.
-            }
-            // An out-of-shape key can't be present in a dense store.
-            None => return Ok(default),
-        }
+    if let Some(s) = store.dense_read(key) {
+        return Ok(slot_dec(s).unwrap_or(default));
     }
     let found = {
         let mut guard = lock(&store.hashed);
@@ -752,19 +760,8 @@ pub fn get(heap: &mut Heap, id: u64, key: Value, default: Value) -> LispResult {
 /// `(%table-has? t k)` — whether `k` is present.
 pub fn has(heap: &mut Heap, id: u64, key: Value) -> Result<bool, LispError> {
     let store = lookup(id)?;
-    if store.dense.load(Ordering::Acquire) {
-        match dense_idx(key) {
-            Some(i) => {
-                let s = store
-                    .slots
-                    .slot(i)
-                    .map_or(SLOT_EMPTY, |slot| slot.load(Ordering::SeqCst));
-                if s != SLOT_MOVED && store.dense.load(Ordering::SeqCst) {
-                    return Ok(s != SLOT_EMPTY);
-                }
-            }
-            None => return Ok(false),
-        }
+    if let Some(s) = store.dense_read(key) {
+        return Ok(s != SLOT_EMPTY);
     }
     let mut guard = lock(&store.hashed);
     let map = store.hashed_or_migrate(&mut guard)?;

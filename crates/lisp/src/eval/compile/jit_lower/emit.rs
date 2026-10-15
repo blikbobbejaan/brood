@@ -44,8 +44,8 @@ pub(super) fn deopt_code_with(
 }
 
 /// The current `roots` data pointer, read straight off the heap: `Heap.roots` is a
-/// `RootsBuf` whose header is (ptr, len, cap) at +0/+8/+16 (pinned by
-/// `RootsBuf::header_offsets`), the same load the §7.5 inline call blob makes — one
+/// `RootsBuf` whose header is (ptr, len, cap) at +0/+8/+16 (pinned by a `const` assertion
+/// in `roots_buf.rs`), the same load the §7.5 inline call blob makes — one
 /// pointer load rather than an FFI round trip at every arm entry and after every call.
 pub(super) fn load_roots_base(
     b: &mut FunctionBuilder,

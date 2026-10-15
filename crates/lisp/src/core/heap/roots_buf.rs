@@ -15,14 +15,21 @@
 use crate::core::value::Value;
 use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 
-/// Field order is load-bearing: `ptr` at 0, `len` at 8, `cap` at 16 (see module doc).
-/// [`Self::header_offsets`] asserts it, so a reorder cannot ship silently.
+/// Field order is load-bearing: `ptr` at 0, `len` at 8, `cap` at 16 (see module doc). The
+/// `const` assertion below pins it on every build, so a reorder cannot ship silently.
 #[repr(C)]
 pub(crate) struct RootsBuf {
     ptr: *mut Value,
     len: usize,
     cap: usize,
 }
+
+const _: () = assert!(
+    std::mem::offset_of!(RootsBuf, ptr) == 0
+        && std::mem::offset_of!(RootsBuf, len) == 8
+        && std::mem::offset_of!(RootsBuf, cap) == 16,
+    "RootsBuf's (ptr, len, cap) layout is read by JIT code at +0/+8/+16"
+);
 
 // SAFETY: the buffer is uniquely owned (no aliasing handles escape long-term — `as_mut_ptr`
 // callers re-fetch after any growth, the same contract `Vec` had), and `Value` is `Send`.
@@ -37,19 +44,6 @@ impl RootsBuf {
             len: 0,
             cap: 0,
         }
-    }
-
-    /// The `(ptr, len, cap)` byte offsets within the struct, for the JIT lowering.
-    /// Compile-time constant; the `const` assertions pin the `#[repr(C)]` layout.
-    #[allow(dead_code)] // consumed by §7.5 increment 2 (the inline fast-frame emission)
-    pub(crate) const fn header_offsets() -> (usize, usize, usize) {
-        let o = (
-            std::mem::offset_of!(RootsBuf, ptr),
-            std::mem::offset_of!(RootsBuf, len),
-            std::mem::offset_of!(RootsBuf, cap),
-        );
-        assert!(o.0 == 0 && o.1 == 8 && o.2 == 16);
-        o
     }
 
     #[inline(always)]
@@ -195,11 +189,6 @@ impl std::ops::DerefMut for RootsBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn header_offsets_are_pinned() {
-        assert_eq!(RootsBuf::header_offsets(), (0, 8, 16));
-    }
 
     #[test]
     fn push_grow_truncate_roundtrip() {

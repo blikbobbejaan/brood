@@ -1184,7 +1184,7 @@ pub enum EnvRoot {
 #[derive(Clone, Copy)]
 pub(crate) struct JitCeremonyOffsets {
     /// `Heap.roots` — a [`roots_buf::RootsBuf`], whose own header is (ptr, len, cap)
-    /// at +0/+8/+16 (pinned by `RootsBuf::header_offsets`).
+    /// at +0/+8/+16 (pinned by a `const` assertion in `roots_buf.rs`).
     pub roots: usize,
     /// The gateway-token counter — bumped per inline call so the callee's token is
     /// unique among live activations. The per-call save/restore of `jit_call_env`,
@@ -1935,7 +1935,6 @@ impl Heap {
     /// `BROOD_GC_VERIFY` walker, so the two detectors can't drift.
     // Available in release too: `dbg_value_stale` (used by the runtime BROOD_JIT_VERIFY
     // staged-stale scan) calls it. Pure arithmetic — zero cost unless called.
-    #[allow(dead_code)]
     fn epoch_in_gen_width(epoch: u32) -> u32 {
         epoch & (crate::core::value::GEN_MASK as u32)
     }

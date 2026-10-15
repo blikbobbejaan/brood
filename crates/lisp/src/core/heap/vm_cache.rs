@@ -603,10 +603,15 @@ impl Heap {
     /// a native call site reads from its own `JitCallCtx` (rung A1), so the per-call table
     /// fetch writes nothing into the heap.
     pub fn vm_fast_links_base_for(&self, ic_base: u32) -> (*const FastLink, usize) {
-        // SAFETY: as `vm_fast_links_base`.
+        // SAFETY: single-threaded per process; nothing mutates the table between this read
+        // and the IR's use of the pointer (a `def`/compaction that would clear it can't run
+        // concurrently with this process executing an arm).
         let v = unsafe { &*self.vm_fast_links.as_ptr() };
-        let base = (ic_base as usize).min(v.len());
-        (unsafe { v.as_ptr().add(base) }, v.len() - base)
+        // `min` guards a stale cursor after a `runtime_collect` table clear (the IR then
+        // sees len 0 → every site misses → slow path, exactly the pre-existing degradation
+        // semantics for a live arm across a clear).
+        let tail = &v[(ic_base as usize).min(v.len())..];
+        (tail.as_ptr(), tail.len())
     }
 
     /// The current activation's IC block bases (see [`Self::set_ic_bases`]).
@@ -1198,17 +1203,10 @@ impl Heap {
     #[cfg(feature = "jit")]
     #[inline]
     pub fn vm_fast_links_base(&self) -> (*const FastLink, usize) {
-        // SAFETY: single-threaded per process; nothing mutates the table between this read
-        // and the IR's use of the pointer (a `def`/compaction that would clear it can't run
-        // concurrently with this process executing an arm).
-        let v = unsafe { &*self.vm_fast_links.as_ptr() };
         // Block-adjusted for the current activation (ADR-175 Phase A): the IR indexes
         // with the arm-relative site id, so hand it the current arm's block as if it
-        // were the whole table. `min` guards a stale cursor after a `runtime_collect`
-        // table clear (the IR then sees len 0 → every site misses → slow path, exactly
-        // the pre-existing degradation semantics for a live arm across a clear).
-        let base = (self.cur_ic_base.get() as usize).min(v.len());
-        (unsafe { v.as_ptr().add(base) }, v.len() - base)
+        // were the whole table.
+        self.vm_fast_links_base_for(self.cur_ic_base.get())
     }
 
     /// Install (or overwrite) call-site `site`'s inline cache entry. An
