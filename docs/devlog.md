@@ -2088,14 +2088,41 @@ lost. The other machine fixed the same race the same morning (`c9092371`: the ca
 holds once the producer owns the socket, and a no-requester error stays answerable); the merge kept
 that version and its test. 0/120 under the load repro.
 
+## 2026-10-16 (night) — two things the `exec_value` retirement exposed, found by bedit
+
+CI's bedit smoke went red on the merged tree (`02271160`, BEDIT_REF moved to bedit 0.5.0): 16 of
+`magit_test`'s 40 raised `%map-assoc: expected map, got nil` in `git-git`, whose signature is
+`(root args &optional (opts {}))`. Two separate bugs; v0.39.0 (`477d97c1`) has neither, because
+both need the retirement.
+
+- **Native entry cleared the missing-optional flags.** `emit_nil_locals` nils every slot above the
+  parameters and captures at native entry, so a stale handle from an earlier frame is never
+  traced. The new flag slots live up there, so `push_frame` set a flag, native entry cleared it,
+  and the prologue skipped the default. The deopt that followed re-ran the same cleared frame, so
+  the bytecode failed the same way. Only on the native tier, and only once the arm had lowered,
+  which is why bedit's later tests failed and its first ones passed. The flag slots are now
+  skipped: an arm with optionals is entered only through `push_frame` (a direct native call
+  refuses `noptional != 0`), and that zero-fills the frame, so a flag it did not set is nil.
+  Guard: `optional_defaults_test.blsp` settles an `&optional` arm to `:native` and calls it with
+  and without the optional (no deopts). It goes red when the flags are cleared again.
+- **A top-level multi-pair `assoc` lost its head.** The September unroll of
+  `(assoc m k1 v1 k2 v2 …)` built its single-pair calls with a `Global` head and no call site.
+  In an arm, `lower_map_prim3` turns them into `Prim3` before emit. A top-level form never meets
+  that pass, and `exec_value` used to resolve a site-less head by name. Since the retirement those
+  calls are emitted as bytecode, where a named head is resolved only through its site: a debug
+  build panicked in `emit`, and a release build ran the wrong code. Each unrolled call now gets a
+  site of its own, as `%set` always did. Guard: `assoc_unroll_test.blsp` evaluates a multi-pair
+  `assoc` through `reflect/eval-string` (red with the site removed).
+
 ## 2026-10-16 (night) — the regression bedit caught: native code wiped the `&optional` flag (KI-270)
 
 CI's downstream smoke went red on `02271160`: bedit's `git-git`, `(&optional (opts {}))`, saw
 `opts` as nil. The `exec_value` retirement's default prologue reads a "missing" flag slot that
 `push_frame` sets above the body's slots — and the JIT's entry nil-fills everything above the
 parameters, flag included. Every local gate passed because no test called a NATIVE arm without
-its optional; the new test does, and reproduced bedit's error exactly before the fix. The
-nil-fill now skips the flag slots, and the prologue clears a flag as its default lands. bedit at
+its optional; the new test does, and reproduced bedit's error exactly before the fix. Both machines fixed it the same hour; the merge kept the other machine's `emit_nil_locals` skip
+and test (`0fb04653`, which also fixed a top-level multi-pair `assoc` built without call sites)
+and this side's prologue clearing a flag as its default lands. bedit at
 `BEDIT_REF`, locally with a grammar-enabled `nest`: 2463/2464. The lesson is the CLAUDE.md one,
 paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
 when the tier the arm actually ran on was never entered.

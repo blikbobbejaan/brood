@@ -1274,13 +1274,24 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                     for pair in items[2..].chunks(2) {
                         let k = compile_node(heap, pair[0], scope, false)?;
                         let v = compile_node(heap, pair[1], scope, false)?;
+                        // Each call gets a site of its own, like any named-head call: the
+                        // emitter does not push a named head, so the call resolves it
+                        // through its site. `lower_map_prim3` makes these primitives in an
+                        // arm, but a top-level form never meets that pass, and there a
+                        // site-less call left the head unresolved.
+                        let site = scope.site_alloc();
+                        let idx = site as usize;
+                        if scope.site_pos.len() <= idx {
+                            scope.site_pos.resize(idx + 1, None);
+                        }
+                        scope.site_pos[idx] = pos.map(|p| (p, file.clone()));
                         acc = Node::Call {
                             callee: Box::new(Node::Global(h)),
                             args: Box::new([acc, k, v]),
                             tail: false,
                             pos,
                             file: file.clone(),
-                            site: NO_SITE,
+                            site,
                             staged: false,
                         };
                     }
