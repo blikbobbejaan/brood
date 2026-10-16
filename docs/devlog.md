@@ -2148,3 +2148,13 @@ when the tier the arm actually ran on was never entered.
   run, neighbours swapping edge rows with the generation pinned in the `receive`. The run
   `assert`s it equals the serial step (verified at 1, 3, 4, 5 and 24 bands; red with the halo
   from above dropped).
+- **Docstring examples for the bare core:** 23 of the 42 bare names that had a docstring but no
+  example now carry executed `form → result` lines — the process primitives (`self`, `send`,
+  `receive`, `spawn`, `spawn-link`, `monitor`, `demonitor`, `exit`, `ref`), `throw`, `match`,
+  `case`, `binding`, `check-allow`, `satisfies?`, `->string`, `inspect`, `gensym`, `arglist`,
+  `doc`, `bytes`, `macroexpand-1`. Each is self-contained (a process example sends to `self` or
+  waits on its own monitor, with a `:doc-` tag no other message can match). Left without: the
+  defining forms (an executed `defn` example would define a global in the test process),
+  `link`/`unlink` (a broken `unlink` would kill the doctest process after its case had passed),
+  and `compare-to`, which has no method for a built-in kind. `spawn`'s docstring named the
+  monitor message `[:down pid …]`; it is `[:down ref pid reason]`.

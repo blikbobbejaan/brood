@@ -64,8 +64,11 @@ plumbing for the `spawn` special forms."
     form (reloading the file doesn't fire a second worker).
 
   Erlang **let-it-crash** (`spawn/1`): an uncaught throw kills the process and
-  any monitors see `[:down pid [:error {:kind :message … :trace}]]` immediately
-  (the reason carries the structured error map, call trace included)."
+  any monitors see `[:down ref pid [:error {:kind :message … :trace}]]` immediately
+  (the reason carries the structured error map, call trace included).
+
+    (pid? (spawn :done))   → true
+    (let (me (self)) (spawn (send me [:doc-from-child 42])) (receive ([:doc-from-child n] n)))   → 42"
   ;; Param name is `more` (not `rest`) so the body can still call the
   ;; prelude's `rest` function without param-shadowing itself.
   (if (empty? more)
@@ -92,7 +95,9 @@ instant exit reaches the caller with its **true** reason — unlike a separate
 `(let (p (spawn expr)) (link p) p)`, where a child that exits in the gap is linked dead
 and reports `:noproc` (losing `:normal`). Supervised children should use this so a fast
 `:normal` exit isn't misread as a crash. A zero-arg lambda `(fn () …)` body is
-passed through (not re-wrapped), like `spawn`."
+passed through (not re-wrapped), like `spawn`.
+
+    (pid? (spawn-link :done))   → true   ; a :normal exit does not reach the caller"
   `(%spawn-link ~(%spawn-body-thunk expr)))
 
 (defmacro spawn-monitor (expr)
@@ -336,7 +341,10 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
               (if (= rest-pin first-pin) first-pin nil))))))))
 
 (defmacro receive (& clauses)
-  "Selectively receive a message from the mailbox: run the first `(pattern [:when guard] body...)` clause that matches, leaving others queued. An optional final `(after ms body...)` clause fires on timeout; `(receive)` blocks for the next message."
+  "Selectively receive a message from the mailbox: run the first `(pattern [:when guard] body...)` clause that matches, leaving others queued. An optional final `(after ms body...)` clause fires on timeout; `(receive)` blocks for the next message.
+
+    (do (send (self) [:doc-ping 1]) (receive ([:doc-ping n] n)))   → 1
+    (receive ([:doc-never-sent] :got) (after 0 :timed-out))       → :timed-out"
   (do
     (%receive-check-after clauses)
     ;; Before the pin/tag/prep scans below, none of which bounds its walk.

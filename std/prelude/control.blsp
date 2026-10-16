@@ -602,7 +602,9 @@ message it carries, and anything else its printed form.
 ;; reader/evaluator syntax, never function calls — so a locally-shadowed `list`
 ;; or `map` can't break the expansion (`fn`/`quote` are special forms).
 (defmacro binding (bindings & body)
-  "Rebind the dynamic variables in `bindings` (a flat `name value ...` list) for the dynamic extent of `body`, restoring them on exit (even on error)."
+  "Rebind the dynamic variables in `bindings` (a flat `name value ...` list) for the dynamic extent of `body`, restoring them on exit (even on error).
+
+    (with-out-str (binding (*err* *out*) (io/puts \"oops\" :to *err*)))   → \"oops\\n\""
   (if (vector? bindings)
     (error "binding: bindings must be a list, not a vector: write (binding (*a* 1 *b* 2) …)."
       " Brood is lists-for-code, vectors-for-data (unlike Clojure).")

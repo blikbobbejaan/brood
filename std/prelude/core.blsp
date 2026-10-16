@@ -737,7 +737,9 @@ function, that performs an effect on purpose), `:total` (a `:total`-declared fun
 the checker cannot see terminate or cover its cases) or `:trusted` (a declared return the
 checker cannot verify — the body's result is a kernel message or a primitive with no
 signature — which `--strict` otherwise reports as trusted, not verified). A runtime
-no-op; the marker is read only by the type checker (`nest check`)."
+no-op; the marker is read only by the type checker (`nest check`).
+
+    (check-allow :deprecated (+ 1 2))   → 3"
   `(%lint-allow ~category (do ~@body)))
 
 ;; `and`/`or` short-circuit left-to-right and return the deciding value, with

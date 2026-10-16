@@ -52,7 +52,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![pid_ty.union(map_ty).union(kw), any], nil_ty),
         &["target", "msg"],
-        "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.",
+        "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.\n\n    (do (send (self) :doc-hello) (receive (:doc-hello :got-it)))   → :got-it",
         send);
     // Arg shape: (matcher: callable, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
@@ -76,7 +76,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(pid_ty),
         &[],
-        "This process's own pid (carries this node's identity).",
+        "This process's own pid (carries this node's identity).\n\n    (pid? (self))        → true\n    (= (self) (self))    → true",
         self_pid,
     );
     primitives.def(
@@ -84,7 +84,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(ref_ty),
         &[],
-        "A fresh, globally-unique reference token (tags a request to its reply).",
+        "A fresh, globally-unique reference token (tags a request to its reply).\n\n    (= (ref) (ref))           → false\n    (let (r (ref)) (= r r))   → true",
         make_ref,
     );
     // `(exit pid reason)` — send an exit signal (Erlang `exit/2`). `:kill` is the
@@ -94,7 +94,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(2),
         Sig::new(vec![pid_ty, any], nil_ty),
         &["pid", "reason"],
-        "Send an exit signal to process pid, local or remote. reason :kill is the untrappable hard kill — pid dies at its next reduction tick, or immediately if parked. Any other reason is the soft signal — pid dies at its next receive. Monitors fire [:down ref pid reason]. A remote pid is routed to its node over the link. No-op for a dead/unknown pid. Returns nil.",
+        "Send an exit signal to process pid, local or remote. reason :kill is the untrappable hard kill — pid dies at its next reduction tick, or immediately if parked. Any other reason is the soft signal — pid dies at its next receive. Monitors fire [:down ref pid reason]. A remote pid is routed to its node over the link. No-op for a dead/unknown pid. Returns nil.\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (exit p :kill) (receive ([:down ^r ^p why] why)))   → :killed",
         exit_proc);
     // `monitor` also accepts a name map (forwarded to the remote node).
     primitives.def(
@@ -102,7 +102,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![pid_ty.union(map_ty)], ref_ty),
         &["pid"],
-        "Watch pid; returns a monitor ref. Delivers [:down ref pid reason] when pid dies.",
+        "Watch pid; returns a monitor ref. Delivers [:down ref pid reason] when pid dies.\n\n    (let (p (spawn (receive (:go :done))) r (monitor p)) (send p :go) (receive ([:down ^r ^p why] why)))   → :normal",
         monitor,
     );
     primitives.def(
@@ -110,7 +110,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![ref_ty], nil_ty),
         &["mref"],
-        "Drop the monitor identified by mref (best-effort).",
+        "Drop the monitor identified by mref (best-effort).\n\n    (let (p (spawn (receive (_ nil))) r (monitor p)) (demonitor r) (exit p :kill) (receive ([:down ^r _ _] :fired) (after 50 :quiet)))   → :quiet",
         demonitor,
     );
     // One-shot reply aliases (OTP 24's `{alias, demonitor}`): the kernel drops a

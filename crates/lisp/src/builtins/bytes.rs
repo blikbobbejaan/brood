@@ -21,7 +21,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::any(),
         Sig::variadic(any, bytes_ty),
         &["&", "byte-ints"],
-        "Build a bytes value from byte integers 0–255: (bytes 1 2 3), or (bytes [1 2 3]) / (bytes (list …)) taking a single vector/list as the sequence. An existing bytes value passes through unchanged.",
+        "Build a bytes value from byte integers 0–255: (bytes 1 2 3), or (bytes [1 2 3]) / (bytes (list …)) taking a single vector/list as the sequence. An existing bytes value passes through unchanged.\n\n    (bytes 1 2 3)            → #b\"\\x01\\x02\\x03\"\n    (count (bytes [255 0]))  → 2",
         bytes_make);
     primitives.def(
         "%byte-length",
