@@ -260,7 +260,7 @@ pub(crate) fn jit_dispatch_call(
             // Not a receive loop: its native code is the driver's alone (ADR-410).
             if installed
                 && arm.nslots > 0
-                && !arm.receive_at_head
+                && !arm.parks_natively
                 && arm.noptional == 0
                 && arm.rest_slot.is_none()
                 && !link_over_cap

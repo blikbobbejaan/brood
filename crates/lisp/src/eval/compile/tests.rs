@@ -307,7 +307,7 @@ fn run_arm_with(f: crate::jit::JitArmFn, heap: &mut Heap, base: usize, unwind: u
 /// fake a pass).
 #[cfg(feature = "jit")]
 #[test]
-fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
+fn receive_bearing_chunks_enter_the_jit_subset_only_when_they_park_natively() {
     let mut interp = crate::Interp::new();
     interp
         .eval_str("(def rcv (fn (want acc) (if (= want 0) acc (receive (m (rcv (- want 1) (+ acc m)))))))")
@@ -323,10 +323,14 @@ fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
     };
     let arm = compiled_arm_for(heap, id, 2).expect("rcv/2 compiles");
     let chunk = arm.chunk.as_ref().expect("rcv has a chunk");
-    assert!(
-        !crate::eval::compile::jit_plan::chunk_in_jit_subset(&chunk.code),
-        "a %receive-bearing chunk entered the JIT subset — a native park kills the process"
+    // ADR-410: a receive-bearing chunk enters the subset exactly when it can park natively —
+    // it journals checkpoints, so a park resumes on the VM without re-running anything.
+    assert_eq!(
+        crate::eval::compile::jit_plan::chunk_in_jit_subset(&chunk.code),
+        crate::eval::compile::jit_plan::parks_natively(&chunk.code),
+        "a %receive-bearing chunk entered the JIT subset without being able to park natively"
     );
+    assert!(arm.parks_natively, "rcv journals, so it parks natively");
 
     // Non-vacuity: the same shape minus the receive is in the subset.
     interp
@@ -349,11 +353,12 @@ fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
     );
 }
 
-/// ADR-410: which arms receive AT THEIR HEAD — may go native, parking by a re-run from ip 0.
-/// Only a `%receive` behind nothing but loads qualifies; one behind a branch or a call does
-/// not (re-running those from ip 0 is not the same), and neither does a second `%receive`.
+/// ADR-410: which arms may park in their own native `%receive`. Every receive-bearing shape
+/// the compiler builds journals checkpoints, so each passes the fence: one that receives
+/// first, one that sends and then receives, one with the receive behind a branch, and one
+/// with two receives. An arm with no `receive` is not such an arm.
 #[test]
-fn receive_at_head_admits_only_a_leading_receive() {
+fn parks_natively_admits_every_journalled_receive() {
     let mut interp = crate::Interp::new();
     let arm_of = |interp: &mut crate::Interp, src: &str, name: &str, argc: usize| {
         interp.eval_str(src).expect("define");
@@ -363,34 +368,22 @@ fn receive_at_head_admits_only_a_leading_receive() {
         };
         compiled_arm_for(&interp.heap, id, argc).expect("compiles")
     };
-    let head = arm_of(
-        &mut interp,
-        "(def lp (fn (acc) (receive ([:add n] (lp (+ acc n))) (:stop acc))))",
-        "lp",
-        1,
-    );
-    assert!(
-        head.receive_at_head,
-        "a loop that receives first is a receive-at-head arm"
-    );
-    assert!(
-        crate::eval::compile::jit_plan::chunk_in_jit_subset(&head.chunk.as_ref().unwrap().code),
-        "a receive-at-head chunk passes the %receive fence"
-    );
     for (src, name, argc) in [
-        // Behind a branch.
         (
-            "(def br (fn (want acc) (if (= want 0) acc (receive (m (br (- want 1) (+ acc m)))))))",
-            "br",
-            2,
+            "(def lp (fn (acc) (receive ([:add n] (lp (+ acc n))) (:stop acc))))",
+            "lp",
+            1,
         ),
-        // Behind a call with an effect.
         (
             "(def ef (fn (pid) (send pid :ready) (receive (m (ef pid)))))",
             "ef",
             1,
         ),
-        // Two receives.
+        (
+            "(def br (fn (want acc) (if (= want 0) acc (receive (m (br (- want 1) (+ acc m)))))))",
+            "br",
+            2,
+        ),
         (
             "(def two (fn () (receive (a (receive (b (two)))))))",
             "two",
@@ -398,15 +391,26 @@ fn receive_at_head_admits_only_a_leading_receive() {
         ),
     ] {
         let arm = arm_of(&mut interp, src, name, argc);
+        assert!(arm.parks_natively, "{name} should park natively");
         assert!(
-            !arm.receive_at_head,
-            "{name} must not be a receive-at-head arm"
+            arm.ckpt_slot != u32::MAX,
+            "{name} parks natively, so it must journal checkpoints"
         );
         assert!(
-            !crate::eval::compile::jit_plan::chunk_in_jit_subset(&arm.chunk.as_ref().unwrap().code),
-            "{name} must stay behind the %receive fence"
+            crate::eval::compile::jit_plan::chunk_in_jit_subset(&arm.chunk.as_ref().unwrap().code),
+            "{name} should pass the %receive fence"
         );
     }
+    let plain = arm_of(
+        &mut interp,
+        "(def plain (fn (n) (if (= n 0) 0 (plain (- n 1)))))",
+        "plain",
+        1,
+    );
+    assert!(
+        !plain.parks_natively,
+        "an arm with no receive does not park"
+    );
 }
 
 #[test]

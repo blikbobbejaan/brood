@@ -100,6 +100,25 @@ it never tiers); a real `&optional` default is a prologue in its arm's own bytec
 prologue tests it by truthiness and sets the slot. `exec_call` went with it; the prim helpers
 are `eval/compile/prim_exec.rs`. Guard: `tests/optional_defaults_test.blsp`.
 
+### OPEN FIRST (2026-10-16, pushed unvalidated on request): ADR-410 generalised — measured SLOWER
+
+The commit after `5e8aba17` generalises ADR-410. Any arm that journals deopt checkpoints may
+now park in its own native `%receive`; the park resumes on the VM at the last checkpoint
+(`jit_ckpt_resume` in `vm_run_bc`'s ERROR+Suspend branch). That replaces the
+receive-at-head shape test: `jit_plan::parks_natively`, and the flag is now
+`CompiledArm::parks_natively`. It covers send-then-receive (`pingpong`'s `ping`, `gen/call`)
+and two receives in one arm. Tests: `tests/receive_loop_jit_test.blsp`, 15 green on tiers
+0–2. The resume-at-ip-0 and dropped-operands sabotages each go red.
+
+**But the rows read worse against `5e8aba17`** (instructions, median of 5, images live):
+`pingpong` +1.9%, `ring` +2.3%, `supervisor` +4.3%, `spawn` +1.4%; `json` −4.4% (bimodal),
+`spawn-live` −2.3%. **Not run:** `test-both`, gcstress, fuzz, latency-gate, clippy,
+smoke-bedit, ADR/devlog text. Next: find why. The likely suspects are newly native arms that
+park often and pay a VM resume plus a re-tier on every wake, and `supervisor`'s `gen/call`
+arms now going native. If it can't be made a win, narrow the gate back to receive-at-head
+(as of `5e8aba17`) and keep only the parts that pay. Either way, run the full gate set before
+building on it.
+
 ### DONE (2026-10-16): `receive` on the native path (ADR-409, ADR-410)
 
 Two items, taken in order. **ADR-409:** a `receive` whose clauses are all simple shapes hands
@@ -183,10 +202,9 @@ corpus.
 
 ### Older threads
 
-1. **Receive loops run interpreted.** About a quarter of `pingpong`'s instructions are
-   `exec_chunk` running process bodies that a `receive` keeps off the JIT. The general lever
-   for every process loop; needs native frames that can suspend (or a receive that returns to
-   the driver from native code) — an ADR, not a patch.
+1. **Receive loops run interpreted — DONE for the receive-at-head shape (ADR-410,
+   2026-10-16).** A loop that does work before its `receive` (send then receive) still runs
+   interpreted; see the DONE entry above.
 2. **The rest of the VM call** (~790 instructions after `CallInPlace`): `exec_chunk`'s `Call` +
    callee entry, and `vm_run_bc`'s frame push/pop. The cheap forms were built, measured and
    dropped (devlog 2026-09-25 "(later)"); what remains is structural.

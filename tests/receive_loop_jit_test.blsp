@@ -1,6 +1,6 @@
-;; A receive loop compiled to native code (ADR-410). An arm whose one `%receive` comes before
-;; anything with an effect — `(defn loop (state) (receive …))` — may go native: a `receive`
-;; that finds nothing parks the frame at ip 0, and the wake re-tiers into the native loop.
+;; Receive loops compiled to native code (ADR-410). A `receive` that finds nothing in native
+;; code parks the frame at its last deopt checkpoint — ip 0 for a loop that receives first,
+;; just after the `send` for one that sends and then receives — and the wake carries on.
 ;; These pin that the native loop answers what the interpreted one does, stays native across
 ;; parks, and that every other way into such an arm still works.
 
@@ -61,6 +61,40 @@
 
 ;; Calls a loop through `apply`, which hands it to the general dispatch — non-tail.
 (defn via-param (f) (+ 0 (apply f (list 0))))
+
+;; A counting server that answers each [:q from] with [:r n], n its request count. It pauses
+;; before every 25th answer, so the client waiting for it parks in its native `receive`.
+(defn slow-server (n)
+  (receive
+    ([:q from] (do
+                 (when (= 0 (math/mod n 25)) (sleep 2))
+                 (send from [:r (+ n 1)])
+                 (slow-server (+ n 1))))
+    ([:count from] (do (send from [:count n]) (slow-server n)))
+    (:stop n)))
+
+;; Sends, then receives: the `gen/call` shape. A park that resumed before the `send` would
+;; send again, which the server's count would show.
+(defn ask-loop (srv k last)
+  (if (= k 0)
+    last
+    (do (send srv [:q (self)]) (receive ([:r n] (ask-loop srv (- k 1) n))))))
+
+;; The receive nested in an expression, with `acc` on the operand stack when it parks.
+(defn sum-replies (srv k acc)
+  (if (= k 0)
+    acc
+    (sum-replies srv (- k 1) (+ acc (do (send srv [:q (self)]) (receive ([:r n] n)))))))
+
+;; Two receives in one arm, with a park between them.
+(defn pair-loop (acc)
+  (receive
+    ([:a x] (receive ([:b y] (pair-loop (+ acc (* x y)))) (:stop acc)))
+    (:stop acc)))
+
+(defn server-count (srv)
+  (send srv [:count (self)])
+  (receive ([:count n] n) (after 20000 :timeout)))
 
 ;; A loop with a timeout clause: counts its timeouts until told to stop.
 (defn tick-loop (timeouts)
@@ -219,3 +253,33 @@
       (each pids (fn (p) (dotimes (k 1000) (send p [:add 1]))))
       (assert= (map pids (fn (_) 1000)) (map pids ask-total))
       (each pids (fn (p) (send p :stop))))))
+
+(describe "receive loops that do work before they receive"
+  (test "send then receive: every request is sent exactly once"
+    (let (srv (spawn (slow-server 0)))
+      ;; Hot enough to go native, then every round parks in native code.
+      (assert= 3000 (ask-loop srv 3000 0))
+      (assert= 3000 (server-count srv))
+      (assert= 3100 (ask-loop srv 100 0))
+      (assert= 3100 (server-count srv))
+      (when (%native-tier?)
+        (assert= :native (tier-of ask-loop 3 500)))
+      (send srv :stop)))
+  (test "a receive nested in an expression keeps the operands it parked with"
+    (let (srv (spawn (slow-server 0)))
+      (assert= (/ (* 3000 3001) 2) (sum-replies srv 3000 0))
+      (assert= 3000 (server-count srv))
+      (when (%native-tier?)
+        (assert= :native (tier-of sum-replies 3 500)))
+      (send srv :stop)))
+  (test "two receives in one arm, parking between them"
+    (let (me (self)
+          pid (spawn (send me [:pairs (pair-loop 0)])))
+      (dotimes (k 3000)
+        (send pid [:a k])
+        (when (= 0 (math/mod k 100)) (sleep 1))
+        (send pid [:b 2]))
+      (send pid :stop)
+      (assert= (* 2 (/ (* 2999 3000) 2)) (receive ([:pairs t] t) (after 20000 :timeout)))
+      (when (%native-tier?)
+        (assert= :native (tier-of pair-loop 1 500))))))

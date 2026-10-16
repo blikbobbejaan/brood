@@ -282,7 +282,7 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
     // to latch.
     if blocked
         || (outcome == crate::jit::outcome::ERROR
-            && !arm.receive_at_head
+            && !arm.parks_natively
             && heap
                 .jit_pending_error
                 .as_ref()

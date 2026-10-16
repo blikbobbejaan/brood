@@ -587,11 +587,11 @@ pub struct CompiledArm {
     /// so an unbound operator reports its call's position from here. Cold — read only when
     /// that resolution fails. Empty for an arm with no staged call.
     pub staged_head_pos: Box<[(u32, crate::error::Pos)]>,
-    /// The arm receives at its head (`jit_plan::receive_at_head`, ADR-410): its one `%receive`
-    /// follows only loads, so re-running it from ip 0 re-runs just that `%receive`. A park
-    /// then rewinds the frame to ip 0 (the wake re-tiers into native code), and only the
-    /// driver may enter its native code — a `receive` under any other native entry must block.
-    pub receive_at_head: bool,
+    /// The arm may park in its own native `%receive` (`jit_plan::parks_natively`, ADR-410):
+    /// it journals deopt checkpoints, so a park resumes the frame on the VM at the last one
+    /// and nothing that already ran runs again. Only the driver may enter its native code —
+    /// a `receive` under any other native entry must block.
+    pub parks_natively: bool,
     pub body: Node,
     /// The body compiled to flat **bytecode** (`Chunk`). [`vm_run_bc`] runs this — the
     /// sole VM executor (ADR-100 Stage 5). `compile_arm` always fills it (every
@@ -883,7 +883,7 @@ impl Default for CompiledArm {
             uid: next_arm_uid(),
             site_pos: Box::new([]),
             staged_head_pos: Box::new([]),
-            receive_at_head: false,
+            parks_natively: false,
             body: Node::Const(ConstVal::new(Value::Nil)),
             chunk: None,
             has_runtime_handles: false,
