@@ -13,6 +13,11 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # bigdecimal 0.4 and num-rational 0.4 are built on num-bigint 0.4; moving it alone splits
+      # `BigInt` into two incompatible types. Lift this when both of those move to 0.5.
+      - dependency-name: num-bigint
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: /
