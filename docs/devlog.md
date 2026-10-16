@@ -2127,3 +2127,16 @@ and this side's prologue clearing a flag as its default lands. bedit at
 paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
 when the tier the arm actually ran on was never entered.
 
+
+## 2026-10-16 — a plain `assert`, and the rustfmt 2024 reformat
+
+- **`assert`** is a prelude macro beside `error`: `(assert test message…)` raises `"assert
+  failed: <form>"` (plus `": "` and the message parts, joined like `error`'s) when `test` is
+  falsy, and returns `test`'s value otherwise. The form's text is baked in at expansion, the
+  test is evaluated once, the message only on failure. Always on: no build strips it, because a
+  knob that turns invariants off is a knob every user pays for (ADR-011). Guard:
+  `tests/assert_test.blsp`, including a worker whose failed assert is its exit reason; red under
+  sabotage (test evaluated twice, value dropped, message joined bare).
+- **rustfmt `style_edition = "2024"`**, the reformat held back when the workspace moved to the
+  2024 edition: `cargo fmt` only, its own commit. It needed two passes to settle (one rewrapped
+  `return Err(…)` in the reader only on the second).

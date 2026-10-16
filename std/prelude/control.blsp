@@ -423,6 +423,22 @@ is not `nil`, so absence and failure stay distinct; and `error-message` reads it
     (if (failure \"nope\") :yes :no)         → :yes   ; truthy — never silently absent"
   (%failure (apply str parts)))
 
+;; The form's printed text is baked into the expansion, so a failure names what was
+;; asserted without the caller restating it. The message parts sit in the failing branch
+;; only: an `(assert ok? "context " (expensive))` pays for `expensive` when it raises.
+(defmacro assert (test & message)
+  "Raise an error naming `test` when it is falsy; otherwise return its value. Any
+`message` parts follow the form in the error, joined like `error`'s.
+
+    (assert (+ 1 2))                                      → 3
+    (try (assert (= 1 2)) (catch e (error-message e)))    → \"assert failed: (= 1 2)\"
+    (try (assert (> -1 0) \"got \" -1) (catch e (error-message e)))   → \"assert failed: (> -1 0): got -1\""
+  (let (v (gensym "v"))
+    `(let (~v ~test)
+       (if ~v
+         ~v
+         (error ~(str "assert failed: " (pr-str test)) ~@(when message (cons ": " message)))))))
+
 ;; `(catch Type e body…)` — Clojure/Java's *typed* catch. Brood's `catch` binds
 ;; ONE bare symbol and has no exception class, so this shape is not an error the
 ;; reader can see: the class name silently becomes the binding and the intended

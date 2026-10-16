@@ -1679,6 +1679,18 @@ Raise with `throw` (any value) or `error` (a formatted message), and handle with
 (error "bad index: " i)             ; raise a message string
 ```
 
+**`(assert test message…)`** states an invariant: when `test` is falsy it raises through
+`error` with the form's own text, followed by any `message` parts; otherwise it returns
+`test`'s value, so it can wrap the expression it checks. The message parts are evaluated
+only when it raises. It is always on — there is no build that strips it.
+
+```clojure
+(assert (> n 0))                    ; raises "assert failed: (> n 0)" when n is 0
+(assert (> n 0) "got " n)           ; "assert failed: (> n 0): got 0"
+(let (conn (assert (lookup id)))    ; the value of (lookup id), or a raise
+  …)
+```
+
 A final **`(finally cleanup…)`** clause runs `cleanup` after the body — and after
 the handler, when there is a `catch` — whether the try completed or threw, then
 yields the try's value or rethrows what escaped (ADR-306). `cleanup`'s own value
