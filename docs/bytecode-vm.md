@@ -1,5 +1,11 @@
 # The execution-engine plan — a closure-compiling VM
 
+> **2026-10-16: the bytecode loop is the VM's only executor.** `exec_value`, the second
+> executor that walked the compiled `Node` tree for top-level forms and `&optional` defaults,
+> is gone: a top-level form compiles to a chunk and runs on the driver like any arm, and a
+> real default is a prologue in its arm's own bytecode (`compile_arm`). The `exec_value` /
+> `exec_node` / `exec_call` names below are history.
+
 > **Status (2026-05-31): Stage 0–3 done — the VM is the default engine (~1.6–2.3×).**
 > The design record is **ADR-076**; this file is the long-form companion. Nothing
 > here changes the language — it is purely an **execution-engine** swap; `std/*.blsp`

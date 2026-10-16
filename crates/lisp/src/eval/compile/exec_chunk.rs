@@ -15,6 +15,16 @@ pub(crate) fn tag_pos(e: LispError, pos: Option<Pos>) -> LispError {
     }
 }
 
+/// The call position of a staged head read at global-read `site`, or `None` for a read that
+/// is not one (see `CompiledArm::staged_head_pos`). Cold: an unbound operator's error path.
+#[cold]
+fn staged_head_pos(arm: &CompiledArm, site: u32) -> Option<Pos> {
+    arm.staged_head_pos
+        .iter()
+        .find(|(s, _)| *s == site)
+        .map(|(_, p)| *p)
+}
+
 /// The module the contract shim templates live in (ADR-385) — the one module whose code
 /// positions the error-position rule in [`attach_vm_trace`] never reports (KI-184).
 pub(crate) const CONTRACT_MODULE: &str = "contract";
@@ -119,13 +129,15 @@ pub(crate) fn exec_chunk(
                                 v
                             }
                             // Autoload (ADR-335); not cached — the load bumped the epoch.
-                            None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)?,
+                            None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
+                                .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?,
                         }
                     }
                 } else {
                     match heap.env_get(env, *sym) {
                         Some(v) => v,
-                        None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)?,
+                        None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
+                            .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?,
                     }
                 };
                 heap.push_root(v);
@@ -166,8 +178,7 @@ pub(crate) fn exec_chunk(
                 }
             }
             Inst::MakeVector(nelem) => {
-                // Same discipline as `exec_value`'s `Node::Vector`: read the elements
-                // (already on the operand stack), truncate, then build.
+                // Read the elements (already on the operand stack), truncate, then build.
                 let n = heap.roots_len();
                 let start = n - nelem;
                 let mut vals = Vec::with_capacity(*nelem);
@@ -1082,7 +1093,7 @@ pub(crate) fn exec_chunk(
                 self_name,
                 module,
             } => {
-                // Mirrors `exec_value`'s `Node::MakeClosure`. The capture values are on
+                // The capture values are on
                 // the operand stack (pushed by preceding leaf insts — safepoint-free,
                 // and alloc here never collects mid-pass), so building the env and the
                 // closure is collection-free; `env` stays valid until `make_closure`

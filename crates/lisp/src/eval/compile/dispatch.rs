@@ -3,156 +3,6 @@ use super::*;
 #[cfg(feature = "jit")]
 use crate::jit::outcome;
 
-/// The combination executor for the surviving `Node` path ([`exec_value`] — used by
-/// `push_frame`'s `&optional` defaults and top-level `run`). Resolves the callee
-/// through the call-site IC, evaluates the arguments onto the operand stack, and
-/// dispatches; the returned [`Step`] is forced in value position. (The bytecode
-/// engine uses its own `Inst::Call` path in [`exec_chunk`].)
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn exec_call(
-    heap: &mut Heap,
-    callee: &Node,
-    args: &[Node],
-    tail: bool,
-    pos: Option<Pos>,
-    file: Option<&str>,
-    site: u32,
-    frame_base: usize,
-    genv: EnvRoot,
-) -> Result<Step, LispError> {
-    // Tag an error with this combination's source position (and file when known)
-    // if it doesn't already carry one — so the *innermost* failing call wins
-    // (mirrors the tree-walker's `or_form_pos`); a sub-call that already tagged
-    // itself is left untouched.
-    let tag = |e: LispError| match pos {
-        Some(p) => match file {
-            Some(f) => e.or_pos(p).or_file(f),
-            None => e.or_pos(p),
-        },
-        None => e,
-    };
-    // Resolve the callee — through this site's inline cache when it has one
-    // (ADR-096). A hit skips the `env_get` walk entirely and may carry the
-    // VM fast path (the callee's compiled arm + captured env); a miss
-    // resolves normally and installs the entry, stamped with `probe_epoch`
-    // (read *before* the resolution, so an arg-eval `def` below can't be
-    // attributed to this resolution). Engages only when the body's free
-    // names resolve through the process global (`is_global`): a
-    // local-capturing closure's captured frames could shadow the symbol,
-    // and they differ per closure *instance* while the site is shared.
-    let probe_epoch = heap.global_epoch();
-    let mut fast: Option<(Arc<ArmHandle>, EnvId, (u32, u32))> = None;
-    let cv: Value;
-    'resolve: {
-        if site != NO_SITE
-            && let Node::Global(sym) = callee
-            && heap.is_global(heap.read_root_env(genv))
-        {
-            let argc = args.len() as u32;
-            if let Some((v, payload)) = heap.vm_call_ic_probe(site, *sym, argc, probe_epoch) {
-                crate::perf_bump!(call_ic_hit);
-                cv = v;
-                fast = payload;
-                break 'resolve;
-            }
-            crate::perf_bump!(call_ic_miss);
-            // Miss: resolve (exactly what `exec_value` on the callee
-            // would do), then install. A *dynamic* symbol is never
-            // cached — a `binding` re-binds it without bumping the
-            // epoch, so a cached resolution would bypass it. (A
-            // later `defdyn` of a cached symbol bumps the epoch, so
-            // the entry self-invalidates and the re-install refuses.)
-            let env = heap.read_root_env(genv);
-            let v = match heap.env_get(env, *sym) {
-                Some(v) => v,
-                None => {
-                    // Autoload (ADR-335): the load collects and bumps the epoch,
-                    // so install nothing — the next call fills the IC. Nothing
-                    // else read so far is a heap handle (`args` are still nodes).
-                    cv = crate::eval::derive::global_miss(heap, env, *sym).map_err(tag)?;
-                    break 'resolve;
-                }
-            };
-            if !heap.is_dynamic(*sym) {
-                let arm = call_site_arm(heap, v, args.len());
-                fast = arm
-                    .as_ref()
-                    .map(|(a, cenv)| (a.clone(), *cenv, heap.vm_arm_block(a)));
-                // Mirror vm_call_ic_put's LOCAL-env guard: arg eval below can
-                // trigger a LOCAL minor collect that moves the env without
-                // bumping the global epoch, so the epoch check at the fast-path
-                // use site wouldn't catch a stale LOCAL cenv.  Clear fast now.
-                // (The bytecode loop has its arguments evaluated already, so it
-                // needs no such guard.)
-                if let Some((_, cenv, _)) = &fast
-                    && *cenv != EnvId::GLOBAL
-                    && cenv.region() == value::LOCAL
-                {
-                    fast = None;
-                }
-                heap.vm_call_ic_install(site, *sym, argc, probe_epoch, v, arm);
-            }
-            cv = v;
-            break 'resolve;
-        }
-        // No IC for this site/shape: evaluate the callee node as before.
-        cv = exec_value(heap, callee, frame_base, genv).map_err(tag)?;
-    }
-    // Evaluate each argument, keeping the callee + results on the operand
-    // stack so a collection during a later argument's eval relocates them in
-    // place (mirrors `eval::eval_arguments`). `save` is this call's region;
-    // it is always truncated back, including on the error path.
-    let save = heap.roots_len();
-    heap.push_root(cv);
-    for a in args.iter() {
-        match exec_value(heap, a, frame_base, genv) {
-            Ok(v) => heap.push_root(v),
-            Err(e) => {
-                heap.truncate_roots(save);
-                return Err(tag(e));
-            }
-        }
-    }
-    // Re-read post-collection from the (relocated) operand stack.
-    let callee_v = heap.root_at(save);
-    let mut argv: SmallVec<[Value; 4]> = SmallVec::with_capacity(args.len());
-    for k in 0..args.len() {
-        argv.push(heap.root_at(save + 1 + k));
-    }
-    // The IC fast path: run the cached compiled arm directly, skipping
-    // `dispatch`'s passthrough probe + body-cache lookup + env read —
-    // but only if the global epoch is *still* `probe_epoch`. An arg's
-    // eval can `def` (new resolution next call — but THIS call correctly
-    // uses the pre-args callee, which is `callee_v`, rooted) or fire a
-    // RUNTIME compaction (which rewrites the rooted `callee_v` in place
-    // but NOT the un-registered `fast` arm's node tree or its env
-    // handle) — either bumps the epoch, so the stale fast path is
-    // dropped and the rooted callee takes the generic path below.
-    if let Some((arm, cenv, bases)) = fast
-        && heap.global_epoch() == probe_epoch
-    {
-        let result = if tail {
-            Ok(Step::Tail {
-                compiled: arm,
-                args: argv,
-                genv: cenv,
-                bases,
-            })
-        } else {
-            vm_apply(heap, arm, &argv, cenv).map(Step::Done)
-        };
-        heap.truncate_roots(save);
-        return result.map_err(tag);
-    }
-    // The *current* env (read fresh post-collection) is what a native callee
-    // runs in; a VM-eligible closure callee instead runs in its own captured
-    // env, which `dispatch` reads off the closure.
-    let cur_env = heap.read_root_env(genv);
-    let result = dispatch(heap, callee_v, argv, tail, cur_env);
-    heap.truncate_roots(save);
-    result.map_err(tag)
-}
-
 /// Restores the `capture_top_level` flag on drop — so the gate is reset even if the
 /// guarded tree-walker `apply` *panics* (caught by `run_one`'s `catch_unwind`); a manual
 /// save/restore would leak a `false` flag on a panic.
@@ -592,15 +442,13 @@ pub(crate) fn push_frame(
     // tree-walker env, so it's correct in both engines. Filled before optional defaults so a
     // default form may reference a capture. No GC between here and the body (no alloc).
     fill_captures(heap, arm, base, heap.read_root_env(genv));
-    // Missing optionals take their default, left-to-right (so a later default sees an
-    // earlier one). `None` is a nil-default — the slot is already nil. A real default
-    // evaluates against the frame: earlier params/optionals are filled and rooted;
-    // its own slot and later slots are still nil (the compiler bound it after the
-    // default, so the default can't name itself).
+    // Mark each missing optional that has a real default: the arm's prologue evaluates
+    // that default into its slot (`compile_arm`), in the arm's own bytecode. A nil default
+    // has no flag — its slot is already nil.
     for j in provided_opt..arm.noptional {
-        if let Some(node) = &arm.optional_defaults[j] {
-            let v = exec_value(heap, node, base, genv)?;
-            heap.set_root_at(base + arm.nrequired + j, v);
+        let flag = arm.optional_flags[j];
+        if flag != u32::MAX {
+            heap.set_root_at(base + flag as usize, Value::boolean(true));
         }
     }
     Ok(())
@@ -610,8 +458,8 @@ pub(crate) fn push_frame(
 /// bytecode frame stack ([`vm_run_bc`]) — the sole VM executor (ADR-100 Stage 5). Every
 /// `CompiledArm` from `compile_arm` has a chunk, so this always routes to the driver;
 /// `vm_run_bc` does the per-frame live-arm registration + the runaway frame guard.
-/// Callers: `dispatch` (non-tail VM-closure branch), `exec_call`'s IC fast path, and
-/// `force` (a tail `Step`). The tree-walker (`BROOD_TIER=0`) is the remaining fallback.
+/// Callers: `dispatch` (non-tail VM-closure branch), `force` (a tail `Step`), and a
+/// top-level form (`run`). The tree-walker (`BROOD_TIER=0`) is the remaining fallback.
 pub(crate) fn vm_apply(
     heap: &mut Heap,
     compiled0: Arc<ArmHandle>,
@@ -625,8 +473,8 @@ pub(crate) fn vm_apply(
     // Native-stack guard. This is the single chokepoint every *nested* activation goes
     // through, and a nested run is the one VM shape that consumes real Rust stack per
     // Brood level: an ordinary call pushes a heap frame inside one `vm_run_bc` loop
-    // (capped by `MAX_BC_FRAMES`), but a `try` body / `&optional` default / native
-    // callback re-enters through `exec_value` → `exec_call` → here. Nothing on that path
+    // (capped by `MAX_BC_FRAMES`), but a native callback (a `try` body, a `map`
+    // function, a top-level form run from a native) re-enters here. Nothing on that path
     // reaches `eval`, so the tree-walker's byte guard never saw it and a recursive `try`
     // body died on the guard page — a SIGSEGV `try`/`catch` cannot observe and no
     // supervisor can restart (the OS process goes, not the green process). Fail here

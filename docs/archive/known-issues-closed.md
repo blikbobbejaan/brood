@@ -14018,3 +14018,30 @@ asserting `:peak-threads <= :workers` (parked, not holding threads). Disabling t
 arms reds both (they hang to the per-test cap). The two repros run 5/5 in ~10 ms (they hung
 or timed out 3/5 before); store-postgres's stress test passes 16/16.
 
+## KI-269 — `stream/socket->` lost a connected socket's early data and close; the consumer hung ✅ FIXED 2026-10-16
+
+**Symptom.** `tests/stream_test.blsp:277: test failed: from-socket / to-socket › loopback:
+->socket drains a stream into a socket, chunk by chunk` — `actual: :timeout` after the 20 s
+wait, seen FLAKY in a `test-both` VM half. Reproduced at 5/120 (8 copies of the file at once,
+15 rounds) on `b98cda3c`, so it predates the change being tested then.
+**Cause.** `socket->` spawned the stream process and let IT call `tcp/controlling-process sock
+(self)`. A just-accepted socket is passive until claimed, so that was safe for accept; a
+CONNECTED socket reads from the moment it connects, into the connector's mailbox. A peer that
+wrote and closed before the stream process ran its claim left every `[:tcp sock …]` and the
+`[:tcp-closed sock]` in the caller's mailbox, where nothing reads them: the stream process
+waited forever for data that had already come, and its consumer with it.
+**Why it survived.** On an idle machine the claim runs long before the peer's first write
+lands; it takes a descheduled reader. The docstring told callers to call it "immediately after
+accept or connect", which describes the window without closing it.
+**Fix.** `c9092371`: once the stream process reports it owns the socket — the transfer
+takes the same `SocketOwner` lock the reactor delivers under, so nothing more for the socket can
+reach the caller after it — the caller forwards every queued `[:tcp ^sock …]`,
+`[:tcp-closed ^sock]` and `[:tcp-error ^sock …]` in order, then `:stream-flushed`, and the
+producer consumes those before anything sent to it directly. A socket error with no requester
+waiting now stays to answer the next `[:next]` (returning there hung the consumer too). The same
+fix was written independently on this machine (the caller transfers the socket itself and sends
+the early messages as one list, replayed first); the merge kept `c9092371`'s, which also covers
+the error case.
+**Guard.** `stream_test` "socket-> reads data that arrived before the stream took the socket":
+the reader waits until the writer's data and close are already in its own mailbox, then makes
+the stream — it fails on the old library. The 8-way load repro: 5/120 before, 0/120 after.

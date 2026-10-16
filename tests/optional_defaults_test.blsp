@@ -1,0 +1,71 @@
+;; `&optional` defaults. On the VM a real default is a prologue in its arm's own bytecode
+;; (`compile_arm`): `push_frame` marks each missing optional in a hidden flag slot, and the
+;; prologue evaluates that default into its slot, left to right, ahead of the body. These pin
+;; what that has to keep: a default runs exactly when its argument is missing — an explicit
+;; `nil` is an argument — it sees the parameters before it, and the body keeps its tail.
+
+(defmodule optional-defaults-test (:use test))
+
+(defn chained (a &optional (b (+ a 1)) (c (* b 2))) [a b c])
+
+(defn with-let (a &optional (b (let (x (* a 10) y 3) (+ x y)))) [a b])
+
+(defn square (x) (* x x))
+
+(defn calls-out (a &optional (b (square a))) (+ a b))
+
+(defn raises (&optional (b (throw "default ran"))) b)
+
+(defn sum-down (n &optional (acc 0)) (if (= n 0) acc (sum-down (- n 1) (+ acc n))))
+
+(defn nil-then-default (a &optional b (c (or b a))) [a b c])
+
+(defn with-rest (a &optional (b a) & more) [a b more])
+
+(defn counting (table &optional (v (do (table/put table :ran (+ 1 (table/get table :ran 0))) :d)))
+  v)
+
+(describe "&optional defaults"
+  (test "a default sees the parameters before it, left to right"
+    (assert= [1 2 4] (chained 1))
+    (assert= [1 5 10] (chained 1 5))
+    (assert= [1 5 9] (chained 1 5 9)))
+  (test "a default can bind its own locals and call out"
+    (assert= [2 23] (with-let 2))
+    (assert= 20 (calls-out 4)))
+  (test "a default runs only when its argument is missing"
+    (assert= 7 (raises 7))
+    (assert-error (raises))
+    (let (t (table/new))
+      (counting t :given)
+      (counting t nil)
+      (assert= nil (table/get t :ran))
+      (assert= :d (counting t))
+      (assert= 1 (table/get t :ran))))
+  (test "an explicit nil is an argument, not a missing one"
+    (assert= [1 nil 1] (nil-then-default 1))
+    (assert= [1 2 2] (nil-then-default 1 2))
+    (assert= [1 nil nil] (nil-then-default 1 nil nil)))
+  (test "a default beside a rest parameter"
+    (assert= [1 1 nil] (with-rest 1))
+    (assert= [1 2 (list 3 4)] (with-rest 1 2 3 4)))
+  (test "the body keeps its tail position: a deep loop through an optional accumulator"
+    (assert= 5000050000 (sum-down 100000)))
+  (test "a default closes over a parameter and over the enclosing scope"
+    (assert= 3 ((fn (a &optional (b (fn () a))) (b)) 3))
+    (assert= 16 (let (m 4) ((fn (&optional (q (* m m))) q))))
+    (assert= (list 11 12 13) (map [1 2 3] (fn (x &optional (y 10)) (+ x y))))))
+
+(describe "&optional defaults across processes"
+  :isolated (test "workers calling one function with and without its optionals agree"
+    (let (me (self))
+      (dotimes (k 8)
+        (spawn (send me [:r k (chained k) (chained k 0) (sum-down 1000)])))
+      (let (rs (map (range 8) (fn (_) (receive ([:r k a b s] [k a b s]) (after 20000 :timeout)))))
+        (assert= 8 (count rs))
+        (each rs
+          (fn (r)
+            (let ([k a b s] r)
+              (assert= [k (+ k 1) (* 2 (+ k 1))] a)
+              (assert= [k 0 0] b)
+              (assert= 500500 s))))))))

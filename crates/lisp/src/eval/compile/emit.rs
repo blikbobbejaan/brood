@@ -1,9 +1,9 @@
 //! Node→bytecode emitter (extracted from mod.rs).
 use super::*;
 
-/// Lower a compiled `Node` body to a [`Chunk`], or `None` if it uses any node
-/// outside Stage 1's vocabulary (`Call`/`SelfCall`/`MakeClosure`, or a `Const` with
-/// a movable RUNTIME handle). `None` is always safe — the arm runs on `exec_node`.
+/// Lower a compiled `Node` body to a [`Chunk`]. Every node kind has an emission, so this
+/// answers `Some` for any body `compile_node` produced; the `Option` is the recursion's
+/// plumbing, and a body that ever does come back `None` has no executor to fall back to.
 pub(crate) fn compile_chunk(body: &Node) -> Option<Chunk> {
     let mut code = Vec::new();
     emit_node(body, &mut code)?;
@@ -226,7 +226,7 @@ fn emit_node_inner(node: &Node, code: &mut Vec<Inst>) -> Option<()> {
             file: _,
             site,
         } => {
-            // Callee first, then each arg (the order `exec_call` evaluates them). When
+            // Callee first, then each arg (the tree-walker's evaluation order). When
             // the head is a free global, carry its symbol + `site` so the call-site IC
             // can cache the resolved arm (Stage 5); the callee is still pushed and
             // resolved in-order, so the IC is a pure cache.

@@ -200,9 +200,9 @@ pub(crate) use closure::*;
 mod emit;
 pub(crate) use emit::*;
 
-mod exec_value;
+mod prim_exec;
 
-pub(crate) use exec_value::*;
+pub(crate) use prim_exec::*;
 
 mod dispatch;
 
@@ -474,14 +474,15 @@ pub(crate) enum VmOutcome {
 /// empty lexical scope: no locals at top level); anything else defers to the
 /// tree-walker. `env` is the process's global/root env.
 pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
-    // A top-level form runs in `exec_value`, which cannot be captured, and every caller is
-    // native (`reflect/eval`, `eval-string`, the loader, a tree-walked `def`). A `receive`
+    // A top-level form runs as a NESTED driver (`vm_apply`), which cannot be captured, and
+    // every caller is native (`reflect/eval`, `eval-string`, the loader, a tree-walked `def`). A `receive`
     // in it must block, not suspend: a suspend rode up to the enclosing body driver, which
     // captured at the CALL into the native, and the resume ran the whole form again — a
     // `reflect/eval`'d spawn-then-receive spawned anew on every message (KI-245). The same
     // guard the tree-walker's entries take.
     let _not_capturable = crate::process::TreeWalkGuard::enter();
     let mut scope = Scope::new();
+    scope.stage_calls = true;
     // When invoked with a *non-global* env — a `def` RHS evaluated inside a `let`,
     // e.g. `(let (me …) (def f (fn () me)))` — the form's closures must be able to
     // capture the enclosing lexicals. Seed them as `enclosing` names so a VM-compiled
@@ -505,53 +506,30 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
     }
     match compile_node(heap, form, &mut scope, false) {
         Some(node) => {
-            // A top-level `let` introduces frame slots too — give the form a frame
-            // of `scope.max` nil slots (like a 0-param closure), then tear it down.
-            // The top-level env is the (immovable) process global, so `root_env`
-            // keeps it inline; rooting it uniformly keeps `exec_node`'s contract.
-            //
-            // Wrap the transient top-level node in a throwaway arm and register it as
-            // LIVE: like a `vm_apply` frame, its `Const` literals are promoted RUNTIME
-            // handles that a nested compaction (a sub-call into `load`/`eval`) would
-            // strand — registering it lets `runtime_collect` rewrite them in place.
-            let has_runtime_handles = node_has_rt_handles(&node);
-            let arm = Arc::new(CompiledArm {
+            // The form becomes a throwaway zero-parameter arm with a chunk of its own and
+            // runs on the bytecode driver like any other activation — through `vm_apply`,
+            // the nested-run entry: the frame (`scope.max` slots, a top-level `let`'s
+            // binders included), the IC block install and the caller's restore (`run`
+            // nests — a `load` inside an arm), the live-arm registration that keeps its
+            // RUNTIME `Const`s rewritable under a nested compaction, and the native-stack
+            // guard are the driver's, as for any call.
+            let chunk = compile_chunk(&node);
+            let arm = CompiledArm {
                 nslots: scope.max,
-                // Top-level forms allocate sites through this scope like any arm; the
-                // throwaway arm needs the counts so `exec_value`'s activation resolves
-                // an IC block covering them.
                 nsites: scope.sites,
                 ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
                 site_pos: std::mem::take(&mut scope.site_pos).into_boxed_slice(),
-                // Top-level forms run via `exec_value` below, not the bytecode loop
-                // (Stage 1 bytecode is reached only through `vm_apply`); no chunk.
+                staged_head_pos: std::mem::take(&mut scope.staged_head_pos).into_boxed_slice(),
+                has_runtime_handles: node_has_rt_handles(&node),
+                chunk,
                 body: node,
-                has_runtime_handles,
                 ..CompiledArm::default()
-            });
-            let arm_slot = if arm.has_runtime_handles {
-                heap.live_arm_push(ArmHandle::new(arm.clone()))
-            } else {
-                usize::MAX
             };
-            let env_base = heap.env_roots_len();
-            let genv = heap.root_env(env);
-            let base = heap.roots_len();
-            for _ in 0..scope.max {
-                heap.push_root(Value::nil());
-            }
-            // Install the top-level form's IC block for its activation (ADR-175
-            // Phase A), restoring the caller's after — `run` nests (a `load` inside
-            // an arm), so the enclosing activation's cursors must survive.
-            let saved_bases = heap.set_ic_bases(heap.vm_arm_block(&arm));
-            let r = exec_value(heap, &arm.body, base, genv);
-            heap.set_ic_bases(saved_bases);
-            heap.truncate_roots(base);
-            heap.truncate_env_roots(env_base);
-            if arm_slot != usize::MAX {
-                heap.live_arm_truncate(arm_slot);
-            }
-            r
+            // Runs once: nothing to tier, and no frame reserve laid out for native code.
+            #[cfg(feature = "jit")]
+            arm.jit_code
+                .store(crate::jit::BAILED, std::sync::atomic::Ordering::Relaxed);
+            vm_apply(heap, ArmHandle::new(Arc::new(arm)), &[], env)
         }
         None => crate::eval::eval(heap, form, env),
     }

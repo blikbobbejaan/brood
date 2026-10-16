@@ -121,7 +121,7 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
   eval.rs + eval/   the tree-walking evaluator (a `'tail: loop`) + compile.rs/compile/,
                the closure-compiling VM (default engine, ADR-076): ir (IR types), lower
                (front-end), walkers, closure (compile_arm, shared body cache), emit
-               (Node -> bytecode), exec_value, dispatch (arm dispatcher, IC, JIT fast
+               (Node -> bytecode), prim_exec (the Prim2/Prim3 executors), dispatch (arm dispatcher, IC, JIT fast
                path), exec_chunk (bytecode inner loop), vm_run_bc (outer trampoline),
                inline (Node->Node passes), jit_plan (backend-independent lowering
                decisions), jit_runtime/ (tiering glue: compiler thread, link, dispatch,

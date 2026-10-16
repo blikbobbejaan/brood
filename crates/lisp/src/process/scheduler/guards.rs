@@ -199,9 +199,9 @@ pub const NATIVE_STACK_MARGIN_BYTES: usize = 512 * 1024;
 /// push heap frames inside one `vm_run_bc` loop, which is why 200 000-deep
 /// non-tail recursion returns cleanly and is capped by `MAX_BC_FRAMES`.
 ///
-/// But some VM paths **re-enter natively**: a `try` body, an `&optional` default,
-/// and every native callback (`map`/`binding`/`%isolate`) run through
-/// `exec_value` → `exec_call` → `vm_apply` → `vm_run_bc`, adding real Rust frames
+/// But some VM paths **re-enter natively**: a `try` body, a top-level form run from a
+/// native, and every native callback (`map`/`binding`/`%isolate`) run through
+/// `vm_apply` → `vm_run_bc`, adding real Rust frames
 /// per Brood level. Nothing on that path reaches `eval`, so the byte guard never
 /// fired and a recursive `try` body died on the guard page — a `SIGSEGV` that
 /// `try`/`catch` cannot observe and no supervisor can restart, because the OS

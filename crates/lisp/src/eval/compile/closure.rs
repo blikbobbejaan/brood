@@ -27,8 +27,9 @@ use super::*;
 /// VM vocabulary. Binds frame slots in layout order — required params, then each
 /// optional (its default compiled *before* the optional's own slot is bound, so a
 /// default sees the required params and earlier optionals but never itself), then
-/// the `&` rest param — then compiles the body. The default nodes ride along in
-/// `optional_defaults` for `push_frame` to evaluate on a missing arg.
+/// the `&` rest param — then compiles the body. A real default becomes part of the arm's
+/// own bytecode: a prologue ahead of the body sets each defaulted optional whose argument
+/// was missing, which `push_frame` marks in a hidden flag slot (`optional_flags`).
 pub(crate) fn compile_arm(
     heap: &Heap,
     required: &[Symbol],
@@ -115,12 +116,39 @@ pub(crate) fn compile_arm(
     // ADR-368: the 3-arity map read and the single-pair `assoc` become instructions LAST,
     // once the linear-map machinery has seen them as the calls it matches.
     inline::lower_map_prim3(heap, &mut body);
-    let optional_defaults = optional_defaults.into_boxed_slice();
-    let has_runtime_handles =
-        node_has_rt_handles(&body) || optional_defaults.iter().flatten().any(node_has_rt_handles);
-    // Stage 1: try to compile the body to flat bytecode (a call-free, handle-free
-    // subset for now — `compile_chunk` returns `None` otherwise, and the arm runs
-    // via `exec_node` exactly as before).
+    // Real `&optional` defaults run in the arm's own bytecode, ahead of the body: for each,
+    // `(if <missing> (set <slot> <default>) nil)`, left to right, so a later default sees an
+    // earlier one. "Missing" is a hidden flag slot `push_frame` sets to `true`, above every
+    // slot the body uses; a truthiness test, so no operator a program could rebind is
+    // involved. The body stays last, so its tail position — and every tail call in it — is
+    // unchanged.
+    let mut optional_flags: Vec<u32> = Vec::with_capacity(noptional);
+    let mut prologue: Vec<Node> = Vec::new();
+    for (j, default) in optional_defaults.into_iter().enumerate() {
+        match default {
+            None => optional_flags.push(u32::MAX),
+            Some(node) => {
+                let flag = scope.max;
+                scope.max += 1;
+                optional_flags.push(flag as u32);
+                prologue.push(Node::If(
+                    Box::new(Node::Local(flag)),
+                    Box::new(Node::LetBind {
+                        binds: Box::new([(nrequired + j, node)]),
+                        body: Box::new(Node::Const(ConstVal::new(Value::nil()))),
+                    }),
+                    Box::new(Node::Const(ConstVal::new(Value::nil()))),
+                ));
+            }
+        }
+    }
+    if !prologue.is_empty() {
+        prologue.push(body);
+        body = Node::Do(prologue.into_boxed_slice());
+    }
+    let optional_flags = optional_flags.into_boxed_slice();
+    let has_runtime_handles = node_has_rt_handles(&body);
+    // The body as flat bytecode — what the driver runs.
     let chunk = compile_chunk(&body);
     // Line coverage (ADR-148 tier 2): register this arm's instrumented lines as they
     // are compiled. This is the report's DENOMINATOR — see `coverage.rs` for why it
@@ -186,6 +214,7 @@ pub(crate) fn compile_arm(
     let nslots_total = scope.max + spill_reserve + ckpt_reserve;
     let uid = next_arm_uid();
     let site_pos = std::mem::take(&mut scope.site_pos).into_boxed_slice();
+    let staged_head_pos = std::mem::take(&mut scope.staged_head_pos).into_boxed_slice();
     let src_file = body_first_form
         .and_then(|f| heap.form_pos(f))
         .and_then(|(_, file)| file);
@@ -272,6 +301,7 @@ pub(crate) fn compile_arm(
                                     ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
                                     uid,
                                     site_pos: site_pos.clone(),
+                                    staged_head_pos: staged_head_pos.clone(),
                                     body: d.body,
                                     chunk: Some(d.chunk),
                                     has_runtime_handles,
@@ -331,13 +361,14 @@ pub(crate) fn compile_arm(
     Some(CompiledArm {
         nrequired,
         noptional,
-        optional_defaults,
+        optional_flags,
         rest_slot: rest.map(|_| nrequired + noptional),
         nslots: nslots_total,
         nsites: scope.sites,
         ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
         uid,
         site_pos,
+        staged_head_pos,
         body,
         chunk,
         has_runtime_handles,

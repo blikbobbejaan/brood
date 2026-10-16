@@ -87,8 +87,9 @@ fn const_handle_round_trips() {
 fn rewrite_arm_handles_rewrites_every_embedded_handle() {
     // The regression guard: `runtime_collect` calls this on each LIVE arm, so it
     // must reach every movable handle a node tree embeds — a `Const` literal, a
-    // `MakeClosure` `fn_rest`, an `&optional` default — through all the structural
-    // node variants, while leaving atoms/symbols/indices alone.
+    // `MakeClosure` `fn_rest` — through all the structural node variants, while leaving
+    // atoms/symbols/indices alone. (An `&optional` default is part of the body now, so the
+    // body's walk is what reaches it.)
     let body = Node::Do(Box::new([
         Node::Const(ConstVal::new(Value::str_(StrId::runtime(1)))),
         Node::If(
@@ -103,10 +104,6 @@ fn rewrite_arm_handles_rewrites_every_embedded_handle() {
         ),
     ]));
     let arm = CompiledArm {
-        noptional: 1,
-        optional_defaults: Box::new([Some(Node::Const(ConstVal::new(Value::str_(
-            StrId::runtime(4),
-        ))))]),
         body,
         has_runtime_handles: true,
         ..CompiledArm::default()
@@ -131,10 +128,6 @@ fn rewrite_arm_handles_rewrites_every_embedded_handle() {
         panic!("makeclosure")
     };
     assert_eq!(pair_idx(fn_rest.load()), 103);
-    let Some(def) = &arm.optional_defaults[0] else {
-        panic!("optional default")
-    };
-    assert_eq!(str_idx(load_const(def)), 104);
 }
 
 fn load_const(node: &Node) -> Value {

@@ -231,7 +231,7 @@ pub enum HandleKind {
 /// `MakeClosure` `fn_rest`). Either a truly-immovable **atom** kept inline, or a
 /// movable **heap handle** stored as `(kind, AtomicU64)` so the RUNTIME compactor
 /// ([`Heap::runtime_collect`](crate::core::heap::Heap::runtime_collect)) can rewrite
-/// it **in place** — the `Node` tree lives behind an `Arc` that `exec_node` walks by
+/// it **in place** — the `Node` tree lives behind an `Arc` that is read by
 /// `&Node`, so the `Arc` can't be swapped for a relocated copy; the handle bits must
 /// move under the live reference. The atomic also keeps `ConstVal`/`Node`
 /// `Send + Sync` (required because `Arc<CompiledArm>` is cached in a `Send` `Heap`).
@@ -340,7 +340,7 @@ impl ConstVal {
 /// A compiled IR node (ADR-076). Stage 1 vocabulary — the core forms a top-level
 /// arithmetic/recursive body is built from. Anything outside this set makes the
 /// whole closure ineligible (it runs on the tree-walker instead), so there is no
-/// `Defer` node: a VM-run body is *fully* compiled, which is what lets `exec_node`
+/// `Defer` node: a VM-run body is *fully* compiled, which is what lets its bytecode
 /// never need an `EnvId` for locals.
 pub enum Node {
     /// A self-evaluating literal (number, bool, nil, string, keyword), as a
@@ -507,7 +507,7 @@ pub enum Node {
     },
     /// `(%try body_fn handler_fn)` desugared inline: body is the thunk's
     /// unwrapped body, bind_slot is the frame slot for the caught exception,
-    /// handler is the handler body. Both run via exec_value in the same frame.
+    /// handler is the handler body. Both run in the same frame.
     TryCatch {
         body: Box<Node>,
         bind_slot: usize,
@@ -547,14 +547,14 @@ pub struct CompiledArm {
     /// guarantees `argc >= nrequired`, so they're always present.
     pub nrequired: usize,
     /// Count of `&optional` params. A provided arg fills the slot; a missing one
-    /// takes its default (see `optional_defaults`).
+    /// takes its default (see `optional_flags`).
     pub noptional: usize,
-    /// Per-optional default, indexed `0..noptional`: `None` = nil-default (just push
-    /// `nil`), `Some(node)` = a real default form, compiled in a scope where the
-    /// required params and *earlier* optionals are bound. Evaluated by `push_frame`
-    /// only when the optional's arg is missing — left-to-right, so a later default
-    /// sees earlier ones (matching the tree-walker).
-    pub optional_defaults: Box<[Option<Node>]>,
+    /// Per-optional, indexed `0..noptional`: the hidden frame slot `push_frame` sets to
+    /// `true` when that optional's argument is missing, or `u32::MAX` for a nil default
+    /// (the slot is just left nil). A real default is compiled into the arm's own body, as
+    /// a prologue that tests the flag and sets the slot — left to right, so a later default
+    /// sees earlier ones (matching the tree-walker); see `compile_arm`.
+    pub optional_flags: Box<[u32]>,
     /// `&` rest param's slot, if any: collects `argv[nrequired+noptional..]` into a
     /// fresh list.
     pub rest_slot: Option<usize>,
@@ -582,6 +582,11 @@ pub struct CompiledArm {
     /// `dbg_site_pos` table (debug builds) so the JIT stale-operand diagnostics can
     /// name a site's `.blsp` file:line. Empty for synthetic/test arms.
     pub site_pos: Box<[Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>]>,
+    /// The call position of each STAGED head (KI-19), keyed by the head's global-read
+    /// site: a staged head resolves through its own `GlobalIc`, which carries no position,
+    /// so an unbound operator reports its call's position from here. Cold — read only when
+    /// that resolution fails. Empty for an arm with no staged call.
+    pub staged_head_pos: Box<[(u32, crate::error::Pos)]>,
     pub body: Node,
     /// The body compiled to flat **bytecode** (`Chunk`). [`vm_run_bc`] runs this — the
     /// sole VM executor (ADR-100 Stage 5). `compile_arm` always fills it (every
@@ -865,13 +870,14 @@ impl Default for CompiledArm {
         CompiledArm {
             nrequired: 0,
             noptional: 0,
-            optional_defaults: Box::new([]),
+            optional_flags: Box::new([]),
             rest_slot: None,
             nslots: 0,
             nsites: 0,
             ngsites: 0,
             uid: next_arm_uid(),
             site_pos: Box::new([]),
+            staged_head_pos: Box::new([]),
             body: Node::Const(ConstVal::new(Value::Nil)),
             chunk: None,
             has_runtime_handles: false,
@@ -1170,11 +1176,10 @@ impl std::ops::Deref for ArmHandle {
     }
 }
 
-/// The result of `dispatch` (and the value-position `exec_call`/`exec_value` path):
-/// a finished value, or a *tail call* the caller continues. `Tail` carries a resolved
-/// VM arm un-run, so a tail call reuses a frame (in [`vm_run_bc`]) or is forced (in
-/// value position, via [`force`]). (`exec_value`/`exec_call` survive for `push_frame`'s
-/// `&optional` defaults and top-level `run`; the bytecode driver uses [`ChunkExit`].)
+/// The result of `dispatch`: a finished value, or a *tail call* the caller continues.
+/// `Tail` carries a resolved VM arm un-run, so a tail call reuses a frame (in
+/// [`vm_run_bc`]) or is forced (in value position, via [`force`]). The bytecode loop's own
+/// exits are [`ChunkExit`].
 pub(crate) enum Step {
     Done(Value),
     Tail {
@@ -1369,15 +1374,12 @@ pub(super) fn rewrite_node(node: &Node, f: &mut dyn FnMut(Value) -> Value) {
     }
 }
 
-/// Rewrite every movable handle embedded in a live compiled arm — its body plus each
-/// real `&optional` default form, and the bytecode `chunk` if present (its `Const`s
+/// Rewrite every movable handle embedded in a live compiled arm — its body (which holds
+/// any real `&optional` default too), and the bytecode `chunk` if present (its `Const`s
 /// and `MakeClosure` `fn_rest` are separate handle copies that must move too). Called
 /// by `runtime_collect` per registered live arm.
 pub fn rewrite_arm_handles(arm: &CompiledArm, f: &mut dyn FnMut(Value) -> Value) {
     rewrite_node(&arm.body, f);
-    for n in arm.optional_defaults.iter().flatten() {
-        rewrite_node(n, f);
-    }
     if let Some(chunk) = &arm.chunk {
         rewrite_chunk(chunk, f);
     }
@@ -1401,9 +1403,8 @@ pub(super) fn rewrite_chunk(chunk: &Chunk, f: &mut dyn FnMut(Value) -> Value) {
 //
 // A compiled arm's `Node` body is also lowered to a flat **bytecode** `Chunk` — a linear
 // instruction stream over the **same** operand stack (`Heap::roots`) the `Node`
-// interpreter uses, run by a single non-recursive loop (`exec_chunk`). Anything outside
-// the lowerable subset makes `compile_chunk` return `None` and the arm keeps running on
-// `exec_node`.
+// interpreter uses, run by a single non-recursive loop (`exec_chunk`). Every compiled
+// body lowers; the bytecode is the VM's only executor.
 //
 // Why this shape: a process's continuation must be relocatable heap data rather than a
 // native Rust stack. The operand state lives on `Heap::roots`; the chunk reifies the
@@ -1415,7 +1416,7 @@ pub(super) fn rewrite_chunk(chunk: &Chunk, f: &mut dyn FnMut(Value) -> Value) {
 /// the operand region of `Heap::roots` that sits just above the activation frame's
 /// slots (`base..base+nslots`). Frame slots are read/written by absolute index
 /// (`Local`/`SetLocal`); everything else is push/pop. The semantics of each arm
-/// mirror the matching [`Node`] case in `exec_value`/`exec_node` exactly.
+/// mirror the matching [`Node`] case, and the tree-walker's form, exactly.
 pub enum Inst {
     /// Push a constant. Stage 1 only embeds **atoms** (`compile_chunk` defers any
     /// body carrying a movable RUNTIME handle), so no in-place handle rewrite is
@@ -1556,8 +1557,8 @@ pub enum Inst {
     /// Build a closure (`(fn …)` evaluated inside a compiled body). The `names`'
     /// capture values have been pushed (in order) by preceding leaf instructions;
     /// this binds them into a fresh captured env, builds the closure from `fn_rest`,
-    /// and (for a direct `letrec` self-ref) late-binds `self_name` to it. Mirrors
-    /// `Node::MakeClosure` / its `exec_value` arm exactly. `fn_rest` is a movable
+    /// and (for a direct `letrec` self-ref) late-binds `self_name` to it. As
+    /// `Node::MakeClosure` describes. `fn_rest` is a movable
     /// RUNTIME handle — rewritten in place by [`rewrite_chunk`].
     MakeClosure {
         fn_rest: ConstVal,
