@@ -1,6 +1,6 @@
 //! Every declared single-argument producer of a `failure` must be narrowable through.
 //!
-//! `guards::DETERMINISTIC_UNARY` is the allow-list a type guard narrows through: it is what
+//! `known_ops::DETERMINISTIC_UNARY` is the allow-list a type guard narrows through: it is what
 //! makes `(if (failure? (parse s)) d (parse s))` — the spelling that does not bind the value
 //! — type the second occurrence as the non-failure half. ADR-316 reports a failure arm
 //! nothing guards, so a parser MISSING from that list does not merely lose precision: the
@@ -15,7 +15,7 @@
 /// The allow-list, read out of its source rather than re-listed here — a hand-copied list
 /// would drift from the one it is meant to police.
 fn allow_list() -> Vec<String> {
-    let src = include_str!("../src/types/check/guards.rs");
+    let src = include_str!("../src/types/check/known_ops.rs");
     let start = src
         .find("pub(super) const DETERMINISTIC_UNARY: &[&str] = &[")
         .expect("DETERMINISTIC_UNARY is declared");

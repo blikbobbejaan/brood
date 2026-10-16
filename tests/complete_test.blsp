@@ -10,6 +10,9 @@
 
 (defmodule complete-test (:use-internals complete) (:use test) (:use complete))
 
+;; Drop the previous run's `temp-dir` fixtures at load (KI-30).
+(purge-stale-temp "brood-complete-")
+
 (describe "complete: scanning with an offset"
   (test "finds a needle at the start"
     (assert= (complete/index-of-from "abcabc" "abc" 0) 0))

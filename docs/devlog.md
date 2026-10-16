@@ -1997,3 +1997,27 @@ any build. (2) `cli::stdimage_reporting` went red in the tree-walker half of a `
 because a `cargo build` (debug) in another shell relinked `target/debug/brood` between the
 test's two steps; reproduced on demand by rebuilding mid-test. Never build the debug profile
 while a suite runs.
+
+## 2026-10-16 (later) — the merged tree's first full `test-both`: four reds, all from moves the other machine could not run
+
+The handoff asked for `make test-both` here first: the other machine's 62 commits (the 2024
+edition, the file splits, KI-256..263) were verified there with targeted tests only. Both
+engines went red on the same four, so each had one shared cause — none a runtime defect:
+
+- `deterministic_unary_is_complete` read `DETERMINISTIC_UNARY` out of `types/check/guards.rs`;
+  `a93e3f08` moved the list to `known_ops.rs`. The test reads the new file.
+- `devirt_differential` ran `brood --test tests/ability_test.blsp`, which `c4b9a8ff` made
+  `(:use suite-helpers)`; `nest test` finds that through `project.blsp`'s `:source-paths`, a
+  bare `brood --test` reads no project. The differential now loads
+  `tests/support/suite-helpers.blsp` first in the same run.
+- `temp_purge_coverage_test`: `e2962c19` gave `complete_test.blsp` a `brood-complete-`
+  fixture without the load-time `purge-stale-temp` (KI-30). Added.
+- `suite_test` "runtime errors" pinned `rem:` and `subvec:`, the names KI-255 (`e2962c19`)
+  retired because no such functions exist; the messages now say `%rem:` and `seq/subvec:`,
+  and the pins follow.
+
+And CI's red on `fec73f3f` was a flake, not that change: `process_limit_test` "the bound is
+ONE-SHOT per arming" timed out on its first try under load and passed the retry. A test race,
+KI-267 — the worker announced `:ready` before entering its `try`, so a preemption between the
+two let the flood trip `E0046` outside the handler; reproduced on demand with a `sleep` in that
+gap, fixed in all four places the file had the ordering.

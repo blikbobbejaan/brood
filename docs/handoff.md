@@ -34,9 +34,10 @@ devlog entries of the same dates.
 
   Large files were split by job, and the ADR log now lives in `docs/decisions/` by number
   range. `process.rs` documents the lock order in one table. All of this was verified with
-  targeted tests on tiers 0–2, GC stress and fuzz; the full suite was **not** run here (it
-  never is on this machine). **Run `make test-both` and `make green` on the other machine
-  first.** `target/` was cleaned here, so the next build is a full one.
+  targeted tests on tiers 0–2, GC stress and fuzz. **Run on the other machine 2026-10-16:**
+  `make test-both` found four reds, all stale tests from those moves (devlog "the merged
+  tree's first full `test-both`"), fixed — now 1897/1897 on both engines. CI's red on
+  `fec73f3f` was a test race, KI-267, also fixed.
 - **Released:** v0.38.0 (`CHANGELOG.md`). On `main` since, merged 2026-10-14 from a branch
   developed apart from the release: preemption reaches every shape of running code (ADR-400..405,
   KI-230..238), one native entry and one quantum module, folds walked in spans, the gate sweep,

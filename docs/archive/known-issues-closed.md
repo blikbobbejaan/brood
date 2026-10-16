@@ -13961,3 +13961,27 @@ correction goes. Every tracked file was a fixed point of the old formatter, so n
 **Guard.** `tests/format_test.blsp` "a blank line after a trailing comment survives, in every
 walker" (top level, body, `cond`, `let`) and "and no blank line appears after a trailing
 comment that had none". Restarting at 0 again reds the first.
+
+## KI-267 — `process_limit_test` "the bound is ONE-SHOT per arming" timed out under load ✅ FIXED 2026-10-16
+
+**Symptom.** CI run 38767334087 (`fec73f3f`): `tests/process_limit_test.blsp:171: test failed:
+proc/flag :max-mailbox › the bound is ONE-SHOT per arming — a breach does not re-arm itself
+(KI-103)`, `(assert= "E0046" code)` against `:timeout` after the 30 s backstop. The retry
+passed, so `nextest` reported it FLAKY, which the CI test step fails on.
+**Cause.** The worker sets `:max-mailbox 8`, sends `[:ready (self)]`, and only THEN enters
+`(try (receive (:never nil)) (catch …))`. The parent floods 32 messages the moment it hears
+`:ready`. A worker preempted between the send and the `try` (CI load) resumed with the queue
+already over the bound and tripped `E0046` at its next safepoint — outside the handler — so it
+died with nothing to report and the parent waited out its timeout. The runtime did what the
+bound specifies; the test announced readiness before it was ready.
+**Why it survived.** On an idle machine the worker reaches its `receive` long before 32 sends
+land, so the window is never hit; it needs the worker descheduled at exactly that point.
+**Fix.** Every worker in the `:max-mailbox` block that catches the breach now sends its
+`:ready` (or `:re-armed`) as the first form INSIDE its `try` — four places: "the handler can
+drain and clear the bound", "the bound is ONE-SHOT per arming", and both armings of
+"setting the bound again re-arms it". The tests that expect the worker to die have no `try`
+and keep their order.
+**Guard.** By construction plus a repro: a scratch copy with `(sleep 200)` between `:ready`
+and the `try` reds every run (`[:timeout 0]`); the same gap placed inside the `try` passes
+3/3. The fixed file runs in `make test-both`.
+

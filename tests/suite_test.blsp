@@ -252,11 +252,12 @@
 (describe "error messages"
   (test "runtime errors"
     (assert= (error-of (/ 1 0)) "runtime error: division by zero")
-    ;; `mod` is Brood over the `rem` primitive, so a ÷0 surfaces as a `rem` error.
-    (assert= (error-of (math/mod 1 0)) "runtime error: rem: division by zero")
-    (assert= (error-of (math/rem 1 0)) "runtime error: rem: division by zero")
+    ;; `mod` is Brood over the `%rem` primitive, so a ÷0 surfaces as a `%rem` error. A
+    ;; message names a function that exists (KI-255), which a bare `rem` does not.
+    (assert= (error-of (math/mod 1 0)) "runtime error: %rem: division by zero")
+    (assert= (error-of (math/rem 1 0)) "runtime error: %rem: division by zero")
     (assert= (error-of (seq/subvec [1 2] 0 9))
-      "runtime error: subvec: range [0, 9) out of bounds for vector of length 2"))
+      "runtime error: seq/subvec: range [0, 9) out of bounds for vector of length 2"))
   (test "unbound symbol echoes the name"
     (assert= (error-of undefined-name) "unbound error: unbound symbol: undefined-name"))
   (test "type errors name the op, the wanted type, and what arrived"

@@ -77,18 +77,27 @@ fn answers_only(text: &str) -> String {
         .join("\n")
 }
 
+/// The ability suite as `brood --test` runs it. `tests/ability_test.blsp` uses `suite-helpers`,
+/// which `nest test` finds through `project.blsp`'s `:source-paths`; a bare `brood --test`
+/// reads no project, so the helper file is loaded first, in the same run.
+const ABILITY_SUITE: &[&str] = &[
+    "--test",
+    "tests/support/suite-helpers.blsp",
+    "tests/ability_test.blsp",
+];
+
 #[test]
 fn the_ability_suite_answers_the_same_devirtualized_and_tree_walked() {
     // The ability suite is the concentrated case: ~94 tests over dispatch, `:default`
     // fallback, sealed members, retraction, and cross-module override precedence.
-    let reference = run_brood(&["--test", "tests/ability_test.blsp"], 0, &[]);
+    let reference = run_brood(ABILITY_SUITE, 0, &[]);
     assert!(
         reference.success,
         "the tree-walked run must pass:\n{}{}",
         reference.stdout, reference.stderr
     );
     for tier in [1, 2] {
-        let compiled = run_brood(&["--test", "tests/ability_test.blsp"], tier, &[]);
+        let compiled = run_brood(ABILITY_SUITE, tier, &[]);
         assert!(
             compiled.success,
             "the tier-{tier} run must pass — a failure here is a miscompile, not a flake:\n{}{}",

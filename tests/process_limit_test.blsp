@@ -121,9 +121,12 @@
           worker (spawn
                    (do
                      (proc/flag :max-mailbox 8)
-                     (send me [:ready (self)])
                      (try
-                       (receive (:never nil))
+                       (do
+                         ;; Announced inside the `try`: the parent floods the moment it hears this,
+                         ;; so a handler installed after it left a window where the breach was uncaught.
+                         (send me [:ready (self)])
+                         (receive (:never nil)))
                        (catch e
                          ;; drain everything, lift the bound, prove we lived
                          (do
@@ -172,9 +175,11 @@
           worker (spawn
                    (do
                      (proc/flag :max-mailbox 8)
-                     (send me [:ready (self)])
                      (try
-                       (receive (:never nil))
+                       (do
+                         ;; Announced inside the `try`, as above.
+                         (send me [:ready (self)])
+                         (receive (:never nil)))
                        (catch e
                          ;; deliberately does NOT clear the bound
                          (letrec (drain (fn (n)
@@ -199,24 +204,29 @@
     ;; outside the inner `try`, killing the worker. That second one is the bound working as
     ;; specified, not a defect — it just hides the property under test.
     (let (me (self)
-          worker (spawn (do
-                          (proc/flag :max-mailbox 4)
-                          (send me [:ready (self)])
-                          (try
-                            (receive (:never nil))
-                            (catch _
-                              (do
-                                (letrec (drain (fn ()
-                                                 (receive
-                                                   (:flood (drain))
-                                                   (:done nil)
-                                                   (after *test-wait-ms* nil))))
-                                  (drain))
-                                (proc/flag :max-mailbox 4)
-                                (send me [:re-armed (self)])
-                                (try
-                                  (receive (:never nil))
-                                  (catch e2 (send me [:twice (get e2 :code)])))))))))
+          worker (spawn
+                   (do
+                     (proc/flag :max-mailbox 4)
+                     (try
+                       (do
+                         ;; Announced inside the `try`, as above.
+                         (send me [:ready (self)])
+                         (receive (:never nil)))
+                       (catch _
+                         (do
+                           (letrec (drain (fn ()
+                                            (receive
+                                              (:flood (drain))
+                                              (:done nil)
+                                              (after *test-wait-ms* nil))))
+                             (drain))
+                           (proc/flag :max-mailbox 4)
+                           (try
+                             (do
+                               ;; Announced inside the `try`, as above.
+                               (send me [:re-armed (self)])
+                               (receive (:never nil)))
+                             (catch e2 (send me [:twice (get e2 :code)])))))))))
       (receive ([:ready ^worker] nil) (after 30000 (error "no ready")))
       (flood worker 16)
       (send worker :done)
