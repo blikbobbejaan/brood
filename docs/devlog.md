@@ -2084,7 +2084,7 @@ unit), `supervisor` reads 4 731M against 4 734M, `json` identical in both modes,
 timed out once in the VM half; 5/120 at 8-way load on `b98cda3c` too, so not this change.
 `stream/socket->` let its stream process claim the socket itself, and a connected socket reads
 from the start, so a fast peer's data and close could land in the caller's mailbox first and be
-lost. The caller now transfers the socket and hands the stream what had already arrived — sound
-because delivery and the transfer take the same `SocketOwner` lock. 0/120 after; a new test that
-forces the window times out against the old `std/`.
+lost. The other machine fixed the same race the same morning (`c9092371`: the caller forwards what it
+holds once the producer owns the socket, and a no-requester error stays answerable); the merge kept
+that version and its test. 0/120 under the load repro.
 

@@ -14033,14 +14033,15 @@ waited forever for data that had already come, and its consumer with it.
 **Why it survived.** On an idle machine the claim runs long before the peer's first write
 lands; it takes a descheduled reader. The docstring told callers to call it "immediately after
 accept or connect", which describes the window without closing it.
-**Fix.** The caller transfers the socket, then drains its own already-delivered messages for
-it and sends them to the stream process, which takes them first and replays them into its
-starting state (data buffers, a close moves to the EOF loop). Sound because the reactor
-delivers under the same `SocketOwner` lock the transfer takes: once `controlling-process`
-returns, nothing more for the socket can reach the old owner, and what it holds precedes
-everything the new owner receives — the move Erlang's `controlling_process` makes too.
-**Guard.** `stream_test` "data and a close that reach the caller BEFORE socket-> belong to the
-stream (KI-269)": the reader waits until the writer has written and closed, lets the reactor
-deliver, then builds the stream. Against the old `std/` it times out (`actual: :timeout`);
-fixed, it reads "early bytes". The load repro: 0/120.
-
+**Fix.** `c9092371`: once the stream process reports it owns the socket — the transfer
+takes the same `SocketOwner` lock the reactor delivers under, so nothing more for the socket can
+reach the caller after it — the caller forwards every queued `[:tcp ^sock …]`,
+`[:tcp-closed ^sock]` and `[:tcp-error ^sock …]` in order, then `:stream-flushed`, and the
+producer consumes those before anything sent to it directly. A socket error with no requester
+waiting now stays to answer the next `[:next]` (returning there hung the consumer too). The same
+fix was written independently on this machine (the caller transfers the socket itself and sends
+the early messages as one list, replayed first); the merge kept `c9092371`'s, which also covers
+the error case.
+**Guard.** `stream_test` "socket-> reads data that arrived before the stream took the socket":
+the reader waits until the writer's data and close are already in its own mailbox, then makes
+the stream — it fails on the old library. The 8-way load repro: 5/120 before, 0/120 after.

@@ -90,8 +90,34 @@ fn run(clients: &str) -> (bool, i64, i64) {
     )
 }
 
+/// Whether this run uses a compiled engine. These tests are about compiled code crossing
+/// between processes; under the tree-walker (`BROOD_TIER=0`, CI's differential job) every
+/// `receive` holds its thread by design, so 200 clients need ~200 threads and the outcome
+/// depends on the machine's thread limit, not on the copy. Skipped by ceiling, as
+/// `process_floor.rs` does.
+fn compiled_engine() -> bool {
+    let compiled = brood::eval::compile::tier_ceiling() != brood::eval::compile::Tier::TreeWalk;
+    if !compiled {
+        eprintln!("closure_copy_stays_compiled: the tree-walker compiles nothing — skipped");
+    }
+    compiled
+}
+
+/// The clients parked rather than holding threads: no more processes ran at once than there
+/// are workers.
+fn assert_parked(peak: i64, workers: i64, what: &str) {
+    assert!(
+        peak <= workers,
+        "{peak} processes ran at once on {workers} workers: the clients held OS threads in \
+         their receives instead of parking ({what} ran on the tree-walker)"
+    );
+}
+
 #[test]
 fn a_closure_inside_a_spawned_capture_stays_compiled() {
+    if !compiled_engine() {
+        return;
+    }
     let (ok, peak, workers) = run(
         "(let (repo {:adaptor (make-adaptor) :pool (start-pool)} parent (self))
            (dolist (c (range 200))
@@ -99,21 +125,12 @@ fn a_closure_inside_a_spawned_capture_stays_compiled() {
            (collect 200))",
     );
     assert!(ok, "a client got a wrong answer or timed out");
-    assert!(
-        peak <= workers,
-        "{peak} processes ran at once on {workers} workers: the clients held OS threads in \
-         their receives instead of parking (a copied closure ran on the tree-walker)"
-    );
+    assert_parked(peak, workers, "a copied closure");
 }
 
 #[test]
 fn a_closure_received_in_a_message_stays_compiled() {
-    // What this pins is that the copied closure runs COMPILED, so its `receive` parks. The
-    // tree-walker (`BROOD_TIER=0`, `test-both`'s second half and CI's differential job) runs
-    // every closure that way and cannot park under a native call at all, so it holds a
-    // thread per client by construction — not the regression. Skipped by ceiling.
-    if brood::eval::compile::tier_ceiling() == brood::eval::compile::Tier::TreeWalk {
-        eprintln!("closure_copy_stays_compiled: no compiled tier to stay on");
+    if !compiled_engine() {
         return;
     }
     let (ok, peak, workers) = run(
@@ -124,9 +141,5 @@ fn a_closure_received_in_a_message_stays_compiled() {
            (collect 200))",
     );
     assert!(ok, "a client got a wrong answer or timed out");
-    assert!(
-        peak <= workers,
-        "{peak} processes ran at once on {workers} workers: the clients held OS threads in \
-         their receives instead of parking (a sent closure ran on the tree-walker)"
-    );
+    assert_parked(peak, workers, "a sent closure");
 }

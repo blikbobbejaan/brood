@@ -152,39 +152,41 @@ monitor is the whole guard."
 (defn socket-> (sock)
   "A stream of string chunks from TCP socket `sock`. Transfers socket ownership
 to the stream process — the caller must not `receive` from `sock` afterwards.
-Data that reached the caller before the call is part of the stream: a connected
-socket reads from the start, so a fast peer's first chunks — even its close — can
-already be in the caller's mailbox."
-  (let (s (spawn (sock-await sock)))
-    ;; The caller hands the socket over itself, then hands over what already arrived:
-    ;; the reactor delivers under the same lock the transfer takes, so once it returns
-    ;; nothing more for `sock` can reach this mailbox, and what is here precedes
-    ;; everything the stream process will receive. It replays these first (KI-269).
-    (tcp/controlling-process sock s)
-    (send s [:stream-socket-early (sock-early sock (list))])
-    s))
+Call immediately after accept or connect, before any data has been read."
+  (let (me (self)
+        s (spawn (sock-init sock me)))
+    (receive
+      ([:stream-socket-ready ^s] (do (sock-forward-queued sock s) s))
+      ([:stream-err msg] (error "socket->: " msg)))))
 
-(defn- sock-early (sock acc)
-  ;; This process's already-delivered messages for `sock`, oldest first.
+;; A connected or accepted socket is already reading, so data can reach the caller before
+;; the stream process owns the socket. `tcp/controlling-process` moves only what arrives
+;; after it returns, and it has returned by the time the producer says it is ready, so
+;; everything still in the caller's mailbox for this socket is exactly what came before.
+;; Hand it over in order, then mark the end. Left where it was, it never reached the
+;; stream, and a writer that sent and closed straight after the accept hung the reader.
+(defn- sock-forward-queued (sock s)
   (receive
-    ([:tcp ^sock data] (sock-early sock (cons [:tcp data] acc)))
-    ([:tcp-closed ^sock] (sock-early sock (cons [:tcp-closed nil] acc)))
-    ([:tcp-error ^sock msg] (sock-early sock (cons [:tcp-error msg] acc)))
-    (after 0 (reverse acc))))
+    ([:tcp ^sock data] (do (send s [:stream-fwd [:tcp data]]) (sock-forward-queued sock s)))
+    ([:tcp-closed ^sock] (do (send s [:stream-fwd [:tcp-closed]]) (sock-forward-queued sock s)))
+    ([:tcp-error ^sock msg] (do
+                              (send s [:stream-fwd [:tcp-error msg]])
+                              (sock-forward-queued sock s)))
+    (after 0 (send s :stream-flushed))))
 
-(defn- sock-await (sock)
-  (receive ([:stream-socket-early early] (sock-replay sock early ""))))
+(defn- sock-init (sock parent)
+  (tcp/controlling-process sock (self))
+  (send parent [:stream-socket-ready (self)])
+  (sock-take-forwarded sock ""))
 
-(defn- sock-replay (sock early buf)
-  ;; `sock-loop`'s answer to each early message, with no requester yet: data buffers, a
-  ;; close moves to the EOF loop, an error ends the stream as it does with no requester.
-  (if (empty? early)
-    (sock-loop sock nil buf)
-    (let ([tag x] (first early))
-      (cond
-        (= tag :tcp) (sock-replay sock (rest early) (str buf x))
-        (= tag :tcp-closed) (sock-eof-loop buf)
-        else nil))))
+;; What the caller forwards comes before anything the socket sends this process directly,
+;; so it is consumed first; a selective receive leaves the direct messages queued behind it.
+(defn- sock-take-forwarded (sock buf)
+  (receive
+    ([:stream-fwd [:tcp data]] (sock-take-forwarded sock (str buf data)))
+    ([:stream-fwd [:tcp-closed]] (do (receive (:stream-flushed nil)) (sock-eof-loop buf)))
+    ([:stream-fwd [:tcp-error msg]] (do (receive (:stream-flushed nil)) (sock-error-loop msg)))
+    (:stream-flushed (sock-loop sock nil buf))))
 
 (defn- sock-loop (sock pending buf)
   ;; pending: a requester PID waiting for data, or nil.
@@ -206,8 +208,9 @@ already be in the caller's mailbox."
         ;; the consumer was between requests, the process died and the consumer's final
         ;; `[:next]` blocked forever (the stream hung).
         else (sock-eof-loop buf)))
-    ;; Socket error
-    ([:tcp-error ^sock msg] (when pending (send pending [:stream-err msg])))
+    ;; Socket error. With no requester waiting, stay to answer the next one: returning
+    ;; left the consumer's next `[:next]` unanswered, and the stream hung.
+    ([:tcp-error ^sock msg] (if pending (send pending [:stream-err msg]) (sock-error-loop msg)))
     ;; Consumer requests next chunk
     ([:next r] (cond
                  (not (= buf ""))
@@ -217,6 +220,12 @@ already be in the caller's mailbox."
                  else (sock-loop sock r "")))
     ;; Graceful cancel
     (:stream-close (tcp/close sock))))
+
+(defn- sock-error-loop (msg)
+  ;; The socket failed before anyone asked for data: the next request gets the error.
+  (receive
+    ([:next r] (send r [:stream-err msg]))
+    (:stream-close nil)))
 
 (defn- sock-eof-loop (remaining)
   ;; Closed but still have buffered bytes to deliver.
