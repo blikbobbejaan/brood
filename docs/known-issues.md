@@ -66,7 +66,29 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## Open and watching
 
-None. (An open entry's `## KI-N` section goes here until it is resolved.)
+(An open entry's `## KI-N` section goes here until it is resolved.)
+
+## KI-271 — a distribution test's server did not listen within 20 s under peak suite load ⚠️ watching 2026-10-16
+
+**Symptom.** `cli::distribution a_delivered_remote_monitor_does_not_fire_again_on_node_down`
+failed on its first try in `make test-both`'s VM half and passed on retry:
+`server never started listening on port 12384` / `--- KI-38 stall report:
+wait_until_listening(12384) gave up after 20 s ---`, `loadavg: 20.79 16.27 12.55`. This was on
+the ADR-410 tree (`f399dbdd`'s working copy).
+
+**Cause.** Not found. It has the shape of KI-38, a freshly spawned debug `brood` booting too
+slowly while the suite peaks. ADR-410 does not touch boot: startup reads 66.06M vs 66.07M
+instructions for a one-form program, against `55e6f3c4`.
+
+**Why it survived.** It is load-dependent. The retry passed, and nextest counts that as flaky,
+which `test-both` rightly reports as a failure.
+
+**Fix.** None yet: it does not reproduce on demand. The distribution file looped 5× at `-j1`
+(195/195), then ran as 3 rounds of 4 copies in parallel (468/468).
+
+**Guard.** The KI-38 stall report in `crates/cli/tests/support/mod.rs` (`wait_until_listening`)
+is the armed diagnostic. It prints load average and memory on recurrence. If it recurs at low
+load, it is not KI-38's shape and needs a real hunt.
 
 ## Index — status per issue
 
@@ -74,7 +96,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-271 | **`a_delivered_remote_monitor_does_not_fire_again_on_node_down` failed once on its first try, in `wait_until_listening(12384)`**: a spawned debug `brood` server did not listen within 20 s, at load average 20.8 during `make test-both` (VM half, 2026-10-16, on the ADR-410 tree). It passed on retry. KI-38's shape, a boot under peak suite load | 👁 **watch**: not reproduced in 858 runs: the distribution file looped 5× at `-j1` (195/195) and 3 rounds of 4 copies in parallel (468/468). Startup is unchanged by the change it ran on (66.06M vs 66.07M instructions for a one-form program). The KI-38 stall report (loadavg, memory) is the armed diagnostic and fires on recurrence |
+| KI-271 | **`a_delivered_remote_monitor_does_not_fire_again_on_node_down` failed once on its first try, in `wait_until_listening(12384)`**: a spawned debug `brood` server did not listen within 20 s, at load average 20.8 during `make test-both` (VM half, 2026-10-16, on the ADR-410 tree). It passed on retry. KI-38's shape, a boot under peak suite load | ⚠️ watching — not reproduced in 858 runs: the distribution file looped 5× at `-j1` (195/195) and 3 rounds of 4 copies in parallel (468/468). Startup is unchanged by the change it ran on (66.06M vs 66.07M instructions for a one-form program). The KI-38 stall report (loadavg, memory) is the armed diagnostic and fires on recurrence |
 | KI-270 | **a JIT'd arm read a missing `&optional` as nil instead of its default** — `7889810d` moved real defaults into the arm's bytecode behind a hidden "missing" flag slot `push_frame` sets, and the native entry's `emit_nil_locals` nils every slot above the parameters, flag included, so the default never ran. Caught by CI's downstream bedit smoke on `02271160` (`bedit/git/git-git`'s `(opts {})`: `%map-assoc: expected map, got nil`, five magit tests) | ✅ **FIXED 2026-10-16** — the nil-fill skips the flag slots, and the prologue clears a flag as its default lands. Guard: `optional_defaults_test` "a defaulted optional of a native arm, called without it" (red at tier 2 with bedit's error before the fix); bedit 2463/2464 locally, the 1 the known Elixir-dev `dbg` header |
 | KI-269 | **`stream/socket->` lost everything a connected socket received before the call — data and the close — and the consumer hung**: the stream process claimed the socket itself (`tcp/controlling-process` from inside it), and a connected socket reads from the start, so a fast peer's messages landed in the caller's mailbox first. Surfaced as `stream_test` "loopback: ->socket drains a stream into a socket" timing out under load (5/120 at 8-way on `b98cda3c`) | ✅ **FIXED 2026-10-16** (`c9092371`) — the caller forwards what it already holds for the socket, in order, once the producer owns it; the producer takes those first. Fixed on both machines the same day; the merge kept `c9092371`'s version, which also keeps a no-requester socket error answerable. Guard: `stream_test` "socket-> reads data that arrived before the stream took the socket" (fails on the old library); the load repro 0/120 |
 | KI-268 | **a closure copied into another process ran on the tree-walker, so 200 pool clients held 200 OS threads and hung** — a closure's code crossing between processes of one runtime was rebuilt as LOCAL data, which has no `cache_key`, never compiles, and tree-walks; a `receive` there blocks its thread. ADR-405's `spawn` copy reached every closure inside a captured value, so store-postgres's 200-checkout stress test grew ~190 overflow threads until the OS refused one, and a refused thread stranded the queued work silently | ✅ **FIXED 2026-10-16** — a same-runtime copy (`spawn`'s, and a queued `send`) carries shared code by its arms, pinned for the message's life; a refused overflow thread is reported once and retried when a blocked thread wakes. Guard: `crates/lisp/tests/closure_copy_stays_compiled.rs` (both paths; red under sabotage) |
