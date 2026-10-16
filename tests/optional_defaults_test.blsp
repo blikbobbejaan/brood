@@ -4,7 +4,7 @@
 ;; what that has to keep: a default runs exactly when its argument is missing — an explicit
 ;; `nil` is an argument — it sees the parameters before it, and the body keeps its tail.
 
-(defmodule optional-defaults-test (:use test))
+(defmodule optional-defaults-test (:use test) (:use suite-helpers))
 
 (defn chained (a &optional (b (+ a 1)) (c (* b 2))) [a b c])
 
@@ -55,6 +55,23 @@
     (assert= 3 ((fn (a &optional (b (fn () a))) (b)) 3))
     (assert= 16 (let (m 4) ((fn (&optional (q (* m m))) q))))
     (assert= (list 11 12 13) (map [1 2 3] (fn (x &optional (y 10)) (+ x y))))))
+
+;; The flag that says an optional was missing is a frame slot above the body's, and native
+;; entry clears the slots above the parameters. Clearing the flag too skipped the default
+;; once the arm went native, and again after the deopt that followed, which re-runs the same
+;; frame: bedit's `git-git`, `&optional (opts {})`, saw nil after enough calls.
+(defn native-default (a &optional (o {})) (assoc o :x a))
+
+(defn- drive-native-default (n acc)
+  (if (= n 0) acc (drive-native-default (- n 1) (native-default n))))
+
+(describe "&optional defaults on the native tier"
+  (test "a default still runs once its arm has gone native"
+    (when (%native-tier?)
+      (assert= :native (settle native-default 1 (fn () (drive-native-default 4000 nil)) 40))
+      (assert= {:x 1} (native-default 1))
+      (assert= {:x 1 :y 2} (native-default 1 {:y 2}))
+      (assert= 0 (get (%jit-arm-state native-default 1) :deopts-total)))))
 
 (describe "&optional defaults across processes"
   :isolated (test "workers calling one function with and without its optionals agree"

@@ -37,4 +37,12 @@
   (test "compiles to nested MapAssoc instructions, not a variadic call"
     (let (ops (%vm-arm-ops three 2))
       (assert= 3 (count (seq/filter ops (fn (o) (includes? o "Prim3(MapAssoc")))))
-      (assert= 0 (count (seq/filter ops (fn (o) (includes? o "Call(argc=7"))))))))
+      (assert= 0 (count (seq/filter ops (fn (o) (includes? o "Call(argc=7")))))))
+
+  ;; A top-level form compiles to a chunk of its own and never meets `lower_map_prim3`, so
+  ;; there the unrolled calls stay calls, and each must carry a call site to find `assoc`.
+  ;; Without one, a debug build panicked in the emitter and a release build applied the
+  ;; single-pair step to nil — bedit's git status raised `%map-assoc: expected map, got nil`.
+  (test "a top-level form unrolls too, and still finds assoc"
+    (assert= {:x 0 :a 1 :b 2} (reflect/eval-string "(assoc {:x 0} :a 1 :b 2)"))
+    (assert= [:a :b 3] (reflect/eval-string "(assoc [1 2 3] 0 :a 1 :b)"))))

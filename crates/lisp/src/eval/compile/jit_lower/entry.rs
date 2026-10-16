@@ -122,6 +122,15 @@ pub(super) fn emit_nil_locals(
     let base_bytes = b.ins().imul_imm_s(base, STRIDE);
     let frame_pointer = b.ins().iadd(roots_base, base_bytes);
     for slot in first_local..nslots {
+        // A missing `&optional` default's flag is live at entry too: `push_frame` set it,
+        // and the arm's prologue reads it to decide whether to run the default. Nilling it
+        // here skipped every default, natively and again after a deopt, which re-runs this
+        // frame from the top. Only `push_frame` enters an arm with optionals (a direct
+        // native call refuses one, `vm_direct_eligible`), and it zero-fills the frame, so a
+        // flag it did not set is already nil.
+        if arm.optional_flags.contains(&(slot as u32)) {
+            continue;
+        }
         let offset = (slot as i64 * STRIDE) as i32;
         b.ins()
             .store(MemFlagsData::trusted(), zero, frame_pointer, offset);
