@@ -4,7 +4,7 @@
 ;; what that has to keep: a default runs exactly when its argument is missing — an explicit
 ;; `nil` is an argument — it sees the parameters before it, and the body keeps its tail.
 
-(defmodule optional-defaults-test (:use test))
+(defmodule optional-defaults-test (:use test) (:use suite-helpers))
 
 (defn chained (a &optional (b (+ a 1)) (c (* b 2))) [a b c])
 
@@ -55,6 +55,26 @@
     (assert= 3 ((fn (a &optional (b (fn () a))) (b)) 3))
     (assert= 16 (let (m 4) ((fn (&optional (q (* m m))) q))))
     (assert= (list 11 12 13) (map [1 2 3] (fn (x &optional (y 10)) (+ x y))))))
+
+(defn plus-default (a &optional (b 10)) (+ a b))
+
+(defn plus-map (a &optional (m {})) (assoc m :a a))
+
+(defn hot-sum (i acc) (if (= i 0) acc (hot-sum (- i 1) (+ acc (plus-default i)))))
+
+(defn hot-maps (i acc) (if (= i 0) acc (hot-maps (- i 1) (+ acc (get (plus-map i) :a)))))
+
+(describe "&optional defaults in native code"
+  ;; Hot enough to tier, and called WITHOUT the optional every time, so the default runs in
+  ;; the arm's native code: its entry must keep the flag `push_frame` set (bedit's
+  ;; `(defn git-git (root args &optional (opts {})) …)` read `opts` as nil when it didn't).
+  (test "a defaulted optional of a native arm, called without it"
+    (assert= (+ (/ (* 20000 20001) 2) (* 20000 10)) (hot-sum 20000 0))
+    (assert= (/ (* 20000 20001) 2) (hot-maps 20000 0))
+    (when (%native-tier?)
+      (assert= :native (settle plus-map 1 (fn () (hot-maps 2000 0)) 200)))
+    (assert= 11 (plus-default 1))
+    (assert= {:a 1} (plus-map 1))))
 
 (describe "&optional defaults across processes"
   :isolated (test "workers calling one function with and without its optionals agree"

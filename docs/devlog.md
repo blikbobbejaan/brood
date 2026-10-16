@@ -2088,3 +2088,15 @@ lost. The other machine fixed the same race the same morning (`c9092371`: the ca
 holds once the producer owns the socket, and a no-requester error stays answerable); the merge kept
 that version and its test. 0/120 under the load repro.
 
+## 2026-10-16 (night) — the regression bedit caught: native code wiped the `&optional` flag (KI-270)
+
+CI's downstream smoke went red on `02271160`: bedit's `git-git`, `(&optional (opts {}))`, saw
+`opts` as nil. The `exec_value` retirement's default prologue reads a "missing" flag slot that
+`push_frame` sets above the body's slots — and the JIT's entry nil-fills everything above the
+parameters, flag included. Every local gate passed because no test called a NATIVE arm without
+its optional; the new test does, and reproduced bedit's error exactly before the fix. The
+nil-fill now skips the flag slots, and the prologue clears a flag as its default lands. bedit at
+`BEDIT_REF`, locally with a grammar-enabled `nest`: 2463/2464. The lesson is the CLAUDE.md one,
+paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
+when the tier the arm actually ran on was never entered.
+

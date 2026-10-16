@@ -99,7 +99,8 @@ pub(super) fn plan_hoists(code: &[Inst], lower_body: &Node, nrequired: usize) ->
 }
 
 /// **The callee nils its own locals.** At entry only the parameters (and, for a closure arm
-/// entered from the VM, its optionals/rest/captures, which `push_frame` filled) are live;
+/// entered from the VM, its optionals/rest/captures, which `push_frame` filled — and the
+/// `&optional` flag slots it set, which lie above the body's slots) are live;
 /// every slot from the first `let` binder up to `nslots` is dead and may hold whatever the
 /// roots buffer's spare capacity held from earlier frames — a stale handle the collector
 /// would trace at the first safepoint (KI-49's class). The callee knows its frame
@@ -122,6 +123,12 @@ pub(super) fn emit_nil_locals(
     let base_bytes = b.ins().imul_imm_s(base, STRIDE);
     let frame_pointer = b.ins().iadd(roots_base, base_bytes);
     for slot in first_local..nslots {
+        // A missing optional's "evaluate my default" flag (`CompiledArm::optional_flags`):
+        // `push_frame` set it and the arm's prologue reads it. Nil it and the default never
+        // runs — the optional reads nil.
+        if arm.optional_flags.contains(&(slot as u32)) {
+            continue;
+        }
         let offset = (slot as i64 * STRIDE) as i32;
         b.ins()
             .store(MemFlagsData::trusted(), zero, frame_pointer, offset);

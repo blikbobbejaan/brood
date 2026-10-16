@@ -14045,3 +14045,29 @@ the error case.
 **Guard.** `stream_test` "socket-> reads data that arrived before the stream took the socket":
 the reader waits until the writer's data and close are already in its own mailbox, then makes
 the stream — it fails on the old library. The 8-way load repro: 5/120 before, 0/120 after.
+
+## KI-270 — a JIT'd arm read a missing `&optional` as nil instead of its default ✅ FIXED 2026-10-16
+
+**Symptom.** CI run 38882508291 (`02271160`), job "downstream smoke (bedit @ BEDIT_REF)": five
+magit tests, each `uncaught error: … :fn bedit/git/git-git … :message %map-assoc: expected map,
+got nil (nil)`. `git-git` is `(defn git-git (root args &optional (opts {})) … (assoc opts …))`,
+called with two arguments.
+**Cause.** `7889810d` (retiring `exec_value`) made a real `&optional` default part of its arm's
+bytecode: `push_frame` sets a hidden flag slot per missing defaulted optional, above the body's
+slots, and a prologue evaluates the default when the flag is set. The JIT's native entry runs
+`emit_nil_locals`, which nils every slot from the end of the parameters/optionals/rest/captures
+up to the frame size — the flag slots included. On native code the flag read nil, the prologue
+skipped the default, and the optional stayed nil.
+**Why it survived.** Every gate here ran the optional-defaults cases on tiers 0–2, and they
+passed: none of them called a NATIVE arm without its optional. `sum-down`'s accumulator default
+ran only on the first, interpreted, call; the rest supplied it. bedit calls `git-git` hot and
+without `opts`.
+**Fix.** `emit_nil_locals` skips the slots in `CompiledArm::optional_flags` (they are filled by
+the frame builder, like the parameters). The prologue also clears the flag as its default lands,
+so an arm re-run from its first instruction does not evaluate the default twice.
+**Guard.** `tests/optional_defaults_test.blsp` "&optional defaults in native code": a function
+with an `(m {})` default called 20 000 times without it, asserted to reach `:native`
+(`settle`). Before the fix it reds at tier 2 with bedit's own error, `%map-assoc: expected map,
+got nil`; after, 9/9 on tiers 0–2. bedit at `BEDIT_REF`: 2463/2464 locally (the one is the
+Elixir 1.21-dev `dbg` header the handoff records).
+
