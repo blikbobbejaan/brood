@@ -11,8 +11,22 @@ how to measure, the traps, and what needs a quiet benchmark box in
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-14)
+## State (2026-10-16)
 
+- **2026-10-15/16, the maintenance review** (devlog entries of 2026-10-15, the last one
+  "two bugs (KI-262, KI-263), one formatter walk, the 2024 edition"). Dependencies are on
+  latest with MSRV 1.96, and the workspace is on the **2024 edition** (rustfmt still
+  `style_edition = "2021"`; the reformat is its own commit when wanted). Two bugs were found
+  and fixed:
+  - **KI-262:** after `unlink` plus a zero-timeout flush, an `[:EXIT]` could still arrive
+    later. Guard: `crates/lisp/tests/unlink_race.rs`.
+  - **KI-263:** `nest format` deleted the blank line below a trailing comment.
+
+  Large files were split by job, and the ADR log now lives in `docs/decisions/` by number
+  range. `process.rs` documents the lock order in one table. All of this was verified with
+  targeted tests on tiers 0–2, GC stress and fuzz; the full suite was **not** run here (it
+  never is on this machine). **Run `make test-both` and `make green` on the other machine
+  first.** `target/` was cleaned here, so the next build is a full one.
 - **Released:** v0.38.0 (`CHANGELOG.md`). On `main` since, merged 2026-10-14 from a branch
   developed apart from the release: preemption reaches every shape of running code (ADR-400..405,
   KI-230..238), one native entry and one quantum module, folds walked in spans, the gate sweep,
@@ -54,6 +68,45 @@ devlog entries of the same dates.
   detached HEAD 88 commits behind its origin.
 
 ## Open threads, in value order
+
+### Next: retire `exec_value`, the VM's second executor (picked 2026-10-16)
+
+`eval/compile/exec_value.rs` holds two things:
+- **The prim helpers** (`prim2_int_fast`, `prim_apply`, `prim2_dispatch_rooted`, …). The
+  bytecode loop uses them, so they stay; move them to their own file.
+- **`exec_value`** (from about line 306), a tree-walking executor over the compiled `Node`
+  tree. It reimplements `If`, `Do`, `LetBind`, `Call`, `Prim2`, `TryCatch` and more, so every
+  node-level change has to be made twice, and its call-site cache handling has drifted from
+  the bytecode loop's once already (the shared helpers `call_site_arm` and
+  `vm_call_ic_install` now keep that half in step).
+
+It has exactly three entry points:
+
+1. **Top-level forms**, in `compile.rs` around line 547. `run` builds a throwaway
+   `CompiledArm` with no chunk ("Top-level forms run via `exec_value` below, not the bytecode
+   loop") and calls `exec_value(heap, &arm.body, base, genv)`.
+2. **Optional-parameter defaults**, in `dispatch.rs` around line 594 (`fill_args`):
+   `exec_value(heap, node, base, genv)` per missing optional.
+3. **`exec_call`**, in `dispatch.rs` at line 12. It is reached only from `exec_value` itself
+   (`exec_value.rs:477`), so it goes when the executor goes.
+
+**Plan:**
+- Emit a chunk for the top-level arm, as for any arm, and run it through the bytecode
+  driver (`vm_run_bc`) instead of `exec_value`.
+- Lower optional defaults into the arm's bytecode prologue, or emit each default as a tiny
+  chunk.
+- Then delete `exec_value` and `exec_call`.
+
+Watch the tail-call contract (`tail_calls_do_not_overflow`), the top-level IC-block install
+and restore around a nested `load` (`set_ic_bases`), `has_runtime_handles` and the
+`live_arm_push`/`live_arm_truncate` pairing, and `try` at top level (ADR-400 runs `try`
+bodies in the bytecode driver).
+
+**Gates:**
+- `make test-both`, `make gcstress`, and the fuzz differential.
+- `make ab` **and** `make ab-vm`: top-level forms run once, so the cost to watch is the
+  per-form setup, which shows on REPL, `eval-string` and test-runner workloads more than on
+  benchmark rows.
 
 ### Next: performance items (A and B the user's pick, 2026-10-13; C found doing A)
 
