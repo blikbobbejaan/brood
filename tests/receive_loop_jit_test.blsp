@@ -1,0 +1,221 @@
+;; A receive loop compiled to native code (ADR-410). An arm whose one `%receive` comes before
+;; anything with an effect — `(defn loop (state) (receive …))` — may go native: a `receive`
+;; that finds nothing parks the frame at ip 0, and the wake re-tiers into the native loop.
+;; These pin that the native loop answers what the interpreted one does, stays native across
+;; parks, and that every other way into such an arm still works.
+
+(defmodule receive-loop-jit-test (:use test))
+
+;; An arm's tier once its background compile, if one is queued, has finished — a loaded
+;; machine can leave a hot arm `:queued` for a while, and that says nothing about this change.
+(defn tier-of (f argc tries)
+  (let (state (get (%jit-arm-state f argc) :state))
+    (if (and (= state :queued) (> tries 0))
+      (do (sleep 10) (tier-of f argc (- tries 1)))
+      state)))
+
+;; An accumulating server: adds what it is sent, reports on :get, stops on :stop.
+(defn acc-loop (total)
+  (receive
+    ([:add n] (acc-loop (+ total n)))
+    ([:get from] (do (send from [:total total]) (acc-loop total)))
+    (:stop total)))
+
+(defn ask-total (pid)
+  (send pid [:get (self)])
+  (receive ([:total t] t) (after 20000 :timeout)))
+
+;; Run `acc-loop` hot in a process of its own, so its arm (shared by every process) is native.
+(defn warm-acc-loop ()
+  (let (warm (spawn (acc-loop 0)))
+    (dotimes (k 3000) (send warm [:add 1]))
+    (ask-total warm)
+    (send warm :stop)))
+
+;; Runs `n` sessions of `acc-loop` from ONE non-tail call site, summing what each returns — a
+;; site hot enough for the interpreter's direct native call, if that path were open to it.
+(defn sessions (n acc)
+  (if (= n 0) acc (sessions (- n 1) (+ acc (acc-loop 0)))))
+
+;; A receive loop that is also a `fold` step: adds until :done, then folds in `x`.
+(defn fold-step (acc x)
+  (receive
+    ([:add n] (fold-step (+ acc n) x))
+    (:done (+ acc x))))
+
+;; Run `fold-step` hot as a process LOOP, where the driver enters it — so it is native.
+(defn warm-fold-step ()
+  (let (me (self)
+        warm (spawn (send me [:warm (fold-step 0 0)])))
+    (dotimes (k 3000) (send warm [:add 1]))
+    (send warm :done)
+    (receive ([:warm _] :ok) (after 20000 :timeout))))
+
+;; Hot for its first 300 000 iterations WITHOUT calling `acc-loop`, so it is lowered to native code
+;; before this process has compiled the loop — `hosts-receive` cannot see the callee, and the
+;; native caller links to it. Then each later iteration runs one `acc-loop` session, non-tail.
+(defn late-sessions (n acc)
+  (if (= n 0)
+    acc
+    (late-sessions (- n 1) (+ acc (if (> n 10) 0 (acc-loop 0))))))
+
+;; Calls a loop through `apply`, which hands it to the general dispatch — non-tail.
+(defn via-param (f) (+ 0 (apply f (list 0))))
+
+;; A loop with a timeout clause: counts its timeouts until told to stop.
+(defn tick-loop (timeouts)
+  (receive
+    (:stop timeouts)
+    ([:report from] (do (send from [:timeouts timeouts]) (tick-loop timeouts)))
+    (after 5 (tick-loop (+ timeouts 1)))))
+
+;; Selective: takes :b messages first, then :a.
+(defn pick-b (acc)
+  (receive
+    ([:b x] (pick-b (cons x acc)))
+    (after 0 (pick-a acc))))
+(defn pick-a (acc) (receive ([:a x] (pick-a (cons x acc))) (after 0 (reverse acc))))
+
+(describe "receive loops in native code"
+  (test "a hot receive loop goes native and stays native across parks"
+    (let (pid (spawn (acc-loop 0)))
+      (dotimes (k 3000)
+        (send pid [:add 1]))
+      (assert= 3000 (ask-total pid))
+      ;; Each round parks the loop between messages; it must come back native every time.
+      (dotimes (round 50)
+        (send pid [:add 2])
+        (sleep 1))
+      (assert= 3100 (ask-total pid))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))
+      (send pid :stop)))
+  (test "the state carried across parks is exact"
+    (let (pid (spawn (acc-loop 0)))
+      (dotimes (k 500)
+        (send pid [:add k])
+        (when (= 0 (math/mod k 50)) (sleep 1)))
+      (assert= (/ (* 499 500) 2) (ask-total pid))
+      (send pid :stop)))
+  (test "an after clause in a native loop still times out"
+    (let (pid (spawn (tick-loop 0)))
+      (sleep 100)
+      (send pid [:report (self)])
+      (let (n (receive ([:timeouts n] n) (after 20000 :timeout)))
+        (assert= true (and (int? n) (> n 3))))
+      (send pid :stop)))
+  (test "selective receive keeps its order"
+    (send (self) [:a 1])
+    (send (self) [:b 2])
+    (send (self) [:a 3])
+    (send (self) [:b 4])
+    (assert= (list 2 4 1 3) (pick-b (list))))
+  (test "a receive loop called non-tail from interpreted code, and as a callback, still answers"
+    ;; Only the driver enters a receive loop's native code; these other entries must run it
+    ;; on the VM and still be right.
+    (send (self) [:add 5])
+    (send (self) [:add 6])
+    (send (self) :stop)
+    (assert= 11 (+ 0 (acc-loop 0)))
+    (send (self) [:add 7])
+    (send (self) :stop)
+    (assert= (list 7) (map (list 0) (fn (start) (acc-loop start))))))
+
+(describe "receive loops in native code, entered other ways"
+  (test "a loop called non-tail from a process body parks and resumes correctly"
+    ;; The body calls the loop NON-tail (its result is sent on), so the interpreter reaches it
+    ;; through its direct call path, not the driver; the loop must still park while it waits.
+    ;; Warm the loop elsewhere FIRST, so it is native when this body reaches it.
+    (warm-acc-loop)
+    (let (me (self)
+          ;; An effect before the call: a park that re-ran the body (or the caller's frame)
+          ;; instead of resuming the loop would send it twice.
+          pid (spawn (do (send me :started) (send me [:result (acc-loop 0)]) :done)))
+      (sleep 20)
+      (send pid [:add 40])
+      (sleep 20)
+      (send pid [:add 2])
+      (send pid :stop)
+      (assert= 42 (receive ([:result r] r) (after 20000 :timeout)))
+      (assert= :started (receive (:started :started) (after 0 :missing)))
+      (assert= :once (receive (:started :twice) (after 0 :once)))
+      ;; Entered natively here, the `receive` would have blocked this worker instead of
+      ;; parking — and the suspend-host latch would then have taken the loop off native code.
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))))
+  (test "a hot non-tail call site into a parking loop resumes each session"
+    (warm-acc-loop)
+    (let (me (self)
+          pid (spawn (send me [:sessions (sessions 40 0)])))
+      (dotimes (k 40)
+        (sleep 2)
+        (send pid [:add 1])
+        (sleep 2)
+        (send pid [:add 2])
+        (send pid :stop))
+      (assert= 120 (receive ([:sessions t] t) (after 20000 :timeout)))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))))
+  (test "a native caller lowered before it saw the loop links to it and still parks"
+    (warm-acc-loop)
+    (let (me (self)
+          pid (spawn (send me [:late (late-sessions 300010 0)])))
+      (sleep 300)
+      (dotimes (k 10)
+        (sleep 2)
+        (send pid [:add 3])
+        (send pid :stop))
+      (assert= 30 (receive ([:late t] t) (after 20000 :timeout)))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))))
+  (test "a loop called through apply waits for its messages"
+    (warm-acc-loop)
+    (let (me (self)
+          pid (spawn (send me [:via (via-param acc-loop)])))
+      (sleep 20)
+      (send pid [:add 4])
+      (sleep 20)
+      (send pid :stop)
+      (assert= 4 (receive ([:via t] t) (after 20000 :timeout)))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))))
+  (test "a loop run as a builtin's callback waits for its messages"
+    ;; Under a builtin (`map`) a `receive` blocks rather than parks; the loop's native code
+    ;; must not be entered there.
+    ;; `acc-loop` itself is the callback, one session per element, each waiting for its
+    ;; messages.
+    (warm-acc-loop)
+    (let (me (self)
+          pid (spawn (send me [:result (map (range 30) acc-loop)])))
+      (dotimes (k 30)
+        (sleep 2)
+        (send pid [:add 9])
+        (send pid :stop))
+      (assert= (map (range 30) (fn (k) (+ k 9))) (receive ([:result r] r) (after 20000 :timeout)))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500))))))
+
+(describe "receive loops in native code, under a builtin"
+  (test "a native receive loop used as a fold step waits per element and stays native"
+    ;; `fold` calls its step through the higher-order fast frame, which must not enter a
+    ;; receive loop's native code.
+    (warm-fold-step)
+    (let (me (self)
+          pid (spawn (send me [:folded (fold (range 30) 0 fold-step)])))
+      (dotimes (k 30)
+        (sleep 2)
+        (send pid [:add 1])
+        (send pid :done))
+      (assert= (+ 30 (/ (* 29 30) 2)) (receive ([:folded t] t) (after 20000 :timeout)))
+      ;; Under a builtin the step runs on the VM, where its `receive` blocks the worker — it
+      ;; must not run natively there, or the suspend-host latch takes it off native code for
+      ;; every process.
+      (when (%native-tier?)
+        (assert= :native (tier-of fold-step 2 500))))))
+
+(describe "receive loops in native code, across processes"
+  :isolated (test "many native loops, many messages, exact totals"
+    (let (pids (map (range 8) (fn (_) (spawn (acc-loop 0)))))
+      (each pids (fn (p) (dotimes (k 1000) (send p [:add 1]))))
+      (assert= (map pids (fn (_) 1000)) (map pids ask-total))
+      (each pids (fn (p) (send p :stop))))))

@@ -1184,6 +1184,24 @@ pub(crate) fn vm_run_bc(
                         Some(outcome::ERROR) => {
                             let e = jit_take_error(heap)
                                 .expect("JIT error outcome without a parked error");
+                            // A receive loop's native `%receive` found nothing (ADR-410): it
+                            // did the whole park (scan position, status, deadline timer) and
+                            // surfaced the suspend on the error channel. Capture this frame
+                            // AT ip 0 — the frame holds the current iteration's arguments (a
+                            // self-tail call stores them every iteration) and nothing before
+                            // the `%receive` had an effect — so the wake re-tiers into the
+                            // native loop. No VM re-run and no second mailbox scan.
+                            if cur_arm.receive_at_head
+                                && let Some(crate::error::Control::Suspend { deadline }) =
+                                    &e.control
+                            {
+                                let deadline = *deadline;
+                                // The arm's own frame: an inlined upgrade's extra slots are
+                                // re-made by the next native entry (`extend_roots_to_nil`).
+                                heap.truncate_roots(small_top);
+                                cur_ip = 0;
+                                Ok(ChunkExit::Suspend { deadline })
+                            } else
                             // A preempt unwound out to here (ADR-401): this frame is the
                             // outermost activation it passed — record it with the rest.
                             if e.is_preempt_unwind() {

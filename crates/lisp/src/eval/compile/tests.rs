@@ -349,6 +349,66 @@ fn receive_bearing_chunks_stay_out_of_the_jit_subset() {
     );
 }
 
+/// ADR-410: which arms receive AT THEIR HEAD — may go native, parking by a re-run from ip 0.
+/// Only a `%receive` behind nothing but loads qualifies; one behind a branch or a call does
+/// not (re-running those from ip 0 is not the same), and neither does a second `%receive`.
+#[test]
+fn receive_at_head_admits_only_a_leading_receive() {
+    let mut interp = crate::Interp::new();
+    let arm_of = |interp: &mut crate::Interp, src: &str, name: &str, argc: usize| {
+        interp.eval_str(src).expect("define");
+        let f = interp.eval_str(name).expect("read back");
+        let crate::core::value::ValueRef::Fn(id) = f.unpack() else {
+            panic!("{name} is not a closure")
+        };
+        compiled_arm_for(&interp.heap, id, argc).expect("compiles")
+    };
+    let head = arm_of(
+        &mut interp,
+        "(def lp (fn (acc) (receive ([:add n] (lp (+ acc n))) (:stop acc))))",
+        "lp",
+        1,
+    );
+    assert!(
+        head.receive_at_head,
+        "a loop that receives first is a receive-at-head arm"
+    );
+    assert!(
+        crate::eval::compile::jit_plan::chunk_in_jit_subset(&head.chunk.as_ref().unwrap().code),
+        "a receive-at-head chunk passes the %receive fence"
+    );
+    for (src, name, argc) in [
+        // Behind a branch.
+        (
+            "(def br (fn (want acc) (if (= want 0) acc (receive (m (br (- want 1) (+ acc m)))))))",
+            "br",
+            2,
+        ),
+        // Behind a call with an effect.
+        (
+            "(def ef (fn (pid) (send pid :ready) (receive (m (ef pid)))))",
+            "ef",
+            1,
+        ),
+        // Two receives.
+        (
+            "(def two (fn () (receive (a (receive (b (two)))))))",
+            "two",
+            0,
+        ),
+    ] {
+        let arm = arm_of(&mut interp, src, name, argc);
+        assert!(
+            !arm.receive_at_head,
+            "{name} must not be a receive-at-head arm"
+        );
+        assert!(
+            !crate::eval::compile::jit_plan::chunk_in_jit_subset(&arm.chunk.as_ref().unwrap().code),
+            "{name} must stay behind the %receive fence"
+        );
+    }
+}
+
 #[test]
 #[cfg(feature = "jit")]
 fn jit_lowers_and_runs_a_straight_line_int_arm() {

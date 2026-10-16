@@ -392,6 +392,36 @@ pub(super) fn jit_ckpt_depth(
     max_after_ckpt
 }
 
+/// Does `code` RECEIVE AT ITS HEAD (ADR-410)? Exactly one `%receive` call, and nothing before
+/// it but loads and the vector literals a `receive` builds for its arguments — so re-running
+/// the arm from its first instruction is the same as re-running that `%receive`. The shape of
+/// a receive loop, `(defn loop (state) (receive …))`.
+///
+/// Such an arm may be compiled to native code: a `%receive` that would park leaves the native
+/// activation and the driver re-runs the arm from ip 0 on the VM, which parks it there — at ip
+/// 0, so the wake re-tiers into the native loop. One `%receive` only, because a second one
+/// would sit after the first one's effect (the message it took), where a re-run from ip 0 is
+/// no longer the same.
+pub(crate) fn receive_at_head(code: &[Inst]) -> bool {
+    let receive_sym = crate::core::value::intern("%receive");
+    let is_receive = |i: &Inst| matches!(i, Inst::Call { head: Some(h), .. } if *h == receive_sym);
+    let Some(at) = code.iter().position(is_receive) else {
+        return false;
+    };
+    code[..at].iter().all(|i| {
+        matches!(
+            i,
+            Inst::Const(_)
+                | Inst::Local(_)
+                | Inst::Global(_)
+                | Inst::GlobalIc { .. }
+                | Inst::MakeVector(_)
+                | Inst::RecordLine(_)
+        )
+    }) && code[at + 1..].iter().all(|i| !is_receive(i))
+        && matches!(code[at], Inst::Call { tail: false, .. })
+}
+
 /// Count of non-tail Brood→Brood calls in `code` — the shape that needs a handle spill
 /// (≥2) and drives the spill-reserve / lowering gates.
 fn non_tail_call_count(code: &[Inst]) -> usize {
@@ -444,10 +474,13 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
     // Today every receive also carries a `MakeClosure` (its matcher), which keeps the chunk
     // out anyway; this fence keeps that true if closures are ever admitted. Guarded by
     // `receive_bearing_chunks_stay_out_of_the_jit_subset` (compile/tests.rs).
+    // The exception is a receive at the arm's head (ADR-410, [`receive_at_head`]): there the
+    // park leaves native code as a re-run from ip 0, which the driver takes on the VM.
     let receive_sym = crate::core::value::intern("%receive");
+    let receive_ok = receive_at_head(code);
     code.iter().all(|inst| match inst {
         Inst::Const(_) => true,
-        Inst::Call { head: Some(h), .. } if *h == receive_sym => false,
+        Inst::Call { head: Some(h), .. } if *h == receive_sym => receive_ok,
         // A contract shim (KI-216): `%contract-tail?` reads the VM's frame stack, which a
         // native frame does not keep, and the mark `%contract-await` leaves only means
         // something to a frame the driver suspended. Both keep the chunk on the VM.

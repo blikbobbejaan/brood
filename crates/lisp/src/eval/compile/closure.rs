@@ -220,6 +220,9 @@ pub(crate) fn compile_arm(
     let uid = next_arm_uid();
     let site_pos = std::mem::take(&mut scope.site_pos).into_boxed_slice();
     let staged_head_pos = std::mem::take(&mut scope.staged_head_pos).into_boxed_slice();
+    let receive_at_head = chunk
+        .as_ref()
+        .is_some_and(|c| super::jit_plan::receive_at_head(&c.code));
     let src_file = body_first_form
         .and_then(|f| heap.form_pos(f))
         .and_then(|(_, file)| file);
@@ -374,6 +377,7 @@ pub(crate) fn compile_arm(
         uid,
         site_pos,
         staged_head_pos,
+        receive_at_head,
         body,
         chunk,
         has_runtime_handles,
@@ -691,6 +695,9 @@ pub(crate) fn arm_hosts_receive(heap: &Heap, arm: &CompiledArm, env: EnvId) -> b
         return false;
     };
     let mut seen: Vec<u64> = vec![arm.uid];
+    // An arm that receives at its head (ADR-410) hosts its OWN `%receive` by design — the park
+    // leaves native code as a re-run from ip 0. Its callees are still checked: one that
+    // reaches a `receive` would park under this native frame.
     let mut work: Vec<(crate::core::value::Symbol, usize)> = chunk
         .code
         .iter()
@@ -700,7 +707,7 @@ pub(crate) fn arm_hosts_receive(heap: &Heap, arm: &CompiledArm, env: EnvId) -> b
                 argc,
                 tail: false,
                 ..
-            } => Some((*h, *argc)),
+            } if !(arm.receive_at_head && *h == receive_sym) => Some((*h, *argc)),
             _ => None,
         })
         .collect();
@@ -945,6 +952,11 @@ pub(crate) fn hof_apply_native(
 ) -> Option<LispResult> {
     use std::sync::atomic::Ordering::{Acquire, Relaxed};
     let argc = args.len();
+    // A receive loop's native code is the driver's alone (ADR-410): a callback runs it on the
+    // VM, where a `receive` under the builtin blocks rather than parks.
+    if arm.receive_at_head {
+        return None;
+    }
     let mut code = arm.jit_code.load(Acquire);
     // The spinning loop's escape hatch (`JIT_QUEUED_SYNC_EDGES`), for a callback: it has no
     // back-edge to count, so count the calls it ran interpreted while its compile waited in

@@ -100,6 +100,18 @@ it never tiers); a real `&optional` default is a prologue in its arm's own bytec
 prologue tests it by truthiness and sets the slot. `exec_call` went with it; the prim helpers
 are `eval/compile/prim_exec.rs`. Guard: `tests/optional_defaults_test.blsp`.
 
+### DONE (2026-10-16): `receive` on the native path (ADR-409, ADR-410)
+
+Two items, taken in order. **ADR-409:** a `receive` whose clauses are all simple shapes hands
+the kernel a pattern spec instead of a matcher closure (`process/receive_spec.rs`). **ADR-410:**
+an arm that receives at its head, `(defn loop (state) (receive …))`, is compiled to native code.
+Its park is captured at ip 0 by the top-level driver, and only an entry that can unwind runs it
+natively (`jit_tier_in_frame`). `ring` −19.4% and `pingpong` −7.3% for ADR-410, on top of
+ADR-409's −2% and −3.7%. Guards: `tests/receive_spec_test.blsp`, `tests/receive_loop_jit_test.blsp`.
+Left on the messaging path: a loop that does work before its `receive` (a `send` and then a
+`receive`, the `gen/call` shape) stays on the VM. Admitting it would need a resume point *after*
+the effect, which is a native continuation, not a re-run.
+
 ### Next: performance items (A and B the user's pick, 2026-10-13; C found doing A)
 
 Measure both by **instruction count** first — `perf stat -e instructions:u` with

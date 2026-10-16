@@ -257,8 +257,10 @@ pub(crate) fn jit_dispatch_call(
             // no-optional/no-rest keeps the inline frame setup trivial and infallible. The
             // epoch guard mirrors `jit_tier`. Over the recursion cap → skip (the slow path
             // drains on the VM via `jit_force_vm`).
+            // Not a receive loop: its native code is the driver's alone (ADR-410).
             if installed
                 && arm.nslots > 0
+                && !arm.receive_at_head
                 && arm.noptional == 0
                 && arm.rest_slot.is_none()
                 && !link_over_cap

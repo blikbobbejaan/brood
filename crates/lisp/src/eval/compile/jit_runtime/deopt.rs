@@ -277,8 +277,12 @@ pub(super) fn jit_suspend_feedback(heap: &mut Heap, arm: &CompiledArm, outcome: 
     if blocked {
         heap.blocked_under_gateway = 0;
     }
+    // A receive loop (ADR-410) parks through exactly that channel on purpose: the driver
+    // captures its frame at ip 0 and the wake re-enters it natively, so it is not a host
+    // to latch.
     if blocked
         || (outcome == crate::jit::outcome::ERROR
+            && !arm.receive_at_head
             && heap
                 .jit_pending_error
                 .as_ref()

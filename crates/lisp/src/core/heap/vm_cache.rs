@@ -1055,7 +1055,8 @@ impl Heap {
         if code.is_null() || code == crate::jit::BAILED || code == crate::jit::QUEUED {
             return None;
         }
-        if arm.nslots == 0 || arm.noptional != 0 || arm.rest_slot.is_some() {
+        // A receive loop's native code is the driver's alone (ADR-410): never fast-linked.
+        if arm.nslots == 0 || arm.noptional != 0 || arm.rest_slot.is_some() || arm.receive_at_head {
             return None;
         }
         // A closure WITH captures can't fast-link: the fast-link / fast-frame frame setup

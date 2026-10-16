@@ -2191,3 +2191,31 @@ Elixir-dev header). `latency-gate` failed once right after a release build (load
 p99 673 µs) and passed on a quiet machine; base and new interleaved, 3 runs each twice: worst p99
 84/82 µs against 84/80 µs — indistinguishable.
 
+
+## 2026-10-16 (late) — a receive loop runs in native code (ADR-410)
+
+Item B of the two receive items (A was ADR-409). The `%receive` fence kept every
+receive-bearing arm off the JIT, so every server loop ran on the bytecode VM. An arm whose one
+`%receive` comes before anything with an effect, `(defn loop (state) (receive …))`, now goes
+native. When its native `%receive` parks, the driver captures the frame at ip 0, and the wake
+re-tiers into the native loop. Only an activation a top-level driver entered may run such an arm
+natively; every nested entry runs it on the VM, where the `receive` blocks as before.
+
+**Measured** (instructions, against `55e6f3c4`, both stdlib images live, median of 5): `ring`
+6 919M → 5 578M (−19.4%), `pingpong` −7.3%. `supervisor`, `spawn`, `spawn-live`, `json`, `fib`
+and `nqueens` are flat.
+
+**What the sabotage pass changed.** Three of the new guards first survived their own removal:
+
+- The interpreter's direct native call. A one-shot non-tail call never warms the inline cache
+  it needs, so the test now runs forty sessions from one hot call site.
+- The `fold` fast frame. Only `fold` and the mailbox matcher use it, so the test needs a
+  two-argument loop that is native as a process loop *and* used as a `fold` step.
+- The native links. These are reachable only from a caller lowered before its process compiled
+  the loop. `late-sessions` runs 300 000 iterations without calling the loop, and then calls it.
+
+Writing that last test showed that a nested driver tiered the arm in, blocked, and latched the
+shared arm `:bailed` for every process. The refusal is now one check in `jit_tier_in_frame`
+(`receive_at_head && !unwind`), which replaced the separate guards I had written in `vm_run_bc`
+and in `dispatch`'s fast path. I dropped two guards that could not fail: the VM park rewinding
+to ip 0, and the `dispatch` refusal, which the central check covers.
