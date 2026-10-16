@@ -644,6 +644,11 @@ impl GenPin {
             generation,
         }
     }
+
+    /// The generation this pin holds.
+    pub fn generation(&self) -> usize {
+        self.generation
+    }
 }
 
 impl Clone for GenPin {
@@ -672,6 +677,19 @@ impl Heap {
             return None;
         }
         Some(GenPin::new(Arc::clone(&self.runtime), id.code_gen()))
+    }
+
+    /// [`Self::pin_gen_of`] for a code FORM: pins the RUNTIME generation a shared form lives
+    /// in, so a queued message carrying a closure's arms by handle keeps them alive. `None`
+    /// for anything that is not a RUNTIME pair (a PRELUDE form is never freed; an immediate
+    /// needs no pin).
+    pub fn pin_gen_of_form(&self, form: crate::core::value::Value) -> Option<GenPin> {
+        match form.unpack() {
+            crate::core::value::ValueRef::Pair(p) if p.region() == RUNTIME => {
+                Some(GenPin::new(Arc::clone(&self.runtime), p.code_gen()))
+            }
+            _ => None,
+        }
     }
 
     /// Withdraw this process's "clean" ack of the current drain — the shared `drain_acks`

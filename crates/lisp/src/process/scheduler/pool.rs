@@ -425,6 +425,30 @@ pub(crate) fn spawn_overflow_drainer() {
         // (which would suppress every future spawn and re-strand the work).
         OVERFLOW_DRAINERS.fetch_sub(1, Ordering::SeqCst);
         LIVE_EXECUTORS.fetch_sub(1, Ordering::SeqCst);
+        // Queued work now has no thread to run on, and nothing will start one until a
+        // blocked thread comes back (`retry_stranded_work`). That used to be silent: a pool
+        // of processes each holding an OS thread in a native-nested `receive` simply
+        // stopped. Say why, once.
+        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !REPORTED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "brood: error — queued processes cannot run: every scheduler thread is held by a \
+                 process blocked in a native-nested `receive` ({} of them), and {}. Work resumes \
+                 when one of them wakes. Each holds a thread because its code runs on the \
+                 tree-walker; `BROOD_JIT_BAIL_TRACE=1` names the arms.",
+                OVERFLOW_DRAINERS.load(Ordering::SeqCst),
+                crate::process::THREAD_LIMIT_HINT
+            );
+        }
+    }
+}
+
+/// Start a drainer for work stranded by a refused thread, if there still is some. Called
+/// when a blocked thread comes back from a native-nested `receive` — the one moment, once
+/// every thread is blocked, at which a thread exists to try again.
+pub(crate) fn retry_stranded_work() {
+    if LIVE_EXECUTORS.load(Ordering::SeqCst) == 0 && STEALABLE.load(Ordering::SeqCst) > 0 {
+        spawn_overflow_drainer();
     }
 }
 

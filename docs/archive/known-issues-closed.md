@@ -13985,3 +13985,36 @@ and keep their order.
 and the `try` reds every run (`[:timeout 0]`); the same gap placed inside the `try` passes
 3/3. The fixed file runs in `make test-both`.
 
+## KI-268 — a closure copied into another process ran on the tree-walker, so 200 pool clients held 200 OS threads and hung ✅ FIXED 2026-10-16
+
+**Symptom.** store-postgres's stress test "200 concurrent checkouts on a 3-connection pool"
+hung on brood main (every tier) and passed on v0.38.0, after `brood: warning — 64 overflow
+scheduler threads are live`. Found by the release train's downstream verification, before
+v0.39.0 was tagged.
+
+**Cause, two layers.** (1) A closure whose code crossed between processes of one runtime was
+rebuilt in the receiver as LOCAL data. `cache_key` names compiled code by its first body
+form, and only a form in a shared region qualifies, so the copy never compiled and ran on
+the tree-walker for good, where a `receive` cannot park: it blocks its OS thread, and the
+scheduler starts an overflow thread for the work behind it. ADR-405 (`spawn` copies captured
+values instead of promoting the closure, bisected to `67a540e1`) made this the common case:
+each client's thunk captured the repo, whose adaptor closures (made inside `pg/adaptor`) were
+copied as data into every client. (2) ~190 overflow threads in, the OS refused the next one
+(under the 16 GB test cap: "failed to allocate an alternative stack"), and
+`spawn_overflow_drainer` treated a refusal by quietly undoing its accounting. The connection
+processes then sat queued with no thread to run them, behind clients waiting on them. The
+second layer predates 0.38: a closure received by `send` takes the same path, and a repro of
+200 clients whose work arrives by message hung v0.38.0 three runs in five.
+
+**Fix.** A copy that stays in this runtime keeps shared code: `ClosureMsg::shared_arms`
+carries the closure's arms by handle, with one `GenPin` per RUNTIME generation they live in
+for the message's life (the `FnShared` discipline), and the receiver calls `rearm_drain_ack`
+(KI-188). Set for `spawn`'s `copy_closure_into` and for a same-runtime send; the wire encoder
+refuses it and the image never sets it. A refused overflow thread now prints why, once
+(`THREAD_LIMIT_HINT`), and a blocked thread that wakes retries starting one
+(`retry_stranded_work`). **Guard.** `crates/lisp/tests/closure_copy_stays_compiled.rs`: 200
+clients of a 3-token pool through a run-time closure, by spawn capture and by message, each
+asserting `:peak-threads <= :workers` (parked, not holding threads). Disabling the shared
+arms reds both (they hang to the per-test cap). The two repros run 5/5 in ~10 ms (they hung
+or timed out 3/5 before); store-postgres's stress test passes 16/16.
+

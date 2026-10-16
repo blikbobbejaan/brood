@@ -2021,3 +2021,18 @@ ONE-SHOT per arming" timed out on its first try under load and passed the retry.
 KI-267 — the worker announced `:ready` before entering its `try`, so a preemption between the
 two let the flood trip `E0046` outside the handler; reproduced on demand with a `sleep` in that
 gap, fixed in all four places the file had the ordering.
+
+## 2026-10-16 — a closure copied between processes keeps its compiled code (KI-268)
+
+The v0.39.0 release train's downstream check found store-postgres's 200-checkout stress test
+hanging on main; v0.38.0 passed it. Bisected to `67a540e1` (ADR-405, `spawn` copies captured
+values), then pinned by gdb and a scheduler trace. A closure that crosses into another process
+of the same runtime was rebuilt there as LOCAL data, which never compiles (`cache_key` needs a
+shared body form), so it tree-walked, and every `receive` in it held an OS thread. 200 clients
+meant ~190 overflow threads; when the OS refused the next one, the stranded work was dropped
+silently. The send path had the same flaw since long before 0.38 (a repro hung v0.38.0 3/5).
+
+A same-runtime copy now carries the closure's shared arms by handle, pinned like `FnShared`, so
+the receiver runs compiled code that parks. A refused overflow thread is reported once and
+retried when a blocked thread wakes. Guard: `closure_copy_stays_compiled.rs`
+(`:peak-threads <= :workers`, red under sabotage). Release held until this was in.
