@@ -39,6 +39,9 @@ runtime now says so instead of stalling silently, and retries.
 - A deopt reaches the system monitor on every native-call path, not one of four (KI-261).
 - `markdown/escape` escapes `"`, so its result is safe inside an attribute.
 - A refused audio thread is retried rather than muting the process.
+- `stream/socket->` keeps data that reached the socket before the stream took it over; a peer
+  that wrote and closed straight away used to leave the stream waiting forever. A socket error
+  with no reader waiting is reported to the next read instead of hanging it.
 
 **Faster.** A call from interpreted code into native code is 32% cheaper: an arm that has
 settled skips the tier-up. The native → interpreted → native round trip is 23% cheaper, and an
