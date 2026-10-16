@@ -81,13 +81,13 @@ struct Shard(AtomicUsize);
 
 static LIVE: [Shard; SHARDS] = [const { Shard(AtomicUsize::new(0)) }; SHARDS];
 static PEAK: AtomicUsize = AtomicUsize::new(0); // high-water mark of live_bytes()
-                                                // A coarse, lazily-refreshed snapshot of `live_bytes()` for the per-allocation
-                                                // hard-limit check, so that check stays one load instead of summing every shard on
-                                                // the hot path. Refreshed on the `PEAK` sample cadence (see `record_alloc`); lags
-                                                // real live bytes by at most one window — fine for a host-survival backstop that
-                                                // already tolerates a small overshoot, and a single oversized allocation is still
-                                                // caught directly by its own `size`. The exact soft limit (summed at the eval
-                                                // safepoint) is the graceful path and trips first on gradual growth.
+// A coarse, lazily-refreshed snapshot of `live_bytes()` for the per-allocation
+// hard-limit check, so that check stays one load instead of summing every shard on
+// the hot path. Refreshed on the `PEAK` sample cadence (see `record_alloc`); lags
+// real live bytes by at most one window — fine for a host-survival backstop that
+// already tolerates a small overshoot, and a single oversized allocation is still
+// caught directly by its own `size`. The exact soft limit (summed at the eval
+// safepoint) is the graceful path and trips first on gradual growth.
 static APPROX_LIVE: AtomicUsize = AtomicUsize::new(0);
 static HARD_LIMIT: AtomicUsize = AtomicUsize::new(0); // 0 = unlimited; abort if crossed
 static SOFT_LIMIT: AtomicUsize = AtomicUsize::new(0); // 0 = unlimited; safepoint raises if crossed

@@ -342,7 +342,7 @@ pub fn call(heap: &mut Heap, id: u64, name: &str, args: &[Value]) -> LispResult 
         None => {
             return Err(LispError::runtime(format!(
                 "%wasm-call: no export `{name}` in this component (see %wasm-exports)"
-            )))
+            )));
         }
     };
     if args.len() != param_tys.len() {
@@ -431,7 +431,7 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
                     _ => {
                         return Err(LispError::runtime(format!(
                             "{who}: a `char` parameter takes a 1-character string"
-                        )))
+                        )));
                     }
                 }
             }
@@ -501,7 +501,7 @@ fn lower(heap: &mut Heap, who: &str, v: Value, ty: &Type) -> Result<Val, LispErr
             return Err(LispError::runtime(format!(
                 "{who}: unsupported WIT parameter type {other:?} (this slice marshals \
                  scalars, strings, lists, tuples, and options)"
-            )))
+            )));
         }
     })
 }
@@ -530,7 +530,7 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
             Err(_) => {
                 return Err(LispError::runtime(format!(
                     "{who}: a u64 result ({n}) exceeds the integer range"
-                )))
+                )));
             }
         },
         Val::Float32(f) => Value::Float(*f as f64),
@@ -599,7 +599,7 @@ fn lift(heap: &mut Heap, who: &str, v: &Val) -> LispResult {
         other => {
             return Err(LispError::runtime(format!(
                 "{who}: unsupported WIT result type {other:?} in this slice"
-            )))
+            )));
         }
     })
 }
@@ -628,7 +628,7 @@ fn seq_items(heap: &Heap, who: &str, v: Value) -> Result<Vec<Value>, LispError> 
                             who,
                             "proper list or vector",
                             other,
-                        ))
+                        ));
                     }
                 }
             }

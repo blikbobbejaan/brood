@@ -18,7 +18,7 @@
 //! preempted (nothing would run instead, ADR-401), so an endless one would hold the
 //! hand-driven worker forever once the responder is gone.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn cpu_bound_process_does_not_starve_peers_on_one_worker() {

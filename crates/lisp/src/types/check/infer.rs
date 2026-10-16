@@ -1,6 +1,6 @@
 //! Type inference over expressions — expr_ty + result-typing helpers
 //! (extracted from guards.rs, file-organization split).
-use super::ctx::{resolve_clause_overload_ret, resolve_overload_ret, Ctx};
+use super::ctx::{Ctx, resolve_clause_overload_ret, resolve_overload_ret};
 use super::guards::path_of;
 use super::known_ops::{self, is_one_of};
 use super::sigs::{declared_heap_overload, sig_of};
@@ -2588,11 +2588,7 @@ fn keep_ty(heap: &Heap, items: &[Value], ctx: &Ctx) -> Option<Ty> {
         let non_nil = t.clone().difference(Ty::of(Tag::Nil));
         // A callback that only ever yields nil keeps an empty list, i.e. `nil`; `list<never>`
         // would be true but useless downstream, so keep the unstripped type there.
-        if non_nil.is_never() {
-            t
-        } else {
-            non_nil
-        }
+        if non_nil.is_never() { t } else { non_nil }
     });
     list_result(kept)
 }

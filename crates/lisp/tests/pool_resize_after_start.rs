@@ -8,7 +8,7 @@
 //! Its own test binary: `set_max_parallel` is process-wide, so the oversized
 //! value must not leak into the other test binaries.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn set_max_parallel_after_pool_start_is_inert() {

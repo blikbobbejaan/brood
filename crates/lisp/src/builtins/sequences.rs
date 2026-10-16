@@ -902,7 +902,7 @@ pub(super) fn vector_fold_span(args: &[Value], env: EnvId, heap: &mut Heap) -> L
                 "%vector-fold-span",
                 "vector",
                 v,
-            ))
+            ));
         }
     };
     let len = heap.vector(vid).len();
@@ -1366,7 +1366,7 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
                 "%registry-update!",
                 "keyword",
                 v,
-            ))
+            ));
         }
     };
     let op = match value::symbol_name_ref(op_sym) {
@@ -1379,7 +1379,7 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
         _ => {
             return Err(LispError::type_err(
                 "%registry-update!: op must be :assoc, :assoc-new, :dissoc, :cons-new, :append-new or :merge",
-            ))
+            ));
         }
     };
     let path = match arg(args, 2).unpack() {
@@ -1397,7 +1397,7 @@ pub(super) fn registry_update(args: &[Value], env: EnvId, heap: &mut Heap) -> Li
                 "%registry-update!",
                 "symbol",
                 v,
-            ))
+            ));
         }
     };
     Ok(Value::boolean(heap.registry_update(

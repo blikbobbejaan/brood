@@ -13,8 +13,8 @@
 //! the load expands source (an imaged module is materialised, not expanded — the image
 //! side of the same defect is `image_writer_differential`).
 
-use brood::core::value::{self, Value};
 use brood::Interp;
+use brood::core::value::{self, Value};
 
 /// Does any form under `form` name `symbol`? The tally rewrite's marker is
 /// `%table-from-map`, which no std source spells.
@@ -72,7 +72,9 @@ fn a_module_the_check_loads_is_expanded_with_the_rewrites() {
         .flat_map(|arm| arm.body.iter().copied())
         .collect();
     assert!(
-        bodies.iter().any(|&b| mentions(&interp, b, "%table-from-map")),
+        bodies
+            .iter()
+            .any(|&b| mentions(&interp, b, "%table-from-map")),
         "seq/frequencies was loaded by the check WITHOUT the tally rewrite (no `%table-from-map` in \
          its body): the program that runs after this pre-flight pays the unrewritten fold"
     );

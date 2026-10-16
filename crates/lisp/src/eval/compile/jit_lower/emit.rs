@@ -8,7 +8,7 @@ use crate::core::value::jit_layout::{
 };
 pub(super) use crate::eval::compile::DeoptReason;
 use cranelift_codegen::ir::{
-    condcodes::IntCC, types, Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, StackSlot, Type,
+    Block, BlockArg, FuncRef, InstBuilder, MemFlagsData, StackSlot, Type, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 

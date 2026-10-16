@@ -650,7 +650,7 @@ impl LispError {
     ///   `throw` never carries one, so a map a program throws itself — even one of kind
     ///   `:contract` — still comes back exactly as thrown.
     pub fn caught_value(&self, heap: &mut crate::core::heap::Heap) -> Value {
-        use crate::core::value::{intern, Value};
+        use crate::core::value::{Value, intern};
         match self.payload {
             Some(Value::Map(map)) if self.code == Some(error_codes::CONTRACT_VIOLATION) => {
                 let mut entries = heap.map_entries(map);
@@ -679,7 +679,7 @@ impl LispError {
     /// stays simple. Used by `try_catch` when the error carries no user
     /// payload (i.e. it's a built-in error). See `docs/llm-native.md` §4.
     pub fn to_value_map(&self, heap: &mut crate::core::heap::Heap) -> Value {
-        use crate::core::value::{intern, Value};
+        use crate::core::value::{Value, intern};
         let kind_kw = Value::keyword(intern(self.kind.tag_name()));
         let msg_str = heap.alloc_string(&self.message);
         let mut entries: Vec<(Value, Value)> = Vec::with_capacity(8);

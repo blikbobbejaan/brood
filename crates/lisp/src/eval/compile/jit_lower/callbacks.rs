@@ -4,7 +4,7 @@
 //! `crate::jit::rt`; a symbol declared here must be registered there.
 #![cfg(feature = "jit")]
 use super::OrBail;
-use cranelift_codegen::ir::{types, AbiParam, FuncRef, Function, SigRef, Signature, Type};
+use cranelift_codegen::ir::{AbiParam, FuncRef, Function, SigRef, Signature, Type, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Linkage, Module};

@@ -62,7 +62,9 @@ pub(crate) fn jit_dispatch_call(
                     crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),
                     crate::core::value::symbol_name_opt(head).unwrap_or("<computed>"),
                     heap.dbg_site_loc(site),
-                    raw[0], raw[1], raw[2],
+                    raw[0],
+                    raw[1],
+                    raw[2],
                 );
             }
         }

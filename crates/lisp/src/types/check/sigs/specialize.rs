@@ -766,11 +766,7 @@ fn clause_arms_ret(
             None => t,
         });
     }
-    if matched {
-        ret
-    } else {
-        None
-    }
+    if matched { ret } else { None }
 }
 
 fn memo_specialization(key: (Symbol, Vec<Option<Ty>>), out: Option<Ty>) {

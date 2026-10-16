@@ -406,7 +406,7 @@ pub(super) fn references_in_source(args: &[Value], _env: EnvId, heap: &mut Heap)
                 "reflect/references-in-source",
                 "symbol or string",
                 other,
-            ))
+            ));
         }
     };
     let src = expect_string(heap, "reflect/references-in-source", arg(args, 1))?;

@@ -25,7 +25,7 @@ use std::sync::{LazyLock, Mutex};
 use crate::core::value::{self, Symbol, Value};
 use crate::process::keywords as pk;
 
-use super::mailbox::{deliver, REGISTRY};
+use super::mailbox::{REGISTRY, deliver};
 use super::message::Message;
 use super::scheduler::self_pid;
 
@@ -709,8 +709,10 @@ mod in_flight_tests {
         let started = std::time::Instant::now();
         demonitor_for(watcher, mref);
         assert!(started.elapsed() < std::time::Duration::from_millis(50));
-        assert!(crate::core::sync::lock(&MONITORS)
-            .take_target(target)
-            .is_empty());
+        assert!(
+            crate::core::sync::lock(&MONITORS)
+                .take_target(target)
+                .is_empty()
+        );
     }
 }

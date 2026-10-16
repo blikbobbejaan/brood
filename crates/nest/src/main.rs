@@ -33,11 +33,11 @@
 //! `-j N` / `--max-parallel N` caps concurrent spawned processes. Hot reload
 //! lives in `nest run --watch <path>` (file or directory, repeatable).
 
+use brood::Interp;
 use brood::cli_support::{
-    init_runtime, report_error, run_on_main_stack, FullTermGuard, RawTermGuard,
+    FullTermGuard, RawTermGuard, init_runtime, report_error, run_on_main_stack,
 };
 use brood::introspect::string_literal;
-use brood::Interp;
 use clap::{Parser, Subcommand};
 
 mod mcp;

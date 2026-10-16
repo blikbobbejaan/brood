@@ -16,7 +16,7 @@
 
 #![cfg(target_os = "linux")]
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 /// Pin the calling thread — and so every thread it later creates — to cpu 0.
 fn pin_to_one_cpu() {

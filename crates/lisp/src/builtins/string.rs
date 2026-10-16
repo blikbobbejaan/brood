@@ -625,7 +625,7 @@ pub(super) fn str_last_index_of(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
                     "%str-last-index-of",
                     "int",
                     other,
-                ))
+                ));
             }
         },
     };
@@ -804,7 +804,7 @@ pub(super) fn codepoints_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
                 "%codepoints->string",
                 "vector, list or bytes of codepoint ints",
                 other,
-            ))
+            ));
         }
     };
     let mut out = String::with_capacity(codes.len());
@@ -815,7 +815,7 @@ pub(super) fn codepoints_to_string(args: &[Value], _: EnvId, heap: &mut Heap) ->
                 return Err(LispError::runtime(format!(
                     "%codepoints->string: {c} is not a Unicode scalar value (0..=0x10FFFF, \
                      excluding the surrogates 0xD800..=0xDFFF)"
-                )))
+                )));
             }
         }
     }
@@ -936,7 +936,7 @@ pub(super) fn string_normalize(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
                 "string/normalize",
                 "keyword",
                 form,
-            ))
+            ));
         }
     };
     let out: String = match name.as_str() {
@@ -947,7 +947,7 @@ pub(super) fn string_normalize(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
         other => {
             return Err(LispError::runtime(format!(
                 "string/normalize: unknown form :{other} (expected :nfc, :nfd, :nfkc or :nfkd)"
-            )))
+            )));
         }
     };
     Ok(heap.alloc_string(&out))

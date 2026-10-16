@@ -32,7 +32,7 @@ const SELF_CONTAINED: &[&str] = &["default", "tui-loop", "gen", "editor", "gui"]
 const RUNNABLE: &[&str] = &["default", "gen"];
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 struct Run {
     out: String,

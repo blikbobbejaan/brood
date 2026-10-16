@@ -6,10 +6,10 @@
 //! prelude/builtin — and compute the active argument from the cursor's position
 //! among the argument forms. No user code runs.
 
+use brood::Interp;
 use brood::introspect;
 use brood::syntax::cst::{Node, NodeKind};
 use brood::syntax::scope::{BindingKind, Resolution, ScopeTree};
-use brood::Interp;
 use lsp_types::{ParameterInformation, ParameterLabel, SignatureHelp, SignatureInformation};
 
 use crate::defs;

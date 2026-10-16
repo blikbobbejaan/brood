@@ -5,21 +5,22 @@
 //! arms is a terminator, so each returns `Some(())` (fall through) or `None` to bail
 //! the whole arm to the VM.
 #![cfg(feature = "jit")]
-use super::emit::{
-    as_f64_guarded, as_f64_pair, as_int, call_handle, cmp_dispatch, deopt_code, emit_arith,
-    emit_float_arith, eq_dispatch, handle_from_out_slot, inline_vec_ref, load_slot_int,
-    op_is_float, op_maybe_float, read_out_slot, read_words, slot_untyped, table_prim, vector_ref,
-    DeoptReason, Frame, Funcs,
-};
 use super::Op;
 use super::OrBail;
+use super::emit::{
+    DeoptReason, Frame, Funcs, as_f64_guarded, as_f64_pair, as_int, call_handle, cmp_dispatch,
+    deopt_code, emit_arith, emit_float_arith, eq_dispatch, handle_from_out_slot, inline_vec_ref,
+    load_slot_int, op_is_float, op_maybe_float, read_out_slot, read_words, slot_untyped,
+    table_prim, vector_ref,
+};
 use crate::core::value::jit_layout::{
     PAYLOAD_OFFSET, TAG_BOOL, TAG_FLOAT, TAG_INT, TAG_KEYWORD, TAG_PAIR, TAG_RANGE, TAG_SEQVIEW,
 };
 use crate::eval::compile::ir::{PrimOp, PrimOp1};
 use cranelift_codegen::ir::{
+    AtomicRmwOp, BlockArg, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value,
     condcodes::{FloatCC, IntCC},
-    types, AtomicRmwOp, BlockArg, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value,
+    types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use std::collections::HashMap;
@@ -31,11 +32,7 @@ const STRIDE: i64 = std::mem::size_of::<crate::core::value::Value>() as i64;
 /// e.g. `>` is `%lt` with `map = [1, 0]` (operands swapped). `m == 0` picks the first
 /// source, else the second. (`emit_node` only ever produces `[0,1]` or `[1,0]`.)
 fn pick(s0: Value, s1: Value, m: u8) -> Value {
-    if m == 0 {
-        s0
-    } else {
-        s1
-    }
+    if m == 0 { s0 } else { s1 }
 }
 
 /// `Inst::Prim1` — a unary primitive: `first`/`rest` (Pair read, inline or FFI),

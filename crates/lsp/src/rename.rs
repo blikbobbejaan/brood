@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use brood::core::heap::Heap;
-use brood::core::value::{symbol_name, Value};
+use brood::core::value::{Value, symbol_name};
 use brood::syntax::cst::Node;
 use brood::syntax::printer::symbol_needs_bars;
 use brood::syntax::reader;

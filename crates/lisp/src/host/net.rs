@@ -67,7 +67,7 @@ use crate::core::value;
 use crate::host::dial::dial_tcp;
 use crate::host::owned::OwnedTable;
 use crate::process::{
-    chunk_flush, chunk_payload, deliver, deliver_credited, CreditSource, DeliveryCredit, Message,
+    CreditSource, DeliveryCredit, Message, chunk_flush, chunk_payload, deliver, deliver_credited,
 };
 
 // ---- tunables ----
@@ -1942,7 +1942,7 @@ pub fn controlling_process(id: u64, pid: u64) -> std::io::Result<()> {
             Some(_) => {
                 return Err(invalid(
                     "tcp-controlling-process: socket is a listener, not a stream",
-                ))
+                ));
             }
             None => return Err(bad_socket()),
         }
@@ -2000,7 +2000,7 @@ pub fn set_idle_timeout(id: u64, ms: u64) -> std::io::Result<()> {
             Some(_) => {
                 return Err(invalid(
                     "tcp-set-idle-timeout: socket is a listener, not a stream",
-                ))
+                ));
             }
             None => return Err(bad_socket()),
         }

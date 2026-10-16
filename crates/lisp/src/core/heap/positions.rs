@@ -133,7 +133,7 @@ impl Heap {
                     return self
                         .cold()
                         .and_then(|c| c.form_pos.get(&form_pos_key(id)))
-                        .map(|e| (e.pos, e.file.clone()))
+                        .map(|e| (e.pos, e.file.clone()));
                 }
                 // Read with the handle's OWN generation: the two RUNTIME generations
                 // share an index space, so an index-only lookup answers with whichever
@@ -142,7 +142,7 @@ impl Heap {
                     return self
                         .runtime
                         .position_of(id.index(), id.code_gen())
-                        .map(|e| (e.pos, e.file))
+                        .map(|e| (e.pos, e.file));
                 }
                 _ => {}
             }

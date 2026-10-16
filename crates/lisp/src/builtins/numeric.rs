@@ -948,7 +948,7 @@ pub(super) fn prim_quot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
             None if y == 0 => {
                 return Err(LispError::runtime("%quot: division by zero")
                     .with_code(crate::error::error_codes::DIV_BY_ZERO)
-                    .with_hint("guard the denominator: (when (not (= y 0)) (math/quot x y))"))
+                    .with_hint("guard the denominator: (when (not (= y 0)) (math/quot x y))"));
             }
             None => {} // i64::MIN / -1 — promote and fall through
         }
@@ -1210,7 +1210,7 @@ pub(super) fn prim_decimal(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
                 "decimal/of",
                 "string or number",
                 other,
-            ))
+            ));
         }
     };
     Ok(heap.alloc_decimal(d))
@@ -1235,7 +1235,7 @@ pub(super) fn prim_decimal_to_string(args: &[Value], _: EnvId, heap: &mut Heap) 
                 "decimal/->string",
                 "decimal",
                 other,
-            ))
+            ));
         }
     };
     Ok(heap.alloc_string(&s))

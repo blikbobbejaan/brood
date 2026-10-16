@@ -11,8 +11,8 @@
 //! The construction-level counterpart — every curated name reads the same loaded or not —
 //! is `check/tests/image_sigs.rs::a_curated_name_reads_the_same_loaded_or_not`.
 
-use brood::types::check;
 use brood::Interp;
+use brood::types::check;
 
 mod support;
 use support::loaded;

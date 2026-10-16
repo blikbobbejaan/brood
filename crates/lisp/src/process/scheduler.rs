@@ -36,7 +36,7 @@ use crate::process::keywords as pk;
 
 use super::links;
 use super::mailbox::{
-    clear_parked, parked_count, set_status, Mailbox, REGISTRY, ST_RUNNABLE, ST_RUNNING, ST_WAITING,
+    Mailbox, REGISTRY, ST_RUNNABLE, ST_RUNNING, ST_WAITING, clear_parked, parked_count, set_status,
 };
 use super::message::Message;
 use super::monitor;
@@ -47,9 +47,8 @@ use super::monitor;
 // `stack_base_set` are scheduler-internal (only `install_ctx` resets them).
 mod guards;
 pub use guards::{
-    gc_block_depth, macro_block_active, native_stack_headroom_ok, stack_budget,
-    stack_overflow_check, GcBlockGuard, MacroBlockGuard, NATIVE_STACK_MARGIN_BYTES,
-    WORKER_STACK_BYTES,
+    GcBlockGuard, MacroBlockGuard, NATIVE_STACK_MARGIN_BYTES, WORKER_STACK_BYTES, gc_block_depth,
+    macro_block_active, native_stack_headroom_ok, stack_budget, stack_overflow_check,
 };
 use guards::{gc_block_set, macro_block_set, stack_base_set};
 
@@ -253,7 +252,7 @@ impl Drop for DirtyBlockGuard {
 fn drain_worker_queue(wid: usize) {
     // Every queued process is stranded on this dirty worker (it won't return to its run
     // loop) and is migratable (no native stack), so re-route them all off it.
-    let stranded: Vec<Box<Process>> = crate::core::sync::lock(&WORKERS[wid].0 .0)
+    let stranded: Vec<Box<Process>> = crate::core::sync::lock(&WORKERS[wid].0.0)
         .drain(..)
         .collect();
     // These left a queue without going through `run_one` (the usual decrement site), so
@@ -608,7 +607,7 @@ fn assign_worker() -> usize {
         if WORKER_DIRTY[i].load(Ordering::Relaxed) {
             return usize::MAX;
         }
-        match WORKERS[i].0 .0.try_lock() {
+        match WORKERS[i].0.0.try_lock() {
             Ok(q) => q
                 .len()
                 .saturating_add(WORKER_BUSY[i].load(Ordering::Relaxed) as usize),
@@ -646,7 +645,7 @@ fn pick_spawn_worker() -> usize {
     let worker_count = WORKERS.len().max(1);
     match CURRENT_WORKER.with(|c| c.get()) {
         Some(worker) if worker < worker_count && !WORKER_DIRTY[worker].load(Ordering::Relaxed) => {
-            let backlog = match WORKERS[worker].0 .0.try_lock() {
+            let backlog = match WORKERS[worker].0.0.try_lock() {
                 Ok(queue) => queue.len(),
                 Err(_) => 0,
             };

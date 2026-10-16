@@ -318,7 +318,7 @@ impl<'a> Scanner<'a> {
                     return match bad {
                         Some(at) => StringScan::BadEscape { at },
                         None => StringScan::Closed,
-                    }
+                    };
                 }
                 Some('\\') => match self.bump() {
                     None => return StringScan::Unterminated,

@@ -56,11 +56,11 @@ use lsp_types::{
     WorkspaceEdit, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
+use brood::Interp;
 use brood::core::value::Value;
 use brood::syntax::scope::{BindingKind, Resolution};
 use brood::syntax::{cst, reader, scope};
 use brood::types::check::check_file;
-use brood::Interp;
 
 mod code_actions;
 mod completion;

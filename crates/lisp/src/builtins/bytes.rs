@@ -6,7 +6,7 @@
 use crate::core::blob::SharedBlob;
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};
-use crate::error::{error_codes, LispError, LispResult};
+use crate::error::{LispError, LispResult, error_codes};
 
 use super::args::{arg, expect_int};
 
@@ -253,7 +253,7 @@ pub(in crate::builtins) fn collect_bytes(
                                     name,
                                     "byte int (0-255)",
                                     other,
-                                ))
+                                ));
                             }
                         }
                         cur = t;
@@ -325,7 +325,7 @@ pub(super) fn flatten_iolist(
                     who,
                     "iolist (string, bytes, byte int 0-255, or a nested list/vector of those)",
                     other,
-                ))
+                ));
             }
         }
     }

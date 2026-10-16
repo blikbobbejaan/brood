@@ -90,7 +90,7 @@ pub use io::{begin_stdout_capture, take_captured_stdout};
 pub(crate) use modules::{
     every_provided_feature_is_embedded, is_embedded_module, provided_features,
 };
-pub(crate) use numeric::{classify_numeric_text, NumericText};
+pub(crate) use numeric::{NumericText, classify_numeric_text};
 pub use os::set_script_args;
 #[cfg(feature = "jit")]
 pub(crate) use sequences::{first_without_eval, is_empty_without_eval, rest_without_eval};

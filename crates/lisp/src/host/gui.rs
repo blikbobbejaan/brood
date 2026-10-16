@@ -519,16 +519,16 @@ pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`
 
 #[cfg(not(feature = "gui"))]
 pub use disabled::{
-    bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab, held_key,
-    host_main_thread, icon, input_mode, inset, line_height, maximize, minimize, next_texture_id,
-    open, register_family, size, size_px, sound, sound_free, text_aa, text_contrast, texture,
-    texture_free, title, TextAa,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
+    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
+    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
+    text_contrast, texture, texture_free, title,
 };
 
 #[cfg(feature = "gui")]
 pub use backend::{
-    bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab, held_key,
-    host_main_thread, icon, input_mode, inset, line_height, maximize, minimize, next_texture_id,
-    open, register_family, size, size_px, sound, sound_free, text_aa, text_contrast, texture,
-    texture_free, title, TextAa,
+    TextAa, bg, cell_size, close, drag_move, drag_resize, draw, focus, font, fullscreen, grab,
+    held_key, host_main_thread, icon, input_mode, inset, line_height, maximize, minimize,
+    next_texture_id, open, register_family, size, size_px, sound, sound_free, text_aa,
+    text_contrast, texture, texture_free, title,
 };

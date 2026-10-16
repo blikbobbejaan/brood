@@ -865,8 +865,8 @@ pub struct CompiledArm {
 /// compile fine. It mints a fresh `uid`, like every compiled arm.
 impl Default for CompiledArm {
     fn default() -> Self {
-        use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64};
         use std::sync::OnceLock;
+        use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64};
         CompiledArm {
             nrequired: 0,
             noptional: 0,

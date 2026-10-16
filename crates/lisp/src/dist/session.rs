@@ -29,8 +29,8 @@ use std::io::{self, Read};
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
 
-use super::wire::{decode_frame, Frame};
 use super::MAX_FRAME;
+use super::wire::{Frame, decode_frame};
 
 /// AEAD key length (ChaCha20-Poly1305 / X25519 shared-secret derived).
 pub(super) const KEY_LEN: usize = 32;

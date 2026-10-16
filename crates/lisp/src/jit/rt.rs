@@ -1096,13 +1096,13 @@ pub unsafe extern "C" fn brood_rt_dbg_check_slot(
         if bad_tag || stale.is_some() || oob.is_some() {
             let site = DBG_STAGING.with(|s| s.get());
             eprintln!(
-            "[slot-read] GARBAGE/STALE read at roots[{abs_idx}] tag={tag:#x} w0={w0:#x} w1={w1:#x} w2={w2:#x} \
+                "[slot-read] GARBAGE/STALE read at roots[{abs_idx}] tag={tag:#x} w0={w0:#x} w1={w1:#x} w2={w2:#x} \
              stale={stale:?} oob={oob:?}; roots_len={} (in_frame={}) jit_native_depth={} last_staging_site={site} loc={}",
-            h.roots_len(),
-            (abs_idx as usize) < h.roots_len(),
-            h.jit_native_depth,
-            h.dbg_site_loc(site),
-        );
+                h.roots_len(),
+                (abs_idx as usize) < h.roots_len(),
+                h.jit_native_depth,
+                h.dbg_site_loc(site),
+            );
         }
     }
 }

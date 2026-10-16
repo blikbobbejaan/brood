@@ -15,8 +15,8 @@
 //! symbols are a global interner, so the body builds messages off-heap without
 //! touching any process's `Heap`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::mailbox::deliver;
 use super::message::Message;

@@ -425,7 +425,7 @@ impl<'a> Parser<'a> {
                     match self.s.peek() {
                         None => return Err(self.err_incomplete("unclosed list")),
                         Some(c) if c == close => {
-                            return Err(self.err("expected a form after '.' in dotted list"))
+                            return Err(self.err("expected a form after '.' in dotted list"));
                         }
                         Some(_) => tail = self.read_form()?,
                     }
@@ -441,7 +441,9 @@ impl<'a> Parser<'a> {
                         // delimiter so a REPL/editor offers a continuation prompt
                         // instead of a hard syntax error (see `err_at_incomplete`).
                         None => {
-                            return Err(self.err_at_incomplete(start, "unclosed list (opened here)"))
+                            return Err(
+                                self.err_at_incomplete(start, "unclosed list (opened here)")
+                            );
                         }
                         _ => return Err(self.err("expected one form after '.' before close")),
                     }
@@ -484,7 +486,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 Some('.') if self.s.is_dot_separator() => {
-                    return Err(self.dot_not_allowed("vector"))
+                    return Err(self.dot_not_allowed("vector"));
                 }
                 Some(_) => items.push(self.read_form()?),
             }
@@ -519,11 +521,11 @@ impl<'a> Parser<'a> {
                             return Err(self.err_at(
                                 start,
                                 "map literal has an odd number of forms (each key needs a value)",
-                            ))
+                            ));
                         }
                         // Same rule in value position — `{:a . 1}` is not a dotted pair.
                         Some('.') if self.s.is_dot_separator() => {
-                            return Err(self.dot_not_allowed("map"))
+                            return Err(self.dot_not_allowed("map"));
                         }
                         Some(_) => {
                             let val = self.read_form()?;
@@ -672,13 +674,8 @@ impl<'a> Parser<'a> {
             // routed here; handled rather than asserted.
             AtomKind::RadixOverflow => {
                 match atom::radix_parts(token).and_then(|(radix, digits, negative)| {
-                    num_bigint::BigInt::parse_bytes(digits.as_bytes(), radix).map(|magnitude| {
-                        if negative {
-                            -magnitude
-                        } else {
-                            magnitude
-                        }
-                    })
+                    num_bigint::BigInt::parse_bytes(digits.as_bytes(), radix)
+                        .map(|magnitude| if negative { -magnitude } else { magnitude })
                 }) {
                     Some(n) => Ok(self.heap.alloc_bigint(n)),
                     None => Err(self.err_at(

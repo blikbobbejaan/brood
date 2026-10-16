@@ -7,7 +7,7 @@
 
 use crate::core::heap::Heap;
 use crate::core::value::{self, EnvId, Value};
-use crate::error::{error_codes, LispError, LispResult};
+use crate::error::{LispError, LispResult, error_codes};
 
 use super::args::{arg, expect_int, expect_string};
 

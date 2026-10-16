@@ -16,7 +16,7 @@
 use std::process::Command;
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 fn write_fixture() -> TempDir {
     let temp = temp_dir("deftype-imports");

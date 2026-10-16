@@ -10,11 +10,11 @@ fn flags_non_tail_self_recursion() {
             .iter()
             .any(|w| w.contains("fact") && w.contains("non-tail"))
     );
-    assert!(recursion_warnings(
-        "(defn sum (xs) (if (empty? xs) 0 (+ (first xs) (sum (rest xs)))))"
-    )
-    .iter()
-    .any(|w| w.contains("sum")));
+    assert!(
+        recursion_warnings("(defn sum (xs) (if (empty? xs) 0 (+ (first xs) (sum (rest xs)))))")
+            .iter()
+            .any(|w| w.contains("sum"))
+    );
     // self-call as a let binding value
     assert!(!recursion_warnings("(defn k (n) (let (m (k (- n 1))) m))").is_empty());
     // first (tested) operand of `and`, and a `cond` test
@@ -152,16 +152,22 @@ fn unused_let_binding_lint() {
 #[test]
 fn curated_equality_and_string_sigs() {
     // = / not= are multi-arm closures; pin bool result so numeric sinks catch it.
-    assert!(warnings("(+ 1 (= x y))")
-        .iter()
-        .any(|w| w.contains('+') && w.contains("bool")));
-    assert!(warnings("(+ 1 (not= x y))")
-        .iter()
-        .any(|w| w.contains('+') && w.contains("bool")));
+    assert!(
+        warnings("(+ 1 (= x y))")
+            .iter()
+            .any(|w| w.contains('+') && w.contains("bool"))
+    );
+    assert!(
+        warnings("(+ 1 (not= x y))")
+            .iter()
+            .any(|w| w.contains('+') && w.contains("bool"))
+    );
     // string/->symbol requires a string.
-    assert!(warnings("(string/->symbol 99)")
-        .iter()
-        .any(|w| w.contains("string/->symbol") && w.contains("string")));
+    assert!(
+        warnings("(string/->symbol 99)")
+            .iter()
+            .any(|w| w.contains("string/->symbol") && w.contains("string"))
+    );
     // String predicates require string args.
     for f in ["string/starts-with?", "string/ends-with?"] {
         assert!(
@@ -171,9 +177,11 @@ fn curated_equality_and_string_sigs() {
             "{f}: expected string-domain warning"
         );
     }
-    assert!(warnings("(string/blank? 0)")
-        .iter()
-        .any(|w| w.contains("string/blank?") && w.contains("string")));
+    assert!(
+        warnings("(string/blank? 0)")
+            .iter()
+            .any(|w| w.contains("string/blank?") && w.contains("string"))
+    );
     // String transforms require string args and return strings.
     for f in ["string/trim", "string/triml", "string/trimr"] {
         assert!(
@@ -188,15 +196,21 @@ fn curated_equality_and_string_sigs() {
             "{f}: result should type as string"
         );
     }
-    assert!(warnings("(string/replace 5 \"a\" \"b\")")
-        .iter()
-        .any(|w| w.contains("string/replace") && w.contains("string")));
-    assert!(warnings("(string/repeat 3 5)")
-        .iter()
-        .any(|w| w.contains("string/repeat") && w.contains("string")));
-    assert!(warnings("(string/format 5 \"extra\")")
-        .iter()
-        .any(|w| w.contains("format") && w.contains("string")));
+    assert!(
+        warnings("(string/replace 5 \"a\" \"b\")")
+            .iter()
+            .any(|w| w.contains("string/replace") && w.contains("string"))
+    );
+    assert!(
+        warnings("(string/repeat 3 5)")
+            .iter()
+            .any(|w| w.contains("string/repeat") && w.contains("string"))
+    );
+    assert!(
+        warnings("(string/format 5 \"extra\")")
+            .iter()
+            .any(|w| w.contains("format") && w.contains("string"))
+    );
     // format returns a string.
     assert!(warnings("(string/length (string/format \"hi %s\" x))").is_empty());
     // index-of/index-where/string/last-index-of return int — safe to add.
@@ -398,18 +412,26 @@ fn check_allow_generated_skips_the_subtree_entirely() {
 #[test]
 fn covers_the_other_signed_primitives() {
     assert!(warnings("(math/mod 7 3)").is_empty());
-    assert!(warnings("(math/mod 7 \"x\")")
-        .iter()
-        .any(|w| w.contains("mod")));
-    assert!(warnings("(math/rem :a 3)")
-        .iter()
-        .any(|w| w.contains("rem")));
-    assert!(warnings("(%vector-length 5)")
-        .iter()
-        .any(|w| w.contains("vector-length")));
-    assert!(warnings("(string/substring \"hi\" \"a\" 1)")
-        .iter()
-        .any(|w| w.contains("string/substring") && w.contains("argument 2")));
+    assert!(
+        warnings("(math/mod 7 \"x\")")
+            .iter()
+            .any(|w| w.contains("mod"))
+    );
+    assert!(
+        warnings("(math/rem :a 3)")
+            .iter()
+            .any(|w| w.contains("rem"))
+    );
+    assert!(
+        warnings("(%vector-length 5)")
+            .iter()
+            .any(|w| w.contains("vector-length"))
+    );
+    assert!(
+        warnings("(string/substring \"hi\" \"a\" 1)")
+            .iter()
+            .any(|w| w.contains("string/substring") && w.contains("argument 2"))
+    );
     assert!(warnings("(%lt 1 :k)").iter().any(|w| w.contains("%lt")));
 }
 
@@ -453,10 +475,12 @@ fn atoms_and_malformed_forms_do_not_panic() {
         let _ = warnings(src);
     }
     assert!(warnings("(5 6 7)").is_empty()); // head isn't a symbol — no diagnostics
-                                             // `(first)` is now an arity diagnostic (0 args; first needs 1).
-    assert!(warnings("(first)")
-        .iter()
-        .any(|w| w.contains("first") && w.contains("expected 1")));
+    // `(first)` is now an arity diagnostic (0 args; first needs 1).
+    assert!(
+        warnings("(first)")
+            .iter()
+            .any(|w| w.contains("first") && w.contains("expected 1"))
+    );
 }
 
 #[test]
@@ -525,15 +549,19 @@ fn the_duplicate_lint_stays_silent_where_a_second_binding_is_legitimate() {
             .is_empty()
     );
     // A second module in the same file (ADR-223 regions) starts a fresh name set.
-    assert!(duplicate_warnings(
-        "(defmodule one)\n(defn helper () 1)\n(defmodule two)\n(defn helper () 2)"
-    )
-    .is_empty());
+    assert!(
+        duplicate_warnings(
+            "(defmodule one)\n(defn helper () 1)\n(defmodule two)\n(defn helper () 2)"
+        )
+        .is_empty()
+    );
     // A deliberate override says so.
-    assert!(duplicate_warnings(
-        "(defmodule dup)\n(def *x* :first)\n(check-allow :duplicate-def (def *x* :second))"
-    )
-    .is_empty());
+    assert!(
+        duplicate_warnings(
+            "(defmodule dup)\n(def *x* :first)\n(check-allow :duplicate-def (def *x* :second))"
+        )
+        .is_empty()
+    );
     // …and a `check-allow` for a DIFFERENT category does not silence it.
     assert_eq!(
         duplicate_warnings(

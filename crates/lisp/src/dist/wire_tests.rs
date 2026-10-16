@@ -451,7 +451,7 @@ fn bogus_collection_count_errors_without_huge_alloc() {
     encode_target(&mut payload, &Target::Pid(1));
     payload.push(M_LIST);
     payload.extend_from_slice(&u32::MAX.to_be_bytes()); // claims 4 billion items
-                                                        // …but no item bytes follow.
+    // …but no item bytes follow.
     let mut framed = (payload.len() as u32).to_be_bytes().to_vec();
     framed.extend_from_slice(&payload);
     match read_frame(&mut Cursor::new(framed)) {

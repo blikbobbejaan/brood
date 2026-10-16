@@ -22,7 +22,7 @@ use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
 use crate::core::sync::lock;
 use crate::core::value;
 
-use crate::process::{deliver, Message};
+use crate::process::{Message, deliver};
 
 use std::cell::RefCell;
 
@@ -70,13 +70,13 @@ use winit::platform::wayland::EventLoopBuilderExtWayland;
 use winit::window::{CursorGrabMode, CursorIcon, Fullscreen, Icon, Window, WindowId};
 
 use cosmic_text::{
-    fontdb, Attrs, Buffer as CtBuffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache,
-    SwashContent, Weight,
+    Attrs, Buffer as CtBuffer, Family, FontSystem, Metrics, Shaping, Style, SwashCache,
+    SwashContent, Weight, fontdb,
 };
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::host::text_width::{cluster_cells, cluster_cells_at, TAB_WIDTH};
+use crate::host::text_width::{TAB_WIDTH, cluster_cells, cluster_cells_at};
 
 /// The winit cursor for a frontend-neutral `CursorShape`.
 fn cursor_icon(shape: CursorShape) -> CursorIcon {
@@ -480,8 +480,7 @@ fn main_slot() -> &'static Mutex<Option<Sender<MainMsg>>> {
 /// returning runtime can no longer be reported back through it.
 static GUI_OWNS_MAIN: AtomicBool = AtomicBool::new(false);
 
-const MAIN_THREAD_UNRESERVED: &str =
-    "gui: this platform requires the event loop on the process main thread, and this \
+const MAIN_THREAD_UNRESERVED: &str = "gui: this platform requires the event loop on the process main thread, and this \
      binary did not reserve it. A host embedding the brood runtime must run its work \
      through `cli_support::run_on_main_stack`, which parks the main thread for exactly \
      this.";

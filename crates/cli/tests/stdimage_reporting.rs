@@ -19,7 +19,7 @@
 use std::process::Command;
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 /// A one-assertion suite file — the summary line is what is under test, not the tests.
 const SUITE: &str = "(defmodule stdimage-line-test (:use test))\n\

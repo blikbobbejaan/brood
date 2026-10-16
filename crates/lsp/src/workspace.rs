@@ -17,8 +17,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use brood::syntax::cst::{Node, NodeKind};
 use brood::Interp;
+use brood::syntax::cst::{Node, NodeKind};
 use lsp_types::{Location, Range, TextEdit, Uri, WorkspaceEdit};
 
 use crate::Documents;

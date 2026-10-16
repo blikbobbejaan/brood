@@ -22,8 +22,8 @@
 //! of the raw `(%profile-stop)` data, per the mechanism/policy split.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::core::value::Symbol;
 

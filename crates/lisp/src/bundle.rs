@@ -229,7 +229,7 @@ pub fn read_bundle(path: &Path) -> Result<Option<Bundle>, String> {
         _ => {
             return corrupt(format!(
                 "the footer claims a {archive_length}-byte archive in a {length}-byte file"
-            ))
+            ));
         }
     };
     // `try_from`, not `as`: a >4 GiB claim must not truncate on a 32-bit target.

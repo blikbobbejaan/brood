@@ -179,12 +179,9 @@ pub(super) fn blob_strong_count(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 }
 
 pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    run_guarded(
-        args,
-        env,
-        heap,
-        |error, heap| vec![error.caught_value(heap)],
-    )
+    run_guarded(args, env, heap, |error, heap| {
+        vec![error.caught_value(heap)]
+    })
 }
 
 /// `(%try-described thunk handler)` — `%try` whose handler also receives the raise's

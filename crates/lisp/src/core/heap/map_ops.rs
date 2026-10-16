@@ -46,11 +46,7 @@ impl Heap {
         if node.data_map & bit != 0 {
             let i = map_champ::rank(node.data_map, slot);
             let (k, v) = node.data[i];
-            if self.equal(k, key) {
-                Some(v)
-            } else {
-                None
-            }
+            if self.equal(k, key) { Some(v) } else { None }
         } else if node.node_map & bit != 0 {
             let j = map_champ::rank(node.node_map, slot);
             self.champ_get(node.children[j], key, hash, depth + 1)

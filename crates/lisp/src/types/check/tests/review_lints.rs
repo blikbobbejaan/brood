@@ -120,7 +120,10 @@ fn sealed_match_forgets_a_name_rebound_by_if_let_for_destructuring_fn_and_catch(
         "(sig h (S -> int)) (defn h (s) (try (match (c 1) ((record c {}) 10)) (catch s (match s ((record c {}) 10)))))",
     ] {
         let w = sealed_warnings(body);
-        assert!(w.is_empty(), "a rebinding keeps no sealed type — {body}: {w:?}");
+        assert!(
+            w.is_empty(),
+            "a rebinding keeps no sealed type — {body}: {w:?}"
+        );
     }
 }
 

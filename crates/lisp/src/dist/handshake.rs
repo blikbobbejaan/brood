@@ -30,11 +30,11 @@ use x25519_dalek::{PublicKey, StaticSecret};
 
 use crate::core::value::{self, Symbol};
 
-use super::session::{OpenKey, SealKey, Session, KEY_LEN};
-use super::wire::{
-    read_frame_capped, write_frame, Frame, EPH_PUB_LEN, MAC_LEN, NONCE_LEN, PROTOCOL_MAGIC,
-};
 use super::MAX_HANDSHAKE_FRAME;
+use super::session::{KEY_LEN, OpenKey, SealKey, Session};
+use super::wire::{
+    EPH_PUB_LEN, Frame, MAC_LEN, NONCE_LEN, PROTOCOL_MAGIC, read_frame_capped, write_frame,
+};
 
 /// Which end opened a connection — the tie-break for a duplicate keeps the link
 /// initiated by the smaller node name, so both ends need to know who that is.

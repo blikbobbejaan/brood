@@ -544,7 +544,7 @@ fn check_builtin_flags_provable_misuse() {
     assert!(run("(reflect/check '(string/length :k))").contains("string/length"));
     assert_eq!(run("(reflect/check '(first (list 1 2)))"), "nil"); // arg type unknown → no warning
     assert_eq!(run("(reflect/check '(+ 1 2))"), "nil"); // closure, not a primitive
-                                                        // It is advisory — it never raises, even on the misuse it reports.
+    // It is advisory — it never raises, even on the misuse it reports.
     assert_eq!(run("(do (reflect/check '(first 5)) :ok)"), ":ok");
 }
 
@@ -609,13 +609,17 @@ fn optional_params() {
 fn optional_params_arity() {
     let mut interp = Interp::new();
     // too many args, no rest to absorb them
-    assert!(interp
-        .eval_str("(defn f (a &optional b) a) (f 1 2 3)")
-        .is_err());
+    assert!(
+        interp
+            .eval_str("(defn f (a &optional b) a) (f 1 2 3)")
+            .is_err()
+    );
     // too few required
-    assert!(interp
-        .eval_str("(defn f (a b &optional c) a) (f 1)")
-        .is_err());
+    assert!(
+        interp
+            .eval_str("(defn f (a b &optional c) a) (f 1)")
+            .is_err()
+    );
     // an unknown marker is rejected, not silently treated as a param name
     assert!(interp.eval_str("(defn f (a &key b) a)").is_err());
 }
@@ -796,9 +800,11 @@ fn fn_clauses_and_pattern_params() {
     );
     // no clause matched is a runtime error
     let mut interp = Interp::new();
-    assert!(interp
-        .eval_str("(defn only-ok (([:ok v]) v)) (only-ok [:err 1])")
-        .is_err());
+    assert!(
+        interp
+            .eval_str("(defn only-ok (([:ok v]) v)) (only-ok [:err 1])")
+            .is_err()
+    );
 }
 
 #[test]
@@ -1348,15 +1354,21 @@ fn dotted_pairs_round_trip() {
     assert_eq!(run("(first (list .5 6))"), "0.5"); // `.5` is a float, not a separator
 
     let mut interp = Interp::new();
-    assert!(interp
-        .eval_str(r#"(reflect/read-string "( . 3)")"#)
-        .is_err());
-    assert!(interp
-        .eval_str(r#"(reflect/read-string "(1 . )")"#)
-        .is_err());
-    assert!(interp
-        .eval_str(r#"(reflect/read-string "(1 . 2 3)")"#)
-        .is_err());
+    assert!(
+        interp
+            .eval_str(r#"(reflect/read-string "( . 3)")"#)
+            .is_err()
+    );
+    assert!(
+        interp
+            .eval_str(r#"(reflect/read-string "(1 . )")"#)
+            .is_err()
+    );
+    assert!(
+        interp
+            .eval_str(r#"(reflect/read-string "(1 . 2 3)")"#)
+            .is_err()
+    );
 }
 
 /// Dynamic variables (`defdyn`/`binding`): default, dynamic shadowing through a
@@ -1386,7 +1398,9 @@ fn dynamic_variables() {
     );
     // `reflect/dynamic?` reports declared dynamics only.
     assert_eq!(
-        run("(defdyn *d* 0) (list (reflect/dynamic? '*d*) (reflect/dynamic? 'rd) (reflect/dynamic? 42))"),
+        run(
+            "(defdyn *d* 0) (list (reflect/dynamic? '*d*) (reflect/dynamic? 'rd) (reflect/dynamic? 42))"
+        ),
         "(true false false)"
     );
 }
@@ -1396,9 +1410,11 @@ fn dynamic_variables() {
 #[test]
 fn binding_undeclared_is_an_error() {
     let mut interp = Interp::new();
-    assert!(interp
-        .eval_str("(binding (not-dynamic 1) not-dynamic)")
-        .is_err());
+    assert!(
+        interp
+            .eval_str("(binding (not-dynamic 1) not-dynamic)")
+            .is_err()
+    );
 }
 
 /// A pathological deeply-nested input is rejected as a parse error rather
@@ -1721,7 +1737,9 @@ fn bignum_bitwise() {
     );
     // OR/XOR of disjoint high bits.
     assert_eq!(
-        run("(= (bit/or (bit/shift-left 1 200) (bit/shift-left 1 100)) (+ (bit/shift-left 1 200) (bit/shift-left 1 100)))"),
+        run(
+            "(= (bit/or (bit/shift-left 1 200) (bit/shift-left 1 100)) (+ (bit/shift-left 1 200) (bit/shift-left 1 100)))"
+        ),
         "true"
     );
     assert_eq!(
@@ -1892,7 +1910,9 @@ fn prim1_guard_sees_redefinition() {
 #[test]
 fn letrec_self_recursion_accumulates() {
     assert_eq!(
-        run("(letrec (sumto (fn (n acc) (if (= n 0) acc (sumto (- n 1) (+ acc n))))) (sumto 100 0))"),
+        run(
+            "(letrec (sumto (fn (n acc) (if (= n 0) acc (sumto (- n 1) (+ acc n))))) (sumto 100 0))"
+        ),
         "5050"
     );
 }

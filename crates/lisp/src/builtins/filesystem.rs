@@ -2,7 +2,7 @@
 //! bytes), metadata, and the atomic `%file-swap`. Policy — `file/*`, `path/*` — is Brood.
 
 use crate::core::heap::Heap;
-use crate::core::value::{kw, EnvId, Value};
+use crate::core::value::{EnvId, Value, kw};
 use crate::error::{LispError, LispResult};
 
 use super::args::{arg, expect_int, expect_string};
@@ -319,7 +319,7 @@ pub(super) fn list_dir(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
             .collect(),
         Err(e) => {
             return Err(LispError::runtime(format!("file/ls: {}: {}", path, e))
-                .with_code(crate::error::error_codes::FILE_IO))
+                .with_code(crate::error::error_codes::FILE_IO));
         }
     };
     names.sort();

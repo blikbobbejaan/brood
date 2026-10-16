@@ -29,7 +29,7 @@
 //! here — it cycles in its worker's queue (re-enqueued on every preempt), so that
 //! worker is never idle and never steals; plain fan-out is what exercises the path.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn idle_worker_steals_fresh_backlog_under_load() {

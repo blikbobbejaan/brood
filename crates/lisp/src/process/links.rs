@@ -41,7 +41,7 @@ use crate::core::sync::lock;
 use crate::core::value::{self, Symbol};
 use crate::process::keywords as pk;
 
-use super::mailbox::{deliver, REGISTRY};
+use super::mailbox::{REGISTRY, deliver};
 use super::message::Message;
 use super::scheduler::{self, self_pid};
 

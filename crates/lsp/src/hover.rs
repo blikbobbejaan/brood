@@ -7,9 +7,9 @@
 //!
 //! No user code runs — see `docs/lsp.md`.
 
+use brood::Interp;
 use brood::syntax::cst::Node;
 use brood::syntax::scope::{BindingKind, Resolution, ScopeTree};
-use brood::Interp;
 use lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use crate::defs;

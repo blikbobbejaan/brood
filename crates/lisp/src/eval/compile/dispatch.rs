@@ -312,7 +312,9 @@ pub(crate) fn dbg_check_args(args: &[Value], label: &str) {
         // silently went stale when ADR-310 appended `Value::Failure`, and every valid
         // failure value then read as corrupt memory.
         if tag > crate::core::value::MAX_VALUE_DISCRIMINANT {
-            panic!("[arg-origin] {label}: arg[{i}] has invalid Value tag {tag:#x} — corrupt (non-Value) memory passed into a frame");
+            panic!(
+                "[arg-origin] {label}: arg[{i}] has invalid Value tag {tag:#x} — corrupt (non-Value) memory passed into a frame"
+            );
         }
     }
 }

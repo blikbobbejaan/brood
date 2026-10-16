@@ -9,8 +9,8 @@
 //! cursor-driven and also covers `:implements`; document links are the
 //! editor's *passive* underlines over every linkable module name at once.
 
-use brood::syntax::cst::{Node, NodeKind};
 use brood::Interp;
+use brood::syntax::cst::{Node, NodeKind};
 use lsp_types::DocumentLink;
 
 use crate::line_index::LineIndex;

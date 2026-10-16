@@ -79,7 +79,7 @@ struct OffloadPool {
 }
 
 fn offload_pool() -> &'static OffloadPool {
-    use std::sync::{mpsc, Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock, mpsc};
     static POOL: OnceLock<OffloadPool> = OnceLock::new();
     POOL.get_or_init(|| {
         let (jobs, queue) = mpsc::channel::<OffloadJob>();
@@ -104,11 +104,13 @@ impl OffloadPool {
             let queue = std::sync::Arc::clone(&self.queue);
             let started = std::thread::Builder::new()
                 .name(format!("brood-offload-{}", *workers))
-                .spawn(move || loop {
-                    let job = crate::core::sync::lock(&queue).recv();
-                    match job {
-                        Ok(j) => run_offload_job(j),
-                        Err(_) => break,
+                .spawn(move || {
+                    loop {
+                        let job = crate::core::sync::lock(&queue).recv();
+                        match job {
+                            Ok(j) => run_offload_job(j),
+                            Err(_) => break,
+                        }
                     }
                 });
             match started {

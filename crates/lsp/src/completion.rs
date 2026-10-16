@@ -12,13 +12,13 @@
 
 use std::collections::HashSet;
 
+use brood::Interp;
 use brood::core::value;
 use brood::error::Span;
 use brood::syntax::cst::{Node, NodeKind};
 use brood::syntax::reader;
 use brood::syntax::scope::{BindingKind, ScopeTree};
 use brood::types::check;
-use brood::Interp;
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionItemTag, Documentation, InsertTextFormat,
     MarkupContent, MarkupKind,

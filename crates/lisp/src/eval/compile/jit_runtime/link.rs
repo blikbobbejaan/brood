@@ -336,7 +336,8 @@ pub(crate) fn debug_check_fast_link_mirror(
         // check fired deterministically on `jit::type_mixed_join_edges_stay_exact`, whose
         // `code` arm latches after sixteen deopts while `work`'s site still mirrors it.
         None => debug_assert!(
-            heap.vm_call_ic_entry_epoch(site).is_none_or(|e| e != mirror_epoch)
+            heap.vm_call_ic_entry_epoch(site)
+                .is_none_or(|e| e != mirror_epoch)
                 || heap.vm_call_ic_entry_native_installed(site) != Some(true),
             "fast-link mirror at epoch {mirror_epoch} (site {site}, head {head}) has an entry at the \
              same epoch that does not fast-link: mirror=(code={code:#x}, nslots={nslots}) — a \

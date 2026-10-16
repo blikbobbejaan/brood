@@ -221,11 +221,7 @@ fn alias_ty(heap: &Heap, name: &str) -> Option<Ty> {
                 .map(|module| format!("{module}/{name}"))
                 .filter(|id| aliases.contains_key(id));
             let first = hits.next();
-            if hits.next().is_some() {
-                None
-            } else {
-                first
-            }
+            if hits.next().is_some() { None } else { first }
         });
         if let Some(id) = imported {
             let form = *aliases.get(&id)?;

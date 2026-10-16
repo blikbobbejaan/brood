@@ -5,17 +5,17 @@
 //! `Break` the caller's inner loop, non-tail → `Fall` through); `SelfCall` is always a
 //! terminator, so the caller `break`s after it. `None` bails the whole arm to the VM.
 #![cfg(feature = "jit")]
-use super::emit::{
-    box_scalar, deopt_code, handle_from_out_slot, read_out_slot, read_words, store_int, store_op,
-    DeoptReason, Frame, Funcs, TICK_BATCH,
-};
 use super::Op;
 use super::OrBail;
-use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_BOOL, TAG_FLOAT};
+use super::emit::{
+    DeoptReason, Frame, Funcs, TICK_BATCH, box_scalar, deopt_code, handle_from_out_slot,
+    read_out_slot, read_words, store_int, store_op,
+};
 use crate::core::value::Symbol;
+use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_BOOL, TAG_FLOAT};
 use cranelift_codegen::ir::BlockArg;
 use cranelift_codegen::ir::{
-    condcodes::IntCC, types, Block, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value,
+    Block, InstBuilder, MemFlagsData, StackSlotData, StackSlotKind, Value, condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 

@@ -12,8 +12,8 @@
 //! `types::check::tests::a_reversed_index_and_collection_call_is_flagged` passed silently.
 //! Deterministic: 3 of 3 runs failed with the image, 0 of 3 without.
 
-use brood::core::value;
 use brood::Interp;
+use brood::core::value;
 
 fn tmp_image(tag: &str) -> String {
     std::env::temp_dir()

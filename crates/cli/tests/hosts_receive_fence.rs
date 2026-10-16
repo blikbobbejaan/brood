@@ -61,7 +61,9 @@ fn an_arm_whose_callee_receives_is_refused_by_name_and_never_parks_dirty() {
     // No JIT (a no-jit build or a ceiling below native): nothing tiers, so the fence is
     // never asked — say so rather than fail.
     if !stderr.lines().any(|l| l.starts_with("[jit-")) {
-        eprintln!("hosts_receive_fence: no JIT activity at all (no JIT, or the tier ceiling is below native) — vacuous");
+        eprintln!(
+            "hosts_receive_fence: no JIT activity at all (no JIT, or the tier ceiling is below native) — vacuous"
+        );
         return;
     }
     assert!(

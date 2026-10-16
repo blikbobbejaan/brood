@@ -1136,11 +1136,15 @@ fn a_fold_accumulator_keeps_its_fields_through_the_ascent() {
     // The seed and the step are two record shapes over one key set, merged field-wise by
     // the ascent's widening; kept apart they multiplied by one alternative a round.
     assert_eq!(
-        ty_str("(:col (fold '(\"a\" \"b\") {:col 1 :ops []} (fn (a s) (assoc a :col (+ (:col a) 1) :ops (conj (:ops a) s)))))"),
+        ty_str(
+            "(:col (fold '(\"a\" \"b\") {:col 1 :ops []} (fn (a s) (assoc a :col (+ (:col a) 1) :ops (conj (:ops a) s)))))"
+        ),
         "int[2..]"
     );
     assert_eq!(
-        ty_str("(:ops (fold '(\"a\" \"b\") {:col 1 :ops []} (fn (a s) (assoc a :col (+ (:col a) 1) :ops (conj (:ops a) s)))))"),
+        ty_str(
+            "(:ops (fold '(\"a\" \"b\") {:col 1 :ops []} (fn (a s) (assoc a :col (+ (:col a) 1) :ops (conj (:ops a) s)))))"
+        ),
         "vector<string>[1..]"
     );
 }

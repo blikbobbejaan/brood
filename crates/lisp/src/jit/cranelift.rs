@@ -25,8 +25,8 @@ use super::backend::JitBackend;
 use super::rt::*;
 use crate::core::value::Symbol;
 use crate::eval::compile::{
-    arm_i64_eligible, arm_i64_too_deep, i64_mark_too_deep, jit_lower_arm, jit_lower_arm_hot,
-    jit_lower_inlined_arm, CompiledArm,
+    CompiledArm, arm_i64_eligible, arm_i64_too_deep, i64_mark_too_deep, jit_lower_arm,
+    jit_lower_arm_hot, jit_lower_inlined_arm,
 };
 
 use cranelift_jit::{JITBuilder, JITModule};

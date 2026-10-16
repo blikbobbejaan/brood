@@ -90,8 +90,8 @@ const MAX_BEEP_HZ: f32 = 20_000.0;
 mod backend {
     use rodio::source::SineWave;
     use rodio::{DeviceSinkBuilder, Source};
-    use std::sync::mpsc::{self, Sender};
     use std::sync::OnceLock;
+    use std::sync::mpsc::{self, Sender};
     use std::time::Duration;
 
     /// Default peak amplitude (0..1) — modest so stacked tones don't clip.

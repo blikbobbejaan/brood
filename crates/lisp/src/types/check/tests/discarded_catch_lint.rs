@@ -81,11 +81,26 @@ fn discarded_catch_check_allow_suppresses_only_its_category() {
 #[test]
 fn zz_probe_failure() {
     let cases = [
-        ("arg into a native", "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(defn q (s) (string/length (p s)))"),
-        ("arg into a local defn", "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(sig r (string -> int))\n(defn r (s) 1)\n(defn q (s) (r (p s)))"),
-        ("declared return", "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(sig q (string -> string))\n(defn q (s) (p s))"),
-        ("arithmetic", "(defmodule t)\n(sig p (string -> (or number failure)))\n(defn p (s) 1)\n(defn q (s) (* 2 (p s)))"),
-        ("guarded — must stay silent", "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(defn q (s) (let (v (p s)) (if (failure? v) 0 (string/length v))))"),
+        (
+            "arg into a native",
+            "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(defn q (s) (string/length (p s)))",
+        ),
+        (
+            "arg into a local defn",
+            "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(sig r (string -> int))\n(defn r (s) 1)\n(defn q (s) (r (p s)))",
+        ),
+        (
+            "declared return",
+            "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(sig q (string -> string))\n(defn q (s) (p s))",
+        ),
+        (
+            "arithmetic",
+            "(defmodule t)\n(sig p (string -> (or number failure)))\n(defn p (s) 1)\n(defn q (s) (* 2 (p s)))",
+        ),
+        (
+            "guarded — must stay silent",
+            "(defmodule t)\n(sig p (string -> (or string failure)))\n(defn p (s) s)\n(defn q (s) (let (v (p s)) (if (failure? v) 0 (string/length v))))",
+        ),
     ];
     for (name, src) in cases {
         eprintln!(

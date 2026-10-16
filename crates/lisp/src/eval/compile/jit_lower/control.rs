@@ -28,14 +28,14 @@
 //! the ordinary tag-checked paths, so a scalar consumer of a non-scalar value deopts on
 //! THAT use (where the VM raises), never on the join. ADR-353.
 #![cfg(feature = "jit")]
-use super::emit::{
-    as_block_arg_for, deopt_code, param_repr, read_words, store_op, store_result, DeoptReason,
-    Frame, ParamRepr,
-};
 use super::Op;
 use super::OrBail;
+use super::emit::{
+    DeoptReason, Frame, ParamRepr, as_block_arg_for, deopt_code, param_repr, read_words, store_op,
+    store_result,
+};
 use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_BOOL};
-use cranelift_codegen::ir::{condcodes::IntCC, types, Block, BlockArg, InstBuilder, MemFlagsData};
+use cranelift_codegen::ir::{Block, BlockArg, InstBuilder, MemFlagsData, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 
 /// The size of a `Value` in bytes — the frame-slot stride in `roots`.

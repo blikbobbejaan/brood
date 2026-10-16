@@ -19,7 +19,7 @@
 //! One `#[test]` drives every shape in sequence: the scheduler knobs are process-wide, and
 //! the shapes must not share a run queue with each other.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 /// Race `hog_form` (a form that loops for many quanta, then evaluates to anything) against a
 /// responder on one hand-driven worker; returns which message reached the root first.

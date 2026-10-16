@@ -24,7 +24,7 @@ pub(in crate::builtins) fn term_err(e: std::io::Error) -> LispError {
 pub(in crate::builtins) fn term_enter(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     use crossterm::cursor::Hide;
     use crossterm::event::EnableMouseCapture;
-    use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+    use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
     enable_raw_mode().map_err(term_err)?;
     // Mouse capture rides with the full-screen path only (not the inline REPL
     // seam), so click/scroll reach `term-poll`. It costs terminal text-selection
@@ -44,7 +44,7 @@ pub(in crate::builtins) fn term_enter(_: &[Value], _: EnvId, _: &mut Heap) -> Li
 pub(in crate::builtins) fn term_leave(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     use crossterm::cursor::Show;
     use crossterm::event::DisableMouseCapture;
-    use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+    use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
     crossterm::execute!(
         std::io::stdout(),
         Show,
@@ -63,7 +63,7 @@ pub(in crate::builtins) fn term_leave(_: &[Value], _: EnvId, _: &mut Heap) -> Li
 pub fn restore_terminal() {
     use crossterm::cursor::Show;
     use crossterm::event::DisableMouseCapture;
-    use crossterm::terminal::{disable_raw_mode, LeaveAlternateScreen};
+    use crossterm::terminal::{LeaveAlternateScreen, disable_raw_mode};
     let _ = crossterm::execute!(
         std::io::stdout(),
         Show,
@@ -123,7 +123,7 @@ pub(in crate::builtins) fn term_size(_: &[Value], _: EnvId, heap: &mut Heap) -> 
 /// thread (never a scheduler worker), but an *infinite* poll on a green process
 /// would pin a worker (native blocking can't be preempted) — hence finite.
 pub(in crate::builtins) fn term_poll(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use crossterm::event::{poll, read, Event, KeyEventKind};
+    use crossterm::event::{Event, KeyEventKind, poll, read};
     let ms = expect_int(heap, "%term-poll", arg(args, 0))?.max(0) as u64;
     if poll(std::time::Duration::from_millis(ms)).map_err(term_err)? {
         match read().map_err(term_err)? {
@@ -882,7 +882,7 @@ pub(in crate::builtins) fn gui_texture(args: &[Value], _: EnvId, heap: &mut Heap
                     .saturating_mul(h_i.max(0) as u64)
                     .saturating_mul(4),
                 rgba.len()
-            )))
+            )));
         }
     };
     crate::host::gui::texture(id, tex, rgba, w, h).map_err(LispError::runtime)?;
@@ -1016,7 +1016,7 @@ pub(in crate::builtins) fn gui_icon(args: &[Value], _: EnvId, heap: &mut Heap) -
         _ => {
             return Err(LispError::runtime(
                 "%gui-icon!: rgba must be a vector of bytes".to_string(),
-            ))
+            ));
         }
     };
     // Validate BEFORE the narrowing cast, and against the buffer we actually have:
@@ -1042,7 +1042,7 @@ pub(in crate::builtins) fn gui_icon(args: &[Value], _: EnvId, heap: &mut Heap) -
             return Err(LispError::runtime(format!(
                 "%gui-icon!: w*h*4 must equal the rgba byte count (w={w_i}, h={h_i}, {} bytes)",
                 rgba.len()
-            )))
+            )));
         }
     };
     crate::host::gui::icon(id, rgba, w, h).map_err(LispError::runtime)?;
@@ -1738,7 +1738,7 @@ pub(in crate::builtins) fn gui_inset(args: &[Value], _: EnvId, heap: &mut Heap) 
                 "%gui-inset!",
                 "a number (pixels)",
                 other,
-            ))
+            ));
         }
     };
     crate::host::gui::inset(px).map_err(LispError::runtime)?;
@@ -1783,7 +1783,7 @@ pub(in crate::builtins) fn gui_line_height(
                 "%gui-line-height!",
                 "a number (a multiple of the font size)",
                 other,
-            ))
+            ));
         }
     };
     crate::host::gui::line_height(mult).map_err(LispError::runtime)?;
@@ -1807,7 +1807,7 @@ pub(in crate::builtins) fn gui_text_aa(args: &[Value], _: EnvId, heap: &mut Heap
                     "%gui-text-aa!",
                     "one of :auto, :gray, :subpixel, :bgr",
                     arg(args, 0),
-                ))
+                ));
             }
         },
         other => {
@@ -1816,7 +1816,7 @@ pub(in crate::builtins) fn gui_text_aa(args: &[Value], _: EnvId, heap: &mut Heap
                 "%gui-text-aa!",
                 "a keyword: :auto, :gray, :subpixel, or :bgr",
                 other,
-            ))
+            ));
         }
     };
     crate::host::gui::text_aa(mode).map_err(LispError::runtime)?;
@@ -1842,7 +1842,7 @@ pub(in crate::builtins) fn gui_font_register(
                 "%gui-font-register",
                 "keyword",
                 other,
-            ))
+            ));
         }
     };
     let Value::Map(id) = arg(args, 1) else {

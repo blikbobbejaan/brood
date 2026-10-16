@@ -15,9 +15,9 @@
 //! A name that is neither bound here nor recorded anywhere (a builtin, or
 //! genuinely unbound) has nowhere to jump — `None`.
 
+use brood::Interp;
 use brood::syntax::cst::{Node, NodeKind};
 use brood::syntax::scope::{Resolution, ScopeTree};
-use brood::Interp;
 use lsp_types::{Location, Position, Range, Uri};
 
 use crate::line_index::LineIndex;

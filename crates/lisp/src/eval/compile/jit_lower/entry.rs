@@ -4,12 +4,12 @@
 //! deopt journals reset. jit-only.
 #![cfg(feature = "jit")]
 use super::callbacks::CallbackRefs;
-use super::emit::{deopt_code, deopt_code_with_constant, read_out_slot, DeoptReason};
+use super::emit::{DeoptReason, deopt_code, deopt_code_with_constant, read_out_slot};
 use super::*;
 use crate::core::value::jit_layout::{PAYLOAD_OFFSET, TAG_FLOAT, TAG_INT};
 use cranelift_codegen::ir::{
-    condcodes::IntCC, types, BlockArg, InstBuilder, MemFlagsData, StackSlot, StackSlotData,
-    StackSlotKind, Type,
+    BlockArg, InstBuilder, MemFlagsData, StackSlot, StackSlotData, StackSlotKind, Type,
+    condcodes::IntCC, types,
 };
 use cranelift_frontend::{FunctionBuilder, Variable};
 use std::collections::{HashMap, HashSet};

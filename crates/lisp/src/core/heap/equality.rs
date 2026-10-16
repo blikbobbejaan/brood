@@ -206,11 +206,7 @@ fn ratio_cmp_bigdecimal(
             None => rhi.cmp(&dec_hi),
         }
     };
-    if sr < 0 {
-        mag.reverse()
-    } else {
-        mag
-    }
+    if sr < 0 { mag.reverse() } else { mag }
 }
 
 /// Tag ranks for `value_cmp`'s heterogeneous fallback. The order is mostly
@@ -296,10 +292,10 @@ impl Heap {
             // already a well-distributed `u64` of the SPELLING (KI-166), so one mix64
             // finishes the job without the SipHash path.
             ValueRef::Sym(s) => {
-                return Self::mix64(crate::core::value::symbol_hash(s) ^ 0x2F72_B4C1_0E33_9A57)
+                return Self::mix64(crate::core::value::symbol_hash(s) ^ 0x2F72_B4C1_0E33_9A57);
             }
             ValueRef::Keyword(s) => {
-                return Self::mix64(crate::core::value::symbol_hash(s) ^ 0x8E1B_6A93_C705_D2F1)
+                return Self::mix64(crate::core::value::symbol_hash(s) ^ 0x8E1B_6A93_C705_D2F1);
             }
             _ => {}
         }
@@ -954,8 +950,8 @@ impl Heap {
     }
 
     fn value_cmp_grown(&self, a: Value, b: Value) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-        use Value::*; // Stage 1: -> use ValueRef::*; (matched via .unpack())
+        use Value::*;
+        use std::cmp::Ordering; // Stage 1: -> use ValueRef::*; (matched via .unpack())
         match (a.unpack(), b.unpack()) {
             (Nil, Nil) => Ordering::Equal,
             (Bool(x), Bool(y)) => x.cmp(&y),
@@ -1144,10 +1140,11 @@ mod hash_memo_tests {
         let mut other = Heap::new();
         let second = nested_sets(&mut other, 200);
         assert_eq!(first_hash, other.hash_value(second));
-        assert!(heap
-            .hash_memo
-            .get()
-            .is_some_and(|memo| !memo.borrow().entries.is_empty()));
+        assert!(
+            heap.hash_memo
+                .get()
+                .is_some_and(|memo| !memo.borrow().entries.is_empty())
+        );
         let mut roots = [first];
         heap.collect(&mut roots, &mut []);
         assert_eq!(heap.hash_value(roots[0]), first_hash);

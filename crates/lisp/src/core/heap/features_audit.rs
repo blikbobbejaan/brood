@@ -117,7 +117,9 @@ impl Heap {
         if !resurrected.is_empty() {
             report(
                 "live *features* write",
-                &format!("an operation on {named:?} also adds {resurrected:?} — a map computed from a stale view"),
+                &format!(
+                    "an operation on {named:?} also adds {resurrected:?} — a map computed from a stale view"
+                ),
             );
         }
     }

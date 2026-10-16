@@ -70,7 +70,9 @@ fn a_native_wrapper_tail_calling_into_a_receive_never_parks_dirty() {
     // a ceiling below native (`BROOD_TIER`) — and the path under test does
     // not exist; say so rather than fail.
     if !stderr.lines().any(|l| l.starts_with("[jit-ir]")) {
-        eprintln!("vm_direct_call: nothing lowered (no JIT, or the tier ceiling is below native) — vacuous");
+        eprintln!(
+            "vm_direct_call: nothing lowered (no JIT, or the tier ceiling is below native) — vacuous"
+        );
         return;
     }
     // Vacuity guard: the wrapper must have gone native, or nothing here was exercised.

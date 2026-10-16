@@ -710,7 +710,7 @@ fn copy_value_inner<T: CopyTarget>(
                     "cannot send a lazy seq-view in a message; realise it first \
                      (e.g. with `seq`, `vec`, or `into`)",
                 )
-            }))
+            }));
         }
         Value::Map(id) => {
             // Two nodes per entry (key and value); `map_size` is O(1).
@@ -730,7 +730,7 @@ fn copy_value_inner<T: CopyTarget>(
         }
         Value::Fn(id) => target.closure(src, v, id, depth)?,
         Value::Macro(_) => {
-            return Err(target.refuse(|| LispError::type_err("cannot send a macro in a message")))
+            return Err(target.refuse(|| LispError::type_err("cannot send a macro in a message")));
         }
         Value::Native(id) => target.native(src, id)?,
         Value::Rope(_) => {
@@ -1973,7 +1973,7 @@ impl CopyTarget for IntoHeap<'_> {
 
 #[cfg(test)]
 mod chunk_tests {
-    use super::{chunk_flush, chunk_payload, Message};
+    use super::{Message, chunk_flush, chunk_payload};
 
     /// Pull the delivered string out of a text-mode payload.
     fn text(m: Option<Message>) -> Option<String> {
@@ -2048,7 +2048,7 @@ mod chunk_tests {
     #[test]
     fn binary_mode_is_byte_faithful_and_flushes_a_text_carry() {
         let mut carry = vec![0xc3]; // a partial char left over from text mode
-                                    // Flipping to binary flushes the carry ahead of the new bytes, verbatim.
+        // Flipping to binary flushes the carry ahead of the new bytes, verbatim.
         assert_eq!(
             raw(chunk_payload(&mut carry, &[0x28, 0xff], true)),
             vec![0xc3, 0x28, 0xff]
@@ -2067,7 +2067,7 @@ mod chunk_tests {
 
 #[cfg(test)]
 mod ratio_decode_tests {
-    use super::{from_message, Message};
+    use super::{Message, from_message};
     use crate::core::heap::Heap;
     use crate::core::value::Value;
 
@@ -2153,7 +2153,7 @@ mod shipped_module_tests {
 /// so they pin the *mechanism* and stay deterministic whatever `BROOD_L1_BUDGET` says.
 #[cfg(test)]
 mod copy_budget_tests {
-    use super::{copy_cross_heap, parse_l1_budget, L1_COPY_BUDGET};
+    use super::{L1_COPY_BUDGET, copy_cross_heap, parse_l1_budget};
     use crate::core::blob::SHARED_BLOB_THRESHOLD;
     use crate::core::heap::Heap;
     use crate::core::value::Value;
@@ -2302,7 +2302,7 @@ mod copy_budget_tests {
 /// while judging a small one big costs only one extra lock acquire.
 #[cfg(test)]
 mod message_fits_tests {
-    use super::{message_fits, Message};
+    use super::{Message, message_fits};
 
     fn ints(n: usize) -> Vec<Message> {
         (0..n as i64).map(Message::Int).collect()
@@ -2382,10 +2382,10 @@ mod message_fits_tests {
 /// (`copy_cross_heap`, parked receiver) and the wire (`Message::FnShared`).
 #[cfg(test)]
 mod drain_ack_tests {
-    use super::{copy_cross_heap, from_message, to_message_to_runtime, L1_COPY_BUDGET};
+    use super::{L1_COPY_BUDGET, copy_cross_heap, from_message, to_message_to_runtime};
+    use crate::Interp;
     use crate::core::heap::Heap;
     use crate::core::value::Value;
-    use crate::Interp;
 
     const MAIN: u64 = 1;
     const SENDER: u64 = 2;
@@ -2632,7 +2632,7 @@ mod decline_tests {
 
 #[cfg(test)]
 mod message_bytes_tests {
-    use super::{message_bytes, ClosureArmMsg, ClosureMsg, Message};
+    use super::{ClosureArmMsg, ClosureMsg, Message, message_bytes};
 
     /// A queued closure's captured values, optional defaults and body are memory the
     /// pressure victim choice must see. `message_bytes` stopped at a closure, so a closure

@@ -420,10 +420,10 @@ pub(super) fn reset_native_state(arm: &CompiledArm) {
     arm.shared_published.store(false, Relaxed); // recompiled code must re-publish
     arm.inline_installed.store(false, Release); // re-decide the inline swap
     arm.inline_queued.store(false, Relaxed); // re-enqueue the inlined upgrade if still hot
-                                             // Drop the stale inlined native too: it was lowered for the state being reset (an old
-                                             // epoch's operators, or the profile the deopts disproved), so it must not be re-swapped
-                                             // as-is — nulling forces a clean re-fetch from the shared inline cache (epoch-checked)
-                                             // or a recompile.
+    // Drop the stale inlined native too: it was lowered for the state being reset (an old
+    // epoch's operators, or the profile the deopts disproved), so it must not be re-swapped
+    // as-is — nulling forces a clean re-fetch from the shared inline cache (epoch-checked)
+    // or a recompile.
     arm.inline_code.store(std::ptr::null_mut(), Release);
 }
 

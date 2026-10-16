@@ -6,20 +6,28 @@ use super::*;
 fn flags_literal_misuse_of_primitives() {
     // An int literal now infers as its singleton (B0), so the diagnostic
     // names the exact value (`5`) rather than the coarse `int` tag.
-    assert!(warnings("(first 5)")
-        .iter()
-        .any(|w| w.contains("first") && w.contains("got 5")));
+    assert!(
+        warnings("(first 5)")
+            .iter()
+            .any(|w| w.contains("first") && w.contains("got 5"))
+    );
     // A keyword literal now infers as its singleton type, so the diagnostic
     // names the exact value (`:k`) rather than the coarse `keyword` tag.
-    assert!(warnings("(string/length :k)")
-        .iter()
-        .any(|w| w.contains("string/length") && w.contains(":k")));
-    assert!(warnings("(%add 1 \"x\")")
-        .iter()
-        .any(|w| w.contains("%add")));
-    assert!(warnings("(%vector-ref [1 2] :k)")
-        .iter()
-        .any(|w| w.contains("vector-ref")));
+    assert!(
+        warnings("(string/length :k)")
+            .iter()
+            .any(|w| w.contains("string/length") && w.contains(":k"))
+    );
+    assert!(
+        warnings("(%add 1 \"x\")")
+            .iter()
+            .any(|w| w.contains("%add"))
+    );
+    assert!(
+        warnings("(%vector-ref [1 2] :k)")
+            .iter()
+            .any(|w| w.contains("vector-ref"))
+    );
 }
 
 #[test]
@@ -35,9 +43,11 @@ fn no_false_positives_when_type_is_unknown_or_right() {
 fn propagates_primitive_result_types() {
     // string-length returns int — the literal `1` here, a literal's length being known;
     // first wants a list/vector → flag it.
-    assert!(warnings("(first (string/length \"a\"))")
-        .iter()
-        .any(|w| w.contains("first") && w.contains("got 1")));
+    assert!(
+        warnings("(first (string/length \"a\"))")
+            .iter()
+            .any(|w| w.contains("first") && w.contains("got 1"))
+    );
 }
 
 #[test]
@@ -47,9 +57,11 @@ fn an_any_result_is_not_a_false_positive() {
     assert!(warnings("(string/length (%vector-ref xs 0))").is_empty());
     // …but on a literal it is exactly that position (a destructuring `let` lowers to
     // `%vector-ref` behind a length check, so this is what types `[x y] rect` binders).
-    assert!(warnings("(string/length (%vector-ref [1] 0))")
-        .iter()
-        .any(|w| w.contains("string/length")));
+    assert!(
+        warnings("(string/length (%vector-ref [1] 0))")
+            .iter()
+            .any(|w| w.contains("string/length"))
+    );
 }
 
 #[test]
@@ -61,14 +73,18 @@ fn does_not_descend_into_quote() {
 fn curated_closures_are_checked() {
     // `+`, `<`, `map` are Brood closures, but their curated sigs let us flag
     // provable misuse — the headline cases.
-    assert!(warnings("(+ 1 \"x\")")
-        .iter()
-        .any(|w| w.contains('+') && w.contains("number")));
+    assert!(
+        warnings("(+ 1 \"x\")")
+            .iter()
+            .any(|w| w.contains('+') && w.contains("number"))
+    );
     assert!(warnings("(< 1 :k)").iter().any(|w| w.contains('<')));
     // map's SECOND argument must be callable; an int is not (data-first, ADR-308).
-    assert!(warnings("(map xs 1)")
-        .iter()
-        .any(|w| w.contains("map") && w.contains("argument 2")));
+    assert!(
+        warnings("(map xs 1)")
+            .iter()
+            .any(|w| w.contains("map") && w.contains("argument 2"))
+    );
     // Correct uses, and an unknown (variable) callable, stay silent.
     assert!(warnings("(+ 1 2)").is_empty());
     assert!(warnings("(map xs inc)").is_empty()); // inc is a variable → unknown
@@ -115,8 +131,8 @@ fn keyword_literal_types_in_a_sig_are_enforced() {
     );
     // The declared literal *result* flows out and is checked too.
     let w = file_warnings(
-            "(sig mode (-> (or :maximized :fullscreen)))\n(defn mode () :maximized)\n(string/length (mode))",
-        );
+        "(sig mode (-> (or :maximized :fullscreen)))\n(defn mode () :maximized)\n(string/length (mode))",
+    );
     assert!(
         w.iter().any(|m| m.contains("string/length")),
         "a keyword-literal result feeding string-length should flag: {w:?}"
@@ -254,8 +270,8 @@ fn optional_sig_params_parse_and_check() {
     // `&optional` combined with a trailing `&` rest, mirroring a
     // closure's full `(req &optional opt & rest)` shape.
     let w = file_warnings(
-            "(sig h (int &optional string & number -> int))\n(defn h (a &optional b & c) a)\n(h 1 \"x\" true)",
-        );
+        "(sig h (int &optional string & number -> int))\n(defn h (a &optional b & c) a)\n(h 1 \"x\" true)",
+    );
     assert!(
         w.iter()
             .any(|m| m.contains("h: argument 3 expects number") && m.contains("got true")),
@@ -497,31 +513,43 @@ fn curated_helper_sigs_catch_misuse() {
     // DECLARES them `(int -> bool)`, and a declaration outranks the curated table whether
     // it is read from the loaded module or from the stdlib image's footer (ADR-370), so a
     // check that never loads `math` says what one that did says.
-    assert!(warnings("(math/even? \"x\")")
-        .iter()
-        .any(|w| w.contains("even?") && w.contains("int")));
-    assert!(warnings("(math/odd? :k)")
-        .iter()
-        .any(|w| w.contains("odd?") && w.contains("int")));
-    assert!(warnings("(math/abs :k)")
-        .iter()
-        .any(|w| w.contains("abs") && w.contains("number")));
+    assert!(
+        warnings("(math/even? \"x\")")
+            .iter()
+            .any(|w| w.contains("even?") && w.contains("int"))
+    );
+    assert!(
+        warnings("(math/odd? :k)")
+            .iter()
+            .any(|w| w.contains("odd?") && w.contains("int"))
+    );
+    assert!(
+        warnings("(math/abs :k)")
+            .iter()
+            .any(|w| w.contains("abs") && w.contains("number"))
+    );
     // count wants a string | map | sequence, not a number.
     assert!(warnings("(count 5)").iter().any(|w| w.contains("count")));
     // There is no `length` function and never was (see `sigs.rs`) — so the right warning
     // is UNBOUND, not a type mismatch. Asserted explicitly, because the old assertion
     // ("some warning mentioning length") passes either way and so proved nothing.
-    assert!(warnings("(length :k)")
-        .iter()
-        .any(|w| w.contains("unbound") && w.contains("length")));
+    assert!(
+        warnings("(length :k)")
+            .iter()
+            .any(|w| w.contains("unbound") && w.contains("length"))
+    );
     // not/zero? accept any arg but pin a bool *result*, so feeding it to a
     // numeric sink is caught (the result-type payoff).
-    assert!(warnings("(+ 1 (not x))")
-        .iter()
-        .any(|w| w.contains('+') && w.contains("bool")));
-    assert!(warnings("(+ 1 (math/zero? x))")
-        .iter()
-        .any(|w| w.contains('+') && w.contains("bool")));
+    assert!(
+        warnings("(+ 1 (not x))")
+            .iter()
+            .any(|w| w.contains('+') && w.contains("bool"))
+    );
+    assert!(
+        warnings("(+ 1 (math/zero? x))")
+            .iter()
+            .any(|w| w.contains('+') && w.contains("bool"))
+    );
     // Correct uses stay silent (no false positives).
     for ok in [
         "(math/even? 4)",
@@ -568,9 +596,11 @@ fn a_curated_sig_does_not_mask_the_unbound_lint_for_a_moved_name() {
         );
     }
     // The qualified spelling is the one that exists, and it still gets the vetted signature.
-    assert!(warnings("(math/abs :k)")
-        .iter()
-        .any(|w| w.contains("abs") && w.contains("number")));
+    assert!(
+        warnings("(math/abs :k)")
+            .iter()
+            .any(|w| w.contains("abs") && w.contains("number"))
+    );
 }
 
 #[test]
@@ -584,16 +614,22 @@ fn curated_output_and_numeric_sigs() {
         );
     }
     // min/max require at least one number.
-    assert!(warnings("(math/min \"a\" 2)")
-        .iter()
-        .any(|w| w.contains("min") && w.contains("number")));
-    assert!(warnings("(math/max 1 :k)")
-        .iter()
-        .any(|w| w.contains("max") && w.contains("number")));
+    assert!(
+        warnings("(math/min \"a\" 2)")
+            .iter()
+            .any(|w| w.contains("min") && w.contains("number"))
+    );
+    assert!(
+        warnings("(math/max 1 :k)")
+            .iter()
+            .any(|w| w.contains("max") && w.contains("number"))
+    );
     // min/max return a number — feeding to a string sink is caught.
-    assert!(warnings("(string/length (math/min 1 2))")
-        .iter()
-        .any(|w| w.contains("string/length")));
+    assert!(
+        warnings("(string/length (math/min 1 2))")
+            .iter()
+            .any(|w| w.contains("string/length"))
+    );
     // Correct uses stay silent.
     for ok in [
         "(io/puts \"hi\")",

@@ -1032,9 +1032,11 @@ pub(super) fn restore_compile_context(args: &[Value], _: EnvId, heap: &mut Heap)
     let parts = heap.seq_items(arg(args, 0))?;
     let (ns, imports) = match parts.as_slice() {
         [ns, imports] => (*ns, *imports),
-        _ => return Err(LispError::runtime(
-            "%restore-compile-context: expected a `[ns imports]` snapshot from %compile-context",
-        )),
+        _ => {
+            return Err(LispError::runtime(
+                "%restore-compile-context: expected a `[ns imports]` snapshot from %compile-context",
+            ));
+        }
     };
     let mut table: std::collections::HashMap<value::Symbol, ImportEntry> =
         std::collections::HashMap::new();
@@ -1645,11 +1647,11 @@ pub(super) fn alias(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         && prev != module
     {
         return Err(LispError::runtime(format!(
-                "alias `{}` is already bound to `{}` — can't also alias `{}`; give one an explicit `:as` name",
-                value::symbol_name(short),
-                value::symbol_name(prev),
-                value::symbol_name(module),
-            )));
+            "alias `{}` is already bound to `{}` — can't also alias `{}`; give one an explicit `:as` name",
+            value::symbol_name(short),
+            value::symbol_name(prev),
+            value::symbol_name(module),
+        )));
     }
     heap.add_import(key, module);
     Ok(Value::nil())

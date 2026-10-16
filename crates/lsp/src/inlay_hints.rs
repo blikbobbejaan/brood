@@ -17,12 +17,12 @@
 
 use std::collections::HashMap;
 
+use brood::Interp;
 use brood::introspect;
 use brood::syntax::cst::{Node, NodeKind};
 use brood::syntax::reader;
 use brood::syntax::scope::{BindingKind, Resolution, ScopeTree};
-use brood::types::check::{file_signatures, FnSignature};
-use brood::Interp;
+use brood::types::check::{FnSignature, file_signatures};
 use lsp_types::{InlayHint, InlayHintKind, InlayHintLabel};
 
 use crate::line_index::LineIndex;

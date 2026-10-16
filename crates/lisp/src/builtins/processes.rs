@@ -309,7 +309,7 @@ pub(super) fn spawn_named(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
                 "%spawn-named",
                 "keyword or symbol",
                 v,
-            ))
+            ));
         }
     };
     let thunk = arg(args, 1);
@@ -427,7 +427,7 @@ pub(super) fn process_flag(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
                             "proc/flag :max-heap",
                             "positive int (bytes) or nil",
                             other,
-                        ))
+                        ));
                     }
                 }
             };
@@ -450,7 +450,7 @@ pub(super) fn process_flag(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
                             "proc/flag :max-mailbox",
                             "positive int (messages) or nil",
                             other,
-                        ))
+                        ));
                     }
                 }
             };
@@ -799,7 +799,7 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                             "proc/system-monitor",
                             "local pid to clear",
                             other,
-                        ))
+                        ));
                     }
                 }
             } else {
@@ -851,7 +851,7 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                             "proc/system-monitor",
                             "options map or nil",
                             other,
-                        ))
+                        ));
                     }
                 }
             }
@@ -868,7 +868,7 @@ pub(super) fn system_monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
                 "proc/system-monitor",
                 "local pid, :all, or nil",
                 other,
-            ))
+            ));
         }
     };
     Ok(sysmon_config_map(heap, prev))

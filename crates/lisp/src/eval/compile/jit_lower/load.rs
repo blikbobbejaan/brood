@@ -2,10 +2,10 @@
 //! `Const`, `Global`/`GlobalIc`, `SetLocal`, and the deopt-resume journal written after an
 //! effect. jit-only.
 #![cfg(feature = "jit")]
-use super::emit::{self, handle_from_out_slot, Frame};
+use super::emit::{self, Frame, handle_from_out_slot};
 use super::entry::Hoisted;
 use super::*;
-use cranelift_codegen::ir::{types, FuncRef, InstBuilder, MemFlagsData, StackSlot, Type};
+use cranelift_codegen::ir::{FuncRef, InstBuilder, MemFlagsData, StackSlot, Type, types};
 use cranelift_frontend::FunctionBuilder;
 
 type SsaValue = cranelift_codegen::ir::Value;

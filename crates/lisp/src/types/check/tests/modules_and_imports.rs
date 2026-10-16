@@ -123,12 +123,16 @@ fn keyword_accessor_receiver_is_checked() {
 
 #[test]
 fn keyword_accessor_arity_is_checked() {
-    assert!(warnings("(:name)")
-        .iter()
-        .any(|s| s.contains("1 or 2 arguments")));
-    assert!(warnings("(:name {} 1 2)")
-        .iter()
-        .any(|s| s.contains("1 or 2 arguments")));
+    assert!(
+        warnings("(:name)")
+            .iter()
+            .any(|s| s.contains("1 or 2 arguments"))
+    );
+    assert!(
+        warnings("(:name {} 1 2)")
+            .iter()
+            .any(|s| s.contains("1 or 2 arguments"))
+    );
     // the two valid arities stay silent
     assert!(warnings("(:name {})").is_empty());
     assert!(warnings("(:name {} :dflt)").is_empty());

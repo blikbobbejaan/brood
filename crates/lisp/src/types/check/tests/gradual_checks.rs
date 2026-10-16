@@ -1038,8 +1038,10 @@ fn strict_mode_reads_a_nested_unknown_as_the_gradual_unknown() {
     assert!(!unknown_mark.is_subtype(&want));
     assert!(!known_mark.is_consistent_subtype(&want));
     assert!(ty_of_sig("vector").is_consistent_subtype(&ty_of_sig("(vector int)")));
-    assert!(ty_of_sig("(vector (record :a any))")
-        .is_consistent_subtype(&ty_of_sig("(vector (record :a int))")));
+    assert!(
+        ty_of_sig("(vector (record :a any))")
+            .is_consistent_subtype(&ty_of_sig("(vector (record :a int))"))
+    );
     assert!(!Ty::ANY.is_consistent_subtype(&Ty::of(Tag::Int)));
     // A map's SHAPE is a component too: a bare `map` (what `(assoc x :k v)` on an unknown
     // `x` answers) and an open record's undeclared keys are unknowns, so they fit any
