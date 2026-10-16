@@ -274,7 +274,27 @@ full budget still yields the failing value, while a merely slow one is forgiven.
         (assert= (stream/->socket (stream/list-> (list "a" "bc" "d")) server) nil)
         (tcp/close server)
         (tcp/close ls)
-        (assert= (receive ([:read data] data) (after *test-wait-ms* :timeout)) "abcd")))))
+        (assert= (receive ([:read data] data) (after *test-wait-ms* :timeout)) "abcd"))))
+  ;; A connected socket is already reading, so data can reach the caller before
+  ;; `socket->`'s stream process owns the socket. Forced here: the reader waits until the
+  ;; writer's data and close are already in its own mailbox, and only then makes the
+  ;; stream. They have to be handed over, or the stream never sees them and hangs.
+  :isolated (test "socket-> reads data that arrived before the stream took the socket"
+    (let (me (self)
+          ls (tcp/listen "127.0.0.1" 0)
+          port (or (tcp/local-port ls) (error "stream-test: the listener reported no local port")))
+      (spawn (let (c (tcp/connect "127.0.0.1" port))
+               (send me [:connected])
+               (eventually "the writer's data and close in the mailbox"
+                 (fn () (>= (get (proc/info (self)) :mailbox) 2)))
+               (send me [:read (stream/fold (stream/socket-> c) "" str)])))
+      (let (server (receive ([:tcp-accept ^ls c] c)))
+        (receive ([:connected] nil))
+        (tcp/send server "early ")
+        (tcp/send server "bytes")
+        (tcp/close server)
+        (tcp/close ls)
+        (assert= (receive ([:read data] data) (after *test-wait-ms* :timeout)) "early bytes")))))
 
 ;; ---- no producer-process leak on exhaustion (KI-33) ---------------------------
 ;;
