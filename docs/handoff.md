@@ -13,6 +13,16 @@ devlog entries of the same dates.
 
 ## State (2026-10-16)
 
+- **Latest work (2026-10-15/16, devlog "the call into native code, 32% cheaper" and "the
+  interpreted call, 10% cheaper"):** the interpreter → native call 636 → 434 instructions
+  (settled arms skip the tier-up; no shared-arm atomic write per entry), the interpreted call
+  771 → 691. Rows: default ceiling `ring` −3.3%, `nbody`/`regex`/`spawn` ~−3%, `json` −1.6%;
+  `BROOD_TIER=1` every row ≤ 0 but `sort` (+0.04%), `fib` −3.4%. Code generation itself is unchanged — the one IR
+  change tried (`push_room` inlined) moved `json` +2.5% and was reverted. Six call-path
+  experiments are recorded as measured-and-dropped; the remaining call costs are structural.
+- **Don't build the debug profile while a suite runs:** `cargo build` relinks
+  `target/debug/brood` under the running tests (it reddened `cli::stdimage_reporting`
+  2026-10-16, reproduced on demand). Release builds (`make release-brood`) are safe.
 - **2026-10-15/16, the maintenance review** (devlog entries of 2026-10-15, the last one
   "two bugs (KI-262, KI-263), one formatter walk, the 2024 edition"). Dependencies are on
   latest with MSRV 1.96, and the workspace is on the **2024 edition** (rustfmt still

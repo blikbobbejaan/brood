@@ -1938,8 +1938,9 @@ limit a cached value would get wrong, silently switching the overflow guard off.
 instructions against `d35af1a1` (a proper `target/ab` baseline — a hand-copied binary booted
 without its stdlib image and read −30..−80% everywhere): `json` −1.6% in each of its two
 modes (30 runs a side), `nbody` −2.9%, `regex` −3.2%, `spawn` −3.3%, `latency` ~−2% (10 a
-side), `persistent-map` −1.5%, `bintree` −1.3%, the rest within ±1%. Watch: one `json` run
-of 40 read 2 896M (the first of its batch); 0/150 on either binary since — not reproducible.
+side), `persistent-map` −1.5%, `bintree` −1.3%, the rest within ±1%. One `json` run of 40
+read 2 896M (the first of its batch) — closed 2026-10-16: the first run after a rebuild boots
+the prelude from source (a new build id), not a tiering failure.
 
 **Guards.** `an_interpreted_callers_native_callees_settle_on_their_code` (Rust, debug build)
 and `stress/jit_settle_test.blsp` (release, `make check-stress`; the debug build never
