@@ -291,6 +291,8 @@ fn closure_roundtrips_through_the_wire() {
         // The authoring module (ADR-383) — the record's last field, so a mis-sized
         // `captured` list ahead of it would misread this too.
         module: Some(value::intern("pool")),
+        shared_arms: None,
+        shared_pins: Vec::new(),
     };
     let f = Frame::Send {
         target: Target::Pid(1),
@@ -361,6 +363,8 @@ fn closure_with_all_options_absent_roundtrips() {
         captured: vec![],
         modules: vec![],
         module: None,
+        shared_arms: None,
+        shared_pins: Vec::new(),
     };
     let f = Frame::Send {
         target: Target::Pid(1),

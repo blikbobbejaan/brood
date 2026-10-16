@@ -275,7 +275,7 @@ full budget still yields the failing value, while a merely slow one is forgiven.
         (tcp/close server)
         (tcp/close ls)
         (assert= (receive ([:read data] data) (after *test-wait-ms* :timeout)) "abcd"))))
-  :isolated (test "data and a close that reach the caller BEFORE socket-> belong to the stream (KI-268)"
+  :isolated (test "data and a close that reach the caller BEFORE socket-> belong to the stream (KI-269)"
     ;; A connected socket reads from the start, so a fast peer's whole conversation can be
     ;; in the connector's mailbox before `socket->` hands the socket over. The writer here
     ;; finishes and closes first; the reader waits for that, gives the reactor time to

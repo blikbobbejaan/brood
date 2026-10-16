@@ -354,6 +354,20 @@ pub struct ClosureMsg {
     /// (`Closure::module`, ADR-383). Carried so a shipped closure keeps the boundary it
     /// was authored under; a copy that lost it would be contracted like a stranger's.
     pub(crate) module: Option<Symbol>,
+    /// The closure's own arms, by handle, when its code lives in a shared region and the
+    /// copy stays inside this runtime ([`IntoMessage::share_code`]); `arms` is then empty.
+    /// The receiver then runs the same code and finds it compiled: rebuilt as LOCAL data
+    /// instead, a body has no `cache_key`, never compiles, and runs on the tree-walker,
+    /// where a `receive` cannot park and holds its OS worker (KI-268).
+    pub(crate) shared_arms: Option<Arc<[value::ClosureArm]>>,
+    /// One pin per RUNTIME generation `shared_arms`' forms live in, held for the message's
+    /// whole life: a queued message is in no heap, so the drain cannot see the handles —
+    /// the reason [`Message::FnShared`] carries a pin too.
+    #[expect(
+        dead_code,
+        reason = "held for its Drop: each pin lasts exactly as long as the message"
+    )]
+    pub(crate) shared_pins: Vec<crate::core::heap::GenPin>,
 }
 
 /// One module a shipped closure's body needs on the receiver (KI-55).
@@ -408,7 +422,11 @@ pub fn to_message_to_runtime(
     v: Value,
     dest_runtime: Option<u64>,
 ) -> Result<Message, LispError> {
-    copy_value(&mut IntoMessage::new(dest_runtime), heap, v, 0)
+    let mut target = IntoMessage::new(dest_runtime);
+    // Within this runtime a closure with shared code keeps it, pinned for the message's
+    // life (`ClosureMsg::shared_pins`); the same off-switch as `FnShared`.
+    target.share_code = dest_runtime == Some(heap.runtime_tag()) && share_fn_enabled();
+    copy_value(&mut target, heap, v, 0)
 }
 
 thread_local! {
@@ -769,6 +787,12 @@ fn copy_entries<T: CopyTarget>(
 struct IntoMessage {
     visited: Vec<ClosureId>,
     dest_runtime: Option<u64>,
+    /// Carry a closure whose code already lives in a shared region by its ARMS
+    /// ([`ClosureMsg::shared_arms`]), pinned ([`ClosureMsg::shared_pins`]), instead of as
+    /// code-as-data. Set only for a copy that stays inside this runtime: `spawn`'s
+    /// [`copy_closure_into`] and a same-runtime send ([`to_message_to_runtime`]). The wire,
+    /// the startup image and every other copy leave it off.
+    share_code: bool,
 }
 
 impl IntoMessage {
@@ -776,6 +800,7 @@ impl IntoMessage {
         IntoMessage {
             visited: Vec::new(),
             dest_runtime,
+            share_code: false,
         }
     }
 }
@@ -932,9 +957,32 @@ fn closure_to_message(
         }
     }
 
-    // Deep-copy each arm's `&optional` defaults and body (code-as-data).
+    // Code already in a shared region crosses by handle when the copy allows it — see
+    // `ClosureMsg::shared_arms` for why a rebuilt LOCAL body is the wrong answer.
+    let shared_arms =
+        (target.share_code && arms_are_shared(&closure.arms)).then(|| Arc::clone(&closure.arms));
+    let mut shared_pins: Vec<crate::core::heap::GenPin> = Vec::new();
+    if let Some(shared) = &shared_arms {
+        for arm in shared.iter() {
+            let forms = arm
+                .body
+                .iter()
+                .copied()
+                .chain(arm.optionals.iter().map(|&(_, d)| d));
+            for form in forms {
+                if let Some(pin) = heap.pin_gen_of_form(form)
+                    && !shared_pins
+                        .iter()
+                        .any(|held| held.generation() == pin.generation())
+                {
+                    shared_pins.push(pin);
+                }
+            }
+        }
+    }
+    // Otherwise deep-copy each arm's `&optional` defaults and body (code-as-data).
     let mut arms = Vec::with_capacity(closure.arms.len());
-    for arm in closure.arms.iter() {
+    for arm in closure.arms.iter().filter(|_| shared_arms.is_none()) {
         let optionals = arm
             .optionals
             .iter()
@@ -989,6 +1037,28 @@ fn closure_to_message(
         captured,
         modules,
         module: closure.module,
+        shared_arms,
+        shared_pins,
+    })
+}
+
+/// Whether every form of every arm lives in a shared region (or is an immediate), so the
+/// arms are valid by handle in any process of this runtime and their body has a
+/// `cache_key` there.
+fn arms_are_shared(arms: &[value::ClosureArm]) -> bool {
+    let shared_form = |v: Value| match v.unpack() {
+        value::ValueRef::Pair(p) => p.region() != value::LOCAL,
+        value::ValueRef::Nil
+        | value::ValueRef::Bool(_)
+        | value::ValueRef::Int(_)
+        | value::ValueRef::Float(_)
+        | value::ValueRef::Sym(_)
+        | value::ValueRef::Keyword(_) => true,
+        _ => false,
+    };
+    arms.iter().all(|arm| {
+        arm.body.iter().all(|&f| shared_form(f))
+            && arm.optionals.iter().all(|&(_, d)| shared_form(d))
     })
 }
 
@@ -1019,21 +1089,7 @@ pub(crate) fn copy_closure_into(heap: &Heap, f: Value, child: &mut Heap) -> Opti
     if env == EnvId::GLOBAL || env.region() != value::LOCAL {
         return None;
     }
-    let shared_form = |v: Value| match v.unpack() {
-        value::ValueRef::Pair(p) => p.region() != value::LOCAL,
-        value::ValueRef::Nil
-        | value::ValueRef::Bool(_)
-        | value::ValueRef::Int(_)
-        | value::ValueRef::Float(_)
-        | value::ValueRef::Sym(_)
-        | value::ValueRef::Keyword(_) => true,
-        _ => false,
-    };
-    let code_shared = cl.arms.iter().all(|arm| {
-        arm.body.iter().all(|&f| shared_form(f))
-            && arm.optionals.iter().all(|&(_, d)| shared_form(d))
-    });
-    if !code_shared {
+    if !arms_are_shared(&cl.arms) {
         return None;
     }
     let mut mentioned = std::collections::HashSet::new();
@@ -1048,6 +1104,11 @@ pub(crate) fn copy_closure_into(heap: &Heap, f: Value, child: &mut Heap) -> Opti
     // `visited` starts at the closure being copied, so a capture that reaches back to it
     // (a self-referential local closure) is refused rather than copied around the cycle.
     let mut target = IntoMessage::new(Some(heap.runtime_tag()));
+    // A closure inside a captured value (a repo's adaptor functions) keeps its shared code
+    // too, exactly as this one does. Copied as LOCAL data it would run on the tree-walker
+    // in the child, where every `receive` holds an OS worker: 200 clients of a 3-connection
+    // pool stalled that way (KI-268).
+    target.share_code = true;
     target.visited.push(id);
     let mut captured = Vec::new();
     for sym in mentioned {
@@ -1547,34 +1608,43 @@ fn closure_from_message(heap: &mut Heap, c: &ClosureMsg) -> Value {
         .iter()
         .filter(|need| heap.env_get(EnvId::GLOBAL, need.probe).is_none())
         .collect();
-    // Rebuild every arm's optional-default forms and body as local data.
-    let arms = c
-        .arms
-        .iter()
-        .map(|arm| {
-            let optionals = arm
-                .optionals
-                .iter()
-                .map(|(s, d)| {
-                    let d = from_message(heap, d);
-                    // A default is evaluated at frame setup, *before* the body — so a
-                    // module a default needs has to be loaded ahead of it too.
-                    (*s, guard_form(heap, &missing, d))
-                })
-                .collect();
-            let mut body: Vec<Value> = arm.body.iter().map(|f| from_message(heap, f)).collect();
-            if let Some(first) = body.first().copied() {
-                body[0] = guard_form(heap, &missing, first);
-            }
-            value::ClosureArm {
-                params: arm.params.clone(),
-                optionals,
-                rest: arm.rest,
-                body,
-                passthrough: None, // recomputed by `alloc_closure` on rebuild
-            }
-        })
-        .collect();
+    // Shared code arrives as its own arms (`ClosureMsg::shared_arms`); anything else
+    // rebuilds every arm's optional-default forms and body as local data.
+    let arms: Arc<[value::ClosureArm]> = match &c.shared_arms {
+        Some(shared) => {
+            // This heap may have acked a drain of these forms' generation clean and now
+            // holds handles into it — the `FnShared` arm's KI-188 rule.
+            heap.rearm_drain_ack();
+            Arc::clone(shared)
+        }
+        None => c
+            .arms
+            .iter()
+            .map(|arm| {
+                let optionals = arm
+                    .optionals
+                    .iter()
+                    .map(|(s, d)| {
+                        let d = from_message(heap, d);
+                        // A default is evaluated at frame setup, *before* the body — so a
+                        // module a default needs has to be loaded ahead of it too.
+                        (*s, guard_form(heap, &missing, d))
+                    })
+                    .collect();
+                let mut body: Vec<Value> = arm.body.iter().map(|f| from_message(heap, f)).collect();
+                if let Some(first) = body.first().copied() {
+                    body[0] = guard_form(heap, &missing, first);
+                }
+                value::ClosureArm {
+                    params: arm.params.clone(),
+                    optionals,
+                    rest: arm.rest,
+                    body,
+                    passthrough: None, // recomputed by `alloc_closure` on rebuild
+                }
+            })
+            .collect(),
+    };
     // Rebuild the captured free vars as one frame chained onto this process's
     // global scope, so the closure's free globals resolve here. No captures =>
     // a global-capturing closure (`env: None`).
@@ -2583,6 +2653,8 @@ mod message_bytes_tests {
                 captured: vec![(crate::core::value::intern("c"), captured)],
                 modules: Vec::new(),
                 module: None,
+                shared_arms: None,
+                shared_pins: Vec::new(),
             }))
         };
         let empty = message_bytes(&closure(Message::Nil, Message::Nil, Message::Nil));

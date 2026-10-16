@@ -159,7 +159,7 @@ already be in the caller's mailbox."
     ;; The caller hands the socket over itself, then hands over what already arrived:
     ;; the reactor delivers under the same lock the transfer takes, so once it returns
     ;; nothing more for `sock` can reach this mailbox, and what is here precedes
-    ;; everything the stream process will receive. It replays these first (KI-268).
+    ;; everything the stream process will receive. It replays these first (KI-269).
     (tcp/controlling-process sock s)
     (send s [:stream-socket-early (sock-early sock (list))])
     s))

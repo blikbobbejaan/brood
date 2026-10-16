@@ -694,6 +694,14 @@ fn encode_msg_inner(w: &mut Vec<u8>, m: &Message) -> io::Result<()> {
 ///     data), so they recurse through [`encode_msg`] — code travels exactly
 ///     like any other data.
 fn encode_closure(w: &mut Vec<u8>, c: &crate::process::ClosureMsg) -> io::Result<()> {
+    // Shared arms are handles into THIS runtime's code region, valid nowhere else. Only
+    // `copy_closure_into` produces them, and its message never leaves the process.
+    if c.shared_arms.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a closure carrying shared code by handle cannot cross the wire",
+        ));
+    }
     put_opt_sym(w, c.name);
     // One block per arity arm: params, optionals (sym + default), rest, body.
     put_u32(w, c.arms.len() as u32);
@@ -912,6 +920,8 @@ fn decode_closure_at(
         captured,
         modules,
         module,
+        shared_arms: None,
+        shared_pins: Vec::new(),
     })
 }
 

@@ -237,6 +237,9 @@ impl Drop for DirtyBlockGuard {
             WORKER_DIRTY[wid].store(false, Ordering::Relaxed);
         }
         if self.executor {
+            // This thread goes back to the process it was running, not to the queues, so if
+            // a refused thread stranded queued work, now is the chance to start one for it.
+            pool::retry_stranded_work();
             LIVE_EXECUTORS.fetch_add(1, Ordering::SeqCst);
         }
     }

@@ -2022,6 +2022,21 @@ KI-267 — the worker announced `:ready` before entering its `try`, so a preempt
 two let the flood trip `E0046` outside the handler; reproduced on demand with a `sleep` in that
 gap, fixed in all four places the file had the ordering.
 
+## 2026-10-16 — a closure copied between processes keeps its compiled code (KI-268)
+
+The v0.39.0 release train's downstream check found store-postgres's 200-checkout stress test
+hanging on main; v0.38.0 passed it. Bisected to `67a540e1` (ADR-405, `spawn` copies captured
+values), then pinned by gdb and a scheduler trace. A closure that crosses into another process
+of the same runtime was rebuilt there as LOCAL data, which never compiles (`cache_key` needs a
+shared body form), so it tree-walked, and every `receive` in it held an OS thread. 200 clients
+meant ~190 overflow threads; when the OS refused the next one, the stranded work was dropped
+silently. The send path had the same flaw since long before 0.38 (a repro hung v0.38.0 3/5).
+
+A same-runtime copy now carries the closure's shared arms by handle, pinned like `FnShared`, so
+the receiver runs compiled code that parks. A refused overflow thread is reported once and
+retried when a blocked thread wakes. Guard: `closure_copy_stays_compiled.rs`
+(`:peak-threads <= :workers`, red under sabotage). Release held until this was in.
+
 ## 2026-10-16 (evening) — `exec_value` retired: the bytecode loop is the VM's only executor
 
 `exec_value` walked the compiled `Node` tree for two callers the bytecode never served — top-level
@@ -2065,7 +2080,7 @@ default, and the profile difference was inlining moving (`jit_dispatch_call` int
 new module (`prim_exec`) re-partitions them. In `release-lean`, the shipped build (fat LTO, one
 unit), `supervisor` reads 4 731M against 4 734M, `json` identical in both modes, `nqueens` −0.3%.
 
-**And a flake found by the gates, fixed (KI-268).** `stream_test`'s loopback `->socket` test
+**And a flake found by the gates, fixed (KI-269 — filed as KI-268 in its commit message; the other machine's KI-268 landed first and this one was renumbered at the merge).** `stream_test`'s loopback `->socket` test
 timed out once in the VM half; 5/120 at 8-way load on `b98cda3c` too, so not this change.
 `stream/socket->` let its stream process claim the socket itself, and a connected socket reads
 from the start, so a fast peer's data and close could land in the caller's mailbox first and be
