@@ -567,7 +567,7 @@ pub(super) fn read_spans(
                 return Err(LispError::runtime(format!(
                     "{}: each span must be a [start end face] vector",
                     who
-                )))
+                )));
             }
         };
         match (parts.first(), parts.get(1), parts.get(2)) {
@@ -576,7 +576,7 @@ pub(super) fn read_spans(
                 return Err(LispError::runtime(format!(
                     "{}: each span must be [int int face]",
                     who
-                )))
+                )));
             }
         }
     }

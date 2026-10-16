@@ -10,9 +10,9 @@
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use brood::Interp;
 use brood::core::heap::Heap;
 use brood::process;
-use brood::Interp;
 
 static MEM_GUARD: LazyLock<()> = LazyLock::new(|| {
     brood::core::alloc::init_limits_with_default(

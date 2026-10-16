@@ -36,7 +36,7 @@ fn swapped_prim2slotint_reinlines_after_epoch_bump() {
     let mut interp = crate::Interp::new();
     let heap = &mut interp.heap;
     let minus = value::intern("-"); // natural map [0,1]; `(- 24 x)` fuses to [1,0] swapped
-                                    // A stale guard (≠ current epoch) forces the revalidation path the bug lived on.
+    // A stale guard (≠ current epoch) forces the revalidation path the bug lived on.
     let guard = AtomicU64::new(heap.global_epoch().wrapping_add(1));
     // Operands as the caller picks them for map=[1,0]: x = const 24, y = local 5.
     let out = prim2_inline_exec(

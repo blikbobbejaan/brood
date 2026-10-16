@@ -22,7 +22,7 @@
 //!
 //! Its own test binary because `set_max_parallel` is process-wide.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn concurrent_senders_into_one_parked_receiver() {

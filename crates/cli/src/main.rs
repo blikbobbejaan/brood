@@ -25,9 +25,9 @@
 //! shape for hot reload (docs/shared-code.md), and `nest` is where the
 //! daily-driver workflow lives.
 
-use brood::bundle::{BUNDLE_BOOT_CHECK_ARG, BUNDLE_BUILD_INFO_ARG};
-use brood::cli_support::{report_error, run_on_main_stack, RawTermGuard};
 use brood::Interp;
+use brood::bundle::{BUNDLE_BOOT_CHECK_ARG, BUNDLE_BUILD_INFO_ARG};
+use brood::cli_support::{RawTermGuard, report_error, run_on_main_stack};
 use clap::Parser;
 use std::path::Path;
 

@@ -26,12 +26,12 @@
 
 use std::collections::HashMap;
 
+use brood::Interp;
 use brood::core::value::Value;
 use brood::error::Span;
 use brood::introspect;
 use brood::syntax::cst::{Node, NodeKind};
 use brood::syntax::scope::ScopeTree;
-use brood::Interp;
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Diagnostic, Range, TextEdit, Uri,
     WorkspaceEdit,

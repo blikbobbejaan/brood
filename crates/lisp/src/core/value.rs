@@ -120,11 +120,7 @@ fn hash_name(name: &str) -> u64 {
     }
     // Never 0: the per-thread cache uses 0 as its "not cached yet" slot. One name in 2^64
     // is nudged, which changes nothing — this is a distribution function, not an identity.
-    if hash == 0 {
-        1
-    } else {
-        hash
-    }
+    if hash == 0 { 1 } else { hash }
 }
 
 /// A hash of `sym`'s SPELLING — stable across processes, boot paths and runs, where the

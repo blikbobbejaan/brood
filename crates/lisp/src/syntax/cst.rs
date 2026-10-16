@@ -580,10 +580,11 @@ mod tests {
     #[test]
     fn comments_and_whitespace_are_kept_as_trivia() {
         let root = parse("a ; hi\nb");
-        assert!(root
-            .children
-            .iter()
-            .any(|c| c.kind == NodeKind::Comment && c.text("a ; hi\nb") == "; hi\n"));
+        assert!(
+            root.children
+                .iter()
+                .any(|c| c.kind == NodeKind::Comment && c.text("a ; hi\nb") == "; hi\n")
+        );
     }
 
     #[test]

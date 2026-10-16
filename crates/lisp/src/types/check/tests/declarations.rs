@@ -183,7 +183,9 @@ fn a_sig_over_the_required_positions_seeds_a_defn_with_undeclared_optionals() {
 fn a_deftype_past_the_shape_budget_is_reported_at_the_declaration() {
     let wide = |n: usize| {
         let fields: String = (0..n).map(|i| format!(" :f{i} int")).collect();
-        format!("(defmodule t)\n(deftype big (record{fields}))\n(sig g (big -> int))\n(defn g (b) (:f0 b))")
+        format!(
+            "(defmodule t)\n(deftype big (record{fields}))\n(sig g (big -> int))\n(defn g (b) (:f0 b))"
+        )
     };
     let ws = file_warnings(&wide(crate::types::MAX_TY_NODES / 2));
     assert!(ws.is_empty(), "{ws:?}");

@@ -79,11 +79,7 @@ fn main() {
     let git_path = |what: &str| {
         git(&["rev-parse", "--git-path", what]).map(|p| {
             let p = std::path::PathBuf::from(p);
-            if p.is_absolute() {
-                p
-            } else {
-                root.join(p)
-            }
+            if p.is_absolute() { p } else { root.join(p) }
         })
     };
     let mut watched = vec![std::path::Path::new(&manifest).join("src")];

@@ -169,5 +169,7 @@ fn an_imaged_module_registers_what_its_source_registers() {
             report.push_str(&format!("  image only : {e}\n"));
         }
     }
-    panic!("materialising a module registered something its source load does not (or the reverse):\n{report}");
+    panic!(
+        "materialising a module registered something its source load does not (or the reverse):\n{report}"
+    );
 }

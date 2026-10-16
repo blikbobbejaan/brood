@@ -18,7 +18,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], Ty::NEVER),
         &["x"],
-        "Raise x as an error - a non-local exit caught by try/catch.",
+        "Raise x as an error - a non-local exit caught by try/catch.\n\n    (try (throw :boom) (catch e e))                 → :boom\n    (try (throw {:code 7}) (catch e (:code e)))     → 7",
         throw,
     );
     // A *returned* failure — the other channel. `throw` unwinds (bugs, the
@@ -179,12 +179,9 @@ pub(super) fn blob_strong_count(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 }
 
 pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    run_guarded(
-        args,
-        env,
-        heap,
-        |error, heap| vec![error.caught_value(heap)],
-    )
+    run_guarded(args, env, heap, |error, heap| {
+        vec![error.caught_value(heap)]
+    })
 }
 
 /// `(%try-described thunk handler)` — `%try` whose handler also receives the raise's

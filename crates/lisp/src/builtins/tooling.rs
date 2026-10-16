@@ -36,7 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::range(0, 1),
         Sig::new(vec![any], sym),
         &["prefix"],
-        "A fresh, unique symbol, with an optional name prefix.",
+        "A fresh, unique symbol, with an optional name prefix.\n\n    (symbol? (gensym \"tmp\"))   → true\n    (= (gensym) (gensym))      → false",
         gensym,
     );
     // source positions (editor tooling; see docs/tooling.md)
@@ -126,7 +126,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], string.union(nil_ty)),
         &["f"],
-        "The docstring of a function, macro, or primitive, or nil.",
+        "The docstring of a function, macro, or primitive, or nil.\n\n    (string? (doc inc))   → true\n    (doc (fn (x) x))      → nil",
         doc,
     );
     primitives.def(
@@ -134,7 +134,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![any], list_ty),
         &["f"],
-        "The parameter list of a function, macro, or primitive, or nil.",
+        "The parameter list of a function, macro, or primitive, or nil.\n\n    (arglist inc)                  → (n)\n    (arglist (fn (a & more) a))    → (a & more)",
         arglist,
     );
     primitives.def(
@@ -406,7 +406,7 @@ pub(super) fn references_in_source(args: &[Value], _env: EnvId, heap: &mut Heap)
                 "reflect/references-in-source",
                 "symbol or string",
                 other,
-            ))
+            ));
         }
     };
     let src = expect_string(heap, "reflect/references-in-source", arg(args, 1))?;

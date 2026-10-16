@@ -1189,11 +1189,13 @@ pub(crate) fn jit_verify_staged(
             // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
             let raw = unsafe { v.raw_words() };
             eprintln!(
-                    "[jit-verify] STALE {kind} (gen {g} != live {e}) staged at roots[{k}] BY arm \
+                "[jit-verify] STALE {kind} (gen {g} != live {e}) staged at roots[{k}] BY arm \
                      '{}' for call to '{head_name}' (site={site}, argc={argc}); raw=[{:#x},{:#x},{:#x}]",
-                    crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),
-                    raw[0], raw[1], raw[2],
-                );
+                crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),
+                raw[0],
+                raw[1],
+                raw[2],
+            );
         }
         if log_args {
             // SAFETY: a diagnostic dump of the words (see `Value::raw_words`).
@@ -1203,7 +1205,9 @@ pub(crate) fn jit_verify_staged(
                 crate::core::value::symbol_name_opt(heap.jit_dbg_fn).unwrap_or("<unknown>"),
                 k - lo,
                 jit_describe_value(v),
-                raw[0], raw[1], raw[2],
+                raw[0],
+                raw[1],
+                raw[2],
             );
         }
     }

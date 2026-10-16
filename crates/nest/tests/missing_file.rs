@@ -12,7 +12,7 @@
 //! is the normal editor case.
 
 mod support;
-use support::{nest, temp_dir, TempDir};
+use support::{TempDir, nest, temp_dir};
 
 fn project() -> TempDir {
     let temp = temp_dir("missing");

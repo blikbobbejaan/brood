@@ -168,7 +168,7 @@ mod imp {
 }
 
 #[cfg(feature = "perf-stats")]
-pub use imp::{reset, C};
+pub use imp::{C, reset};
 
 /// Snapshot of all counters as `(name, value)` pairs, or `None` when the
 /// `perf-stats` feature is off. Read by the `(%vm-stats)` builtin.
@@ -251,9 +251,7 @@ macro_rules! perf_time {
 #[cfg(not(feature = "perf-stats"))]
 #[macro_export]
 macro_rules! perf_time {
-    ($field:ident, $body:block) => {{
-        $body
-    }};
+    ($field:ident, $body:block) => {{ $body }};
 }
 
 /// No-op form without the feature (drops its arguments unevaluated — callers pass

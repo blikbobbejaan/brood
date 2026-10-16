@@ -22,9 +22,9 @@
 //! supertype of it while the runtime — which cannot inspect a closure's domain — accepts
 //! any function. Both are right; the disagreement is structural, not drift.
 
+use brood::Interp;
 use brood::types::check::annot::parse_type;
 use brood::types::check::expr_ty_of;
-use brood::Interp;
 
 /// `(type-expr, value-expr, expected)` — `expected` is what BOTH implementations must say.
 const CASES: &[(&str, &str, bool)] = &[

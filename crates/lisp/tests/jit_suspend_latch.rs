@@ -27,8 +27,8 @@
 //! under a future tree, these tests arm themselves and the phase-2 assertions bite; the
 //! `42` round-trip assertions check parked-receive correctness either way.
 
-use brood::eval::compile::{tier_ceiling, Tier};
-use brood::{process, Interp};
+use brood::eval::compile::{Tier, tier_ceiling};
+use brood::{Interp, process};
 
 /// True when this run can never observe a dirty block, so the phase-1 hunt is pointless.
 ///

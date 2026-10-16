@@ -9,11 +9,11 @@
 //! `image-sig-probe/pick` has no rule, no binding and no module: the only thing that can
 //! type the call is the footer's `(?A ?A -> ?A)`.
 
+use brood::Interp;
 use brood::core::value::Tag;
 use brood::eval::derive::register_image_sigs;
-use brood::types::check::expr_ty_of;
 use brood::types::Ty;
-use brood::Interp;
+use brood::types::check::expr_ty_of;
 
 #[test]
 fn a_planted_type_variable_declaration_resolves_from_the_arguments() {

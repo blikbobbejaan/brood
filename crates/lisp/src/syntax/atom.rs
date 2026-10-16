@@ -359,7 +359,7 @@ fn numeric_shape(token: &str) -> NumericShape {
             return NumericShape {
                 numeric: false,
                 has_fraction_or_exp: false,
-            }
+            };
         }
     };
     // First char: a digit, or a sign/dot that leads a longer token.

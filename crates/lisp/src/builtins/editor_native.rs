@@ -171,7 +171,7 @@ fn gui_text_contrast(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
                 "%gui-text-contrast!",
                 "a number (the contrast exponent, 1.0 = plain)",
                 other,
-            ))
+            ));
         }
     };
     crate::host::gui::text_contrast(gamma).map_err(LispError::runtime)?;
@@ -189,7 +189,7 @@ fn string_width_to_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
                 "string/width->index",
                 "string",
                 other,
-            ))
+            ));
         }
     };
     let cell = match arg(args, 1) {
@@ -200,7 +200,7 @@ fn string_width_to_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResul
                 "string/width->index",
                 "int (a display cell)",
                 other,
-            ))
+            ));
         }
     };
     let (start_col, tab_width) = tab_layout(heap, "string/width->index", args, 2)?;
@@ -220,7 +220,7 @@ fn string_expand_tabs(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
                 "string/expand-tabs",
                 "string",
                 other,
-            ))
+            ));
         }
     };
     let (start_col, tab_width) = tab_layout(heap, "string/expand-tabs", args, 1)?;

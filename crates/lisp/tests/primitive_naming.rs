@@ -12,8 +12,8 @@
 //! reserved for a real module-backed one. This test fails the moment a primitive violates
 //! it — at CI, not three deploys later.
 
-use brood::core::value::{self, EnvId, ValueRef};
 use brood::Interp;
+use brood::core::value::{self, EnvId, ValueRef};
 
 #[test]
 fn primitives_do_not_borrow_a_non_module_slash_namespace() {

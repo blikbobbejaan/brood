@@ -14,7 +14,7 @@
 //! Its own test binary: `set_test_no_workers` is process-global, so it must not race the
 //! other tests.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn a_quantum_on_the_callers_thread_leaves_the_callers_capture_intact() {

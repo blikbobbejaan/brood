@@ -1,8 +1,8 @@
 //! The stub the GUI surface resolves to when the `gui` feature is off: every entry point
 //! keeps its real signature and reports that no backend was compiled in.
 
-use super::Op;
 use super::NOT_COMPILED;
+use super::Op;
 
 /// No GUI is compiled in, so nothing will ever want the process main thread: this is
 /// the plain `join` it stands in for. The signature matches the real backend's so

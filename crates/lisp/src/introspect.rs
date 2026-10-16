@@ -13,10 +13,10 @@
 //!     `reset_local_to` before returning. A long-running tooling session must
 //!     not leak a fresh list per query.
 
+use crate::Interp;
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;
 use crate::core::value::{self, Value};
-use crate::Interp;
 
 /// Every global the interpreter knows (prelude + builtins), sorted by spelling
 /// (`reflect/global-names` sorts) — the completion candidate pool.

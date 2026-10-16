@@ -2127,6 +2127,42 @@ and this side's prologue clearing a flag as its default lands. bedit at
 paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
 when the tier the arm actually ran on was never entered.
 
+
+## 2026-10-16 — a plain `assert`, the rustfmt 2024 reformat, the concurrency teaching note
+
+- **`assert`** is a prelude macro beside `error`: `(assert test message…)` raises `"assert
+  failed: <form>"` (plus `": "` and the message parts, joined like `error`'s) when `test` is
+  falsy, and returns `test`'s value otherwise. The form's text is baked in at expansion, the
+  test is evaluated once, the message only on failure. Always on: no build strips it, because a
+  knob that turns invariants off is a knob every user pays for (ADR-011). Guard:
+  `tests/assert_test.blsp`, including a worker whose failed assert is its exit reason; red under
+  sabotage (test evaluated twice, value dropped, message joined bare).
+- **rustfmt `style_edition = "2024"`**, the reformat held back when the workspace moved to the
+  2024 edition: `cargo fmt` only, its own commit. It needed two passes to settle (one rewrapped
+  `return Err(…)` in the reader only on the second).
+- **The concurrency teaching note** from the 2026-05-30 Game of Life findings: a fan-out per
+  generation loses to one process (the board crosses heaps twice a step and the merge is
+  serial); tiling with halo exchange is the shape that can win. It is in
+  `docs/brood-for-claude.md` beside the worker pool, so every scaffolded project carries it, and
+  `examples/life_bands.blsp` is the worked version — a process per band of rows for the whole
+  run, neighbours swapping edge rows with the generation pinned in the `receive`. The run
+  `assert`s it equals the serial step (verified at 1, 3, 4, 5 and 24 bands; red with the halo
+  from above dropped).
+- **Docstring examples for the bare core:** 23 of the 42 bare names that had a docstring but no
+  example now carry executed `form → result` lines — the process primitives (`self`, `send`,
+  `receive`, `spawn`, `spawn-link`, `monitor`, `demonitor`, `exit`, `ref`), `throw`, `match`,
+  `case`, `binding`, `check-allow`, `satisfies?`, `->string`, `inspect`, `gensym`, `arglist`,
+  `doc`, `bytes`, `macroexpand-1`. Each is self-contained (a process example sends to `self` or
+  waits on its own monitor, with a `:doc-` tag no other message can match). Left without: the
+  defining forms (an executed `defn` example would define a global in the test process),
+  `link`/`unlink` (a broken `unlink` would kill the doctest process after its case had passed),
+  and `compare-to`, which has no method for a built-in kind. `spawn`'s docstring named the
+  monitor message `[:down pid …]`; it is `[:down ref pid reason]`.
+- **Stale docs fixed on the way:** `failure`'s docstring and the value-kinds table in
+  `language.md` still said a failure is FALSY (it is truthy, deliberately — the Truthiness
+  section says why); `audit/report`'s doc example printed the whole surface audit into every
+  doc-examples run, and now captures it with `with-out-str`.
+
 ## 2026-10-17 — `receive` matches simple patterns natively (ADR-409)
 
 **Where a message hop goes.** The handoff's next thread was "receive loops run interpreted".

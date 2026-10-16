@@ -315,7 +315,10 @@ which is meaningless for a rope, so falling through unconditionally would swap a
 (defn satisfies? (aname x)
   "True if ability `aname` is implemented for `x`'s identity — every declared op
   resolves (directly or via `:default`). Lets a caller branch instead of letting the op
-  raise the missing-impl error. False for an unknown ability."
+  raise the missing-impl error. False for an unknown ability.
+
+    (satisfies? 'Display 1)       → true
+    (satisfies? 'NoSuchThing 1)   → false"
   (let (key (%identity-of x)
         ops (%ability-ops aname))
     (if ops
@@ -904,7 +907,10 @@ An optional leading docstring is carried onto the generated function.
 
 ;; ── Display / Inspect: the print protocol (always on) ──────────────────────────
 (defability Display
-  "A value's human display string — what `io/write`/`io/puts` show for it."
+  "A value's human display string — what `io/write`/`io/puts` show for it.
+
+    (->string \"hi\")       → \"hi\"
+    (->string [1 \"a\"])    → \"[1 a]\""
   (->string [self] :-> string))
 
 ;; Every built-in kind, and every record without a custom impl, lands here: the
@@ -933,7 +939,10 @@ An optional leading docstring is carried onto the generated function.
 ;; override. `inspect` carries no round-trip contract, so a record may shape it
 ;; freely. `:default` is `pr-str` (the readable form) for everything uncustomised.
 (defability Inspect
-  "A value's debug string — for logs / the REPL. Unlike `pr-str`, need not re-read."
+  "A value's debug string — for logs / the REPL. Unlike `pr-str`, need not re-read.
+
+    (inspect \"hi\")       → \"\\\"hi\\\"\"
+    (inspect [1 \"a\"])    → \"[1 \\\"a\\\"]\""
   (inspect [self] :-> string))
 
 (impl Inspect :default (inspect [x] (pr-str x)))

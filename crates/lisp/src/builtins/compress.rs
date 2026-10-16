@@ -14,9 +14,9 @@
 
 use std::io::{Read, Write};
 
+use flate2::Compression;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::write::{DeflateEncoder, GzEncoder, ZlibEncoder};
-use flate2::Compression;
 
 use crate::core::heap::Heap;
 use crate::core::value::{EnvId, Value};

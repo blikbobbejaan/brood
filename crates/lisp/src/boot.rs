@@ -476,8 +476,8 @@ mod prelude_hygiene {
     //! at build (this cost real time: `with-err-str` and `%table-from-map` both shipped
     //! a `table/new` the boot image could not resolve). This lint catches it at build.
     use super::*;
-    use crate::core::value::{self, ValueRef};
     use crate::Interp;
+    use crate::core::value::{self, ValueRef};
 
     #[test]
     fn prelude_paths_match_the_concatenation() {

@@ -42,7 +42,7 @@ use crate::core::heap::Heap;
 use crate::core::sync::lock;
 use crate::core::value::Value;
 use crate::error::{LispError, LispResult};
-use crate::process::{from_message, to_message, Message};
+use crate::process::{Message, from_message, to_message};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -556,7 +556,8 @@ pub fn check_key(who: &str, key: Value) -> Result<(), LispError> {
             crate::core::value::tag(key).name()
         ),
         Value::Float(f) if f.is_nan() => {
-            "NaN cannot be a table key — it never equals itself, so it could never be looked up".to_string()
+            "NaN cannot be a table key — it never equals itself, so it could never be looked up"
+                .to_string()
         }
         _ => return Ok(()),
     };

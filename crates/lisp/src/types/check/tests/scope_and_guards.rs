@@ -328,13 +328,17 @@ fn let_inside_a_then_branch_can_shadow_a_narrowing() {
 #[test]
 fn flags_too_few_arguments() {
     // `first` expects exactly 1; 0 is wrong.
-    assert!(warnings("(first)")
-        .iter()
-        .any(|w| w.contains("first") && w.contains("expected 1") && w.contains("got 0")));
+    assert!(
+        warnings("(first)")
+            .iter()
+            .any(|w| w.contains("first") && w.contains("expected 1") && w.contains("got 0"))
+    );
     // `string-length` expects exactly 1.
-    assert!(warnings("(string/length)")
-        .iter()
-        .any(|w| w.contains("string/length") && w.contains("expected 1")));
+    assert!(
+        warnings("(string/length)")
+            .iter()
+            .any(|w| w.contains("string/length") && w.contains("expected 1"))
+    );
 }
 
 #[test]
@@ -342,31 +346,41 @@ fn flags_too_many_arguments() {
     // `inc` is `exact(1)`; calling with 2 is wrong. A bare prelude function on purpose:
     // `warnings()` builds an `Interp::new()` with no module loaded, so a `math/…` name has
     // no bound function for the ARITY check to read (the curated sig supplies types only).
-    assert!(warnings("(inc 1 2)")
-        .iter()
-        .any(|w| w.contains("inc") && w.contains("expected 1") && w.contains("got 2")));
+    assert!(
+        warnings("(inc 1 2)")
+            .iter()
+            .any(|w| w.contains("inc") && w.contains("expected 1") && w.contains("got 2"))
+    );
 }
 
 #[test]
 fn arity_message_handles_range_and_variadic() {
     // `%map-get` is `range(2, 3)` → "expected 2 to 3".
-    assert!(warnings("(%map-get {})")
-        .iter()
-        .any(|w| w.contains("%map-get") && w.contains("2 to 3")));
+    assert!(
+        warnings("(%map-get {})")
+            .iter()
+            .any(|w| w.contains("%map-get") && w.contains("2 to 3"))
+    );
     // `apply` is `at_least(2)` → "expected at least 2 arguments"; 1 is too few.
-    assert!(warnings("(apply f)")
-        .iter()
-        .any(|w| w.contains("apply") && w.contains("at least 2 arguments")));
+    assert!(
+        warnings("(apply f)")
+            .iter()
+            .any(|w| w.contains("apply") && w.contains("at least 2 arguments"))
+    );
 }
 
 #[test]
 fn arity_pass_is_silent_for_correct_calls() {
-    assert!(warnings("(first [1 2])")
-        .iter()
-        .all(|w| !w.contains("number of arguments")));
-    assert!(warnings("(math/rem 7 3)")
-        .iter()
-        .all(|w| !w.contains("number of arguments")));
+    assert!(
+        warnings("(first [1 2])")
+            .iter()
+            .all(|w| !w.contains("number of arguments"))
+    );
+    assert!(
+        warnings("(math/rem 7 3)")
+            .iter()
+            .all(|w| !w.contains("number of arguments"))
+    );
     // Variadic: any count is fine.
     for n in 0..=5 {
         let args = (0..n).map(|i| i.to_string()).collect::<Vec<_>>().join(" ");
@@ -382,12 +396,16 @@ fn arity_pass_is_silent_for_correct_calls() {
 
 #[test]
 fn flags_unbound_call_heads() {
-    assert!(warnings("(frobnicate 1)")
-        .iter()
-        .any(|w| w.contains("unbound symbol: frobnicate")));
-    assert!(warnings("(typo-name :hi)")
-        .iter()
-        .any(|w| w.contains("unbound symbol: typo-name")));
+    assert!(
+        warnings("(frobnicate 1)")
+            .iter()
+            .any(|w| w.contains("unbound symbol: frobnicate"))
+    );
+    assert!(
+        warnings("(typo-name :hi)")
+            .iter()
+            .any(|w| w.contains("unbound symbol: typo-name"))
+    );
 }
 
 // ---- Operand / value-slot unbound symbols (whole-file mode only) --------
@@ -412,34 +430,48 @@ fn flags_unbound_operand_of_a_known_call() {
 
 #[test]
 fn flags_unbound_value_in_def_let_if_slots() {
-    assert!(file_warnings("(def y zilch)")
-        .iter()
-        .any(|m| m.contains("unbound symbol: zilch")));
-    assert!(file_warnings("(defn f () (let (a absent) a))")
-        .iter()
-        .any(|m| m.contains("unbound symbol: absent")));
-    assert!(file_warnings("(defn f () (if missing 1 2))")
-        .iter()
-        .any(|m| m.contains("unbound symbol: missing")));
+    assert!(
+        file_warnings("(def y zilch)")
+            .iter()
+            .any(|m| m.contains("unbound symbol: zilch"))
+    );
+    assert!(
+        file_warnings("(defn f () (let (a absent) a))")
+            .iter()
+            .any(|m| m.contains("unbound symbol: absent"))
+    );
+    assert!(
+        file_warnings("(defn f () (if missing 1 2))")
+            .iter()
+            .any(|m| m.contains("unbound symbol: missing"))
+    );
 }
 
 #[test]
 fn operand_check_respects_scope_and_forward_refs() {
     // A forward reference to a later top-level def — file-global, not unbound.
-    assert!(file_warnings("(defn a () (cons 1 (b)))\n(defn b () 2)")
-        .iter()
-        .all(|m| !m.contains("unbound")));
+    assert!(
+        file_warnings("(defn a () (cons 1 (b)))\n(defn b () 2)")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
     // A param / let-bound name used as an operand — in scope, not unbound.
-    assert!(file_warnings("(defn f (x) (+ x 1))")
-        .iter()
-        .all(|m| !m.contains("unbound")));
-    assert!(file_warnings("(defn f () (let (y 1) (+ y 2)))")
-        .iter()
-        .all(|m| !m.contains("unbound")));
+    assert!(
+        file_warnings("(defn f (x) (+ x 1))")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
+    assert!(
+        file_warnings("(defn f () (let (y 1) (+ y 2)))")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
     // A prelude name as an operand resolves through the heap globals.
-    assert!(file_warnings("(defn f () (map (list 1 2) inc))")
-        .iter()
-        .all(|m| !m.contains("unbound")));
+    assert!(
+        file_warnings("(defn f () (map (list 1 2) inc))")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
 }
 
 #[test]
@@ -447,13 +479,17 @@ fn operand_check_is_off_for_bare_fragments() {
     // The single-form path (REPL / `(check 'form)`) stays lenient: a free
     // operand variable is ambiguous, not provably unbound — only call *heads*
     // are flagged there. (Guards the no-false-positives rule for fragments.)
-    assert!(warnings("(first xs)")
-        .iter()
-        .all(|m| !m.contains("unbound")));
+    assert!(
+        warnings("(first xs)")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
     assert!(warnings("(+ 1 foo)").iter().all(|m| !m.contains("unbound")));
-    assert!(warnings("(let (x bar) (first x))")
-        .iter()
-        .all(|m| !m.contains("unbound")));
+    assert!(
+        warnings("(let (x bar) (first x))")
+            .iter()
+            .all(|m| !m.contains("unbound"))
+    );
 }
 
 #[test]
@@ -485,9 +521,11 @@ fn function_as_value_lint_is_quiet_on_the_correct_and_legitimate_shapes() {
             .all(|m| !m.contains("function used as a value"))
     );
     // A fn that *takes* arguments is a plausible intentional callback value.
-    assert!(check_with_defs(&["(defn f (x) x)"], "(print f)")
-        .iter()
-        .all(|m| !m.contains("function used as a value")));
+    assert!(
+        check_with_defs(&["(defn f (x) x)"], "(print f)")
+            .iter()
+            .all(|m| !m.contains("function used as a value"))
+    );
     // A same-named *local* (not the global zero-arg fn) is left alone.
     assert!(
         check_with_defs(&["(defn home () 1)"], "(let (home 42) (print home))")
@@ -495,27 +533,35 @@ fn function_as_value_lint_is_quiet_on_the_correct_and_legitimate_shapes() {
             .all(|m| !m.contains("function used as a value"))
     );
     // A plain value is fine.
-    assert!(warnings("(print 42)")
-        .iter()
-        .all(|m| !m.contains("function used as a value")));
+    assert!(
+        warnings("(print 42)")
+            .iter()
+            .all(|m| !m.contains("function used as a value"))
+    );
     // The lint is sink-scoped: passing a bare zero-arg fn elsewhere (a real
     // higher-order use) is not flagged.
-    assert!(check_with_defs(&["(defn home () 1)"], "(map [1 2] home)")
-        .iter()
-        .all(|m| !m.contains("function used as a value")));
+    assert!(
+        check_with_defs(&["(defn home () 1)"], "(map [1 2] home)")
+            .iter()
+            .all(|m| !m.contains("function used as a value"))
+    );
 }
 
 #[test]
 fn unbound_is_silent_for_in_scope_names() {
     // fn params don't look unbound when used as call heads or
     // referenced in the body.
-    assert!(warnings("(fn (f) (f 1 2))")
-        .iter()
-        .all(|w| !w.contains("unbound")));
+    assert!(
+        warnings("(fn (f) (f 1 2))")
+            .iter()
+            .all(|w| !w.contains("unbound"))
+    );
     // let bindings: same.
-    assert!(warnings("(let (g (fn (x) x)) (g 1))")
-        .iter()
-        .all(|w| !w.contains("unbound")));
+    assert!(
+        warnings("(let (g (fn (x) x)) (g 1))")
+            .iter()
+            .all(|w| !w.contains("unbound"))
+    );
     // Syntactic keywords aren't bound but are never "unbound".
     for src in &["(do 1 2 3)", "(when true 1)", "(cond)", "(and)", "(or)"] {
         assert!(
@@ -606,12 +652,16 @@ fn file_globals_make_later_forms_see_earlier_defs() {
 fn fn_params_with_rest_and_optional_dont_leak() {
     // The marker symbols `&`/`&optional` themselves are *not* binders;
     // the names that follow them are.
-    assert!(warnings("(fn (x & ys) (cons x ys))")
-        .iter()
-        .all(|w| !w.contains("unbound")));
-    assert!(warnings("(fn (x &optional (y 0)) (+ x y))")
-        .iter()
-        .all(|w| !w.contains("unbound")));
+    assert!(
+        warnings("(fn (x & ys) (cons x ys))")
+            .iter()
+            .all(|w| !w.contains("unbound"))
+    );
+    assert!(
+        warnings("(fn (x &optional (y 0)) (+ x y))")
+            .iter()
+            .all(|w| !w.contains("unbound"))
+    );
 }
 
 #[test]
@@ -619,9 +669,11 @@ fn defn_body_sees_its_params_in_scope() {
     // A user defn whose body references its params must not flag them as
     // unbound. (The `defn` macro hasn't been expanded — the CLI checks
     // un-expanded forms — so this tests the un-expanded surface path.)
-    assert!(warnings("(defn my-fn (x y) (+ x y))")
-        .iter()
-        .all(|w| !w.contains("unbound")));
+    assert!(
+        warnings("(defn my-fn (x y) (+ x y))")
+            .iter()
+            .all(|w| !w.contains("unbound"))
+    );
 }
 
 #[test]
@@ -918,7 +970,9 @@ fn a_type_of_equality_guards_like_the_predicate() {
     // the complement. Without it a LOADED `seq/frequencies` read `map | table` at every call
     // site (KI-173). Either operand order, and a keyword naming no tag asserts nothing.
     assert_eq!(
-        ty_str("(let (r (if (rand/float) {} (table/new))) (if (= :table (type-of r)) (table/snapshot r) r))"),
+        ty_str(
+            "(let (r (if (rand/float) {} (table/new))) (if (= :table (type-of r)) (table/snapshot r) r))"
+        ),
         "map<any, any>"
     );
     assert_eq!(

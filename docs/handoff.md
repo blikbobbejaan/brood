@@ -13,6 +13,12 @@ devlog entries of the same dates.
 
 ## State (2026-10-16)
 
+- **Easy pickings, done 2026-10-16** (devlog "a plain `assert`, the rustfmt 2024 reformat, the
+  concurrency teaching note"): `assert` in the prelude, the `style_edition = "2024"` reformat,
+  executed examples for 23 bare core names, and the tiling note in `brood-for-claude.md` with
+  `examples/life_bands.blsp`. The docstring-example campaign continues module by module — the
+  largest gaps are `editor/buffer` (101), `debug` and `test` (~40 each), `project`, `datetime`.
+
 - **Latest work (2026-10-15/16, devlog "the call into native code, 32% cheaper" and "the
   interpreted call, 10% cheaper"):** the interpreter → native call 636 → 434 instructions
   (settled arms skip the tier-up; no shared-arm atomic write per entry), the interpreted call
@@ -25,8 +31,8 @@ devlog entries of the same dates.
   2026-10-16, reproduced on demand). Release builds (`make release-brood`) are safe.
 - **2026-10-15/16, the maintenance review** (devlog entries of 2026-10-15, the last one
   "two bugs (KI-262, KI-263), one formatter walk, the 2024 edition"). Dependencies are on
-  latest with MSRV 1.96, and the workspace is on the **2024 edition** (rustfmt still
-  `style_edition = "2021"`; the reformat is its own commit when wanted). Two bugs were found
+  latest with MSRV 1.96, and the workspace is on the **2024 edition**, rustfmt's
+  `style_edition` too (the reformat landed on its own, `27a24cef`). Two bugs were found
   and fixed:
   - **KI-262:** after `unlink` plus a zero-timeout flush, an `[:EXIT]` could still arrive
     later. Guard: `crates/lisp/tests/unlink_race.rs`.
@@ -80,8 +86,8 @@ devlog entries of the same dates.
   machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`).
 - **Not brood, noted:** bedit at CI's pin passes 2463/2464 with a grammar-enabled `nest` — its
   Elixir agent keeps the ANSI-coloured `dbg` header Elixir 1.21-dev prints. `make wasm-test`
-  wants wasm-bindgen-cli 0.2.128 (0.2.100 is installed here). The local `../bedit` checkout is a
-  detached HEAD 88 commits behind its origin.
+  needs wasm-bindgen-cli at the playground's pin (0.2.129, installed in `~/.cargo/bin`, which
+  a non-login shell may not have on `PATH`).
 
 ## Open threads, in value order
 

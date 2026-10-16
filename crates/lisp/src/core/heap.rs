@@ -41,13 +41,13 @@ use std::sync::{Arc, Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard}
 
 use smallvec::SmallVec;
 
-use crate::core::blob::{SharedBlob, SHARED_BLOB_THRESHOLD};
+use crate::core::blob::{SHARED_BLOB_THRESHOLD, SharedBlob};
 use crate::core::keywords as kw;
-use crate::core::map_champ::{self, MapNode, MAX_DEPTH};
+use crate::core::map_champ::{self, MAX_DEPTH, MapNode};
 use crate::core::value::{
-    BigIntId, BytesId, Closure, ClosureArm, ClosureId, ClosureTemplate, DecimalId, EnvId, MapId,
-    NativeFn, NativeId, PairId, Passthrough, RatioId, RopeId, StrId, Symbol, Value, ValueRef,
-    VecId, LOCAL, PRELUDE, RUNTIME,
+    BigIntId, BytesId, Closure, ClosureArm, ClosureId, ClosureTemplate, DecimalId, EnvId, LOCAL,
+    MapId, NativeFn, NativeId, PRELUDE, PairId, Passthrough, RUNTIME, RatioId, RopeId, StrId,
+    Symbol, Value, ValueRef, VecId,
 };
 use crate::error::LispError;
 
@@ -1247,9 +1247,9 @@ mod gc;
 // The collector's tuning knobs live with it (move f); re-imported so `heap.rs` and the
 // sibling children resolve them unqualified, as they did when they were defined here.
 use self::gc::{
-    gc_floor, gc_trace_default, major_floor, rt_gc_floor, DRAIN_REPORT_STRIDE, P1_LARGE_SEED,
-    P1_REVALIDATE_STRIDE, P2_REVALIDATE_STRIDE, RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE,
-    WALKER_STACK_CHUNK,
+    DRAIN_REPORT_STRIDE, P1_LARGE_SEED, P1_REVALIDATE_STRIDE, P2_REVALIDATE_STRIDE,
+    RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor, gc_trace_default,
+    major_floor, rt_gc_floor,
 };
 mod gc_runtime;
 mod local_string;
@@ -1262,7 +1262,7 @@ mod roots_buf;
 /// a runtime holds in common, and the generation machinery around them.
 mod runtime_code;
 use self::runtime_code::{
-    reg_trace_enabled, ClosureTemplateMap, ConstClosureMap, LoadStage, LoadWrite,
+    ClosureTemplateMap, ConstClosureMap, LoadStage, LoadWrite, reg_trace_enabled,
 };
 pub use self::runtime_code::{
     GenPin, GlobalsSnapshot, NameMeta, RegistryOp, RuntimeCode, SourceLoc, SymbolHasher, SymbolMap,
@@ -1271,10 +1271,10 @@ pub use self::runtime_code::{
 mod slabs;
 mod small_map;
 use self::slabs::{
-    owned_bytes, park_trim_probe, shrink_slabs, slab_bytes, slab_capacity_bytes, slab_live_count,
-    CodeSlabs, Slabs, PARK_TRIM_GROWTH_SLOTS,
+    CodeSlabs, PARK_TRIM_GROWTH_SLOTS, Slabs, owned_bytes, park_trim_probe, shrink_slabs,
+    slab_bytes, slab_capacity_bytes, slab_live_count,
 };
-pub(crate) use self::slabs::{VecStore, INLINE_VEC_CAP};
+pub(crate) use self::slabs::{INLINE_VEC_CAP, VecStore};
 pub(crate) use self::small_map::SmallMap;
 mod vm_cache;
 /// The per-process compiled-body cache's type — see [`Heap::vm_cache`].
@@ -2242,8 +2242,8 @@ impl Heap {
 /// compiled out entirely in every non-test build.
 #[cfg(test)]
 mod def_publish_probe {
-    use std::sync::atomic::{AtomicU8, Ordering};
     use std::sync::RwLock;
+    use std::sync::atomic::{AtomicU8, Ordering};
 
     pub(super) const DISARMED: u8 = 0;
     pub(super) const ARMED: u8 = 1;

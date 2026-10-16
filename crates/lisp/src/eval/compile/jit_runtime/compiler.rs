@@ -262,7 +262,10 @@ pub(crate) fn jit_compile_now(heap: &Heap, arm: &Arc<CompiledArm>, base: usize) 
         {
             if crate::diagnostics::debug_flags::jit_bail_trace() {
                 let name = arm.dbg_label();
-                eprintln!("[jit-ir] arm={name} adopted-shared-code-compile-now nslots={} (not lowered here, emits no IR dump)", arm.nslots);
+                eprintln!(
+                    "[jit-ir] arm={name} adopted-shared-code-compile-now nslots={} (not lowered here, emits no IR dump)",
+                    arm.nslots
+                );
             }
         }
         arm.compile_epoch.store(epoch, Release);
@@ -339,7 +342,7 @@ pub(super) fn trace_lower_declined(arm: &CompiledArm, inlined: bool) {
 #[cfg(feature = "jit")]
 pub(crate) static JIT_COMPILER: std::sync::LazyLock<JitCompiler> = std::sync::LazyLock::new(|| {
     use std::sync::atomic::Ordering::Release;
-    use std::sync::mpsc::{sync_channel, TryRecvError};
+    use std::sync::mpsc::{TryRecvError, sync_channel};
     let (ptx, prx) = sync_channel::<Option<JitWorkItem>>(256);
     let (dtx, drx) = sync_channel::<JitWorkItem>(256);
     // A refused thread (`EAGAIN` under a thread or task limit) must not panic: this is a

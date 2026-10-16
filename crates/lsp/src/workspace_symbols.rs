@@ -11,12 +11,12 @@
 //! again, but a server-side filter keeps the payload small on a big project. An
 //! empty query returns every symbol (the "show all" affordance some clients use).
 
-use brood::syntax::cst::{Node, NodeKind};
 use brood::Interp;
+use brood::syntax::cst::{Node, NodeKind};
 use lsp_types::{Location, OneOf, SymbolKind, Uri, WorkspaceSymbol};
 
 use crate::defs::{self, DefKind};
-use crate::{workspace, Documents};
+use crate::{Documents, workspace};
 
 /// Every top-level definition across the project whose name matches `query`.
 pub fn workspace_symbols(

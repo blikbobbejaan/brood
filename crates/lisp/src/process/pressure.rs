@@ -33,7 +33,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use super::mailbox::{is_alive, Payload, REGISTRY};
+use super::mailbox::{Payload, REGISTRY, is_alive};
 use super::message::message_bytes;
 use super::scheduler;
 use crate::core::heap::Heap;

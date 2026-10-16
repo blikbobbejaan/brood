@@ -13,7 +13,7 @@
 //! `Value` is `Copy` (no drop glue), so grow/drop are plain byte copies + one `dealloc`.
 
 use crate::core::value::Value;
-use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+use std::alloc::{Layout, alloc, dealloc, handle_alloc_error};
 
 /// Field order is load-bearing: `ptr` at 0, `len` at 8, `cap` at 16 (see module doc). The
 /// `const` assertion below pins it on every build, so a reorder cannot ship silently.

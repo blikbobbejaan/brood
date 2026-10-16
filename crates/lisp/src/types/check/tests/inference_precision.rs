@@ -43,8 +43,8 @@ fn a_decidable_division_types_exactly() {
     assert_eq!(ty_str("(/ 6 -1)"), "int");
     // what stays deferred: an unknown numerator over a divisor that is not ±1
     assert_eq!(ty_str("(let (x (+ 1 2)) (/ x 2))"), "ratio"); // `x` is exactly 3 now
-                                                              // a literal SET that lands on both kinds is exactly `int | ratio` — the answer the
-                                                              // caller already gives, so the fold stops rather than walking the rest of it
+    // a literal SET that lands on both kinds is exactly `int | ratio` — the answer the
+    // caller already gives, so the fold stops rather than walking the rest of it
     assert_eq!(ty_str("(/ (if (os/env \"X\") 6 5) 2)"), "int | ratio");
     // a zero divisor RAISES (E0040), so the checker declines rather than typing an
     // expression that cannot produce a value
@@ -188,7 +188,7 @@ fn adding_whole_numbers_to_one_ratio_is_exactly_a_ratio() {
     // and the rules above it still win in order: float contagion first, then int closure
     assert_eq!(ty_str("(+ 1.0 1/2)"), "float");
     assert_eq!(ty_str("(+ 1 2)"), "3"); // int closure, and the interval arithmetic makes it exact
-                                        // A declared `int` over it is now provably wrong, where before it was merely wider.
+    // A declared `int` over it is now provably wrong, where before it was merely wider.
     let ws = file_warnings("(defmodule t)\n(sig f (int -> int))\n(defn f (x) (+ x 1/2))");
     assert!(
         ws.iter()

@@ -20,7 +20,7 @@ fn subtyping_is_set_inclusion() {
     assert!(Ty::of(Tag::Int).is_subtype(&Ty::NUMBER)); // int ⊆ number
     assert!(Ty::NUMBER.is_subtype(&Ty::ANY)); // number ⊆ any
     assert!(!Ty::NUMBER.is_subtype(&Ty::of(Tag::Int))); // number ⊄ int
-                                                        // ⊥ is a subtype of everything; everything is a subtype of ⊤.
+    // ⊥ is a subtype of everything; everything is a subtype of ⊤.
     assert!(Ty::NEVER.is_subtype(&Ty::of(Tag::Str)));
     assert!(Ty::of(Tag::Str).is_subtype(&Ty::ANY));
     assert!(Ty::of(Tag::Int).is_subtype(&Ty::of(Tag::Int))); // reflexive
@@ -400,7 +400,7 @@ fn union_keeps_a_lone_arrow_but_widens_two() {
 fn intersect_narrows_to_the_known_arrow() {
     let f = arr(vec![Ty::of(Tag::Int)], Ty::of(Tag::Int));
     let any_fn = Ty::of_tags(&[Tag::Fn, Tag::Native]); // unrefined
-                                                       // refined ∩ any-function → keep the refinement (narrowing via fn? guard).
+    // refined ∩ any-function → keep the refinement (narrowing via fn? guard).
     assert_eq!(f.clone().intersect(any_fn).as_arrow(), f.as_arrow());
 }
 
@@ -448,8 +448,8 @@ fn intersect_with_any_function_keeps_the_others_candidates_unchanged() {
     let g = arr(vec![Ty::of(Tag::Bool)], Ty::of(Tag::Bool));
     let overloaded = f.clone().intersect(g.clone());
     let any_fn = Ty::of_tags(&[Tag::Fn, Tag::Native]); // unrefined
-                                                       // any_fn ∩ overloaded and overloaded ∩ any_fn both keep the overload
-                                                       // untouched (one side contributes zero candidates).
+    // any_fn ∩ overloaded and overloaded ∩ any_fn both keep the overload
+    // untouched (one side contributes zero candidates).
     assert_eq!(
         any_fn.clone().intersect(overloaded.clone()).overload_sigs(),
         overloaded.overload_sigs()
@@ -699,14 +699,18 @@ fn double_negation_round_trips_a_refined_type() {
 
     // The subtraction is what makes `T ∩ ¬T` empty — the property the widening destroyed.
     assert!(vi.clone().intersect(once).is_never(), "T ∩ ¬T is empty");
-    assert!(Ty::tuple_of(vec![Ty::of(Tag::Int)])
-        .intersect(Ty::tuple_of(vec![Ty::of(Tag::Int)]).negate())
-        .is_never());
+    assert!(
+        Ty::tuple_of(vec![Ty::of(Tag::Int)])
+            .intersect(Ty::tuple_of(vec![Ty::of(Tag::Int)]).negate())
+            .is_never()
+    );
 
     // …and a DIFFERENT structural type is not removed by it.
-    assert!(!Ty::vector_of(Ty::of(Tag::Str))
-        .intersect(Ty::vector_of(Ty::of(Tag::Int)).negate())
-        .is_never());
+    assert!(
+        !Ty::vector_of(Ty::of(Tag::Str))
+            .intersect(Ty::vector_of(Ty::of(Tag::Int)).negate())
+            .is_never()
+    );
 
     // The empty vector is vacuously a `vector<string>`, so `vector<int>` is NOT inside
     // `¬vector<string>` — the two share `[]`. Exactness cuts both ways.
@@ -1142,7 +1146,7 @@ fn a_union_still_merges_when_one_term_can_hold_it() {
 fn a_union_absorbs_a_term_another_already_covers() {
     let vi = Ty::vector_of(Ty::of(Tag::Int));
     let v = Ty::of(Tag::Vector); // any vector
-                                 // vector<int> ⊆ vector, so the union is just `vector` — one term, not two.
+    // vector<int> ⊆ vector, so the union is just `vector` — one term, not two.
     assert_eq!(vi.clone().union(v.clone()).to_string(), "vector");
     assert_eq!(v.union(vi).to_string(), "vector");
 }
@@ -1635,9 +1639,11 @@ fn intersecting_record_shapes_is_exact() {
         Some(Ty::of(Tag::Int))
     );
     // Contradictory shapes intersect to nothing at all — not to "some map".
-    assert!(rec(&[("x", Ty::of(Tag::Int), true)])
-        .intersect(rec(&[("y", Ty::of(Tag::Str), true)]))
-        .is_never());
+    assert!(
+        rec(&[("x", Ty::of(Tag::Int), true)])
+            .intersect(rec(&[("y", Ty::of(Tag::Str), true)]))
+            .is_never()
+    );
 }
 
 #[test]
@@ -1658,9 +1664,11 @@ fn a_union_is_never_flat() {
     // be refinement-free while the alternatives do the describing, so answering from
     // the head alone would answer about one term while reading as if it answered about
     // the type.
-    assert!(!Ty::of(Tag::Int)
-        .union(Ty::tuple_of(vec![Ty::of(Tag::Str)]))
-        .is_flat());
+    assert!(
+        !Ty::of(Tag::Int)
+            .union(Ty::tuple_of(vec![Ty::of(Tag::Str)]))
+            .is_flat()
+    );
     assert!(Ty::of(Tag::Int).union(Ty::of(Tag::Str)).is_flat());
 }
 
@@ -1703,13 +1711,17 @@ fn an_intersection_of_element_and_tuple_types_is_a_lower_bound() {
     let both = vi.clone().intersect(vs);
     assert!(both.is_subtype(&vi), "`{both}` is not a lower bound");
     assert_eq!(both.elem_ty(), Some(Ty::NEVER)); // only the empty vector
-                                                 // A tuple's arity IS its shape, so no vector satisfies both.
-    assert!(Ty::tuple_of(vec![Ty::of(Tag::Int)])
-        .intersect(Ty::tuple_of(vec![Ty::of(Tag::Str)]))
-        .is_never());
-    assert!(Ty::tuple_of(vec![Ty::of(Tag::Int)])
-        .intersect(Ty::tuple_of(vec![Ty::of(Tag::Int), Ty::of(Tag::Int)]))
-        .is_never());
+    // A tuple's arity IS its shape, so no vector satisfies both.
+    assert!(
+        Ty::tuple_of(vec![Ty::of(Tag::Int)])
+            .intersect(Ty::tuple_of(vec![Ty::of(Tag::Str)]))
+            .is_never()
+    );
+    assert!(
+        Ty::tuple_of(vec![Ty::of(Tag::Int)])
+            .intersect(Ty::tuple_of(vec![Ty::of(Tag::Int), Ty::of(Tag::Int)]))
+            .is_never()
+    );
 }
 
 #[test]
@@ -1754,12 +1766,16 @@ fn a_bool_literal_complement_is_exact() {
         Ty::bool_lit(false).negate().as_lit_bool().map(|s| s.len()),
         Some(1)
     );
-    assert!(Ty::bool_lit(false)
-        .negate()
-        .is_disjoint(&Ty::bool_lit(false)));
-    assert!(!Ty::bool_lit(false)
-        .negate()
-        .is_disjoint(&Ty::bool_lit(true)));
+    assert!(
+        Ty::bool_lit(false)
+            .negate()
+            .is_disjoint(&Ty::bool_lit(false))
+    );
+    assert!(
+        !Ty::bool_lit(false)
+            .negate()
+            .is_disjoint(&Ty::bool_lit(true))
+    );
     // The truthy type itself: everything but `nil` and `false`.
     let truthy = Ty::of(Tag::Nil).union(Ty::bool_lit(false)).negate();
     assert!(truthy.is_disjoint(&Ty::of(Tag::Nil)));
@@ -1973,10 +1989,11 @@ fn an_intersection_of_arrows_satisfies_a_requirement_together() {
         "contravariance: a function taking more is usable where less is wanted"
     );
     assert!(ii.clone().intersect(ii.clone().negate()).is_never());
-    assert!(!ii
-        .clone()
-        .intersect(arr(vec![b.clone()], b.clone()).negate())
-        .is_never());
+    assert!(
+        !ii.clone()
+            .intersect(arr(vec![b.clone()], b.clone()).negate())
+            .is_never()
+    );
     // A result split across a union is NOT covered — an arrow is like a vector, not like a
     // tuple: the same function may return an int for one input and a string for another.
     assert!(!arr(vec![i.clone()], i.clone().union(s)).is_subtype(&is.union(ii)));
@@ -2085,11 +2102,13 @@ fn a_list_shape_is_a_non_empty_list_of_exactly_its_positions() {
     // A uniform list is not a shape (it has no arity), and a shape with `nil` beside it
     // has no positional answer (the empty list has no first).
     assert!(Ty::list_of(int.clone()).positional_elems().is_none());
-    assert!(shape
-        .clone()
-        .union(Ty::of(Tag::Nil))
-        .positional_elems()
-        .is_none());
+    assert!(
+        shape
+            .clone()
+            .union(Ty::of(Tag::Nil))
+            .positional_elems()
+            .is_none()
+    );
     // Two arities share no value; two shapes of one arity intersect by position.
     let one = Ty::list_shape_of(vec![int.clone()]);
     assert!(shape.is_disjoint(&one));
@@ -2302,9 +2321,11 @@ fn an_int_interval_is_a_refinement_of_the_int_member() {
     assert_eq!(both.to_string(), "int[0..5]");
     assert_eq!(both.int_range(), Some(Range::new(Some(0), Some(5))));
     assert!(Ty::int_in(Range::at_least(6)).is_disjoint(&small));
-    assert!(Ty::int_in(Range::at_least(6))
-        .intersect(small.clone())
-        .is_never());
+    assert!(
+        Ty::int_in(Range::at_least(6))
+            .intersect(small.clone())
+            .is_never()
+    );
     let hull = Ty::int_lit(0).union(Ty::int_in(Range::at_least(5)));
     assert_eq!(hull.to_string(), "int[0..]");
     // A literal set is filtered by an interval it meets.
@@ -2653,12 +2674,14 @@ fn a_nominal_records_identity_is_not_one_of_its_map_entries() {
     assert!(!plain.is_subtype(&int_map));
     // A nominal record is still NOT inside a structural shape that omits its identity.
     let structural = rec(&[("x", Ty::of(Tag::Int), true), ("y", Ty::of(Tag::Int), true)]);
-    assert!(!rec(&[
-        ("__id__", identity, true),
-        ("x", Ty::of(Tag::Int), true),
-        ("y", Ty::of(Tag::Int), true)
-    ])
-    .is_subtype(&structural));
+    assert!(
+        !rec(&[
+            ("__id__", identity, true),
+            ("x", Ty::of(Tag::Int), true),
+            ("y", Ty::of(Tag::Int), true)
+        ])
+        .is_subtype(&structural)
+    );
 }
 
 #[test]

@@ -10,13 +10,13 @@
 
 use std::io;
 use std::net::Shutdown;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::sync::Arc;
 use std::time::Duration;
 
-use super::wire::{encode_payload, Frame};
-use super::{now_millis, NODES};
+use super::wire::{Frame, encode_payload};
+use super::{NODES, now_millis};
 
 /// How often the (single, shared) heartbeat thread wakes up to inspect each link.
 /// A `Ping` is only sent to a link that has been idle for at least this long —
@@ -48,10 +48,12 @@ pub(super) fn ensure_heartbeat() {
         .name("dist-heartbeat".into())
         // Re-spawn on panic so a single bad iteration doesn't silently stop
         // liveness detection for the rest of the process lifetime.
-        .spawn(|| loop {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(heartbeat_loop));
-            eprintln!("dist: heartbeat thread panicked; restarting");
-            std::thread::sleep(HEARTBEAT_INTERVAL);
+        .spawn(|| {
+            loop {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(heartbeat_loop));
+                eprintln!("dist: heartbeat thread panicked; restarting");
+                std::thread::sleep(HEARTBEAT_INTERVAL);
+            }
         });
     if let Err(error) = started {
         HEARTBEAT_STARTED.store(false, Ordering::Release);

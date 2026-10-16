@@ -11,8 +11,8 @@
 //! result, so we return `None` (the editor leaves the text untouched) rather
 //! than risk emitting a mangled edit.
 
-use brood::introspect;
 use brood::Interp;
+use brood::introspect;
 use lsp_types::{Position, Range, TextEdit};
 
 use crate::line_index::LineIndex;

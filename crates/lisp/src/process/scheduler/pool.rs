@@ -55,17 +55,19 @@ fn ledger_watchdog() {
     STARTED.call_once(|| {
         std::thread::Builder::new()
             .name("quantum-watchdog".into())
-            .spawn(|| loop {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                let now = std::time::Instant::now();
-                for (tid, (pid, t0)) in QUANTUM_LEDGER
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .iter()
-                {
-                    let age = now.duration_since(*t0).as_secs();
-                    if age >= 3 {
-                        eprintln!("[sched] LEDGER: {tid:?} inside pid={pid} for {age}s");
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    let now = std::time::Instant::now();
+                    for (tid, (pid, t0)) in QUANTUM_LEDGER
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .iter()
+                    {
+                        let age = now.duration_since(*t0).as_secs();
+                        if age >= 3 {
+                            eprintln!("[sched] LEDGER: {tid:?} inside pid={pid} for {age}s");
+                        }
                     }
                 }
             })
@@ -175,7 +177,7 @@ fn stranded_report_queue(lock: &std::sync::Mutex<VecDeque<Box<Process>>>) -> Opt
         match lock.try_lock() {
             Ok(queue) => return Some(queue.iter().map(|p| p.pid).collect()),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                return Some(poisoned.into_inner().iter().map(|p| p.pid).collect())
+                return Some(poisoned.into_inner().iter().map(|p| p.pid).collect());
             }
             Err(std::sync::TryLockError::WouldBlock) => {
                 if std::time::Instant::now() >= deadline {
@@ -199,11 +201,11 @@ pub(crate) fn enqueue(mut proc: Box<Process>) {
     }
     proc.queued_at = now_nanos();
     set_status(&proc.mailbox, ST_RUNNABLE); // queued, awaiting a worker turn
-                                            // Count it as stealable runnable work (the `try_steal` fast-path hint), balanced by
-                                            // the single decrement in `run_one`. SeqCst so the dirty-block / drainer exhaustion
-                                            // checks see this work in the same total order as their `LIVE_EXECUTORS` updates (work
-                                            // is never stranded with no live executor — see `dirty_block`), and as the store half
-                                            // of the `wake_a_parked_peer` handshake.
+    // Count it as stealable runnable work (the `try_steal` fast-path hint), balanced by
+    // the single decrement in `run_one`. SeqCst so the dirty-block / drainer exhaustion
+    // checks see this work in the same total order as their `LIVE_EXECUTORS` updates (work
+    // is never stranded with no live executor — see `dirty_block`), and as the store half
+    // of the `wake_a_parked_peer` handshake.
     STEALABLE.fetch_add(1, Ordering::SeqCst);
     let (lock, cv) = &WORKERS[wid].0;
     crate::core::sync::lock(lock).push_back(proc);
@@ -290,7 +292,7 @@ pub(crate) fn wake_a_parked_peer(wid: usize) {
         if WORKER_PARKED[peer].load(Ordering::Relaxed) {
             // One `futex_wake`. The peer re-checks its own queue, then tries a steal; if it
             // loses the race (the owner drained it first) it simply parks again.
-            WORKERS[peer].0 .1.notify_one();
+            WORKERS[peer].0.1.notify_one();
             return;
         }
     }
@@ -325,7 +327,7 @@ fn try_steal(thief_wid: usize, saw_young: &mut bool) -> Option<Box<Process>> {
         // `try_lock`: never block a would-be thief on a contended victim — skip it
         // and try the next. A momentarily-locked queue just isn't probed this pass;
         // the `STEAL_BACKOFF` timeout brings us back.
-        let mut q = match WORKERS[victim].0 .0.try_lock() {
+        let mut q = match WORKERS[victim].0.0.try_lock() {
             Ok(q) => q,
             Err(_) => continue,
         };
@@ -367,7 +369,7 @@ fn try_steal_any() -> Option<Box<Process>> {
     let start = NEXT_WORKER.fetch_add(1, Ordering::Relaxed) % n;
     for off in 0..n {
         let victim = (start + off) % n;
-        let mut q = match WORKERS[victim].0 .0.try_lock() {
+        let mut q = match WORKERS[victim].0.0.try_lock() {
             Ok(q) => q,
             Err(_) => continue,
         };
@@ -505,7 +507,7 @@ pub fn set_test_no_workers(on: bool) {
 pub fn test_drive_quanta(max: usize) -> usize {
     let mut ran = 0;
     for _ in 0..max {
-        let next = crate::core::sync::lock(&WORKERS[0].0 .0).pop_front();
+        let next = crate::core::sync::lock(&WORKERS[0].0.0).pop_front();
         match next {
             Some(p) => {
                 run_one(p);
@@ -533,7 +535,7 @@ pub(crate) fn pump_until_quiescent() {
             loop {
                 // Bind the pop to a `let` so the queue guard drops before `run_one` — the
                 // running process's receive/preempt re-enqueue re-locks this same queue.
-                let next = crate::core::sync::lock(&WORKERS[wid].0 .0).pop_front();
+                let next = crate::core::sync::lock(&WORKERS[wid].0.0).pop_front();
                 match next {
                     Some(p) => {
                         run_one(p);
@@ -678,7 +680,7 @@ fn worker_loop(wid: usize) {
         //    `if let Some(p) = lock(..).pop_front() { run_one(p) }` would hold the
         //    queue lock across the run — and the running process's preempt/receive
         //    re-enqueue (which re-locks this same queue) would deadlock the worker.
-        let own = crate::core::sync::lock(&WORKERS[wid].0 .0).pop_front();
+        let own = crate::core::sync::lock(&WORKERS[wid].0.0).pop_front();
         if let Some(p) = own {
             idle_backoff = STEAL_BACKOFF;
             run_one(p);

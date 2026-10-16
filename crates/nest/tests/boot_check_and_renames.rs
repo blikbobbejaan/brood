@@ -12,7 +12,7 @@ use std::path::Path;
 use std::process::Command;
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 // ---------- scaffolding ----------
 

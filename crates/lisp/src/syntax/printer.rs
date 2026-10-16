@@ -4,7 +4,7 @@
 //! - [`display`] is *human* (strings raw) — what `print`/`str` use.
 
 use crate::core::heap::Heap;
-use crate::core::value::{symbol_name_ref, Value, ValueRef, VecId};
+use crate::core::value::{Value, ValueRef, VecId, symbol_name_ref};
 
 /// Maximum nesting the printer will descend into. Past this we stop
 /// recursing — a printed REPL value should never be the thing that overflows
@@ -363,7 +363,7 @@ fn write_symbol(out: &mut String, name: &str, readable: bool, keyword: bool) {
 /// keywords built from arbitrary strings (`(symbol "a b")`, `(keyword "")`) can hold
 /// spellings that aren't a clean atom token — those need `|…|` bars to round-trip.
 pub fn symbol_needs_bars(name: &str, keyword: bool) -> bool {
-    use crate::syntax::atom::{classify, is_delimiter, AtomKind};
+    use crate::syntax::atom::{AtomKind, classify, is_delimiter};
     // Not a single clean atom token: empty, or holding whitespace / a delimiter / the
     // bar-escape chars themselves / a control character (which the reader refuses in a
     // bare token but reads verbatim between bars). True for both symbols and keywords.

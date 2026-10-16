@@ -20,7 +20,7 @@
 use std::process::Command;
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 /// A temp dir holding the provider, the consumer and a runner, removed on drop.
 fn write_fixture() -> TempDir {

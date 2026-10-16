@@ -77,7 +77,7 @@ pub(super) fn tree_sitter_parse(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
                 "%tree-sitter-parse",
                 "keyword",
                 v,
-            ))
+            ));
         }
     };
     crate::host::treesit::parse(heap, &src, &lang)
@@ -125,7 +125,7 @@ pub(super) fn tree_sitter_spans(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
                     "%tree-sitter-spans",
                     "keyword",
                     other,
-                ))
+                ));
             }
         }
     }
@@ -146,7 +146,7 @@ pub(super) fn tree_sitter_load_grammar(args: &[Value], _: EnvId, heap: &mut Heap
                 "%tree-sitter-load-grammar",
                 "keyword",
                 v,
-            ))
+            ));
         }
     };
     crate::host::treesit::load_grammar(&path, &lang)

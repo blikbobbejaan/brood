@@ -375,8 +375,8 @@ pub(crate) fn exec_chunk(
                 let sa = heap.root_at(n - 3); // table
                 let sb = heap.root_at(n - 2); // key
                 let sc = heap.root_at(n - 1); // value
-                                              // Epoch guard, same discipline as Prim2: inline only while `head` still
-                                              // resolves to the primitive; a `def` bump forces one re-validate.
+                // Epoch guard, same discipline as Prim2: inline only while `head` still
+                // resolves to the primitive; a `def` bump forces one re-validate.
                 let cur = heap.global_epoch();
                 let inlinable = guard.load(Ordering::Relaxed) == cur || {
                     match resolve_prim3(heap, *head) {

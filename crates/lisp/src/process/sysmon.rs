@@ -49,8 +49,8 @@
 //! subscriber opts into that traffic knowingly (as with BEAM
 //! trace/system_monitor).
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use super::keywords as pk;
 use super::message::Message;

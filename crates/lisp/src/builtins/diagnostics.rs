@@ -236,7 +236,7 @@ pub(super) fn profile_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
                 "dev/profile-start",
                 "positive int (hz) or absent",
                 other,
-            ))
+            ));
         }
     };
     crate::diagnostics::profile::start(hz);

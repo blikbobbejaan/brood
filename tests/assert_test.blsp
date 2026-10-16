@@ -1,0 +1,50 @@
+;; `assert` — the prelude's plain assertion, outside the test framework: raise naming the
+;; form when the test is falsy, hand the test's value back when it holds.
+
+(defmodule assert-test (:use test))
+
+(describe "assert"
+  (test "a truthy test returns its value"
+    (assert= (assert (+ 1 2)) 3)
+    (assert= (assert [:ok 1]) [:ok 1])
+    ;; truthiness, not `true`: 0 and "" pass
+    (assert= (assert 0) 0)
+    (assert= (assert "") ""))
+
+  (test "a falsy test raises with the form's text"
+    (assert= (error-of (assert (= 1 2))) "assert failed: (= 1 2)")
+    (assert= (error-of (assert false)) "assert failed: false")
+    (assert= (error-of (assert nil)) "assert failed: nil"))
+
+  (test "message parts follow the form, joined like error's"
+    (let (n -1)
+      (assert= (error-of (assert (> n 0) "n must be positive, got " n))
+        "assert failed: (> n 0): n must be positive, got -1")))
+
+  (test "the message is evaluated only when the test fails"
+    (assert= (assert :ok (error "the message ran")) :ok)
+    (assert= (error-of (assert false (error "the message ran"))) "the message ran"))
+
+  (test "the test is evaluated once"
+    (assert= (with-out-str (try (assert (do (io/write "x") false)) (catch e (error-message e))))
+      "x")
+    (assert= (with-out-str (assert (do (io/write "x") true))) "x"))
+
+  (test "the raise is catchable and error-message reads it"
+    (assert= (try (assert (empty? [1])) (catch e (error-message e)))
+      "assert failed: (empty? [1])")))
+
+(defn- assert-positive (n)
+  (assert (and (> n 0) n) "worker got " n))
+
+(describe "assert across processes"
+  (test "workers that hold their assertion return the value"
+    (assert= (vec (sort (concurrently 8 (fn (i) (assert-positive (+ i 1))))))
+      [1 2 3 4 5 6 7 8]))
+
+  (test "a failed assertion in a worker is its exit reason"
+    (let ([pid ref] (spawn-monitor (assert-positive -3))
+          expected "assert failed: (and (> n 0) n): worker got -3")
+      (receive
+        ([:down ^ref ^pid reason] (is (includes? (pr-str reason) expected)))
+        (after *test-wait-ms* (is false))))))

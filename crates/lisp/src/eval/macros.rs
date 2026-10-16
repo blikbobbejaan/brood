@@ -922,8 +922,8 @@ fn expand_let(
 #[cfg(test)]
 mod resolve_tests {
     use super::*;
-    use crate::syntax::reader;
     use crate::Interp;
+    use crate::syntax::reader;
 
     /// Resolve `form_src` in namespace `ns`, after evaluating each `defs` line to
     /// set up globals. Returns the printed resolved form.

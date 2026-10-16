@@ -360,7 +360,7 @@ fn i64_guard_overflow(
     cx: &I64Ctx,
     ov: cranelift_codegen::ir::Value,
 ) {
-    use cranelift_codegen::ir::{types, InstBuilder, MemFlagsData};
+    use cranelift_codegen::ir::{InstBuilder, MemFlagsData, types};
     let ovset = b.create_block();
     let cont = b.create_block();
     b.ins().brif(ov, ovset, &[], cont, &[]);
@@ -423,7 +423,7 @@ fn lower_i64_value(
     cx: &I64Ctx,
     node: &Node,
 ) -> cranelift_codegen::ir::Value {
-    use cranelift_codegen::ir::{types, InstBuilder, MemFlagsData};
+    use cranelift_codegen::ir::{InstBuilder, MemFlagsData, types};
     match node {
         Node::Const(ConstVal::Atom(v)) => match cx.kind {
             Scalar::Int => b.ins().iconst(types::I64, v.as_int().expect("int const")),
@@ -546,8 +546,8 @@ fn lower_i64_cond(
     node: &Node,
 ) -> cranelift_codegen::ir::Value {
     use cranelift_codegen::ir::{
-        condcodes::{FloatCC, IntCC},
         InstBuilder,
+        condcodes::{FloatCC, IntCC},
     };
     match node {
         Node::Prim2 {
@@ -598,7 +598,7 @@ pub(super) fn jit_lower_i64_arm(
     arm: &CompiledArm,
 ) -> Option<*const u8> {
     use crate::core::value::jit_layout::PAYLOAD_OFFSET;
-    use cranelift_codegen::ir::{condcodes::IntCC, types, AbiParam, InstBuilder, MemFlagsData};
+    use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlagsData, condcodes::IntCC, types};
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_module::{Linkage, Module};
     use std::sync::atomic::Ordering;

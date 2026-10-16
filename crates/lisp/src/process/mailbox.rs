@@ -18,7 +18,7 @@
 //!   native-nested receive (the §7.4 dirty carve-out).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use crate::core::heap::Heap;
@@ -27,13 +27,13 @@ use crate::error::{LispError, LispResult};
 use crate::eval;
 use crate::process::keywords as pk;
 
-use super::message::{from_message, to_message_to_runtime, Message};
+use super::message::{Message, from_message, to_message_to_runtime};
 // Only the `dev-tools` trace path converts a whole trace to a message; importing it
 // unconditionally makes a `--no-default-features` build warn.
 #[cfg(feature = "dev-tools")]
 use super::message::to_message;
-use super::scheduler::{ensure_ctx, wake_enqueue, Ctx, Process};
-use super::timer::{arm_timer, SchedDeadline};
+use super::scheduler::{Ctx, Process, ensure_ctx, wake_enqueue};
+use super::timer::{SchedDeadline, arm_timer};
 
 /// Coarse run-status for `process-info` (ADR-051), stored as a lock-free cell on
 /// the mailbox (which is registry-reachable, unlike the `Process` itself). Set at
@@ -1102,9 +1102,11 @@ pub fn send(heap: &Heap, target_val: Value, msg_val: Value) -> Result<(), LispEr
                 node,
             )
         }
-        _ => return Err(LispError::type_err(
-            "send: target must be a pid, a registered name (a keyword), or a {:name :node} address",
-        )),
+        _ => {
+            return Err(LispError::type_err(
+                "send: target must be a pid, a registered name (a keyword), or a {:name :node} address",
+            ));
+        }
     };
     if !routed && heap.proc_send_errors() {
         return Err(LispError::runtime(format!(
@@ -1272,7 +1274,7 @@ fn receive_match_timed(
         _ => {
             return Err(LispError::type_err(
                 "receive: timeout must be an integer (milliseconds) or nil",
-            ))
+            ));
         }
     };
     // Mark this process running (the root never goes through `run_one`, so this is
@@ -1291,14 +1293,14 @@ fn receive_match_timed(
     // mailbox, so the scanned prefix is stable and `send` only appends.)
     let rbase = heap.roots_len();
     heap.push_root(matcher); // rbase + 0
-                             // `tags` needs exactly the same treatment, for exactly the same reason, and used to
-                             // be passed down as a bare `Value` instead. It is a LOCAL vector the `receive` macro
-                             // built, and the scan decodes it LAZILY — inside the loop, so on any iteration after
-                             // the first the decode happens *after* a matcher `apply` has run and possibly
-                             // collected, dereferencing a handle that moved. `BROOD_GC_STRESS=1` makes that
-                             // deterministic: `use-after-GC: vector handle … is from epoch N` out of
-                             // `collect_receive_tags`. In release it is silent corruption of the tag filter, i.e.
-                             // a selective receive that skips a message it should have matched.
+    // `tags` needs exactly the same treatment, for exactly the same reason, and used to
+    // be passed down as a bare `Value` instead. It is a LOCAL vector the `receive` macro
+    // built, and the scan decodes it LAZILY — inside the loop, so on any iteration after
+    // the first the decode happens *after* a matcher `apply` has run and possibly
+    // collected, dereferencing a handle that moved. `BROOD_GC_STRESS=1` makes that
+    // deterministic: `use-after-GC: vector handle … is from epoch N` out of
+    // `collect_receive_tags`. In release it is silent corruption of the tag filter, i.e.
+    // a selective receive that skips a message it should have matched.
     heap.push_root(tags); // rbase + 1
 
     // Receive-mark (ADR-195): when EVERY clause pins a ref this process minted, no message

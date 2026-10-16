@@ -38,9 +38,9 @@ use winit::window::Window;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::host::gui::backend::{snap_hairline, text_px_width, Renderer, CURSOR_FG};
+use crate::host::gui::backend::{CURSOR_FG, Renderer, snap_hairline, text_px_width};
 use crate::host::gui::{Align, CursorStyle, Op};
-use crate::host::text_width::{cluster_cells, cluster_cells_at, TAB_WIDTH};
+use crate::host::text_width::{TAB_WIDTH, cluster_cells, cluster_cells_at};
 
 const DEFAULT_FG: [u8; 3] = [0xe5, 0xe5, 0xe5];
 const DEFAULT_BG_RGB: [u8; 3] = [12, 12, 16];
@@ -1590,7 +1590,7 @@ mod tests {
         assert!(!quad_visible(10.0, -10.0, 5.0, 5.0, FW, FH)); // above
         assert!(!quad_visible(FW, 10.0, 5.0, 5.0, FW, FH)); // right
         assert!(!quad_visible(10.0, FH, 5.0, 5.0, FW, FH)); // below
-                                                            // A bitboard cell far past the window: the `Op::Cells` case the cull exists for.
+        // A bitboard cell far past the window: the `Op::Cells` case the cull exists for.
         assert!(!quad_visible(1_000_000.0, 1_000_000.0, 8.0, 16.0, FW, FH));
     }
 
@@ -1719,7 +1719,7 @@ mod tests {
         assert_eq!(block.len(), 5);
         assert_eq!(block[0], (100.0, 50.0, 10.0, 20.0, [255, 255, 255, 128]));
         assert_eq!(block[2].0, 108.0); // the right rim at cw - t
-                                       // Bar: one caret on the left edge, at least 2 px.
+        // Bar: one caret on the left edge, at least 2 px.
         let bar = cursor_quads(100.0, 50.0, 10.0, 20.0, CursorStyle::Bar);
         assert_eq!(bar.len(), 1);
         assert_eq!((bar[0].2, bar[0].3), (2.0, 20.0));

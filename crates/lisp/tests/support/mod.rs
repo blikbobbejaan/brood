@@ -9,9 +9,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use brood::eval::compile::{set_forced_ceiling, Tier};
-use brood::types::check::check_file;
 use brood::Interp;
+use brood::eval::compile::{Tier, set_forced_ceiling};
+use brood::types::check::check_file;
 
 /// The workspace root (`crates/lisp` → two levels up).
 pub fn workspace_root() -> PathBuf {

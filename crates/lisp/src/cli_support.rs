@@ -6,8 +6,8 @@
 //! formatting, common flag parsing). Anything binary-specific stays in
 //! `crates/cli/` or `crates/nest/`.
 
-use crate::error::LispError;
 use crate::Interp;
+use crate::error::LispError;
 use std::path::Path;
 
 /// The version line both binaries report from `--version`: `"<semver> (<git sha>)"`.
@@ -847,7 +847,7 @@ fn run_check_unescape(s: &str) -> String {
 mod run_check_cache_tests {
     use super::*;
     use crate::core::heap::Heap;
-    use crate::core::value::{intern, EnvId, Value};
+    use crate::core::value::{EnvId, Value, intern};
 
     /// KI-238: a verdict recorded by a process WITHOUT the stdlib image must not be served
     /// to one with it. The un-imaged walk scans module sources and loads more along the way,

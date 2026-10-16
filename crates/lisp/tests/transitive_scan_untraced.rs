@@ -18,8 +18,8 @@
 //! edges were tried first and each went away as coverage improved (`json` → `reflect` for
 //! the curated `reflect/read-string`), which is the point of planting one.
 
-use brood::types::check;
 use brood::Interp;
+use brood::types::check;
 
 mod support;
 use support::loaded;

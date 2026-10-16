@@ -14,7 +14,7 @@
 //!   2. **Migration actually happened.** `process::migrate_count()` counts capture-mode
 //!      processes re-assigned to a different worker on wake — it must be > 0.
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 #[test]
 fn deep_receive_continuations_resume_correctly_across_workers() {

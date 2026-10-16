@@ -7,10 +7,7 @@
 # `cargo fmt --check` is a meaningful CI gate and no one is surprised by a large
 # diff on first run.
 edition = "2024"
-# The 2024 style edition re-sorts imports and reflows some expressions across the whole
-# tree. Kept at 2021 so the edition move did not carry a reformat of every file; moving
-# it is one `cargo fmt` commit of its own.
-style_edition = "2021"
+style_edition = "2024"
 
 # rustfmt's default. Stated here because it's the one knob the code cares about:
 # the house style keeps lines under 100, and this is what the CI check enforces.

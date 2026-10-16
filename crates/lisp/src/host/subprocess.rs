@@ -64,8 +64,8 @@ use std::time::Duration;
 use crate::core::value;
 use crate::host::owned::OwnedTable;
 use crate::process::{
-    chunk_flush, chunk_payload, deliver_credited, reserve_io_thread, CreditSource, DeliveryCredit,
-    IoThread, Message,
+    CreditSource, DeliveryCredit, IoThread, Message, chunk_flush, chunk_payload, deliver_credited,
+    reserve_io_thread,
 };
 
 /// A live child process: the write half (its stdin) plus a shared handle to the
@@ -1010,7 +1010,7 @@ pub fn signal(id: u64, sig: &str) -> std::io::Result<()> {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     format!("unknown signal :{other} (one of :int :term :hup :quit :kill)"),
-                ))
+                ));
             }
         };
         let registry = reg();

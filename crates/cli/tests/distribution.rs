@@ -131,8 +131,8 @@ fn clean_peer_exit_fires_nodedown_promptly() {
 
     let out = a.wait_with_output().expect("watcher finished");
     let _ = b.kill(); // already exited cleanly; reap defensively
-                      // B's own output on the failure path: A exiting early (rather than on its 5 s guard) means
-                      // `connect` or `node/start` failed, and whether B was healthy is then the first question.
+    // B's own output on the failure path: A exiting early (rather than on its 5 s guard) means
+    // `connect` or `node/start` failed, and whether B was healthy is then the first question.
     let b_err = b
         .wait_with_output()
         .map(|o| String::from_utf8_lossy(&o.stderr).to_string())
@@ -1356,9 +1356,7 @@ fn no_mesh_env_keeps_links_point_to_point() {
 
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        out.status.success()
-            && stdout.contains("A-NODES=")
-            && !stdout.contains(":c@127.0.0.1"),
+        out.status.success() && stdout.contains("A-NODES=") && !stdout.contains(":c@127.0.0.1"),
         "with BROOD_NO_MESH=1, A must NOT discover C transitively.\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -2476,7 +2474,7 @@ fn a_dropped_send_to_an_unregistered_name_warns_once() {
 #[test]
 fn concurrent_nextest_slots_never_share_a_port_slice() {
     let slices = 162u16; // SPAN / SLICE in `free_port`
-                         // Two pids exactly `slices` apart collide on the pid fallback — the KI-99 shape…
+    // Two pids exactly `slices` apart collide on the pid fallback — the KI-99 shape…
     assert_eq!(
         support::port_slice(None, 1000, slices),
         support::port_slice(None, 1000 + slices as u32, slices),

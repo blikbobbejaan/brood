@@ -42,7 +42,7 @@ fn blsp_files(root: &Path) -> Vec<PathBuf> {
 /// program in a string is meant to.
 #[test]
 fn no_sig_hides_inside_a_docstring() {
-    use brood::core::value::{symbol_name_ref, Value};
+    use brood::core::value::{Value, symbol_name_ref};
     let root = workspace_root();
     let mut offenders: Vec<String> = Vec::new();
     let mut interp = brood::Interp::new();

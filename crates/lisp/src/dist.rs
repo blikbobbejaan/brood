@@ -1304,49 +1304,51 @@ where
 /// burn-looping or killing the acceptor.
 fn spawn_acceptor(accept: impl FnMut() -> io::Result<Stream> + Send + 'static) {
     let mut accept = accept;
-    spawn_bg("dist-acceptor", move || loop {
-        match accept() {
-            Ok(stream) => {
-                // Shed past the in-flight-handshake cap *before* spawning a thread
-                // or reading a byte, so a flood of unauthenticated connections
-                // can't exhaust threads/memory. Closing the socket is the whole
-                // response, but not a *silent* one: reaching the cap means inbound
-                // links are being refused outright, which the node reports
-                // (rate-limited — see `note_shed_handshake`).
-                let permit = match HandshakeSlot::try_acquire() {
-                    Some(p) => p,
-                    None => {
-                        note_shed_handshake();
-                        let _ = stream.shutdown(Shutdown::Both);
-                        continue;
-                    }
-                };
-                // `spawn_bg`, not `thread::spawn`: a refused thread must not panic
-                // *inside the accept loop* (that would close the listener permanently);
-                // the connection is refused and the node keeps accepting.
-                spawn_bg("dist-conn", move || {
-                    // Hold the slot until the handshake finishes (this thread ends
-                    // right after `establish` hands off to the steady-state reader
-                    // and writer threads, which don't hold a slot).
-                    let _permit = permit;
-                    // Catch a panic in the per-connection thread so one bad peer
-                    // doesn't take down the runtime via thread-panic unwind (the
-                    // rest of the dist surface assumes its background threads
-                    // stay alive).
-                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        if let Err(e) = accept_link(stream) {
-                            eprintln!("dist: incoming connection failed: {}", e);
+    spawn_bg("dist-acceptor", move || {
+        loop {
+            match accept() {
+                Ok(stream) => {
+                    // Shed past the in-flight-handshake cap *before* spawning a thread
+                    // or reading a byte, so a flood of unauthenticated connections
+                    // can't exhaust threads/memory. Closing the socket is the whole
+                    // response, but not a *silent* one: reaching the cap means inbound
+                    // links are being refused outright, which the node reports
+                    // (rate-limited — see `note_shed_handshake`).
+                    let permit = match HandshakeSlot::try_acquire() {
+                        Some(p) => p,
+                        None => {
+                            note_shed_handshake();
+                            let _ = stream.shutdown(Shutdown::Both);
+                            continue;
                         }
-                    }));
-                });
-                // No explicit shed on failure is needed: `Builder::spawn` drops the
-                // closure when it cannot start, which drops the accepted `stream` (closing
-                // the socket) and the `HandshakeSlot` permit with it. The connection is
-                // refused and the acceptor loops on, which is the whole point.
-            }
-            Err(e) => {
-                eprintln!("dist: accept error: {}", e);
-                std::thread::sleep(Duration::from_millis(50));
+                    };
+                    // `spawn_bg`, not `thread::spawn`: a refused thread must not panic
+                    // *inside the accept loop* (that would close the listener permanently);
+                    // the connection is refused and the node keeps accepting.
+                    spawn_bg("dist-conn", move || {
+                        // Hold the slot until the handshake finishes (this thread ends
+                        // right after `establish` hands off to the steady-state reader
+                        // and writer threads, which don't hold a slot).
+                        let _permit = permit;
+                        // Catch a panic in the per-connection thread so one bad peer
+                        // doesn't take down the runtime via thread-panic unwind (the
+                        // rest of the dist surface assumes its background threads
+                        // stay alive).
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if let Err(e) = accept_link(stream) {
+                                eprintln!("dist: incoming connection failed: {}", e);
+                            }
+                        }));
+                    });
+                    // No explicit shed on failure is needed: `Builder::spawn` drops the
+                    // closure when it cannot start, which drops the accepted `stream` (closing
+                    // the socket) and the `HandshakeSlot` permit with it. The connection is
+                    // refused and the acceptor loops on, which is the whole point.
+                }
+                Err(e) => {
+                    eprintln!("dist: accept error: {}", e);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
             }
         }
     });
@@ -1423,7 +1425,7 @@ fn prepare_unix_path(path: &str) -> io::Result<()> {
 // `Role` + the four-step `handshake` live in `dist::handshake`; only the link
 // lifecycle uses them, and they keep the cookie/nonce/MAC plumbing self-
 // contained.
-use handshake::{handshake, Role};
+use handshake::{Role, handshake};
 
 /// `(%node-connect peer addr)` — dial a peer and complete the client handshake.
 /// `addr` carries the transport (`"unix:PATH"` / `"tcp:HOST:PORT"`); `peer` is
@@ -1474,14 +1476,14 @@ pub(crate) fn node_connect(peer: Symbol, addr: &str) -> io::Result<Symbol> {
         ));
     }
     stream.set_read_timeout(None)?; // steady-state reader blocks until the next message
-                                    // Always pass to `establish` — even when we already have a link under the
-                                    // authenticated name. `establish` has its own symmetric tie-break (both sides
-                                    // compare connectors by name and reach the same decision). The losing side
-                                    // closes its own socket and returns; the winning side replaces the link. A
-                                    // short-circuit `stream.shutdown` here would skip the tie-break on our end
-                                    // while the peer still runs `establish` on theirs — they might win, register
-                                    // our doomed socket, and later fire a spurious `[:nodedown]` when the reader
-                                    // hits the EOF our shutdown sent.
+    // Always pass to `establish` — even when we already have a link under the
+    // authenticated name. `establish` has its own symmetric tie-break (both sides
+    // compare connectors by name and reach the same decision). The losing side
+    // closes its own socket and returns; the winning side replaces the link. A
+    // short-circuit `stream.shutdown` here would skip the tie-break on our end
+    // while the peer still runs `establish` on theirs — they might win, register
+    // our doomed socket, and later fire a spurious `[:nodedown]` when the reader
+    // hits the EOF our shutdown sent.
     establish(authenticated, stream, Role::Initiator);
     // Whether our link won or an existing one did, `addr` reaches `peer`.
     crate::core::sync::write(&DIAL_ROUTES).insert(addr.to_string(), peer);
@@ -2010,7 +2012,7 @@ pub(crate) mod wire;
 
 use heartbeat::ensure_heartbeat;
 use session::Session;
-use wire::{encode_payload, Frame};
+use wire::{Frame, encode_payload};
 
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]

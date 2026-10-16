@@ -415,13 +415,30 @@ are not base64. Reach for `error` when the caller made a mistake — wrong type,
 arity, a broken invariant — because that is a bug and should unwind to the supervisor.
 
 The two cannot be confused, because they do not travel the same way: one comes back
-as a value, the other unwinds. A failure is falsy, so `(or (parse s) 0)` defaults; it
-is not `nil`, so absence and failure stay distinct; and `error-message` reads it.
+as a value, the other unwinds. A failure is truthy, so `(or (parse s) 0)` keeps the
+failure rather than quietly defaulting — test it with `failure?`; it is not `nil`, so
+absence and failure stay distinct; and `error-message` reads it.
 
     (failure \"not a range: \" (pr-str s))
     (failure? (failure \"nope\"))            → true
     (if (failure \"nope\") :yes :no)         → :yes   ; truthy — never silently absent"
   (%failure (apply str parts)))
+
+;; The form's printed text is baked into the expansion, so a failure names what was
+;; asserted without the caller restating it. The message parts sit in the failing branch
+;; only: an `(assert ok? "context " (expensive))` pays for `expensive` when it raises.
+(defmacro assert (test & message)
+  "Raise an error naming `test` when it is falsy; otherwise return its value. Any
+`message` parts follow the form in the error, joined like `error`'s.
+
+    (assert (+ 1 2))                                      → 3
+    (try (assert (= 1 2)) (catch e (error-message e)))    → \"assert failed: (= 1 2)\"
+    (try (assert (> -1 0) \"got \" -1) (catch e (error-message e)))   → \"assert failed: (> -1 0): got -1\""
+  (let (v (gensym "v"))
+    `(let (~v ~test)
+       (if ~v
+         ~v
+         (error ~(str "assert failed: " (pr-str test)) ~@(when message (cons ": " message)))))))
 
 ;; `(catch Type e body…)` — Clojure/Java's *typed* catch. Brood's `catch` binds
 ;; ONE bare symbol and has no exception class, so this shape is not an error the
@@ -586,7 +603,9 @@ message it carries, and anything else its printed form.
 ;; reader/evaluator syntax, never function calls — so a locally-shadowed `list`
 ;; or `map` can't break the expansion (`fn`/`quote` are special forms).
 (defmacro binding (bindings & body)
-  "Rebind the dynamic variables in `bindings` (a flat `name value ...` list) for the dynamic extent of `body`, restoring them on exit (even on error)."
+  "Rebind the dynamic variables in `bindings` (a flat `name value ...` list) for the dynamic extent of `body`, restoring them on exit (even on error).
+
+    (with-out-str (binding (*err* *out*) (io/puts \"oops\" :to *err*)))   → \"oops\\n\""
   (if (vector? bindings)
     (error "binding: bindings must be a list, not a vector: write (binding (*a* 1 *b* 2) …)."
       " Brood is lists-for-code, vectors-for-data (unlike Clojure).")

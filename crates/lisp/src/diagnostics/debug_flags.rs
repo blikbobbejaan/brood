@@ -242,7 +242,11 @@ pub const FLAGS: &[DebugFlag] = &[
         GC,
         "before each collection, walk the live LOCAL graph and panic on a stale (old-epoch) handle, naming it and the cell that holds it — catches a stale handle STORED rather than dereferenced; works in plain release",
     ),
-    f("BROOD_GC_TRACE", GC, "log each minor collection's stats (debug builds)"),
+    f(
+        "BROOD_GC_TRACE",
+        GC,
+        "log each minor collection's stats (debug builds)",
+    ),
     f(
         "BROOD_GC_FLOOR",
         GC,
@@ -258,7 +262,11 @@ pub const FLAGS: &[DebugFlag] = &[
         GC,
         "hard memory cap for a run (bytes; default: 3/4 of a container's memory cap, else none; 0 = none)",
     ),
-    f("BROOD_MEM_SOFT_LIMIT", GC, "soft memory cap for a run (bytes)"),
+    f(
+        "BROOD_MEM_SOFT_LIMIT",
+        GC,
+        "soft memory cap for a run (bytes)",
+    ),
     external(
         "MIMALLOC_PURGE_DELAY",
         GC,

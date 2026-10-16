@@ -160,7 +160,7 @@ const CORPUS: &[&str] = &[
     "(defn g ((x) x) ((x y) (+ x y))) [(g 7) (g 3 4)]",
     // variadic call (and a variadic user fn)
     "(defn vsum (& xs) (reduce xs 0 +)) (vsum 1 2 3 4 5)",
-    "(defn vsum (& xs) (reduce xs 0 +)) (vsum)",        // empty rest → ()
+    "(defn vsum (& xs) (reduce xs 0 +)) (vsum)", // empty rest → ()
     "(defn greet (name & rest) [name (count rest)]) (greet :a :b :c)",
     "(defn greet (name & rest) [name rest]) (greet :a)", // rest is the empty list
     // &optional (nil default) — provided and missing
@@ -202,12 +202,12 @@ const CORPUS: &[&str] = &[
     "(nope-undefined-fn 1)",
     "(/ 1 0)",
     "(+ 1 \"x\")",
-    "(1 2 3)",   // calling a non-function — both engines: "cannot call non-function: 1"
+    "(1 2 3)", // calling a non-function — both engines: "cannot call non-function: 1"
     // try/catch — body and handler thunks route through apply_engine (builtins
     // `try_catch`). Both the success and the error path must agree across engines.
     "(defn safe-div (a b) (try (/ a b) (catch _ :div-zero))) [(safe-div 10 2) (safe-div 1 0)]",
-    "(try (+ 1 2) (catch _ :err))",            // success path: no throw
-    "(try (/ 1 0) (catch e (get e :kind)))",   // error path: handler invoked
+    "(try (+ 1 2) (catch _ :err))",          // success path: no throw
+    "(try (/ 1 0) (catch e (get e :kind)))", // error path: handler invoked
     // binding (dynamic scope) — body thunk routes through apply_engine
     "(defdyn *dv* 10) (defn get-dv () *dv*) [(get-dv) (binding (*dv* 42) (get-dv)) (get-dv)]",
     // isolate — thunk routes through apply_engine; visible def is rolled back
@@ -216,9 +216,9 @@ const CORPUS: &[&str] = &[
     // `(apply f args)` inline, re-dispatching the real callee through the VM.
     // Both engines must agree on results and the O(1)-stack tail property.
     "(defn f (n) (if (= n 0) :done (apply f (list (- n 1))))) (f 5000)", // tail via apply
-    "(apply + (list 1 2 3 4 5))",                                         // basic splice
-    "(apply list 1 2 (list 3 4))",                                        // prefix + splice
-    "(apply apply (list + (list 1 2 3)))",                                // nested apply
+    "(apply + (list 1 2 3 4 5))",                                        // basic splice
+    "(apply list 1 2 (list 3 4))",                                       // prefix + splice
+    "(apply apply (list + (list 1 2 3)))",                               // nested apply
     "(defn g (a b) (+ a b)) (apply g (list 10 20))",                     // RUNTIME callee
     // bytecode stepping engine (ADR-100 Stage 1): call-free helper bodies lower to a
     // chunk and run on the bytecode loop when called. These exercise its node set —
@@ -228,10 +228,10 @@ const CORPUS: &[&str] = &[
     "(defn classify (n) (if (< n 0) :neg (if (= n 0) :zero :pos))) (map (list -3 0 8) classify)",
     "(defn pick (x) (let (a (* x 2) b (+ a 1)) [a b {:k a :v b}])) (pick 10)",
     "(defn hd (xs) (first xs)) (defn tl (xs) (rest xs)) [(hd [10 20 30]) (tl '(1 2 3)) (hd '())]",
-    "(defn boom (x) (first x)) (boom 5)",          // Prim1 fallback → type error, both engines
-    "(defn dz (a b) (/ a b)) (dz 1 0)",            // Prim2 fallback (Div) → div-by-zero
+    "(defn boom (x) (first x)) (boom 5)", // Prim1 fallback → type error, both engines
+    "(defn dz (a b) (/ a b)) (dz 1 0)",   // Prim2 fallback (Div) → div-by-zero
     "(defn add1 (x) (+ x 1)) (def + (fn (a b) (* a b))) (add1 5)", // redefine + → guard fallback
-    "(defn cz (a b) (cons a b)) (cz 1 (list 2 3))",                // Prim2 Cons inline
+    "(defn cz (a b) (cons a b)) (cz 1 (list 2 3))", // Prim2 Cons inline
     // 2026-10-08 review: a `let` binding after a closure is not visible to it (the
     // tree-walker bound a `let` into one frame searched by name), …
     "(let (x 1 f (fn () x) x 2) (f))",

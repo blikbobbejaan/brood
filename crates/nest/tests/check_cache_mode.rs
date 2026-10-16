@@ -14,7 +14,7 @@
 //! failure arm is not, since ADR-316 reports one in both modes.
 
 mod support;
-use support::{nest, temp_dir, TempDir};
+use support::{TempDir, nest, temp_dir};
 
 fn project() -> TempDir {
     let temp = temp_dir("ckmode");

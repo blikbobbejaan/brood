@@ -3132,11 +3132,7 @@ impl Ty {
     /// impls get from destructuring.
     fn project_tag(&self, tag_bit: u32) -> Ty {
         fn keep<T>(applies: bool, slot: &Option<Arc<T>>) -> Option<Arc<T>> {
-            if applies {
-                slot.clone()
-            } else {
-                None
-            }
+            if applies { slot.clone() } else { None }
         }
         Ty {
             tags: tag_bit,

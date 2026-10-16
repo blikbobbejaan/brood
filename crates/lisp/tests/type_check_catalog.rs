@@ -15,8 +15,8 @@
 //! deliberate type errors would be scanned by `nest check` / the project audit
 //! and spew warnings. Here each snippet is checked in isolation.
 
-use brood::types::check::check_file;
 use brood::Interp;
+use brood::types::check::check_file;
 
 mod support;
 use support::warnings;
@@ -25,34 +25,49 @@ use support::warnings;
 /// confirm the *right* diagnostic fired, not an incidental one).
 const SHOULD_WARN: &[(&str, &str)] = &[
     // ---- base: disjoint argument, wrong arity ----
-    ("(first 5)", "first"),                  // int isn't a sequence
-    (r#"(+ 1 "x")"#, "+"),                    // string isn't a number
-    ("(math/rem 1 2 3)", "rem"),                  // arity: expects 2
+    ("(first 5)", "first"),      // int isn't a sequence
+    (r#"(+ 1 "x")"#, "+"),       // string isn't a number
+    ("(math/rem 1 2 3)", "rem"), // arity: expects 2
     // ---- function arrows: callback arity ----
-    ("(map (list 1 2 3) cons)", "callback"),         // cons is 2-ary; map calls with 1
+    ("(map (list 1 2 3) cons)", "callback"), // cons is 2-ary; map calls with 1
     ("(map (list 1 2 3) (fn (a b) a))", "callback"), // 2-ary lambda under map
     ("(reduce (list 1 2 3) 0 (fn (a) a))", "callback"), // 1-ary callback; reduce calls with 2
     ("(map (list 1 2 3) (fn (a b & c) a))", "callback"), // variadic lambda needs >=2; map calls with 1
     ("(map (list 1 2 3) (fn (a b &optional c) a))", "callback"), // 2 required + optional; min 2 > 1
     // ---- element types from literals / constructors ----
-    ("(string/length (first [1 2 3]))", "string/length"),       // vector literal → int
-    (r#"(+ 1 (first (list "a" "b")))"#, "+"),                    // (list …) → string
+    ("(string/length (first [1 2 3]))", "string/length"), // vector literal → int
+    (r#"(+ 1 (first (list "a" "b")))"#, "+"),             // (list …) → string
     // ---- parametric HOF results: types flow through ----
-    ("(string/length (first (map (list 1 2 3) inc)))", "string/length"), // map → number
-    ("(string/length (first (seq/filter (list 1 2 3) even?)))", "string/length"), // filter preserves int
-    ("(string/length (reduce (list 1 2 3) 0 +))", "string/length"),      // reduce → number
+    (
+        "(string/length (first (map (list 1 2 3) inc)))",
+        "string/length",
+    ), // map → number
+    (
+        "(string/length (first (seq/filter (list 1 2 3) even?)))",
+        "string/length",
+    ), // filter preserves int
+    ("(string/length (reduce (list 1 2 3) 0 +))", "string/length"), // reduce → number
     (
         "(string/length (fold (list 1 2 3) 0 (fn (acc x) (+ acc x))))",
         "string/length",
     ), // fold → number (lambda callback)
     // ---- element types preserved through structural combinators ----
-    ("(string/length (first (reverse [1 2 3])))", "string/length"),      // reverse vector<int> → int
-    ("(string/length (first (sort [1 2 3])))", "string/length"),         // sort preserves int
-    ("(string/length (first (sort-by [1 2 3] (fn (x) x))))", "string/length"), // sort-by preserves int
-    ("(string/length (first (take [1 2 3] 2)))", "string/length"),       // take preserves int
-    ("(string/length (first (drop [1 2 3] 1)))", "string/length"),       // drop preserves int
-    ("(string/length (first (cons 1 (list 2 3))))", "string/length"),    // cons: int | int = int
-    ("(string/length (first (append [1 2] [3 4])))", "string/length"),   // append: int ∪ int = int
+    ("(string/length (first (reverse [1 2 3])))", "string/length"), // reverse vector<int> → int
+    ("(string/length (first (sort [1 2 3])))", "string/length"),    // sort preserves int
+    (
+        "(string/length (first (sort-by [1 2 3] (fn (x) x))))",
+        "string/length",
+    ), // sort-by preserves int
+    ("(string/length (first (take [1 2 3] 2)))", "string/length"),  // take preserves int
+    ("(string/length (first (drop [1 2 3] 1)))", "string/length"),  // drop preserves int
+    (
+        "(string/length (first (cons 1 (list 2 3))))",
+        "string/length",
+    ), // cons: int | int = int
+    (
+        "(string/length (first (append [1 2] [3 4])))",
+        "string/length",
+    ), // append: int ∪ int = int
     // ---- type-variable sigs: return type resolved from argument types ----
     (
         "(sig my-identity (?A -> ?A)) (defn my-identity (x) x) (string/length (my-identity 42))",
@@ -67,16 +82,16 @@ const SHOULD_WARN: &[(&str, &str)] = &[
         "string/length",
     ), // const(?A ?B → ?A) on (int str) → int
     // ---- expanded curated sigs: predicates return bool ----
-    ("(+ 1 (number? 42))", "+"),              // number? → bool, not number
-    ("(+ 1 (empty? (list)))", "+"),           // empty? → bool
-    ("(+ 1 (list? (list 1 2)))", "+"),        // list? → bool
-    ("(+ 1 (contains? {:a 1} :a))", "+"),     // contains? → bool
-    ("(+ 1 (includes? (list 1 2) 1))", "+"),    // includes? → bool
-    ("(+ 1 (any? (list 1 2) int?))", "+"),    // any? → bool
-    ("(+ 1 (every? (list 1 2) int?))", "+"),  // every? → bool
+    ("(+ 1 (number? 42))", "+"),             // number? → bool, not number
+    ("(+ 1 (empty? (list)))", "+"),          // empty? → bool
+    ("(+ 1 (list? (list 1 2)))", "+"),       // list? → bool
+    ("(+ 1 (contains? {:a 1} :a))", "+"),    // contains? → bool
+    ("(+ 1 (includes? (list 1 2) 1))", "+"), // includes? → bool
+    ("(+ 1 (any? (list 1 2) int?))", "+"),   // any? → bool
+    ("(+ 1 (every? (list 1 2) int?))", "+"), // every? → bool
     // ---- expanded curated sigs: string converters ----
     (r#"(+ 1 (string/join (list "a" "b") ", "))"#, "+"), // join → string
-    (r#"(+ 1 (string/capitalize "hello"))"#, "+"), // capitalize → string
+    (r#"(+ 1 (string/capitalize "hello"))"#, "+"),       // capitalize → string
     // ---- op names must be unique within a module (ADR-172) ----
     // two abilities declaring the same op name `area` clobber each other's generic fn.
     (
@@ -109,10 +124,10 @@ const SHOULD_WARN: &[(&str, &str)] = &[
 /// Each snippet must produce **zero** warnings — the false-positive guards.
 const SHOULD_NOT_WARN: &[&str] = &[
     // ---- correct higher-order calls ----
-    "(map (list 1 2 3) inc)",                   // right-arity named callback
-    "(map (list 1 2 3) +)",                     // variadic callback accepts 1
-    "(map (list 1 2 3) (fn (x) (+ x 1)))",      // right-arity lambda
-    "(reduce (list 1 2 3) 0 +)",                // right-arity, numeric
+    "(map (list 1 2 3) inc)",              // right-arity named callback
+    "(map (list 1 2 3) +)",                // variadic callback accepts 1
+    "(map (list 1 2 3) (fn (x) (+ x 1)))", // right-arity lambda
+    "(reduce (list 1 2 3) 0 +)",           // right-arity, numeric
     "(reduce (list 1 2 3) 0 (fn (acc x) (+ acc x)))", // 2-ary lambda for reduce
     "(map (list 1 2 3) (fn (& xs) (apply + xs)))", // variadic lambda (math/min 0) accepts 1
     "(map (list 1 2 3) (fn (x &optional y) x))", // 1 required + optional accepts 1
@@ -122,17 +137,17 @@ const SHOULD_NOT_WARN: &[&str] = &[
     "(+ 1 (reduce (list 1 2 3) 0 +))",
     "(+ 1 (first (map (list 1 2 3) (fn (x) x))))", // identity preserves int
     // ---- imprecise-but-overlapping element types must not warn ----
-    r#"(+ 1 (first [1 "a"]))"#,                 // int|string|nil overlaps number
+    r#"(+ 1 (first [1 "a"]))"#, // int|string|nil overlaps number
     // ---- unknown inputs → no refinement, no warning ----
-    "(fn (xs) (+ 1 (first xs)))",               // unknown sequence
-    "(fn (f) (map (list 1 2 3) f))",            // local callback, unknown arity
+    "(fn (xs) (+ 1 (first xs)))",    // unknown sequence
+    "(fn (f) (map (list 1 2 3) f))", // local callback, unknown arity
     "(fn (init) (string/length (reduce (list 1 2 3) init +)))", // unknown init type
     // ---- structural combinators: correct uses stay silent ----
-    "(+ 1 (first (reverse [1 2 3])))",          // int element is fine for +
+    "(+ 1 (first (reverse [1 2 3])))", // int element is fine for +
     "(+ 1 (first (sort [1 2 3])))",
     "(+ 1 (first (take [1 2 3] 2)))",
     "(+ 1 (first (drop [1 2 3] 1)))",
-    "(+ 1 (first (cons 1 (list 2 3))))",        // int | int = int, fine for +
+    "(+ 1 (first (cons 1 (list 2 3))))", // int | int = int, fine for +
     "(+ 1 (first (append [1 2] [3 4])))",
     // unknown sequence → no refinement propagated, no warning
     "(fn (xs) (+ 1 (first (reverse xs))))",
@@ -149,8 +164,8 @@ const SHOULD_NOT_WARN: &[&str] = &[
     // ---- correct occurrence typing (then-branch narrowing is sound) ----
     "(fn (x) (if (int? x) (+ x 1) 0))",
     // ---- expanded curated sigs: correct uses stay silent ----
-    "(if (number? 42) :yes :no)",             // number? used as a predicate (bool is fine)
-    "(if (empty? (list)) :yes :no)",          // empty? as predicate
+    "(if (number? 42) :yes :no)", // number? used as a predicate (bool is fine)
+    "(if (empty? (list)) :yes :no)", // empty? as predicate
     r#"(if (contains? {:a 1} :a) :yes :no)"#, // contains? as predicate
     r#"(string/length (string/join (list "a") ", "))"#, // join→string→length fine
     // ---- type-variable sigs: correct uses stay silent ----

@@ -490,8 +490,8 @@ fn non_sealed_ability_name_is_not_a_type() {
 #[test]
 fn behaviour_flags_a_missing_callback() {
     let ws = file_warnings(
-            "(defbehaviour B (render [m]) (mount [p]))\n(defmodule foo (:implements B))\n(defn render (m) m)",
-        );
+        "(defbehaviour B (render [m]) (mount [p]))\n(defmodule foo (:implements B))\n(defn render (m) m)",
+    );
     assert!(
         ws.iter()
             .any(|w| w.contains("behaviour B: this module is missing `mount`")),

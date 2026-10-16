@@ -257,9 +257,11 @@ fn specialization_declines_a_lexical_local_callback_and_a_variadic_arm() {
 fn file_signatures_costs_nothing_when_unarmed() {
     // The capture is a no-op on the ordinary checking path — pinned because it runs
     // inside `check_file`, which every diagnostic request goes through.
-    assert!(file_warnings("(defn f (s) (string/length s))")
-        .iter()
-        .all(|w| !w.contains("panic")));
+    assert!(
+        file_warnings("(defn f (s) (string/length s))")
+            .iter()
+            .all(|w| !w.contains("panic"))
+    );
     let ws = file_warnings("(defn f (s) (string/length s))\n(defn c () (f 5))");
     assert!(ws.iter().any(|w| w.contains("expects string")), "{ws:?}");
 }

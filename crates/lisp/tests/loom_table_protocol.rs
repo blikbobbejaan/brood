@@ -14,8 +14,8 @@
 //! --test loom_table_protocol).
 #![cfg(feature = "loom-model")]
 
-use loom::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering::SeqCst};
 use loom::sync::Mutex;
+use loom::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst, fence};
 use loom::thread;
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -282,7 +282,7 @@ pub(super) fn ed25519_verify(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 /// reuse breaks both confidentiality *and* the Poly1305 integrity guarantee.
 /// Nonce generation is the caller's responsibility (see `crypto/random-nonce`).
 pub(super) fn chacha20_encrypt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead};
     let key_bytes = collect_bytes("%chacha20-encrypt", arg(args, 0), heap)?;
     let nonce_bytes = collect_bytes("%chacha20-encrypt", arg(args, 1), heap)?;
     let plaintext = collect_bytes("%chacha20-encrypt", arg(args, 2), heap)?;
@@ -312,7 +312,7 @@ pub(super) fn chacha20_encrypt(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
 /// decryption (ChaCha20-Poly1305). Returns the plaintext as a byte vector, or
 /// `:error` if the authentication tag fails (tampered or wrong key/nonce).
 pub(super) fn chacha20_decrypt(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    use chacha20poly1305::{aead::Aead, ChaCha20Poly1305, KeyInit, Nonce};
+    use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead};
     let key_bytes = collect_bytes("%chacha20-decrypt", arg(args, 0), heap)?;
     let nonce_bytes = collect_bytes("%chacha20-decrypt", arg(args, 1), heap)?;
     let ciphertext = collect_bytes("%chacha20-decrypt", arg(args, 2), heap)?;

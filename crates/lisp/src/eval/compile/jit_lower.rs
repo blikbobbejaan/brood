@@ -345,7 +345,7 @@ fn jit_lower_arm_inner(
     hot: bool,
 ) -> Option<*const u8> {
     use cranelift_codegen::ir::{
-        types, AbiParam, BlockArg, InstBuilder, StackSlotData, StackSlotKind,
+        AbiParam, BlockArg, InstBuilder, StackSlotData, StackSlotKind, types,
     };
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
     use cranelift_module::{Linkage, Module};
@@ -506,8 +506,8 @@ fn jit_lower_arm_inner(
     let mut sig = m.make_signature();
     sig.params.push(AbiParam::new(ptr_ty)); // heap
     sig.params.push(AbiParam::new(types::I64)); // base (frame index into roots)
-                                                // `out`: where the Done result goes — the slot its ultimate consumer already owns, so the
-                                                // callee stores it once and nobody reads it back (docs/compute-frontier.md §2h).
+    // `out`: where the Done result goes — the slot its ultimate consumer already owns, so the
+    // callee stores it once and nobody reads it back (docs/compute-frontier.md §2h).
     sig.params.push(AbiParam::new(ptr_ty)); // out: *mut Value (Done result)
     sig.params.push(AbiParam::new(ptr_ty)); // ctx: *const JitCallCtx (rung A0: unread)
     sig.returns.push(AbiParam::new(types::I64)); // outcome: 0 = Done, 1 = deopt, 2 = preempt

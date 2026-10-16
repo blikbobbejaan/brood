@@ -10,10 +10,10 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use serde_json::{json, Value as Json};
+use serde_json::{Value as Json, json};
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 /// A one-module project, plus `extra` files (`(relative path, contents)`).
 fn project(tag: &str, extra: &[(&str, &str)]) -> TempDir {
@@ -412,9 +412,11 @@ fn the_project_tools_act_on_the_served_project() {
                 .is_some_and(|m| m.contains("definitely-not-a-real-global"))
         })
         .unwrap_or_else(|| panic!("the planted warning is missing: {diagnostics:?}"));
-    assert!(planted["file"]
-        .as_str()
-        .is_some_and(|f| f.ends_with("oops.blsp")));
+    assert!(
+        planted["file"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("oops.blsp"))
+    );
 
     let processes = tool_body(&session, 9)["processes"].clone();
     let processes = processes.as_array().unwrap();
@@ -517,10 +519,12 @@ fn a_panicking_handler_is_an_error_reply_and_the_session_survives() {
     assert_eq!(session.code, Some(0), "stderr: {}", session.stderr);
     let error = &reply(&session, 1)["error"];
     assert_eq!(error["code"], -32603);
-    assert!(error["message"]
-        .as_str()
-        .unwrap()
-        .contains("panic in tool handler"));
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("panic in tool handler")
+    );
     assert_eq!(error["data"]["kind"], "panic");
     assert!(session.stderr.contains("stunt panic"), "{}", session.stderr);
     assert_eq!(tool_body(&session, 2)["value"], "7");

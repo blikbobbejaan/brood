@@ -74,7 +74,7 @@ is the one piece that can't be guessed from Clojure; it has to be read.
 | Function | `#<fn name>`, `#<native +>` | Closures and builtins. |
 | Ref | `#<ref 0>` | A unique, opaque reference token from `(ref)` — no literal syntax; the only way to make one. Used to tag a request to its reply (see [Processes](#processes-concurrency)). |
 | Pid | `#<pid a/7>` | A process id from `self`/`spawn`; carries node identity (`node/id`). No literal syntax. The location-transparent handle for `send` — local or across a node link (see [Distributed nodes](#distributed-nodes)). |
-| Failure | `#failure{:message "…"}` | What a function returns when it cannot interpret its input — `(string/->number "abc")` (ADR-310). No literal syntax; build one with `failure`, test with `failure?`, read it with `error-message`. **Falsy**, so it short-circuits everywhere `nil` did, but distinct from `nil`, which means *absence*. Prints self-identifyingly and is deliberately not re-readable — reconstructing one from text would manufacture a provenance it never had. See [Errors](#errors). |
+| Failure | `#failure{:message "…"}` | What a function returns when it cannot interpret its input — `(string/->number "abc")` (ADR-310). No literal syntax; build one with `failure`, test with `failure?`, read it with `error-message`. **Truthy**, so it is never silently taken for absence (see [Truthiness](#truthiness)), and distinct from `nil`, which means *absence*. Prints self-identifyingly and is deliberately not re-readable — reconstructing one from text would manufacture a provenance it never had. See [Errors](#errors). |
 
 ### Truthiness
 
@@ -1677,6 +1677,18 @@ Raise with `throw` (any value) or `error` (a formatted message), and handle with
 
 (throw :boom)                       ; raise an arbitrary value
 (error "bad index: " i)             ; raise a message string
+```
+
+**`(assert test message…)`** states an invariant: when `test` is falsy it raises through
+`error` with the form's own text, followed by any `message` parts; otherwise it returns
+`test`'s value, so it can wrap the expression it checks. The message parts are evaluated
+only when it raises. It is always on — there is no build that strips it.
+
+```clojure
+(assert (> n 0))                    ; raises "assert failed: (> n 0)" when n is 0
+(assert (> n 0) "got " n)           ; "assert failed: (> n 0): got 0"
+(let (conn (assert (lookup id)))    ; the value of (lookup id), or a raise
+  …)
 ```
 
 A final **`(finally cleanup…)`** clause runs `cleanup` after the body — and after

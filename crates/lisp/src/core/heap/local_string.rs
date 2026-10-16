@@ -384,9 +384,10 @@ mod shared_text_tests {
         let ValueRef::Str(id) = value.unpack() else {
             panic!("alloc_string did not return a string");
         };
-        assert!(heap
-            .local_shared_blob(id)
-            .is_some_and(|blob| blob.is_text()));
+        assert!(
+            heap.local_shared_blob(id)
+                .is_some_and(|blob| blob.is_text())
+        );
         assert_eq!(heap.string(id), text.as_str());
     }
 }

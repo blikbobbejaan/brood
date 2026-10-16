@@ -63,7 +63,9 @@ fn gen_project(dir: &Path, n: usize) {
         write(
             dir,
             &format!("src/leaf{i}.blsp"),
-            &format!("(defmodule leaf{i})\n\n(defn leaf{i}-f (x) (+ x {i}))\n(defn leaf{i}-g (x) (leaf{i}-f (* x 2)))\n"),
+            &format!(
+                "(defmodule leaf{i})\n\n(defn leaf{i}-f (x) (+ x {i}))\n(defn leaf{i}-g (x) (leaf{i}-f (* x 2)))\n"
+            ),
         );
     }
 }

@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 mod support;
-use support::{temp_dir, TempDir};
+use support::{TempDir, temp_dir};
 
 fn fixture(tag: &str, source: &str) -> (TempDir, PathBuf) {
     let dir = temp_dir(tag);

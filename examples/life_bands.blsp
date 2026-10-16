@@ -1,0 +1,92 @@
+(defmodule life-bands
+  "Game of Life on all cores, the way that wins: split the grid into bands of rows, give
+each band to a process that lives for the whole run, and have neighbouring bands swap only
+their edge rows (the halo) each generation. The parent touches the grid twice — to hand it
+out and to collect it.
+
+The way that loses is a fresh fan-out every generation: spawn a worker per region, send it
+the board, fan the results back in, merge, repeat. Every generation then copies the whole
+board across process heaps twice and stops at a serial merge, and for a board that steps in
+a millisecond that coordination is all the work there is. Here a generation moves two rows
+per band, between neighbours, and nothing waits on the parent.
+
+The band's step is the serial step: `step-band` over the whole grid with an empty row on
+either side IS the one-process Game of Life, and the run checks the two agree.
+Run:  brood examples/life_bands.blsp")
+
+;; The board is a vector of rows, each a vector of 0/1, with dead cells past every edge.
+(defn- cell (row c) (if (and (>= c 0) (< c (count row))) (nth row c) 0))
+
+(defn- sum3 (row c) (+ (cell row (- c 1)) (cell row c) (cell row (+ c 1))))
+
+(defn- next-row (above row below)
+  (vec (for (c (range (count row)))
+         (let (n (- (+ (sum3 above c) (sum3 row c) (sum3 below c)) (nth row c)))
+           (if (or (= n 3) (and (= n 2) (= (nth row c) 1))) 1 0)))))
+
+(defn step-band (above band below)
+  "The next generation of `band`, given the row just above it and the row just below it."
+  (let (rows (vec (append [above] band [below])))
+    (vec (for (i (range 1 (+ 1 (count band))))
+           (next-row (nth rows (- i 1)) (nth rows i) (nth rows (+ i 1)))))))
+
+(defn step (grid)
+  "One generation of the whole grid, in this process."
+  (let (empty-row (vec (repeat (count (first grid)) 0)))
+    (step-band empty-row grid empty-row)))
+
+;; A band's process. Each generation it sends its top row up and its bottom row down, then
+;; waits for the rows its neighbours send back. The generation is pinned in the receive: a
+;; neighbour can run one generation ahead (it has everything it needs from us), and its
+;; next halo must wait in the mailbox rather than be taken for this one.
+(defn- band-loop (parent k band g generations up down)
+  (if (= g generations)
+    (send parent [:band k band])
+    (do
+      (when up (send up [:halo g :below (first band)]))
+      (when down (send down [:halo g :above (last band)]))
+      (let (empty-row (vec (repeat (count (first band)) 0))
+            above (if up (receive ([:halo ^g :above row] row)) empty-row)
+            below (if down (receive ([:halo ^g :below row] row)) empty-row))
+        (band-loop parent k (step-band above band below) (+ g 1) generations up down)))))
+
+(defn- band-worker (parent k band generations)
+  (receive ([:neighbours up down] (band-loop parent k band 0 generations up down))))
+
+(defn- collect (remaining bands)
+  (if (= remaining 0)
+    bands
+    (collect (- remaining 1) (receive ([:band k band] (assoc bands k band))))))
+
+(defn run-bands (grid band-count generations)
+  "`generations` steps of `grid`, split into `band-count` bands of rows, one process each."
+  (let (me (self)
+        slices (vec (seq/chunk-every grid (math/ceil (/ (count grid) band-count))))
+        indices (range (count slices))
+        pids (vec (map indices (fn (k) (spawn (band-worker me k (nth slices k) generations))))))
+    ;; neighbours go out once the pids exist; a band at the world's edge has nil there
+    (each indices
+      (fn (k)
+        (send (nth pids k)
+          [:neighbours
+            (when (> k 0) (nth pids (- k 1)))
+            (when (< (+ k 1) (count pids)) (nth pids (+ k 1)))])))
+    (let (bands (collect (count pids) {}))
+      (vec (mapcat indices (fn (k) (get bands k)))))))
+
+(defn- step-times (grid n) (if (= n 0) grid (step-times (step grid) (- n 1))))
+
+;; A glider and a blinker on a 24×24 board.
+(def board
+  (vec (for (y (range 24))
+         (vec (for (x (range 24))
+                (if (contains? #{[1 0] [2 1] [0 2] [1 2] [2 2] [12 12] [13 12] [14 12]} [x y]) 1 0))))))
+
+(defn- render (grid)
+  (string/join (map grid (fn (row) (string/join (map row (fn (c) (if (= c 1) "█" "·"))) ""))) "\n"))
+
+(let (serial (step-times board 40)
+      banded (run-bands board 4 40))
+  (io/puts (render banded))
+  (assert (= serial banded) "the bands disagree with the serial step")
+  (io/puts "4 bands agree with the serial step after 40 generations"))

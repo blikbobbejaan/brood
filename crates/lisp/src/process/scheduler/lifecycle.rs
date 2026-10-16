@@ -567,8 +567,8 @@ pub fn spawn_root_program(
 #[cfg(test)]
 mod root_ctx_name_tests {
     use super::*;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
 
     /// A retiring root context drops its registered names in the same step as its
     /// REGISTRY entry: an observer never sees the pid dead yet still named (which is

@@ -184,12 +184,12 @@ mod ir;
 // `ArmHandle`, the process-local arm handle (KI-40), is named by `Heap`'s IC entry and
 // live-arm stack, so it is re-exported at the crate-visible `compile::` path too.
 pub use ir::{
-    rewrite_arm_handles, ArmHandle, Chunk, CompiledArm, CompiledClosure, ConstVal, HandleKind,
-    Inst, Node, PrimOp, PrimOp1, PrimOp3,
+    ArmHandle, Chunk, CompiledArm, CompiledClosure, ConstVal, HandleKind, Inst, Node, PrimOp,
+    PrimOp1, PrimOp3, rewrite_arm_handles,
 };
 
 // The pub(super) items of `ir` this module needs internally.
-use ir::{next_arm_uid, ArmSpec, ChunkExit, Step};
+use ir::{ArmSpec, ChunkExit, Step, next_arm_uid};
 
 mod lower;
 pub(crate) use lower::*;

@@ -20,7 +20,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::fd::FromRawFd;
 use std::time::Duration;
 
-use brood::{process, Interp};
+use brood::{Interp, process};
 
 /// A listener on 127.0.0.1 with an accept backlog of 0 (one queued connection).
 fn backlog_zero_listener() -> TcpListener {

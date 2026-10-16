@@ -20,7 +20,7 @@ use crate::core::blob::SharedBlob;
 use crate::core::value::{self, Symbol};
 use crate::process::Message;
 
-use super::{Target, MAX_FRAME};
+use super::{MAX_FRAME, Target};
 
 /// Frames travel over the wire as `[u32 len][payload]`. `pub(super)` so the
 /// connection-lifecycle code in `dist::mod` can construct and pattern-match
@@ -855,7 +855,7 @@ fn decode_msg_at_inner(r: &mut Cursor<Vec<u8>>, depth: u32) -> io::Result<Messag
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown message tag {t}"),
-            ))
+            ));
         }
     })
 }

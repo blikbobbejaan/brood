@@ -13,7 +13,7 @@ use super::*;
 // `JIT_COMPILER` thread — the whole production codegen surface), plus the three tiering
 // advisories, which are associated fns precisely so consulting them per activation costs no
 // `GLOBAL_JIT` lock. See `crate::jit::backend`.
-use crate::jit::{outcome, ActiveBackend, JitBackend};
+use crate::jit::{ActiveBackend, JitBackend, outcome};
 
 mod compiler;
 mod deopt;
@@ -598,7 +598,10 @@ fn jit_tier_in_frame_slow(
                 {
                     if crate::diagnostics::debug_flags::jit_bail_trace() {
                         let name = arm.dbg_label();
-                        eprintln!("[jit-ir] arm={name} adopted-inline-code-from-cache nslots={} (not lowered here, emits no IR dump)", arm.nslots);
+                        eprintln!(
+                            "[jit-ir] arm={name} adopted-inline-code-from-cache nslots={} (not lowered here, emits no IR dump)",
+                            arm.nslots
+                        );
                     }
                 }
                 arm.inline_code.store(ptr, Release);

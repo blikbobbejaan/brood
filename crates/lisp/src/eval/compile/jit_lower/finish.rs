@@ -2,8 +2,8 @@
 //! the define/finalize step that turns the built function into a code pointer. jit-only.
 #![cfg(feature = "jit")]
 use super::*;
-use cranelift_codegen::ir::{types, Block, FuncRef, InstBuilder};
 use cranelift_codegen::Context;
+use cranelift_codegen::ir::{Block, FuncRef, InstBuilder, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_jit::JITModule;
 use cranelift_module::{FuncId, Module};

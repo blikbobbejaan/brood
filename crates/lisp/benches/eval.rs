@@ -15,8 +15,8 @@
 //! ~7.3 ms on the VM vs ~13 ms on the tree-walker. Don't read a single number as
 //! "the" eval cost without noting which engine row it's on.
 
-use brood::eval::compile::{set_forced_ceiling, Tier};
-use brood::{syntax::reader, Interp};
+use brood::eval::compile::{Tier, set_forced_ceiling};
+use brood::{Interp, syntax::reader};
 
 fn main() {
     divan::main();

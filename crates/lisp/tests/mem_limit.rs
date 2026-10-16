@@ -4,9 +4,9 @@
 //! limit is a process-wide global, so setting it here can't leak into the other
 //! integration tests (each `cargo test` binary is a separate process).
 
+use brood::Interp;
 use brood::core::alloc;
 use brood::error::ErrorKind;
-use brood::Interp;
 
 /// The limit is ONE process-wide global, and the plain libtest harness runs this file's
 /// tests as parallel threads of one process: one test clearing or re-arming the limit while
@@ -31,7 +31,7 @@ fn parse_size_handles_suffixes() {
     assert_eq!(alloc::parse_size("2gb"), Some(2 * 1024 * 1024 * 1024));
     assert_eq!(alloc::parse_size("  8M  "), Some(8 * 1024 * 1024));
     assert_eq!(alloc::parse_size("0"), Some(0)); // valid → unlimited
-                                                 // Garbage parses to None so the caller warns and falls back.
+    // Garbage parses to None so the caller warns and falls back.
     assert_eq!(alloc::parse_size(""), None);
     assert_eq!(alloc::parse_size("notanumber"), None);
     assert_eq!(alloc::parse_size("12X"), None);

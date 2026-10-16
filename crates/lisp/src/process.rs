@@ -87,27 +87,27 @@ mod scheduler;
 /// `(proc/system-monitor …)` builtin reach it without per-fn re-exports.
 pub mod sysmon;
 mod timer;
-/// Pending `(after ms …)` deadline entries, runtime-wide — the leak/compaction test hook
-/// for `timer`'s lazy cancellation.
-pub use timer::pending_timer_count;
 /// A `receive` deadline on the scheduler clock — carried through the VM's suspend path
 /// (`Control::Suspend`). Opaque outside this module: nothing else can mint or read one.
 pub use timer::SchedDeadline;
+/// Pending `(after ms …)` deadline entries, runtime-wide — the leak/compaction test hook
+/// for `timer`'s lazy cancellation.
+pub use timer::pending_timer_count;
 
 pub use mailbox::{
     deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_gc_runs, process_mem,
     process_reductions, process_status, receive_match, send, set_max_mailbox,
 };
+pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
-pub use message::{from_message, to_message, ClosureArmMsg, ClosureMsg, Message};
 pub(crate) use scheduler::exit_reason_phrase;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.
-pub(crate) use message::{grow, MAX_MESSAGE_DEPTH};
+pub(crate) use message::{MAX_MESSAGE_DEPTH, grow};
 // The reusable blocking-IO → mailbox seam (ADR-059): any subsystem that must
 // block runs it on a non-worker thread and delivers to a process mailbox.
-pub(crate) use io_source::{reserve_io_thread, sink_pair, IoThread, MailboxSink};
+pub(crate) use io_source::{IoThread, MailboxSink, reserve_io_thread, sink_pair};
 
 /// What to do when the OS refuses a thread the runtime cannot work without.
 pub(crate) const THREAD_LIMIT_HINT: &str = "the operating system refused a thread: raise the \
@@ -124,7 +124,8 @@ pub(crate) use links::{
 #[cfg(target_arch = "wasm32")]
 pub(crate) use scheduler::pump_until_quiescent;
 pub use scheduler::{
-    begin_capture, capture_append, current_pid, deregister_root_ctx, deregister_root_ctx_of,
+    GcBlockGuard, MacroBlockGuard, NATIVE_STACK_MARGIN_BYTES, WORKER_STACK_BYTES, begin_capture,
+    capture_append, current_pid, deregister_root_ctx, deregister_root_ctx_of,
     dirty_receive_block_count, exit, exit_count, free_drained_gen, gc_block_depth,
     in_green_process, isolate_owner_of, live_pids, macro_block_active, migrate_count,
     native_stack_headroom_ok, next_isolate_token, old_gen_drained, parent_of, peak_threads,
@@ -132,8 +133,7 @@ pub use scheduler::{
     self_mailbox_seq, self_pid, set_max_parallel, set_self_isolate_scope, set_test_no_workers,
     shutdown_runtime_parked, spawn, spawn_count, spawn_linked, spawn_monitored, spawn_root_program,
     stack_budget, stack_overflow_check, steal_count, take_capture, test_drive_quanta, tick,
-    with_minting_runtime_tag, worker_threads, yield_now, GcBlockGuard, MacroBlockGuard,
-    NATIVE_STACK_MARGIN_BYTES, WORKER_STACK_BYTES,
+    with_minting_runtime_tag, worker_threads, yield_now,
 };
 /// Currently-parked process count, runtime-wide — teardown/leak test hook.
 pub fn parked_process_count() -> usize {
@@ -143,14 +143,14 @@ pub fn parked_process_count() -> usize {
 // when to capture a continuation (vs. yield the coroutine / block the root), and by the
 // `receive` gate to tell a capturable top-level receive from a native-nested one.
 pub(crate) use scheduler::{
-    capture_hard_kill_pending, capture_top_level, charge as charge_reductions, charge_native,
-    dirty_block, driver_safepoint, expire_quantum, in_capture_run, set_capture_top_level,
-    stop_between_elements, tick_reporting_hard_kill, Safepoint, TreeWalkGuard,
+    Safepoint, TreeWalkGuard, capture_hard_kill_pending, capture_top_level,
+    charge as charge_reductions, charge_native, dirty_block, driver_safepoint, expire_quantum,
+    in_capture_run, set_capture_top_level, stop_between_elements, tick_reporting_hard_kill,
 };
 // A native activation's poll is called only from the JIT's runtime callback (`crate::jit`),
 // so its re-export is feature-gated to keep the no-`jit` build warning-free.
 #[cfg(feature = "jit")]
-pub(crate) use scheduler::{current_mailbox_overflow_pending, native_poll, NativePoll};
+pub(crate) use scheduler::{NativePoll, current_mailbox_overflow_pending, native_poll};
 // Test-only: the JIT preempt unit test (`compile.rs`) drives a tiered arm as if it
 // were a capture-mode green process. That test is itself `#[cfg(feature = "jit")]`,
 // so the re-export must match — gating on bare `test` leaves it unused (and warned)
@@ -167,8 +167,8 @@ pub(crate) use mailbox::{deliver, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is
 // returned to its source when the message leaves the mailbox. Used by `host::net` and
 // `host::subprocess`.
-pub(crate) use mailbox::{deliver_credited, CreditSource, DeliveryCredit};
+pub(crate) use mailbox::{CreditSource, DeliveryCredit, deliver_credited};
 pub(crate) use monitor::{
-    add_monitor, deliver_remote_down, demonitor_remote_fanout, drop_monitor, drop_pending_remote,
-    fire_noconnection_if_pending, handle_node_down, record_pending_remote, Watcher,
+    Watcher, add_monitor, deliver_remote_down, demonitor_remote_fanout, drop_monitor,
+    drop_pending_remote, fire_noconnection_if_pending, handle_node_down, record_pending_remote,
 };
