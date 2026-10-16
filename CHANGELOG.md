@@ -6,6 +6,25 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.39.1 — one bytecode executor
+
+The VM now runs everything as bytecode. Top-level forms and `&optional` defaults used to go
+through a second executor that walked the compiled tree; it is gone, so every change to how code
+runs is made in one place. The narrative is the devlog's 2026-10-16 evening and night entries.
+
+**Changed.**
+- A top-level form compiles to bytecode and runs like any function call. At top level, an
+  unbound operator is reported before an unbound argument, with its hint, as the tree-walker
+  reports it.
+- An `&optional` default runs in its function's own bytecode, left to right, only when its
+  argument is missing (an explicit `nil` is an argument).
+
+**Fixed — found while making that change, before it shipped.**
+- A function with an `&optional` default ignored the default once the JIT compiled it, so the
+  parameter was nil.
+- A multi-pair `(assoc m k1 v1 k2 v2 …)` evaluated at top level (`reflect/eval-string`, a REPL
+  line) could not find `assoc`.
+
 ## v0.39.0 — preemption reaches all code, cheaper calls, and a review's twenty fixes
 
 Long-running code no longer holds its worker anywhere, the soft memory limit stops the process
