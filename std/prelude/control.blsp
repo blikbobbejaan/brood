@@ -415,8 +415,9 @@ are not base64. Reach for `error` when the caller made a mistake — wrong type,
 arity, a broken invariant — because that is a bug and should unwind to the supervisor.
 
 The two cannot be confused, because they do not travel the same way: one comes back
-as a value, the other unwinds. A failure is falsy, so `(or (parse s) 0)` defaults; it
-is not `nil`, so absence and failure stay distinct; and `error-message` reads it.
+as a value, the other unwinds. A failure is truthy, so `(or (parse s) 0)` keeps the
+failure rather than quietly defaulting — test it with `failure?`; it is not `nil`, so
+absence and failure stay distinct; and `error-message` reads it.
 
     (failure \"not a range: \" (pr-str s))
     (failure? (failure \"nope\"))            → true

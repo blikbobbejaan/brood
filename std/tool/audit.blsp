@@ -293,7 +293,7 @@ collection — ADR-308 suspects, by parameter name."
   "Print the surface audit — counts and names for each of the three checks —
 and return `{:total :undocumented :exampleless :reversed-args}`.
 
-    (map? (audit/report))   → true"
+    (string/starts-with? (with-out-str (audit/report)) \"surface audit — \")   → true"
   (load-everything)
   (let (total (count (public-names))
         no-doc (undocumented)

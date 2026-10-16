@@ -74,7 +74,7 @@ is the one piece that can't be guessed from Clojure; it has to be read.
 | Function | `#<fn name>`, `#<native +>` | Closures and builtins. |
 | Ref | `#<ref 0>` | A unique, opaque reference token from `(ref)` — no literal syntax; the only way to make one. Used to tag a request to its reply (see [Processes](#processes-concurrency)). |
 | Pid | `#<pid a/7>` | A process id from `self`/`spawn`; carries node identity (`node/id`). No literal syntax. The location-transparent handle for `send` — local or across a node link (see [Distributed nodes](#distributed-nodes)). |
-| Failure | `#failure{:message "…"}` | What a function returns when it cannot interpret its input — `(string/->number "abc")` (ADR-310). No literal syntax; build one with `failure`, test with `failure?`, read it with `error-message`. **Falsy**, so it short-circuits everywhere `nil` did, but distinct from `nil`, which means *absence*. Prints self-identifyingly and is deliberately not re-readable — reconstructing one from text would manufacture a provenance it never had. See [Errors](#errors). |
+| Failure | `#failure{:message "…"}` | What a function returns when it cannot interpret its input — `(string/->number "abc")` (ADR-310). No literal syntax; build one with `failure`, test with `failure?`, read it with `error-message`. **Truthy**, so it is never silently taken for absence (see [Truthiness](#truthiness)), and distinct from `nil`, which means *absence*. Prints self-identifyingly and is deliberately not re-readable — reconstructing one from text would manufacture a provenance it never had. See [Errors](#errors). |
 
 ### Truthiness
 

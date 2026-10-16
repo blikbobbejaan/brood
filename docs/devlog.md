@@ -2158,3 +2158,7 @@ when the tier the arm actually ran on was never entered.
   `link`/`unlink` (a broken `unlink` would kill the doctest process after its case had passed),
   and `compare-to`, which has no method for a built-in kind. `spawn`'s docstring named the
   monitor message `[:down pid …]`; it is `[:down ref pid reason]`.
+- **Stale docs fixed on the way:** `failure`'s docstring and the value-kinds table in
+  `language.md` still said a failure is FALSY (it is truthy, deliberately — the Truthiness
+  section says why); `audit/report`'s doc example printed the whole surface audit into every
+  doc-examples run, and now captures it with `with-out-str`.
