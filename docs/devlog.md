@@ -2127,3 +2127,31 @@ and this side's prologue clearing a flag as its default lands. bedit at
 paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
 when the tier the arm actually ran on was never entered.
 
+## 2026-10-17 — `receive` matches simple patterns natively (ADR-409)
+
+**Where a message hop goes.** The handoff's next thread was "receive loops run interpreted".
+Measured first: on `ring` a hop is ~9 500 instructions, but the interpreter executes only 21
+bytecode instructions of it — compiling the loop would save little (the 2026-10-15 spike's
+conclusion again). The cost that stood out was the matcher: a closure built per `receive` and
+called from the kernel per scanned message. So this came first, and the compiled receive loop
+second.
+
+**What it took, measured three times.** The spec as a vector literal built at the call site:
+slower (`pingpong` +12%) — four allocations a `receive` against a cached closure. As a quoted
+constant: `spawn` +47% — and the cause was not the constant: the new binary's stdlib image was
+stale after the `std/` edit, so every run loaded `std/` from source (`(stdimage/status)` said
+`:stale`); `nest stdimage` fixed the measurement, and the counters had shown it (base and new
+disagreed on `tw_defer` by 180×). Then a keyword key (an arm with a heap constant is not shared
+across processes, which matters regardless) resolved per CANDIDATE: `ring` +7%, `pingpong`
++5.6% — a SipHash lookup and an `Rc` clone two or three times a hop. Resolved once per
+`receive` with the symbol hasher: `supervisor` −7.9%, `spawn-live` −7.8%, `pingpong` −3.7%,
+`spawn` −2.4%, `ring` −2%. The measurement lesson, in `benchmarking.md` already and paid for
+again: after a `std/` edit, `nest stdimage` (or `make ab`) before any row.
+
+Gates: `test-both` 1899/1899 on both engines (after one fix — the new helpers' `;; ---- … ----`
+comment was a section header to the doc catalogue, which then filed `receive` and `sleep` under
+`:other`), `gcstress`, fuzz ×5 (`match` included), `check-stress`, bedit 2463/2464 (the known
+Elixir-dev header). `latency-gate` failed once right after a release build (load average 6, worst
+p99 673 µs) and passed on a quiet machine; base and new interleaved, 3 runs each twice: worst p99
+84/82 µs against 84/80 µs — indistinguishable.
+

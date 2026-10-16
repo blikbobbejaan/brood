@@ -1,0 +1,107 @@
+;; `receive`'s native pattern spec (ADR-409). When every clause is a simple shape the macro
+;; hands `%receive` a spec the kernel matches itself instead of a matcher closure. These pin
+;; that the two answer the same: each case runs once on the spec and once with a `:when
+;; true` guard, which keeps the closure, against the same messages.
+
+(defmodule receive-spec-test (:use test))
+
+;; The `%receive` call inside a `receive`'s expansion: its first argument is the spec (a
+;; vector) or the matcher closure (a `(fn …)` form).
+(defn- receive-call (form)
+  (cond
+    (and (pair? form) (= (first form) '%receive)) form
+    (pair? form) (fold form nil (fn (found f) (or found (receive-call f))))
+    (vector? form) (fold (seq form) nil (fn (found f) (or found (receive-call f))))
+    else nil))
+
+(defn- matcher-of (form) (second (receive-call (macroexpand form))))
+
+;; A spec is a keyword naming the patterns, or `[key pin…]` when it pins; a closure is a
+;; `(fn …)` form.
+(defn- spec? (matcher) (or (keyword? matcher) (vector? matcher)))
+
+(defn- send-all (msgs) (each msgs (fn (m) (send (self) m))))
+
+(defn- drain (acc) (receive (m (drain (cons m acc))) (after 0 (reverse acc))))
+
+(describe "receive: which clauses become a native spec"
+  (test "simple shapes are a spec"
+    (assert= true (spec? (matcher-of '(receive (v v)))))
+    (assert= true (spec? (matcher-of '(receive ([:ping from] from) (:stop :stop)))))
+    (assert= true (spec? (matcher-of '(receive ([:reply ^r v] v) (_ nil)))))
+    (assert= true (spec? (matcher-of '(receive ([:pair [a b] 'tag "s" 1 nil] [a b]))))))
+  (test "a guard, a list/map pattern, a pinned expression or a rest keep the closure"
+    (assert= false (spec? (matcher-of '(receive (v :when (int? v) v)))))
+    (assert= false (spec? (matcher-of '(receive ((a b) a)))))
+    (assert= false (spec? (matcher-of '(receive ({:k v} v)))))
+    (assert= false (spec? (matcher-of '(receive ([:r ^(first xs)] nil)))))
+    (assert= false (spec? (matcher-of '(receive ((or :a :b) nil)))))))
+
+(describe "receive: the spec answers what the closure answers"
+  (test "a catch-all takes the first message"
+    (send-all [3 4])
+    (assert= 3 (receive (v v)))
+    (assert= 4 (receive (v :when true v))))
+  (test "tagged vectors pick the clause and bind in order, message by message"
+    ;; The first QUEUED message any clause matches is taken; clause order only decides
+    ;; between clauses for that one message.
+    (letrec (take-spec (fn ()
+                         (receive ([:ping who n] [:ping who n]) ([:pong n] [:pong n]) (:stop :stop)))
+             take-closure (fn ()
+                            (receive
+                              ([:ping who n] :when true [:ping who n])
+                              ([:pong n] [:pong n])
+                              (:stop :stop))))
+      (send-all [[:pong 1] [:ping :me 7] :stop])
+      (let (spec-run [(take-spec) (take-spec) (take-spec)])
+        (send-all [[:pong 1] [:ping :me 7] :stop])
+        (assert= [[:pong 1] [:ping :me 7] :stop] spec-run)
+        (assert= spec-run [(take-closure) (take-closure) (take-closure)]))))
+  (test "a selective receive leaves non-matching messages queued, in order"
+    (send-all [[:a 1] [:b 2] [:a 3]])
+    (assert= 2 (receive ([:b x] x)))
+    (assert= (list [:a 1] [:a 3]) (drain (list))))
+  (test "exact vector length, nested vectors, wildcards"
+    ;; Too long (outer, then inner), too short, then the one that fits.
+    (send-all [[:p [1 2] 3 4] [:p [1 2 9] 3] [:p [1 2]] [:p [1 2] 3]])
+    (assert= [1 2] (receive ([:p [a b] _] [a b])))
+    (assert= (list [:p [1 2] 3 4] [:p [1 2 9] 3] [:p [1 2]]) (drain (list))))
+  (test "a repeated binder must be equal"
+    (send-all [[:same 1 2] [:same 5 5]])
+    (assert= 5 (receive ([:same x x] x)))
+    (assert= (list [:same 1 2]) (drain (list))))
+  (test "literals of every kind, and a quoted symbol"
+    (send-all [[:lit "s" 1 nil true 'tag] [:lit "t" 1 nil true 'tag]])
+    (assert= :hit (receive ([:lit "s" 1 nil true 'tag] :hit)))
+    (assert= (list [:lit "t" 1 nil true 'tag]) (drain (list))))
+  (test "equality is %eq's: 1 and 1.0 are different messages"
+    (send-all [[:n 1.0] [:n 1]])
+    (assert= :int (receive ([:n 1] :int)))
+    (assert= (list [:n 1.0]) (drain (list))))
+  (test "a pin matches the current value of a symbol"
+    (let (r (ref) other (ref))
+      (send-all [[:reply other 1] [:reply r 2]])
+      (assert= 2 (receive ([:reply ^r v] v)))
+      (assert= (list [:reply other 1]) (drain (list)))))
+  (test "a pinned lazy seq-view compares as the list it stands for"
+    (let (want (seq/lmap (list 1 2) (fn (x) (* x 10))))
+      (send-all [[:v (list 10 20)]])
+      (assert= :ok (receive ([:v ^want] :ok) (after 1000 :timeout)))))
+  (test "after still times out, and an empty receive takes anything"
+    (assert= :late (receive ([:never x] x) (after 0 :late)))
+    (send-all [:anything])
+    (assert= :anything (receive))))
+
+(describe "receive: the spec across processes"
+  :isolated (test "a server loop on the spec answers many clients"
+    (letrec (serve (fn ()
+                     (receive
+                       ([:add from a b] (do (send from [:sum (+ a b)]) (serve)))
+                       (:stop :stopped))))
+      (let (me (self)
+            server (spawn (serve)))
+        (dotimes (k 50)
+          (spawn (send server [:add me k 1])))
+        (let (sums (map (range 50) (fn (_) (receive ([:sum s] s) (after 20000 :timeout)))))
+          (send server :stop)
+          (assert= (+ (* 49 50 1/2) 50) (fold sums 0 +)))))))

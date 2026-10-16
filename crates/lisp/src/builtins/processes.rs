@@ -54,9 +54,11 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["target", "msg"],
         "Copy msg into target's mailbox; target is a pid, a registered name (a keyword — the local node's `{:name :node}`), or a {:name :node} address. Routes locally or over a node link. Returns nil.",
         send);
-    // Arg shape: (matcher: callable, timeout: int|nil, tags: vector|nil). The
+    // Arg shape: (matcher: callable|spec vector, timeout: int|nil, tags: vector|nil). The
     // `receive` macro in `std/prelude.blsp` expands to exactly this. The matcher
-    // answers `[idx var…]` for the clause that matched (nil = no match); a timeout
+    // answers `[idx var…]` for the clause that matched (nil = no match) — a closure, or
+    // a pattern spec the kernel matches itself when every clause is a simple shape
+    // (ADR-409, `process/receive_spec.rs`); a timeout
     // answers nil. `tags` is the set of leading keywords the clauses can match, or
     // nil to scan everything — a pure filter that lets the scan reject a message by
     // peeking its tag instead of rebuilding it into the heap (see `receive--tags`).
@@ -66,10 +68,18 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%receive",
         Arity::exact(4),
-        Sig::new(vec![callable, int.union(nil_ty), any, any], any),
+        Sig::new(vec![any, int.union(nil_ty), any, any], any),
         &[],
         "",
         receive_match,
+    );
+    primitives.def(
+        "%receive-spec-key",
+        Arity::exact(1),
+        Sig::new(vec![vec_ty.clone()], kw.clone()),
+        &[],
+        "",
+        receive_spec_key,
     );
     primitives.def(
         "self",
@@ -572,6 +582,12 @@ pub(super) fn demonitor(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
 
 /// `(%receive matcher timeout tags)` — the selective-receive primitive the `receive`
 /// macro (`std/prelude.blsp`) expands to. See `crate::process::receive_match`.
+/// `(%receive-spec-key patterns)` — the keyword naming a `receive`'s native pattern spec
+/// (ADR-409), for the macro at expansion time. See `process/receive_spec.rs`.
+pub(super) fn receive_spec_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    Ok(crate::process::receive_spec_key(heap, arg(args, 0)))
+}
+
 pub(super) fn receive_match(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     crate::process::receive_match(heap, arg(args, 0), arg(args, 1), arg(args, 2), arg(args, 3))
 }

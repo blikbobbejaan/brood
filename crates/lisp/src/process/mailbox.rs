@@ -1310,7 +1310,19 @@ fn receive_match_timed(
         Value::Ref(id) if recv_mark_enabled() => heap.recv_mark_for(id),
         _ => None,
     };
-    let result = scan_until_answered(heap, &ctx, rbase, mark, deadline);
+    // A native pattern spec (ADR-409) compares without an evaluator, so a pinned lazy
+    // seq-view in it is realised here, once, as `%eq` would realise it per comparison. The
+    // realise can collect, which is why it runs after the operands are rooted.
+    let matcher_now = heap.root_at(rbase);
+    let spec = super::receive_spec::resolve(heap, matcher_now);
+    let realised = if spec.is_some() {
+        super::receive_spec::realise_spec_views(heap, matcher_now)
+            .map(|r| heap.set_root_at(rbase, r))
+    } else {
+        Ok(())
+    };
+    let result = realised
+        .and_then(|()| scan_until_answered(heap, &ctx, rbase, mark, deadline, spec.as_ref()));
     // The one exit, for every way the receive ends: this scan's operand roots go, and so
     // does a persisted capture-mode deadline — unless a control signal (suspend, kill)
     // ended the scan, since a suspended receive resumes against the deadline it stored. A
@@ -1332,6 +1344,7 @@ fn scan_until_answered(
     rbase: usize,
     mark: Option<u64>,
     deadline: Option<SchedDeadline>,
+    spec: Option<&super::receive_spec::Spec>,
 ) -> LispResult {
     let mut i = 0usize;
     loop {
@@ -1339,7 +1352,7 @@ fn scan_until_answered(
         // non-matches). The wait, below, is the only blocking step — this split is
         // the seam the coming state-capture path uses: there, a `None` becomes a
         // *suspend signal* returned to the scheduler instead of a `wait_for_message`.
-        match scan_mailbox(heap, ctx, rbase, &mut i, mark)? {
+        match scan_mailbox(heap, ctx, rbase, &mut i, mark, spec)? {
             Some(matched) => return Ok(matched),
             None => {
                 // Scanned every queued message with no match. A deadline that has passed
@@ -1448,6 +1461,33 @@ fn scan_until_answered(
     }
 }
 
+/// Run a matcher CLOSURE on candidate `v`: through the VM / JIT fast-frame when it resolves
+/// to a plain arm (resolved lazily, on the scan's first candidate, into `hof`), falling back
+/// to the tree-walking `eval::apply` otherwise (or when `hof_apply_step` deopts on an identity
+/// miss — e.g. a mid-scan GC relocated the matcher). Same semantics either way: the clause's
+/// `[idx var…]` answer on a match, nil on no-match.
+fn apply_matcher(
+    heap: &mut Heap,
+    hof: &mut Option<Option<crate::eval::compile::HofArm>>,
+    matcher: Value,
+    v: Value,
+) -> LispResult {
+    if hof.is_none() {
+        *hof = Some(crate::perf_time!(ns_match_resolve, {
+            crate::eval::compile::hof_resolve(heap, matcher, 1)
+        }));
+    }
+    crate::perf_time!(ns_match_run, {
+        match hof.as_ref().unwrap() {
+            Some(h) => match crate::eval::compile::hof_apply_step(heap, h, matcher, &[v]) {
+                Some(r) => r,
+                None => eval::apply(heap, matcher, &[v], EnvId::GLOBAL),
+            },
+            None => eval::apply(heap, matcher, &[v], EnvId::GLOBAL),
+        }
+    })
+}
+
 /// Scan the mailbox from index `*i` for the first message a clause matches, advancing
 /// `*i` past non-matching messages (Erlang selective receive — non-matches stay
 /// queued). Returns `Ok(Some(answer))` — the matcher's `[idx var…]` result for the
@@ -1471,6 +1511,8 @@ fn scan_mailbox(
     // The receive-mark, if this receive pinned a ref we minted (ADR-195): no message with
     // `seq` below it can match, so the scan may start past them.
     mark: Option<u64>,
+    // The receive's native pattern spec (ADR-409), or `None` to run the matcher closure.
+    spec: Option<&super::receive_spec::Spec>,
 ) -> Result<Option<Value>, LispError> {
     // Resolve the matcher to its compiled VM arm lazily, on the FIRST queued candidate:
     // each candidate then runs the pattern dispatch through the bytecode VM / JIT
@@ -1641,25 +1683,15 @@ fn scan_mailbox(
             }
         };
         let matcher = heap.root_at(rbase);
-        if hof.is_none() {
-            hof = Some(crate::perf_time!(ns_match_resolve, {
-                crate::eval::compile::hof_resolve(heap, matcher, 1)
-            }));
-        }
-        // Apply the matcher via the VM / JIT fast-frame when it resolved to a plain
-        // arm, falling back to the tree-walking `eval::apply` otherwise (or when
-        // `hof_apply_step` deopts on an identity miss — e.g. a mid-scan GC relocated
-        // the matcher). Same semantics either way: returns the clause body thunk on
-        // a match, a non-`Fn` value on no-match.
-        let applied = crate::perf_time!(ns_match_run, {
-            match hof.as_ref().unwrap() {
-                Some(h) => match crate::eval::compile::hof_apply_step(heap, h, matcher, &[v]) {
-                    Some(r) => r,
-                    None => eval::apply(heap, matcher, &[v], EnvId::GLOBAL),
-                },
-                None => eval::apply(heap, matcher, &[v], EnvId::GLOBAL),
-            }
-        });
+        // A native pattern spec (ADR-409): every clause is a shape the kernel matches
+        // itself, so no closure is resolved or called for this candidate.
+        let applied = if let Some(spec) = spec {
+            crate::perf_time!(ns_match_run, {
+                Ok(super::receive_spec::spec_answer(heap, spec, matcher, v))
+            })
+        } else {
+            apply_matcher(heap, &mut hof, matcher, v)
+        };
         let answer = match applied {
             Ok(t) => t,
             Err(e) => {
