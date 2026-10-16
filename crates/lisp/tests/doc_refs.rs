@@ -74,6 +74,17 @@ fn refs_in(text: &str, prefix: &str) -> BTreeSet<u32> {
     found
 }
 
+/// Every file that holds ADR entries: the log split by number range, and the superseded
+/// ones in the archive. `docs/decisions.md` itself is only the index.
+const ADR_FILES: &[&str] = &[
+    "docs/decisions/adr-001-099.md",
+    "docs/decisions/adr-100-199.md",
+    "docs/decisions/adr-200-299.md",
+    "docs/decisions/adr-300-399.md",
+    "docs/decisions/adr-400-499.md",
+    "docs/archive/decisions-superseded.md",
+];
+
 /// The numbers that actually have an entry, from `## ADR-N` / `## KI-N` headings.
 fn defined(root: &Path, files: &[&str], prefix: &str) -> BTreeSet<u32> {
     let mut out = BTreeSet::new();
@@ -116,10 +127,7 @@ fn no_two_entries_claim_the_same_number() {
             ][..],
             "KI-",
         ),
-        (
-            &["docs/decisions.md", "docs/archive/decisions-superseded.md"][..],
-            "ADR-",
-        ),
+        (ADR_FILES, "ADR-"),
     ] {
         let mut seen: BTreeMap<u32, usize> = BTreeMap::new();
         for rel in files {
@@ -161,11 +169,7 @@ fn no_two_entries_claim_the_same_number() {
 fn every_adr_reference_resolves_to_an_adr() {
     let root = workspace_root();
     // Superseded ADRs keep their entries in the archive, and `decisions.md` links there.
-    let known = defined(
-        &root,
-        &["docs/decisions.md", "docs/archive/decisions-superseded.md"],
-        "ADR-",
-    );
+    let known = defined(&root, ADR_FILES, "ADR-");
     assert!(
         known.len() > 100,
         "only {} ADRs parsed — the heading format probably changed, which would make this \
@@ -194,7 +198,7 @@ fn every_adr_reference_resolves_to_an_adr() {
     dangling.dedup();
     assert!(
         dangling.is_empty(),
-        "these cite an ADR that has no entry in decisions.md or the archive — write the ADR \
+        "these cite an ADR that has no entry in docs/decisions/ or the archive — write the ADR \
          or fix the citation:\n  {}",
         dangling.join("\n  ")
     );

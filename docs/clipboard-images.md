@@ -4,9 +4,9 @@
 Wayland: one builtin, no `wl-paste` / `xclip` / `pngpaste` to install or shell out to.
 
 > Status: **implemented** (2026-09-29), recorded as
-> [ADR-392](decisions.md#adr-392--clipboard-images-osclipboard-image-answers-a-png-natively-or-nil),
+> [ADR-392](decisions/adr-300-399.md#adr-392--clipboard-images-osclipboard-image-answers-a-png-natively-or-nil),
 > which extends
-> [ADR-095](decisions.md#adr-095--os-clipboard-clipboard-get--clipboard-set-builtins-the-clipboard-feature).
+> [ADR-095](decisions/adr-001-099.md#adr-095--os-clipboard-clipboard-get--clipboard-set-builtins-the-clipboard-feature).
 > It comes from Zubr (the coding agent in `claudette/`), which wants "paste a screenshot
 > into the prompt" like Claude Code does. **Tried on one machine only: GNOME 50 on
 > Wayland, where it runs through XWayland** (see "Behaviour to settle"). macOS, Windows,

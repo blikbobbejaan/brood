@@ -367,7 +367,8 @@ commits in this repo.**
    from construction instead — do not settle for a weaker test.
 4. Update `docs/language.md` (it documents the language *as implemented*).
 5. Tick it off in `ROADMAP.md`; add a dated entry to `docs/devlog.md`.
-6. If it reflects a real design choice, record an ADR in `docs/decisions.md`.
+6. If it reflects a real design choice, record an ADR at the bottom of the newest file in
+   `docs/decisions/` (`docs/decisions.md` is the index).
 
 ## When you RENAME or REORDER a stdlib function
 

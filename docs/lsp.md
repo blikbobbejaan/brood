@@ -15,7 +15,7 @@ one server that owns the language knowledge.
 > document links** (clickable module names in `require`/`:use`/`:alias`)**, and
 > selection range** (expand/shrink to s-expression).
 > Recorded as
-> [ADR-025](decisions.md#adr-025--a-lossless-span-carrying-cst-for-tooling-separate-from-the-eval-value);
+> [ADR-025](decisions/adr-001-099.md#adr-025--a-lossless-span-carrying-cst-for-tooling-separate-from-the-eval-value);
 > this document is the full plan it points to (the `types.md` ↔ ADR-024 pattern).
 > **Done:** Foundation A — the CST (`syntax::cst`) + shared lexical rules
 > (`syntax::atom`) + `error::Span`; Foundation B — the CST scope resolver

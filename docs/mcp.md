@@ -8,7 +8,7 @@ image.
 
 > Status: **implemented, v0** (2026-05-28; catalogue since grown to 23 tools —
 > see the tool table below). Recorded as
-> [ADR-036](decisions.md#adr-036--nest-mcp-a-per-project-model-context-protocol-server-tools-surface-in-brood).
+> [ADR-036](decisions/adr-001-099.md#adr-036--nest-mcp-a-per-project-model-context-protocol-server-tools-surface-in-brood).
 > The full catalogue is live (including the once-stubbed `check` / `run-tests` /
 > `proc/list`, and the 2026-07-30 ability/type trio `abilities` / `ability` /
 > `check-source`), with the three Tier-1 niceties in place (project-defined tool

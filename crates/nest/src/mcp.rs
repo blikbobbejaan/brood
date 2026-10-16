@@ -25,7 +25,18 @@ const DOCUMENTS: &[(&str, &str)] = &[
         include_str!("../../../docs/claude-demo-findings.md"),
     ),
     ("language", include_str!("../../../docs/language.md")),
-    ("decisions", include_str!("../../../docs/decisions.md")),
+    // The whole ADR log: the index, then the files it is split across by number.
+    (
+        "decisions",
+        concat!(
+            include_str!("../../../docs/decisions.md"),
+            include_str!("../../../docs/decisions/adr-001-099.md"),
+            include_str!("../../../docs/decisions/adr-100-199.md"),
+            include_str!("../../../docs/decisions/adr-200-299.md"),
+            include_str!("../../../docs/decisions/adr-300-399.md"),
+            include_str!("../../../docs/decisions/adr-400-499.md"),
+        ),
+    ),
     ("types", include_str!("../../../docs/types.md")),
     ("error-codes", include_str!("../../../docs/error-codes.md")),
     ("prelude", brood::boot::PRELUDE),
