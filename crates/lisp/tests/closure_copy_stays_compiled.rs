@@ -108,6 +108,14 @@ fn a_closure_inside_a_spawned_capture_stays_compiled() {
 
 #[test]
 fn a_closure_received_in_a_message_stays_compiled() {
+    // What this pins is that the copied closure runs COMPILED, so its `receive` parks. The
+    // tree-walker (`BROOD_TIER=0`, `test-both`'s second half and CI's differential job) runs
+    // every closure that way and cannot park under a native call at all, so it holds a
+    // thread per client by construction — not the regression. Skipped by ceiling.
+    if brood::eval::compile::tier_ceiling() == brood::eval::compile::Tier::TreeWalk {
+        eprintln!("closure_copy_stays_compiled: no compiled tier to stay on");
+        return;
+    }
     let (ok, peak, workers) = run(
         "(let (adaptor (make-adaptor) pool (start-pool) parent (self))
            (dolist (c (range 200))
