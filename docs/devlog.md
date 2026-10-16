@@ -2128,7 +2128,7 @@ paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pa
 when the tier the arm actually ran on was never entered.
 
 
-## 2026-10-16 — a plain `assert`, and the rustfmt 2024 reformat
+## 2026-10-16 — a plain `assert`, the rustfmt 2024 reformat, the concurrency teaching note
 
 - **`assert`** is a prelude macro beside `error`: `(assert test message…)` raises `"assert
   failed: <form>"` (plus `": "` and the message parts, joined like `error`'s) when `test` is
@@ -2140,3 +2140,11 @@ when the tier the arm actually ran on was never entered.
 - **rustfmt `style_edition = "2024"`**, the reformat held back when the workspace moved to the
   2024 edition: `cargo fmt` only, its own commit. It needed two passes to settle (one rewrapped
   `return Err(…)` in the reader only on the second).
+- **The concurrency teaching note** from the 2026-05-30 Game of Life findings: a fan-out per
+  generation loses to one process (the board crosses heaps twice a step and the merge is
+  serial); tiling with halo exchange is the shape that can win. It is in
+  `docs/brood-for-claude.md` beside the worker pool, so every scaffolded project carries it, and
+  `examples/life_bands.blsp` is the worked version — a process per band of rows for the whole
+  run, neighbours swapping edge rows with the generation pinned in the `receive`. The run
+  `assert`s it equals the serial step (verified at 1, 3, 4, 5 and 24 bands; red with the halo
+  from above dropped).

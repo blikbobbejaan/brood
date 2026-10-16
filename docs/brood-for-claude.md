@@ -838,6 +838,28 @@ Each worker is a green process on the scheduler's pool; `send` deep-copies the
 result across heaps. The `collect` loop is tail-recursive, so it's O(1) stack
 even for thousands of workers.
 
+**Parallelising a step-by-step simulation — tile it, don't re-spawn it.** The
+pool above suits independent jobs. For a computation that advances in steps over
+shared state (a cellular automaton, a grid relaxation), a fresh fan-out per step —
+spawn workers, send each the board, fan in, merge, repeat — is usually *slower*
+than one process: every step copies the board across heaps twice and ends in a
+serial merge, and when a step takes a millisecond that coordination is the whole
+cost. What wins is **spatial tiling with halo exchange**:
+
+- Split the grid into tiles (bands of rows is the simplest) and give each tile to a
+  process that lives for the **whole run**, holding its tile as loop state.
+- Each step, a tile sends only its **edge** cells to its neighbours and receives
+  theirs — the halo — then steps itself with the same pure function the serial
+  version uses. Pin the step number in the `receive` (`[:halo ^g …]`): a neighbour
+  can run one step ahead, and its next halo must wait in the mailbox.
+- Neighbours talk to each other directly; the parent hands the tiles out once and
+  collects them once.
+
+`examples/life_bands.blsp` in the Brood repository is the worked version: Game of
+Life in bands, checked against the serial step. Measure the serial version first —
+on a small board one process can still win, with too little work per step to pay
+even for a halo.
+
 ## Interactive apps — the display seam & `ui-run`
 
 An interactive app (terminal *or* native window) is one render-op protocol with

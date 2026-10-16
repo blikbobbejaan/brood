@@ -502,9 +502,9 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       real editor workload.
 - [x] **A plain `assert`** — DONE 2026-10-16: a prelude macro, `(assert test message…)`, raises
       naming the form and returns the test's value (`docs/language.md` § Errors).
-- [ ] **Concurrency teaching note** — how to parallelise a cellular automaton (spatial tiling +
-      halo exchange), not "spawn per generation" (from the retired `todo.md`, 2026-05-30 GoL
-      findings).
+- [x] **Concurrency teaching note** — DONE 2026-10-16: `docs/brood-for-claude.md` "Parallelising
+      a step-by-step simulation" (tiling + halo exchange, not a fan-out per generation), with
+      `examples/life_bands.blsp` as the worked version, checked against the serial step.
 - [ ] **Perf levers parked in `docs/compute-frontier.md`** — unboxed arrays (`matmul`), and a
       fast frame for the VM `dispatch` computed-head branch (`pipeline`).
 
