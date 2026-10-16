@@ -152,17 +152,39 @@ monitor is the whole guard."
 (defn socket-> (sock)
   "A stream of string chunks from TCP socket `sock`. Transfers socket ownership
 to the stream process — the caller must not `receive` from `sock` afterwards.
-Call immediately after accept or connect, before any data has been read."
-  (let (me (self)
-        s (spawn (sock-init sock me)))
-    (receive
-      ([:stream-socket-ready ^s] s)
-      ([:stream-err msg] (error "socket->: " msg)))))
+Data that reached the caller before the call is part of the stream: a connected
+socket reads from the start, so a fast peer's first chunks — even its close — can
+already be in the caller's mailbox."
+  (let (s (spawn (sock-await sock)))
+    ;; The caller hands the socket over itself, then hands over what already arrived:
+    ;; the reactor delivers under the same lock the transfer takes, so once it returns
+    ;; nothing more for `sock` can reach this mailbox, and what is here precedes
+    ;; everything the stream process will receive. It replays these first (KI-268).
+    (tcp/controlling-process sock s)
+    (send s [:stream-socket-early (sock-early sock (list))])
+    s))
 
-(defn- sock-init (sock parent)
-  (tcp/controlling-process sock (self))
-  (send parent [:stream-socket-ready (self)])
-  (sock-loop sock nil ""))
+(defn- sock-early (sock acc)
+  ;; This process's already-delivered messages for `sock`, oldest first.
+  (receive
+    ([:tcp ^sock data] (sock-early sock (cons [:tcp data] acc)))
+    ([:tcp-closed ^sock] (sock-early sock (cons [:tcp-closed nil] acc)))
+    ([:tcp-error ^sock msg] (sock-early sock (cons [:tcp-error msg] acc)))
+    (after 0 (reverse acc))))
+
+(defn- sock-await (sock)
+  (receive ([:stream-socket-early early] (sock-replay sock early ""))))
+
+(defn- sock-replay (sock early buf)
+  ;; `sock-loop`'s answer to each early message, with no requester yet: data buffers, a
+  ;; close moves to the EOF loop, an error ends the stream as it does with no requester.
+  (if (empty? early)
+    (sock-loop sock nil buf)
+    (let ([tag x] (first early))
+      (cond
+        (= tag :tcp) (sock-replay sock (rest early) (str buf x))
+        (= tag :tcp-closed) (sock-eof-loop buf)
+        else nil))))
 
 (defn- sock-loop (sock pending buf)
   ;; pending: a requester PID waiting for data, or nil.

@@ -13985,3 +13985,29 @@ and keep their order.
 and the `try` reds every run (`[:timeout 0]`); the same gap placed inside the `try` passes
 3/3. The fixed file runs in `make test-both`.
 
+## KI-268 — `stream/socket->` lost a connected socket's early data and close; the consumer hung ✅ FIXED 2026-10-16
+
+**Symptom.** `tests/stream_test.blsp:277: test failed: from-socket / to-socket › loopback:
+->socket drains a stream into a socket, chunk by chunk` — `actual: :timeout` after the 20 s
+wait, seen FLAKY in a `test-both` VM half. Reproduced at 5/120 (8 copies of the file at once,
+15 rounds) on `b98cda3c`, so it predates the change being tested then.
+**Cause.** `socket->` spawned the stream process and let IT call `tcp/controlling-process sock
+(self)`. A just-accepted socket is passive until claimed, so that was safe for accept; a
+CONNECTED socket reads from the moment it connects, into the connector's mailbox. A peer that
+wrote and closed before the stream process ran its claim left every `[:tcp sock …]` and the
+`[:tcp-closed sock]` in the caller's mailbox, where nothing reads them: the stream process
+waited forever for data that had already come, and its consumer with it.
+**Why it survived.** On an idle machine the claim runs long before the peer's first write
+lands; it takes a descheduled reader. The docstring told callers to call it "immediately after
+accept or connect", which describes the window without closing it.
+**Fix.** The caller transfers the socket, then drains its own already-delivered messages for
+it and sends them to the stream process, which takes them first and replays them into its
+starting state (data buffers, a close moves to the EOF loop). Sound because the reactor
+delivers under the same `SocketOwner` lock the transfer takes: once `controlling-process`
+returns, nothing more for the socket can reach the old owner, and what it holds precedes
+everything the new owner receives — the move Erlang's `controlling_process` makes too.
+**Guard.** `stream_test` "data and a close that reach the caller BEFORE socket-> belong to the
+stream (KI-268)": the reader waits until the writer has written and closed, lets the reactor
+deliver, then builds the stream. Against the old `std/` it times out (`actual: :timeout`);
+fixed, it reads "early bytes". The load repro: 0/120.
+
