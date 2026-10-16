@@ -131,10 +131,15 @@ pub(crate) fn compile_arm(
                 let flag = scope.max;
                 scope.max += 1;
                 optional_flags.push(flag as u32);
+                // The flag is cleared as the default lands, so a re-run of the arm from its
+                // first instruction (a deopt that resumes at ip 0) does not evaluate it twice.
                 prologue.push(Node::If(
                     Box::new(Node::Local(flag)),
                     Box::new(Node::LetBind {
-                        binds: Box::new([(nrequired + j, node)]),
+                        binds: Box::new([
+                            (nrequired + j, node),
+                            (flag, Node::Const(ConstVal::new(Value::nil()))),
+                        ]),
                         body: Box::new(Node::Const(ConstVal::new(Value::nil()))),
                     }),
                     Box::new(Node::Const(ConstVal::new(Value::nil()))),

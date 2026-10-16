@@ -2114,3 +2114,16 @@ both need the retirement.
   site of its own, as `%set` always did. Guard: `assoc_unroll_test.blsp` evaluates a multi-pair
   `assoc` through `reflect/eval-string` (red with the site removed).
 
+## 2026-10-16 (night) — the regression bedit caught: native code wiped the `&optional` flag (KI-270)
+
+CI's downstream smoke went red on `02271160`: bedit's `git-git`, `(&optional (opts {}))`, saw
+`opts` as nil. The `exec_value` retirement's default prologue reads a "missing" flag slot that
+`push_frame` sets above the body's slots — and the JIT's entry nil-fills everything above the
+parameters, flag included. Every local gate passed because no test called a NATIVE arm without
+its optional; the new test does, and reproduced bedit's error exactly before the fix. Both machines fixed it the same hour; the merge kept the other machine's `emit_nil_locals` skip
+and test (`0fb04653`, which also fixed a top-level multi-pair `assoc` built without call sites)
+and this side's prologue clearing a flag as its default lands. bedit at
+`BEDIT_REF`, locally with a grammar-enabled `nest`: 2463/2464. The lesson is the CLAUDE.md one,
+paid again: a guard has to reach the shape a caller reaches, and "tiers 0–2 pass" is not that
+when the tier the arm actually ran on was never entered.
+
