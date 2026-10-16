@@ -84,7 +84,7 @@ genuine before/after, which on this machine means **interleaving**: run baseline
 and candidate binaries in alternation (not back-to-back blocks) so they share the
 load window, many samples each.
 
-### Measuring a whole row by hand — the four ways it silently lies
+### Measuring a whole row by hand — the ways it silently lies
 
 `scripts/ab-bench.sh` encodes these; a hand-rolled loop re-learns them the hard way, so
 they are written down here rather than only in that script's comments. All four were hit in
@@ -121,7 +121,23 @@ scripts/ab-bench.sh --tier 1 --floor pfib      # the VM's call path, with a nois
 scripts/ab-bench.sh --floor fib loop collatz   # the default ceiling, single-threaded rows
 ```
 
-5. **RSS moves in 2 MiB steps — compare it with transparent huge pages off.** mimalloc
+5. **Never A/B against a binary copied out of the tree.** A copy in a scratch directory
+   booted without its stdlib image and read every row 30-80% "slower" than the working tree
+   (2026-10-15: `startup` 469M against 81M instructions for `(io/puts 0)`). Build the
+   baseline with `make ab BASE=<ref>` (or `scripts/ab-bench.sh -b <ref> -n 1 <row>` just
+   to build it) and take `target/ab/<sha>/target/release-fast/brood`: each tree writes its
+   own image, and the script refuses a pair whose image states differ.
+6. **Some rows are bimodal in instructions — compare mode against mode.** `json` lands in
+   one of two counts ~4% apart from run to run (background compiles racing the run decide
+   which), so a best-of-3 or a median of 5 can compare one binary's low mode with the other's
+   high one and invent a ±6% delta. Take 20+ runs a side and compare each mode; that is what
+   showed a real +2.5% (both modes moved) on 2026-10-16 and a fake +7.9% the day before.
+7. **Instruction samples skid onto the instruction AFTER an atomic.** A plain
+   `perf record -e instructions:u` put 34% of a function on the `test` after an `xchg` and
+   130 "instructions" on an `Arc` refcount line. Use `instructions:upp` (precise, PEBS) for
+   line-level attribution, and scale percentages by an exact `perf stat` count — the 1 kHz
+   sample cap here also makes absolute sample totals meaningless.
+8. **RSS moves in 2 MiB steps — compare it with transparent huge pages off.** mimalloc
    marks its arena for THP (`allow_thp`, default on) and a `madvise`-mode kernel backs it
    with 2 MiB pages, so resident memory jumps by huge pages depending on where allocations
    land and on how fragmented the machine is at that moment. A brood-benchmarks refresh read
