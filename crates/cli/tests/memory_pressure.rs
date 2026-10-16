@@ -51,7 +51,9 @@ const VERDICT: &str = r#"
 (monitor bystander)
 (io/puts "culprit" culprit)
 (receive
-  ([:down _ pid [:error {:code code}]] (io/puts "down" pid code))
+  ([:down _ pid [:error {:code code :message message}]]
+    (io/puts "down" pid code)
+    (io/puts "reason" message))
   ([:down _ pid reason] (io/puts "down" pid reason))
   (after 60000 (io/puts "nothing went down")))
 (io/puts "bystander alive" (proc/alive? bystander))
@@ -70,10 +72,27 @@ fn assert_culprit_stopped(stdout: &str, stderr: &str) {
         stdout.contains("bystander alive true"),
         "the bystander did not survive:\n{stdout}\n{stderr}"
     );
-    assert!(
-        stderr.contains("stopping process"),
-        "nothing on stderr named the stopped process:\n{stderr}"
-    );
+    // Who noticed the crossing decides the path. Usually a bystander's safepoint does, and
+    // the selector stops the culprit and says so on stderr before the stop lands. Under
+    // load the culprit can reach a safepoint first: it is then the largest holder and
+    // raises the error in itself — catchable, so the runtime prints nothing, and its crash
+    // report is asynchronous (the main process may exit before it is written). Both stop
+    // the right process; only the selector's path promises the stderr line.
+    let reason = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("reason "))
+        .unwrap_or_else(|| panic!("no exit reason printed:\n{stdout}\n{stderr}"));
+    if reason.contains("held the most memory") {
+        assert!(
+            stderr.contains("stopping process"),
+            "the selector stopped the culprit but nothing on stderr named it:\n{stderr}"
+        );
+    } else {
+        assert!(
+            reason.contains("allocated process-wide exceeds"),
+            "the culprit went down with neither memory-limit error:\n{stdout}\n{stderr}"
+        );
+    }
 }
 
 /// The leak grows in pieces under the allocator's large-allocation size, so it never

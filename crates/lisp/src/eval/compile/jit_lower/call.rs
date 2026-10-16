@@ -63,6 +63,9 @@ pub(super) fn emit_call(
     tail: bool,
     site: u32,
     head: Option<Symbol>,
+    // The global-read slot a tail call by name resolves its head through
+    // (`CompiledArm::tail_head_gsite`); unused otherwise.
+    head_gsite: u32,
     spill_base: usize,
     reserve: usize,
     epoch_ptr: Option<Value>,
@@ -142,15 +145,15 @@ pub(super) fn emit_call(
     // complete, so **nothing between here and them may allocate or collect** — they are pure
     // stores, and `Heap::push_roots_room` documents the invariant.
     // For a free-global tail call, jit_dispatch_tail reads [callee, args…] from roots —
-    // but the elided head is never staged. Resolve it via the global IC and put it at slot
-    // 0, args after.
+    // but the elided head is never staged. Resolve it via the global IC, at the slot the
+    // arm reserves for this call site's head, and put it at slot 0, args after.
     // The elided-head resolution below is a CALL, so it must happen before the room is
     // reserved — nothing may run between the reservation and the stores. Its words are held
     // back and stored with the rest.
     let mut staged_callee: Option<[cranelift_codegen::ir::Value; 3]> = None;
     let arg_base: i32 = if tail && head.is_some() {
         let sym_v2 = b.ins().iconst(types::I32, call_head as i64);
-        let site_v2 = b.ins().iconst(types::I32, call_site as i64);
+        let site_v2 = b.ins().iconst(types::I32, head_gsite as i64);
         let out_a = b.ins().stack_addr(ptr_ty, out_slot, 0);
         let cv = b
             .ins()

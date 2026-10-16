@@ -569,7 +569,9 @@ pub struct CompiledArm {
     /// ICs silently dead in every process but the compiling one.
     pub nsites: u32,
     /// Global-read IC slots, arm-relative from 0 — the `Node::GlobalIc` counterpart of
-    /// [`Self::nsites`], indexing `Heap::vm_global_ics` via `Heap::cur_gic_base`.
+    /// [`Self::nsites`], indexing `Heap::vm_global_ics` via `Heap::cur_gic_base`. Built by
+    /// [`gsite_reservation`]: the body's own global reads, then one slot per call site for
+    /// native code's tail-call head ([`Self::tail_head_gsite`]).
     pub ngsites: u32,
     /// Process-independent identity for this arm instance, from a global counter —
     /// the key under which each process tracks its IC block for this arm
@@ -739,6 +741,14 @@ pub struct CompiledArm {
     /// arm-instance, not one per call. Reset when the arm is epoch-invalidated so the
     /// recompiled code re-publishes.
     pub shared_published: std::sync::atomic::AtomicBool,
+    /// The code pointer this arm has SETTLED on: the tier-up work [`jit_tier_in_frame`]
+    /// does around an installed pointer — the inlined or re-lowered upgrade, the shared
+    /// publish — is finished for it, so an entry that finds `jit_code` equal to this runs
+    /// only the checks every entry needs and enters. Null until the slow path settles it.
+    /// Keyed on the pointer rather than a flag, so every writer of `jit_code` voids it
+    /// without knowing it exists; [`deopt::reset_native_state`], which can see the same
+    /// pointer re-adopted from the shared cache, clears it explicitly.
+    pub settled_code: std::sync::atomic::AtomicPtr<u8>,
     /// Captured enclosing-lexical names, in capture-slot order (#3 lexical addressing).
     /// Empty for a top-level / non-capturing arm. When non-empty, each name occupies a
     /// **capture slot** at `[capture_base + k]` where `capture_base = nrequired +
@@ -884,6 +894,7 @@ impl Default for CompiledArm {
             stale_bindings: AtomicBool::new(false),
             share_key: None,
             shared_published: AtomicBool::new(false),
+            settled_code: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
             capture_names: Box::new([]),
             fn_name: None,
             src_file: None,
@@ -933,12 +944,74 @@ pub struct LeafInline {
     /// addresses of this chunk's `ConstVal`s into itself, and `JIT_ARM_KEEPALIVE`
     /// retains the caller arm (hence this `Arc`) for the process lifetime.
     pub resume: Arc<CompiledArm>,
-    /// `heap.global_epoch()` at derivation. Lowering requires `compile_epoch ==`
-    /// this — i.e. no `def`/compaction between derivation and lowering.
-    pub epoch: u64,
+    /// The epoch the derivation is known valid at: `heap.global_epoch()` when derived, and
+    /// moved forward by the tier-up when [`Self::still_valid`] finds nothing it depends on
+    /// changed. Lowering requires `compile_epoch ==` this.
+    pub epoch: std::sync::atomic::AtomicU64,
+    /// The callees spliced in, as resolved at derivation.
+    pub callees: Vec<LeafCallee>,
+    /// `heap.code_relocations()` at derivation: the recorded closure handles mean what they
+    /// meant then only while this is unchanged.
+    pub relocations: u64,
+}
+
+/// One callee a leaf derivation spliced in: the call head and the closure it named.
+#[cfg(feature = "jit")]
+pub struct LeafCallee {
+    pub sym: Symbol,
+    /// The closure's handle bits (`ClosureId.0`), compared, never dereferenced.
+    pub closure: u64,
+}
+
+#[cfg(feature = "jit")]
+impl LeafInline {
+    /// Is the derivation still what deriving it now would give? No code handle has been
+    /// rewritten since, each head still names the closure that was spliced (a spliced
+    /// callee captures nothing, so the same closure is the same body), and the spliced
+    /// chunk's primitives are still native. A rebind of anything else, or a module load,
+    /// leaves all three true — and the epoch moving for that reason no longer costs the
+    /// arm its inlined body for good.
+    pub(crate) fn still_valid(&self, heap: &crate::core::heap::Heap) -> bool {
+        heap.code_relocations() == self.relocations
+            && self.callees.iter().all(|c| {
+                // A LOCAL handle is recycled by the minor collector, which counts no
+                // relocation, so only a shared one can be trusted by identity.
+                heap.env_get(heap.global(), c.sym).is_some_and(|v| {
+                    matches!(v.unpack(), ValueRef::Fn(id)
+                        if id.0 == c.closure && id.region() != crate::core::value::LOCAL)
+                })
+            })
+            && self
+                .resume
+                .chunk
+                .as_ref()
+                .is_some_and(|chunk| super::chunk_ops_native(heap, chunk))
+    }
+}
+
+/// The global-read slots an arm reserves for a body with `gsites` global reads and `sites`
+/// call sites: the reads first, then one per call site. Native code resolves the head of a
+/// tail call by name through the global-read cache ([`CompiledArm::tail_head_gsite`]); with
+/// the call site's own number as the slot, that index was another read's slot or past the
+/// arm's block, where the cache drops every write — each such call walked the environment
+/// (`json`'s `string-acc` 100 000 times a run).
+pub(crate) fn gsite_reservation(gsites: u32, sites: u32) -> u32 {
+    gsites + sites
 }
 
 impl CompiledArm {
+    /// The global-read slot native code resolves call site `call_site`'s head through when
+    /// it makes that call in tail position — past every slot the body's own global reads
+    /// use (see [`gsite_reservation`]).
+    pub(crate) fn tail_head_gsite(&self, call_site: u32) -> u32 {
+        debug_assert!(
+            call_site < self.nsites,
+            "call site {call_site} outside the arm's {} sites",
+            self.nsites
+        );
+        self.ngsites - self.nsites + call_site
+    }
+
     /// The arm's name for diagnostics: its `dbg_name`, or `<closure>` for an anonymous arm.
     pub(crate) fn dbg_label(&self) -> &'static str {
         self.dbg_name

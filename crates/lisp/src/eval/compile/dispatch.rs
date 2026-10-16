@@ -471,10 +471,18 @@ pub(crate) fn dbg_check_args(args: &[Value], label: &str) {
 /// env `cenv` — [`push_frame`]'s step for them, shared with every frame built without it:
 /// the driver's in-place adoption (`ChunkExit::CallInPlace`) and the native entries'
 /// fast frames. Without it a callee reads its captured lexicals as nil and fails far away.
-/// No allocation, so no collection.
+/// No allocation, so no collection. The emptiness test is split from the fill so it inlines:
+/// with the loop in one body it stayed a call, on every frame of an arm with no captures.
 #[inline]
 pub(crate) fn fill_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, cenv: EnvId) {
     if !arm.capture_names.is_empty() {
+        fill_captures_from(heap, arm, base, cenv);
+    }
+}
+
+#[inline(never)]
+fn fill_captures_from(heap: &mut Heap, arm: &CompiledArm, base: usize, cenv: EnvId) {
+    {
         let capture_base = arm.nrequired + arm.noptional + arm.rest_slot.is_some() as usize;
         for (k, &name) in arm.capture_names.iter().enumerate() {
             let v = heap.capture_value(cenv, k, name);

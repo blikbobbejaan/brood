@@ -659,11 +659,6 @@ pub(crate) fn exec_chunk(
                         });
                     }
                 }
-                let n = heap.roots_len();
-                argv = SmallVec::with_capacity(argc);
-                for k in 0..argc {
-                    argv.push(heap.root_at(n - argc + k));
-                }
                 // VM→native DIRECT call (`docs/compute-frontier.md` §7.12). On the
                 // call-heavy rows the interpreter's dominant "call" is not a VM-level apply
                 // but an entry into a callee that is ALREADY native — a gate-refused arm's
@@ -687,106 +682,125 @@ pub(crate) fn exec_chunk(
                 // is where the result must land when the callee returns.
                 #[cfg(feature = "jit")]
                 if !*tail
-                    && let Some((ref arm, cenv, bases)) = fast
-                    && vm_direct_eligible(heap, arm, argc)
+                    && fast
+                        .as_ref()
+                        .is_some_and(|(arm, _, _)| vm_direct_eligible(heap, arm, argc))
                 {
-                    let arm = arm.clone();
-                    heap.truncate_roots(drop_base);
-                    for a in &argv {
-                        heap.push_root(*a);
-                    }
-                    let (r, frame_nslots) =
-                        vm_call_native_direct(heap, &arm, argc, drop_base, cenv, bases, capture);
-                    match r {
-                        DirectNative::Done(v) => {
-                            // `roots` is back at `drop_base`; the result replaces
-                            // the call. `v` is unrooted until pushed — nothing may
-                            // allocate before this (see `crate::jit::JitArmFn`).
-                            heap.push_root(v);
-                            if !crate::process::macro_block_active() && heap.gc_due() {
-                                heap.collect(&mut [], &mut []);
+                    // Every outcome below returns or continues, so the IC's handle is moved
+                    // out rather than cloned (two atomic refcount writes a call).
+                    let (arm, cenv, bases) = fast.take().expect("matched Some above");
+                    {
+                        // The args already lie where the frame starts, but for a staged
+                        // head's callee value below them: shift them down over it, in
+                        // place (forward-safe — each write is below its read).
+                        let n = heap.roots_len();
+                        if drop_base + argc < n {
+                            for k in 0..argc {
+                                let v = heap.root_at(drop_base + 1 + k);
+                                heap.set_root_at(drop_base + k, v);
                             }
-                            continue;
+                            heap.truncate_roots(drop_base + argc);
                         }
-                        DirectNative::Error => {
-                            let e = jit_take_error(heap)
-                                .expect("native callee reported an error without parking one");
-                            // A hard kill unwinds untouched to the top-level driver
-                            // (as the `dispatch` arm below does). The native arm
-                            // recorded its own trace frame (KI-117); the driver's
-                            // `Err` arm names this caller and the pending frames.
-                            if e.is_kill_signal() {
-                                return Err(e);
+                        let (r, frame_nslots) = vm_call_native_direct(
+                            heap, &arm, argc, drop_base, cenv, bases, capture,
+                        );
+                        match r {
+                            DirectNative::Done(v) => {
+                                // `roots` is back at `drop_base`; the result replaces
+                                // the call. `v` is unrooted until pushed — nothing may
+                                // allocate before this (see `crate::jit::JitArmFn`).
+                                heap.push_root(v);
+                                if !crate::process::macro_block_active() && heap.gc_due() {
+                                    heap.collect(&mut [], &mut []);
+                                }
+                                continue;
                             }
-                            return Err(tag_pos(e, pos));
-                        }
-                        DirectNative::Tail { top } => {
-                            // `[callee, arg0..]` staged above the callee's frame:
-                            // `jit_dispatch_tail`'s dispatch, done here. A VM
-                            // closure comes back UN-RUN as `Step::Tail` and becomes
-                            // this call's frame push (the frame the native callee
-                            // would have reused — same depth, same base); a native
-                            // or tree-walked callee ran to `Done`, as it would there.
-                            let n2 = heap.roots_len();
-                            let tail_callee = heap.root_at(top);
-                            let mut tail_argv: SmallVec<[Value; 4]> =
-                                SmallVec::with_capacity(n2 - top - 1);
-                            for k in (top + 1)..n2 {
-                                tail_argv.push(heap.root_at(k));
-                            }
-                            let step = match dispatch(heap, tail_callee, tail_argv, true, cur_env) {
-                                Ok(s) => s,
-                                Err(e) if e.is_control() => {
-                                    // Only a kill can arrive here: the tail callee
-                                    // of a native arm is never `%receive` (the
-                                    // receive fence keeps that chunk off the JIT),
-                                    // so there is no suspend to rewind for.
-                                    debug_assert!(e.is_kill_signal());
+                            DirectNative::Error => {
+                                let e = jit_take_error(heap)
+                                    .expect("native callee reported an error without parking one");
+                                // A hard kill unwinds untouched to the top-level driver
+                                // (as the `dispatch` arm below does). The native arm
+                                // recorded its own trace frame (KI-117); the driver's
+                                // `Err` arm names this caller and the pending frames.
+                                if e.is_kill_signal() {
                                     return Err(e);
                                 }
-                                Err(e) => return Err(tag_pos(e, pos)),
-                            };
-                            heap.truncate_roots(drop_base);
-                            match step {
-                                Step::Tail {
-                                    compiled,
-                                    args,
-                                    genv,
-                                    bases,
-                                } => {
-                                    return Ok(ChunkExit::Call {
-                                        arm: compiled,
+                                return Err(tag_pos(e, pos));
+                            }
+                            DirectNative::Tail { top } => {
+                                // `[callee, arg0..]` staged above the callee's frame:
+                                // `jit_dispatch_tail`'s dispatch, done here. A VM
+                                // closure comes back UN-RUN as `Step::Tail` and becomes
+                                // this call's frame push (the frame the native callee
+                                // would have reused — same depth, same base); a native
+                                // or tree-walked callee ran to `Done`, as it would there.
+                                let n2 = heap.roots_len();
+                                let tail_callee = heap.root_at(top);
+                                let mut tail_argv: SmallVec<[Value; 4]> =
+                                    SmallVec::with_capacity(n2 - top - 1);
+                                for k in (top + 1)..n2 {
+                                    tail_argv.push(heap.root_at(k));
+                                }
+                                let step =
+                                    match dispatch(heap, tail_callee, tail_argv, true, cur_env) {
+                                        Ok(s) => s,
+                                        Err(e) if e.is_control() => {
+                                            // Only a kill can arrive here: the tail callee
+                                            // of a native arm is never `%receive` (the
+                                            // receive fence keeps that chunk off the JIT),
+                                            // so there is no suspend to rewind for.
+                                            debug_assert!(e.is_kill_signal());
+                                            return Err(e);
+                                        }
+                                        Err(e) => return Err(tag_pos(e, pos)),
+                                    };
+                                heap.truncate_roots(drop_base);
+                                match step {
+                                    Step::Tail {
+                                        compiled,
                                         args,
                                         genv,
                                         bases,
-                                    });
-                                }
-                                Step::Done(v) => {
-                                    heap.push_root(v);
-                                    if !crate::process::macro_block_active() && heap.gc_due() {
-                                        heap.collect(&mut [], &mut []);
+                                    } => {
+                                        return Ok(ChunkExit::Call {
+                                            arm: compiled,
+                                            args,
+                                            genv,
+                                            bases,
+                                        });
                                     }
-                                    continue;
+                                    Step::Done(v) => {
+                                        heap.push_root(v);
+                                        if !crate::process::macro_block_active() && heap.gc_due() {
+                                            heap.collect(&mut [], &mut []);
+                                        }
+                                        continue;
+                                    }
                                 }
                             }
-                        }
-                        DirectNative::Unwound => {
-                            // The parked signal has done its job: the frames it
-                            // passed are recorded (ADR-401).
-                            let _ = jit_take_error(heap);
-                            return Ok(ChunkExit::Unwound { keep_current: true });
-                        }
-                        DirectNative::Handoff { outcome } => {
-                            return Ok(ChunkExit::CallResume {
-                                arm,
-                                base: drop_base,
-                                nslots: frame_nslots,
-                                genv: cenv,
-                                bases,
-                                outcome,
-                            });
+                            DirectNative::Unwound => {
+                                // The parked signal has done its job: the frames it
+                                // passed are recorded (ADR-401).
+                                let _ = jit_take_error(heap);
+                                return Ok(ChunkExit::Unwound { keep_current: true });
+                            }
+                            DirectNative::Handoff { outcome } => {
+                                return Ok(ChunkExit::CallResume {
+                                    arm,
+                                    base: drop_base,
+                                    nslots: frame_nslots,
+                                    genv: cenv,
+                                    bases,
+                                    outcome,
+                                });
+                            }
                         }
                     }
+                }
+                let n = heap.roots_len();
+                argv = SmallVec::with_capacity(argc);
+                for k in 0..argc {
+                    argv.push(heap.root_at(n - argc + k));
                 }
                 // Inline fast-path: IC hit for the exact same arm, same captured env, no
                 // optional/rest params, and GC is not yet due. Covers the common
@@ -1394,6 +1408,16 @@ pub(super) fn quantum_checks(heap: &Heap) -> Result<(), LispError> {
 /// to a captured `me`).
 #[inline]
 fn reset_frame_keep_captures(heap: &mut Heap, arm: &CompiledArm, base: usize, argv: &[Value]) {
+    // No captures to keep — nearly every loop: the frame is nil but for the args, which is one
+    // bulk fill, not a test per slot (the call sites have truncated `roots` to the frame top).
+    if arm.capture_names.is_empty() {
+        heap.truncate_roots(base);
+        heap.extend_roots_to_nil(base + arm.nslots);
+        for (i, &a) in argv.iter().enumerate().take(arm.nrequired) {
+            heap.set_root_at(base + i, a);
+        }
+        return;
+    }
     let capture_lo = arm.nrequired;
     let capture_hi = capture_lo + arm.capture_names.len();
     for i in 0..arm.nslots {

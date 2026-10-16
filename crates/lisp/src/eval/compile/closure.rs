@@ -269,13 +269,16 @@ pub(crate) fn compile_arm(
                                     nrequired,
                                     nslots: leaf_nslots,
                                     nsites: scope.sites,
-                                    ngsites: scope.gsites,
+                                    ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
                                     uid,
                                     site_pos: site_pos.clone(),
                                     body: d.body,
                                     chunk: Some(d.chunk),
                                     has_runtime_handles,
                                     ckpt_slot: d.ckpt_slot,
+                                    // `share_key` stays None (the default): never published
+                                    // to the cross-process cache, as this arm is reachable
+                                    // only through its caller's derivation.
                                     fn_name: trace_name,
                                     src_file: src_file.clone(),
                                     module: scope.module,
@@ -311,7 +314,9 @@ pub(crate) fn compile_arm(
                                     leaf_nslots,
                                     Some(Box::new(ir::LeafInline {
                                         resume: Arc::new(resume),
-                                        epoch: heap.global_epoch(),
+                                        epoch: AtomicU64::new(heap.global_epoch()),
+                                        callees: d.callees,
+                                        relocations: heap.code_relocations(),
                                     })),
                                 )
                             }
@@ -330,7 +335,7 @@ pub(crate) fn compile_arm(
         rest_slot: rest.map(|_| nrequired + noptional),
         nslots: nslots_total,
         nsites: scope.sites,
-        ngsites: scope.gsites,
+        ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
         uid,
         site_pos,
         body,
@@ -902,9 +907,21 @@ pub(crate) fn hof_apply_native(
     cenv: EnvId,
     bases: (u32, u32),
 ) -> Option<LispResult> {
-    use std::sync::atomic::Ordering::Acquire;
+    use std::sync::atomic::Ordering::{Acquire, Relaxed};
     let argc = args.len();
-    let code = arm.jit_code.load(Acquire);
+    let mut code = arm.jit_code.load(Acquire);
+    // The spinning loop's escape hatch (`JIT_QUEUED_SYNC_EDGES`), for a callback: it has no
+    // back-edge to count, so count the calls it ran interpreted while its compile waited in
+    // the queue. Behind a backed-up queue a whole fold ran that way — `json`'s closing
+    // `reduce` over 20 000 records, every element on the VM. `jit_calls` is not counted
+    // while an arm is queued, so it is free to count here.
+    if code == crate::jit::QUEUED
+        && (arm.jit_calls.fetch_add(1, Relaxed) + 1)
+            .is_multiple_of(crate::eval::compile::jit_runtime::JIT_QUEUED_SYNC_EDGES)
+    {
+        crate::eval::compile::jit_runtime::jit_compile_now_with_args(heap, arm, args);
+        code = arm.jit_code.load(Acquire);
+    }
     if code.is_null() || code == crate::jit::BAILED || code == crate::jit::QUEUED {
         // Which of the three, under `perf-stats`: `jit_link_done` reading 0 against N calls
         // says the fast frame never engaged but not why, and the three have entirely
@@ -987,7 +1004,7 @@ pub(crate) fn hof_apply_native(
         NativeEntry {
             code,
             base,
-            env: cenv,
+            env: EntryEnv::Bare(cenv),
             dbg_fn: dbg_sym,
             ic_bases: Some(bases),
             from: EntryFrom::Native,

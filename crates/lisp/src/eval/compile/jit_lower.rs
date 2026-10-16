@@ -266,7 +266,9 @@ pub(crate) fn jit_lower_inlined_arm(
         // (or a prim its body uses), and the derivation can't be re-checked here (no
         // heap on this thread). Refuse → the upgrade BAILs and the small native keeps
         // running; the caller re-derives fresh only when its closure is recompiled.
-        if arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire) != leaf.epoch {
+        if arm.compile_epoch.load(std::sync::atomic::Ordering::Acquire)
+            != leaf.epoch.load(std::sync::atomic::Ordering::Acquire)
+        {
             return bail("leaf-derivation-stale");
         }
         // The spliced body + chunk live on the resume arm, which `arm` owns and
@@ -865,6 +867,12 @@ fn jit_lower_arm_inner(
                     } else {
                         (head, site)
                     };
+                    // Where a tail call by name resolves its head (see `tail_head_gsite`).
+                    let head_gsite = if *tail && head.is_some() {
+                        arm.tail_head_gsite(*site)
+                    } else {
+                        0
+                    };
                     match call::emit_call(
                         &mut b,
                         &mut stack,
@@ -873,6 +881,7 @@ fn jit_lower_arm_inner(
                         *tail,
                         *site,
                         *head,
+                        head_gsite,
                         spill_base,
                         reserve,
                         epoch_ptr,

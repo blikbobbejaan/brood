@@ -381,6 +381,12 @@ pub struct RuntimeCode {
     /// 4000-module load, and the JIT came out a net 43% *loss* against no JIT at all.
     /// `version` keeps its exact old meaning for the inline caches.
     pub(super) code_epoch: AtomicU64,
+    /// Bumped whenever RUNTIME code handles are rewritten — a generation migration, a freed
+    /// generation, a compaction — so a handle recorded before it may now address something
+    /// else. `code_epoch` moves for those too, but also for every rebind; a cache that keys
+    /// on handle identity and re-checks bindings itself (a leaf derivation's callees,
+    /// [`crate::eval::compile::LeafInline`]) needs to tell the two apart.
+    pub(super) relocations: AtomicU64,
     /// Bumped whenever a binding LEAVES the table — `reflect/undef` (ADR-391), an
     /// `%isolate` restore. Before removal existed the table only grew between restores, so
     /// the checker keyed its export and namespace indexes on the global COUNT; a removal
@@ -732,6 +738,7 @@ impl Default for RuntimeCode {
             contract_forced: RwLock::new(std::collections::HashSet::new()),
             version: AtomicU64::new(0),
             code_epoch: AtomicU64::new(0),
+            relocations: AtomicU64::new(0),
             removals: AtomicU64::new(0),
             undefined: RwLock::new(std::collections::HashSet::new()),
             def_sites: RwLock::new(HashMap::new()),
@@ -880,6 +887,7 @@ impl RuntimeCode {
             load_journal: Mutex::new(LoadJournal::default()),
             version: AtomicU64::new(0),
             code_epoch: AtomicU64::new(0),
+            relocations: AtomicU64::new(0),
             removals: AtomicU64::new(0),
             undefined: RwLock::new(std::collections::HashSet::new()),
             def_sites: RwLock::new(HashMap::new()),

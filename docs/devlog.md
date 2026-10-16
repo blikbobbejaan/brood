@@ -1771,3 +1771,228 @@ test target with knobs; tests for twelve public functions nothing referenced; th
 share their head and tail; a refused audio thread is retried; the scaffold's templates are
 data.
 
+## 2026-10-16 — merged the other machine's 2026-10-15/16 work; its KI numbers moved
+
+Both machines numbered new known issues from KI-250 on 2026-10-15. This side's KI-250..255
+came first, so the other machine's entries were renumbered at the merge: **KI-250 → KI-264,
+KI-251 → KI-265, KI-252 → KI-266**. Their commit messages (`9d7c9150`, `985f97fd` and
+others) still carry the old numbers. The entries below are theirs, renumbered.
+
+## 2026-10-15 — a native tail call by name caches its head (KI-264)
+
+**Picking `json` apart.** A `json` profile at N=20 000 had two Rust frames that do not belong
+on a hot path: `env_get` (4%) and `jit_tier_in_frame` (3%, the per-entry ceremony of VM→native
+calls, scattered — no single hot instruction). The counter build said why the first was there:
+the global-read cache hit 186 625 times and missed 179 843. Instrumenting the miss path named
+three functions, each tail-called BY NAME from native code, and the slot each was looked up in
+lay one past the end of the process's table.
+
+**KI-264.** Native code resolves a named tail call's head through the global-read cache, and
+passed the call SITE's number as the slot. An arm reserves only as many global-read slots as
+its body has reads, so the call-site number pointed past its block (the write refused, every
+call an `env_get`) or onto one of its own reads (the two evicting each other). The entry
+checks the symbol, so nothing was ever wrong but the cost. An arm now reserves one slot per
+call site after its reads, and native code uses that slot. Instructions: `primes` −6.4%,
+`supervisor` −1.8%, `latency` −1.8%, `nqueens` −1.1%, `ring` −0.8%; `json` only −0.35% at the
+benchmark's N=2 000 (the misses scale with the document; 18 000 a run there).
+
+**KI-265, a test flake found by the gate.** The tree-walker half of `make test-both` failed
+`a_leak_is_stopped_and_a_busy_worker_beside_it_is_not` once. With the CPU loaded it failed 7 runs
+in 25. The runtime was right every time: the culprit sometimes notices the crossing itself and
+raises in itself, which prints nothing on stderr. The test now checks which of the two errors
+the culprit died with, and wants the stderr line only from the selector.
+
+## 2026-10-15 (later) — the three `json` leads: stale leaf derivations (KI-266), the slow path's environment walk, a queued callback
+
+**A stale leaf derivation (KI-266).** At `4d1cdbda` `json`'s `skip-ws`, `digits-run` and
+`json-object` never got their inlined body: derived at epoch 96, tiered at 113. On the next
+commit they did, by timing. The tier-up now re-validates a derivation whose epoch moved — the
+closures it spliced, a new runtime count of code-handle relocations, the spliced primitives —
+and moves its stamp forward; only a real rebind of a spliced callee recompiles the arm. The
+first cut recompiled on any stale stamp and churned (`%match-bind-sym?` 58 times in one run).
+
+**The environment walks.** A `#[track_caller]` tally on `env_get` put ~1M of `json`'s 1.03M (N=20 000)
+at one line: `jit_dispatch_call`'s slow path, resolving a named callee native code could not
+link. 588 000 were `(nth s i -1)`: `nth`'s 3-argument arm was `(coll i & default)`, and a rest arm
+never links, so every call walked the environment, dispatched on the VM and allocated a rest list.
+Two fixes: the slow path takes the callee from the call IC the resolve above it has just filled
+(every unlinkable named call), and `nth`'s default is a fixed third parameter, as its `sig`
+already said — a fourth argument is now an arity error (the checker warned on it before).
+Warm, `json` at N=20 000 does ~40 000 walks, from 1.7M this morning. An earlier tally that put
+54 000 walks in the tree-walker was a cold run: the first run after a prelude edit re-expands
+the prelude into its cache.
+
+**A callback whose compile is queued.** A spinning loop compiles synchronously after 2 048
+back-edges spent waiting for its queued compile (`JIT_QUEUED_SYNC_EDGES`); a callback has no
+back-edge, so a fold over a cold callback behind a backed-up queue ran entirely interpreted —
+`json`'s closing `reduce` at N=20 000, all 19 872 elements. `hof_apply_native` now counts the
+calls it declines while queued and compiles on the same threshold: 19 872 → 1 919. The
+benchmark rows decline at most 6 273 times a run, so this is for long folds, not the column.
+
+**Measured** against `1d7adbb6` (KI-264 already in), min of 3: `json` −5.1%, `errors` −2.1%,
+`primes` −1.6%, `latency` −1.4%, `regex` −1.1%, `base64` −1.0%, `nqueens` and `pipeline` −0.8%.
+`errors-deep`, `supervisor`, `wordcount` and `sort` read +0.3–0.5% on six repeats each; their
+traces show identical tiering decisions on both binaries (no leaf upgrade runs there), so that is
+layout. `ring` is bimodal on both (7.33G / 7.52G).
+
+## 2026-10-15 (evening) — the native → interpreted → native round trip, 23% cheaper
+
+**The lead, and why not the gate.** What is left on `json` is ~470 000 calls a run (N=20 000)
+into functions the native compiler refuses (`call-mediated-boxed`: `json-value`, `enc-key`,
+`reverse`, …). Compute-frontier §7.1 admitted that class three ways and lost every time, so
+the gate stays; the cost to cut is the BOUNDARY. A per-arm tally of interpreted instructions
+put ~1.2M short activations (4–22 instructions each) on the row — per-call cost, not loops.
+A microbenchmark of `json`'s shape — a native loop calling a refused dispatcher that calls a
+native leaf — paid ~3 130 instructions an element against ~495 with the middle function
+native.
+
+**Four cuts, all in the plumbing:**
+- `jit_dispatch_call`'s slow path ran the callee through `dispatch`, which looked its arm up
+  again by closure (a hash lookup, the closure read, its IC block) though the resolve above
+  had just found it in the call IC. It now runs that arm with `vm_apply` — what `dispatch`
+  ends in — unless a module load has staled it (ADR-366), and resolves the callee value only
+  for the `dispatch` fallback. −520, then −45 an element.
+- `arm_ic_blocks`, read on every VM frame push, hashed its `uid` with SipHash; past eight arms
+  it is a real hash map (`json` runs ~240). Now `SymbolHasher`'s one multiply, as the other
+  per-call maps already were. −145.
+- The interpreter's call into a native callee cloned the call IC's arm handle a second time;
+  every outcome after it returns, so it is moved. Two atomic refcount writes a call — cycles,
+  not instructions.
+- `jit_tier_in_frame` tested the global xcall switch (a call) on every native entry before the
+  arm's cached "has a non-tail named call" answer, which ends the test for a leaf. −33.
+
+Round trip 9.80G → 7.56G instructions (−23%) and 3.4G → 2.6G cycles at N=3M. Rows against
+`985f97fd`: `nqueens` −3.9%, `nbody` −2.0%, `json` −1.4%, `regex` −1.3%, `startup` −1.0%;
+`spawn` and `latency` read +1.3% / +1.0% once and overlap fully on six repeats each (noise).
+What remains of the round trip is the trampoline itself (`vm_run_bc` per nested entry, the
+frame's arm refcount) and `jit_tier_in_frame`'s entry ceremony — handoff's "the rest of the
+VM call", structural.
+
+## 2026-10-15 (night) — spike: resuming native code through the driver does not pay for compute
+
+**The question.** Should a native → interpreted call stop nesting an interpreter run and
+instead return to the driver, which runs the callee as an ordinary frame and re-enters the
+caller's native code at the call site (a resumable native frame, BEAM's model)? The same
+design is what a compiled `receive` loop needs, so the spike asked the compute half first:
+is resuming through the driver cheaper than nesting?
+
+**Measured instead of built.** The new path is the sum of two costs that exist today, so they
+bound it. Microbenchmarks (instructions a call, min of 3, N 1M vs 3M, an interpreted driver
+kept off the JIT by a `binding`):
+
+| path | instructions |
+|---|---|
+| interpreted → interpreted call, callee body included (`BROOD_TIER=1`) | 768 |
+| interpreted → native call | 640 |
+| today's nested native → interpreted crossing, callee body included | ~1 180 |
+
+The resumed crossing is an exit from native code (~50), the driver running the callee
+(~768), and a re-entry at the call site — at least the native-entry ceremony (~200, from the
+computed-call work), plus reloading what was live across the call: carry variables, the
+per-slot register caches and the operand stack's block parameters, all of which the lowering
+keeps in SSA values and would have to write to the frame before every such exit. ~1 020–1 300
+against ~1 180: break-even. After the day's cuts the nesting is no longer the cost; the two
+per-call constants are, and the redesign pays both.
+
+**What follows.** Not built, for compute. The compute lever is the per-call constants
+themselves — 768 for an interpreted call, 640 into native code, ~410 native to native, where
+BEAM pays tens. The resumable native frame stays the design for compiled `receive` loops (it
+is the only way a native frame can park), and it is judged on the process rows, not on
+these; it will want the cheaper entry either way.
+
+## 2026-10-15 (late) — the call into native code, 32% cheaper: an arm that has settled skips the tier-up
+
+**The constant.** The spike left three per-call constants as the compute lever; this takes the
+middle one, an interpreted caller entering native code (640 instructions, the
+`drv_base`/`drv_leaf` microbenchmarks: an interpreted driver kept off the JIT by a `binding`,
+with and without a call to a native leaf). Precise sampling (`instructions:upp`; plain
+`perf record` here is capped at 1 000 samples/s and skids onto the instruction after an
+atomic) split it into `jit_tier_in_frame` ~227, the call site in `exec_chunk`, `enter_native`'s
+ceremony, `native_feedback` and the stack stamp.
+
+**Cuts:**
+- `shared_published.swap(true)` ran on EVERY native entry of an arm without an installed
+  inlined body — a locked RMW on a `CompiledArm` all of a runtime's processes share, so each
+  entry wrote that cache line and a fan-out bounced it between cores. Now a plain load first;
+  `inline_queued.swap` the same (it ran on every entry while a deferred compile waited — a
+  spawn storm's whole run).
+- An arm that has nothing left for the tier-up to do records the code pointer it SETTLED on
+  (`CompiledArm::settled_code`); `jit_tier_in_frame` is now an inline fast path for that
+  pointer — the drain, the ceiling, the epoch and its re-load, the frame size, then the entry —
+  and everything else is `jit_tier_in_frame_slow`. Keyed on the pointer, so every writer of
+  `jit_code` voids it unawares; `reset_native_state` clears it (the same pointer can be
+  re-adopted from the shared cache at an unchanged epoch). Only a BAILED upgrade slot counts as
+  finished: a null one may be a deferred compile in flight, so the xcall re-lowering's swap
+  (which nulls the slot) settles its own pointer. Skipping the slow path can only miss an
+  upgrade, never run wrong code.
+- `enter_native` re-rooted an env its driver caller had already rooted (`EntryEnv::Rooted`).
+- The direct call site copied the args into a `SmallVec` and pushed them back to the slots
+  they came from; now they stay put (a staged head shifts them down one, in place).
+- `native_feedback` returns inline on a clean exit with nothing blocked and no deopt streak.
+
+Not taken: caching the stack stamp per thread (~25 instructions) — lowering runs under
+`stacker::maybe_grow`, so a macro can enter native code at depth 0 on a heap segment whose
+limit a cached value would get wrong, silently switching the overflow guard off.
+
+**Measured.** The call: 636 → 434 instructions (−32%), ~148 → ~84 cycles (−43%). Rows,
+instructions against `d35af1a1` (a proper `target/ab` baseline — a hand-copied binary booted
+without its stdlib image and read −30..−80% everywhere): `json` −1.6% in each of its two
+modes (30 runs a side), `nbody` −2.9%, `regex` −3.2%, `spawn` −3.3%, `latency` ~−2% (10 a
+side), `persistent-map` −1.5%, `bintree` −1.3%, the rest within ±1%. Watch: one `json` run
+of 40 read 2 896M (the first of its batch); 0/150 on either binary since — not reproducible.
+
+**Guards.** `an_interpreted_callers_native_callees_settle_on_their_code` (Rust, debug build)
+and `stress/jit_settle_test.blsp` (release, `make check-stress`; the debug build never
+re-lowers) via the new `:settled` key of `%jit-arm-state`. Sabotaged: settling while an
+upgrade is pending reds `an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body`;
+dropping the swap's settle reds the stress test. Gates: `test-both` 1882/1882 both engines,
+fuzz (tier_transition, metamorphic, pipeline, arithmetic × 300, stale=0) clean, `gcstress`
+clean.
+
+## 2026-10-16 — the interpreted call, 10% cheaper; three cuts measured and NOT taken
+
+**The constant.** The interpreted → interpreted call (the `drv_*` microbenchmarks at
+`BROOD_TIER=1`): ~771 instructions. Precise sampling: ~325 in `vm_run_bc`'s frame push/pop and
+loop top, the rest spread through `exec_chunk`'s `Call`/`Return` handling and its two entries
+per call — the shape the 2026-09-25 entry found, whose structural fix (frame push/pop inside
+`exec_chunk`) regressed `ring`/`ackermann` on L1i and stays dropped.
+
+**Shipped — two cuts that are equivalent by construction:**
+- `fill_captures` was `#[inline]` but too big to inline, so every `CallInPlace` frame paid a
+  call to find an arm with no captures; the fill is split out and the emptiness test inlines.
+- A self-tail loop's frame reset (`reset_frame_keep_captures`) tested every slot for being a
+  capture; an arm with none (nearly every loop) truncates and nil-fills in one write. It
+  showed because a call in a loop body gives the loop's frame spill slots (`drive`: 6 slots
+  against 2), all reset per iteration.
+
+Call 771 → 691 instructions (−10%). Rows, instructions, median of 5 against `fec73f3f`: at
+`BROOD_TIER=1` `fib` −3.4%, `spawn` −3.3%, `bintree` −2.6%, `json` −2.4%, `latency` −2.2%,
+`ackermann` −1.9%, `nbody` −1.8%, every row ≤ 0 but `sort` (+0.04%); at the default ceiling
+`ring` −3.3%, `nbody` −1.3%, `supervisor` −0.7%, `json` (20 a side, both modes) flat.
+
+**Measured and dropped:**
+- **One thread-local for the quantum state** (`REDUCTIONS` + `OWED`, each access an
+  out-of-line accessor call here): 691 → 688. Not worth the reshuffle.
+- **The fast-link table's base from a heap mirror** instead of `brood_rt_fastlink_base` (a
+  callback per native→native call site): −4 instructions on a ~255-instruction call, inside
+  the noise — against five sync points whose one omission reads freed memory.
+- **`brood_rt_push_room` inlined in IR** (bump `RootsBuf`'s length when it has the room, call
+  only to grow): −9 instructions and −3% cycles per native→native call, `bintree` −2.9% — and
+  `json` +2.5% in both its modes (20 runs a side; bisected to this change alone). The extra
+  blocks and the join parameter at every call site cost the big call-heavy arms more than the
+  callback did. A regression on a row is stop-the-world, so it is not in.
+
+**Where the native→native call goes** (a self-tail loop calling a recursive — so unspliced —
+callee, after the xcall re-lowering installs: ~255 instructions): the caller's in-IR sequence
+~139 (the fast-link guards, nine `JitCallCtx` stores, the gateway bump, the checkpoint journal
+written after the call), the callee's boxed entry wrapper ~39 around its i64 worker ~21. The
+structural lever is a direct i64-convention call into the worker when the caller knows its
+operands are ints, skipping the wrapper both ways.
+
+**Two things learned about measuring here.** (1) The first run of a freshly built binary boots
+the prelude from source (a new build id), +1.6G instructions on `json`: yesterday's
+"unreproducible 2 896M outlier" was exactly that, so it is closed — discard the first run after
+any build. (2) `cli::stdimage_reporting` went red in the tree-walker half of a `test-both`
+because a `cargo build` (debug) in another shell relinked `target/debug/brood` between the
+test's two steps; reproduced on demand by rebuilding mid-test. Never build the debug profile
+while a suite runs.

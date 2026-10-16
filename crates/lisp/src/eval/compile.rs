@@ -521,7 +521,7 @@ pub fn run(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
                 // throwaway arm needs the counts so `exec_value`'s activation resolves
                 // an IC block covering them.
                 nsites: scope.sites,
-                ngsites: scope.gsites,
+                ngsites: ir::gsite_reservation(scope.gsites, scope.sites),
                 site_pos: std::mem::take(&mut scope.site_pos).into_boxed_slice(),
                 // Top-level forms run via `exec_value` below, not the bytecode loop
                 // (Stage 1 bytecode is reached only through `vm_apply`); no chunk.

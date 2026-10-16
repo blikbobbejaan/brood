@@ -1,0 +1,39 @@
+;; STRESS — native callees of interpreted code SETTLE on their installed code, so entries
+;; from the interpreter take `jit_tier_in_frame`'s fast path (see `CompiledArm::settled_code`).
+;; Lives here, not in tests/, because the arm it is about — a loop whose named calls were
+;; re-lowered in place (the xcall swap) — only exists in a build without debug assertions,
+;; which is what this directory runs on; the suite's debug build never re-lowers. The
+;; re-lowered swap nulls the upgrade slot, which then reads like a compile still in flight,
+;; so it must settle its own pointer: without that it ran the full tier-up every entry.
+
+(defmodule jit-settle-stress-test (:use test))
+
+(defn h2 (x) (+ x 1))
+;; Not a leaf (it calls), so `g` gets no leaf splice and re-lowers its call instead.
+(defn h (x) (h2 (h2 x)))
+(defn g (n acc) (if (= n 0) acc (g (- n 1) (+ acc (h (bit/and n 3))))))
+(defn leaf (x) (+ x 1))
+(defdyn *k* 1)
+;; The `binding` keeps `drive` interpreted, so its calls to `g` and `leaf` enter native code
+;; from the interpreter — the entries that settle.
+(defn drive (i acc)
+  (if (>= i 2000) acc (drive (+ i 1) (binding (*k* 1) (+ acc (g 3 0) (leaf i))))))
+
+(defn settled? (f argc) (get (%jit-arm-state f argc) :settled))
+
+(defn await-settled (rounds)
+  (drive 0 0)
+  (cond
+    (and (settled? g 2) (settled? leaf 1)) true
+    (= rounds 0) false
+    :else (do (sleep 2) (await-settled (- rounds 1)))))
+
+(describe "jit: interpreted callers' native callees settle"
+  (test "a leaf and a re-lowered loop both settle, and still compute"
+    (if (%native-tier?)
+      (do
+        (assert= (await-settled 5000) true)
+        ;; `(g 3 0)` is h(3) + h(2) + h(1) = 5 + 4 + 3; `(leaf i)` is i + 1.
+        (assert= (drive 0 0) (+ (* 2000 12) 2001000))
+        true)
+      true)))

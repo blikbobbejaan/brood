@@ -359,6 +359,7 @@ impl Heap {
         // code baked in, so unlike a first-time `def` this must invalidate the JIT.
         self.runtime.version.fetch_add(1, Ordering::Relaxed);
         self.runtime.code_epoch.fetch_add(1, Ordering::Relaxed);
+        self.runtime.relocations.fetch_add(1, Ordering::Release);
         self.vm_cache.write().clear();
         self.global_ic.borrow_mut().clear();
         self.vm_call_ics.borrow_mut().clear();
@@ -480,6 +481,7 @@ impl Heap {
         // native code holding a handle into them must be re-tiered, not just re-resolved.
         self.runtime.version.fetch_add(1, Ordering::Relaxed);
         self.runtime.code_epoch.fetch_add(1, Ordering::Relaxed);
+        self.runtime.relocations.fetch_add(1, Ordering::Release);
         // …and the handle-keyed vm_cache (via free_epoch) across every process.
         // `Release`, paired with the `Acquire` in `free_epoch_now`: a process that
         // observes the bump must also observe the empty-slab store above it, since what
@@ -1411,6 +1413,7 @@ impl Heap {
             // Compaction rewrites closure ids and moves code — a code-epoch bump, not
             // merely an IC re-resolve (ADR-217).
             rt.code_epoch.fetch_add(1, Ordering::Relaxed);
+            rt.relocations.fetch_add(1, Ordering::Release);
             // Drop the shared JIT-code cache: compaction rewrites closure ids, so its
             // `(id, argc)` keys no longer denote the same closures. The version bump
             // already makes every entry epoch-stale (never installed), but clearing

@@ -76,7 +76,7 @@ pub(crate) fn jit_run_fast_link(
         NativeEntry {
             code: code as *const u8,
             base: stage_base,
-            env: callee_env,
+            env: EntryEnv::Bare(callee_env),
             dbg_fn: head,
             ic_bases: Some(callee_bases),
             from: EntryFrom::Native,

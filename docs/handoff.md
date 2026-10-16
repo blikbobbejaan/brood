@@ -35,15 +35,20 @@ devlog entries of the same dates.
   it carry the old ones — the map is in the devlog entry "merged origin/main".
 - `known-issues.md` lists **no open or watching entry**. KI-247 (a bystander raising after a
   holder died) and KI-248 (a large allocation passing the hard limit when the live snapshot
-  had not seen an earlier large block) were found and fixed 2026-10-14 (night).
+  had not seen an earlier large block) were found and fixed 2026-10-14 (night); KI-264 (a native
+  tail call by name never hit its head's cache slot) and KI-265 (a memory-pressure test that
+  required the selector's stderr line when the culprit had raised in itself) and KI-266 (a stale
+  leaf derivation refused for good) 2026-10-15. Those three were KI-250..252 on the other
+  machine and were renumbered at the 2026-10-16 merge (this side's KI-250..255 came first).
 - **Gates on the merged tree** (2026-10-14): `make test-both` 1859/1859 on both engines,
   `make gcstress`, fuzz (`tier_transition`, `metamorphic`, `pipeline`: 1 350 programs, clean),
   clippy `--all-features`, the `--no-default-features` checks, the JIT/frame/preemption/
   `process_floor`/`doc_refs` Rust tests, and the pre-push steps (`nest check` and `--strict` at
   zero, the 45 test files the merge touches). `nest format --check` no longer reads
-  git-ignored files (`make prepush` used to stop on `stress/fuzz_out/fuzz_6.blsp`). Not run
-  since 2026-10-13: `latency-gate`, `check-examples`, `check-stress`, `check-imaged`,
-  `breakagetests`.
+  git-ignored files (`make prepush` used to stop on `stress/fuzz_out/fuzz_6.blsp`). On
+  `0ba6c797` (2026-10-16): `test-both` 1882/1882 both engines, fuzz (four generators × 300,
+  `stale=0`), `gcstress`, `check-stress`, `check-examples`, `check-imaged`, `breakagetests`
+  (37/37) and `latency-gate` (worst p99 79 µs) all clean.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
   default their limits from the cap (hard = 3/4 of it), re-read every few seconds so a
   resized container moves them; elsewhere they stay unlimited. A table holding the memory is
@@ -151,6 +156,32 @@ every other row ~0 — at ~240 instructions saved each, ≤2% of any row. Worth 
 built on higher-order loops, not for the benchmark column. `nqueens`' `solve` stays
 interpreted (it builds its loop closure; §7.1).
 
+**E. DONE (2026-10-15) — `json`, picked apart by counters.** KI-264 (a native tail call by
+name caches its head), KI-266 (a stale leaf derivation is re-validated, not refused for good),
+the unlinkable-call slow path reads the call IC instead of walking the environment, `nth`'s
+default is a fixed parameter, and a queued callback compiles synchronously after 2 048 declines.
+`json` −5.1% instructions on top of KI-264's rows. What is left on `json` (N=20 000, counter
+build): `vm_apply` ~470 000 — the functions the native compiler refuses
+(`call-mediated-boxed`: `json-value`, `json-slice`, `enc-key`, `enc-string`, `->string`,
+`reverse`; `chunk-outside-jit-subset`: `enc-escapes`, `count`), each called from native code
+through the slow path. Followed 2026-10-15 (evening): the gate is right (§7.1), so the
+boundary was cut instead — a native → interpreted → native round trip −23% (devlog). Left:
+the nested `vm_run_bc` trampoline per crossing and `jit_tier_in_frame`'s entry ceremony
+(older thread 2), and `fast_link_from_entry` re-checking a callee that is not native on
+every call. A spike (devlog 2026-10-15 night) measured that resuming native code through the
+driver instead of nesting would be break-even for compute: the lever is the per-call
+constants — 768 instructions an interpreted call, 640 into native code, ~410 native to native.
+The middle one is now 434 (devlog 2026-10-15 late: settled arms skip the tier-up, the shared
+atomic writes are gone); what is left of it is `exec_chunk`'s call-site share (IC probe + its
+`Arc` clone, the frame fill), `enter_native`'s save/restore and the stack stamp. Next: the
+768 of an interpreted call, then native to native.
+The interpreted call is now 691 (devlog 2026-10-16; the quantum TLS merge, a fast-link base
+mirror and an in-IR `push_room` were measured and dropped there — the last moved `json` +2.5%).
+Native to native is ~255 once the xcall re-lowering lands; a direct i64-convention call that
+skips the callee's boxed wrapper was the structural idea, but the wrapper is 0.0% of every
+row (an i64 worker is entered once and recurses in registers) — not worth building for the
+corpus.
+
 ### Older threads
 
 1. **Receive loops run interpreted.** About a quarter of `pingpong`'s instructions are
@@ -161,7 +192,10 @@ interpreted (it builds its loop closure; §7.1).
    callee entry, and `vm_run_bc`'s frame push/pop. The cheap forms were built, measured and
    dropped (devlog 2026-09-25 "(later)"); what remains is structural.
 3. **Per-message residue:** `receive_match`, `run_one`, allocation, `Ctx` install — each small;
-   count the calls before touching any of them.
+   count the calls before touching any of them. Profiled 2026-10-16 (`ring`, precise
+   sampling): `receive_match` is 9.7% of the row with no source line above 0.6% — no
+   hotspot to cut; `run_one` 3.8%, `send` 2.3%, the `Ctx` thread-local + its drop ~2.8%.
+   The interpreter running the process bodies (`exec_chunk` 30%) is thread 1's lever.
 4. **Refresh the benchmark column** once 1 or 2 lands (protocol in brood-benchmarks'
    `CLAUDE.md`). Not on this machine.
 5. **Known limit:** under the tree-walker a caught contract error's position is the raise

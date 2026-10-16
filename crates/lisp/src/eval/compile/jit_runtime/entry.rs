@@ -35,8 +35,8 @@ pub(crate) struct NativeEntry {
     /// built `roots[base..]` to.
     pub(crate) code: *const u8,
     pub(crate) base: usize,
-    /// The callee's env; rooted for the call, and read back live afterwards.
-    pub(crate) env: EnvId,
+    /// The callee's env, read back live afterwards.
+    pub(crate) env: EntryEnv,
     /// The arm's name for diagnostics (`Heap::jit_dbg_fn`).
     pub(crate) dbg_fn: Symbol,
     /// The callee's IC block cursors, or `None` when the caller has installed them.
@@ -44,6 +44,16 @@ pub(crate) struct NativeEntry {
     pub(crate) from: EntryFrom,
     /// May the activation preempt by unwinding (`JitCallCtx::unwind`, ADR-401)?
     pub(crate) unwind: bool,
+}
+
+/// The env a native activation runs in.
+#[derive(Clone, Copy)]
+pub(crate) enum EntryEnv {
+    /// Not rooted yet: the entry roots it for the call.
+    Bare(EnvId),
+    /// Already rooted by the caller, which keeps it rooted across the call — the driver's
+    /// tier-in, whose frame owns the root. Rooting it a second time bought nothing.
+    Rooted(EnvRoot),
 }
 
 /// What came back from a native activation.
@@ -73,7 +83,10 @@ pub(crate) fn enter_native(heap: &mut Heap, entry: NativeEntry, out: *mut Value)
     // `GLOBAL_JIT`, epoch-checked, with its frame built at `roots[base..]`.
     let f: crate::jit::JitArmFn = unsafe { std::mem::transmute(entry.code) };
     let env_base = heap.env_roots_len();
-    let env_root = heap.root_env(entry.env);
+    let env_root = match entry.env {
+        EntryEnv::Bare(e) => heap.root_env(e),
+        EntryEnv::Rooted(r) => r,
+    };
     let saved_env = std::mem::replace(&mut heap.jit_call_env, env_root);
     let saved_fn = std::mem::replace(&mut heap.jit_dbg_fn, entry.dbg_fn);
     let depth = heap.jit_native_depth;
@@ -115,7 +128,30 @@ pub(crate) fn enter_native(heap: &mut Heap, entry: NativeEntry, out: *mut Value)
 /// (`jit_suspend_feedback`) and the deopt feedback — every type-deopt counted, and a watched
 /// arm's consecutive count latched or reset. `base`/`nslots` locate the frame for the
 /// `BROOD_JIT_BAIL_TRACE` line naming the instruction a deopt left at.
+///
+/// A clean return with nothing blocked under it and no deopt streak to reset — nearly every
+/// exit — has no feedback to give: that test is inline, so the common exit pays it and not
+/// a call.
+#[inline(always)]
 pub(crate) fn native_feedback(
+    heap: &mut Heap,
+    arm: &Arc<CompiledArm>,
+    base: usize,
+    nslots: usize,
+    exit: &NativeExit,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+    if exit.outcome == 0
+        && heap.blocked_under_gateway != exit.gateway
+        && !(arm.deopt_watch && arm.jit_deopts.load(Relaxed) != 0)
+    {
+        return;
+    }
+    native_feedback_slow(heap, arm, base, nslots, exit);
+}
+
+#[inline(never)]
+fn native_feedback_slow(
     heap: &mut Heap,
     arm: &Arc<CompiledArm>,
     base: usize,

@@ -670,7 +670,8 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
                 argc: 2,
                 tail: true,
                 pos: None,
-                site: NO_SITE,
+                // A named head always carries its call site (`emit.rs` asserts it).
+                site: 0,
                 head: Some(fb), // free-global head, elided from the stack
                 staged: false,
             }, // 14
@@ -679,6 +680,9 @@ fn jit_lowers_an_arm_ending_in_a_tail_call() {
     let elided_arm = CompiledArm {
         nrequired: 2,
         nslots: 2,
+        // The elided call carries site 0, so the arm reserves it.
+        nsites: 1,
+        ngsites: super::ir::gsite_reservation(0, 1),
         body: Node::Const(ConstVal::new(Value::nil())),
         chunk: Some(elided),
         ..CompiledArm::default()
@@ -2179,4 +2183,245 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
         misplaced.len(),
         &misplaced[..misplaced.len().min(4)]
     );
+}
+
+/// Native code resolves the head of a tail call by name through the global-read cache, and
+/// it used the CALL site's number as the slot. Call sites and global reads are numbered
+/// separately, so that slot was another read's (here `limit`'s, and the two evicted each
+/// other) or lay past the arm's block, where the cache drops every write and each call
+/// walked the environment — `json`'s `string-acc` 100 000 times a run, `primes` 6% of its
+/// instructions. Nothing else could see it: the cache checks the symbol, so every answer
+/// stayed right. The arm now reserves a slot per call site after its reads
+/// (`gsite_reservation`), and both entries must be in the arm's own block side by side.
+#[cfg(feature = "jit")]
+#[test]
+fn a_native_tail_call_by_name_caches_its_head_in_its_own_slot() {
+    use std::sync::atomic::Ordering::Acquire;
+    // Below the native tier (`BROOD_TIER=0|1`, the tree-walker CI job) nothing goes native,
+    // so there is no native tail call to observe.
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    interp
+        .eval_str(
+            "(def limit 7)
+             (defn hop (n) (if (= n 0) limit (hop-on (- n 1))))
+             (defn hop-on (n) (hop n))
+             (defn warm (k) (if (< k 1) :ok (do (hop 1) (warm (- k 1)))))",
+        )
+        .expect("define");
+    let id = match interp.eval_str("hop").expect("read hop").unpack() {
+        ValueRef::Fn(id) => id,
+        _ => panic!("`hop` should be a closure"),
+    };
+    let arm = compiled_arm_for(&interp.heap, id, 1).expect("hop/1 compiles");
+    let arm = arm.arc().clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        interp.eval_str("(warm 200)").expect("warm");
+        let code = arm.jit_code.load(Acquire);
+        if !code.is_null() && code != crate::jit::BAILED && code != crate::jit::QUEUED {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "`hop` should have tiered up to native code"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let chunk = arm.chunk.as_ref().expect("hop has a chunk");
+    let limit = value::intern("limit");
+    let read_site = chunk
+        .code
+        .iter()
+        .find_map(|i| match i {
+            Inst::GlobalIc { sym, site } if *sym == limit => Some(*site),
+            _ => None,
+        })
+        .expect("`limit` is a cached global read");
+    let call_site = chunk
+        .code
+        .iter()
+        .find_map(|i| match i {
+            Inst::Call {
+                tail: true,
+                head: Some(_),
+                site,
+                ..
+            } => Some(*site),
+            _ => None,
+        })
+        .expect("`(hop-on …)` is a tail call by name");
+    // Native `hop(1)` caches `hop-on` as it tail-calls it; `hop(0)` then caches `limit`.
+    interp.eval_str("(hop 1)").expect("run hop natively");
+    let (_, gbase) = interp.heap.vm_arm_block(&arm);
+    let head_slot = arm.tail_head_gsite(call_site);
+    assert!(
+        head_slot < arm.ngsites,
+        "the head's slot is inside the arm's block"
+    );
+    assert_ne!(
+        head_slot, read_site,
+        "the head and `limit` have slots of their own"
+    );
+    assert_eq!(
+        interp.heap.dbg_global_ic_sym(gbase + head_slot),
+        Some(value::intern("hop-on")),
+        "the native tail call cached its head in the slot reserved for it"
+    );
+    assert_eq!(
+        interp.heap.dbg_global_ic_sym(gbase + read_site),
+        Some(limit),
+        "the head did not evict `limit`'s entry"
+    );
+}
+
+/// A leaf derivation is stamped with the epoch it was derived at, and the compiler thread
+/// refuses a stale one for good. One `def` of anything between an arm's compile and its
+/// tier-up therefore kept the arm on its small native for the rest of the program — `json`'s
+/// `skip-ws`, `digits-run` and `json-object` whenever a module loaded mid-run. The tier-up
+/// now checks what the derivation reads (its spliced callees and primitives) and moves the
+/// stamp forward when nothing it reads changed, so the inlined body still installs.
+/// An arm entered from the interpreter SETTLES on its installed pointer once the tier-up has
+/// nothing left to do for it, so later entries take `jit_tier_in_frame`'s fast path. This
+/// build has debug assertions, which keep the xcall re-lowering off, so `g` settles on its
+/// first body here; the re-lowered case is `stress/jit_settle_test.blsp`, run on a release
+/// build by `make check-stress`.
+#[cfg(feature = "jit")]
+#[test]
+fn an_interpreted_callers_native_callees_settle_on_their_code() {
+    use std::sync::atomic::Ordering::Acquire;
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    // `drive` stays interpreted (the `binding` keeps it off the JIT), so its calls to `g` and
+    // `leaf` are the interpreter-to-native entries that settle. `g` is a native loop with a
+    // non-tail named call to a non-leaf `h`: the shape a release build re-lowers.
+    interp
+        .eval_str(
+            "(defn h (x) (if (< x 2) x (+ (h (- x 1)) 1)))
+             (defn g (n acc) (if (= n 0) acc (g (- n 1) (+ acc (h (bit/and n 3))))))
+             (defn leaf (x) (+ x 1))
+             (defdyn *k* 1)
+             (defn drive (i acc)
+               (if (>= i 2000) acc (drive (+ i 1) (binding (*k* 1) (+ acc (g 3 0) (leaf i))))))",
+        )
+        .expect("define");
+    let arm_of = |interp: &mut crate::Interp, name: &str, argc: usize| {
+        let id = match interp.eval_str(name).expect("read").unpack() {
+            ValueRef::Fn(id) => id,
+            _ => panic!("`{name}` should be a closure"),
+        };
+        compiled_arm_for(&interp.heap, id, argc)
+            .expect("compiles")
+            .arc()
+            .clone()
+    };
+    interp.eval_str("(drive 0 0)").expect("first run");
+    let g = arm_of(&mut interp, "g", 2);
+    let leaf = arm_of(&mut interp, "leaf", 1);
+    let settled = |arm: &CompiledArm| {
+        let code = arm.jit_code.load(Acquire);
+        !code.is_null()
+            && code != crate::jit::BAILED
+            && code != crate::jit::QUEUED
+            && arm.settled_code.load(Acquire) == code
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !(settled(&g) && settled(&leaf)) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never settled: g={} (inline_installed={}, inline_queued={}) leaf={}",
+            settled(&g),
+            g.inline_installed.load(Acquire),
+            g.inline_queued.load(Acquire),
+            settled(&leaf)
+        );
+        interp.eval_str("(drive 0 0)").expect("warm");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        interp
+            .eval_str("(drive 0 0)")
+            .expect("run settled")
+            .as_int(),
+        // `(g 3 0)` is h(3) + h(2) + h(1) = 6; `(leaf i)` is i + 1.
+        Some(2000 * 6 + (1..=2000).sum::<i64>()),
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body() {
+    use std::sync::atomic::Ordering::Acquire;
+    if crate::eval::compile::tier_ceiling() != crate::eval::compile::Tier::Native {
+        return;
+    }
+    let mut interp = crate::Interp::new();
+    interp
+        .eval_str(
+            "(def unrelated 0)
+             (defn leaf-sq (x) (* x x))
+             (defn sum-sq (n acc) (if (= n 0) acc (sum-sq (- n 1) (+ acc (leaf-sq n)))))
+             (defn warm (k) (if (< k 1) :ok (do (sum-sq 20 0) (warm (- k 1)))))",
+        )
+        .expect("define");
+    // Compile `sum-sq` (deriving its leaf splice of `leaf-sq`) with one call, THEN move the
+    // epoch by rebinding a global it does not read (a new name does not move it).
+    assert_eq!(
+        interp
+            .eval_str("(sum-sq 3 0)")
+            .expect("first call")
+            .as_int(),
+        Some(14)
+    );
+    let id = match interp.eval_str("sum-sq").expect("read sum-sq").unpack() {
+        ValueRef::Fn(id) => id,
+        _ => panic!("`sum-sq` should be a closure"),
+    };
+    let arm = compiled_arm_for(&interp.heap, id, 2).expect("sum-sq/2 compiles");
+    let arm = arm.arc().clone();
+    let leaf = arm.leaf.as_ref().expect(
+        "`sum-sq` should carry a leaf derivation splicing `leaf-sq`, or this test checks nothing",
+    );
+    let derived_at = leaf.epoch.load(Acquire);
+    interp.eval_str("(def unrelated 1)").expect("def");
+    assert_ne!(
+        interp.heap.global_epoch(),
+        derived_at,
+        "the def moved the epoch"
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !arm.inline_installed.load(Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "`sum-sq`'s inlined body never installed after an unrelated def"
+        );
+        interp.eval_str("(warm 200)").expect("warm");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        interp
+            .eval_str("(sum-sq 20 0)")
+            .expect("run inlined")
+            .as_int(),
+        Some(2870)
+    );
+    // The other direction: rebinding the callee the derivation spliced must not let the
+    // tier-up re-stamp it — the old body would keep running. Warm past a re-tier and the
+    // new definition must be what runs.
+    interp
+        .eval_str("(def leaf-sq (fn (x) (* x 10)))")
+        .expect("rebind the spliced callee");
+    for _ in 0..50 {
+        interp.eval_str("(warm 200)").expect("warm");
+        assert_eq!(
+            interp.eval_str("(sum-sq 20 0)").expect("run").as_int(),
+            Some(2100),
+            "a re-tier after rebinding `leaf-sq` ran the body spliced before the rebind"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }

@@ -412,6 +412,9 @@ fn reset_arm_untried(heap: &Heap, arm: &CompiledArm) {
 pub(super) fn reset_native_state(arm: &CompiledArm) {
     use std::sync::atomic::Ordering::{Relaxed, Release};
     arm.jit_code.store(std::ptr::null_mut(), Release);
+    // Unsettle: the re-tier may adopt this very pointer back from the shared cache, and the
+    // upgrade state below is being reset for it.
+    arm.settled_code.store(std::ptr::null_mut(), Relaxed);
     arm.jit_calls.store(super::TIER_THRESHOLD, Release); // re-tier promptly (already proven hot)
     arm.jit_deopts.store(0, Relaxed); // a fresh deopt-feedback trial for the recompile
     arm.shared_published.store(false, Relaxed); // recompiled code must re-publish
