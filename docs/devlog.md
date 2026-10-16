@@ -2021,3 +2021,55 @@ ONE-SHOT per arming" timed out on its first try under load and passed the retry.
 KI-267 — the worker announced `:ready` before entering its `try`, so a preemption between the
 two let the flood trip `E0046` outside the handler; reproduced on demand with a `sleep` in that
 gap, fixed in all four places the file had the ordering.
+
+## 2026-10-16 (evening) — `exec_value` retired: the bytecode loop is the VM's only executor
+
+`exec_value` walked the compiled `Node` tree for two callers the bytecode never served — top-level
+forms and `&optional` defaults — and reimplemented `If`/`Do`/`LetBind`/`Call`/`Prim2`/`TryCatch`
+beside `exec_chunk`, so every node-level change had to be made twice (its call-site cache handling
+had drifted once already). Both callers now run bytecode, and it is gone, `exec_call` with it; the
+prim helpers it shared a file with are `eval/compile/prim_exec.rs`.
+
+- **Top-level forms.** `run` compiles the form's node to a chunk (every node kind already had an
+  emission — `compile_chunk` never declined), wraps it in a throwaway zero-parameter arm (`BAILED`,
+  so it never tiers: it runs once) and calls `vm_apply`, the nested-run entry — so the frame, the
+  IC-block install and the caller's restore, the live-arm registration and the native-stack guard
+  are the driver's, as for any call. The KI-245 guard stays: a nested driver cannot capture either.
+- **`&optional` defaults.** A real default is now a prologue in its arm's own bytecode:
+  `(if <missing> (set <slot> <default>) nil)` per defaulted optional, left to right, ahead of the
+  body (which keeps its tail position). "Missing" is a hidden flag slot above the body's slots that
+  `push_frame` sets to `true` — `CompiledArm::optional_flags` replaces `optional_defaults`. A
+  truthiness test, so no operator a program could rebind is involved; `push_frame` is the only
+  frame builder an arm with optionals reaches (every other one refuses `noptional != 0`).
+- **Evaluation order at top level.** `exec_value` resolved a call's operator before its arguments
+  (the tree-walker's order); the bytecode elides a free-global head and resolves it AFTER them
+  unless an argument can run user code (KI-19). Inside function bodies that has always been so,
+  but at top level it would have made `(definterface Foo)` at a REPL report `Foo` instead of
+  `definterface` and its hint — `hints_name_only_features_that_exist` caught it. A top-level
+  form's scope now stages every call (`Scope::stage_calls`), and a staged head's `GlobalIc`, which
+  carries no position, reports its call's position from `CompiledArm::staged_head_pos` on a miss
+  (`unbound_head_in_tail_position_carries_call_pos` caught that one). Both were red before their
+  fix.
+
+Guard: `tests/optional_defaults_test.blsp` — defaults that read earlier parameters, bind locals,
+call out, raise; one that must NOT run when supplied (an explicit `nil` included); a 100 000-deep
+tail loop through an optional accumulator; captures; across processes. Sabotage: flagging every
+optional instead of the missing ones reds six of its eight tests.
+
+**Measured** (instructions, against `b98cda3c`). A loop of 20 000 `reflect/eval-string` calls —
+the per-form setup the change could cost — −0.8% at the default ceiling, +2.0% at
+`BROOD_TIER=1`; `startup` +0.07%; the rows within ±0.5% but `supervisor`, +1.4% in
+`release-fast` at both ceilings (10 runs a side). None of `supervisor`'s hot paths has a real
+default, and the profile difference was inlining moving (`jit_dispatch_call` into
+`brood_rt_call_slow`, `prim_apply` out of line) — `release-fast` has 16 codegen units, and a
+new module (`prim_exec`) re-partitions them. In `release-lean`, the shipped build (fat LTO, one
+unit), `supervisor` reads 4 731M against 4 734M, `json` identical in both modes, `nqueens` −0.3%.
+
+**And a flake found by the gates, fixed (KI-268).** `stream_test`'s loopback `->socket` test
+timed out once in the VM half; 5/120 at 8-way load on `b98cda3c` too, so not this change.
+`stream/socket->` let its stream process claim the socket itself, and a connected socket reads
+from the start, so a fast peer's data and close could land in the caller's mailbox first and be
+lost. The caller now transfers the socket and hands the stream what had already arrived — sound
+because delivery and the transfer take the same `SocketOwner` lock. 0/120 after; a new test that
+forces the window times out against the old `std/`.
+

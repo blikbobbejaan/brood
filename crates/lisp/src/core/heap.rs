@@ -873,7 +873,7 @@ pub struct Heap {
     /// walks these after evacuating the RUNTIME region and rewrites the movable
     /// handles their node trees embed (`Const`/`MakeClosure` literals): they're the
     /// one RUNTIME-handle holder the root walk can't reach — the `Arc`'d node tree is
-    /// off the GC root graph, and `exec_node` holds it by `&Node`, so the `Arc` can't
+    /// off the GC root graph, and it is held by `&Node`, so the `Arc` can't
     /// be swapped for a relocated copy. (The non-live arms in `vm_cache` are just
     /// cleared and rebuilt lazily; only the live ones need fixup.) Empty unless the VM
     /// is running a body. See ADR-076 / `docs/known-issues.md`.

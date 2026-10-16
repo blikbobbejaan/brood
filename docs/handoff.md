@@ -85,44 +85,14 @@ devlog entries of the same dates.
 
 ## Open threads, in value order
 
-### Next: retire `exec_value`, the VM's second executor (picked 2026-10-16)
+### DONE (2026-10-16): `exec_value`, the VM's second executor, is retired
 
-`eval/compile/exec_value.rs` holds two things:
-- **The prim helpers** (`prim2_int_fast`, `prim_apply`, `prim2_dispatch_rooted`, …). The
-  bytecode loop uses them, so they stay; move them to their own file.
-- **`exec_value`** (from about line 306), a tree-walking executor over the compiled `Node`
-  tree. It reimplements `If`, `Do`, `LetBind`, `Call`, `Prim2`, `TryCatch` and more, so every
-  node-level change has to be made twice, and its call-site cache handling has drifted from
-  the bytecode loop's once already (the shared helpers `call_site_arm` and
-  `vm_call_ic_install` now keep that half in step).
-
-It has exactly three entry points:
-
-1. **Top-level forms**, in `compile.rs` around line 547. `run` builds a throwaway
-   `CompiledArm` with no chunk ("Top-level forms run via `exec_value` below, not the bytecode
-   loop") and calls `exec_value(heap, &arm.body, base, genv)`.
-2. **Optional-parameter defaults**, in `dispatch.rs` around line 594 (`fill_args`):
-   `exec_value(heap, node, base, genv)` per missing optional.
-3. **`exec_call`**, in `dispatch.rs` at line 12. It is reached only from `exec_value` itself
-   (`exec_value.rs:477`), so it goes when the executor goes.
-
-**Plan:**
-- Emit a chunk for the top-level arm, as for any arm, and run it through the bytecode
-  driver (`vm_run_bc`) instead of `exec_value`.
-- Lower optional defaults into the arm's bytecode prologue, or emit each default as a tiny
-  chunk.
-- Then delete `exec_value` and `exec_call`.
-
-Watch the tail-call contract (`tail_calls_do_not_overflow`), the top-level IC-block install
-and restore around a nested `load` (`set_ic_bases`), `has_runtime_handles` and the
-`live_arm_push`/`live_arm_truncate` pairing, and `try` at top level (ADR-400 runs `try`
-bodies in the bytecode driver).
-
-**Gates:**
-- `make test-both`, `make gcstress`, and the fuzz differential.
-- `make ab` **and** `make ab-vm`: top-level forms run once, so the cost to watch is the
-  per-form setup, which shows on REPL, `eval-string` and test-runner workloads more than on
-  benchmark rows.
+The bytecode loop is the VM's only executor (devlog 2026-10-16 "exec_value retired"). A
+top-level form compiles to a chunk and runs through `vm_apply` (a throwaway arm, `BAILED` so
+it never tiers); a real `&optional` default is a prologue in its arm's own bytecode —
+`push_frame` sets a hidden flag slot per missing defaulted optional (`optional_flags`), the
+prologue tests it by truthiness and sets the slot. `exec_call` went with it; the prim helpers
+are `eval/compile/prim_exec.rs`. Guard: `tests/optional_defaults_test.blsp`.
 
 ### Next: performance items (A and B the user's pick, 2026-10-13; C found doing A)
 

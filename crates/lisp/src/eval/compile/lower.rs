@@ -68,6 +68,16 @@ pub(crate) struct Scope {
     /// uncontracted binding ([`module_boundary_ref`]), and a nested `(fn …)` inherits
     /// it. `None` compiles every reference as written.
     pub(crate) module: Option<Symbol>,
+    /// Stage every call's free-global head — resolve it before the arguments, as the
+    /// tree-walker does — not only those whose arguments can run user code (KI-19). Set for
+    /// a top-level form (`run`): it runs once, and a call whose operator AND argument are
+    /// both unbound must report the operator, whose hint names the replacement — `(definterface
+    /// Foo)` at a REPL is about `definterface`, not `Foo`. A nested `(fn …)` gets a fresh scope
+    /// and keeps the elided head.
+    pub(crate) stage_calls: bool,
+    /// `(global-read site, call position)` for each staged head — moved into
+    /// `CompiledArm::staged_head_pos`.
+    pub(crate) staged_head_pos: Vec<(u32, crate::error::Pos)>,
 }
 
 impl Scope {
@@ -85,6 +95,8 @@ impl Scope {
             gsites: 0,
             site_pos: Vec::new(),
             module: None,
+            stage_calls: false,
+            staged_head_pos: Vec::new(),
         }
     }
     /// Allocate the next arm-relative call-site id (see the `sites` field).
@@ -1105,7 +1117,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 // Primitive inlining (perf #1): a 2-arg call whose head is a free
                 // (non-shadowed) reference resolving — through at most one passthrough
                 // hop — to a core numeric/comparison primitive compiles to a
-                // `Node::Prim2`. The `(Int, Int)` case then runs inline in `exec_node`,
+                // `Node::Prim2`. The `(Int, Int)` case then runs inline in the bytecode loop,
                 // skipping the global lookup, passthrough redirect, `compiled_for`
                 // cache hit, arity check, and native dispatch the generic call path
                 // pays per operator per iteration. Guarded by the global epoch so a
@@ -1352,7 +1364,7 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
             // and `is_reserved_global` already reports false while one is in progress, so
             // that path stages conservatively.)
             let staged = site != NO_SITE
-                && args.iter().any(node_runs_user_code)
+                && (scope.stage_calls || args.iter().any(node_runs_user_code))
                 && !matches!(callee, Node::Global(sym) if heap.is_reserved_global(sym));
             if staged && let Node::Global(sym) = callee {
                 callee = Node::GlobalIc {
@@ -1364,6 +1376,11 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
                 Some((p, f)) => (Some(p), f),
                 None => (None, None),
             };
+            if let (Node::GlobalIc { site: gsite, .. }, Some(p)) = (&callee, pos)
+                && staged
+            {
+                scope.staged_head_pos.push((*gsite, p));
+            }
             if site != NO_SITE {
                 // Arm-relative: accumulate on the scope; `compile_arm` moves the vec
                 // into the CompiledArm, and `Heap::vm_arm_block` copies it into the

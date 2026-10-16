@@ -137,7 +137,14 @@ scripts/ab-bench.sh --floor fib loop collatz   # the default ceiling, single-thr
    130 "instructions" on an `Arc` refcount line. Use `instructions:upp` (precise, PEBS) for
    line-level attribution, and scale percentages by an exact `perf stat` count — the 1 kHz
    sample cap here also makes absolute sample totals meaningless.
-8. **RSS moves in 2 MiB steps — compare it with transparent huge pages off.** mimalloc
+8. **A module move shifts `release-fast` inlining — confirm in `release-lean`.** `release-fast`
+   keeps the default 16 codegen units without fat LTO, so moving functions into a new file
+   re-partitions them and changes what inlines across units: retiring `exec_value` (its prim
+   helpers moved to `prim_exec.rs`) read `supervisor` +1.4% in `release-fast` and 4 731M against
+   4 734M in `release-lean` (fat LTO, one unit — what `make install` ships), 2026-10-16. A
+   small delta on a change that moves code is a question for `cargo build --profile
+   release-lean -p cli`, not a verdict.
+9. **RSS moves in 2 MiB steps — compare it with transparent huge pages off.** mimalloc
    marks its arena for THP (`allow_thp`, default on) and a `madvise`-mode kernel backs it
    with 2 MiB pages, so resident memory jumps by huge pages depending on where allocations
    land and on how fragmented the machine is at that moment. A brood-benchmarks refresh read
