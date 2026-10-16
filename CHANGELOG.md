@@ -21,7 +21,8 @@ runs is made in one place. The narrative is the devlog's 2026-10-16 evening and 
 
 **Fixed — found while making that change, before it shipped.**
 - A function with an `&optional` default ignored the default once the JIT compiled it, so the
-  parameter was nil.
+  parameter was nil (KI-270). A deopt that re-runs such a function from the top no longer
+  evaluates the default a second time.
 - A multi-pair `(assoc m k1 v1 k2 v2 …)` evaluated at top level (`reflect/eval-string`, a REPL
   line) could not find `assoc`.
 
