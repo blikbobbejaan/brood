@@ -115,7 +115,7 @@
       ;; children indented under it, each line tagged with its span's pid.
       (let (lines (seq/reject (string/split (with-out-str (print-causal dbg)) "\n") string/blank?))
         (assert= (count lines) 4)
-        (is (string/starts-with? (first lines) "root ["))
+        (is (string/starts-with? (str (first lines)) "root ["))
         (is (every? (rest lines) (fn (line) (string/starts-with? line "  w")))))
       (dbg-stop dbg))))
 
