@@ -6,6 +6,43 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.39.0 — preemption reaches all code, cheaper calls, and a review's twenty fixes
+
+Long-running code no longer holds its worker anywhere, the soft memory limit stops the process
+that holds the memory, and calls into and between native code are markedly cheaper. A
+whole-project review for duplication fixed the bugs listed below, and the toolchain moved to
+the Rust 2024 edition. The narrative is the devlog's 2026-10-14 to 2026-10-16 entries.
+
+**Fixed — from a whole-project review for duplication.**
+- `unlink` followed by a zero-timeout flush no longer leaves an `[:EXIT]` to arrive later (KI-262).
+- `nest format` keeps the blank line below a line that ends in a comment, top level included
+  (KI-263).
+- `nest` no longer panics on a non-UTF-8 argument (KI-252).
+- A pty child is no longer left running when the spawn fails half-way (KI-250).
+- A failed image section load restores the current file (KI-251).
+- A panic in the timer thread no longer ends every receive timeout (KI-253).
+- Completion and the reload watcher no longer loop on symlinked directories (KI-254).
+- 52 error messages that named functions that do not exist now name the ones you called
+  (KI-255).
+- A queued closure's captured data counts toward the memory-pressure choice (KI-256).
+- A relative `XDG_CACHE_HOME` no longer splits the caches (KI-257).
+- One panic during a coverage run no longer reports every later line uncovered (KI-258).
+- An `%isolate` window no longer restores code another process had aged (KI-259).
+- The native form scans skip brackets inside a `|…|` symbol (KI-260).
+- A deopt reaches the system monitor on every native-call path, not one of four (KI-261).
+- `markdown/escape` escapes `"`, so its result is safe inside an attribute.
+- A refused audio thread is retried rather than muting the process.
+
+**Faster.** A call from interpreted code into native code is 32% cheaper: an arm that has
+settled skips the tier-up. The native → interpreted → native round trip is 23% cheaper, and an
+interpreted call 10% cheaper. A native tail call by name now caches its head (KI-264). A stale
+leaf derivation is re-validated instead of refusing the inlined body for good (KI-266).
+
+**Changed — building Brood.** The workspace is on the Rust 2024 edition; the MSRV is 1.96, and
+dependencies are on their latest releases (cranelift 0.136, wasmtime 49).
+`scripts/bench.sh --quick` replaces `quickbench.sh`. Local `make test` fails on a test that
+passes only on retry, as CI does.
+
 **Fixed.** `tcp/close` on a socket with unread input no longer resets the connection: the
 close shuts the write half after the last queued byte and drains until the peer's EOF (at
 most 5 s), so a server that answers before reading the whole request no longer truncates
