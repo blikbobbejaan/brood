@@ -18,13 +18,22 @@ decided on it, `ascending?` is the span invariant every highlighter test checks,
 
 (defn settle (f argc batch rounds)
   "Call `batch` until arity `argc` of `f` is `:native` or `:bailed`, or `rounds` run out;
-returns the last state seen. A `:queued` arm is waiting on the compiler thread, so the
-loop sleeps briefly rather than spending a round on it."
+returns the last state seen. A `:queued` arm is waiting on the compiler thread, which a
+loaded machine (a CI runner) can leave behind for a while: that wait is up to ~10 s of its
+own (`settle-queued`) and spends no round, so a slow queue reads as slow, not as `:queued`."
   (batch)
-  (let (state (get (%jit-arm-state f argc) :state))
+  (let (state (settle-queued f argc 1000))
     (if (or (= state :native) (= state :bailed) (= rounds 0))
       state
-      (do (when (= state :queued) (sleep 10)) (settle f argc batch (- rounds 1))))))
+      (settle f argc batch (- rounds 1)))))
+
+(defn settle-queued (f argc tries)
+  "The state of arity `argc` of `f` once a queued compile has finished, waiting up to
+`tries` × 10 ms."
+  (let (state (get (%jit-arm-state f argc) :state))
+    (if (and (= state :queued) (> tries 0))
+      (do (sleep 10) (settle-queued f argc (- tries 1)))
+      state)))
 
 ;; ---- highlighter spans ------------------------------------------------------------
 
