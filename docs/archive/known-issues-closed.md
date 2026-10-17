@@ -14152,3 +14152,27 @@ boot for 20-40 s (max 40.6 s), which reproduces the original symptom on demand.
 (16 threads; red 3/3 with the check-then-write claim). Measured: 30 concurrent misses over a
 100 000-entry cache, max 1.72 s for the one-time trim and 0.49 s mean after it (old code: 1.24 s
 mean at 108 000 entries).
+
+## KI-274 — a native self-loop never saw a `def` of itself while it ran ✅ FIXED 2026-10-17
+
+**Symptom.** `hot_reload_test` "a busy native loop runs the redefinition without waiting for a
+park" failed 1 run in 10 (`expect: 2003000`, actual `203000`): all 200 000 queued messages ran
+the OLD body. Forced by redefining while the loop sat in its `:hold` clause: 40/40 old, on the
+native tier only (the VM and tree-walker: 40/40 new). A plain native compute loop,
+`(defn spin (n acc) (if (= n 0) acc (spin (- n 1) (+ acc 1))))`, redefined mid-run: 3/3 ran
+the old body to the end.
+**Cause.** Native code's back-edge epoch guard (`emit_self_call`'s poll) compared against an
+`entry_epoch` loaded only when the arm HOISTED a global. A self-loop whose calls go through
+their own epoch-guarded links hoists none, so it had no guard: it ran its old body until it
+left native code — at a park, a preempt resume or a return. The VM's `SelfCall` re-resolves
+the name on every epoch change, which is the hot-reload contract for long-lived loops.
+**Why it survived.** The hot-reload tests redefine while a loop is PARKED, and a park takes the
+loop through the driver, which notices the stale compile epoch. The busy test meant to cover
+the no-park case raced: 9 runs in 10 its `def` landed while the loop was still parked.
+**Fix.** Every arm with a `SelfCall` fetches the epoch pointer and snapshots the epoch at
+entry, so the guard is always emitted (one load and compare per 128-iteration tick batch).
+A rebind is now observed within one batch, the guard's documented contract.
+**Guard.** `hot_reload_test` "a busy native loop …" (made deterministic: the `def` lands
+inside the clause; allows one batch on the old body) and "a running native self-loop picks up
+a redefinition of itself" (a loop that would run for hours returns once redefined). Both red
+3/3 without the fix; green 3/3 with it, and on `BROOD_TIER=0`.

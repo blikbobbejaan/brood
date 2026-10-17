@@ -2347,4 +2347,11 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
   hardenings, both done: the sweep claim is a `try_lock` on the stamp (a rename claim could let
   two sweep), and `error_reason_in` runs under `catch_unwind`, falling back to `error_reason`, so
   a panic reading a thrown value cannot take a scheduler worker with it.
+- **KI-274 fixed** (found by the review's second `test-both`): a native self-loop that hoisted no
+  global had no back-edge epoch guard, so it never saw a `def` of itself while it ran — a busy
+  receive loop or a compute loop kept its old body until it left native code. Every `SelfCall`
+  arm now snapshots the epoch at entry; the busy hot-reload test is deterministic now, and a
+  compute-loop case joins it.
+- **`any?`'s no-deopt guard** (`jit_eq_join_test`) counted the shared prelude arm's lifetime
+  deopts, which siblings legitimately add (the nightly ASAN run read 1); it counts its own drive.
 

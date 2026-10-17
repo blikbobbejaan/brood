@@ -130,12 +130,19 @@
     (let (pid (spawn (hrn-b 0)))
       (assert= 3000 (hrn-warm pid))
       (when (%native-tier?) (assert= :native (hrn-tier hrn-b 500)))
-      ;; The redefinition lands while the loop sleeps in a clause body, and 200 000 messages
-      ;; queue behind it; it then drains them with no park in between.
+      ;; The redefinition lands while the loop sleeps in a clause body (the 50 ms makes sure
+      ;; it is in there: without it the def won the race 9 runs in 10 and landed while the
+      ;; loop was parked, the case above), and 200 000 messages queue behind it; it then
+      ;; drains them with no park in between. Native code sees the def at its back-edge
+      ;; epoch guard, which runs once per tick batch (128 iterations): up to a batch may run
+      ;; the old body (+1 instead of +10). Before the guard existed for every self-loop,
+      ;; all 200 000 did (203 000).
       (send pid [:hold 300])
+      (sleep 50)
       (hrn-times-ten "hrn-b")
       (dotimes (k 200000) (send pid [:add 1]))
-      (assert= (+ 3000 (* 10 200000)) (hrn-total pid))
+      (let (total (hrn-total pid))
+        (is (<= (- (+ 3000 (* 10 200000)) total) (* 9 128))))
       (send pid :stop)))
   :isolated (test "proc/info reads a parked native loop"
     (let (pid (spawn (hrn-c 0)))
@@ -170,3 +177,21 @@
       (assert= 3003 (hrn-total pid))
       (assert= (list) (hrn-spy-kinds (list)))
       (send pid :stop))))
+
+;; A native self-loop with no hoisted global had no back-edge epoch guard, so it never saw a
+;; `def` of itself while it ran: a compute loop spun on its old body until it finished, and
+;; hot reload — which the VM's `SelfCall` re-resolution gives every interpreted loop — did
+;; not reach it. Here the loop would run for hours; the redefinition makes it return. Without
+;; the guard the wait times out (and the spinner is killed).
+(defn hrn-spin (n acc) (if (= n 0) acc (hrn-spin (- n 1) (+ acc 1))))
+
+(describe "hot reload reaches native compute loops"
+  :isolated (test "a running native self-loop picks up a redefinition of itself"
+    (when (%native-tier?)
+      (let (me (self)
+            pid (spawn (send me [:spun (hrn-spin 1000000000000 0)])))
+        (sleep 50)
+        (reflect/eval-string "(defn hot-reload-test/hrn-spin (n acc) acc)")
+        (let (got (receive ([:spun r] r) (after *test-wait-ms* :still-spinning)))
+          (when (= got :still-spinning) (exit pid :kill))
+          (is (int? got)))))))

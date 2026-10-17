@@ -633,7 +633,25 @@ fn jit_lower_arm_inner(
         },
         epoch_ptr,
     );
-    let entry_epoch = hoisted.entry_epoch;
+    // The back-edge epoch guard (`emit_self_call`'s poll) compares against this. It used to
+    // exist only when the arm hoisted a global, so a self-loop that hoisted none — calls go
+    // through their own epoch-guarded links — never saw a `def` of ITSELF while it ran: a
+    // receive loop that never emptied its mailbox drained 200 000 messages on its old body
+    // (hot_reload_test, 2026-10-17), where the VM's `SelfCall` re-resolves the name. Every
+    // self-loop snapshots the epoch at entry now; the guard is one load per tick batch.
+    let entry_epoch = hoisted.entry_epoch.or_else(|| {
+        let pointer = epoch_ptr?;
+        code.iter()
+            .any(|i| matches!(i, Inst::SelfCall { .. }))
+            .then(|| {
+                b.ins().load(
+                    types::I64,
+                    cranelift_codegen::ir::MemFlagsData::trusted(),
+                    pointer,
+                    0,
+                )
+            })
+    });
     entry::emit_carry_init(&mut b, &carry_vars, rb_var, base, deopt);
     // Reduction batching for the self-tail loop: an in-register countdown (`TICK_BATCH`
     // iterations) gates the back edge's preemption poll + epoch guard — one sub+branch per

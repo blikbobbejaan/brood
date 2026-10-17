@@ -197,8 +197,9 @@ pub(super) fn emit_stack_guard(
 }
 
 /// The global-epoch counter's address, fetched once in the entry block (which dominates
-/// every loop/call block) when the arm reads the epoch on a hot path — a hoisted-global
-/// back-edge guard, or a per-call epoch check. Those sites then do a raw load.
+/// every loop/call block) when the arm reads the epoch on a hot path — a self-loop's
+/// back-edge guard (which every `SelfCall` arm has; see `jit_lower`'s `entry_epoch`), or a
+/// per-call epoch check. Those sites then do a raw load.
 pub(super) fn emit_epoch_pointer(
     b: &mut FunctionBuilder,
     code: &[Inst],
@@ -208,6 +209,7 @@ pub(super) fn emit_epoch_pointer(
 ) -> Option<SsaValue> {
     let needs = !plan.globals.is_empty()
         || !plan.scalar_globals.is_empty()
+        || code.iter().any(|i| matches!(i, Inst::SelfCall { .. }))
         || (crate::diagnostics::debug_flags::jit_inline_call()
             && code.iter().any(|i| {
                 matches!(
