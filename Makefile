@@ -425,13 +425,20 @@ tsan: ## ThreadSanitizer over the concurrency-sensitive Rust tests (needs nightl
 loom: ## Loom model-check of the dense-table migration protocol (exhaustive interleavings of a faithful model)
 	cargo test -p brood --release --features brood/loom-model --test loom_table_protocol
 
-asan: ## AddressSanitizer over the kernel-exercising Rust tests (needs nightly + rust-src; system-alloc so ASAN can intercept allocations instead of mimalloc's un-instrumented arena). Catches genuine OOB / use-after-free in the unsafe substrate (mmap table, JIT codegen buffers) that TSAN and the logical GC tripwires miss. `--tests` skips doctests, which don't LINK under ASAN + -Zbuild-std (a toolchain quirk, not a finding).
+asan: ## AddressSanitizer over the kernel-exercising Rust tests (needs nightly + rust-src + cargo-nextest; system-alloc so ASAN can intercept allocations instead of mimalloc's un-instrumented arena). Catches genuine OOB / use-after-free in the unsafe substrate (mmap table, JIT codegen buffers) that TSAN and the logical GC tripwires miss. Through nextest, which also skips doctests (they don't LINK under ASAN + build-std, a toolchain quirk).
 	# `--cfg brood_asan` sizes `WORKER_STACK_BYTES` to 64 MiB for this build, because ASAN's
 	# redzones roughly double every Rust frame: the instrumented prelude boot measured
 	# 16 768 736 bytes against the ordinary 16 MiB stack. Raise the stack, never
 	# BROOD_STACK_BUDGET: a budget larger than the stack disables the stale-base backstop.
 	# No $(RUN_CAP) here or on tsan: the sanitizers reserve terabytes of shadow address space.
-	RUSTFLAGS="-Zsanitizer=address --cfg brood_asan" $(SANITIZER_TEST) --tests
+	# nextest, process per test, like every other run of these binaries: under `cargo test`
+	# the integration tests shared one process and its process-wide scheduler knobs, and
+	# `preemption_shapes` failed for no reason ASAN found. CARGO_UNSTABLE_BUILD_STD is
+	# `-Zbuild-std`, which nextest does not pass through as a flag.
+	$(REQUIRE_NEXTEST)
+	CARGO_UNSTABLE_BUILD_STD=std RUSTFLAGS="-Zsanitizer=address --cfg brood_asan" \
+		cargo +nightly nextest run --profile asan --no-fail-fast --target x86_64-unknown-linux-gnu \
+		-p brood --release --features brood/system-alloc
 
 repl: ## Start the REPL
 	$(CLI)

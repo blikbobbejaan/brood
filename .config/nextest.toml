@@ -376,6 +376,26 @@ filter = 'binary(suite)'
 slow-timeout = { period = "60s", terminate-after = 25 }
 retries = 1
 
+## The nightly ASAN job's profile (`make asan`). ASAN roughly doubles every frame and slows
+## everything several-fold; the JIT cases warm with real iteration counts and run for
+## minutes instrumented, and `brood_suite_passes` is the whole in-language suite. Longer
+## budgets for THIS profile only. The job ran `cargo test` until 2026-10-17, every test of a
+## binary a thread of ONE process, and the integration binaries are written for nextest's
+## process-per-test: `preemption_shapes` drives quanta by hand with process-wide scheduler
+## knobs, and three of its tests read "ran 0 quanta" with siblings in the same process.
+[profile.asan]
+slow-timeout = { period = "120s", terminate-after = 10 }
+
+[[profile.asan.overrides]]
+filter = 'binary(suite)'
+slow-timeout = { period = "120s", terminate-after = 45 }
+
+# The default profile's per-binary caps (`image_matches_source` at 6 min, …) are sized for an
+# uninstrumented build and would otherwise win: this profile's overrides are read first.
+[[profile.asan.overrides]]
+filter = 'all()'
+slow-timeout = { period = "120s", terminate-after = 10 }
+
 [[profile.default.scripts]]
 filter = 'all()'
 # nextest runs setup scripts in the order their TABLES are declared above, not in this

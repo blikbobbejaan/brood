@@ -251,6 +251,11 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Pinned like ci.yml's: `make asan` runs through nextest (process per test).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.148
+
       - name: make asan
         run: make asan
 

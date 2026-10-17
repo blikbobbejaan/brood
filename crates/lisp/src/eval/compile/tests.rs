@@ -2270,19 +2270,17 @@ fn a_native_tail_call_by_name_caches_its_head_in_its_own_slot() {
     };
     let arm = compiled_arm_for(&interp.heap, id, 1).expect("hop/1 compiles");
     let arm = arm.arc().clone();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        interp.eval_str("(warm 200)").expect("warm");
-        let code = arm.jit_code.load(Acquire);
-        if !code.is_null() && code != crate::jit::BAILED && code != crate::jit::QUEUED {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "`hop` should have tiered up to native code"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    wait_for_tier(
+        || {
+            let code = arm.jit_code.load(Acquire);
+            !code.is_null() && code != crate::jit::BAILED && code != crate::jit::QUEUED
+        },
+        || arm.jit_code.load(Acquire) == crate::jit::QUEUED,
+        || {
+            interp.eval_str("(warm 200)").expect("warm");
+        },
+        || "`hop` should have tiered up to native code".to_string(),
+    );
     let chunk = arm.chunk.as_ref().expect("hop has a chunk");
     let limit = value::intern("limit");
     let read_site = chunk
@@ -2382,19 +2380,25 @@ fn an_interpreted_callers_native_callees_settle_on_their_code() {
             && code != crate::jit::QUEUED
             && arm.settled_code.load(Acquire) == code
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !(settled(&g) && settled(&leaf)) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "never settled: g={} (inline_installed={}, inline_queued={}) leaf={}",
-            settled(&g),
-            g.inline_installed.load(Acquire),
-            g.inline_queued.load(Acquire),
-            settled(&leaf)
-        );
-        interp.eval_str("(drive 0 0)").expect("warm");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    let queued = |arm: &CompiledArm| {
+        arm.jit_code.load(Acquire) == crate::jit::QUEUED || arm.inline_queued.load(Acquire)
+    };
+    wait_for_tier(
+        || settled(&g) && settled(&leaf),
+        || queued(&g) || queued(&leaf),
+        || {
+            interp.eval_str("(drive 0 0)").expect("warm");
+        },
+        || {
+            format!(
+                "never settled: g={} (inline_installed={}, inline_queued={}) leaf={}",
+                settled(&g),
+                g.inline_installed.load(Acquire),
+                g.inline_queued.load(Acquire),
+                settled(&leaf)
+            )
+        },
+    );
     assert_eq!(
         interp
             .eval_str("(drive 0 0)")
@@ -2446,15 +2450,14 @@ fn an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body() {
         derived_at,
         "the def moved the epoch"
     );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    while !arm.inline_installed.load(Acquire) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "`sum-sq`'s inlined body never installed after an unrelated def"
-        );
-        interp.eval_str("(warm 200)").expect("warm");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
+    wait_for_tier(
+        || arm.inline_installed.load(Acquire),
+        || arm.inline_queued.load(Acquire) || arm.jit_code.load(Acquire) == crate::jit::QUEUED,
+        || {
+            interp.eval_str("(warm 200)").expect("warm");
+        },
+        || "`sum-sq`'s inlined body never installed after an unrelated def".to_string(),
+    );
     assert_eq!(
         interp
             .eval_str("(sum-sq 20 0)")
@@ -2475,6 +2478,38 @@ fn an_unrelated_def_does_not_cost_a_leaf_derivation_its_inlined_body() {
             Some(2100),
             "a re-tier after rebinding `leaf-sq` ran the body spliced before the rebind"
         );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// Warm until `done`, failing after a minute of waiting with no compile in flight. The
+/// background compiler serves its whole process, and `cargo test` — the nightly ASAN job —
+/// runs every lib test as a thread of ONE process: there, under ASAN, the queue backed up
+/// past the flat 60 s these waits had, and three tests failed with their arm still queued
+/// (`inline_queued=true`), nothing wrong but the wait. Time spent `queued` does not spend the
+/// budget; ten minutes is the outer cap, so a compile that never finishes still fails.
+fn wait_for_tier(
+    mut done: impl FnMut() -> bool,
+    mut queued: impl FnMut() -> bool,
+    mut warm: impl FnMut(),
+    what: impl Fn() -> String,
+) {
+    let start = std::time::Instant::now();
+    let mut idle = std::time::Duration::ZERO;
+    let mut last = start;
+    while !done() {
+        let now = std::time::Instant::now();
+        if !queued() {
+            idle += now - last;
+        }
+        last = now;
+        assert!(
+            idle < std::time::Duration::from_secs(60)
+                && now - start < std::time::Duration::from_secs(600),
+            "{}",
+            what()
+        );
+        warm();
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }

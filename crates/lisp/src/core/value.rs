@@ -1507,7 +1507,9 @@ pub fn gensym_floor(n: u64) {
 
 impl Value {
     /// The discriminant byte at offset 0 — the tag JIT code checks, and what the debug
-    /// tripwires compare against `MAX_VALUE_DISCRIMINANT`.
+    /// tripwires compare against `MAX_VALUE_DISCRIMINANT`. Only those tripwires and the
+    /// layout test read it, so it exists where they do.
+    #[cfg(any(debug_assertions, test))]
     pub(crate) fn raw_tag(&self) -> u8 {
         // SAFETY: `Value` is `repr(C, u8)` (pinned by `value_layout_is_stable_for_the_jit`):
         // its first byte is the initialised `u8` discriminant. Only that byte is read — the

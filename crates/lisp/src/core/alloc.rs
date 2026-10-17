@@ -160,24 +160,35 @@ fn record_dealloc(size: usize) {
 /// sample was invisible, and a 500 MB one built on top of it passed a 512 MiB limit (KI-248).
 #[inline]
 fn would_exceed_hard(size: usize) -> bool {
-    let limit = HARD_LIMIT.load(Ordering::Relaxed);
+    hard_verdict(
+        size,
+        HARD_LIMIT.load(Ordering::Relaxed),
+        APPROX_LIVE.load(Ordering::Relaxed),
+        exact_live,
+    )
+}
+
+/// The hard-limit decision, apart from the process-wide counters so a test can drive it:
+/// `approx` is the snapshot, `exact` the exact sum, consulted only for a large or near-limit
+/// allocation. Limit 0 means none.
+#[inline]
+fn hard_verdict(size: usize, limit: usize, approx: usize, exact: impl FnOnce() -> usize) -> bool {
     if limit == 0 {
         return false;
     }
-    let approx = APPROX_LIVE.load(Ordering::Relaxed);
     if size < LARGE_ALLOCATION && approx.saturating_add(size) <= limit - limit / 8 {
         return false;
     }
-    exact_would_exceed_hard(size, limit)
+    exact().saturating_add(size) > limit
 }
 
-/// [`would_exceed_hard`] against the exact sum, which it also leaves in the snapshot (so a
-/// refusal reports the true live figure). Large or near-limit allocations only.
+/// The exact live sum, which it also leaves in the snapshot (so a refusal reports the true
+/// live figure). Large or near-limit allocations only.
 #[cold]
-fn exact_would_exceed_hard(size: usize, limit: usize) -> bool {
+fn exact_live() -> usize {
     let live = live_bytes();
     APPROX_LIVE.store(live, Ordering::Relaxed);
-    live.saturating_add(size) > limit
+    live
 }
 
 /// An allocation at least this large checks the soft limit itself.
@@ -678,30 +689,30 @@ mod tests {
     }
 
     /// KI-248: the snapshot lags by a count of allocations, so a large block made since the
-    /// last sample is invisible to it. A large allocation on top of one must still be refused.
-    /// Staged on the counters as the torn-sum test does: 100 MB live that the snapshot has
-    /// not seen, then a 500 MB request under a 512 MiB limit. Sabotage: judge every size by
-    /// the snapshot again (`would_exceed_hard`'s pre-KI-248 body) and the first assert fails.
+    /// last sample is invisible to it. A large allocation on top of one must still be refused:
+    /// 100 MB live that the snapshot has not seen, then a 500 MB request under a 512 MiB
+    /// limit. Sabotage: judge every size by the snapshot again and the first assert fails.
+    ///
+    /// Driven through `hard_verdict`, not the process-wide counters: this test used to store
+    /// a real 512 MiB `HARD_LIMIT`, and under `cargo test` — every lib test a thread of one
+    /// process, as the nightly ASAN job runs them — a sibling holding 1 GiB live had its next
+    /// allocation refused and the whole process aborted (2026-10-17).
     #[test]
     fn a_large_allocation_sees_the_large_blocks_the_snapshot_has_not() {
-        let unseen = 100_000_000usize;
         let limit = 512usize << 20;
-        let stale = live_bytes();
-        LIVE[0].0.fetch_add(unseen, Ordering::Relaxed);
-        APPROX_LIVE.store(stale, Ordering::Relaxed);
-        HARD_LIMIT.store(limit, Ordering::Relaxed);
-        let large_refused = would_exceed_hard(500_000_000);
-        let small_far_allowed = !would_exceed_hard(64);
-        HARD_LIMIT.store(0, Ordering::Relaxed);
-        LIVE[0].0.fetch_sub(unseen, Ordering::Relaxed);
-        APPROX_LIVE.store(live_bytes(), Ordering::Relaxed);
+        let stale = 10usize << 20;
+        let exact = stale + 100_000_000;
         assert!(
-            large_refused,
+            hard_verdict(500_000_000, limit, stale, || exact),
             "500 MB on top of an unseen 100 MB passed a 512 MiB hard limit"
         );
         assert!(
-            small_far_allowed,
+            !hard_verdict(64, limit, stale, || exact),
             "a small allocation far from the limit was refused"
+        );
+        assert!(
+            !hard_verdict(usize::MAX / 2, 0, stale, || exact),
+            "limit 0 means none"
         );
     }
 
