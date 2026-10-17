@@ -34,16 +34,28 @@ the strict checker flagged on `main` (2026-09-20), and rightly."
       (assert= ["blsp" (fuzzy/filter "blsp" frt-cands)] (frt-await session))
       (ranker-stop session)))
   (test "a burst of queries is answered ONCE, at the newest — the point of the session"
-    ;; five keystrokes' worth sent back to back. A session that queued them would answer
-    ;; five times and fall further behind the faster you type; this answers "comma" and
-    ;; nothing else, so a second await times out.
-    (let (session (ranker frt-cands))
+    ;; five keystrokes' worth, queued while the session is busy. A session that queued them
+    ;; would answer five times and fall further behind the faster you type; this answers
+    ;; "comma" and nothing else, so a later await times out. The session is HELD inside a
+    ;; ranking (a scorer that waits for `:release`) while the burst is sent: sent to an idle
+    ;; session, the first query can be taken and answered before the second is even queued —
+    ;; the session's job done right, and the test's assumption broken (seen under GC stress
+    ;; on a 2-core runner, 2026-10-17).
+    (let (me (self)
+          held (fn (q)
+                 (when (= q "hold") (send me :holding) (receive (:release nil)))
+                 (scorer q))
+          session (binding (*fuzzy-scorer* held) (ranker frt-cands)))
       (do
+        (rank-async session "hold" 3)
+        (receive (:holding nil) (after 5000 (/error "the session never started ranking")))
         (rank-async session "c" 3)
         (rank-async session "co" 3)
         (rank-async session "com" 3)
         (rank-async session "comm" 3)
         (rank-async session "comma" 3)
+        (send session :release)
+        (assert= "hold" (first (frt-await session)))
         (let (answer (frt-await session))
           (do
             (assert= "comma" (first answer))
