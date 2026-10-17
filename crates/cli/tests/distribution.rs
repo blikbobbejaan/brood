@@ -1716,6 +1716,75 @@ fn remote_spawn_sync_returns_a_usable_remote_pid() {
     );
 }
 
+/// **`gen/call` across nodes** — the request/reply framework over the dist wire, by pid:
+/// a reply carrying a BigInt, Decimal and Ratio comes back exact (each crosses as its
+/// canonical text and is re-parsed on the far heap); a call that crashes the remote server
+/// raises promptly with the server's reason — the thrown map, as a `catch` there would have
+/// bound it — through the cross-node monitor `gen/call` holds; and a call to the dead pid
+/// raises `:noproc` rather than waiting out its deadline. A remote `{:name :node}` address
+/// cannot be monitored (`docs/primitives.md`), so the client asks a directory process for
+/// the pid first.
+#[test]
+fn gen_call_round_trips_across_nodes_and_reports_a_remote_crash() {
+    let _g = port_lock();
+    let dir = std::env::temp_dir().join(format!("brood-dist-gencall-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let port_a = free_port();
+    let port_b = free_port();
+
+    let server = format!(
+        r#"
+(node/start :a "127.0.0.1:{port_a}" "secret-test-cookie-16+")
+(gen/defserver ledger (total)
+  (call [:add x] (let (t (+ total x)) [[t (type-of t)] t]))
+  (call :crash (throw {{:kind :ledger-crash :total total}})))
+(gen/start-named :ledger ledger 0)
+(defn directory () (receive ([:where who] (send who [:ledger-at (proc/whereis :ledger)]) (directory))))
+(proc/register :directory (spawn (directory)))
+(receive (:never :x))
+"#
+    );
+    let client = format!(
+        r#"
+(node/start :b "127.0.0.1:{port_b}" "secret-test-cookie-16+")
+(node/connect "a@127.0.0.1:{port_a}")
+(send {{:name :directory :node :a@127.0.0.1}} [:where (self)])
+(def server (receive ([:ledger-at p] p) (after 30000 (throw "no reply from the directory"))))
+(defn expect (label got want)
+  (unless (= got want) (throw (str label ": got " (pr-str got) ", want " (pr-str want)))))
+(expect "decimal" (gen/call server [:add 1.10M]) [1.10M :decimal])
+(expect "ratio" (gen/call server [:add 1/3]) [43/30 :ratio])
+(expect "bignum" (gen/call server [:add 340282366920938463463374607431768211457])
+        [(+ 43/30 340282366920938463463374607431768211457) :ratio])
+(def watch (monitor server))
+(def crashed (try (gen/call server :crash) (catch e (error-message e))))
+(unless (includes? crashed "died")
+  (throw (str "the crashing call did not raise: " crashed)))
+(def reason (receive ([:down ^watch _ r] r) (after 30000 :no-down)))
+(expect "reason kind" (:kind (second reason)) :ledger-crash)
+(expect "reason payload" (:total (second reason)) (+ 43/30 340282366920938463463374607431768211457))
+(def gone (try (gen/call-timeout server [:add 1] 20000) (catch e (error-message e))))
+(unless (includes? gone ":noproc")
+  (throw (str "a call to the dead server did not raise :noproc: " gone)))
+(io/puts "GEN-CALL-ACROSS-NODES-OK")
+"#
+    );
+
+    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    wait_until_listening(port_a);
+    let b = spawn_brood(&dir, "client.blsp", &client);
+    let out = b.wait_with_output().expect("client finished");
+    let _ = a.kill();
+    let _ = a.wait();
+    let _ = std::fs::remove_dir_all(&dir);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("GEN-CALL-ACROSS-NODES-OK"),
+        "cross-node gen/call failed.\n--- stdout ---\n{stdout}\n--- stderr ---\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// **Dual-listen** (ADR-074): one node serves *both* a TCP endpoint and a local
 /// Unix socket via `node-also-listen`. A client reaches the same node — same
 /// authoritative `name@host`, same registered `:echo` — over each transport.

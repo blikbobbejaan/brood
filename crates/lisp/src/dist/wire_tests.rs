@@ -608,3 +608,36 @@ fn a_deeply_nested_message_round_trips_on_a_small_stack() {
         .join()
         .expect("the codec must not overflow a 2 MiB stack");
 }
+
+#[test]
+fn exact_numbers_cross_the_wire_into_another_heap() {
+    // BigInt, Decimal and Ratio travel as their canonical text (`M_BIGINT` / `M_DECIMAL` /
+    // `M_RATIO`) and are re-parsed into the receiving node's heap: the far side must read
+    // back the same value — equal by its own reading of the source, and printing the same.
+    // Negative, sub-unit and trailing-zero decimals, and exact values nested as map keys.
+    let src = "[340282366920938463463374607431768211457 -98765432109876543210 \
+               12345.6789M -0.000100M 22/7 -5/12 {1.50M [7/3 18446744073709551616]}]";
+    let mut sender = crate::Interp::new();
+    let sent = crate::syntax::reader::read_one_complete(&mut sender.heap, src).unwrap();
+    let msg = crate::process::message::to_message(&sender.heap, sent).unwrap();
+    let frame = Frame::Send {
+        target: Target::Name(value::intern("echo")),
+        msg,
+    };
+    let Frame::Send { msg, .. } = read_full(&frame) else {
+        panic!("wrong frame");
+    };
+    let mut receiver = crate::Interp::new();
+    let got = crate::process::message::from_message(&mut receiver.heap, &msg);
+    let expected = crate::syntax::reader::read_one_complete(&mut receiver.heap, src).unwrap();
+    assert!(
+        receiver.heap.equal(got, expected),
+        "{} != {}",
+        crate::syntax::printer::print(&receiver.heap, got),
+        crate::syntax::printer::print(&receiver.heap, expected)
+    );
+    assert_eq!(
+        crate::syntax::printer::print(&receiver.heap, got),
+        crate::syntax::printer::print(&sender.heap, sent)
+    );
+}

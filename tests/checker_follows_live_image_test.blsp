@@ -1,0 +1,66 @@
+;; The checker never contradicts the live image (ADR-123..126, docs/types.md): a `def` or a
+;; reload always wins. After a global is redefined, a use valid for its CURRENT shape checks
+;; clean and a use valid only for the old one warns — whichever process did the redefining,
+;; since a runtime's processes share one code region. And the checker never gates the `def`
+;; itself: a redefinition that breaks a declared `sig` still lands.
+;;
+;; Each test owns its fixture module, because the suite runs these tests side by side in one
+;; runtime and every redefinition is visible to all of them at once.
+(defmodule checker-follows-live-image-test (:use test))
+
+(defn- warns? (src) (not (empty? (reflect/check-string-here src))))
+
+(defn- redefine-in-worker (parent src)
+  (reflect/eval-string src)
+  (send parent :redefined))
+
+(defn- check-in-worker (parent srcs) (send parent [:checked (map srcs warns?)]))
+
+(describe "the checker follows the live image"
+  (test "an arity change flips which call warns"
+    (%load-string "(defmodule clf-arity) (defn f (a) a)")
+    (refute (warns? "(clf-arity/f 1)"))
+    (is (warns? "(clf-arity/f 1 2)"))
+    (%load-string "(defmodule clf-arity) (defn f (a b) (+ a b))")
+    (is (warns? "(clf-arity/f 1)"))
+    (refute (warns? "(clf-arity/f 1 2)")))
+
+  (test "a redeclared sig flips which argument type warns"
+    (%load-string "(defmodule clf-sig) (sig f (int -> int)) (defn f (x) (+ x 1))")
+    (refute (warns? "(clf-sig/f 1)"))
+    (is (warns? "(clf-sig/f \"s\")"))
+    (%load-string "(defmodule clf-sig) (sig f (string -> string)) (defn f (x) (string/upper x))")
+    (refute (warns? "(clf-sig/f \"s\")"))
+    (is (warns? "(clf-sig/f 1)")))
+
+  (test "a value global is checked as what it holds now"
+    (%load-string "(defmodule clf-value) (def v 1)")
+    (refute (warns? "(+ clf-value/v 1)"))
+    (%load-string "(defmodule clf-value) (def v \"s\")")
+    (refute (warns? "(string/upper clf-value/v)"))
+    (is (warns? "(+ clf-value/v 1)")))
+
+  ;; Unarmed, the new body simply runs; armed (`nest test`), the contract blames the CALLEE
+  ;; — the new body's string result — which the old body, returning an int, never could.
+  (test "a redefinition the declared sig contradicts still lands"
+    (%load-string "(defmodule clf-gate) (sig f (int -> int)) (defn f (x) (+ x 1))")
+    (assert= 2 (clf-gate/f 1))
+    (%load-string "(defmodule clf-gate) (check-allow :type-mismatch (defn f (x) (str \"v2:\" x)))")
+    (assert= (if (%contracts-armed?) :callee "v2:1")
+      (try (clf-gate/f 1) (catch e (get e :blame)))))
+
+  :isolated (test "a redefinition in another process is what the checker reads here"
+    (%load-string "(defmodule clf-remote) (defn f (a) a)")
+    (refute (warns? "(clf-remote/f 1)"))
+    (let (me (self))
+      (spawn (redefine-in-worker me "(defmodule clf-remote) (defn f (a b) (+ a b))"))
+      (assert= (receive (:redefined :ok) (after *test-wait-ms* :timeout)) :ok))
+    (is (warns? "(clf-remote/f 1)"))
+    (refute (warns? "(clf-remote/f 1 2)")))
+
+  (test "a worker's checker reads a redefinition made here"
+    (%load-string "(defmodule clf-local) (defn f (a) a)")
+    (%load-string "(defmodule clf-local) (defn f (a b c) a)")
+    (let (me (self))
+      (spawn (check-in-worker me ["(clf-local/f 1)" "(clf-local/f 1 2 3)"]))
+      (assert= (receive ([:checked r] r) (after *test-wait-ms* :timeout)) (list true false)))))
