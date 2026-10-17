@@ -83,7 +83,13 @@ come from `*module-files*`).
   ;; INCLUDED files count for the same reason (KI-275): the image holds what a module built
   ;; from their text. The list is the one the last image write recorded; a missing one is
   ;; listed as missing, which changes the key just as an edit does.
+  ;;
+  ;; And the CONTRACT MODE (KI-276): an armed load binds each `sig`'d function to its contract
+  ;; shim, so an image written armed and materialised unarmed ran the shims, and one written
+  ;; unarmed served an armed run without its contracts. `nest test` arms by default and a
+  ;; smoke or `nest run` may not, so the two met in one checkout and read wrong answers.
   (str (system/build-id)
+    (if (%contracts-armed?) " contracts" "")
     "\n"
     (string/join (map (append files (project-dep-module-files) (project-included-files))
                    (fn (f)

@@ -14197,3 +14197,27 @@ has to be a file: the key is checked before anything loads. `nest check`'s whole
 uses the same key, so it follows an included file too.
 **Guard.** `nest::startup_image an_edited_include_str_file_makes_the_image_stale`; red with the
 included files dropped from the key, green restored.
+
+## KI-276 — a project image written with contracts armed was served to unarmed runs ✅ FIXED 2026-10-17
+
+**Symptom.** bedit's `view_scroll_test` "M-r moves point to window top …" failed in the downstream
+smoke (`point stayed on line 0`), twice in three smoke runs, and never in 36 plain `nest test`
+runs. The diagnostic armed in the test (bedit `d50442f`) showed `:top 0 :cycle nil :again 0`: the
+wrong answer, recomputed at once, was the same — deterministic in that process. It came down to
+the run's mode: `BROOD_CONTRACTS=0 nest test` failed every time after an armed run in the same
+checkout; armed, it passed.
+**Cause.** The project startup image (ADR-218) holds each module's bindings as a load produced
+them, and an ARMED load binds every `sig`'d function to its contract shim (ADR-381). The image's
+staleness key — build id, file stats — did not say which mode wrote it, so an unarmed run
+materialised the armed run's shims, and an armed run after an unarmed write lost its contracts.
+`nest test` arms by default; the smoke and `nest run` may not; the two met in one checkout.
+**Why it survived.** CI's bedit job starts from a clean checkout, so its unarmed run always builds
+its own image. Locally the image was written in whichever mode ran first, and the mixed case
+needed an armed run and an unarmed one in the same tree — which a stability session running both
+`nest test` and `make smoke-bedit` against one bedit produced. The stdlib image already refuses an
+armed build (`stdimage.blsp`) for this reason; the project image had no counterpart.
+**Fix.** `fingerprint-of` adds ` contracts` to the key when contracts are armed, so each mode
+reads only an image its own mode wrote (and the check-cache replay, which shares the key, too).
+**Guard.** `nest::startup_image the_image_is_keyed_by_contract_mode`: armed, then unarmed, then
+armed again; red before the fix (the unarmed run read `:contract`), green after. bedit's
+`view_scroll_test` passes armed → unarmed → armed in one checkout.

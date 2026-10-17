@@ -2358,4 +2358,10 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
   closing the last bedit smoke failure, which was two Elixir 1.21-dev differences in bedit's
   agent (an ANSI-coloured `dbg` header; checker chunk `v9`). Both are fixed in bedit, and the
   smoke is 2464/2464 locally; brood's pin moves with it.
+- **KI-276 fixed:** the project image was not keyed by contract mode, so an image `nest test`
+  wrote (armed) was served to the downstream smoke's unarmed run, and bedit's M-r test read
+  line 0. Found by arming a diagnostic in that test (bedit `d50442f`) after it failed once in ~42
+  runs: the failure was deterministic per checkout, not random. `fingerprint-of` includes the mode.
+- **`fuzzy_ranker_test`'s burst test** raced on a 2-core runner under GC stress (nightly
+  `gcstress-all`'s first catch): the session is now held while the burst is queued.
 

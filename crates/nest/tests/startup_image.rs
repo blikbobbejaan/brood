@@ -486,3 +486,54 @@ fn an_edited_include_str_file_makes_the_image_stale() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// KI-276: a project image written by a run with contracts ARMED carries the contract shims
+/// as the bindings, and the staleness key did not say which mode wrote it — so the next
+/// UNARMED run materialised the shims (and an armed run after an unarmed write lost its
+/// contracts). bedit's suite read wrong answers from it: `nest test` (armed by default)
+/// wrote the image, and the downstream smoke's unarmed `nest test` reused it.
+#[test]
+fn the_image_is_keyed_by_contract_mode() {
+    let dir = scratch("contracts");
+    write(
+        &dir,
+        "project.blsp",
+        "(project\n  :name demo\n  :main app)\n",
+    );
+    // `f` in a module of its own: a contract guards the module boundary (ADR-383), so a
+    // call from inside `lib` would not meet the shim in either mode.
+    write(
+        &dir,
+        "src/lib.blsp",
+        "(defmodule lib)\n\
+         (sig f (int -> int))\n\
+         (check-allow :type-mismatch (defn f (x) (str \"v\" x)))\n",
+    );
+    write(
+        &dir,
+        "src/app.blsp",
+        "(defmodule app (:use lib))\n\
+         (defn main () (io/puts (str \"RESULT: \" (try (f 1) (catch e (get e :kind))))))\n",
+    );
+    let run = |armed: &str| {
+        let out = Command::new(env!("CARGO_BIN_EXE_nest"))
+            .arg("run")
+            .current_dir(&dir)
+            .env("BROOD_CONTRACTS", armed)
+            .output()
+            .expect("spawn nest");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(run("1").contains("RESULT: :contract"), "armed, cold");
+    let unarmed = run("0");
+    assert!(
+        unarmed.contains("RESULT: v1"),
+        "an unarmed run was served the armed image's contract shims:\n{unarmed}"
+    );
+    let armed = run("1");
+    assert!(
+        armed.contains("RESULT: :contract"),
+        "an armed run was served the unarmed image and lost its contract:\n{armed}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
