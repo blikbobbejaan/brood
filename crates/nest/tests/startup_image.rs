@@ -463,7 +463,11 @@ fn an_imaged_start_terminates_on_a_require_cycle() {
 fn an_edited_include_str_file_makes_the_image_stale() {
     let dir = scratch("include");
     std::fs::create_dir_all(dir.join("priv")).unwrap();
-    write(&dir, "project.blsp", "(project\n  :name demo\n  :main app)\n");
+    write(
+        &dir,
+        "project.blsp",
+        "(project\n  :name demo\n  :main app)\n",
+    );
     write(&dir, "priv/greeting.txt", "hello");
     write(
         &dir,
