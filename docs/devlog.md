@@ -2237,3 +2237,16 @@ against it, which is drift). The three new tests stay for their answers, without
 `:native` checks. Making this shape pay needs the wake to re-enter native code at the
 `receive` itself, a native continuation.
 
+
+## 2026-10-17 — hot reload and observability checked against native receive loops
+
+Question from review: did the speedups (ADR-409/410, the JIT call-path work) cost hot reload or
+runtime observability? It was checked, not assumed. A native receive loop (`:native` per
+`%jit-arm-state`) picks up a redefinition from its next iteration, whether it is parked in
+`receive` or busy draining 200 000 queued messages with no park. A redefinition makes the native
+loop hand over to the VM, whose `SelfCall` guard (ADR-013) re-resolves the name. `proc/info` reads
+it (`:waiting`, mailbox, advancing reductions). `trace-fn` sees its calls, and `untrace-fn` puts
+it back. None of this was covered for *native* loops before; the existing hot-reload tests use
+interpreted ones. It is now: `tests/hot_reload_test.blsp` "hot reload reaches native receive
+loops", 4 tests, green on tiers 0–2 and 24/24 under 8-way load. Sabotaging the `SelfCall` guard
+reddens three of them on both VM tiers.

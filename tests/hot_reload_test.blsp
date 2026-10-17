@@ -5,7 +5,7 @@
 ;; jit_shared_spawn proves between-batch JIT invalidation). This asserts the
 ;; behaviour change directly, including cross-process and under concurrent load.
 ;; `:isolated` — these `def` shared globals; isolate from the concurrent suite.
-(defmodule hot-reload-test (:use test))
+(defmodule hot-reload-test (:use test) (:use debug))
 
 ; zero garbage results across 1600 calls
 (describe "late binding (def redefinition is visible on the next call)"
@@ -72,3 +72,101 @@
       ; redefine hr-e ~600× while workers run
       (hr-churn 200)
       (assert= (hr-collect 0 16 0) 0))))
+
+;; Hot reload reaches a receive loop running in NATIVE code (ADR-410). One loop function per
+;; test, because each test redefines its own. A redefinition makes the native loop hand over to
+;; the VM, whose `SelfCall` re-resolves the name (the ADR-013 guard), so the loop runs the new
+;; code from its next iteration. That holds whether the loop is parked in `receive` or busy
+;; draining a full mailbox. Sabotaging that guard reddens the first, second and fourth tests.
+(defn hrn-a (total)
+  (receive
+    ([:add n] (hrn-a (+ total n)))
+    ([:get from] (do (send from [:total total]) (hrn-a total)))
+    (:stop total)))
+(defn hrn-b (total)
+  (receive
+    ([:add n] (hrn-b (+ total n)))
+    ([:hold ms] (do (sleep ms) (hrn-b total)))
+    ([:get from] (do (send from [:total total]) (hrn-b total)))
+    (:stop total)))
+(defn hrn-c (total)
+  (receive
+    ([:add n] (hrn-c (+ total n)))
+    ([:get from] (do (send from [:total total]) (hrn-c total)))
+    (:stop total)))
+(defn hrn-d (total)
+  (receive
+    ([:add n] (hrn-d (+ total n)))
+    ([:get from] (do (send from [:total total]) (hrn-d total)))
+    (:stop total)))
+
+(defn hrn-total (pid) (send pid [:get (self)]) (receive ([:total t] t) (after 20000 :timeout)))
+(defn hrn-warm (pid) (dotimes (k 3000) (send pid [:add 1])) (hrn-total pid))
+;; An arm's tier once a queued background compile has finished.
+(defn hrn-tier (f tries)
+  (let (state (get (%jit-arm-state f 1) :state))
+    (if (and (= state :queued) (> tries 0)) (do (sleep 10) (hrn-tier f (- tries 1))) state)))
+(defn hrn-times-ten (name)
+  (reflect/eval-string (str "(defn hot-reload-test/"
+                         name " (total) (receive ([:add n] (hot-reload-test/" name
+                         " (+ total (* 10 n)))) ([:get from] (do (send from [:total total]) (hot-reload-test/"
+                         name " total))) (:stop total)))")))
+(defn hrn-spy-kinds (acc) (receive ([:spy k] (hrn-spy-kinds (cons k acc))) (after 50 acc)))
+
+(describe "hot reload reaches native receive loops"
+  :isolated (test "a parked native loop runs the redefinition from its next iteration"
+    (let (pid (spawn (hrn-a 0)))
+      (assert= 3000 (hrn-warm pid))
+      (when (%native-tier?) (assert= :native (hrn-tier hrn-a 500)))
+      (sleep 20)
+      (hrn-times-ten "hrn-a")
+      ;; The first message is handled by the activation that was parked (old code, +1); its
+      ;; tail call enters the new code (+10).
+      (send pid [:add 1])
+      (send pid [:add 1])
+      (assert= 3011 (hrn-total pid))
+      (send pid :stop)))
+  :isolated (test "a busy native loop runs the redefinition without waiting for a park"
+    (let (pid (spawn (hrn-b 0)))
+      (assert= 3000 (hrn-warm pid))
+      (when (%native-tier?) (assert= :native (hrn-tier hrn-b 500)))
+      ;; The redefinition lands while the loop sleeps in a clause body, and 200 000 messages
+      ;; queue behind it; it then drains them with no park in between.
+      (send pid [:hold 300])
+      (hrn-times-ten "hrn-b")
+      (dotimes (k 200000) (send pid [:add 1]))
+      (assert= (+ 3000 (* 10 200000)) (hrn-total pid))
+      (send pid :stop)))
+  :isolated (test "proc/info reads a parked native loop"
+    (let (pid (spawn (hrn-c 0)))
+      (hrn-warm pid)
+      (when (%native-tier?) (assert= :native (hrn-tier hrn-c 500)))
+      (sleep 20)
+      (let (before (proc/info pid))
+        (assert= :waiting (get before :status))
+        (dotimes (k 2000) (send pid [:add 1]))
+        (hrn-total pid)
+        (sleep 20)
+        (let (after (proc/info pid))
+          (assert= :waiting (get after :status))
+          (assert= 0 (get after :mailbox))
+          (assert= true (> (get after :reductions) (get before :reductions)))))
+      (send pid :stop)))
+  :isolated (test "trace-fn sees a native loop's calls, and untrace-fn puts it back"
+    (let (me (self)
+          pid (spawn (hrn-d 0)))
+      (hrn-warm pid)
+      (when (%native-tier?) (assert= :native (hrn-tier hrn-d 500)))
+      (sleep 20)
+      (def *spy-sink* (fn (e) (send me [:spy (get e :spy)])))
+      (trace-fn 'hot-reload-test/hrn-d)
+      (send pid [:add 1])
+      (send pid [:add 1])
+      (assert= 3002 (hrn-total pid))
+      (assert= true (>= (count (seq/filter (hrn-spy-kinds (list)) (fn (k) (= k :call)))) 2))
+      (untrace-fn 'hot-reload-test/hrn-d)
+      (def *spy-sink* nil)
+      (send pid [:add 1])
+      (assert= 3003 (hrn-total pid))
+      (assert= (list) (hrn-spy-kinds (list)))
+      (send pid :stop))))
