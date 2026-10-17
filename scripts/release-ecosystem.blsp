@@ -45,7 +45,6 @@
     {:dir "bedit-theme-monokai" :publish? true}
     {:dir "bedit-theme-rose-pine" :publish? true}
     {:dir "bedit-theme-solarized-light" :publish? true}
-    {:dir "hatch-demo" :publish? false}
     {:dir "hive" :publish? false}
     {:dir "pong" :publish? false}
     {:dir "brood-chat" :publish? false}
