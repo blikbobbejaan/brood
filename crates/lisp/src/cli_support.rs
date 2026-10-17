@@ -817,35 +817,49 @@ const RUN_CHECK_CACHE_STAMP: &str = ".pruned";
 
 /// Claim this interval's sweep, for exactly one of the processes that miss at once. A
 /// check-then-write of the stamp let all thirty of thirty concurrent misses through, and
-/// thirty processes deleting the same 98 000 files held every boot for 20-40 s. The claim is
-/// atomic: the first sweep ever creates the stamp (`create_new`, one creator wins); an
-/// expired stamp is renamed away (one rename wins) and recreated by the winner.
+/// thirty processes deleting the same 98 000 files held every boot for 20-40 s; a
+/// check-then-rename still let two through when one renamed a stamp another had just
+/// recreated. So the stamp is a LOCK: an exclusive, non-blocking `try_lock` on it, and,
+/// under the lock, its contents — the last sweep's time in seconds, empty for never — are
+/// read and, on a claim, rewritten. A process that crashes mid-claim releases the lock with
+/// its file descriptor.
 fn run_check_cache_claim_sweep(
     stamp: &Path,
     now: std::time::SystemTime,
     every: std::time::Duration,
 ) -> bool {
-    let create = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(stamp)
-            .is_ok()
+    use std::io::{Read, Seek, Write};
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(stamp)
+    else {
+        return false;
     };
-    let Ok(modified) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
-        return create();
-    };
+    if file.try_lock().is_err() {
+        return false;
+    }
+    let now_secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut text = String::new();
+    let last = file
+        .read_to_string(&mut text)
+        .ok()
+        .and_then(|_| text.trim().parse::<u64>().ok());
     // A stamp in the future (the clock moved back) counts as expired, or it would stop
     // every sweep until the clock caught up.
-    if now.duration_since(modified).is_ok_and(|age| age < every) {
+    if let Some(last) = last
+        && last <= now_secs
+        && now_secs - last < every.as_secs()
+    {
         return false;
     }
-    let claimed = stamp.with_extension(format!("claimed.{}", std::process::id()));
-    if std::fs::rename(stamp, &claimed).is_err() {
-        return false;
-    }
-    let _ = std::fs::remove_file(&claimed);
-    create()
+    file.set_len(0).is_ok()
+        && file.rewind().is_ok()
+        && file.write_all(now_secs.to_string().as_bytes()).is_ok()
 }
 
 fn run_check_cache_prune_every(dir: &Path, keep: &Path, every: std::time::Duration) {
@@ -931,6 +945,15 @@ mod run_check_cache_tests {
             .unwrap();
     }
 
+    /// Record a sweep `secs` ago in `stamp`, the way a claim writes it.
+    fn stamp_age(stamp: &std::path::Path, secs: u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::fs::write(stamp, (now - secs).to_string()).unwrap();
+    }
+
     /// KI-271: the sweep ran on every miss. Within the interval a second miss must not sweep
     /// (a week-old entry it would delete survives); once the stamp is older, it does.
     #[test]
@@ -947,10 +970,7 @@ mod run_check_cache_tests {
             stale.exists(),
             "a second miss inside the interval swept again"
         );
-        age(
-            &dir.join(RUN_CHECK_CACHE_STAMP),
-            std::time::Duration::from_secs(7200),
-        );
+        stamp_age(&dir.join(RUN_CHECK_CACHE_STAMP), 7200);
         run_check_cache_prune_every(&dir, &keep, std::time::Duration::from_secs(3600));
         assert!(
             !stale.exists(),
@@ -993,7 +1013,7 @@ mod run_check_cache_tests {
             1,
             "a missing stamp was claimed more than once"
         );
-        age(&stamp, std::time::Duration::from_secs(7200));
+        stamp_age(&stamp, 7200);
         assert_eq!(
             race(&stamp),
             1,

@@ -14139,9 +14139,11 @@ state, `open_last_lookups` or `__lock_buffer`, with 10-40 ms of CPU — booting,
 **Why it survived.** It needs a large cache and concurrent misses, and the cache grows across
 days of runs; the load average pointed at CPU contention (KI-38's shape), and the retry passed. The
 diagnostic that had been armed for KI-38 is what named it.
-**Fix.** The sweep runs at most once an hour per cache: a `.pruned` stamp, claimed atomically
-(`create_new`, or a rename of the expired stamp that only one process wins), so one process
-sweeps and the rest pay one `stat`. The sweep also trims the cache to its newest 10 000 entries.
+**Fix.** The sweep runs at most once an hour per cache: a `.pruned` stamp that is also a lock: a
+non-blocking exclusive `try_lock`, and under it the last sweep's time read from and written to
+the stamp, so one process sweeps and the rest skip at once. (A rename-based claim, the second
+version, still let two through when one renamed a stamp another had just recreated; a review
+found it.) The sweep also trims the cache to its newest 10 000 entries.
 The first version of the fix checked the stamp and then wrote it; all thirty of thirty
 concurrent misses got through, and thirty processes deleting the same 98 000 files held every
 boot for 20-40 s (max 40.6 s), which reproduces the original symptom on demand.

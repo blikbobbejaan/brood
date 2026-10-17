@@ -1002,7 +1002,12 @@ fn handle_capture_outcome(
                 eprintln!("process {who} died: {why}");
             }
             crate::cli_support::dump_process_death(&who, &why.to_string());
-            let reason = crate::process::message::error_reason_in(&mut proc.heap, &e);
+            // Outside the quantum's `catch_unwind`, so a panic while reading the thrown value
+            // would take the worker with it: fall back to the reason built from the error alone.
+            let reason = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::process::message::error_reason_in(&mut proc.heap, &e)
+            }))
+            .unwrap_or_else(|_| crate::process::message::error_reason(&e));
             proc.retire(reason);
         }
         Err(_) => {

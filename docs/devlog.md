@@ -2343,3 +2343,8 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
   ~1 000 sibling tests shared the one background compiler (`wait_for_tier` now stops the clock
   while a compile is queued), and the KI-248 allocator test stored a real 512 MiB hard limit, so
   a sibling holding 1 GiB aborted the process (it drives the pure `hard_verdict` now).
+- **A review of the day's kernel diff** (read-only, by a subagent) found no defect and two
+  hardenings, both done: the sweep claim is a `try_lock` on the stamp (a rename claim could let
+  two sweep), and `error_reason_in` runs under `catch_unwind`, falling back to `error_reason`, so
+  a panic reading a thrown value cannot take a scheduler worker with it.
+
