@@ -797,24 +797,88 @@ fn run_check_cache_path(heap: &crate::core::heap::Heap, src: &str) -> Option<std
 /// Best-effort prune of stale entries — every distinct program text a box ever ran leaves
 /// one small file, and an old binary's entries can never hit again. Runs only on a write
 /// (a miss), never on the hit path, and never touches `keep`.
+///
+/// **At most once an hour per cache, and to a bounded size** (KI-271). It used to sweep the
+/// whole directory on every miss, deleting only entries older than a week, and a test suite
+/// misses on every fresh temp script: this box's cache reached 108 173 entries (427 MB), so
+/// each miss cost 108 197 `statx` calls, 0.15-0.6 s idle. Hundreds of concurrent test boots
+/// doing that held the directory's lock against every other boot's `open` of its entry,
+/// which is the `D:open_last_lookups` stall that left a server not listening after 20 s. A
+/// stamp file now gates the sweep (one `stat` on a miss), and the sweep also trims the
+/// oldest entries past [`RUN_CHECK_CACHE_MAX_ENTRIES`].
 fn run_check_cache_prune(dir: &Path, keep: &Path) {
-    const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+    run_check_cache_prune_every(dir, keep, RUN_CHECK_CACHE_PRUNE_EVERY);
+}
+
+const RUN_CHECK_CACHE_PRUNE_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
+const RUN_CHECK_CACHE_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
+const RUN_CHECK_CACHE_MAX_ENTRIES: usize = 10_000;
+const RUN_CHECK_CACHE_STAMP: &str = ".pruned";
+
+/// Claim this interval's sweep, for exactly one of the processes that miss at once. A
+/// check-then-write of the stamp let all thirty of thirty concurrent misses through, and
+/// thirty processes deleting the same 98 000 files held every boot for 20-40 s. The claim is
+/// atomic: the first sweep ever creates the stamp (`create_new`, one creator wins); an
+/// expired stamp is renamed away (one rename wins) and recreated by the winner.
+fn run_check_cache_claim_sweep(
+    stamp: &Path,
+    now: std::time::SystemTime,
+    every: std::time::Duration,
+) -> bool {
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(stamp)
+            .is_ok()
+    };
+    let Ok(modified) = std::fs::metadata(stamp).and_then(|m| m.modified()) else {
+        return create();
+    };
+    // A stamp in the future (the clock moved back) counts as expired, or it would stop
+    // every sweep until the clock caught up.
+    if now.duration_since(modified).is_ok_and(|age| age < every) {
+        return false;
+    }
+    let claimed = stamp.with_extension(format!("claimed.{}", std::process::id()));
+    if std::fs::rename(stamp, &claimed).is_err() {
+        return false;
+    }
+    let _ = std::fs::remove_file(&claimed);
+    create()
+}
+
+fn run_check_cache_prune_every(dir: &Path, keep: &Path, every: std::time::Duration) {
+    let now = std::time::SystemTime::now();
+    let stamp = dir.join(RUN_CHECK_CACHE_STAMP);
+    if !run_check_cache_claim_sweep(&stamp, now, every) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
-    let now = std::time::SystemTime::now();
+    let mut kept: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     for e in entries.flatten() {
         let p = e.path();
-        if p == keep {
+        if p == keep || p == stamp {
             continue;
         }
-        let stale = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|m| now.duration_since(m).ok())
-            .is_some_and(|age| age > MAX_AGE);
-        if stale {
+        let Some(modified) = e.metadata().and_then(|m| m.modified()).ok() else {
+            continue;
+        };
+        if now
+            .duration_since(modified)
+            .is_ok_and(|age| age > RUN_CHECK_CACHE_MAX_AGE)
+        {
+            let _ = std::fs::remove_file(&p);
+        } else {
+            kept.push((modified, p));
+        }
+    }
+    if kept.len() > RUN_CHECK_CACHE_MAX_ENTRIES {
+        kept.sort_unstable_by_key(|(modified, _)| *modified);
+        let excess = kept.len() - RUN_CHECK_CACHE_MAX_ENTRIES;
+        for (_, p) in kept.into_iter().take(excess) {
             let _ = std::fs::remove_file(&p);
         }
     }
@@ -848,6 +912,120 @@ mod run_check_cache_tests {
     use super::*;
     use crate::core::heap::Heap;
     use crate::core::value::{EnvId, Value, intern};
+
+    fn scratch_cache(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("brood-run-check-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn age(path: &std::path::Path, by: std::time::Duration) {
+        let when = std::time::SystemTime::now() - by;
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+
+    /// KI-271: the sweep ran on every miss. Within the interval a second miss must not sweep
+    /// (a week-old entry it would delete survives); once the stamp is older, it does.
+    #[test]
+    fn the_prune_sweeps_at_most_once_per_interval() {
+        let dir = scratch_cache("interval");
+        let keep = dir.join("keep");
+        std::fs::write(&keep, "k").unwrap();
+        run_check_cache_prune_every(&dir, &keep, std::time::Duration::from_secs(3600));
+        let stale = dir.join("stale");
+        std::fs::write(&stale, "s").unwrap();
+        age(&stale, std::time::Duration::from_secs(8 * 24 * 3600));
+        run_check_cache_prune_every(&dir, &keep, std::time::Duration::from_secs(3600));
+        assert!(
+            stale.exists(),
+            "a second miss inside the interval swept again"
+        );
+        age(
+            &dir.join(RUN_CHECK_CACHE_STAMP),
+            std::time::Duration::from_secs(7200),
+        );
+        run_check_cache_prune_every(&dir, &keep, std::time::Duration::from_secs(3600));
+        assert!(
+            !stale.exists(),
+            "a sweep past the interval left a week-old entry"
+        );
+        assert!(keep.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Thirty concurrent misses once ran thirty sweeps over the same directory. Of sixteen
+    /// threads racing for an expired stamp, and then for a missing one, exactly one wins.
+    #[test]
+    fn exactly_one_concurrent_miss_claims_the_sweep() {
+        let dir = scratch_cache("claim");
+        let stamp = dir.join(RUN_CHECK_CACHE_STAMP);
+        let race = |stamp: &std::path::Path| {
+            let barrier = std::sync::Barrier::new(16);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..16)
+                    .map(|_| {
+                        scope.spawn(|| {
+                            barrier.wait();
+                            run_check_cache_claim_sweep(
+                                stamp,
+                                std::time::SystemTime::now(),
+                                std::time::Duration::from_secs(3600),
+                            )
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap())
+                    .filter(|&won| won)
+                    .count()
+            })
+        };
+        assert_eq!(
+            race(&stamp),
+            1,
+            "a missing stamp was claimed more than once"
+        );
+        age(&stamp, std::time::Duration::from_secs(7200));
+        assert_eq!(
+            race(&stamp),
+            1,
+            "an expired stamp was claimed more than once"
+        );
+        assert_eq!(race(&stamp), 0, "a fresh stamp was claimed");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A busy box fills the cache faster than entries age out; the sweep trims the oldest.
+    #[test]
+    fn the_prune_bounds_the_entry_count_keeping_the_newest() {
+        let dir = scratch_cache("bound");
+        let keep = dir.join("keep");
+        std::fs::write(&keep, "k").unwrap();
+        let extra = 5;
+        for i in 0..RUN_CHECK_CACHE_MAX_ENTRIES + extra {
+            let p = dir.join(format!("e{i:06}"));
+            std::fs::write(&p, "x").unwrap();
+            // e000000 is the oldest; ages fall as i rises.
+            let secs = (RUN_CHECK_CACHE_MAX_ENTRIES + extra - i) as u64;
+            age(&p, std::time::Duration::from_secs(secs));
+        }
+        run_check_cache_prune_every(&dir, &keep, std::time::Duration::ZERO);
+        let left = std::fs::read_dir(&dir).unwrap().count();
+        // the bounded entries, plus `keep` and the stamp
+        assert_eq!(left, RUN_CHECK_CACHE_MAX_ENTRIES + 2);
+        assert!(!dir.join("e000000").exists() && !dir.join(format!("e{:06}", extra - 1)).exists());
+        assert!(dir.join(format!("e{extra:06}")).exists());
+        assert!(keep.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// KI-238: a verdict recorded by a process WITHOUT the stdlib image must not be served
     /// to one with it. The un-imaged walk scans module sources and loads more along the way,
