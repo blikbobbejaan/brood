@@ -987,7 +987,7 @@ fn handle_capture_outcome(
             }
             // An uncaught throw/error killed the process (Erlang let-it-crash).
             // The death reason carries the STRUCTURED error — `[:error {:kind
-            // :message … :trace}]`, see `message::error_reason` — so a monitor /
+            // :message … :trace}]`, see `message::error_reason_in` — so a monitor /
             // trapping link / supervisor gets BEAM's `{Reason, Stacktrace}`
             // rather than a flattened string.
             // …and durably, not only to stderr (KI-72): libtest discards a
@@ -1002,7 +1002,8 @@ fn handle_capture_outcome(
                 eprintln!("process {who} died: {why}");
             }
             crate::cli_support::dump_process_death(&who, &why.to_string());
-            proc.retire(crate::process::message::error_reason(&e));
+            let reason = crate::process::message::error_reason_in(&mut proc.heap, &e);
+            proc.retire(reason);
         }
         Err(_) => {
             let who = proc_descr(proc.pid);

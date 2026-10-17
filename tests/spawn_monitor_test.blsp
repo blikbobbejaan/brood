@@ -102,3 +102,35 @@
         ;; Name what went wrong rather than just a count — a `:noproc` here and a `:lost`
         ;; here mean different bugs.
         (assert= '() (collect collect 0 '()))))))
+
+;; docs/language.md § Monitors: a crash reason is `[:error m]` where `m` is the map a `catch`
+;; in the dying process would have bound. It was built from the error's text alone, so a
+;; thrown map arrived as its printed string and a contract violation as `:kind :user`, its
+;; `:blame`/`:expected`/`:got` gone. The standard fields a bound map lacks are filled in.
+(defn- down-reason-of (thunk)
+  (let ([p r] (spawn-monitor (thunk)))
+    (receive ([:down ^r ^p reason] reason) (after *test-wait-ms* :lost))))
+
+(defn- smt-int-only (n) n)
+(sig! smt-int-only (int -> int))
+
+(describe "spawn-monitor: the reason is what a catch would bind"
+  (test "a thrown map arrives as thrown, with the standard fields filled in"
+    (let ([tag m] (down-reason-of (fn () (throw {:kind :overdrawn :account 7 :short 12.50M}))))
+      (assert= :error tag)
+      (assert= :overdrawn (:kind m))
+      (assert= 7 (:account m))
+      (assert= 12.50M (:short m))
+      (is (string? (:message m)))))
+  (test "a contract violation keeps its kind and blame"
+    (let ([tag m] (down-reason-of (fn () (check-allow :type-mismatch (smt-int-only "x")))))
+      (assert= :error tag)
+      (assert= :contract (:kind m))
+      (assert= :caller (:blame m))
+      (assert= "x" (:got m))))
+  (test "a built-in error and a thrown string still read as structured error maps"
+    (let ([_ arity] (down-reason-of (fn () (apply (fn (a) a) [])))
+          [_ thrown] (down-reason-of (fn () (throw "plain"))))
+      (assert= :arity (:kind arity))
+      (assert= :user (:kind thrown))
+      (assert= "plain" (:message thrown)))))

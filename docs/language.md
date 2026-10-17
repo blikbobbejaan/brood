@@ -2308,10 +2308,14 @@ When that process dies, the watcher receives one message:
 ```
 
 `reason` is `:normal` for a clean return, `[:error <error-map>]` for a crash —
-the same structured `{:kind :message [:code :file :line :col :hint :trace]}` map
-a `catch` binds (call `:trace` included — BEAM's `{Reason, Stacktrace}`), so a
-supervisor can log `(get m :message)` and walk `(get m :trace)` from the reason
-alone — and
+the map a `catch` in the dying process would have bound: a thrown map as thrown, a
+contract violation with its `:kind :contract`, `:blame`, `:expected` and `:got`, a
+built-in error as its structured `{:kind :message [:code :file :line :col :hint
+:trace]}` map (call `:trace` included — BEAM's `{Reason, Stacktrace}`). Any of
+those standard fields the bound map lacks is filled in from the error, and a throw
+of a non-map reads as `{:kind :user :message <printed value> …}`, so the reason is
+always a map, and a supervisor can log `(get m :message)` and walk `(get m :trace)`
+from the reason alone — and
 `:noproc` if `pid` was *already* dead when you called `monitor` (the DOWN is then
 delivered immediately). The monitor is **unidirectional** (it never affects the
 watched process) and **one-shot** (it fires once). `(demonitor mref)` drops it,

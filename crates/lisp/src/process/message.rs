@@ -511,6 +511,49 @@ pub fn error_reason(e: &crate::error::LispError) -> Message {
     Message::Vector(vec![kw(crate::process::keywords::ERROR), Message::Map(m)])
 }
 
+/// [`error_reason`] for a process whose heap is still alive — the reason a crashed green
+/// process retires with. The map is what a `catch` in that process would have bound
+/// ([`LispError::caught_value`]): a thrown map arrives as thrown, and a contract violation
+/// keeps its `:kind :contract`, `:blame`, `:expected` and `:got`, where [`error_reason`]
+/// alone has only the error's flattened text to work from (the thrown value is a handle into
+/// the heap about to drop). Any of the standard fields — `:kind :message :code :file :line
+/// :col :hint :trace` — the bound map lacks is filled in from the error, so a supervisor can
+/// read `(get m :message)` and walk `(get m :trace)` from any reason. A throw of something
+/// other than a map, or a payload that cannot be copied out, falls back to [`error_reason`]:
+/// the reason is always `[:error <map>]`.
+pub fn error_reason_in(heap: &mut Heap, e: &crate::error::LispError) -> Message {
+    let standard = error_reason(e);
+    if e.payload.is_none() {
+        return standard;
+    }
+    let caught = e.caught_value(heap);
+    if !matches!(caught, Value::Map(_)) {
+        return standard;
+    }
+    let mut bound = match to_message(heap, caught) {
+        Ok(m @ Message::Map(_)) => m,
+        _ => return standard,
+    };
+    let mut standard = standard;
+    if let (Message::Map(entries), Message::Vector(parts)) = (&mut bound, &mut standard)
+        && let Some(Message::Map(fields)) = parts.last_mut()
+    {
+        for (key, value) in std::mem::take(fields) {
+            let present = match &key {
+                Message::Keyword(name) => entries
+                    .iter()
+                    .any(|(k, _)| matches!(k, Message::Keyword(s) if s == name)),
+                _ => true,
+            };
+            if !present {
+                entries.push((key, value));
+            }
+        }
+        *fields = std::mem::take(entries);
+    }
+    standard
+}
+
 // ===== The value walker ======================================================
 //
 // One deep-copy traversal serves both ways a value leaves its heap: serialised into a
