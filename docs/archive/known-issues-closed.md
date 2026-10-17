@@ -14071,3 +14071,55 @@ with an `(m {})` default called 20 000 times without it, asserted to reach `:nat
 got nil`; after, 9/9 on tiers 0–2. bedit at `BEDIT_REF`: 2463/2464 locally (the one is the
 Elixir 1.21-dev `dbg` header the handoff records).
 
+
+## KI-272 — a `receive` pattern with a decimal, ratio or bignum literal raised "expected a map" on every message ✅ FIXED 2026-10-17
+
+**Symptom.** `(receive ([:price 19.99M] :priced) (after 1000 :timeout))` raised, on every
+engine: `type error: :|%rspec [[:vec [:eq :price] [:eq 19.99M]]]|: expected a map, set or nil
+to look up in, got vector ([:price 19.99M])`. A ratio (`[:q 1/2]`), a bignum literal and a
+quoted list (`[:s '(1 2)]`) did the same. Found by the new
+`exact_numbers_across_processes_test`.
+**Cause.** ADR-409's native matcher. The `receive` macro (`%receive-spec-pat`) admits any
+`number?` and any quoted datum as an `[:eq v]` pattern, but the kernel's spec parser
+(`receive_spec.rs::parse_pat`) has a `Lit` only for immediates and strings. The key did not
+parse, `resolve` returned `None`, and `%receive` treated the spec KEYWORD as a matcher closure
+and called it on each message — a keyword lookup on a vector.
+**Why it survived.** `receive_spec_test` pins that the spec and the closure agree, and every
+literal it uses is one the kernel holds (`"s" 1 nil true 'tag`). No test anywhere received on a
+decimal or ratio literal; the exact numbers were tested in one process only, and their one
+cross-process test (`ratio_test`) took the message with a bare `(receive)`.
+**Fix.** `%receive-spec-key` parses the spec it is about to hand out and returns nil when the
+kernel cannot interpret it; the macro then keeps the closure. The macro still decides what is
+simple, but only the kernel's parse decides what a spec means, so the two agree by
+construction rather than by keeping two lists in step.
+**Guard.** `receive_spec_test` "a decimal, ratio or bignum literal, or a quoted list, keeps the
+closure and matches" (each of the four is not a spec, and each matches its message), and
+`exact_numbers_across_processes_test` "a literal exact pattern matches the copy in a selective
+receive". With the parse check removed, the first reds 5 assertions and the second 1; restored,
+both green.
+
+## KI-273 — a crashed process's exit reason dropped what it threw: a contract violation read `:kind :user` ✅ FIXED 2026-10-17
+
+**Symptom.** A worker killed by `(sig! f (int -> int))` / `(f "x")` delivered
+`[:down ref pid [:error {:message "contract: f: argument 1 expected int, got :string (\"x\")"
+:code "E0080" :kind :user}]]` — no `:kind :contract`, no `:blame`, `:expected` or `:got`. A
+thrown `{:kind :foo :x 1}` arrived as `{:message "{:x 1, :kind :foo}" :kind :user …}`: the map
+printed into a string. `docs/language.md` § Monitors promises "the same structured map a
+`catch` binds". Found by the new `contract_test` "contracts across processes" block.
+**Cause.** `message::error_reason` builds the reason from the `LispError`'s own fields. A
+`(throw v)` keeps `v` as the error's `payload`, a handle into the dying process's heap, which
+`error_reason` has no heap to read — so it used the flattened message.
+**Why it survived.** The reason tests (`spawn_monitor_test`, `link_test`, `chaos_test`) all crash
+with a built-in error or `(error "…")`, whose catch map IS the error's fields. None threw a map
+or broke a contract in a worker; the contract suite ran in one process.
+**Fix.** `message::error_reason_in` — used where a green process retires on an uncaught error,
+while its heap is still alive — takes what `catch` would bind (`LispError::caught_value`) when
+that is a map, and fills in any standard field (`:kind :message :code :file :line :col :hint
+:trace`) it lacks. A non-map throw keeps the standard map, so a reason is always `[:error
+map]`.
+**Guard.** `spawn_monitor_test` "the reason is what a catch would bind" (a thrown map with a
+decimal in it, a contract violation, a built-in error and a thrown string);
+`contract_test` "a worker that dies of a contract error reports it as its exit reason"; and
+`cli::distribution gen_call_round_trips_across_nodes_and_reports_a_remote_crash`, which reads
+the remote server's reason through its own monitor. With `error_reason` restored at the retire
+site, the contract test and the distribution test red (`:kind` read `:user`); restored, green.

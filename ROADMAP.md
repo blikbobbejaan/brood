@@ -485,6 +485,12 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 
 **Still open:**
 
+- [ ] **Monitor a remote registered name** — `(monitor {:name :srv :node :a@host})` refuses
+      ("pass the pid"), so `gen/call` to a server registered by name on another node fails at
+      once; Erlang's `gen_server:call({Name, Node}, …)` works. Needs a `MonitorName` frame the
+      far side resolves (`:noproc` when unregistered) and `:noconnection` for a monitor whose
+      pid is not known yet. Found 2026-10-17 writing the cross-node `gen/call` test, which
+      goes by pid meanwhile.
 - [ ] **Large-project scaling at 3k-line files** — `docs/large-project-scaling.md` (2026-09-21):
       items 1 and 2 DONE the same day (ADR-380: the module index is a per-file cache, a warm
       `nest run` opens no source file, 3.0 s → 0.15 s; ADR-382 / KI-179: the check cache had

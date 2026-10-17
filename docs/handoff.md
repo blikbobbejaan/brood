@@ -11,7 +11,7 @@ how to measure, the traps, and what needs a quiet benchmark box in
 used to accumulate (2026-09-04 … 2026-10-05) are in git history; their substance is in the
 devlog entries of the same dates.
 
-## State (2026-10-16)
+## State (2026-10-17)
 
 - **Easy pickings, done 2026-10-16** (devlog "a plain `assert`, the rustfmt 2024 reformat, the
   concurrency teaching note"): `assert` in the prelude, the `style_edition = "2024"` reformat,
@@ -90,6 +90,28 @@ devlog entries of the same dates.
   a non-login shell may not have on `PATH`).
 
 ## Open threads, in value order
+
+### DONE (2026-10-17): the design promises without a guard now have one
+
+An audit mapped the design's promises to tests and closed the eight that had none (devlog
+2026-10-17 "every design promise has a guard"). Two were real bugs, both fixed: KI-272 (a
+`receive` on a decimal, ratio or bignum literal raised on every message) and KI-273 (a crash
+reason dropped what the process threw). The standard suite (`make test`) stays inside its
+5-minute budget: the new per-push tests cost a few seconds. The slow ones are separate gates:
+
+- **`make test-contracts`** — the suite with every `sig` armed, as `nest test` users get it.
+  CI job `contracts-armed`; `green-all`. Not in `make test`: armed costs twice the CPU.
+- **`make gcstress-all`** — every test file under GC stress (~80 s at -P 6). Nightly and
+  `green-all`; `make gcstress` (the twelve process files) stays per push.
+- **`tier-audit`** — nightly now too (checks out `brood-benchmarks`), with the checkout and a
+  native tier asserted first so it cannot pass vacuously. **`latency-gate`** joins `green-all`
+  only: it is a benchmark-box gate, and a shared runner's p99 means nothing (benchmarking.md).
+
+**Found and NOT done, the user's call:** `gen/call` (and `monitor`) on a remote `{:name :node}`
+address. `monitor` refuses it ("pass the pid", `docs/primitives.md`), so a call to a server
+registered by name on another node fails at once; Erlang's `gen_server:call({Name, Node}, …)`
+works. Needs a wire frame that resolves the name on the far side, and `:noconnection` for a
+monitor whose pid is not known yet. ROADMAP "Still open".
 
 ### DONE (2026-10-16): `exec_value`, the VM's second executor, is retired
 

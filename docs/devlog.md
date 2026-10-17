@@ -2264,3 +2264,55 @@ on EVERY message still goes native", with a loop function no other test warms. I
 without the fix (`:untried` after 400 one-at-a-time messages). Also added: a native loop killed
 while parked reports `:killed` to its monitor, and one whose linked peer dies exits too.
 Tiers 0–2 green; GC stress ×3 clean on both new test files.
+
+## 2026-10-17 — every design promise has a guard; two of them were broken (KI-272, KI-273)
+
+An audit mapped what the design promises (CLAUDE.md, ADR-013/026/042/123..126/381, the wire
+format) to the tests that hold it, and found eight promises nothing guarded. Each now has a
+guard, sabotage-verified unless noted. Writing them found two real bugs.
+
+- **No data-mutation primitive (ADR-026).** `crates/lisp/tests/natives_never_mutate.rs` calls
+  every native the image binds (~370, effectful ones skipped by EXACT name) with freshly built
+  aggregates in 1-3 argument shapes, ~3 200 calls returning, and fails if any argument prints
+  differently afterwards. A temporary `%vec-poke` that wrote into its vector went red, named.
+  Beside it, the forbidden names (`set!`, `while`, `transient`, `assoc!`, `atom`, …) must stay
+  unbound as globals and as special forms.
+- **The reload diagnostics (ADR-042 §5).** `crates/cli/tests/reload_diagnostics.rs`: a macro
+  redefinition and an arity change each print their `[reload]` line on tiers 0-2, in one file and
+  through `system/reload-defs`; a first definition, a same-arity rebinding and a value `def` in a
+  loop stay silent; `BROOD_NO_RELOAD_DIAG` silences both. Red with the macro line disabled.
+- **The checker follows the live image (ADR-123..126).** `tests/checker_follows_live_image_test`:
+  after a redefinition, an arity, a redeclared `sig` and a value global each flip which use
+  warns, including a redefinition made in another process and a check made in one; and a
+  redefinition the declared `sig` contradicts still lands. Construction, not sabotage: every
+  flip is asserted in both directions, so a stale checker and a silent one both fail.
+- **Exact numbers across processes and nodes.** `tests/exact_numbers_across_processes_test`
+  (BigInt/Decimal/Ratio: built in a worker, round-tripped, fan-in, a shared global read by 50
+  processes, a literal pattern in a selective receive) and a wire round trip into a second heap
+  (`dist/wire_tests.rs`). Red with decimals decoded as strings. The literal pattern found
+  **KI-272**: `receive` on `19.99M`, `1/2`, a bignum or `'(1 2)` raised "expected a map" on
+  every message. ADR-409's macro admitted literals the kernel's spec parser had no form for.
+  `%receive-spec-key` now refuses a spec it cannot parse, so the macro keeps the closure.
+- **Contracts across processes.** `contract_test` "contracts across processes": a `sig!` in a
+  worker, forty workers at once, an armed `sig` in a worker exactly when armed on the runner, and
+  a worker killed by a contract error. That last one found **KI-273**: the exit reason dropped
+  what the process threw (`:kind :user`, blame flattened), against language.md's "the map a
+  `catch` binds". `message::error_reason_in` now builds it from `caught_value`.
+  `spawn_monitor_test` "the reason is what a catch would bind" pins it.
+- **Cross-node `gen/call`.** `cli::distribution gen_call_round_trips_across_nodes_and_reports_a_remote_crash`:
+  exact numbers through a remote server, its crash reason read through a monitor across the
+  wire, then `:noproc`. By pid: `monitor` refuses a remote `{:name :node}` address, so `gen/call`
+  by name across nodes does not work. Recorded in ROADMAP "Still open" for the user to decide.
+- **Contracts armed over the whole suite.** Armed is what `nest test` users get, but the cargo
+  wrapper runs unarmed. Armed costs twice the CPU (251 s against 126 s; 128 s against 103 s
+  wall), and `make test` already saturates 12 cores (`not binary(suite)` alone reads 962%
+  CPU), so it would breach the standard suite's 5-minute budget. It is a gate of its own
+  instead: `make test-contracts`, CI job `contracts-armed`, in `green-all`. The suite is green
+  armed, 6889/6889.
+- **GC stress over everything.** `make gcstress-all`: all 291 test files under
+  GC_STRESS + GC_VERIFY via `nest test` (most files need tests/support/), ~80 s at -P 6. All
+  clean. Nightly and `green-all`.
+- **`tier-audit` nightly; `latency-gate` in `green-all`.** The tier audit is a value gate, so it
+  runs on a shared runner. The nightly job asserts the benchmark checkout and a native tier
+  first, because the script passes on a missing checkout and on a JIT-less binary. The latency
+  gate measures p99, which a shared runner cannot hold (docs/benchmarking.md), so it stays local.
