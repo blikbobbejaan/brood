@@ -392,36 +392,34 @@ pub(super) fn jit_ckpt_depth(
     max_after_ckpt
 }
 
-/// May this arm PARK in its own native `%receive` (ADR-410)? It calls `%receive`, never in
-/// tail position, and it journals deopt checkpoints ([`jit_ckpt_depth`]): after every
-/// completed non-tail call the native code records where the VM would continue and the
-/// operands it would hold. A `%receive` that finds nothing then leaves native code the way a
-/// deopt does — the driver resumes the frame on the VM at the last checkpoint (ip 0 when no
-/// call has completed since the entry or the last back edge), so nothing that already ran
-/// runs again, and parks it there. That covers a loop that receives first, one that sends
-/// and then receives (`gen/call`'s shape), and one that receives twice: a completed
-/// `%receive` is itself a checkpointed call.
+/// Does `code` RECEIVE AT ITS HEAD (ADR-410)? Exactly one `%receive` call, and nothing before
+/// it but loads and the vector literals a `receive` builds for its arguments — so re-running
+/// the arm from its first instruction is the same as re-running that `%receive`. The shape of
+/// a receive loop, `(defn loop (state) (receive …))`.
 ///
-/// A receive-bearing arm is never pure self-recursion (`%receive` is not a self-call), so
-/// `self_name` does not change the answer; passing none keeps this a property of the code.
-pub(crate) fn parks_natively(code: &[Inst]) -> bool {
+/// Such an arm may be compiled to native code: a `%receive` that would park leaves the native
+/// activation and the driver re-runs the arm from ip 0 on the VM, which parks it there — at ip
+/// 0, so the wake re-tiers into the native loop. One `%receive` only, because a second one
+/// would sit after the first one's effect (the message it took), where a re-run from ip 0 is
+/// no longer the same.
+pub(crate) fn receive_at_head(code: &[Inst]) -> bool {
     let receive_sym = crate::core::value::intern("%receive");
-    let mut any = false;
-    for i in code {
-        if let Inst::Call {
-            head: Some(h),
-            tail,
-            ..
-        } = i
-            && *h == receive_sym
-        {
-            if *tail {
-                return false;
-            }
-            any = true;
-        }
-    }
-    any && jit_ckpt_depth(code, None, None).is_some()
+    let is_receive = |i: &Inst| matches!(i, Inst::Call { head: Some(h), .. } if *h == receive_sym);
+    let Some(at) = code.iter().position(is_receive) else {
+        return false;
+    };
+    code[..at].iter().all(|i| {
+        matches!(
+            i,
+            Inst::Const(_)
+                | Inst::Local(_)
+                | Inst::Global(_)
+                | Inst::GlobalIc { .. }
+                | Inst::MakeVector(_)
+                | Inst::RecordLine(_)
+        )
+    }) && code[at + 1..].iter().all(|i| !is_receive(i))
+        && matches!(code[at], Inst::Call { tail: false, .. })
 }
 
 /// Count of non-tail Brood→Brood calls in `code` — the shape that needs a handle spill
@@ -476,10 +474,10 @@ pub(super) fn chunk_in_jit_subset(code: &[Inst]) -> bool {
     // Today every receive also carries a `MakeClosure` (its matcher), which keeps the chunk
     // out anyway; this fence keeps that true if closures are ever admitted. Guarded by
     // `receive_bearing_chunks_stay_out_of_the_jit_subset` (compile/tests.rs).
-    // The exception is an arm that parks natively (ADR-410, [`parks_natively`]): its park
-    // leaves native code at its last deopt checkpoint, which the driver resumes on the VM.
+    // The exception is a receive at the arm's head (ADR-410, [`receive_at_head`]): there the
+    // park leaves native code as a re-run from ip 0, which the driver takes on the VM.
     let receive_sym = crate::core::value::intern("%receive");
-    let receive_ok = parks_natively(code);
+    let receive_ok = receive_at_head(code);
     code.iter().all(|inst| match inst {
         Inst::Const(_) => true,
         Inst::Call { head: Some(h), .. } if *h == receive_sym => receive_ok,

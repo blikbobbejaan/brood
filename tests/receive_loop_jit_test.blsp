@@ -1,6 +1,6 @@
-;; Receive loops compiled to native code (ADR-410). A `receive` that finds nothing in native
-;; code parks the frame at its last deopt checkpoint — ip 0 for a loop that receives first,
-;; just after the `send` for one that sends and then receives — and the wake carries on.
+;; A receive loop compiled to native code (ADR-410). An arm whose one `%receive` comes before
+;; anything with an effect — `(defn loop (state) (receive …))` — may go native: a `receive`
+;; that finds nothing parks the frame at ip 0, and the wake re-tiers into the native loop.
 ;; These pin that the native loop answers what the interpreted one does, stays native across
 ;; parks, and that every other way into such an arm still works.
 
@@ -254,6 +254,10 @@
       (assert= (map pids (fn (_) 1000)) (map pids ask-total))
       (each pids (fn (p) (send p :stop))))))
 
+;; These shapes stay on the VM: admitting them natively (a park resuming at the last deopt
+;; checkpoint) was built and measured slower — such a loop parks on nearly every iteration, and
+;; each park paid a native entry, an exit, a VM resume and a re-tier for a native stretch that
+;; was little more than the `send` (devlog 2026-10-17). They are kept for their answers.
 (describe "receive loops that do work before they receive"
   (test "send then receive: every request is sent exactly once"
     (let (srv (spawn (slow-server 0)))
@@ -262,15 +266,11 @@
       (assert= 3000 (server-count srv))
       (assert= 3100 (ask-loop srv 100 0))
       (assert= 3100 (server-count srv))
-      (when (%native-tier?)
-        (assert= :native (tier-of ask-loop 3 500)))
       (send srv :stop)))
   (test "a receive nested in an expression keeps the operands it parked with"
     (let (srv (spawn (slow-server 0)))
       (assert= (/ (* 3000 3001) 2) (sum-replies srv 3000 0))
       (assert= 3000 (server-count srv))
-      (when (%native-tier?)
-        (assert= :native (tier-of sum-replies 3 500)))
       (send srv :stop)))
   (test "two receives in one arm, parking between them"
     (let (me (self)
@@ -280,6 +280,4 @@
         (when (= 0 (math/mod k 100)) (sleep 1))
         (send pid [:b 2]))
       (send pid :stop)
-      (assert= (* 2 (/ (* 2999 3000) 2)) (receive ([:pairs t] t) (after 20000 :timeout)))
-      (when (%native-tier?)
-        (assert= :native (tier-of pair-loop 1 500))))))
+      (assert= (* 2 (/ (* 2999 3000) 2)) (receive ([:pairs t] t) (after 20000 :timeout))))))

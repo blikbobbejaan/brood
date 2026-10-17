@@ -2219,3 +2219,21 @@ shared arm `:bailed` for every process. The refusal is now one check in `jit_tie
 (`receive_at_head && !unwind`), which replaced the separate guards I had written in `vm_run_bc`
 and in `dispatch`'s fast path. I dropped two guards that could not fail: the VM park rewinding
 to ip 0, and the `dispatch` refusal, which the central check covers.
+
+## 2026-10-17 — ADR-410 generalised, measured slower, narrowed back
+
+`060ed7c0` let any receive-bearing arm that journals deopt checkpoints park in its own native
+`%receive`. The park resumed the frame on the VM at the last checkpoint, so a `send` before the
+`receive` never repeated. That admitted send-then-receive loops (`pingpong`'s `ping`,
+`gen/call`) and two receives in one arm, and it was correct: the resume-at-ip-0 and
+dropped-operands sabotages each reddened the new tests.
+
+It was slower. Against `5e8aba17` (instructions, 10 runs a side): `pingpong` +1.9%,
+`supervisor` +4.8%, `ring` within noise. A send-then-receive loop parks on nearly every
+iteration, and each park cost a native entry, an exit, a VM resume of the rest of the iteration
+and a re-tier on the back edge. The native stretch in between was little more than the `send`.
+The code is back to `5e8aba17`'s receive-at-head gate (`pingpong` +0.5%, `supervisor` −1.3%
+against it, which is drift). The three new tests stay for their answers, without their
+`:native` checks. Making this shape pay needs the wake to re-enter native code at the
+`receive` itself, a native continuation.
+

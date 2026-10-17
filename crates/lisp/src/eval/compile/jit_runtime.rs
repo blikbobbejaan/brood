@@ -202,7 +202,7 @@ pub(crate) fn vm_direct_eligible(heap: &Heap, arm: &CompiledArm, argc: usize) ->
         || arm.noptional != 0
         || arm.rest_slot.is_some()
         || !arm.capture_names.is_empty()
-        || arm.parks_natively
+        || arm.receive_at_head
     {
         return false;
     }
@@ -267,7 +267,7 @@ pub(crate) fn jit_tier_in_frame(
     // top-level driver entered, the same entries that may unwind. Under any other — a
     // builtin's callback, a primitive's fallback call — its `receive` blocks the worker, and
     // the suspend-host latch would take the shared arm off native code for every process.
-    if arm.parks_natively && !unwind {
+    if arm.receive_at_head && !unwind {
         return None;
     }
     let code = arm.jit_code.load(Acquire);

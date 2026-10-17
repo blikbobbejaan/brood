@@ -220,9 +220,9 @@ pub(crate) fn compile_arm(
     let uid = next_arm_uid();
     let site_pos = std::mem::take(&mut scope.site_pos).into_boxed_slice();
     let staged_head_pos = std::mem::take(&mut scope.staged_head_pos).into_boxed_slice();
-    let parks_natively = chunk
+    let receive_at_head = chunk
         .as_ref()
-        .is_some_and(|c| super::jit_plan::parks_natively(&c.code));
+        .is_some_and(|c| super::jit_plan::receive_at_head(&c.code));
     let src_file = body_first_form
         .and_then(|f| heap.form_pos(f))
         .and_then(|(_, file)| file);
@@ -377,7 +377,7 @@ pub(crate) fn compile_arm(
         uid,
         site_pos,
         staged_head_pos,
-        parks_natively,
+        receive_at_head,
         body,
         chunk,
         has_runtime_handles,
@@ -707,7 +707,7 @@ pub(crate) fn arm_hosts_receive(heap: &Heap, arm: &CompiledArm, env: EnvId) -> b
                 argc,
                 tail: false,
                 ..
-            } if !(arm.parks_natively && *h == receive_sym) => Some((*h, *argc)),
+            } if !(arm.receive_at_head && *h == receive_sym) => Some((*h, *argc)),
             _ => None,
         })
         .collect();
@@ -954,7 +954,7 @@ pub(crate) fn hof_apply_native(
     let argc = args.len();
     // A receive loop's native code is the driver's alone (ADR-410): a callback runs it on the
     // VM, where a `receive` under the builtin blocks rather than parks.
-    if arm.parks_natively {
+    if arm.receive_at_head {
         return None;
     }
     let mut code = arm.jit_code.load(Acquire);
