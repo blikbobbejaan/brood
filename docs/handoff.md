@@ -84,10 +84,11 @@ devlog entries of the same dates.
 - **Before pushing:** `make prepush`, and `git merge --ff-only origin/main` first if it moved.
 - **Is the tree green?** Answer with `make green`, never by reading the run list. On this
   machine run targeted tests only, capped (`( ulimit -v 16000000; … -j1 )`).
-- **Not brood, noted:** bedit at CI's pin passes 2463/2464 with a grammar-enabled `nest` — its
-  Elixir agent keeps the ANSI-coloured `dbg` header Elixir 1.21-dev prints. `make wasm-test`
-  needs wasm-bindgen-cli at the playground's pin (0.2.129, installed in `~/.cargo/bin`, which
-  a non-login shell may not have on `PATH`).
+- **bedit at CI's pin (`d50442f`) passes 2464/2464** with a grammar-enabled `nest`
+  (`make smoke-bedit NEST=…`; without `NEST=` the smoke picks a grammar-less one and the mode
+  tests fail on "no grammar", which is not a regression). `make wasm-test` needs
+  wasm-bindgen-cli at the playground's pin, 0.2.129. On this machine `~/.cargo/bin` holds
+  0.2.100 (2026-10-17); `cargo install wasm-bindgen-cli --version 0.2.129 --locked` fixes it.
 
 ## Open threads, in value order
 
@@ -107,7 +108,10 @@ reason dropped what the process threw). The standard suite (`make test`) stays i
   native tier asserted first so it cannot pass vacuously. **`latency-gate`** joins `green-all`
   only: it is a benchmark-box gate, and a shared runner's p99 means nothing (benchmarking.md).
 
-**No KI is open** (KI-271 fixed: the run-check cache sweep, see known-issues). The nightly is
+**No KI is open.** Today's stability review found and fixed KI-271 (the run-check cache sweep
+held every boot), KI-274 (a native self-loop never saw a `def` of itself), KI-275 (an edited
+`include-str` file did not stale the project image) and KI-276 (the project image was not keyed
+by contract mode). The nightly is
 green again: cargo-deny (a yanked crate), and ASAN, whose job now runs through nextest
 (`make asan`, profile `asan`) because `cargo test`'s one shared process broke tests written for
 process-per-test.
