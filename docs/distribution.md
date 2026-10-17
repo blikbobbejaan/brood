@@ -226,6 +226,13 @@ independent symbol interners. (In-process messages keep the interned id.)
     `handle_node_down`. See `cross_node_pid_monitor_fires_down`,
     `remote_monitor_fires_noconnection_on_node_down`, and
     `a_delivered_remote_monitor_does_not_fire_again_on_node_down`.
+  - **Monitoring a remote registered name** (ADR-411) — `(monitor {:name n :node
+    peer})`, the monitor `gen/call` holds on a `{:name :node}` address, ships a
+    `Frame::MonitorName`; the peer resolves the name on arrival and watches that pid,
+    or fires `:noproc` for an unregistered name, as a local `monitor` does. Until the
+    pid is known, the pending entry (and an unreachable node's `:noconnection`) names
+    the placeholder pid the local unregistered-name path uses. See
+    `gen_call_round_trips_across_nodes_by_pid_and_by_name`.
   - **Distributed links** (ADR-067) — the symmetric cousin of monitors.
     `(link remote-pid)` ships a `Frame::Link`; each node keeps its half in
     `links::REMOTE_LINKS` (`local_pid → (node, remote_pid)`). A linked process's

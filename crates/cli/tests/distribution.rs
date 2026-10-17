@@ -1721,11 +1721,12 @@ fn remote_spawn_sync_returns_a_usable_remote_pid() {
 /// canonical text and is re-parsed on the far heap); a call that crashes the remote server
 /// raises promptly with the server's reason — the thrown map, as a `catch` there would have
 /// bound it — through the cross-node monitor `gen/call` holds; and a call to the dead pid
-/// raises `:noproc` rather than waiting out its deadline. A remote `{:name :node}` address
-/// cannot be monitored (`docs/primitives.md`), so the client asks a directory process for
-/// the pid first.
+/// raises `:noproc` rather than waiting out its deadline. Then the same by registered name
+/// (`{:name :node}`, resolved by the peer for the monitor `gen/call` holds), plus a monitor of
+/// an unregistered remote name (`:noproc`), a demonitored one (silent) and one on a node
+/// that is not connected (`:noconnection`).
 #[test]
-fn gen_call_round_trips_across_nodes_and_reports_a_remote_crash() {
+fn gen_call_round_trips_across_nodes_by_pid_and_by_name() {
     let _g = port_lock();
     let dir = std::env::temp_dir().join(format!("brood-dist-gencall-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -1739,6 +1740,7 @@ fn gen_call_round_trips_across_nodes_and_reports_a_remote_crash() {
   (call [:add x] (let (t (+ total x)) [[t (type-of t)] t]))
   (call :crash (throw {{:kind :ledger-crash :total total}})))
 (gen/start-named :ledger ledger 0)
+(gen/start-named :ledger2 ledger 0)
 (defn directory () (receive ([:where who] (send who [:ledger-at (proc/whereis :ledger)]) (directory))))
 (proc/register :directory (spawn (directory)))
 (receive (:never :x))
@@ -1766,6 +1768,22 @@ fn gen_call_round_trips_across_nodes_and_reports_a_remote_crash() {
 (def gone (try (gen/call-timeout server [:add 1] 20000) (catch e (error-message e))))
 (unless (includes? gone ":noproc")
   (throw (str "a call to the dead server did not raise :noproc: " gone)))
+;; By registered name: the peer resolves a name address for the monitor `gen/call` holds.
+(def named {{:name :ledger2 :node :a@127.0.0.1}})
+(expect "by name" (gen/call named [:add 1/2]) [1/2 :ratio])
+(def named-crash (try (gen/call named :crash) (catch e (error-message e))))
+(unless (includes? named-crash ":ledger-crash")
+  (throw (str "a call by name did not report the crash: " named-crash)))
+(def named-gone (try (gen/call-timeout named [:add 1] 20000) (catch e (error-message e))))
+(unless (includes? named-gone ":noproc")
+  (throw (str "a call by name to a dead server did not raise :noproc: " named-gone)))
+(def nobody (monitor {{:name :nobody :node :a@127.0.0.1}}))
+(expect "unregistered name" (receive ([:down ^nobody _ r] r) (after 30000 :no-down)) :noproc)
+(def dropped (monitor {{:name :directory :node :a@127.0.0.1}}))
+(demonitor dropped)
+(expect "demonitored" (receive ([:down ^dropped _ r] r) (after 300 :quiet)) :quiet)
+(def unreachable (monitor {{:name :directory :node :c@127.0.0.1}}))
+(expect "unreachable node" (receive ([:down ^unreachable _ r] r) (after 30000 :no-down)) :noconnection)
 (io/puts "GEN-CALL-ACROSS-NODES-OK")
 "#
     );

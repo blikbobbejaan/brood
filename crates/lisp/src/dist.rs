@@ -651,6 +651,26 @@ pub(crate) fn monitor_remote(target_node: Symbol, target_pid: u64, watcher_pid: 
     }
 }
 
+/// `(monitor {:name n :node target_node})`: [`monitor_remote`] for a process registered
+/// under `name` on the peer, which resolves it on arrival (`Frame::MonitorName`). The pid
+/// is not known here, so the pending entry and an unreachable `:noconnection` name the
+/// placeholder pid `u64::MAX` — the one a local `monitor` of an unregistered name fires
+/// `:noproc` for. A resolved monitor's DOWN carries the real pid.
+pub(crate) fn monitor_remote_name(target_node: Symbol, name: Symbol, watcher_pid: u64, mref: u64) {
+    process::record_pending_remote(target_node, u64::MAX, watcher_pid, mref);
+    let sent = send_frame(
+        target_node,
+        &Frame::MonitorName {
+            watcher_pid,
+            name,
+            mref,
+        },
+    );
+    if !sent {
+        process::fire_noconnection_if_pending(target_node, u64::MAX, watcher_pid, mref);
+    }
+}
+
 /// `(demonitor mref)` for a monitor that was set up against a remote pid:
 /// ship a `Frame::Demonitor` and forget the pending entry locally. Best
 /// effort, like the local demonitor — the peer drops the matching watcher
@@ -1773,6 +1793,21 @@ fn handle_inbound_frame(peer: Symbol, frame: Frame) {
             mref,
         } => process::add_monitor(
             target,
+            process::Watcher::Remote {
+                node: peer,
+                pid: watcher_pid,
+                mref,
+            },
+        ),
+        // The same for a process registered under `name` here: resolve it now, and an
+        // unregistered name watches the placeholder pid, which fires `:noproc` at once —
+        // the local `monitor`'s behaviour for an unregistered name.
+        Frame::MonitorName {
+            watcher_pid,
+            name,
+            mref,
+        } => process::add_monitor(
+            whereis(name).unwrap_or(u64::MAX),
             process::Watcher::Remote {
                 node: peer,
                 pid: watcher_pid,

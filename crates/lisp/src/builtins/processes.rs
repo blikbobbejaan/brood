@@ -519,10 +519,8 @@ pub(super) fn monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             Ok(Value::ref_(mref))
         }
         // `{:name n :node node}` address: resolve to a pid via `proc/whereis` and
-        // monitor that pid. Only the local-node case is supported — a remote
-        // `{:name :node}` address has no protocol to resolve the name on the
-        // far side at monitor time, so we redirect the user to ship the pid
-        // directly. Documented in `docs/primitives.md`.
+        // monitor that pid; on another node the peer resolves it on arrival
+        // (`dist::monitor_remote_name`). Either way an unregistered name fires `:noproc`.
         Value::Map(mid) => {
             // `read_name_address` is shared with `send` and hardcodes a `send:` prefix
             // in its two shape errors, so `(monitor {:oops 1})` reported "send: name
@@ -546,9 +544,9 @@ pub(super) fn monitor(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
                     None => Ok(crate::process::monitor(u64::MAX)),
                 }
             } else {
-                Err(LispError::type_err(
-                    "monitor: remote {:name :node} addresses aren't resolvable for monitor — pass the pid",
-                ))
+                let mref = crate::process::next_ref();
+                crate::dist::monitor_remote_name(node, name, crate::process::self_pid(), mref);
+                Ok(Value::ref_(mref))
             }
         }
         _ => Err(LispError::type_err(

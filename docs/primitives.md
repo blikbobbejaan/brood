@@ -186,7 +186,7 @@ arg silently becoming `nil`.
 | | `%receive` | 4 | selective-receive primitive: matcher fn, timeout-ms-or-nil, clause **tag** vector-or-nil (the leading-keyword pre-filter, ADR-178), and the **pin** value-or-nil (the receive-mark hint — the ref every clause pins, when they all pin the same one, ADR-195). `receive` is a Brood macro over it, and derives both hints at expansion time. (The old entry said the third argument was an on-timeout thunk; it has been the tag filter for some time.) |
 | | `self` | 0 | this process's pid |
 | | `ref` | 0 | a fresh, globally-unique reference token (`Value::Ref`); tags request↔reply |
-| | `monitor` | 1 | watch a pid (local or remote); returns a monitor ref. Delivers `[:down ref pid reason]` on death (`:noproc` if already dead; `:noconnection` if a remote peer's link drops) |
+| | `monitor` | 1 | watch a pid (local or remote) or a `{:name n :node node}` address (resolved on that node, ADR-411); returns a monitor ref. Delivers `[:down ref pid reason]` on death (`:noproc` if already dead; `:noconnection` if a remote peer's link drops) |
 | | `demonitor` | 1 | drop a monitor by its ref (best-effort; remote demonitor is fanned out to the holding peer) |
 | | `exit` | 2 | `(exit pid reason)` — send an exit signal to a local process (Erlang `exit/2`). `:kill` is the untrappable hard kill (dies at its next reduction tick, or now if parked); any other reason is the soft signal (dies at its next `receive`). Monitors fire `[:down ref pid reason]`. No-op for a dead/unknown pid (ADR-063) |
 | | `proc/register` | 2 | bind a local name → pid so peers can address it via `{:name n :node this-node}`. Returns the pid |

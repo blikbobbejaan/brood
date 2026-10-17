@@ -641,3 +641,25 @@ fn exact_numbers_cross_the_wire_into_another_heap() {
         crate::syntax::printer::print(&sender.heap, sent)
     );
 }
+
+#[test]
+fn monitor_name_roundtrips() {
+    // The name crosses as a NAME and is re-interned on decode, like a `Send` target.
+    let f = Frame::MonitorName {
+        watcher_pid: 9,
+        name: value::intern("ledger"),
+        mref: 1 << 40,
+    };
+    match read_full(&f) {
+        Frame::MonitorName {
+            watcher_pid,
+            name,
+            mref,
+        } => {
+            assert_eq!(watcher_pid, 9);
+            assert_eq!(value::symbol_name(name), "ledger");
+            assert_eq!(mref, 1 << 40);
+        }
+        _ => panic!("wrong frame"),
+    }
+}

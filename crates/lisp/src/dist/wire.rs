@@ -94,6 +94,16 @@ pub(super) enum Frame {
         target: u64,
         mref: u64,
     },
+    /// [`Frame::Monitor`] for a process REGISTERED under `name` on the receiver
+    /// (`(monitor {:name n :node peer})`, which `gen/call` makes): the receiver resolves the
+    /// name at arrival and watches that pid, or — unregistered — fires `:noproc` at once,
+    /// exactly as a local `monitor` of an unregistered name does. The name is resolved
+    /// once; a later re-registration is a different process, as in Erlang.
+    MonitorName {
+        watcher_pid: u64,
+        name: Symbol,
+        mref: u64,
+    },
     /// Drop the matching remote watcher (best effort; identified by the
     /// authenticated peer node + pid + mref). Goes through `process::drop_monitor`,
     /// the same dropper local `demonitor` uses.
@@ -154,6 +164,7 @@ const FRAME_UNLINK: u8 = 8;
 const FRAME_EXIT: u8 = 9;
 const FRAME_PEERS: u8 = 10;
 const FRAME_DOWN: u8 = 11;
+const FRAME_MONITOR_NAME: u8 = 12;
 const TARGET_PID: u8 = 0;
 const TARGET_NAME: u8 = 1;
 
@@ -311,6 +322,16 @@ fn encode_frame(w: &mut Vec<u8>, frame: &Frame) -> io::Result<()> {
             w.extend_from_slice(&target.to_be_bytes());
             w.extend_from_slice(&mref.to_be_bytes());
         }
+        Frame::MonitorName {
+            watcher_pid,
+            name,
+            mref,
+        } => {
+            w.push(FRAME_MONITOR_NAME);
+            w.extend_from_slice(&watcher_pid.to_be_bytes());
+            put_sym(w, *name);
+            w.extend_from_slice(&mref.to_be_bytes());
+        }
         Frame::Demonitor { watcher_pid, mref } => {
             w.push(FRAME_DEMONITOR);
             w.extend_from_slice(&watcher_pid.to_be_bytes());
@@ -388,6 +409,11 @@ pub(super) fn decode_frame(r: &mut Cursor<Vec<u8>>) -> io::Result<Frame> {
         FRAME_MONITOR => Ok(Frame::Monitor {
             watcher_pid: get_u64(r)?,
             target: get_u64(r)?,
+            mref: get_u64(r)?,
+        }),
+        FRAME_MONITOR_NAME => Ok(Frame::MonitorName {
+            watcher_pid: get_u64(r)?,
+            name: get_sym(r)?,
             mref: get_u64(r)?,
         }),
         FRAME_DEMONITOR => Ok(Frame::Demonitor {
