@@ -2250,3 +2250,17 @@ it back. None of this was covered for *native* loops before; the existing hot-re
 interpreted ones. It is now: `tests/hot_reload_test.blsp` "hot reload reaches native receive
 loops", 4 tests, green on tiers 0–2 and 24/24 under 8-way load. Sabotaging the `SelfCall` guard
 reddens three of them on both VM tiers.
+
+## 2026-10-17 — a receive loop that parks on every message never went native (fixed)
+
+Found by GC stress on `tests/receive_loop_jit_test.blsp`, where `acc-loop` read `:untried` after
+3 000 messages in one run of four. The tier threshold counts entries at ip 0, plus a bonus for a
+back-edge exit. An interpreted receive loop parked at its `%receive` call, mid-arm, so a loop
+that parks on every message (a lightly loaded server: the common case) counted one back edge per
+wake and never got hot. The bursts in the tests and benchmarks hid it. The fix is the
+interpreter's park at ip 0 for receive-at-head arms, which yesterday's entry removed as "a guard
+that could not fail". It could; the traffic just never exercised it. Guard: "a loop that parks
+on EVERY message still goes native", with a loop function no other test warms. It is red
+without the fix (`:untried` after 400 one-at-a-time messages). Also added: a native loop killed
+while parked reports `:killed` to its monitor, and one whose linked peer dies exits too.
+Tiers 0–2 green; GC stress ×3 clean on both new test files.

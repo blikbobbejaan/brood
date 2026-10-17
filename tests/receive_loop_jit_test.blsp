@@ -21,6 +21,13 @@
     ([:get from] (do (send from [:total total]) (acc-loop total)))
     (:stop total)))
 
+;; `acc-loop`'s twin, used by one test only, so nothing else warms it.
+(defn lonely-loop (total)
+  (receive
+    ([:add n] (lonely-loop (+ total n)))
+    ([:get from] (do (send from [:total total]) (lonely-loop total)))
+    (:stop total)))
+
 (defn ask-total (pid)
   (send pid [:get (self)])
   (receive ([:total t] t) (after 20000 :timeout)))
@@ -124,6 +131,46 @@
       (when (%native-tier?)
         (assert= :native (tier-of acc-loop 1 500)))
       (send pid :stop)))
+  (test "a loop that parks on EVERY message still goes native"
+    ;; One message at a time, each answered before the next is sent, so the loop parks
+    ;; between every pair — the usual traffic of a lightly loaded server. Each interpreted
+    ;; park must leave the frame at ip 0, where the resume counts toward the tier
+    ;; threshold; parked mid-arm, it never gets hot.
+    ;; Its own loop function: the other tests make `acc-loop` hot with bursts.
+    (let (pid (spawn (lonely-loop 0)))
+      (dotimes (k 400)
+        (send pid [:add 1])
+        (ask-total pid))
+      (assert= 400 (ask-total pid))
+      (when (%native-tier?)
+        (assert= :native (tier-of lonely-loop 1 500)))
+      (send pid :stop)))
+  (test "a native loop killed while parked dies, and its monitor hears of it"
+    (warm-acc-loop)
+    (let (pid-ref (spawn-monitor (acc-loop 0))
+          pid (first pid-ref))
+      (send pid [:add 1])
+      (assert= 1 (ask-total pid))
+      (sleep 20)
+      (exit pid :kill)
+      (assert= :killed (receive ([:down _ _ reason] reason) (after 20000 :timeout)))
+      (assert= nil (proc/info pid))
+      (when (%native-tier?)
+        (assert= :native (tier-of acc-loop 1 500)))))
+  (test "a native loop parked when its linked peer dies exits too"
+    (warm-acc-loop)
+    (let (me (self)
+          peer (spawn (let (loop (spawn (acc-loop 0)))
+                        (link loop)
+                        (send me [:loop loop])
+                        (receive (:die (throw "boom")))))
+          loop (receive ([:loop l] l) (after 20000 nil))
+          ref (monitor loop))
+      (assert= 0 (ask-total loop))
+      (sleep 20)
+      (send peer :die)
+      (assert= false (nil? (receive ([:down ^ref _ reason] reason) (after 20000 nil))))
+      (assert= nil (proc/info loop))))
   (test "the state carried across parks is exact"
     (let (pid (spawn (acc-loop 0)))
       (dotimes (k 500)

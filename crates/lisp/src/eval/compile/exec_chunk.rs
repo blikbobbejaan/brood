@@ -878,6 +878,17 @@ pub(crate) fn exec_chunk(
                             // them back. Hand the driver a `Suspend` to capture the
                             // continuation. Default-off builds never produce the signal.
                             *ip -= 1;
+                            // An arm that receives at its head (ADR-410) parks at ip 0
+                            // instead, its operands dropped: everything before the `%receive`
+                            // is a load, so the re-run is the same. A resume at ip 0 is an
+                            // ENTRY — it counts toward the tier threshold and re-tiers once
+                            // the arm is native — so a loop that parks on every message (a
+                            // lightly loaded server) still gets hot. Parked mid-arm, its only
+                            // count would be one back edge per wake, and it never would.
+                            if arm.receive_at_head {
+                                *ip = 0;
+                                heap.truncate_roots(base + arm.nslots);
+                            }
                             let deadline = match &e.control {
                                 Some(crate::error::Control::Suspend { deadline }) => *deadline,
                                 Some(crate::error::Control::Kill) | None => None,
