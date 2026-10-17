@@ -72,6 +72,14 @@ jobs:
       - name: make gcstress
         run: make gcstress
 
+      # The twelve files above are where values cross heaps, but a handle held across a
+      # collection is not confined to them: any builtin that allocates twice can strand the
+      # first allocation. This is every tests/*_test.blsp under the same flags (~12
+      # CPU-minutes; ~80 s on a 12-core box), which is why it is here and not per push.
+      - name: make gcstress-all (every test file)
+        if: always()
+        run: make gcstress-all LOGS=/tmp/gcstress-all JOBS=2
+
       # The target writes a per-file log and prints only the first few lines of a
       # failure; keep the whole thing, because a use-after-GC report is a path through
       # the heap graph and the interesting part is rarely in the first five lines.
@@ -80,7 +88,9 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: gcstress-logs
-          path: /tmp/gcstress.*.log
+          path: |
+            /tmp/gcstress.*.log
+            /tmp/gcstress-all/
           if-no-files-found: warn
 
   # The manual gates. A gate nobody runs reports nothing, so these rotted silently for
@@ -113,6 +123,44 @@ jobs:
           name: stress-fuzz-seeds
           path: stress/fuzz_out/
           if-no-files-found: warn
+
+  # The tier audit: every benchmark row under BROOD_JIT_BAIL_TRACE, failing on an arm that
+  # lowered and then could not stay native (a deopt-thrash or suspend latch) or a lowering
+  # bug (KI-132's class). Every per-push gate is a VALUE gate and these produce the right
+  # answer slowly, so nothing else here can see one. A value gate too, not a timing one, so a
+  # shared runner is fine — unlike `make latency-gate`, which is a benchmark-box gate
+  # (docs/benchmarking.md) and runs in `make green-all` instead.
+  tier-audit:
+    name: tier audit (every hot benchmark arm stays native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The rows live in their own (public) repository; checked out inside the workspace,
+      # since actions/checkout refuses a sibling path, and named with BENCH_DIR.
+      - uses: actions/checkout@v7
+        with:
+          repository: broodlang/brood-benchmarks
+          path: brood-benchmarks
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # The audit greps for BAD lines, so it passes vacuously on a missing checkout (which
+      # it reports as "skipped", exit 0) and on a binary that never reaches the native tier.
+      # Both are asserted first.
+      - name: make tier-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -d "$GITHUB_WORKSPACE/brood-benchmarks/bench/brood" \
+            || { echo "::error::no benchmark rows checked out"; exit 1; }
+          make release-brood
+          echo '(io/puts (%native-tier?))' > native-tier.blsp
+          [ "$(target/release-fast/brood native-tier.blsp)" = "true" ] \
+            || { echo "::error::the audited brood has no native tier"; exit 1; }
+          make tier-audit BENCH_DIR="$GITHUB_WORKSPACE/brood-benchmarks" | tee tier-audit.log
+          grep -q "every hot arm stayed native" tier-audit.log
 
   # KI-88 (a spawn never scheduled) and KI-127 (an autoload fan hung) were never root-caused
   # and sit behind watchdogs. This boots the concurrency soak fresh for 30 minutes — first

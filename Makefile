@@ -113,10 +113,10 @@ SYMBOLS_DIR := target/$(TARGET_SUBDIR)release-symbols
 # fails on one.
 .PHONY: ab ab-clean ab-pin ab-vm asan benchmark breakagetests build check check-corpora \
 	check-cost check-examples check-imaged check-stress clean clippy configure doctor \
-	enable-perf-check ensure-nextest fmt fuzz gcstress green green-all help hooks install \
+	enable-perf-check ensure-nextest fmt fuzz gcstress gcstress-all green green-all help hooks install \
 	install-features \
 	latency-gate loom perf-brood perf-symbols prepush quickbench release release-brood repl \
-	runtime-soak smoke-bedit stress suite test test-both test-light tier-audit tsan \
+	runtime-soak smoke-bedit stress suite test test-both test-contracts test-light tier-audit tsan \
 	uninstall wasm-test
 
 help: ## Show this help
@@ -259,6 +259,14 @@ gcstress: ## Run the concurrency/mailbox tests with GC_STRESS+GC_VERIFY armed �
 	if [ $$fail -ne 0 ]; then echo ">>> gcstress: FAILURES above"; exit 1; fi; \
 	echo ">>> gcstress: all clean"
 
+gcstress-all: ## EVERY tests/*_test.blsp under GC_STRESS+GC_VERIFY (debug build, ~80 s at -P 6) — `gcstress` widened past the twelve process/mailbox files. Nightly + green-all, not per push
+	cargo build -p cli -p nest
+	@./scripts/gcstress-all.sh
+
+test-contracts: ## The in-language suite with every `sig` armed as a runtime contract — what `nest test` users get (ADR-381); `make test`'s wrapper runs it unarmed to stay inside its 5-min budget
+	cargo build --release -p cli -p nest
+	@./scripts/test-contracts.sh
+
 breakagetests: ## Run the aggressive `breakage/` stress suite (JIT on, GC tripwire armed) — try to break the JIT/VM/memory. NOT part of `make test`.
 	# These are deliberately abusive tests that live OUTSIDE tests/ (so neither
 	# `make test` nor `nest test` ever discovers them) and try to make the JIT
@@ -332,9 +340,9 @@ green: ## Answer one question honestly: is this tree green? (completed CI runs +
 	# `--local` skips the CI half, `--remote` skips the local half.
 	@./scripts/green.sh $(ARGS)
 
-green-all: check-examples check-stress check-imaged smoke-bedit tier-audit wasm-test ## `make green` plus clippy (CI's flags), the two slow .blsp corpus gates, the bedit smoke, the tier audit and the wasm behavioural suite
+green-all: check-examples check-stress check-imaged smoke-bedit tier-audit wasm-test test-contracts gcstress-all latency-gate ## `make green` plus clippy (CI's flags), the two slow .blsp corpus gates, the bedit smoke, the tier audit, the wasm behavioural suite, the suite with contracts armed, every test file under GC stress, and the latency gate
 	@./scripts/green.sh --clippy
-	@echo "green-all: clippy, the .blsp gates, the bedit smoke, the tier audit and the wasm suite passed too. Still not run: make test, breakage, tree-walker differential."
+	@echo "green-all: clippy, the .blsp gates, the bedit smoke, the tier audit, the wasm suite, the armed-contract suite, the whole-suite GC stress and the latency gate passed too. Still not run: make test, breakage, tree-walker differential."
 
 tier-audit: release-brood ## Every benchmark row under BROOD_JIT_BAIL_TRACE — fail on any arm latched off the native tier or any lowering bug (KI-132's class)
 	# Every other gate is a value gate, and the KI-132 class is right-but-slow: an arm that

@@ -575,6 +575,28 @@ jobs:
           grep -hoE '^  FAIL +.*' examples.log | sort -u | head -25 \
             | while IFS= read -r line; do echo "::error::examples:$line"; done || true
 
+  # The in-language suite with every `sig` ARMED as a runtime contract (ADR-381) — what each
+  # `nest test` and `nest run` user gets. The `test` job runs the same suite through its cargo
+  # wrapper with contracts off, because armed it costs twice the CPU and that wrapper has a
+  # five-minute local budget; so without this job a contract shim that breaks a caller, or a
+  # test that only passes unarmed, went red for users and nowhere here. Its own job, in
+  # parallel with `test`, so it adds no wall-clock to the per-push answer.
+  contracts-armed:
+    name: suite with contracts armed (nest test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build brood + nest
+        run: cargo build --release -p cli -p nest
+
+      - name: nest test over the repo (BROOD_CONTRACTS=1)
+        run: ./scripts/test-contracts.sh
+
   # DOWNSTREAM smoke: bedit (github.com/broodlang/bedit) against the brood under test.
   #
   # bedit is the largest program written in the language that does not live in this repo,
