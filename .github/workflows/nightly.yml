@@ -156,8 +156,10 @@ jobs:
           test -d "$GITHUB_WORKSPACE/brood-benchmarks/bench/brood" \
             || { echo "::error::no benchmark rows checked out"; exit 1; }
           make release-brood
-          echo '(io/puts (%native-tier?))' > native-tier.blsp
-          [ "$(target/release-fast/brood native-tier.blsp)" = "true" ] \
+          # `system/features`, not `%native-tier?`: the audited build is the lean release one,
+          # which has no dev-tools primitives. Nothing in this job lowers the BROOD_TIER ceiling.
+          echo '(io/puts (pr-str (system/features)))' > features.blsp
+          target/release-fast/brood features.blsp | grep -q ':jit' \
             || { echo "::error::the audited brood has no native tier"; exit 1; }
           make tier-audit BENCH_DIR="$GITHUB_WORKSPACE/brood-benchmarks" | tee tier-audit.log
           grep -q "every hot arm stayed native" tier-audit.log

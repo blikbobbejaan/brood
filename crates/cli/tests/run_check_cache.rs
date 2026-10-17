@@ -38,10 +38,19 @@ impl Sandbox {
     fn cache_home(&self) -> PathBuf {
         self.dir.join("cache")
     }
+    /// The verdict entries — not the dot-files beside them (the sweep's `.pruned` stamp, a
+    /// write's `.<pid>.tmp`), which are the cache's bookkeeping.
     fn entries(&self) -> Vec<PathBuf> {
         let d = self.cache_home().join("brood").join("run-check");
         match std::fs::read_dir(&d) {
-            Ok(rd) => rd.flatten().map(|e| e.path()).collect(),
+            Ok(rd) => rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    !p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+                })
+                .collect(),
             Err(_) => Vec::new(),
         }
     }
