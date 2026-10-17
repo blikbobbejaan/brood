@@ -2316,3 +2316,30 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
   runs on a shared runner. The nightly job asserts the benchmark checkout and a native tier
   first, because the script passes on a missing checkout and on a JIT-less binary. The latency
   gate measures p99, which a shared runner cannot hold (docs/benchmarking.md), so it stays local.
+
+## 2026-10-17 (later) — `gen/call` by name across nodes (ADR-411); CI and nightly back to green
+
+- **ADR-411:** `monitor` takes a remote `{:name :node}` address. A `Frame::MonitorName` is
+  resolved by the peer on arrival; an unregistered name fires `:noproc` through the same
+  placeholder pid the local path uses. `gen/call` by name across nodes works, with its crash
+  reason and a later `:noproc`. Guard extended:
+  `gen_call_round_trips_across_nodes_by_pid_and_by_name`, red with the receiver ignoring the name.
+- **CI `cargo-deny`** had gone red on a dependency yanked upstream (`inout` 0.2.3 -> 0.2.4).
+- **Nightly ASAN** had been red for three nights: `callback_table_tests` scanned source text and
+  so expected the two `brood_rt_dbg_*` callbacks, which exist only under `debug_assertions`, in
+  a build without them. Its abort hid every later ASAN binary. The other nightly red of those
+  three nights (`stream_test` "->socket drains a stream", a reader timeout) was KI-269 on a
+  commit before its fix.
+- `Value::raw_tag`, read only by debug tripwires and a test, is compiled only there: release
+  builds no longer warn about it.
+- **KI-271 fixed.** The distribution test's 20 s listen stall was the run-check verdict cache:
+  swept on every miss (108 173 entries, 108 197 `statx` per miss), and concurrent sweeps deleting
+  week-old batches held every booting `brood` in `D:open_last_lookups`. The sweep now runs hourly,
+  claimed atomically by one process, and bounds the cache to 10 000 entries. Reproduced on demand
+  before (30 concurrent misses, max 40.6 s with a racy first fix) and measured after (max 1.72 s
+  for the one-time trim, 0.49 s mean steady). No KI is open.
+- **Three more nightly-ASAN reds** sat behind the callback-table abort, all test bugs of the
+  single-process `cargo test` the ASAN job uses: three JIT tier-up waits gave a flat 60 s while
+  ~1 000 sibling tests shared the one background compiler (`wait_for_tier` now stops the clock
+  while a compile is queued), and the KI-248 allocator test stored a real 512 MiB hard limit, so
+  a sibling holding 1 GiB aborted the process (it drives the pure `hard_verdict` now).

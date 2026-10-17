@@ -14123,3 +14123,30 @@ decimal in it, a contract violation, a built-in error and a thrown string);
 `cli::distribution gen_call_round_trips_across_nodes_and_reports_a_remote_crash`, which reads
 the remote server's reason through its own monitor. With `error_reason` restored at the retire
 site, the contract test and the distribution test red (`:kind` read `:user`); restored, green.
+
+## KI-271 — a distribution test's server did not listen within 20 s under peak suite load ✅ FIXED 2026-10-17
+
+**Symptom.** `cli::distribution a_delivered_remote_monitor_does_not_fire_again_on_node_down`
+failed on its first try in `make test-both` (2026-10-16): `server never started listening on port
+12384`, `loadavg: 20.79`. It passed on retry, and 858 later runs did not reproduce it.
+**Cause.** The run-check verdict cache. `brood file` caches its pre-flight verdict in
+`~/.cache/brood/run-check/<hash>`, and every MISS ran `run_check_cache_prune`: a sweep of the whole
+directory, deleting entries older than a week. A test suite misses on every fresh temp script, so
+the directory had reached 108 173 entries (427 MB). Each miss made 108 197 `statx` calls, and the
+sweeps that found a batch past a week old deleted thousands of files while every other booting
+`brood` waited to open its own entry. The stall report says exactly this: each live `brood` in `D`
+state, `open_last_lookups` or `__lock_buffer`, with 10-40 ms of CPU — booting, not computing.
+**Why it survived.** It needs a large cache and concurrent misses, and the cache grows across
+days of runs; the load average pointed at CPU contention (KI-38's shape), and the retry passed. The
+diagnostic that had been armed for KI-38 is what named it.
+**Fix.** The sweep runs at most once an hour per cache: a `.pruned` stamp, claimed atomically
+(`create_new`, or a rename of the expired stamp that only one process wins), so one process
+sweeps and the rest pay one `stat`. The sweep also trims the cache to its newest 10 000 entries.
+The first version of the fix checked the stamp and then wrote it; all thirty of thirty
+concurrent misses got through, and thirty processes deleting the same 98 000 files held every
+boot for 20-40 s (max 40.6 s), which reproduces the original symptom on demand.
+**Guard.** `cli_support::run_check_cache_tests`: `the_prune_sweeps_at_most_once_per_interval`,
+`the_prune_bounds_the_entry_count_keeping_the_newest`, `exactly_one_concurrent_miss_claims_the_sweep`
+(16 threads; red 3/3 with the check-then-write claim). Measured: 30 concurrent misses over a
+100 000-entry cache, max 1.72 s for the one-time trim and 0.49 s mean after it (old code: 1.24 s
+mean at 108 000 entries).

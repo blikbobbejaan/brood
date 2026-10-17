@@ -107,11 +107,14 @@ reason dropped what the process threw). The standard suite (`make test`) stays i
   native tier asserted first so it cannot pass vacuously. **`latency-gate`** joins `green-all`
   only: it is a benchmark-box gate, and a shared runner's p99 means nothing (benchmarking.md).
 
-**Found and NOT done, the user's call:** `gen/call` (and `monitor`) on a remote `{:name :node}`
-address. `monitor` refuses it ("pass the pid", `docs/primitives.md`), so a call to a server
-registered by name on another node fails at once; Erlang's `gen_server:call({Name, Node}, …)`
-works. Needs a wire frame that resolves the name on the far side, and `:noconnection` for a
-monitor whose pid is not known yet. ROADMAP "Still open".
+**No KI is open** (KI-271 fixed: the run-check cache sweep, see known-issues). The nightly is
+green again: cargo-deny (a yanked crate), and ASAN, whose job now runs through nextest
+(`make asan`, profile `asan`) because `cargo test`'s one shared process broke tests written for
+process-per-test.
+
+**Found and then done:** `monitor` on a remote `{:name :node}` address refused ("pass the pid"),
+so `gen/call` by name across nodes failed at once. ADR-411 adds `Frame::MonitorName`, resolved by
+the peer; guard `gen_call_round_trips_across_nodes_by_pid_and_by_name`.
 
 ### DONE (2026-10-16): `exec_value`, the VM's second executor, is retired
 
