@@ -2354,4 +2354,8 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
   compute-loop case joins it.
 - **`any?`'s no-deopt guard** (`jit_eq_join_test`) counted the shared prelude arm's lifetime
   deopts, which siblings legitimately add (the nightly ASAN run read 1); it counts its own drive.
+- **KI-275 fixed:** an edited `include-str` file did not make the project image stale. Found
+  closing the last bedit smoke failure, which was two Elixir 1.21-dev differences in bedit's
+  agent (an ANSI-coloured `dbg` header; checker chunk `v9`). Both are fixed in bedit, and the
+  smoke is 2464/2464 locally; brood's pin moves with it.
 

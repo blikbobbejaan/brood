@@ -453,3 +453,32 @@ fn an_imaged_start_terminates_on_a_require_cycle() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// KI-275: a file a module splices in with `include-str` is part of what the image holds,
+/// so editing it must make the image stale. The staleness key covered the project's
+/// SOURCES only, and an imaged run went on serving the old text: bedit's Elixir agent
+/// (`(include-str "elixir/bedit_agent.exs")`) kept running a fix's previous version until
+/// some `.blsp` happened to change.
+#[test]
+fn an_edited_include_str_file_makes_the_image_stale() {
+    let dir = scratch("include");
+    std::fs::create_dir_all(dir.join("priv")).unwrap();
+    write(&dir, "project.blsp", "(project\n  :name demo\n  :main app)\n");
+    write(&dir, "priv/greeting.txt", "hello");
+    write(
+        &dir,
+        "src/app.blsp",
+        "(defmodule app)\n\
+         (def *greeting* (include-str \"priv/greeting.txt\"))\n\
+         (defn main () (io/puts (str \"GREETING: \" *greeting*)))\n",
+    );
+    assert!(nest_run(&dir).contains("GREETING: hello"));
+    assert!(nest_run(&dir).contains("GREETING: hello"), "the imaged run");
+    write(&dir, "priv/greeting.txt", "goodbye, and a longer line");
+    let third = nest_run(&dir);
+    assert!(
+        third.contains("GREETING: goodbye, and a longer line"),
+        "an imaged run served the old included text:\n{third}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

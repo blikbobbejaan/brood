@@ -110,6 +110,16 @@ release run from a subdirectory resolved every embedded file against the wrong p
                    (file/cwd)))
         (if (string/ends-with? base "/") (/str base rel) (/str base "/" rel)))))
 
+;; Every file an `include-str` read in this runtime, as `{path true}`. A cached project image
+;; holds what a module built from that text, so its staleness key has to cover these files as
+;; well as the sources (KI-275); `project-image` reads them through [[%included-files]]. A
+;; registry, so the write goes through `%registry-update!`, the registry write path.
+(def- *included-files* {})
+
+(defn %included-files ()
+  "The absolute paths every `include-str` in this runtime has read, sorted."
+  (sort (keys *included-files*)))
+
 (defmacro include-str (rel)
   "Splice the contents of the file at `rel` into the program as a string literal, read
 at expansion time — `rel` relative to the project root (see [[%include-str-path]]).
@@ -131,6 +141,7 @@ be asserted lives in `tests/project_test.blsp`.)"
   (let (path (%include-str-path rel))
     (unless (file/exists? path)
       (error "include-str: no file at " path))
+    (%registry-update! '*included-files* :assoc [path] true)
     (file/slurp path)))
 
 ;; ---- threading macros (demonstrate that macros compute at expansion time) ----

@@ -14176,3 +14176,24 @@ A rebind is now observed within one batch, the guard's documented contract.
 inside the clause; allows one batch on the old body) and "a running native self-loop picks up
 a redefinition of itself" (a loop that would run for hours returns once redefined). Both red
 3/3 without the fix; green 3/3 with it, and on `BROOD_TIER=0`.
+
+## KI-275 — an edit to a file read by `include-str` did not make the project image stale ✅ FIXED 2026-10-17
+
+**Symptom.** bedit's `elixir_playground_test` kept failing on an assertion an edit of
+`elixir/bedit_agent.exs` had just fixed, and debug probes added to that file never ran. The agent
+is spliced in with `(def *agent-source* (include-str "elixir/bedit_agent.exs"))`; touching the
+`.blsp` that includes it made the next run use the edit at once (84/84). Repro:
+`nest::startup_image an_edited_include_str_file_makes_the_image_stale` — run, run (imaged), edit
+the included file, run: the third run printed the old text.
+**Cause.** The project startup image (ADR-218) holds what each module built, including the
+string an `include-str` produced at expansion, but its staleness key (`fingerprint-of`) covered
+only the project's source files and its dependencies' files. An included file is neither.
+**Why it survived.** `include-str`'s tests check the splice and `nest release`'s inlining, each
+in one process; none ran a project twice through the image with an edit in between.
+**Fix.** `include-str` records each path it reads (`%registry-update! '*included-files*`). An
+image write saves the list beside the image (`.brood/image.includes`), before it takes the
+fingerprint; `fingerprint-of` adds each listed file's size and mtime, or `:missing`. The list
+has to be a file: the key is checked before anything loads. `nest check`'s whole-project replay
+uses the same key, so it follows an included file too.
+**Guard.** `nest::startup_image an_edited_include_str_file_makes_the_image_stale`; red with the
+included files dropped from the key, green restored.

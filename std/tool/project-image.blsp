@@ -8,6 +8,12 @@ takes; everything else is the mechanism behind it.")
 
 (def *project-image-file* ".brood/image.bin")
 
+;; The files the modules in the image spliced in with `include-str`, one absolute path per
+;; line, written beside the image. Part of the staleness key (KI-275): the image holds what
+;; a module built from that text, and a `.blsp`-only key served the old text after an edit.
+;; Read before anything loads — which is why it is a file, not something the image carries.
+(def- *project-image-includes-file* ".brood/image.includes")
+
 ;; A registry global is one that LOADING mutates rather than creates — `*impls*`,
 ;; `*methods*`, `*module-docs*`, … They already exist after the prelude, so the "names that
 ;; appeared" diff below cannot see them, and an image without them is silently wrong.
@@ -73,11 +79,26 @@ come from `*module-files*`).
   ;; so the source-tree walk alone cannot see one change, and an imaged start would go on
   ;; serving the old code. They come from `*module-files*`, which `setup`
   ;; populates before any fingerprint is taken, on the cold and warm paths alike.
+  ;;
+  ;; INCLUDED files count for the same reason (KI-275): the image holds what a module built
+  ;; from their text. The list is the one the last image write recorded; a missing one is
+  ;; listed as missing, which changes the key just as an edit does.
   (str (system/build-id)
     "\n"
-    (string/join (map (append files (project-dep-module-files))
-                   (fn (f) (str f ":" (file/size f) ":" (file/mtime f))))
+    (string/join (map (append files (project-dep-module-files) (project-included-files))
+                   (fn (f)
+                     (if (file/exists? f)
+                       (str f ":" (file/size f) ":" (file/mtime f))
+                       (str f ":missing"))))
       "\n")))
+
+;; The included files the last image write recorded for this project, or none.
+(defn- project-included-files ()
+  (let (root (when (bound? '*project-root*) *project-root*)
+        listing (when root (path/join root *project-image-includes-file*)))
+    (if (and listing (file/exists? listing))
+      (seq/reject (string/split (file/slurp listing) "\n") empty?)
+      (list))))
 
 ;; The file behind every DEPENDENCY module, sorted for a stable fingerprint. A project roots
 ;; its own modules under its `:name` too (ADR-070), so both live in `*module-files*`
@@ -259,6 +280,9 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
 `%isolate` puts them back once the file is on disk."
   (let (dir (path/dirname (image-path root)))
     (when (not (file/dir? dir)) (file/mkdir dir))
+    ;; Before the fingerprint below, which reads this list back.
+    (file/spit (path/join root *project-image-includes-file*)
+      (string/join (%included-files) "\n"))
     (%isolate (fn ()
                 (image-prune-foreign-registrations before-regs)
                 (%image-write (image-path root)
