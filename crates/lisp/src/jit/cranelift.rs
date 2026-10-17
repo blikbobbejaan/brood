@@ -231,9 +231,14 @@ mod callback_table_tests {
                 sources.push_str(&std::fs::read_to_string(&path).expect("read a lowering file"));
             }
         }
+        // The `brood_rt_dbg_*` pair is declared and registered under `debug_assertions` only,
+        // but this scan reads source text, which has no cfg: in a build without them (the
+        // nightly ASAN job, `cargo test --release`) the names are in the text and not in
+        // the table, and this test failed three nights running before it said so.
         let declared: std::collections::BTreeSet<&str> = sources
             .split('"')
             .filter(|piece| piece.starts_with("brood_rt_"))
+            .filter(|piece| cfg!(debug_assertions) || !piece.starts_with("brood_rt_dbg_"))
             .collect();
         let registered: std::collections::BTreeSet<&str> = super::callback_table()
             .iter()
