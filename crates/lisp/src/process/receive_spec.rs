@@ -74,10 +74,21 @@ pub(crate) struct Spec {
     pinned: bool,
 }
 
-/// `%receive-spec-key`: the keyword naming `patterns` — for the `receive` macro, at expansion.
-pub(crate) fn spec_key(heap: &Heap, patterns: Value) -> Value {
+/// `%receive-spec-key`: the keyword naming `patterns` — for the `receive` macro, at expansion —
+/// or nil when this file cannot interpret them, so the macro keeps the matcher closure.
+///
+/// The macro decides what qualifies, but only this parse decides what a spec MEANS, and a key
+/// that does not parse is not a spec at all: [`resolve`] passes it through as a matcher, and
+/// `%receive` calls a keyword on every message. A pattern the macro admitted that this file
+/// had no `Lit` for — a decimal, ratio or bignum literal, a quoted list — did exactly that.
+/// Parsing the key here, before it is handed out, makes the two agree by construction.
+pub(crate) fn spec_key(heap: &mut Heap, patterns: Value) -> Value {
     let name = format!("{PREFIX}{}", crate::syntax::printer::print(heap, patterns));
-    Value::Keyword(value::intern(&name))
+    let key = value::intern(&name);
+    if parse_key(heap, key).is_none() {
+        return Value::Nil;
+    }
+    Value::Keyword(key)
 }
 
 /// The spec `matcher` stands for, or `None` when it is a matcher closure. One cache lookup —

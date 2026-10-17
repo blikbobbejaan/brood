@@ -74,6 +74,21 @@
     (send-all [[:lit "s" 1 nil true 'tag] [:lit "t" 1 nil true 'tag]])
     (assert= :hit (receive ([:lit "s" 1 nil true 'tag] :hit)))
     (assert= (list [:lit "t" 1 nil true 'tag]) (drain (list))))
+  ;; The kernel has no literal for these: a spec that named one did not parse, and `%receive`
+  ;; then called the spec KEYWORD on every message — "expected a map, set or nil to look up
+  ;; in". `%receive-spec-key` now refuses what the kernel cannot read, so they keep the
+  ;; closure, and match.
+  (test "a decimal, ratio or bignum literal, or a quoted list, keeps the closure and matches"
+    (assert= false (spec? (matcher-of '(receive ([:p 19.99M] :hit)))))
+    (assert= false (spec? (matcher-of '(receive ([:p 1/2] :hit)))))
+    (assert= false (spec? (matcher-of '(receive ([:p 99999999999999999999999] :hit)))))
+    (assert= false (spec? (matcher-of '(receive ([:p '(1 2)] :hit)))))
+    (send-all [[:p 19.98M] [:p 19.990M] [:q 2/4] [:r 99999999999999999999999] [:s (list 1 2)]])
+    (assert= :decimal (receive ([:p 19.99M] :decimal) (after 1000 :timeout)))
+    (assert= :ratio (receive ([:q 1/2] :ratio) (after 1000 :timeout)))
+    (assert= :big (receive ([:r 99999999999999999999999] :big) (after 1000 :timeout)))
+    (assert= :list (receive ([:s '(1 2)] :list) (after 1000 :timeout)))
+    (assert= (list [:p 19.98M]) (drain (list))))
   (test "equality is %eq's: 1 and 1.0 are different messages"
     (send-all [[:n 1.0] [:n 1]])
     (assert= :int (receive ([:n 1] :int)))

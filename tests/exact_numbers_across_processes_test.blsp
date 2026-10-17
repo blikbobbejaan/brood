@@ -1,0 +1,84 @@
+;; BigInt, Decimal and Ratio across processes. Each is a heap leaf that crosses a `send` as
+;; its canonical text and is re-parsed into the receiver's heap (`Message::BigInt` /
+;; `Decimal` / `Ratio`), so the copy has to come back equal, hash the same, match a literal
+;; pattern, and keep its arithmetic. A shared global holding one is promoted to the RUNTIME
+;; region and read by many processes at once.
+(defmodule exact-numbers-across-processes-test (:use test))
+
+(def *shared-exact* [123456789012345678901234567890 12345.6789M 22/7])
+
+(defn- build-exact (i)
+  "Three exact values derived from `i` at run time, so none is a literal constant."
+  [(* (+ 99999999999999999999 i) 1000003) (* i 1.10M) (/ i (+ i 7))])
+
+(defn- send-built (parent i) (send parent [:built i (build-exact i)]))
+
+(defn- echo-once (parent) (receive (v (send parent [:echo v]))))
+
+(defn- read-shared (parent i)
+  (let ([big dec rat] *shared-exact*)
+    (send parent [:read i (+ big i) (+ dec i) (+ rat i)])))
+
+(defn- collect (tag n acc)
+  (if (= n 0)
+    acc
+    (receive ([^tag i v] (collect tag (- n 1) (assoc acc i v))))))
+
+(defn- collect-reads (n acc)
+  (if (= n 0)
+    acc
+    (receive ([:read i big dec rat] (collect-reads (- n 1) (assoc acc i [big dec rat]))))))
+
+(describe "exact numbers across processes"
+  :isolated (test "each kind built in a worker comes home equal, typed and usable"
+    (let (me (self)) (spawn (send-built me 5)))
+    (let ([big dec rat] (receive ([:built 5 v] v)))
+      (is (int? big))
+      (assert= big (* 100000000000000000004 1000003))
+      (is (decimal? dec))
+      (assert= dec 5.50M)
+      (assert= (* dec 2) 11.00M)
+      (is (ratio? rat))
+      (assert= rat 5/12)
+      (assert= (* rat 12) 5)))
+
+  (test "a round trip through a worker's heap preserves value, printing and hashing"
+    (let (me (self)
+          w (spawn (echo-once me))
+          sent {1.50M :decimal 7/3 :ratio 340282366920938463463374607431768211457 :big})
+      (send w sent)
+      (let (got (receive ([:echo v] v)))
+        (assert= got sent)
+        (assert= (pr-str got) (pr-str sent))
+        ;; normalised decimal hashing survives the copy: 1.5M finds the 1.50M key
+        (assert= (get got 1.5M) :decimal)
+        (assert= (get got 14/6) :ratio)
+        (assert= (get got (+ 340282366920938463463374607431768211456 1)) :big))))
+
+  (test "fan-in: twenty workers' values fold to the exact total"
+    (let (me (self)) (doseq (i (range 1 21)) (spawn (send-built me i))))
+    (let (got (collect :built 20 {})
+          sums (fold (vals got)
+                 [0 0M 0]
+                 (fn ([b d r] [big dec rat]) [(+ b big) (+ d dec) (+ r rat)])))
+      (assert= (count got) 20)
+      (assert= (first sums) (fold (range 1 21) 0 (fn (acc i) (+ acc (first (build-exact i))))))
+      (assert= (second sums) 231.00M)
+      (assert= (nth sums 2) (fold (range 1 21) 0 (fn (acc i) (+ acc (/ i (+ i 7))))))))
+
+  (test "many processes read a shared global of exact numbers at once"
+    (let (me (self)) (doseq (i (range 50)) (spawn (read-shared me i))))
+    (let (got (collect-reads 50 {}))
+      (assert= (count got) 50)
+      (assert= (get got 49)
+        [123456789012345678901234567939 12394.6789M (+ 22/7 49)])
+      (assert= (get got 0) *shared-exact*)))
+
+  (test "a literal exact pattern matches the copy in a selective receive"
+    (let (me (self))
+      (send me [:other 1])
+      (spawn (send me [:price 19.990M]))
+      (spawn (send me [:share 2/4])))
+    (assert= (receive ([:price 19.99M] :priced) (after *test-wait-ms* :timeout)) :priced)
+    (assert= (receive ([:share 1/2] :shared) (after *test-wait-ms* :timeout)) :shared)
+    (assert= (receive ([:other n] n)) 1)))

@@ -76,7 +76,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     primitives.def(
         "%receive-spec-key",
         Arity::exact(1),
-        Sig::new(vec![vec_ty.clone()], kw.clone()),
+        Sig::new(vec![vec_ty.clone()], kw.union(nil_ty.clone())),
         &[],
         "",
         receive_spec_key,
@@ -583,7 +583,8 @@ pub(super) fn demonitor(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
 /// `(%receive matcher timeout tags)` — the selective-receive primitive the `receive`
 /// macro (`std/prelude.blsp`) expands to. See `crate::process::receive_match`.
 /// `(%receive-spec-key patterns)` — the keyword naming a `receive`'s native pattern spec
-/// (ADR-409), for the macro at expansion time. See `process/receive_spec.rs`.
+/// (ADR-409), for the macro at expansion time, or nil for patterns the kernel cannot
+/// interpret. See `process/receive_spec.rs`.
 pub(super) fn receive_spec_key(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     Ok(crate::process::receive_spec_key(heap, arg(args, 0)))
 }

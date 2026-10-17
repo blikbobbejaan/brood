@@ -318,11 +318,14 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 (defn- %receive-spec (clauses)
   (if (%receive-some? clauses (fn (clause) (= (second clause) :when)))
     nil
-    (let (r (%receive-spec-clauses clauses (list) (list)))
+    (let (r (%receive-spec-clauses clauses (list) (list))
+          ;; nil when the kernel cannot interpret a pattern this walk admitted (a decimal
+          ;; literal, a quoted list): the kernel's parse, not this walk, decides what a spec is
+          key (if (nil? r) nil (%receive-spec-key (apply vector (first r)))))
       (cond
-        (nil? r) nil
-        (empty? (second r)) (%receive-spec-key (apply vector (first r)))
-        else `[~(%receive-spec-key (apply vector (first r))) ~@(second r)]))))
+        (nil? key) nil
+        (empty? (second r)) key
+        else `[~key ~@(second r)]))))
 
 ;; Walk the clause list and error if an `(after ...)` clause appears before the last
 ;; position — a non-last `after` would silently become a pattern clause matching the
