@@ -541,6 +541,17 @@
         (let (bundle (project-release/bundle-collect root))
           (is (any? bundle (fn (s) (and (string? s) (includes? s "defn shipped")))))
           (is (not (any? bundle (fn (s) (and (string? s) (includes? s "describe"))))))))))
+  (test "bundle-collect refuses a runtime the manifest's :brood does not admit"
+    ;; `nest release` never calls `setup`, so without its own check an image built on an
+    ;; older brood shipped a project that requires a newer one
+    (let (root (temp-dir "brood-gate-"))
+      (file/mkdir root)
+      (file/mkdir (path/join (or root "") "src"))
+      (file/spit (path/join (or root "") "project.blsp")
+        "(project :name \"gated\" :source-paths [\"src\"] :main lib :brood \">= 999.0\")\n")
+      (file/spit (path/join (or root "") "src" "lib.blsp") "(defmodule lib)\n(defn shipped () 1)\n")
+      (is (includes? (try (project-release/bundle-collect root) (catch e (error-message e)))
+            "requires Brood"))))
   ;; ---- include-str: the file travels as a literal, not as a path ------------
   ;; A bundle carries module source and no asset files (ADR-038), so a program that
   ;; needs a foreign file has to carry its TEXT. These two tests are the two halves of

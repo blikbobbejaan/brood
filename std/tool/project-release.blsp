@@ -180,6 +180,9 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
     ;; mirroring `setup`. We don't load any source here — just read it.
     (let (form (reflect/read-first manifest))
       (when (and (pair? form) (= (first form) 'project)) (project/apply-config (rest form))))
+    ;; the :brood gate `setup` applies — without it an image builds and ships a release on a
+    ;; runtime the manifest refuses, since `nest fetch` and `nest release` never call setup
+    (project/project-check-brood-version)
     ;; Project source dirs first, then resolved dependency dirs (so a project
     ;; module wins a stem clash with a dep — matches `*load-path*` ordering).
     ;; `*project-dependencies*` only — never `*project-dev-dependencies*` (ADR-172): a
