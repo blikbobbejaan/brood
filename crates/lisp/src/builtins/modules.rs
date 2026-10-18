@@ -498,6 +498,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Bounded memoisation for hot paths (`defmemo`): the last few calls, compared by `=`
     // — so a rope argument is matched by handle, not hashed by its whole text.
     embedded_module!("memo", "std/memo.blsp"),
+    // Named registries a program fills as its modules load (`put!` / `entries` / `ranked`):
+    // `%registry-update!`'s atomic, isolate-safe, imaged write under one global keyed by a
+    // caller-chosen id, so a project module never has to spell a qualified global.
+    embedded_module!("registry", "std/registry.blsp"),
     // Markdown to HTML — a small subset, HTML-escaped. CORE, not tooling: the doc generator
     // renders its guides with it and the hosted registry its package READMEs, at request
     // time, on a shipped runtime (ADR-356).
@@ -610,6 +614,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // and a rendering — the keys go through `editor/keymap`, the rendering comes out as
     // plain rows, and the host services `:run` / `:read`. Pure; opt-in.
     embedded_module!("editor/transient", "std/editor/transient.blsp"),
+    // Moving a selection through a list (C-n / C-p wrap, M-< / M->): the key vocabulary as
+    // data and the index arithmetic, shared by every picker, popup and menu. Pure; opt-in.
+    embedded_module!("editor/list-motion", "std/editor/list-motion.blsp"),
     // Foldable section trees (Magit's `magit-section`): sections as data, rendered to lines
     // plus parallel rows, walked by index. Pure; opt-in.
     embedded_module!("editor/section", "std/editor/section.blsp"),

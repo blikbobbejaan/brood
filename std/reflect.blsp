@@ -213,6 +213,17 @@ cannot load is a citation that does not work."
         (and loaded (bound? name))))))
 (sig resolves? (symbol -> bool))
 
+(defn call-if-bound (name fallback & args)
+  "Call the function `name` — a symbol, resolved NOW — with `args`, or answer `fallback`
+when nothing is bound under it. The late-bound call a registry of hooks wants: a hook kept
+as a symbol takes a redefinition on its next call, and one whose module has not loaded yet
+is simply absent rather than an `unbound symbol` error. It does not load the module — a
+hook in a module nobody has opened is not a hook yet (that is `resolves?`'s job).
+
+    (reflect/call-if-bound 'inc 0 41)          → 42
+    (reflect/call-if-bound 'no-such-fn :none 1) → :none"
+  (if (bound? name) (apply (reflect/eval name) args) fallback))
+
 (defn source-location (name)
   "Where global name was defined, as [file line col], or nil. Quote it: (source-location 'foo)."
   (%source-location name))

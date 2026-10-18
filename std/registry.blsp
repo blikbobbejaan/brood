@@ -1,0 +1,94 @@
+;; std/registry.blsp — named registries a program fills as its modules load.
+;;
+;; Design notes (the *why*; the *what* is in the docstrings below):
+;;  - A plugin-shaped program — an editor whose features each add a timer, an event
+;;    handler, a status-bar chip — keeps tables that LOADING fills: each module adds its
+;;    rows when it loads, and the core reads the table without naming any of them. bedit
+;;    hand-wrote seventeen of these, each a `defonce` global re-bound with `def`, and every
+;;    one carried the same three latent bugs the kernel's own registries were fixed for:
+;;    two processes registering at once each read the old table and the later write drops
+;;    the earlier row (KI-22/KI-23); a registration made inside an `%isolate` window is
+;;    lost at the restore (KI-134/KI-141); and a global that loading MUTATES is invisible to
+;;    the startup image, which carries only what loading creates (ADR-218, KI-106).
+;;  - `%registry-update!` fixes all three — one locked read-modify-write, journalled for
+;;    the isolate replay, recorded for the image with the module that made the write
+;;    (KI-136) — but it names a registry by its fully qualified global, which a project
+;;    module cannot spell (`model/*jobs*` in source is `bedit/model/*jobs*` at runtime; a
+;;    bare name writes a root global of that name instead, silently).
+;;  - So the registries live HERE, in one global, keyed by an id the caller chooses (a
+;;    keyword — namespace it, `:model/idle-jobs`), then by entry key. `%registry-update!`'s
+;;    two-level path is exactly that shape, so every registry gets the atomic write, the
+;;    isolate replay and the image for free, and nobody spells a qualified global.
+;;  - Entries are whatever the caller stores. Hooks in them are best stored as SYMBOLS and
+;;    called late (`reflect/call-if-bound`): a redefinition then takes effect on the next
+;;    call, and a hook whose module has not loaded yet is simply not there.
+
+(defmodule registry
+  "Named registries a program fills as its modules load — `put!` a row under a registry id
+and a key, read them back with `entries` / `lookup` / `ranked`. Each write is atomic across
+processes, survives an `%isolate` restore and is carried by the startup image."
+  (:use memo)) ; defmemo — a table's rank order, computed once per change
+
+;; id -> key -> entry. `defonce`: this file re-runs from its embedded source when a project
+;; module `:use`s it on an imaged start, and a plain `def` would wipe what the image restored.
+(defonce *registries* {})
+
+(defn put! (id key entry)
+  "Register `entry` under `key` in the registry `id`, replacing any entry already there —
+so a module that registers at load is safe to reload. Returns `entry`.
+
+    (registry/put! :doc/greetings :en \"hello\")   → \"hello\""
+  (do (%registry-update! 'registry/*registries* :assoc [id key] entry) entry))
+(sig put! (any any any -> any))
+
+(defn entries (id)
+  "The registry `id` as a map of key → entry — `{}` for a registry nothing has written.
+
+    (do (registry/put! :doc/colours :red 1) (registry/entries :doc/colours))   → {:red 1}"
+  (let (table (get *registries* id))
+    (if (map? table) table {})))
+(sig entries (any -> map))
+
+(defn remove! (id key)
+  "Remove `key` from the registry `id`. True when there was an entry to remove.
+
+    (do (registry/put! :doc/scratch :k 1) (registry/remove! :doc/scratch :k))   → true"
+  (and (contains? (entries id) key)
+    (= true (%registry-update! 'registry/*registries* :dissoc [id key] nil))))
+(sig remove! (any any -> bool))
+
+(defn lookup (id key &optional default)
+  "The entry under `key` in the registry `id`, else `default` (nil).
+
+    (do (registry/put! :doc/sizes :s 1) (registry/lookup :doc/sizes :s))   → 1
+    (registry/lookup :doc/sizes :xl 0)   → 0"
+  (get (entries id) key default))
+
+(defn- rank-of (entry)
+  (let (rank (and (map? entry) (get entry :rank)))
+    (if (number? rank) rank 0)))
+
+(defn- rank-order (table)
+  ;; Sort keys computed ONCE per row, then compared — `sort-by` asks its key function on
+  ;; every comparison, and a printed key per comparison made reading a fourteen-row
+  ;; registry a visible slice of an editor's cursor blink.
+  (map (sort-by (map (%map-pairs table) (fn ([key entry]) [(rank-of entry) (pr-str key) key entry]))
+         (fn (row) [(nth row 0) (nth row 1)]))
+    (fn (row) [(nth row 2) (nth row 3)])))
+
+;; The order of a table is a pure function of the table, and a table only changes when
+;; something registers — rare — while the order is read on hot paths (an idle beat, every
+;; blink). `defmemo` compares by `=`, which is immediate for the very map it saw last.
+(defmemo ranked-table 16 (table)
+  "`table`'s `[key entry]` rows in rank order — the memoised half of [[ranked]], public only
+because `defmemo` defines a public function."
+  (rank-order table))
+
+(defn ranked (id)
+  "The registry `id`'s rows as `[key entry]` pairs, in order of each entry's `:rank` (a
+number; 0 for an entry with none, or that is not a map), ties broken by the printed key —
+so the order never depends on which module happened to load first.
+
+    (do (registry/put! :doc/steps :b {:rank 2}) (registry/put! :doc/steps :a {:rank 1}) (map (registry/ranked :doc/steps) first))   → (:a :b)"
+  (let (order (ranked-table (entries id))) (if (list? order) order (list))))
+(sig ranked (any -> list))

@@ -1,0 +1,52 @@
+;; std/editor/list-motion.blsp — moving a selection through a list, the way every list in an
+;; editor moves.
+;;
+;; Design notes (the *why*; the *what* is in the docstrings below):
+;;  - A minibuffer's candidates, a completion popup, a context menu, a picker: each has a
+;;    selected row, and each answers the same keys the same way — C-n / ↓ the next row, C-p /
+;;    ↑ the previous, wrapping at the ends, M-< / M-> the first and last. bedit wrote that
+;;    four times (the minibuffer, the completion popup, the context menu, the vertical
+;;    completion list), and the copies drifted: the context menu silently swallowed C-n.
+;;  - So the vocabulary is data (`motion-keys`, rebindable as a map) and the arithmetic one
+;;    function. A widget asks `motion-of` for a key, and if it is a motion, `motion-index`
+;;    for the row; what a selection IS stays the widget's own.
+
+(defmodule editor/list-motion
+  "Moving a selection through a list: `motion-of` names the motion an editor key means
+(`:next` `:previous` `:first` `:last`, from `motion-keys`), `motion-index` applies one to a
+row index — next and previous wrap, first and last are the ends.")
+
+;; Editor key → list motion: C-n / ↓ next, C-p / ↑ previous, M-< first, M-> last.
+(def motion-keys
+  {:ctrl-n :next
+   :down :next
+   :ctrl-p :previous
+   :up :previous
+   (keyword "alt-<") :first
+   (keyword "alt->") :last})
+
+(defn motion-of (key)
+  "The list motion editor `key` means — `:next`, `:previous`, `:first` or `:last` — or nil
+when it is not one.
+
+    (editor/list-motion/motion-of :ctrl-n)   → :next
+    (editor/list-motion/motion-of \"x\")     → nil"
+  (get motion-keys key))
+
+(defn motion-index (index size motion)
+  "The row `motion` moves a selection at `index` to, in a list of `size` rows: `:next` and
+`:previous` wrap around, `:first` and `:last` are the ends. An empty list has only row 0.
+
+    (editor/list-motion/motion-index 2 3 :next)       → 0
+    (editor/list-motion/motion-index 0 3 :previous)   → 2
+    (editor/list-motion/motion-index 1 3 :last)       → 2
+    (editor/list-motion/motion-index 0 0 :next)       → 0"
+  (if (<= size 0)
+    0
+    (case motion
+      :next (math/mod (inc index) size)
+      :previous (math/mod (+ (dec index) size) size)
+      :first 0
+      :last (dec size)
+      index)))
+(sig motion-index (int int any -> int))

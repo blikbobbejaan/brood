@@ -1,0 +1,34 @@
+;; std/editor/list-motion — the selection keys every list in an editor answers, and the index
+;; arithmetic behind them. Pure.
+;;
+;; Register-only — discovered and run by `nest test`.
+
+(defmodule list-motion-test (:use test) (:use editor/list-motion))
+
+(describe "list-motion: the keys"
+  (test "C-n and down are next, C-p and up previous, M-< and M-> the ends"
+    (assert= :next (motion-of :ctrl-n))
+    (assert= :next (motion-of :down))
+    (assert= :previous (motion-of :ctrl-p))
+    (assert= :previous (motion-of :up))
+    (assert= :first (motion-of (keyword "alt-<")))
+    (assert= :last (motion-of (keyword "alt->"))))
+  (test "any other key is not a motion"
+    (assert= nil (motion-of "n"))
+    (assert= nil (motion-of :return))))
+
+(describe "list-motion: the index"
+  (test "next and previous step, wrapping at both ends"
+    (assert= 1 (motion-index 0 3 :next))
+    (assert= 0 (motion-index 2 3 :next))
+    (assert= 2 (motion-index 0 3 :previous))
+    (assert= 1 (motion-index 2 3 :previous)))
+  (test "first and last are the ends"
+    (assert= 0 (motion-index 2 5 :first))
+    (assert= 4 (motion-index 0 5 :last)))
+  (test "an empty list has only row 0 — no division by its size"
+    (assert= 0 (motion-index 0 0 :next))
+    (assert= 0 (motion-index 0 0 :previous))
+    (assert= 0 (motion-index 0 0 :last)))
+  (test "a motion it does not know leaves the index where it was"
+    (assert= 3 (motion-index 3 5 :sideways))))
