@@ -181,11 +181,23 @@
     (assert-error (%gui-draw 999999 [[:sound "x"] [:sound 4294967296] [:sound 1 "loud"]])))
 
   (test "effect ops with garbage arguments are skipped or clamped, not a panic"
-    (assert-error (%gui-draw 999999 [[:ambient "x"] [:light 0 0 -5 :red] [:light 1e30 nil 10 [1 2 3] "x"]
-                                     [:overlay 1 2 3] [:bloom "x" -1 1e30] [:crt 9 9 9]
-                                     [:emitter -1 0 0 {}] [:emitter 1 0 0 "opts"]
-                                     [:emitter 2 0 0 {:rate -5 :life [-1 1e30] :max 99999999 :size "big" :color :nope}]
-                                     [:burst 1 -3] [:burst "x" 4]])))
+    (assert-error (%gui-draw 999999
+                    [[:ambient "x"]
+                      [:light 0 0 -5 :red]
+                      [:light 1e30 nil 10 [1 2 3] "x"]
+                      [:overlay 1 2 3]
+                      [:bloom "x" -1 1e30]
+                      [:crt 9 9 9]
+                      [:emitter -1 0 0 {}]
+                      [:emitter 1 0 0 "opts"]
+                      [:emitter
+                        2
+                        0
+                        0
+                        {:rate -5 :life [-1 1e30] :max 99999999 :size "big" :color :nope}]
+                      [:burst 1 -3]
+                      [:burst "x" 4]])))
 
   (test "a :music op with a garbage handle or volume is skipped, not a panic"
-    (assert-error (%gui-draw 999999 [[:music "x"] [:music -1] [:music 4294967296] [:music 1 "loud"]]))))
+    (assert-error (%gui-draw 999999
+                    [[:music "x"] [:music -1] [:music 4294967296] [:music 1 "loud"]]))))

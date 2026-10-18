@@ -170,7 +170,6 @@ UTF-8 form.
   (%base64-encode bytes true))
 (sig base64-url-encode-bytes ((or bytes (vector (int 0 255)) (list (int 0 255))) -> string))
 
-
 (defn base64-decode (s)
   "Decode a standard Base64 string → original string, or a `failure` naming the input.
 
