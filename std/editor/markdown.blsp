@@ -86,24 +86,30 @@ incomplete input; feeds the editor's `:fontify` mode service and the shared
 
 ;; ---- line-shape classifiers -------------------------------------------------
 
+(defn- md-fence-at? (line lead n c)
+  ;; `line` (length `n`) is a fence, given its first non-blank char `c` at column `lead`
+  (and (or (= c "`") (= c "~")) (>= (md-count-char line lead n c) 3)))
+(sig md-fence-at? (string int int string -> bool))
+
 (defn- md-fence? (line)
   "True if `line` is a fenced-code delimiter — three or more `` ` `` or `~`, after up
 to its leading whitespace."
   (let (lead (md-lead-ws line)
-        n (string/length line)
-        c (if (< lead n) (string/char-at line lead) ""))
-    (and (or (= c "`") (= c "~"))
-      (>= (md-count-char line lead n c) 3))))
+        n (string/length line))
+    (md-fence-at? line lead n (if (< lead n) (string/char-at line lead) ""))))
+
+(defn- md-heading-at (line lead n)
+  ;; the ATX level of `line` (length `n`) whose leading whitespace ends at `lead`, or nil
+  (let (h (md-count-char line lead n "#"))
+    (if (and (>= h 1) (<= h 6) (or (= (+ lead h) n) (= (string/char-at line (+ lead h)) " ")))
+      h
+      nil)))
+(sig md-heading-at (string int int -> (or int nil)))
 
 (defn- md-heading-level (line)
   "The ATX heading level (1–6) of `line` — its run of leading `#`s, which must be
 followed by a space or end-of-line — or nil if it isn't a heading."
-  (let (n (string/length line)
-        lead (md-lead-ws line)
-        h (md-count-char line lead n "#"))
-    (if (and (>= h 1) (<= h 6) (or (= (+ lead h) n) (= (string/char-at line (+ lead h)) " ")))
-      h
-      nil)))
+  (md-heading-at line (md-lead-ws line) (string/length line)))
 (sig md-heading-level (string -> (or int nil)))
 
 (defn- md-ordered-end (line i n)
@@ -231,15 +237,27 @@ reverse. Each matched region is consumed whole, so spans stay non-overlapping."
 are currently inside a fenced code block (`fence`). A fence delimiter or any line
 inside a block colours whole as code (and toggles `fence`); a heading colours whole;
 otherwise a leading block marker plus an inline scan of the rest."
+  ;; The leading whitespace is measured ONCE and the line's first character read once —
+  ;; the fence test, the heading test and the block marker each used to do both again. A
+  ;; plain prose line (no marker, no inline delimiter anywhere) leaves after one native
+  ;; scan, which is most lines of most documents and was a third of a window's lex.
   (let (n (string/length line))
-    (cond
-      fence [(not (md-fence? line)) (list [base (+ base n) md-face-code])]
-      (md-fence? line) [true (list [base (+ base n) md-face-code])]
-      (md-heading-level line) [false (list [base (+ base n) md-face-heading])]
-      else
-        (let (lead (md-lead-ws line)
-              [marker mstart] (md-block line base lead n))
-          [false (append marker (md-inline line base mstart n '()))]))))
+    (if fence
+      [(not (md-fence? line)) (list [base (+ base n) md-face-code])]
+      (let (lead (md-lead-ws-at line 0 n)
+            c (if (< lead n) (string/char-at line lead) ""))
+        (cond
+          (md-fence-at? line lead n c) [true (list [base (+ base n) md-face-code])]
+          (and (= c "#") (md-heading-at line lead n))
+            [false (list [base (+ base n) md-face-heading])]
+          (and (not (= c ">"))
+            (not (md-bullet? c))
+            (not (md-digit? c))
+            (>= (string/span-until line lead "`*_[") n))
+            [false '()]
+          else
+            (let ([marker mstart] (md-block line base lead n))
+              [false (append marker (md-inline line base mstart n '()))]))))))
 (sig md-line-spans (string int bool -> vector))
 
 ;; One `string-split` for the whole source, then walk the lines with a running offset —

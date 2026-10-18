@@ -27,10 +27,12 @@ CST (`{:kind :start :end :named :kids/:text}`): `(fontify text lang face-of)` �
 point` — `point-forward` / `point-backward` (every named node),
 `point-list-forward` / `point-list-backward` (containers only),
 `point-up` / `point-up-forward` / `point-down`, and `point-defun-start` /
-`point-defun-end`. `face-of` is built with `(face-of-kinds {kind face-name})`.
+`point-defun-end` — which find what each language declared a definition to be with
+`register-definitions`. `face-of` is built with `(face-of-kinds {kind face-name})`.
 Per-language face tables + keymaps are policy in the editor. `(require
 'editor/treesit)`."
-  (:use editor/face))
+  (:use editor/face)
+  (:load registry)) ; each language's definitions (`register-definitions`)
 
 ;; ---- what a language mode must answer ---------------------------------------
 ;; The CONTRACT, named once. Every service below is generic — the editor's view asks a
@@ -218,15 +220,22 @@ consumer that genuinely visits every node, so it was the one paying for the whol
 projection: thousands of Brood maps per keystroke, built to read `:kind` off each and
 discard the rest. `face-of-kinds` / `face-of-syntax` remain for anything that wants the
 node→face function itself."
-  (let (kinds (into [] (map kind->face-name first))
-        raw (%tree-sitter-spans text lang kinds keywords?))
+  ;; Each face resolved ONCE per call — per kind, not per span. A window has a few hundred
+  ;; spans and a table a dozen kinds, and looking the face up for every span was two thirds
+  ;; of the whole fontify (1.28 ms against 0.41 ms on a 250-line Elixir window, measured in
+  ;; bedit) — paid on every keystroke in every tree-sitter language.
+  (let (resolved (fold (%map-pairs kind->face-name)
+                   {}
+                   (fn (acc [kind name]) (assoc acc kind (face name))))
+        keyword-face (face :syntax/keyword)
+        raw (%tree-sitter-spans text lang (into [] (map kind->face-name first)) keywords?))
     ;; a LIST, as before — the `:fontify` contract, and what `shift-spans` and the view
     ;; consume; returning a vector here compared unequal to every list in sight
     (seq/keep raw
       (fn (sp)
         (let (kind (nth sp 2)
-              name (if (= kind :__keyword__) :syntax/keyword (get kind->face-name kind)))
-          (when name [(nth sp 0) (nth sp 1) (face name)]))))))
+              resolved-face (if (= kind :__keyword__) keyword-face (get resolved kind)))
+          (when resolved-face [(nth sp 0) (nth sp 1) resolved-face]))))))
 (sig fontify (string keyword any -> any))
 
 ;; ---- where a windowed fontify may restart -------------------------------------
@@ -688,15 +697,40 @@ offset), and a motion that cannot move is worse than one that overshoots."
           else point)))))
 (sig point-down (string keyword any -> any))
 
-(def- ts-def-kinds
-  ;; node KINDS that are themselves definitions — most grammars (Ruby, …) name them
-  ;; distinctly. Extend for a new language whose defs have their own node kind.
-  (list "method" "singleton_method" "class" "module" "function_definition" "method_declaration"))
+;; ---- what a definition is, per language ----------------------------------------
+;; Which nodes are DEFINITIONS is the one thing `beginning-of-defun` cannot read off a tree,
+;; and it is a fact about one grammar: Ruby says `method`, Python `function_definition`,
+;; Rust `function_item`, and Elixir says nothing at all — its `def` is a `call`. It used to
+;; be one private list holding every grammar's names at once, so a language the list had
+;; not heard of (Rust, at the time) got no definitions: C-M-a inside an `impl` jumped to the
+;; edge of the whole `impl`, and the only fix was an edit to std. Now a language declares
+;; its own, beside the rest of its mode, and an undeclared one falls back to the top-level
+;; form — the honest answer when nothing says what a definition is.
 
-(def- ts-def-macros
-  ;; Elixir defines via a `call` to one of these macros (the node kind is just `call`, so we
-  ;; key off the callee text). Extend for a macro-defined construct in another grammar.
-  (list "def" "defp" "defmacro" "defmacrop" "defmodule" "defprotocol" "defimpl"))
+(defn register-definitions (lang definitions)
+  "Declare what a definition is in tree-sitter language `lang`, for `point-defun-start` /
+`point-defun-end`: `{:kinds #{node-kind …} :calls #{callee …}}`. `:kinds` names the node
+kinds that are themselves definitions; `:calls` the callees whose `call` node defines
+(Elixir's `def`, `defmodule`, … are calls, not node kinds). Replaces any earlier
+declaration for `lang`; returns `definitions`.
+
+    (editor/treesit/register-definitions :doc-lang {:kinds #{:fn_item}})   → {:kinds #{:fn_item}}"
+  (registry/put! :treesit/definitions lang definitions))
+(sig register-definitions (keyword map -> map))
+
+(defn definitions (lang)
+  "What `lang` declared a definition to be (`register-definitions`), or `{}`.
+
+    (contains? (get (editor/treesit/definitions :ruby) :kinds) :method)   → true"
+  (let (declared (registry/lookup :treesit/definitions lang))
+    (if (map? declared) declared {})))
+(sig definitions (keyword -> map))
+
+;; The two grammars this runtime can be built with. A grammar loaded at runtime declares
+;; its own, from the editor's language definition.
+(register-definitions :ruby {:kinds #{:method :singleton_method :class :module}})
+(register-definitions :elixir
+  {:calls #{"def" "defp" "defmacro" "defmacrop" "defmodule" "defprotocol" "defimpl"}})
 
 (defn- ts-head-word (text node)
   "The identifier a node BEGINS with, read from the source. A chain node carries no
@@ -711,13 +745,13 @@ a first child — which is the same token either way, and does not require the t
                       (scan (inc i)))))
       (scan from))))
 
-(defn- ts-defun? (text node)
-  "Whether `node` is a definition for `beginning-of-defun`: a definition-*kind* node (Ruby
-`method`/`class`/`module`, …) or a `call` whose callee text is a `def`-family macro (Elixir,
-where `def`/`defmodule`/… are calls, not distinct node kinds)."
-  (let (k (->string (get node :kind)))
-    (or (includes? ts-def-kinds k)
-      (and (= k "call") (includes? ts-def-macros (ts-head-word text node))))))
+(defn- ts-defun? (text definitions node)
+  "Whether `node` is a definition for `beginning-of-defun`, as the language's `definitions`
+say: a node of a definition KIND (Ruby `method`, Rust `function_item`, …) or a `call`
+whose callee is a defining one (Elixir, where `def`/`defmodule`/… are calls)."
+  (let (k (get node :kind))
+    (or (contains? (get definitions :kinds #{}) k)
+      (and (= k :call) (contains? (get definitions :calls #{}) (ts-head-word text node))))))
 
 (defn- ts-defun-edge (text lang point edge)
   "The `edge` (`:start` / `:end`) of the enclosing **definition**: the deepest `def` /
@@ -725,7 +759,8 @@ where `def`/`defmodule`/… are calls, not distinct node kinds)."
 The shared body of `point-defun-start` / `point-defun-end`."
   (let (chain (seq/filter (%tree-sitter-chain text lang point)
                 (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))
-        defuns (seq/filter chain (fn (n) (ts-defun? text n))))
+        definitions (definitions lang)
+        defuns (seq/filter chain (fn (n) (ts-defun? text definitions n))))
     (cond
       (not (empty? defuns)) (get (last defuns) edge)
       (not (empty? chain)) (get (first chain) edge)
