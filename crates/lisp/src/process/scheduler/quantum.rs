@@ -57,9 +57,40 @@ pub(super) fn used() -> u32 {
     reduction_budget().saturating_sub(REDUCTIONS.with(|r| r.get()))
 }
 
-/// Is some process waiting for a worker? One relaxed load of the queued count.
+/// Is some process waiting for a worker? One relaxed load of the queued count — or, on
+/// wasm, is the host waiting for its thread back ([`set_host_deadline`]).
 pub(crate) fn work_waiting() -> bool {
-    STEALABLE.load(Ordering::Relaxed) != 0
+    STEALABLE.load(Ordering::Relaxed) != 0 || host_waiting()
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// When the host that is pumping this runtime wants its thread back (a browser page,
+    /// between paints): `None` when no pump is bounded.
+    static HOST_DEADLINE: Cell<Option<web_time::Instant>> = const { Cell::new(None) };
+}
+
+/// Bound the pump the host is running (`pump_due`): past `deadline` a spent quantum yields
+/// even with no other process queued, as it would to a waiting one, so a lone process with
+/// more work than time — a game behind its frame rate — still hands the page back. On wasm
+/// there is one thread and nothing else to preempt it.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn set_host_deadline(deadline: Option<web_time::Instant>) {
+    HOST_DEADLINE.with(|h| h.set(deadline));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn host_waiting() -> bool {
+    HOST_DEADLINE.with(|h| {
+        h.get()
+            .is_some_and(|deadline| web_time::Instant::now() >= deadline)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn host_waiting() -> bool {
+    false
 }
 
 /// Charge one reduction where nothing can capture (the eval loop): on rollover, run on into

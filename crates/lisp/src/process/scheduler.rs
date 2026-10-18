@@ -67,10 +67,10 @@ pub(crate) use lifecycle::{exit_propagate, exit_reason_phrase};
 // scheduling state stays in the root (reached via `use super::*`). Re-export the
 // public/`process`-facing surface so `scheduler::…`/`process::…` paths are unchanged.
 mod pool;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use pool::pump_until_quiescent;
 use pool::spawn_overflow_drainer;
 pub(crate) use pool::{enqueue, ensure_workers, wake_enqueue};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use pool::{pump_due, pump_until_quiescent};
 pub use pool::{set_test_no_workers, test_drive_quanta};
 
 /// A green process (ADR-100 §8.4 — state capture, corosensei removed): its own `Heap`,

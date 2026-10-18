@@ -181,15 +181,64 @@ fn sched_now() -> Instant {
 #[cfg(target_arch = "wasm32")]
 thread_local! {
     static LOGICAL_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// Set by a host that runs a program for as long as it lives — a game in a browser tab
+    /// (`pump_due`) — rather than to completion: its receive deadlines are wall-clock
+    /// times, reached when the time comes, not jumped to.
+    static REAL_TIME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[cfg(target_arch = "wasm32")]
 fn sched_now() -> Instant {
+    if REAL_TIME.with(|r| r.get()) {
+        return Instant::now();
+    }
     LOGICAL_NOW.with(|c| {
         let now = c.get().unwrap_or_else(Instant::now);
         c.set(Some(now));
         now
     })
+}
+
+/// Run receive deadlines on the wall clock from now on (see `REAL_TIME`).
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn use_real_time() {
+    REAL_TIME.with(|r| r.set(true));
+}
+
+/// Fire the earliest pending receive-timeout if its deadline has passed on the wall clock;
+/// whether one fired. The real-time pump's counterpart of `fire_next_timer`.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn fire_due_timer() -> bool {
+    let (lock, _cv) = &*TIMERS;
+    let due = {
+        let mut timers = crate::core::sync::lock(lock);
+        match timers.peek() {
+            Some(Reverse((SchedDeadline(deadline), _, _))) if *deadline <= Instant::now() => {
+                timers.pop()
+            }
+            _ => None,
+        }
+    };
+    match due {
+        Some(Reverse((_, pid, generation))) => {
+            super::mailbox::wake_for_timeout(pid, generation);
+            true
+        }
+        None => false,
+    }
+}
+
+/// How long until the earliest pending receive-timeout is due (zero when it already is),
+/// or `None` with none pending — when a real-time host should pump next.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn next_timer_in() -> Option<std::time::Duration> {
+    let (lock, _cv) = &*TIMERS;
+    let timers = crate::core::sync::lock(lock);
+    timers
+        .peek()
+        .map(|Reverse((SchedDeadline(deadline), _, _))| {
+            deadline.saturating_duration_since(Instant::now())
+        })
 }
 
 /// Fire the earliest pending receive-timeout, waking its parked process (wasm cooperative

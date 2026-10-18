@@ -251,12 +251,32 @@ pub fn read_bundle(path: &Path) -> Result<Option<Bundle>, String> {
     }
 }
 
+static MOUNTED: OnceLock<Result<Option<Bundle>, String>> = OnceLock::new();
+
 fn mounted_state() -> &'static Result<Option<Bundle>, String> {
-    static MOUNTED: OnceLock<Result<Option<Bundle>, String>> = OnceLock::new();
     MOUNTED.get_or_init(|| match std::env::current_exe() {
         Ok(executable) => read_bundle(&executable),
         Err(_) => Ok(None),
     })
+}
+
+/// Mount the bundle in `bytes` — a release file, or just its archive and footer — as
+/// this process's own, for a host with no executable to read one from: a browser tab
+/// (the `brood-tab` wasm build) fetches the game's bundle and hands it over before the
+/// first `require`. An error when `bytes` is not a bundle, or when a bundle (or the
+/// executable's lack of one) is already mounted.
+/// The bundle in `bytes` — a release file, or its archive and footer alone.
+pub fn parse_bytes(bytes: &[u8]) -> Result<Bundle, String> {
+    let (start, length) = footer(bytes).ok_or("not a brood bundle (no bundle footer)")?;
+    parse_archive(&bytes[start..start + length])
+        .ok_or_else(|| "the archive does not parse".to_string())
+}
+
+pub fn mount_bytes(bytes: &[u8]) -> Result<(), String> {
+    let bundle = parse_bytes(bytes)?;
+    MOUNTED
+        .set(Ok(Some(bundle)))
+        .map_err(|_| "a bundle is already mounted".to_string())
 }
 
 /// The bundle embedded in *this* executable, read once from `current_exe()`.
@@ -364,6 +384,27 @@ mod tests {
         assert_eq!(bundle.modules, modules);
         assert_eq!(bundle.module_src("util"), Some("(defn helper () 2)"));
         assert_eq!(bundle.module_src("absent"), None);
+    }
+
+    #[test]
+    fn a_bundle_reads_from_bytes_with_or_without_a_runtime_before_it() {
+        let modules = vec![("app".to_string(), "(defn main () 1)".to_string())];
+        let alone = fake_release(b"", "(project :main app)", &modules);
+        assert_eq!(parse_bytes(&alone).expect("parses").modules, modules);
+        let behind_a_runtime = fake_release(b"FAKE-BROOD-BINARY", "(project :main app)", &modules);
+        assert_eq!(
+            parse_bytes(&behind_a_runtime).expect("parses").modules,
+            modules
+        );
+    }
+
+    #[test]
+    fn bytes_that_are_not_a_bundle_are_refused_and_mount_nothing() {
+        assert!(parse_bytes(b"(defn main () 1)").is_err());
+        assert!(mount_bytes(b"not a bundle").is_err());
+        let mut cut = fake_release(b"", "(project)", &[]);
+        cut.drain(0..3);
+        assert!(parse_bytes(&cut).is_err(), "a truncated archive");
     }
 
     /// The reserved-argument contract: first position only, exact spelling only.

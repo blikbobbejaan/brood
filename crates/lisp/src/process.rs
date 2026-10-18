@@ -121,8 +121,6 @@ pub(crate) use links::{
     deliver_remote_link_exit, drop_remote_link, handle_node_down as handle_link_node_down,
     record_remote_link,
 };
-#[cfg(target_arch = "wasm32")]
-pub(crate) use scheduler::pump_until_quiescent;
 pub use scheduler::{
     GcBlockGuard, MacroBlockGuard, NATIVE_STACK_MARGIN_BYTES, WORKER_STACK_BYTES, begin_capture,
     capture_append, current_pid, deregister_root_ctx, deregister_root_ctx_of,
@@ -135,6 +133,8 @@ pub use scheduler::{
     stack_budget, stack_overflow_check, steal_count, take_capture, test_drive_quanta, tick,
     with_minting_runtime_tag, worker_threads, yield_now,
 };
+#[cfg(target_arch = "wasm32")]
+pub(crate) use scheduler::{pump_due, pump_until_quiescent};
 /// Currently-parked process count, runtime-wide — teardown/leak test hook.
 pub fn parked_process_count() -> usize {
     mailbox::parked_count()

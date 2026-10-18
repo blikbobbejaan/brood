@@ -222,6 +222,17 @@ impl Interp {
         Ok(exit.take_result().unwrap_or_default())
     }
 
+    /// Start a top-level program as a green process and return at once, with it still
+    /// running: for a host that keeps a program alive and drives it itself — a game in a
+    /// browser tab, pumped from the page's event loop (`host::tab::pump`). The handle says
+    /// how the program ended, once it has (`ProgramExit::ended`).
+    pub fn start_program(
+        &mut self,
+        src: &str,
+    ) -> Result<std::sync::Arc<eval::compile::ProgramExit>, LispError> {
+        process::spawn_root_program(&self.heap, src, None, None, false)
+    }
+
     /// Test-only: spawn a top-level program as a green process and return immediately,
     /// WITHOUT waiting for it. Lets a test drive the quanta itself on the calling thread —
     /// the shape wasm runs in, where `wait` pumps the run queue on the caller rather than

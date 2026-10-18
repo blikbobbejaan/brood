@@ -72,6 +72,106 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["haystack", "needle", "&optional", "from"],
         "The first index of the needle bytes within haystack at or after from (default 0), or -1 if absent. The byte-protocol workhorse (locate a \\r\\n\\r\\n, a frame delimiter, …).",
         bytes_index_of);
+    primitives.def(
+        "%base64-encode",
+        Arity::exact(2),
+        Sig::new(vec![any, any], string),
+        &["byte-seq", "url?"],
+        "Base64 of byte-seq (a bytes value, or a vector or list of byte ints 0–255), with `=` padding: the standard `+/` alphabet, or the URL-safe `-_` one when url? is truthy. The engine of `encoding/base64-encode-bytes` and its siblings.",
+        base64_encode,
+    );
+    primitives.def(
+        "%base64-decode",
+        Arity::exact(2),
+        Sig::new(vec![string, any], any),
+        &["s", "url?"],
+        "The bytes that Base64 string s encodes (the URL-safe alphabet when url? is truthy), or nil when s is not Base64: a character outside the alphabet, a `=` anywhere but a trailing run of at most two, or one character left over from a group of four. The engine of `encoding/base64-decode-bytes` and its siblings.",
+        base64_decode,
+    );
+}
+
+const BASE64_STANDARD: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// `(%base64-encode byte-seq url?)` — padded Base64 of the bytes.
+pub(super) fn base64_encode(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let alphabet = if !matches!(arg(args, 1), Value::Nil | Value::Bool(false)) {
+        BASE64_URL
+    } else {
+        BASE64_STANDARD
+    };
+    let encoded = match arg(args, 0) {
+        Value::Bytes(id) => base64_encode_with(heap.bytes(id).as_bytes(), alphabet),
+        other => base64_encode_with(&collect_bytes("%base64-encode", other, heap)?, alphabet),
+    };
+    Ok(heap.alloc_string(&encoded))
+}
+
+fn base64_encode_with(input: &[u8], alphabet: &[u8; 64]) -> String {
+    let mut out = Vec::with_capacity(input.len().div_ceil(3) * 4);
+    for group in input.chunks(3) {
+        let b1 = group[0];
+        let b2 = group.get(1).copied().unwrap_or(0);
+        let b3 = group.get(2).copied().unwrap_or(0);
+        out.push(alphabet[(b1 >> 2) as usize]);
+        out.push(alphabet[(((b1 & 0b11) << 4) | (b2 >> 4)) as usize]);
+        out.push(if group.len() > 1 {
+            alphabet[(((b2 & 0b1111) << 2) | (b3 >> 6)) as usize]
+        } else {
+            b'='
+        });
+        out.push(if group.len() > 2 {
+            alphabet[(b3 & 0b11_1111) as usize]
+        } else {
+            b'='
+        });
+    }
+    // Every byte pushed is from the ASCII alphabet or `=`.
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// `(%base64-decode s url?)` — the bytes, or nil for text that is not Base64.
+pub(super) fn base64_decode(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let alphabet = if !matches!(arg(args, 1), Value::Nil | Value::Bool(false)) {
+        BASE64_URL
+    } else {
+        BASE64_STANDARD
+    };
+    let text = super::args::expect_string_ref(heap, "%base64-decode", arg(args, 0))?;
+    Ok(match base64_decode_with(text.as_bytes(), alphabet) {
+        Some(decoded) => heap.alloc_bytes(SharedBlob::new(&decoded)),
+        None => Value::Nil,
+    })
+}
+
+fn base64_decode_with(input: &[u8], alphabet: &[u8; 64]) -> Option<Vec<u8>> {
+    let mut values = [u8::MAX; 256];
+    for (value, &symbol) in alphabet.iter().enumerate() {
+        values[symbol as usize] = value as u8;
+    }
+    let body_length = input.len() - input.iter().rev().take_while(|&&c| c == b'=').count();
+    if input.len() - body_length > 2 || body_length % 4 == 1 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body_length / 4 * 3 + 2);
+    for group in input[..body_length].chunks(4) {
+        let mut sextets = [0u8; 4];
+        for (slot, &c) in sextets.iter_mut().zip(group) {
+            *slot = values[c as usize];
+            if *slot == u8::MAX {
+                return None;
+            }
+        }
+        out.push((sextets[0] << 2) | (sextets[1] >> 4));
+        if group.len() > 2 {
+            out.push((sextets[1] << 4) | (sextets[2] >> 2));
+        }
+        if group.len() > 3 {
+            out.push((sextets[2] << 6) | sextets[3]);
+        }
+    }
+    Some(out)
 }
 
 /// Borrow a `Value::Bytes`'s raw bytes, or a type error. The borrow lives as long as
@@ -339,4 +439,43 @@ pub(super) fn send_payload(heap: &Heap, who: &str, v: Value) -> Result<Vec<u8>, 
     let mut out = Vec::new();
     flatten_iolist(heap, who, v, &mut out)?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod base64_tests {
+    use super::{BASE64_STANDARD, BASE64_URL, base64_decode_with, base64_encode_with};
+
+    #[test]
+    fn encodes_every_tail_length_with_padding() {
+        assert_eq!(base64_encode_with(b"", BASE64_STANDARD), "");
+        assert_eq!(base64_encode_with(b"hi", BASE64_STANDARD), "aGk=");
+        assert_eq!(base64_encode_with(&[255, 0, 1], BASE64_STANDARD), "/wAB");
+        assert_eq!(base64_encode_with(&[251, 255], BASE64_URL), "-_8=");
+        assert_eq!(base64_encode_with(b"A", BASE64_STANDARD), "QQ==");
+    }
+
+    #[test]
+    fn round_trips_every_byte_value() {
+        let all: Vec<u8> = (0..=255).chain((0..=255).rev()).collect();
+        for length in 0..all.len() {
+            let encoded = base64_encode_with(&all[..length], BASE64_STANDARD);
+            assert_eq!(
+                base64_decode_with(encoded.as_bytes(), BASE64_STANDARD).as_deref(),
+                Some(&all[..length])
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_what_is_not_base64_and_takes_unpadded_input() {
+        assert_eq!(
+            base64_decode_with(b"aGk", BASE64_STANDARD),
+            Some(b"hi".to_vec())
+        );
+        assert_eq!(base64_decode_with(b"QQ==QQ==", BASE64_STANDARD), None);
+        assert_eq!(base64_decode_with(b"QQ===", BASE64_STANDARD), None);
+        assert_eq!(base64_decode_with(b"QUJDR", BASE64_STANDARD), None);
+        assert_eq!(base64_decode_with(b"-_8=", BASE64_STANDARD), None);
+        assert_eq!(base64_decode_with("aGké".as_bytes(), BASE64_STANDARD), None);
+    }
 }

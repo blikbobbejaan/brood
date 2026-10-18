@@ -15,6 +15,7 @@ pub mod net; // thin non-blocking TCP socket mechanism (ADR-062); policy lives i
 pub mod net; // wasm has no sockets — stub with the same API (fails at runtime)
 pub(crate) mod owned; // the owner-indexed handle table behind sockets, subprocesses and wasm instances
 pub mod subprocess; // persistent child-process mechanism: spawn + stdio pipes over the mailbox seam (ADR-104)
+pub mod tab; // a browser tab as a display, for a program running in the tab (the brood-tab wasm build)
 pub mod text_width; // grapheme-cluster display-cell width (the `string/display-width` builtin + the GUI grid)
 pub mod treesit; // optional tree-sitter parsing for foreign languages (feature "treesit") — ROADMAP §C
 #[cfg(feature = "wasm")]

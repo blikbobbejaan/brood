@@ -72,6 +72,7 @@ mod source;
 mod string;
 mod subprocesses;
 mod syntax_scan;
+mod tab;
 mod table;
 mod terminal;
 mod tooling;
@@ -181,6 +182,8 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     fuzzy::register(&mut primitives);
     text_search::register(&mut primitives);
     regex_native::register(&mut primitives);
+    // Appended for the same order reason: the browser-tab display primitives.
+    tab::register(&mut primitives);
 }
 
 #[cfg(test)]

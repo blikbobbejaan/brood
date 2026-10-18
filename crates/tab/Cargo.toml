@@ -1,0 +1,24 @@
+[package]
+name = "brood-tab"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+description = "wasm-bindgen shim that keeps a bundled Brood program running in a browser tab (a game: b2d's tab frontend)."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# The interpreter for wasm32, as the playground builds it: no JIT, no native subsystems.
+brood = { path = "../lisp", default-features = false }
+# The playground's pin: the crate and the wasm-bindgen CLI versions must match.
+wasm-bindgen = "=0.2.129"
+
+# Build with `--profile release-wasm` (the workspace root's; a member's profiles are ignored).
+
+[lints]
+workspace = true

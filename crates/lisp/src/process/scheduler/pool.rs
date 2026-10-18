@@ -557,6 +557,59 @@ pub(crate) fn pump_until_quiescent() {
     }
 }
 
+/// The real-time pump: run every runnable process until none is, firing only the receive
+/// timeouts whose wall-clock deadline has passed, then return how long until the next one
+/// is due (`None` with none pending). A host that keeps a program alive — a game in a
+/// browser tab — calls this from its event loop: on each animation frame, after each
+/// input, and when the returned delay elapses. `pump_until_quiescent` is the to-completion
+/// version, which jumps logical time to each deadline instead of waiting for it.
+///
+/// Bounded by `budget`: past it the pump returns at once with a delay of zero, the rest
+/// of the work still queued. The page it runs in has one thread, and a program with more
+/// to do than time to do it in — a game whose tick takes longer than its frame, so its
+/// next deadline is always already due — would otherwise never hand it back to paint.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn pump_due(budget: std::time::Duration) -> Option<std::time::Duration> {
+    crate::process::timer::use_real_time();
+    let started = web_time::Instant::now();
+    super::set_host_deadline(Some(started + budget));
+    let next = pump_due_until(started, budget);
+    super::set_host_deadline(None);
+    next
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pump_due_until(
+    started: web_time::Instant,
+    budget: std::time::Duration,
+) -> Option<std::time::Duration> {
+    loop {
+        let mut ran_any = false;
+        for wid in 0..WORKERS.len() {
+            loop {
+                if started.elapsed() >= budget {
+                    return Some(std::time::Duration::ZERO);
+                }
+                let next = crate::core::sync::lock(&WORKERS[wid].0.0).pop_front();
+                match next {
+                    Some(p) => {
+                        run_one(p);
+                        ran_any = true;
+                    }
+                    None => break,
+                }
+            }
+        }
+        if !ran_any {
+            if crate::process::timer::fire_due_timer() {
+                continue;
+            }
+            break;
+        }
+    }
+    crate::process::timer::next_timer_in()
+}
+
 /// Start the worker pool exactly once (on the first `spawn`).
 pub(crate) fn ensure_workers() {
     WORKERS_STARTED.call_once(|| {

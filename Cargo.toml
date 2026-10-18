@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/lisp", "crates/cli", "crates/nest", "crates/lsp", "crates/playground"]
+members = ["crates/lisp", "crates/cli", "crates/nest", "crates/lsp", "crates/playground", "crates/tab"]
 
 [workspace.lints.rust]
 # `brood_asan` is set by the `asan` make target (`--cfg brood_asan`) so the instrumented
@@ -76,6 +76,15 @@ codegen-units = 1
 [profile.release-wasm]
 inherits = "release"
 opt-level = "s"
+lto = true
+codegen-units = 1
+
+# The **tab wasm** (`crates/tab`): a game kept running in a page, where every frame is
+# interpreted (wasm has no JIT), so throughput matters more than bytes — `opt-level = 3`,
+# otherwise `release-wasm`. Measured on b2d's demo: see `crates/tab`.
+[profile.release-tab-wasm]
+inherits = "release"
+opt-level = 3
 lto = true
 codegen-units = 1
 
