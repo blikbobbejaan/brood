@@ -154,36 +154,52 @@ fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Op
 
 /// The last occurrence starting strictly before `before`.
 ///
-/// Forward scans that resume where the last match began, keeping the newest. Each scan
-/// starts one character past the previous match, so together they read the text up to
-/// `before` once — the same order as the forward search, without a second, backwards
-/// streaming path to get subtly wrong.
+/// Read BACKWARD from `before` a slice at a time, each slice searched with the standard
+/// library's `rfind`, so the cost is the distance to the match rather than the offset of
+/// `before`. A forward rescan from offset 0 (what this was) cost 40 ms at the end of a
+/// 40 MB mailbox on every "previous message", and bedit carried a chunked backward search
+/// of its own until this did the same. Each slice reaches `needle.len() - 1` characters
+/// past its start into the slice after it, so a match straddling the boundary is whole in
+/// one of them; any match a slice holds starts before `before`, because the first slice
+/// ends `needle.len() - 1` characters past it.
 fn find_last_before(
     rope: &ropey::Rope,
     needle: &[char],
     before: usize,
     fold: bool,
 ) -> Option<usize> {
+    const SLICE_CHARS: usize = 65_536;
     if before == 0 {
         return None;
     }
-    // An empty needle occurs at every index 0..=len. Answer it here: the scan below would
-    // otherwise find it at `len` forever once `before` lies past the end (`find_from`
-    // clamps a start past the end back to `len`, so `start` never advances past it).
+    // An empty needle occurs at every index 0..=len.
     if needle.is_empty() {
         return Some((before - 1).min(rope.len_chars()));
     }
-    let before = before.min(rope.len_chars());
-    let mut last = None;
-    let mut start = 0usize;
-    while let Some(at) = find_from(rope, needle, start, fold) {
-        if at >= before {
-            break;
+    let n = rope.len_chars();
+    let m = needle.len();
+    let before = before.min(n);
+    let pattern: String = needle.iter().collect();
+    let width = SLICE_CHARS.max(4 * m);
+    let mut end = (before + m - 1).min(n);
+    loop {
+        let start = end.saturating_sub(width);
+        if end - start >= m {
+            let slice = rope.slice(start..end);
+            let text: String = if fold {
+                slice.chars().map(fold_char).collect()
+            } else {
+                slice.to_string()
+            };
+            if let Some(byte) = text.rfind(&pattern) {
+                return Some(start + text[..byte].chars().count());
+            }
         }
-        last = Some(at);
-        start = at + 1;
+        if start == 0 {
+            return None;
+        }
+        end = start + m - 1;
     }
-    last
 }
 
 fn needle_of(
@@ -327,6 +343,53 @@ mod find_tests {
                         find_from(&rope, &needle_chars, from, fold),
                         naive(&text, needle, from, fold),
                         "needle {needle:?} fold {fold} from {from}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The backward search agrees with "the last forward match before `before`" over a text
+    /// several slices long: matches straddling a slice boundary, overlapping matches ("aa"
+    /// in "aaa"), multi-byte characters, a needle that does not occur, folded and not.
+    #[test]
+    fn backward_search_agrees_with_the_last_forward_match() {
+        let unit = "lorem IPSUM aaab ταχύ Ωmega (def x) ";
+        let text: String = unit.repeat(5_000) + "THE-END";
+        let rope = ropey::Rope::from_str(&text);
+        let total = rope.len_chars();
+        assert!(total > 2 * 65_536, "the text must span several slices");
+        for needle in [
+            "aa",
+            "ipsum",
+            "ταχύ",
+            "ωmega (def",
+            "the-end",
+            "x) lorem",
+            "absent!",
+        ] {
+            for fold in [false, true] {
+                let needle_chars: Vec<char> = if fold {
+                    needle.chars().map(fold_char).collect()
+                } else {
+                    needle.chars().collect()
+                };
+                // every match start, once: `naive` refolds the whole text per call
+                let haystack: Vec<char> = if fold {
+                    text.chars().map(fold_char).collect()
+                } else {
+                    text.chars().collect()
+                };
+                let starts: Vec<usize> = (0..haystack.len())
+                    .filter(|&at| haystack[at..].starts_with(&needle_chars))
+                    .collect();
+                assert_eq!(starts.first().copied(), naive(&text, needle, 0, fold));
+                for before in (0..=total).step_by(4_099).chain([65_536, 65_537, total]) {
+                    let expected = starts.iter().rev().find(|&&at| at < before).copied();
+                    assert_eq!(
+                        find_last_before(&rope, &needle_chars, before, fold),
+                        expected,
+                        "needle {needle:?} fold {fold} before {before}"
                     );
                 }
             }

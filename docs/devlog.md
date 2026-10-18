@@ -2570,3 +2570,28 @@ never got a clock, and a process timing its own work across the runtime's first 
 only. Guard `cpu_time_first_read`, red without it. Also on the way to a release: the
 `jit_eq_join` polymorphic-param tests wait out a queued re-lowering before reading its state,
 and two gates upstream's commits left red (two process-wide statics, one bare name) are green.
+
+## 2026-10-18 (late) — `std/mime`: mail messages; a lossy UTF-8 read; backward rope search walks back
+
+bedit wanted to open an `.eml` and show what a reader means by it, and Brood could not say any
+of it: no header unfolding, no RFC 2047 encoded words, no quoted-printable, no multipart, no
+legacy charset — and `string/bytes->` raised on the first invalid byte, which mail is full of.
+**`std/mime`** (pure Brood over `regex` + `encoding`) reads a message into a part tree
+(`parse`), and decodes what a reader sees: `header` / `header-values`, `decode-header`
+(adjacent words pool their bytes, so a character split across two still decodes),
+`parse-params` (quotes, RFC 2231 continuations and `*=utf-8''…`), `quoted-printable-decode`,
+`decode-charset` (UTF-8, US-ASCII, ISO-8859-1/-15, windows-1252), `body-bytes` / `body-text`,
+`leaves`, `text-part` (plain over HTML in an alternative), `attachment?`, `filename`. Nothing in
+it raises on bad mail: a word that does not decode stays as written, broken base64 reads as
+its text. 21 tests (`tests/mime_test.blsp`).
+
+**`(string/bytes-> b :lossy)`** — `%utf8-bytes->string` takes an optional flag and reads each
+invalid sequence as U+FFFD (`String::from_utf8_lossy`). The strict default is unchanged.
+
+**`buffer-search-backward` costs the distance, not the offset.** `find_last_before`
+(`text_search.rs`) rescanned forward from offset 0 keeping the newest match — 33–41 ms at the
+end of a 40 MB mailbox on every "previous message", which bedit had worked around with a
+chunked backward search of its own. It now reads 64K-char slices back from `before`, each
+overlapping the next by the needle's length, and `rfind`s each. Guard
+`backward_search_agrees_with_the_last_forward_match` (overlapping matches, slice-straddling
+matches, multi-byte, folded).

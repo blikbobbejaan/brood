@@ -1,0 +1,441 @@
+;; std/mime.blsp — Internet mail messages: RFC 5322 headers and the MIME body
+;; (RFC 2045–2047, 2231), written entirely in Brood.
+
+(defmodule mime
+  "Internet mail messages: read an RFC 5322 message (an `.eml` file, one message of an
+mbox) into its headers and its MIME part tree, and decode what a reader sees.
+
+A PART is a map: `:headers`, a vector of `[name value]` in message order (folded lines
+already unfolded, values still encoded); `:type`, the lowercased media type
+(`\"text/plain\"`); `:params`, the Content-Type parameters keyed by lowercased name;
+and either `:parts` (a `multipart/*` or `message/rfc822`) or `:body`, the raw
+undecoded text. A message is the top part.
+
+    (def m (mime/parse \"Subject: =?utf-8?Q?caf=C3=A9?=\\n\\nhello\"))
+    (mime/decode-header (mime/header m \"subject\"))   ;; => \"café\"
+    (mime/body-text (mime/text-part m))               ;; => \"hello\"
+
+Decoding never raises on bad input: mail is whatever the sender's software wrote, so a
+malformed encoded word stays as written, a broken base64 body reads as its raw text and
+invalid UTF-8 reads as U+FFFD.")
+
+;; ---- headers ----------------------------------------------------------------
+
+(defn- header-lines (block)
+  ;; A header block's lines folded into `[name value]` pairs. A line opening with a space
+  ;; or tab continues the one before it (RFC 5322 §2.2.3: unfolding removes the line
+  ;; break only); a line with no colon — an mbox `From ` separator — is not a header.
+  (vec
+    (reverse
+      (fold (string/split block "\n")
+        '()
+        (fn (acc line)
+          (cond
+            (and (or (string/starts-with? line " ") (string/starts-with? line "\t"))
+              (not (empty? acc)))
+              (let ([name value] (first acc))
+                (cons [name (str value line)] (rest acc)))
+            else
+              (let (colon (index-of line ":"))
+                ;; a field name is printable ASCII with no space in it, which is
+                ;; what tells `From a@b Mon Jan 1 00:00:00` from a header
+                (if (and (> colon 0) (regex/match? "^[!-9;-~]+$" (string/substring line 0 colon)))
+                  (cons [(string/trim (string/substring line 0 colon))
+                          (string/trim (string/substring line (inc colon)))]
+                    acc)
+                  acc))))))))
+
+(defn split-message (text)
+  "`[headers body]` of message `text`: the header block (unfolded, as `[name value]`
+pairs) and everything after the first empty line. CRLF line ends read as LF.
+
+    (mime/split-message \"A: 1\\n\\nbody\")   → [[[\"A\" \"1\"]] \"body\"]"
+  (let (text (string/replace text "\r\n" "\n")
+        at (cond
+             (string/starts-with? text "\n") 0
+             else (index-of text "\n\n")))
+    (cond
+      (= at 0) [[] (string/substring text 1)]
+      (< at 0) [(header-lines text) ""]
+      else [(header-lines (string/substring text 0 at)) (string/substring text (+ at 2))])))
+
+(defn header (part name)
+  "The first value of header `name` in `part` (case-insensitive), still encoded, or nil.
+
+    (mime/header {:headers [[\"Subject\" \"hi\"]]} \"subject\")   → \"hi\""
+  (let (wanted (string/lower name)
+        found (seq/find (get part :headers) (fn (pair) (= (string/lower (first pair)) wanted))))
+    (when found (nth found 1))))
+
+(defn header-values (part name)
+  "Every value of header `name` in `part`, in message order (`Received`, `To` more than once).
+
+    (mime/header-values {:headers [[\"To\" \"a\"] [\"to\" \"b\"]]} \"To\")   → [\"a\" \"b\"]"
+  (let (wanted (string/lower name))
+    (vec (for (pair (get part :headers) :when (= (string/lower (first pair)) wanted)) (nth pair 1)))))
+
+;; ---- parameters: `type/subtype; name=value; name="quoted"` (RFC 2045, 2231) -------
+
+(defn- split-unquoted (s separator)
+  ;; `s` split on `separator` (a 1-char string) outside double quotes; a backslash
+  ;; escapes the next character inside them
+  (let (chars (string/->list s))
+    (letrec (walk (fn (chars quoted escaped current acc)
+                    (if (empty? chars)
+                      (reverse (cons (string/list-> (reverse current)) acc))
+                      (let (char (first chars) more (rest chars))
+                        (cond
+                          escaped (walk more quoted false (cons char current) acc)
+                          (and quoted (= char "\\")) (walk more quoted true (cons char current) acc)
+                          (= char "\"") (walk more (not quoted) false (cons char current) acc)
+                          (and (not quoted) (= char separator))
+                            (walk more false false '() (cons (string/list-> (reverse current)) acc))
+                          else (walk more quoted false (cons char current) acc))))))
+      (walk chars false false '() '()))))
+
+(defn- unquote-value (value)
+  (if (and (string/starts-with? value "\"")
+        (string/ends-with? value "\"")
+        (>= (string/length value) 2))
+    (regex/replace "\\\\(.)" (string/substring value 1 (dec (string/length value))) "$1")
+    value))
+
+(defn- percent-bytes (s)
+  ;; RFC 2231's `%XX` octets (anything else as its own UTF-8 bytes) as a byte list
+  (let (chars (string/->codepoints s) n (count chars))
+    (letrec (walk (fn (i acc)
+                    (cond
+                      (>= i n) (reverse acc)
+                      (and (= (nth chars i) 37) (< (+ i 2) n))
+                        (let (high (hex-digit (nth chars (inc i)))
+                              low (hex-digit (nth chars (+ i 2))))
+                          (if (and high low)
+                            (walk (+ i 3) (cons (+ (* high 16) low) acc))
+                            (walk (inc i) (cons 37 acc))))
+                      else
+                        (walk (inc i)
+                          (%reverse-onto (string/->bytes (string/int->char (nth chars i))) acc)))))
+      (walk 0 '()))))
+
+(defn- extended-value (value)
+  ;; RFC 2231 `charset'language'%XX…` → decoded text
+  (let (pieces (string/split value "'"))
+    (if (>= (count pieces) 3)
+      (decode-charset (percent-bytes (string/join (drop pieces 2) "'")) (first pieces))
+      (decode-charset (percent-bytes value) "utf-8"))))
+
+(defn- join-continuations (raw)
+  ;; `raw` maps a lowercased parameter name, possibly `name*`, `name*0`, `name*1*`, to
+  ;; its value; RFC 2231 continuations join in section order, and a section whose name
+  ;; ends in `*` is percent-encoded with a charset prefix on the first one
+  (let (sections (fn (name)
+                   (let (found (regex/find "^(.*?)\\*(\\d+)(\\*?)$" name))
+                     (when found
+                       (let (groups (get found :groups))
+                         [(get (nth groups 0) :text)
+                           (string/->number (get (nth groups 1) :text))
+                           (= (get (nth groups 2) :text) "*")]))))
+        plain (into {}
+                (for ([name value] raw :when (nil? (sections name)))
+                  (if (string/ends-with? name "*")
+                    [(string/drop-suffix name "*") (extended-value value)]
+                    [name value])))
+        grouped (seq/group-by (for ([name value] raw :when (sections name))
+                                (conj (sections name) value))
+                  first))
+    (fold grouped
+      plain
+      (fn (acc entry)
+        (let ([name pieces] entry
+              ordered (sort-by pieces (fn (piece) (nth piece 1)))
+              encoded? (nth (first ordered) 2)
+              joined (string/join (map ordered (fn (piece) (nth piece 3))) ""))
+          (assoc acc name (if encoded? (extended-value joined) joined)))))))
+
+(defn parse-params (value)
+  "A structured header value — `type/subtype; name=value; …` — as `[main params]`: the
+lowercased leading token and its parameters keyed by lowercased name, quotes removed and
+RFC 2231 continuations (`name*0=` `name*1=`) and encodings (`name*=utf-8''%E2%82%AC`)
+decoded. Content-Type and Content-Disposition both have this shape.
+
+    (mime/parse-params \"text/plain; charset=\\\"UTF-8\\\"\")   → [\"text/plain\" {\"charset\" \"UTF-8\"}]"
+  (let (pieces (split-unquoted (or value "") ";")
+        raw (into {}
+              (for (piece (rest pieces) :when (> (index-of piece "=") 0))
+                (let (at (index-of piece "="))
+                  [(string/lower (string/trim (string/substring piece 0 at)))
+                    (unquote-value (string/trim (string/substring piece (inc at))))]))))
+    [(string/lower (string/trim (first pieces))) (join-continuations raw)]))
+
+;; ---- encoded words (RFC 2047) -----------------------------------------------
+
+(def- *encoded-word* "=\\?([^?\\s]+)\\?([BbQq])\\?([^?\\s]*)\\?=")
+
+(defn- encoded-word-bytes (encoding text)
+  (if (= (string/upper encoding) "B")
+    (let (decoded (encoding/base64-decode-bytes text))
+      (when (not (failure? decoded)) decoded))
+    (quoted-printable-decode (string/replace text "_" " "))))
+
+(defn decode-header (value)
+  "Header `value` with its RFC 2047 encoded words (`=?charset?B|Q?text?=`) decoded and
+the whitespace between two adjacent ones dropped, as the RFC says. A word that does not
+decode stays as written.
+
+    (mime/decode-header \"=?UTF-8?Q?caf=C3=A9?= au lait\")   → \"café au lait\"
+    (mime/decode-header \"=?utf-8?B?aMOp?= =?utf-8?B?bGxv?=\")   → \"héllo\""
+  (if (nil? value)
+    nil
+    (let (found (regex/find-all *encoded-word* value))
+      (if (empty? found)
+        value
+        ;; one pass over the matches: text between them is kept unless it is only
+        ;; whitespace between two encoded words; adjacent words in the same charset pool
+        ;; their bytes, so a character split across two words still decodes
+        (let ([out position pending] (fold found
+                                       ['() 0 nil]
+                                       (fn ([out position pending] match)
+                                         (let (groups (get match :groups)
+                                               charset (string/lower (first (string/split (get (nth groups
+                                                                                                 0)
+                                                                                            :text)
+                                                                              "*")))
+                                               word-bytes (encoded-word-bytes (get (nth groups 1)
+                                                                                :text)
+                                                            (get (nth groups 2) :text))
+                                               gap (string/substring value
+                                                     position
+                                                     (get match :start))
+                                               joined? (and pending (string/blank? gap)))
+                                           (cond
+                                             (nil? word-bytes)
+                                               [(cons (get match :text)
+                                                  (cons gap (flush-pending pending out)))
+                                                 (get match :end)
+                                                 nil]
+                                             (and joined? (= (first pending) charset))
+                                               [out
+                                                 (get match :end)
+                                                 [charset (bytes/concat (nth pending 1) word-bytes)]]
+                                             joined?
+                                               [(flush-pending pending out)
+                                                 (get match :end)
+                                                 [charset word-bytes]]
+                                             else
+                                               [(cons gap (flush-pending pending out))
+                                                 (get match :end)
+                                                 [charset word-bytes]]))))
+              out (flush-pending pending out))
+          (string/join (reverse (cons (string/substring value position) out)) ""))))))
+
+(defn- flush-pending (pending out)
+  (if pending
+    (cons (decode-charset (nth pending 1) (first pending)) out)
+    out))
+
+;; ---- transfer encodings (RFC 2045 §6) ----------------------------------------
+
+(defn- hex-digit (code)
+  ;; the value of hex digit `code` (a codepoint), or nil — for a non-digit and past the end
+  (cond
+    (not (int? code)) nil
+    (and (>= code 48) (<= code 57)) (- code 48)
+    (and (>= code 65) (<= code 70)) (- code 55)
+    (and (>= code 97) (<= code 102)) (- code 87)
+    else nil))
+
+;; check-allow :type-mismatch — every `(nth chars i)` sits behind an `i < n` test on the same
+;; vector, further from the read than the checker derives the bound
+(check-allow :type-mismatch
+  (defn quoted-printable-decode (text)
+    "The bytes quoted-printable `text` encodes: `=XX` is one octet, `=` at a line end is a
+soft break (the line continues), and any other character is its own UTF-8 bytes. A
+stray `=` that starts neither is kept, as decoders do.
+
+    (string/bytes-> (mime/quoted-printable-decode \"caf=C3=A9 =\\nau lait\"))   → \"café au lait\""
+    (let (chars (string/->codepoints (string/replace text "\r\n" "\n")) n (count chars))
+      (letrec (soft-break (fn (i)
+                            ;; the index past `=`, trailing blanks and a newline, or nil
+                            (cond
+                              (>= i n) i
+                              (= (nth chars i) 10) (inc i)
+                              (or (= (nth chars i) 32) (= (nth chars i) 9)) (soft-break (inc i))
+                              else nil))
+               walk (fn (i acc)
+                      (cond
+                        (>= i n) (bytes (reverse acc))
+                        (= (nth chars i) 61)
+                          (let (after-break (soft-break (inc i))
+                                high (when (< (inc i) n) (hex-digit (nth chars (inc i))))
+                                low (when (< (+ i 2) n) (hex-digit (nth chars (+ i 2)))))
+                            (cond
+                              after-break (walk after-break acc)
+                              (and high low) (walk (+ i 3) (cons (+ (* high 16) low) acc))
+                              else (walk (inc i) (cons 61 acc))))
+                        (< (nth chars i) 128) (walk (inc i) (cons (nth chars i) acc))
+                        else
+                          (walk (inc i)
+                            (%reverse-onto (string/->bytes (string/int->char (nth chars i))) acc)))))
+        (walk 0 '())))))
+
+;; ---- charsets ----------------------------------------------------------------
+
+;; windows-1252's 0x80–0x9F, where it differs from ISO-8859-1's C1 controls (the five
+;; holes map to themselves, as browsers decode them)
+(def- *windows-1252-high*
+  [8364
+    129 8218 402 8222 8230 8224 8225 710 8240 352 8249 338 141 381 143 144 8216 8217 8220 8221 8226
+    8211 8212 732 8482 353 8250 339 157 382 376])
+
+;; ISO-8859-15 is ISO-8859-1 with eight code points replaced (the euro sign among them)
+(def- *latin-9-changes* {164 8364 166 352 168 353 180 381 184 382 188 338 189 339 190 376})
+
+(defn- single-byte (octets code-of)
+  (string/codepoints-> (map octets code-of)))
+
+(defn decode-charset (octets charset)
+  "`octets` (a bytes value or a byte list) read as text in the MIME `charset` name —
+UTF-8, US-ASCII, ISO-8859-1, ISO-8859-15 or windows-1252, case-insensitively. Any other
+name, and nil, reads as UTF-8; invalid UTF-8 reads as U+FFFD rather than raising.
+
+    (mime/decode-charset [99 97 102 233] \"iso-8859-1\")   → \"café\"
+    (mime/decode-charset [128] \"windows-1252\")   → \"€\""
+  (match (string/lower (or charset "utf-8"))
+    ((or "iso-8859-1" "latin1" "latin-1" "l1" "iso_8859-1" "iso8859-1") (single-byte octets
+                                                                          (fn (byte) byte)))
+    ((or "iso-8859-15" "latin-9" "latin9" "iso8859-15") (single-byte octets
+                                                          (fn (byte)
+                                                            (get *latin-9-changes* byte byte))))
+    ((or "windows-1252" "cp1252" "x-cp1252") (single-byte octets
+                                               (fn (byte)
+                                                 (if (and (>= byte 128) (< byte 160))
+                                                   (nth *windows-1252-high* (- byte 128))
+                                                   byte))))
+    (_ (string/bytes-> octets :lossy))))
+
+;; ---- the part tree -----------------------------------------------------------
+
+(defn- multipart-bodies (body boundary)
+  ;; the texts between `--boundary` delimiter lines, preamble and epilogue dropped
+  (let (open (str "--" boundary)
+        close (str open "--")
+        [parts current state] (fold (string/split body "\n")
+                                ['() '() :preamble]
+                                (fn ([parts current state] line)
+                                  (let (line (string/trimr line))
+                                    (cond
+                                      (= state :epilogue) [parts current state]
+                                      (= line close)
+                                        [(if (= state :part) (cons current parts) parts)
+                                          '() :epilogue]
+                                      (= line open)
+                                        [(if (= state :part) (cons current parts) parts) '() :part]
+                                      (= state :part) [parts (cons line current) state]
+                                      else [parts current state])))))
+    ;; a message cut off before its closing delimiter still has its last part
+    (map (reverse (if (= state :part) (cons current parts) parts))
+      (fn (lines) (string/join (reverse lines) "\n")))))
+
+(defn- parse-part (text default-type)
+  (let ([headers body] (split-message text)
+        stub {:headers headers}
+        [type params] (parse-params (or (header stub "content-type") default-type))
+        type (if (> (index-of type "/") 0) type "text/plain")
+        part (assoc stub :type type :params params))
+    (cond
+      (and (string/starts-with? type "multipart/") (get params "boundary"))
+        (let (child-type (if (= type "multipart/digest") "message/rfc822" "text/plain"))
+          (assoc part
+            :parts
+              (vec (map (multipart-bodies body (get params "boundary"))
+                     (fn (child) (parse-part child child-type))))))
+      (= type "message/rfc822") (assoc part :parts [(parse-part body "text/plain")])
+      else (assoc part :body body))))
+
+(defn parse (text)
+  "Message `text` read into its part tree (see the module doc for a part's shape). A
+missing Content-Type is `text/plain`; a multipart body is split on its boundary, and a
+`message/rfc822` part holds the forwarded message as its one child.
+
+    (get (mime/parse \"Content-Type: text/html\\n\\n<p>hi</p>\") :type)   → \"text/html\""
+  (parse-part text "text/plain"))
+
+(defn leaves (part)
+  "Every non-container part under `part`, depth-first in message order: the text bodies
+and attachments, without the `multipart/*` envelopes around them.
+
+    (count (mime/leaves (mime/parse \"A: 1\\n\\nx\")))   → 1"
+  (if (get part :parts)
+    (vec (mapcat (get part :parts) leaves))
+    [part]))
+
+(defn transfer-encoding (part)
+  "`part`'s Content-Transfer-Encoding, lowercased — `\"7bit\"` when absent.
+
+    (mime/transfer-encoding {:headers []})   → \"7bit\""
+  (string/lower (string/trim (or (header part "content-transfer-encoding") "7bit"))))
+
+(defn body-bytes (part)
+  "`part`'s body with its transfer encoding undone, as bytes: base64 and
+quoted-printable decoded, `7bit` / `8bit` / `binary` as written. A base64 body that does
+not decode is returned as written.
+
+    (string/bytes-> (mime/body-bytes {:headers [[\"Content-Transfer-Encoding\" \"base64\"]] :body \"aGk=\"}))   → \"hi\""
+  (let (body (or (get part :body) ""))
+    (case (transfer-encoding part)
+      "base64"
+        (let (decoded (encoding/base64-decode-bytes (regex/replace "\\s+" body "")))
+          (if (failure? decoded) (string/->bytes body) decoded))
+      "quoted-printable" (quoted-printable-decode body)
+      (string/->bytes body))))
+
+(defn body-text (part)
+  "`part`'s body as text: the transfer encoding undone, then read in its charset.
+
+    (mime/body-text {:headers [] :params {\"charset\" \"iso-8859-1\"} :body \"hi\"})   → \"hi\""
+  (decode-charset (body-bytes part) (get (get part :params) "charset")))
+
+(defn disposition (part)
+  "`[kind params]` of `part`'s Content-Disposition — kind `\"inline\"` or `\"attachment\"`,
+`\"inline\"` when the header is absent.
+
+    (mime/disposition {:headers []})   → [\"inline\" {}]"
+  (let (value (header part "content-disposition"))
+    (if value (parse-params value) ["inline" {}])))
+
+(defn filename (part)
+  "The file name `part` carries — Content-Disposition's `filename`, else Content-Type's
+`name` — decoded, or nil.
+
+    (mime/filename {:headers [] :params {\"name\" \"a.pdf\"}})   → \"a.pdf\""
+  (let (name (or (get (nth (disposition part) 1) "filename") (get (get part :params) "name")))
+    (when name (decode-header name))))
+
+(defn attachment? (part)
+  "Whether `part` is something to save rather than read: marked `attachment`, or a leaf
+that is neither text nor a message.
+
+    (mime/attachment? {:headers [] :type \"application/pdf\"})   → true"
+  (or (= (first (disposition part)) "attachment")
+    (and (nil? (get part :parts))
+      (not (string/starts-with? (get part :type) "text/")))))
+
+(defn text-part (part)
+  "The part a reader shows as `part`'s text, or nil: in `multipart/alternative` the
+`text/plain` version (else `text/html`, else the last readable one), in any other
+multipart the first readable child that is not an attachment, and a `text/*` part that is
+not an attachment is itself.
+
+    (get (mime/text-part (mime/parse \"A: 1\\n\\nx\")) :type)   → \"text/plain\""
+  (let (type (get part :type) children (get part :parts))
+    (cond
+      (= type "multipart/alternative")
+        (let (readable (vec (seq/filter (map children text-part) (fn (child) (not (nil? child))))))
+          (or (seq/find readable (fn (child) (= (get child :type) "text/plain")))
+            (seq/find readable (fn (child) (= (get child :type) "text/html")))
+            (last readable)))
+      (= type "message/rfc822") nil
+      children (seq/find (map children text-part) (fn (child) (not (nil? child))))
+      (attachment? part) nil
+      (string/starts-with? type "text/") part
+      else nil)))

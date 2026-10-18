@@ -1,0 +1,112 @@
+;; Tests for std/mime.blsp — mail headers, the MIME part tree, and decoding.
+
+(defmodule mime-test (:use test))
+
+(def- multipart-message
+  (string/join ["From: =?iso-8859-1?Q?Ren=E9?= <rene@example.org>"
+                 "To: a@example.org," "  b@example.org" "Subject: =?utf-8?B?SMOpbGxv?="
+                 "  =?utf-8?Q?_w=C3=B6rld?=" "MIME-Version: 1.0"
+                 "Content-Type: multipart/mixed; boundary=\"outer\"" "" "This is the preamble."
+                 "--outer" "Content-Type: multipart/alternative; boundary=inner" "" "--inner"
+                 "Content-Type: text/plain; charset=utf-8"
+                 "Content-Transfer-Encoding: quoted-printable" ""
+                 "Caf=C3=A9 au lait, a long line that is =" "soft-broken." "--inner"
+                 "Content-Type: text/html; charset=utf-8" "" "<p>Café</p>" "--inner--" "--outer"
+                 "Content-Type: application/pdf; name=\"report.pdf\""
+                 "Content-Disposition: attachment; filename*=utf-8''r%C3%A9sum%C3%A9.pdf"
+                 "Content-Transfer-Encoding: base64" "" "JVBERi0x" "LjQK" "--outer--"
+                 "The epilogue."]
+    "\r\n"))
+
+(describe "mime/split-message"
+  (test "unfolds continuation lines and reads CRLF as LF"
+    (let ([headers body] (mime/split-message "A: one\r\n two\r\nB: 2\r\n\r\nbody\r\n"))
+      (assert= [["A" "one two"] ["B" "2"]] headers)
+      (assert= "body\n" body)))
+  (test "a message with no empty line is all headers"
+    (assert= [[["A" "1"]] ""] (mime/split-message "A: 1")))
+  (test "an mbox separator line is not a header"
+    (assert= [["Subject" "x"]]
+      (first (mime/split-message "From someone@example.org Mon Jan  1 00:00:00 2024\nSubject: x\n\nbody")))))
+
+(describe "mime/header"
+  (test "looks names up case-insensitively, the first one wins"
+    (let (part {:headers [["Received" "one"] ["received" "two"] ["To" "x"]]})
+      (assert= "one" (mime/header part "RECEIVED"))
+      (assert= ["one" "two"] (mime/header-values part "received"))
+      (assert= nil (mime/header part "cc")))))
+
+(describe "mime/parse-params"
+  (test "quoted values keep their semicolons and lose their escapes"
+    (assert= ["attachment" {"filename" "a;b \"c\".txt"}]
+      (mime/parse-params "Attachment; FILENAME=\"a;b \\\"c\\\".txt\"")))
+  (test "RFC 2231 continuations join in order, encoded ones decode"
+    (assert= {"name" "long-name.txt"}
+      (nth (mime/parse-params "x/y; name*1=\"name.txt\"; name*0=\"long-\"") 1))
+    (assert= {"filename" "€ rates.pdf"}
+      (nth (mime/parse-params "attachment; filename*=utf-8''%E2%82%AC%20rates.pdf") 1))))
+
+(describe "mime/decode-header"
+  (test "plain text passes through"
+    (assert= "plain" (mime/decode-header "plain"))
+    (assert= nil (mime/decode-header nil)))
+  (test "B and Q words, in the charset they name"
+    (assert= "René <r@example.org>" (mime/decode-header "=?ISO-8859-1?Q?Ren=E9?= <r@example.org>"))
+    (assert= "héllo" (mime/decode-header "=?utf-8?b?aMOpbGxv?=")))
+  (test "whitespace between adjacent encoded words is dropped, other text kept"
+    (assert= "ab c" (mime/decode-header "=?utf-8?Q?a?=  =?utf-8?Q?b?= c")))
+  (test "a character split across two words still decodes"
+    (assert= "é" (mime/decode-header "=?utf-8?Q?=C3?= =?utf-8?Q?=A9?=")))
+  (test "a word that does not decode stays as written"
+    (assert= "x =?utf-8?B?***?= y" (mime/decode-header "x =?utf-8?B?***?= y"))))
+
+(describe "mime/quoted-printable-decode"
+  (test "octets, soft breaks and a stray equals sign"
+    (assert= "a=b café, joined"
+      (string/bytes-> (mime/quoted-printable-decode "a=b caf=C3=A9, jo=  \r\nined")))))
+
+(describe "mime/decode-charset"
+  (test "single-byte charsets"
+    (assert= "café" (mime/decode-charset [99 97 102 233] "ISO-8859-1"))
+    (assert= "€" (mime/decode-charset [164] "iso-8859-15"))
+    (assert= "“q”" (mime/decode-charset [147 113 148] "windows-1252")))
+  (test "UTF-8, and an unknown charset, read bad bytes as U+FFFD"
+    (assert= [97 65533] (string/->codepoints (mime/decode-charset [97 255] "utf-8")))
+    (assert= "ok" (mime/decode-charset (string/->bytes "ok") "x-unknown"))))
+
+(describe "mime/parse"
+  (test "a bare message is one text/plain part"
+    (let (message (mime/parse "Subject: hi\n\nbody"))
+      (assert= "text/plain" (get message :type))
+      (assert= "body" (mime/body-text message))
+      (assert= message (mime/text-part message))))
+  (test "a multipart tree, preamble and epilogue dropped"
+    (let (message (mime/parse multipart-message)
+          [alternative attachment] (get message :parts))
+      (assert= "multipart/mixed" (get message :type))
+      (assert= "multipart/alternative" (get alternative :type))
+      (assert= ["text/plain" "text/html" "application/pdf"]
+        (vec (map (mime/leaves message) (fn (part) (get part :type)))))
+      (assert= "Héllo wörld" (mime/decode-header (mime/header message "subject")))
+      (assert= "René <rene@example.org>" (mime/decode-header (mime/header message "from")))
+      (assert= "a@example.org,  b@example.org" (mime/header message "to"))))
+  (test "the text a reader sees prefers text/plain in an alternative"
+    (let (text (mime/text-part (mime/parse multipart-message)))
+      (assert= "text/plain" (get text :type))
+      (assert= "Café au lait, a long line that is soft-broken." (mime/body-text text))))
+  (test "an attachment: its decoded name and bytes"
+    (let (attachment (last (mime/leaves (mime/parse multipart-message))))
+      (is (mime/attachment? attachment))
+      (assert= "résumé.pdf" (mime/filename attachment))
+      (assert= "%PDF-1.4\n" (string/bytes-> (mime/body-bytes attachment)))))
+  (test "a message cut off before its closing delimiter keeps its last part"
+    (let (message (mime/parse "Content-Type: multipart/mixed; boundary=b\n\n--b\n\none\n--b\n\ntwo"))
+      (assert= ["one" "two"] (vec (map (mime/leaves message) mime/body-text)))))
+  (test "a forwarded message is a part holding the message"
+    (let (message (mime/parse "Content-Type: multipart/mixed; boundary=b\n\n--b\n\nsee below\n--b\nContent-Type: message/rfc822\n\nSubject: inner\n\ninner body\n--b--")
+          forwarded (nth (get message :parts) 1))
+      (assert= "inner" (mime/header (first (get forwarded :parts)) "subject"))
+      (assert= "see below" (mime/body-text (mime/text-part message)))))
+  (test "a broken base64 body reads as written"
+    (assert= "not base64!"
+      (mime/body-text (mime/parse "Content-Transfer-Encoding: base64\n\nnot base64!")))))

@@ -271,7 +271,7 @@ literal — no constructor call.
 |  | `string/char->int` | 1 | Unicode codepoint of the first character of string s (identical to the byte value for ASCII). |
 |  | `string/int->char` | 1 | A 1-char string for Unicode codepoint n. Errors on an invalid codepoint. |
 |  | `string->utf8-bytes` | 1 | The UTF-8 encoding of s as a bytes value. |
-|  | `utf8-bytes->string` | 1 | Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8. |
+|  | `utf8-bytes->string` | 1–2 | Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8, unless the optional `lossy` flag is truthy: then each invalid sequence becomes U+FFFD. |
 | **Regex** (the matching engine, ADR-389; `%`-internal — `std/regex.blsp` owns the pattern language and translates into these) | `%regex-match?` | 2 | Whether a pattern in the engine's syntax matches anywhere in s. |
 |  | `%regex-find` | 3 | The leftmost-first match at or after char index `from`: `{:start :end :text :groups [...]}` in CHAR offsets, or nil. |
 |  | `%regex-find-all` | 2 | Every non-overlapping match, as a vector of those maps; an empty match steps one character on. |

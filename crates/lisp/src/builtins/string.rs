@@ -205,14 +205,15 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
     primitives.def(
         "%utf8-bytes->string",
-        Arity::exact(1),
+        Arity::range(1, 2),
         // What `collect_bytes` accepts: bytes, a vector or list of ints, or nil (empty).
-        Sig::new(
+        Sig::with_rest(
             vec![bytes_ty.union(Ty::of(Tag::Vector)).union(Ty::LIST)],
+            any,
             string,
         ),
-        &["bytes"],
-        "Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8.",
+        &["bytes", "lossy"],
+        "Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8 — unless `lossy` is truthy, when each invalid sequence becomes U+FFFD, the replacement character (text from the wire: mail, a legacy file, a subprocess).",
         utf8_bytes_to_string);
     // `->fixed` renders a number with a fixed count of decimals — the one
     // float→text op `str`/`pr-str` can't express (they print shortest round-trip
@@ -1034,6 +1035,9 @@ pub(super) fn string_to_utf8_bytes(args: &[Value], _: EnvId, heap: &mut Heap) ->
 pub(super) fn utf8_bytes_to_string(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     // Accepts a `bytes` value, or (leniently) a vector or list of byte ints.
     let bytes = super::bytes::collect_bytes("utf8-bytes->string", arg(args, 0), heap)?;
+    if args.get(1).is_some_and(|lossy| crate::eval::truthy(*lossy)) {
+        return Ok(heap.alloc_string(&String::from_utf8_lossy(&bytes)));
+    }
     match String::from_utf8(bytes) {
         Ok(s) => Ok(heap.alloc_string(&s)),
         Err(e) => Err(LispError::runtime(format!(
