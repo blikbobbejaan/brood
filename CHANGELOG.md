@@ -7,6 +7,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `std/editor/org`: Org-mode, lexically — `org-spans` colours headings by level, TODO / DONE
+  keywords, priorities, tags, `#+KEYWORD:` lines, `#+BEGIN_ … #+END_` blocks, comments, drawers,
+  list bullets and checkboxes, links, timestamps and the six emphasis markers, in the
+  `highlight-spans` shape and with theme faces resolved per call. The outline is there too:
+  `heading-level`, `subtree-end` (what a fold hides) and `cycle-todo` (Org's `C-c C-t`).
 - `editor/treesit/languages` (`%tree-sitter-languages`): the languages the runtime can parse
   right now — loaded and built-in grammars — as a sorted vector of keywords. An editor asks
   this before offering to fetch a grammar, instead of parsing something and reading the error.

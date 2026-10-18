@@ -701,6 +701,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // may `require` (bedit's markdown-mode), so it stays in CORE alongside
     // `highlight`/`lineedit`; opt-in, never in the prelude.
     embedded_module!("editor/markdown", "std/editor/markdown.blsp"),
+    embedded_module!("editor/org", "std/editor/org.blsp"),
     // Lexical `.env` and Dockerfile highlighters, the dotenv/Dockerfile analogues of
     // `markdown` (`env-spans` / `dockerfile-spans` → `[start end face]` spans). Pure
     // UI a shipped app may `require` (bedit's env-/docker-mode); CORE, like markdown.
