@@ -7,6 +7,16 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- `editor/treesit/languages` (`%tree-sitter-languages`): the languages the runtime can parse
+  right now — loaded and built-in grammars — as a sorted vector of keywords. An editor asks
+  this before offering to fetch a grammar, instead of parsing something and reading the error.
+- `editor/treesit/grammar-install` and `grammar-build` take an optional `subdir`, for a
+  repository that holds several grammars (tree-sitter-typescript keeps `typescript/` and
+  `tsx/`), and `grammar-fetch` reuses a checkout already at its destination instead of
+  failing to clone over it.
+- `editor/treesit/indent-column`: a `:dedent` token needs a word boundary after it only when
+  it ends in a word character, so a punctuation closer like JSX's `</` matches whatever tag
+  name follows it.
 - `std/registry`: named registries a program fills as its modules load. `registry/put!`
   replaces by key; read with `entries`, `lookup`, `ranked` (by an entry's `:rank`). Writes are
   atomic across processes, survive an `%isolate` restore, and are carried by the startup image

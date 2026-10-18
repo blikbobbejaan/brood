@@ -347,12 +347,17 @@ restart is never wrong where the lead-in is right, and is right everywhere the l
   "Does `line` begin with `token` at a WORD BOUNDARY? `end)` closes a block and `endless`
 does not, and splitting on whitespace cannot tell them apart — which is how the closing
 line of `Enum.reduce(xs, %{}, fn … end)`, a shape Elixir is full of, kept a level it had
-already left."
+already left.
+
+The boundary is asked of a token that ENDS in a word character only. A punctuation token
+has no word to run on into — JSX's `</` closes an element whatever tag name follows it."
   (let (t (string/triml line)
-        n (string/length token))
+        n (string/length token)
+        word-char? (fn (c) (regex/matches? "[A-Za-z0-9_]" c)))
     (and (string/starts-with? t token)
       (or (= (string/length t) n)
-        (not (regex/matches? "[A-Za-z0-9_]" (string/substring t n (inc n))))))))
+        (not (word-char? (string/substring token (dec n) n)))
+        (not (word-char? (string/substring t n (inc n))))))))
 
 (defn- ts-dedent-tokens (dedent)
   "The tokens of a `:dedent`, which may be a SET (all backing out `:dedent-levels`) or a
@@ -785,6 +790,15 @@ not the whole enclosing module. Falls back to the top-level form, then `point`."
 ;; expects — are the same for every grammar, so they are here as a recipe a mode can run
 ;; from a declaration of WHERE the grammar is, rather than a README the user follows.
 
+(defn languages ()
+  "The languages this runtime can parse right now — grammars loaded at runtime and built
+in — as a sorted vector of keywords. What to ask before offering to fetch a grammar, or
+telling someone a file's mode has none.
+
+    (vector? (editor/treesit/languages))   → true"
+  (%tree-sitter-languages))
+(sig languages (-> vector))
+
 (defn grammar-library-name (lang)
   "The file name a grammar for `lang` is loaded from: `libtree-sitter-<lang>.so`.
 
@@ -800,34 +814,39 @@ not the whole enclosing module. Falls back to the top-level form, then `point`."
 
 (defn grammar-fetch (source dest)
   "Bring the grammar at `source` to the directory `dest`: a git URL is cloned (shallow,
-so a language costs seconds, not a history); a local directory is used as it is. Returns
-`{:ok dir}` — the checkout holding `src/` — or `{:error text}`.
+so a language costs seconds, not a history) unless `dest` already holds a checkout,
+which is used as it is, like a local directory. Returns `{:ok dir}` — the checkout — or
+`{:error text}`.
 
     (editor/treesit/grammar-fetch \"nowhere\" \"unused\")   → {:error \"no grammar at nowhere (a git URL or a directory)\"}"
   (cond
     (file/dir? source) {:ok source}
     (or (string/starts-with? source "http") (string/starts-with? source "git@"))
-      (let (r (os/cmd "git" ["clone" "--depth=1" source dest]))
-        (if (or (os/cmd-ok? r) (file/dir? (path/join dest "src")))
-          {:ok dest}
-          {:error (str "git clone " source ": " (string/trim (get r :stderr "")))}))
+      (if (file/dir? (path/join dest ".git"))
+        {:ok dest}
+        (let (r (os/cmd "git" ["clone" "--depth=1" source dest]))
+          (if (os/cmd-ok? r)
+            {:ok dest}
+            {:error (str "git clone " source ": " (string/trim (get r :stderr "")))})))
     else {:error (str "no grammar at " source " (a git URL or a directory)")}))
 (sig grammar-fetch (string string -> map))
 
-(defn grammar-build (checkout lang out-dir)
+(defn grammar-build (checkout lang out-dir &optional (subdir nil))
   "Compile the grammar in `checkout` (its `src/parser.c`, plus `src/scanner.c` /
 `scanner.cc` when present — the latter with the C++ compiler) into
-`<out-dir>/libtree-sitter-<lang>.so`, the library `%tree-sitter-load-grammar` takes. A
-`src/` a grammar generator has not produced yet (a repository shipping only
-`grammar.js`) is reported, not generated: that needs the tree-sitter CLI. Returns
-`{:ok path}` or `{:error text}`.
+`<out-dir>/libtree-sitter-<lang>.so`, the library `%tree-sitter-load-grammar` takes.
+`subdir` names the grammar's directory inside a repository that holds several —
+tree-sitter-typescript keeps `typescript/src` and `tsx/src`. A `src/` a grammar generator
+has not produced yet (a repository shipping only `grammar.js`) is reported, not
+generated: that needs the tree-sitter CLI. Returns `{:ok path}` or `{:error text}`.
 
     (contains? (editor/treesit/grammar-build \".\" :none \".\") :error)   → true"
-  (let (src (path/join checkout "src")
+  (let (root (if (nil? subdir) checkout (path/join checkout subdir))
+        src (path/join root "src")
         parser (path/join src "parser.c")
         out (path/join out-dir (grammar-library-name lang)))
     (if (not (file/exists? parser))
-      {:error (str checkout " has no src/parser.c — run `tree-sitter generate` in it first")}
+      {:error (str root " has no src/parser.c — run `tree-sitter generate` in it first")}
       (let (scanner (grammar-scanner src)
             cxx? (and scanner (second scanner))
             compiler (if cxx? "c++" "cc")
@@ -839,17 +858,18 @@ so a language costs seconds, not a history); a local directory is used as it is.
         (if (os/cmd-ok? r)
           {:ok out}
           {:error (str compiler " failed: " (string/trim (get r :stderr "")))})))))
-(sig grammar-build (string any string -> map))
+(sig grammar-build (string any string &optional (or nil string) -> map))
 
-(defn grammar-install (source lang out-dir work-dir)
+(defn grammar-install (source lang out-dir work-dir &optional (subdir nil))
   "`grammar-fetch` then `grammar-build`: from where a grammar lives (`source` — a git URL
-or a directory) to `<out-dir>/libtree-sitter-<lang>.so`, cloning into
-`<work-dir>/<lang>` when it has to. The one call a mode's `:grammar` declaration needs
-to become a loadable library. `{:ok path}` or `{:error text}`.
+or a directory, and `subdir` within it when the repository holds several grammars) to
+`<out-dir>/libtree-sitter-<lang>.so`, cloning into `<work-dir>/<lang>` when it has to.
+The one call a mode's `:grammar` declaration needs to become a loadable library.
+`{:ok path}` or `{:error text}`.
 
     (contains? (editor/treesit/grammar-install \"nowhere\" :none \".\" \".\") :error)   → true"
   (let (fetched (grammar-fetch source (path/join work-dir (->string lang))))
     (if (:error fetched)
       fetched
-      (grammar-build (:ok fetched) lang out-dir))))
-(sig grammar-install (string any string string -> map))
+      (grammar-build (:ok fetched) lang out-dir subdir))))
+(sig grammar-install (string any string string &optional (or nil string) -> map))

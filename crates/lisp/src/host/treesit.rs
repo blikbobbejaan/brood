@@ -564,6 +564,32 @@ fn dynamic_language(lang: &str) -> Option<tree_sitter::Language> {
     crate::core::sync::lock(&DYNAMIC).get(lang).cloned()
 }
 
+/// `(%tree-sitter-languages)` — the languages this runtime can parse right now: every
+/// grammar loaded at runtime plus the ones built in, sorted. The question an editor asks
+/// before it offers to fetch a grammar, or tells you a file's mode has none: without it the
+/// only way to find out was to parse something and read the error.
+#[cfg(feature = "treesit")]
+pub fn languages(heap: &mut Heap) -> LispResult {
+    #[allow(unused_mut)] // a build with no grammar feature never pushes a built-in
+    let mut names: Vec<String> = crate::core::sync::lock(&DYNAMIC).keys().cloned().collect();
+    #[cfg(feature = "treesit-ruby")]
+    names.push("ruby".to_string());
+    #[cfg(feature = "treesit-elixir")]
+    names.push("elixir".to_string());
+    names.sort();
+    names.dedup();
+    let keywords = names
+        .iter()
+        .map(|name| Value::keyword(crate::core::value::intern(name)))
+        .collect();
+    Ok(heap.alloc_vector(keywords))
+}
+
+#[cfg(not(feature = "treesit"))]
+pub fn languages(heap: &mut crate::core::heap::Heap) -> LispResult {
+    Ok(heap.alloc_vector(Vec::new()))
+}
+
 #[cfg(not(feature = "treesit"))]
 pub fn load_grammar(_path: &str, lang: &str) -> LispResult {
     Err(LispError::runtime(format!(
