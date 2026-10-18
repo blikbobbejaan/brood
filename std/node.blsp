@@ -210,3 +210,33 @@ runtime isn't a node yet."
   (%node-also-listen (if (nil? addr)
                        (str "unix:" (node-socket-path (node-name-part (->string (name)))))
                        (str "tcp:" addr))))
+
+;; ---- guest links: a credential that is not the machine's (ADR-415) --------------------
+
+(defn grant-guest (cookie &optional (opts {}))
+  "Accept peers that authenticate with `cookie` as GUESTS: their link reaches only the
+registered names in `(:names opts)` and the pids this node has sent them, and cannot carry
+code — a message holding a function is dropped. `(:as opts)` names who the guest is, read
+back with `peer-grant` (a server's answer to \"who is this?\" that the client cannot
+choose). The guest's side is an ordinary node started with `cookie`. Returns `cookie`.
+
+    (node/grant-guest \"a-long-random-session-cookie\" {:names [:docs]})   → \"a-long-random-session-cookie\""
+  (%node-grant-guest cookie (vec (or (:names opts) [])) (:as opts))
+  cookie)
+(sig grant-guest (string &optional map -> string))
+
+(defn revoke-guest (cookie)
+  "Stop accepting `cookie` from new guests; true when it was granted. A guest already
+connected under it stays connected until `disconnect`.
+
+    (node/revoke-guest \"never-granted\")   → false"
+  (%node-revoke-guest cookie))
+(sig revoke-guest (string -> bool))
+
+(defn peer-grant (peer)
+  "The grant a connected peer authenticated with — `{:names [...] :as ...}` — or nil for
+a full peer (or none). `peer` is a node name or a pid on that node.
+
+    (node/peer-grant :nobody@nowhere)   → nil"
+  (%node-peer-grant peer))
+(sig peer-grant (any -> (or nil map)))

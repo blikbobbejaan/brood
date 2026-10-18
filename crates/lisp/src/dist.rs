@@ -995,7 +995,10 @@ pub(crate) fn route(node: Symbol, target: Target, msg: Message) -> bool {
         process::deliver(id, msg);
         return true;
     }
-    // Remote: encode a Send frame and hand it to the peer's writer thread.
+    // Remote: encode a Send frame and hand it to the peer's writer thread. A guest peer is
+    // told about every local pid in the message, which is what lets it reply to one
+    // (ADR-415).
+    guest::note_outbound(node, &msg);
     let bytes: Arc<[u8]> = match encode_payload(&Frame::Send { target, msg }) {
         Ok(b) => Arc::from(b),
         Err(e) => {
@@ -1614,6 +1617,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         addr: peer_addr,
         incarnation,
         session,
+        grant,
     } = authenticated;
     // Who initiated *this* connection (the tie-break key).
     let connector = match role {
@@ -1638,6 +1642,13 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
         let _ = sock.shutdown(Shutdown::Both);
         return;
     };
+    // A guest's every frame is filtered from here on (ADR-415). A full link under the same
+    // name clears whatever an earlier guest link left, so a grant never outlives its link.
+    let guest_link = grant.is_some();
+    match grant {
+        Some(grant) => guest::register(peer, grant),
+        None => guest::forget(peer),
+    }
 
     ensure_heartbeat();
 
@@ -1651,7 +1662,7 @@ fn establish(authenticated: handshake::Authenticated, stream: Stream, role: Role
     // A brand-new peer just joined: tell the cluster (ADR-088) — one broadcast sends the
     // newcomer our other peers and tells our peers about the newcomer. Skipped for a
     // reconnect/duplicate (the name was already known) and when meshing is disabled.
-    if was_new && mesh_enabled() {
+    if was_new && !guest_link && mesh_enabled() {
         broadcast_peer_table();
     }
 }
@@ -1783,6 +1794,11 @@ fn spawn_link_reader(
 /// node X and inject `[:down …]` / link-exit deliveries to processes coupled with X.
 /// (These frames carry no `from_node` field at all — see the security note on `Frame`.)
 fn handle_inbound_frame(peer: Symbol, frame: Frame) {
+    // A guest link acts only on frames that reach what it was given and carry no code
+    // (ADR-415); a full peer's pass untouched.
+    if !guest::admit(peer, &frame) {
+        return;
+    }
     match frame {
         Frame::Send { target, msg } => deliver_inbound(target, msg),
         // A peer asked to watch one of our local pids — the shared `add_monitor` core
@@ -1889,6 +1905,8 @@ fn broadcast_peer_table() {
         let nodes = crate::core::sync::read(&NODES);
         nodes
             .iter()
+            // a guest is neither told about the cluster nor introduced to it (ADR-415)
+            .filter(|(name, _)| !guest::is_guest(**name))
             .map(|(&name, c)| PeerSnap {
                 name,
                 addr: c.addr.clone(),
@@ -1979,6 +1997,7 @@ fn drop_link(peer: Symbol, id: u64) {
     };
     if removed {
         forget_dial_routes(peer);
+        guest::forget(peer);
         fire_nodedown(peer);
     }
 }
@@ -2040,6 +2059,7 @@ fn deliver_inbound(target: Target, msg: Message) {
     process::deliver(id, msg);
 }
 
+pub(crate) mod guest;
 mod handshake;
 mod heartbeat;
 mod session;
@@ -2201,6 +2221,7 @@ mod tests {
             peer,
             addr: String::new(),
             incarnation,
+            grant: None,
             session: Session {
                 send: session::SealKey::new([1; session::KEY_LEN]),
                 recv: session::OpenKey::new([2; session::KEY_LEN]),

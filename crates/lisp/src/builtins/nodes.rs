@@ -95,6 +95,28 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["name"],
         "Tear down the link to peer node `name` now, without exiting this process (Erlang's disconnect_node) — fires [:nodedown name] on both sides and prunes `name` from (nodes). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive.",
         disconnect);
+    // guest links (ADR-415) — `std/node.blsp`'s grant-guest / revoke-guest / peer-grant
+    primitives.def(
+        "%node-grant-guest",
+        Arity::exact(3),
+        Sig::new(vec![string, any, any], nil_ty),
+        &["cookie", "names", "as"],
+        "Accept peers that authenticate with `cookie` as guests: their link reaches only the registered `names` (a list/vector of keywords) and the pids this node has sent them, and a message from it carrying a function is dropped. `as` (a string, or nil) is who the guest is, read back with %node-peer-grant. The cookie must be at least 16 characters. Replaces an earlier grant of the same cookie.",
+        node_grant_guest);
+    primitives.def(
+        "%node-revoke-guest",
+        Arity::exact(1),
+        Sig::new(vec![string], bool_ty),
+        &["cookie"],
+        "Stop accepting `cookie` from new guests; true when it was granted. A guest already connected under it stays until disconnected.",
+        node_revoke_guest);
+    primitives.def(
+        "%node-peer-grant",
+        Arity::exact(1),
+        Sig::new(vec![any], map_ty.union(nil_ty)),
+        &["peer"],
+        "The grant a connected peer authenticated with — `{:names [...] :as ...}` — or nil for a full peer or an unknown one. `peer` is a node name or a pid on that node.",
+        node_peer_grant);
 }
 
 /// Coerce a node/name argument (a keyword or symbol) to its interned `Symbol`.
@@ -227,4 +249,68 @@ pub(super) fn nodes(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         .map(Value::Keyword)
         .collect();
     Ok(heap.list(names))
+}
+
+// ----- guest grants (ADR-415) -------------------------------------------------
+
+/// The shortest cookie a guest grant takes. A grant is handed to someone else, often over
+/// a chat message, so it must not be guessable — and a short one is a typo away from a
+/// password someone chose.
+const MIN_GUEST_COOKIE_LEN: usize = 16;
+
+/// `(%node-grant-guest cookie names as)` — accept peers that authenticate with `cookie` as
+/// guests reaching `names` (registered names) and identified as `as` (a string, or nil).
+pub(super) fn node_grant_guest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let cookie = expect_string(heap, "%node-grant-guest", arg(args, 0))?;
+    if cookie.chars().count() < MIN_GUEST_COOKIE_LEN {
+        return Err(LispError::runtime(format!(
+            "node/grant-guest: a guest cookie needs at least {MIN_GUEST_COOKIE_LEN} characters"
+        )));
+    }
+    let names = heap
+        .seq_items(arg(args, 1))?
+        .into_iter()
+        .map(|name| expect_node_name(heap, "%node-grant-guest", name))
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
+    let as_name = match arg(args, 2) {
+        Value::Nil => None,
+        other => Some(expect_string(heap, "%node-grant-guest", other)?),
+    };
+    crate::dist::guest::grant(cookie, names, as_name);
+    Ok(Value::nil())
+}
+
+/// `(%node-revoke-guest cookie)` — forget a grant; true when there was one.
+pub(super) fn node_revoke_guest(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let cookie = expect_string(heap, "%node-revoke-guest", arg(args, 0))?;
+    Ok(Value::boolean(crate::dist::guest::revoke(&cookie)))
+}
+
+/// `(%node-peer-grant peer)` — the grant a connected peer (a node name, or a pid on that
+/// node) authenticated with, as `{:names [...] :as ...}`, or nil for a full peer.
+pub(super) fn node_peer_grant(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let node = match arg(args, 0) {
+        Value::Pid { node, .. } => node,
+        other => expect_node_name(heap, "%node-peer-grant", other)?,
+    };
+    let Some(grant) = crate::dist::guest::grant_of(node) else {
+        return Ok(Value::nil());
+    };
+    let mut names: Vec<Value> = grant.names.iter().copied().map(Value::Keyword).collect();
+    names.sort_by(|a, b| {
+        let name_of = |v: &Value| match v {
+            Value::Keyword(s) => value::symbol_name(*s).to_string(),
+            _ => String::new(),
+        };
+        name_of(a).cmp(&name_of(b))
+    });
+    let names = heap.alloc_vector(names);
+    let as_value = match &grant.as_name {
+        Some(name) => heap.alloc_string(name),
+        None => Value::nil(),
+    };
+    Ok(heap.map_from_pairs(vec![
+        (Value::keyword(value::intern("names")), names),
+        (Value::keyword(value::intern("as")), as_value),
+    ]))
 }

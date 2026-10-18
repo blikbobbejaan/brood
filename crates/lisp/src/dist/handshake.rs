@@ -57,6 +57,9 @@ pub(super) struct Authenticated {
     pub(super) incarnation: u64,
     /// The two directional ciphers for the reader and writer (ADR-089).
     pub(super) session: Session,
+    /// The guest grant the initiator authenticated with (ADR-415), or `None` for a full
+    /// peer — one that holds the node's own cookie. Only ever `Some` on the responder.
+    pub(super) grant: Option<std::sync::Arc<super::guest::Grant>>,
 }
 
 /// Drive the four-step exchange. Returns the peer's authoritative node name, its
@@ -126,49 +129,77 @@ pub(super) fn handshake<S: Read + Write>(stream: &mut S, role: Role) -> io::Resu
     // *both* ephemeral pubkeys. Folding the pubkeys in authenticates the DH: a
     // man-in-the-middle can't substitute its own key without the cookie (ADR-089),
     // just as folding the addr authenticates the gossiped address (ADR-088).
-    let my_mac = compute_mac(
-        &cookie,
-        &peer_nonce,
-        &peer_eph_pub,
-        &peer_name,
-        &my_name,
-        &my_addr,
-        &my_eph_pub,
-        my_incarnation,
-    );
-    let expected_peer_mac = compute_mac(
-        &cookie,
-        &my_nonce,
-        &my_eph_pub,
-        &my_name,
-        &peer_name,
-        &peer_addr,
-        &peer_eph_pub,
-        peer_incarnation,
-    );
-    let verify = |their_mac: &[u8; MAC_LEN]| {
-        if ct_eq(their_mac, &expected_peer_mac) {
-            Ok(())
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "node handshake MAC mismatch (wrong cookie?)",
-            ))
-        }
+    let my_mac_under = |cookie: &str| {
+        compute_mac(
+            cookie,
+            &peer_nonce,
+            &peer_eph_pub,
+            &peer_name,
+            &my_name,
+            &my_addr,
+            &my_eph_pub,
+            my_incarnation,
+        )
     };
-    match role {
+    let expected_peer_mac_under = |cookie: &str| {
+        compute_mac(
+            cookie,
+            &my_nonce,
+            &my_eph_pub,
+            &my_name,
+            &peer_name,
+            &peer_addr,
+            &peer_eph_pub,
+            peer_incarnation,
+        )
+    };
+    let mismatch = || {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "node handshake MAC mismatch (wrong cookie?)",
+        )
+    };
+    let grant = match role {
         Role::Initiator => {
-            write_frame(stream, &Frame::Auth { mac: my_mac })?;
-            verify(&read_auth(stream)?)?;
+            write_frame(
+                stream,
+                &Frame::Auth {
+                    mac: my_mac_under(&cookie),
+                },
+            )?;
+            if !ct_eq(&read_auth(stream)?, &expected_peer_mac_under(&cookie)) {
+                return Err(mismatch());
+            }
+            None
         }
         // The responder verifies the initiator's proof BEFORE sending its own: an
         // unauthenticated dialer gets nothing back — not even a MAC computed under the
-        // cookie over a nonce it chose.
+        // cookie over a nonce it chose. The proof is tried against the node's own cookie,
+        // then each guest grant (ADR-415); the reply is MAC'd under whichever matched, the
+        // cookie the initiator holds.
         Role::Responder => {
-            verify(&read_auth(stream)?)?;
-            write_frame(stream, &Frame::Auth { mac: my_mac })?;
+            let their_mac = read_auth(stream)?;
+            let grant = if ct_eq(&their_mac, &expected_peer_mac_under(&cookie)) {
+                None
+            } else {
+                let matched = super::guest::grants()
+                    .into_iter()
+                    .find(|grant| ct_eq(&their_mac, &expected_peer_mac_under(&grant.cookie)))
+                    .ok_or_else(mismatch)?;
+                Some(matched)
+            };
+            let answer_cookie = grant
+                .as_ref()
+                .map_or(cookie.as_str(), |g| g.cookie.as_str());
+            write_frame(
+                stream,
+                &Frame::Auth {
+                    mac: my_mac_under(answer_cookie),
+                },
+            )?;
+            grant
         }
-    }
+    };
 
     // Only now is the peer's name trusted, so only now does it reach the interner
     // (append-only, and budgeted for wire data — see `Frame::Hello`).
@@ -210,6 +241,7 @@ pub(super) fn handshake<S: Read + Write>(stream: &mut S, role: Role) -> io::Resu
         addr: peer_addr,
         incarnation: peer_incarnation,
         session,
+        grant,
     })
 }
 

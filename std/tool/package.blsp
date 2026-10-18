@@ -976,17 +976,29 @@ TOFU-pinned signing key, nil for an unsigned package)."
         (registry-resolved dep target version checksum pinned)))))
 
 ;; Advisory signature + TOFU check (ADR-212). NEVER errors — every problem is a warning, so a
-;; signing issue can't block an install (the type-checker stance). Returns the pubkey to pin in
-;; the lock: the already-pinned key when there is one (TOFU keeps the first-seen key and only
-;; WARNS on a change — it does not silently adopt a new one), else the release's key IF its
-;; signature verified (never pin a key that hasn't proven control by producing a valid signature).
-(defn- package-verify-signature (name version checksum signature pubkey locked-pubkey)
-  ;; `signature`/`pubkey`/`locked-pubkey` are attacker-controlled (registry JSON / the lock), so
+;; signing issue can't block an install (the type-checker stance). The decision is a VERDICT,
+;; `{:status :pin :warning}`, so the two callers say it their own way: the lock path prints it,
+;; and a runtime install (an editor's plugin) returns it for the user to see — stdout is
+;; nowhere an editor's user is looking.
+;;
+;; `:pin` is the pubkey to keep: the already-pinned key when there is one (TOFU keeps the
+;; first-seen key and only WARNS on a change — it does not silently adopt a new one), else the
+;; release's key IF its signature verified (never pin a key that hasn't proven control by
+;; producing a valid signature). `:status` is one of `:verified`, `:bad-signature`,
+;; `:key-changed`, `:signature-dropped`, `:unsigned`.
+(defn signature-verdict (name version checksum signature pubkey pinned-pubkey)
+  "The ADR-212 verdict on a release: whether its signature verifies, against the key
+pinned on first use. `{:status :pin :warning}` — `:pin` the key to keep, `:warning` a sentence
+for the user or nil. Never raises: every input here comes from a registry or a file.
+
+    (get (package/signature-verdict \"p\" \"1.0.0\" \"abc\" nil nil nil) :status)   → :unsigned"
+  ;; `signature`/`pubkey`/`pinned-pubkey` are attacker-controlled (registry JSON / the lock), so
   ;; type-guard to STRINGS before touching hex-decode — a non-string (a JSON number/array) would
   ;; otherwise throw out of hex-decode and turn this advisory check into a hard install block. The
   ;; verify itself is wrapped in a `try` as belt-and-suspenders: nothing may escape this function.
   (let (signed (and (string? signature) (string? pubkey) (not (= signature "")) (not (= pubkey "")))
-        had-pin (and (string? locked-pubkey) (not (= locked-pubkey "")))
+        had-pin (and (string? pinned-pubkey) (not (= pinned-pubkey "")))
+        label (str (->string name) " " version)
         verified (and signed
                    ;; check-allow :discarded-catch — a body / signature / name that does not parse or verify is the negative answer
                    (check-allow :discarded-catch
@@ -996,41 +1008,36 @@ TOFU-pinned signing key, nil for an unsigned package)."
                          (encoding/hex-decode-bytes signature))
                        (catch _ false)))))
     (cond
-      signed
-        (do
-          (when (not verified)
-            (io/puts "package: WARNING — "
-              (->string name)
-              " "
-              version
-              " carries a signature that does NOT verify against its key (possible tampering)."))
-          ;; a genuine key change is only meaningful when the new signature actually verifies;
-          ;; otherwise the "does not verify" warning already covers it.
-          (when (and verified had-pin (not (= locked-pubkey pubkey)))
-            (io/puts "package: WARNING — "
-              (->string name)
-              " "
-              version
-              " is signed by a DIFFERENT key than the one pinned in your lock"
-              " — a legitimate key rotation, or a compromise. Delete the lock entry to re-pin."))
-          ;; Pin ONLY a verified key: keep the existing pin when there is one (sticky TOFU), pin
-          ;; the release's key on a first VERIFIED sighting, and on a failed verify establish no
-          ;; new trust — keep the old pin (nil when there was none) so a later good install pins it.
-          (cond
-            (and verified had-pin) locked-pubkey
-            verified pubkey
-            else locked-pubkey))
+      (and signed (not verified))
+      ;; establish no new trust: keep the old pin (nil when there was none), so a later good
+      ;; install pins it
+        {:status :bad-signature
+         :pin (when had-pin pinned-pubkey)
+         :warning (str label
+                    " carries a signature that does NOT verify against its key (possible tampering).")}
+      ;; a genuine key change is only meaningful when the new signature actually verifies
+      (and verified had-pin (not (= pinned-pubkey pubkey)))
+        {:status :key-changed
+         :pin pinned-pubkey
+         :warning (str label
+                    " is signed by a DIFFERENT key than the one pinned"
+                    " — a legitimate key rotation, or a compromise. Delete the pin to re-pin.")}
+      verified {:status :verified :pin (if had-pin pinned-pubkey pubkey) :warning nil}
       ;; unsigned now, but a prior release was signed → a dropped signature (downgrade).
       had-pin
-        (do
-          (io/puts "package: WARNING — "
-            (->string name)
-            " "
-            version
-            " is unsigned, but a previous release was signed (a dropped signature).")
-          locked-pubkey)
+        {:status :signature-dropped
+         :pin pinned-pubkey
+         :warning (str label
+                    " is unsigned, but a previous release was signed (a dropped signature).")}
       ;; unsigned, never pinned — the common case in a mostly-unsigned ecosystem; stay quiet.
-      else nil)))
+      else {:status :unsigned :pin nil :warning nil})))
+(sig signature-verdict (any any any any any any -> map))
+
+(defn- package-verify-signature (name version checksum signature pubkey locked-pubkey)
+  ;; the lock path: print the verdict's warning, return the key to pin in the lock
+  (let (verdict (signature-verdict name version checksum signature pubkey locked-pubkey))
+    (when (:warning verdict) (io/puts "package: WARNING — " (:warning verdict)))
+    (:pin verdict)))
 
 (defn- registry-write-meta (target base name version checksum)
   (file/spit (package-pkg-meta-path target)
@@ -1065,13 +1072,43 @@ runtime side of `nest search --enhances`: an app lists its own installable plugi
       ([:ok data] (or (get data :packages) nil))
       ([:error _status _message] nil))))
 
+;; A runtime install has no lock to pin a signing key in (ADR-212's TOFU), so the install
+;; directory keeps its own: `.signing-pins.blsp`, `{name pubkey}`. Without it, the user-package
+;; path — an editor's plugins — checked the bytes against a checksum from the same registry
+;; response and nothing else: whoever could publish under a name could replace the plugin.
+
+(defn- runtime-pins-path (dest-dir) (path/join dest-dir ".signing-pins.blsp"))
+
+(defn- runtime-pins (dest-dir)
+  ;; the pinned keys, `{}` when there are none or the file does not read as a map
+  (let (path (runtime-pins-path dest-dir))
+    (if (not (file/exists? path))
+      {}
+      ;; check-allow :discarded-catch — an unreadable pin file pins nothing; the next verified install rewrites it
+      (let (form (check-allow :discarded-catch
+                   (try (reflect/read-first (file/slurp path)) (catch _ nil))))
+        (if (map? form) form {})))))
+
+(defn- runtime-pin! (dest-dir name pubkey)
+  ;; remember `pubkey` for `name`, once it is the key the verdict says to keep
+  (let (pins (runtime-pins dest-dir))
+    (when (and (string? pubkey) (not (= (get pins name) pubkey)))
+      (file/mkdir dest-dir)
+      (file/spit (runtime-pins-path dest-dir)
+        (str ";; .signing-pins.blsp — package signing keys pinned on first use (ADR-212).\n"
+          ";; Delete an entry to trust a package's new key.\n"
+          (pr-str (assoc pins name pubkey))
+          "\n")))))
+
 (defn registry-install (name dest-dir)
   "Download, sha-VERIFY, and extract the newest release of package `name` into `dest-dir/<name>/`
 at runtime — the user-package install path, independent of any project `_deps`/manifest. Returns
-`{:name :version :path :checksum}`. Errors on an unknown package, a download failure, or a
-checksum mismatch (the same integrity guarantee `nest add` gives — the registry is never trusted
-for the bytes). Advisory signature/TOFU checking is a lock-file concern and is skipped here; the
-sha256 pin still holds."
+`{:name :version :path :checksum :signature :warning}`. Errors on an unknown package, a download
+failure, or a checksum mismatch (the same integrity guarantee `nest add` gives — the registry is
+never trusted for the bytes). The signature is checked as the lock path checks it (ADR-212,
+`signature-verdict`), with the key pinned on first use in `dest-dir/.signing-pins.blsp`:
+`:signature` is the verdict's status and `:warning` its sentence (nil when there is nothing to
+say). Advisory, like every signing check: a bad or changed signature is reported, not refused."
   (let (base (registry-base-for nil)
         name-sym (if (symbol? name) name (symbol name))
         name-str (if (string? name) name (->string name))
@@ -1087,27 +1124,44 @@ sha256 pin still holds."
     (match (registry-get-json (registry-release-url base name-sym version))
       ([:error 404 _message] (error "package: no release " name-str " " version))
       ([:error _status message] (error "package: " message))
-      ([:ok meta] (let (checksum (get meta :checksum)
-                        source-url (get meta :source_url)
-                        external (and source-url (not (= source-url "")))
-                        _scheme (when external
-                                  (registry-check-source-url name-str version source-url))
-                        bytes (if external
-                                (package-fetch-bytes source-url)
-                                (registry-download-hosted base name-sym version))
-                        got (hash/sha256-bytes bytes))
-                    (when (not (= got checksum))
-                      (error "package: "
-                        name-str " " version " sha256 mismatch — declared " checksum ", got " got
-                        " (tampered or corrupted — not installed)"))
-                    (let (target (path/join dest-dir name-str)
-                          archive (path/join dest-dir (str name-str ".tar.gz")))
-                      (when (file/dir? target) (%rm-rf target))
-                      (file/mkdir dest-dir)
-                      (file/spit-bytes archive bytes)
-                      (offload %untar-gz archive target (if external 1 0))
-                      (file/rm archive)
-                      {:name name-str :version version :path target :checksum checksum}))))))
+      ([:ok meta]
+        (let (checksum (get meta :checksum)
+              source-url (get meta :source_url)
+              external (and source-url (not (= source-url "")))
+              _scheme (when external
+                        (registry-check-source-url name-str version source-url))
+              bytes (if external
+                      (package-fetch-bytes source-url)
+                      (registry-download-hosted base name-sym version))
+              got (hash/sha256-bytes bytes))
+          (when (not (= got checksum))
+            (error "package: "
+              name-str " " version " sha256 mismatch — declared " checksum ", got " got
+              " (tampered or corrupted — not installed)"))
+          (let (target (path/join dest-dir name-str)
+                archive (path/join dest-dir (str name-str ".tar.gz")))
+            ;; `file/rmdir`, not `%rm-rf`: that one deletes only inside a `_deps/`, which a
+            ;; runtime install directory (an editor's plugins) is not — so a REINSTALL
+            ;; failed. The name was checked as one path component above, so `target` is
+            ;; `dest-dir/<name>` and nothing else.
+            (when (file/dir? target) (file/rmdir target))
+            (file/mkdir dest-dir)
+            (file/spit-bytes archive bytes)
+            (offload %untar-gz archive target (if external 1 0))
+            (file/rm archive)
+            (let (verdict (signature-verdict name-str
+                            version
+                            checksum
+                            (get meta :signature)
+                            (get meta :pubkey)
+                            (get (runtime-pins dest-dir) name-str)))
+              (runtime-pin! dest-dir name-str (:pin verdict))
+              {:name name-str
+               :version version
+               :path target
+               :checksum checksum
+               :signature (:status verdict)
+               :warning (:warning verdict)})))))))
 (sig registry-install ((or keyword string symbol) any -> any))
 
 ;; Two resolutions of the same name must agree on their source. Different kinds can

@@ -7,6 +7,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- Guest links (ADR-415): `node/grant-guest` accepts peers that authenticate with a SECOND
+  cookie as guests. A guest link reaches only the grant's `:names` and the pids this node has
+  sent it — a pid on a node is a small integer anyone can guess, so being told one is what
+  counts — and drops any message carrying a closure, a native function or a function handle,
+  any link, unlink or exit signal, and any mesh gossip. `node/peer-grant` answers who a
+  connected peer authenticated as, and `editor/serve` takes an attaching guest's name from it
+  rather than from the client. `node/revoke-guest` refuses a cookie to new links. The
+  machine cookie no longer has to leave the machine for someone to share a session.
 - `std/editor/org`: Org-mode, lexically — `org-spans` colours headings by level, TODO / DONE
   keywords, priorities, tags, `#+KEYWORD:` lines, `#+BEGIN_ … #+END_` blocks, comments, drawers,
   list bullets and checkboxes, links, timestamps and the six emphasis markers, in the
@@ -123,6 +131,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   ~2-3% fewer instructions; a loop made of bigints or rope inserts ~1% more.
 
 **Fixed.**
+- `package/registry-install` — the runtime path an editor installs its plugins through — checks
+  the release's signature as the lock path does (ADR-212): the signing key is pinned on first
+  use in the install directory (`.signing-pins.blsp`), and the result carries the verdict
+  (`:signature` — `:verified`, `:key-changed`, `:bad-signature`, `:signature-dropped` or
+  `:unsigned` — and `:warning`). It skipped signatures entirely, so a plugin was checked only
+  against a checksum from the same registry response. Still advisory: reported, never refused.
+  The verdict itself is `package/signature-verdict`, pure. And a REINSTALL into such a
+  directory works: it replaced the old copy with `%rm-rf`, which deletes only inside a `_deps/`.
 - `test/purge-stale-temp` removes only leftovers an hour old (`*stale-temp-age-ms*`). /tmp is
   shared by every run on the machine, so a second run of the same test file — another
   checkout, another terminal — deleted the first's live fixtures at load, and the first failed

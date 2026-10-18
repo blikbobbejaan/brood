@@ -102,11 +102,22 @@ independent. When the client attached with a non-empty `opts` map (its identity 
 see `attach`), it is queued to this session's own mailbox as `[:client-opts opts]`
 BEFORE `ui-run` starts, so it is the first event the app's `update` folds (through
 `remote-display`'s async pass-through) — the seam a collaborative app reads a
-participant's name from."
+participant's name from.
+
+A client that attached over a GUEST link (`node/grant-guest`, ADR-415) is marked `:guest
+true` — the app decides what a guest may do — and, when its grant names who it is, gets
+THAT name whatever its `opts` claim: the host chose it when it handed out the cookie, and
+the client cannot."
   (monitor client)
   (send client [:attached (self)])
-  (when (and (map? opts) (not (empty? opts)))
-    (send (self) [:client-opts opts]))
+  (let (grant (node/peer-grant client)
+        claimed (if (map? opts) opts {})
+        identity (cond
+                   (nil? grant) opts
+                   (string? (:as grant)) (assoc claimed :name (:as grant) :guest true)
+                   else (assoc claimed :guest true)))
+    (when (and (map? identity) (not (empty? identity)))
+      (send (self) [:client-opts identity])))
   (ui-run (make-model) view update (remote-display client cols rows)))
 
 (defn- serve-manager (make-model view update &optional sessions)
