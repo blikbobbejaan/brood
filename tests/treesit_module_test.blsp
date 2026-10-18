@@ -320,3 +320,15 @@
     (assert= (editor/treesit/missing-services {}) '(:ts-lang :fontify :indent))
     (assert= (editor/treesit/missing-services {:ts-lang :x :fontify identity}) '(:indent))
     (is (empty? (editor/treesit/missing-services {:ts-lang :x :fontify identity :indent identity})))))
+
+;; An editor asks this before offering to fetch a grammar, rather than parsing and reading
+;; the error.
+(describe "languages"
+  (test "lists what parses: keywords, sorted, with the built-in grammars when there are any"
+    (let (names (editor/treesit/languages))
+      (is (vector? names))
+      (is (every? names keyword?))
+      (assert= names (vec (sort-by names ->string)))
+      (when tsm-grammars?
+        (is (includes? names :ruby))
+        (is (includes? names :elixir))))))

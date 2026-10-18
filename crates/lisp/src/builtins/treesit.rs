@@ -62,6 +62,18 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["path", "lang"],
         "Load a tree-sitter grammar from the shared library at `path` and register it under the language keyword `lang`, so tree-sitter-parse can use it like a built-in grammar; returns its ABI version. This is how a language the runtime was not built with gets parsed at all — the kernel deliberately knows no path convention, so the caller names the library and an application keeps its own grammar directory. A grammar loaded this way overrides a bundled one of the same name. Errors (never crashes) on a missing file, a library exporting no tree_sitter_<lang>, or a grammar built for an incompatible tree-sitter ABI; it is native code, though, so load only from a directory the user controls. Feature `treesit`.",
         tree_sitter_load_grammar);
+    primitives.def(
+        "%tree-sitter-languages",
+        Arity::exact(0),
+        Sig::new(vec![], vec_ty),
+        &[],
+        "The languages this runtime can parse right now, as a sorted vector of keywords: every grammar loaded with %tree-sitter-load-grammar plus those built in. What an editor asks before offering to fetch a grammar, or telling you a file's mode has none — instead of parsing something and reading the error. [] in a build without feature `treesit`.",
+        tree_sitter_languages);
+}
+
+/// `(%tree-sitter-languages)` — the parseable languages; `crate::host::treesit::languages`.
+pub(super) fn tree_sitter_languages(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    crate::host::treesit::languages(heap)
 }
 
 /// `(tree-sitter-parse source lang)` — parse a foreign language into the same
