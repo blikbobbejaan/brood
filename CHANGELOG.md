@@ -7,6 +7,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Added.**
+- Guest links (ADR-415): `node/grant-guest` accepts peers that authenticate with a SECOND
+  cookie as guests. A guest link reaches only the grant's `:names` and the pids this node has
+  sent it — a pid on a node is a small integer anyone can guess, so being told one is what
+  counts — and drops any message carrying a closure, a native function or a function handle,
+  any link, unlink or exit signal, and any mesh gossip. `node/peer-grant` answers who a
+  connected peer authenticated as, and `editor/serve` takes an attaching guest's name from it
+  rather than from the client. `node/revoke-guest` refuses a cookie to new links. The
+  machine cookie no longer has to leave the machine for someone to share a session.
 - `std/editor/org`: Org-mode, lexically — `org-spans` colours headings by level, TODO / DONE
   keywords, priorities, tags, `#+KEYWORD:` lines, `#+BEGIN_ … #+END_` blocks, comments, drawers,
   list bullets and checkboxes, links, timestamps and the six emphasis markers, in the

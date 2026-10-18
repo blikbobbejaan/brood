@@ -432,6 +432,33 @@ to exactly the nodes you dial, with no transitive discovery.
   same-cookie nodes link. Do not expose a TCP node on an untrusted network until
   channel TLS lands (ADR-081), mesh or not.
 
+## Guest links — a credential that is not the machine's (ADR-415)
+
+A link authenticated with the node cookie can send anything anywhere: a registered name,
+a pid (which here is a small integer anyone can guess), a closure (ADR-033) for a process
+that calls what it receives, a `node/spawn`. Between your own nodes that is the point.
+For someone you are sharing a session with, hand out a GUEST cookie instead:
+
+```clojure
+(node/grant-guest "a-long-random-session-cookie" {:names [:ui] :as "alice"})
+```
+
+A peer that authenticates with that cookie (its node started with it — `node/start`'s
+cookie argument) gets a guest link:
+
+- it can send to the grant's `:names`, and to the pids this node has SENT it — a pid
+  becomes reachable by being introduced, never by being guessed;
+- a message carrying a closure, a native function or a function handle is dropped whole;
+- it cannot link, unlink or send an exit signal, and is never part of the mesh;
+- `(node/peer-grant pid-or-node)` tells a server who it is (`:as`), so identity is the
+  host's choice rather than the client's claim — `editor/serve` uses it for an attaching
+  client's name.
+
+`(node/revoke-guest cookie)` refuses the cookie to new links; `node/disconnect` ends one
+already open. A refused frame is logged on stderr (`dist: refused …`). What a guest link
+does NOT make safe is what the processes it can reach do with the data they are sent: a
+guest attached to an editor session can still drive that editor.
+
 ## Where it lives
 - `crates/lisp/src/dist.rs` — node state, transport threads, handshake, routing,
   wire codec, **cluster-mesh gossip** (`broadcast_peer_table`/`mesh_consider`).

@@ -2868,3 +2868,94 @@ fn a_bare_name_connect_to_a_live_peer_does_not_disturb_its_link() {
         String::from_utf8_lossy(&server_out.stderr)
     );
 }
+
+/// A GUEST link (ADR-415): the host grants a second cookie scoped to `:echo`, naming the
+/// guest "alice". The guest reaches `:echo` and the pid `:echo` answered from, and is told
+/// who it is by the grant — but a message to `:secret`, a remote spawn, and a message
+/// carrying a closure are all dropped on the host, which never runs or receives them.
+#[test]
+fn a_guest_link_reaches_what_it_was_given_and_ships_no_code() {
+    let _g = port_lock();
+    let dir = std::env::temp_dir().join(format!("brood-dist-guest-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let port_a = free_port();
+    let port_b = free_port();
+
+    let server = format!(
+        r#"
+(proc/register :echo (self))
+(proc/register :secret (spawn (fn () (receive (_ (io/puts "SECRET-REACHED"))))))
+(node/start :a "127.0.0.1:{port_a}" "full-node-cookie-16+")
+(node/serve-spawns)
+(node/grant-guest "guest-cookie-0123456789" {{:names [:echo] :as "alice"}})
+(defn serve ()
+  (receive
+    ([:hi from] (do (send from [:pong (self) (node/peer-grant from)]) (serve)))
+    ([:ping from] (do (send from [:pong-by-pid]) (serve)))
+    ([:run f reply] (do (send reply [:ran (f)]) (serve)))
+    (_ (serve))))
+(serve)
+"#
+    );
+
+    let client = format!(
+        r#"
+(node/start :b "127.0.0.1:{port_b}" "guest-cookie-0123456789")
+(node/connect "a@127.0.0.1:{port_a}")
+(send {{:name :echo :node :a@127.0.0.1}} [:hi (self)])
+(def reply (receive ([:pong p grant] [p grant]) (after 30000 (throw "no reply by name"))))
+(io/puts (str "AS=" (:as (second reply))))
+(send {{:name :secret :node :a@127.0.0.1}} [:x])
+(node/spawn :a@127.0.0.1 (io/puts "SPAWNED"))
+(send (first reply) [:run (fn () 42) (self)])
+(receive ([:ran _] (io/puts "CLOSURE-RAN")) (after 1500 (io/puts "CLOSURE-DROPPED")))
+(send (first reply) [:ping (self)])
+(receive ([:pong-by-pid] (io/puts "PID-OK")) (after 30000 (throw "no reply by pid")))
+"#
+    );
+
+    let mut a = spawn_brood(&dir, "server.blsp", &server);
+    wait_until_listening(port_a);
+    let b = spawn_brood(&dir, "client.blsp", &client);
+
+    let out = b.wait_with_output().expect("client finished");
+    let _ = a.kill();
+    let _ = a.wait();
+    let mut a_out = String::new();
+    if let Some(mut o) = a.stdout.take() {
+        let _ = o.read_to_string(&mut a_out);
+    }
+    let mut a_err = String::new();
+    if let Some(mut e) = a.stderr.take() {
+        let _ = e.read_to_string(&mut a_err);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let report = format!(
+        "--- guest stdout ---\n{stdout}\n--- guest stderr ---\n{stderr}\n--- host stdout ---\n{a_out}\n--- host stderr ---\n{a_err}"
+    );
+    assert!(out.status.success(), "guest failed.\n{report}");
+    assert!(
+        stdout.contains("AS=alice"),
+        "the grant names the guest.\n{report}"
+    );
+    assert!(
+        stdout.contains("CLOSURE-DROPPED"),
+        "a closure must not reach the host.\n{report}"
+    );
+    assert!(
+        stdout.contains("PID-OK"),
+        "a pid the guest was sent is reachable.\n{report}"
+    );
+    assert!(
+        !a_out.contains("SECRET-REACHED"),
+        "a name outside the grant is unreachable.\n{report}"
+    );
+    assert!(
+        !a_out.contains("SPAWNED"),
+        "a guest cannot spawn on the host.\n{report}"
+    );
+}
