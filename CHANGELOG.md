@@ -6,6 +6,15 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.40.0 — guest links, Org-mode, and what a process costs
+
+A node can now let someone in without handing over its machine cookie: a guest link reaches
+only what it was granted and ships no code. Org-mode lands in the editor toolkit, along with
+named registries, short transient rows and the grammars a runtime can load and build. A process
+says what it costs — CPU time per process, a profiler that samples one pid, the GC's pause
+broken down — and costs less: a parked process is 2 763 bytes, and `receive` matches simple
+patterns in the kernel. The narrative is the devlog's 2026-10-17 and 2026-10-18 entries.
+
 **Added.**
 - Guest links (ADR-415): `node/grant-guest` accepts peers that authenticate with a SECOND
   cookie as guests. A guest link reaches only the grant's `:names` and the pids this node has
