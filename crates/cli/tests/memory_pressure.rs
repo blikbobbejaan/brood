@@ -142,6 +142,15 @@ fn a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder() {
         "stuck",
         // The hoarder stops growing inside the last eighth below the soft limit (384 MiB
         // here; the eighth starts at 352 MB), where it has measured itself, then blocks.
+        //
+        // The leak is primed to 64 MB first and held there while the hoarder fills up, then
+        // released. Without the head start it had grown only ~40-50 MB when the hoarder's
+        // grace ran out — under the eighth of the count (~55 MB) a process must hold to be
+        // stopped — so nobody was attributable and the error was raised in whichever
+        // process reached a safepoint first. On a slow runner that was the waiting root
+        // (CI's tree-walker job, 2026-10-18, KI-279), which died instead of the leak. Primed, the
+        // leak holds an attributable share whoever reaches the safepoint, and the total
+        // (~370 + 64 + what it grows in the grace) stays under the 512 MiB hard limit.
         r#"
 (defn hoard (kept parent)
   (if (> (%mem-bytes) 370000000)
@@ -149,12 +158,18 @@ fn a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder() {
     (hoard (conj kept (string/repeat "x" 1000000)) parent)))
 (defn leaky (kept)
   (receive (after 5 (leaky (conj kept (string/repeat "x" 1000000))))))
+(defn primed-leak (kept parent)
+  (if (< (count kept) 64)
+    (primed-leak (conj kept (string/repeat "x" 1000000)) parent)
+    (do (send parent :primed) (receive (:go (leaky kept))))))
 (def me (self))
+(def leak (spawn (primed-leak [] me)))
+(monitor leak)
+(receive (:primed nil) (after 60000 (io/puts "never primed")))
 (def hoarder (spawn (hoard [] me)))
 (receive (:hoarded nil) (after 60000 (io/puts "never hoarded")))
-(def leak (spawn (leaky [])))
-(monitor leak)
 (io/puts "leak" leak)
+(send leak :go)
 (receive
   ([:down _ pid [:error {:code code}]] (io/puts "down" pid code))
   ([:down _ pid reason] (io/puts "down" pid reason))

@@ -2494,3 +2494,19 @@ mailbox half the rest. Bound lowered 4 040 → 3 040; the heap-half-only tree (3
 spawn + park of 50k 1.67–1.69G → 1.64–1.67G — flat to slightly better on all three
 (measured on the heap half; the mailbox half touches only the retire path and a `None`
 check on delivery).
+
+## 2026-10-18 (later) — clippy, a memory test's race (KI-279), and KI-280 filed
+
+The floor commit failed CI's clippy: `Box<HashMap>` trips `clippy::box_collection`, and the
+box is the point (it pays only on a spill), so the variant carries an `allow` with that
+reason. Run clippy with CI's `--all-targets --all-features` before pushing; a plain run passes
+what CI rejects.
+
+CI's tree-walker job had failed on `8f345ed9` (both tries) in `memory_pressure`'s stuck-victim
+test: the waiting root died of `E0043` instead of the leak. After the stuck hoarder's 250 ms
+grace the leak held ~40-50 MB, under the eighth of the count (~55 MB) a process must hold to be
+stopped, so nobody was attributable and the error went to whichever process reached a
+safepoint first. The leak is now primed to 64 MB before the hoarder fills up (KI-279).
+Passes at every tier on four and twelve cores. On two cores the tree-walker still fails, for a
+different reason: the leak's published footprint jumps by about the hoarder's size and the
+selector raises in the leak. Filed as KI-280 (open) with the trace; it reproduces on demand.

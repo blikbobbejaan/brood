@@ -14270,3 +14270,24 @@ both signals ignored in the test process, a child spawned without the reset show
 `/proc/self/status` (the control) and one spawned with it does not. bedit's bshell suite run under
 `trap "" INT`: 0/3 before, 3/3 after.
 
+
+## KI-279 — the stuck-victim memory test raced who reached a safepoint first ✅ FIXED 2026-10-18
+
+**Symptom.** CI's tree-walker job failed both tries on `8f345ed9` in `cli::memory_pressure
+a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder`: the hoarder was stopped as
+it should be, and then the waiting ROOT died of `E0043` at its `receive`, ending the program
+before the leak went down. Not reproducible locally on four or twelve cores.
+
+**Cause.** After a victim's 250 ms grace the selector stops the largest holder that can die,
+but only one holding an eighth of the count (~55 MB at 441 MB); below that nobody is
+attributable and the error is raised in whichever process is at the safepoint
+(`process/pressure.rs`). The leak, started after the hoarder had filled up and growing 1 MB per
+5 ms, held ~40-50 MB when the grace ran out, on a slow runner less. So the outcome depended on
+who reached a safepoint first: the leak (pass) or the tree-walked root polling its `receive`
+(fail). The policy did what it says; the test sat on its threshold.
+
+**Fix.** The leak is primed to 64 MB before the hoarder starts and held there until the hoarder
+is stuck, so at the decision it holds an attributable share whoever reaches the safepoint; the
+total (~370 + 64 + its growth in the grace) stays under the 512 MiB hard limit. Passes at every
+tier on four and twelve cores, five runs in CI's tree-walker environment. Two cores under the
+tree-walker still fail for a different reason, KI-280.

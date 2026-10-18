@@ -50,7 +50,9 @@ devlog entries of the same dates.
   and handoff items B (the fold span result stops allocating) and A (ADR-406, the computed-call
   memo). That branch's KI and ADR numbers were moved at the merge; commit messages from before
   it carry the old ones — the map is in the devlog entry "merged origin/main".
-- `known-issues.md` lists **no open or watching entry**. KI-247 (a bystander raising after a
+- `known-issues.md` lists **one open entry, KI-280** (2026-10-18): under the tree-walker on two
+  workers the memory-pressure selector credits a hoarder's memory to a leak beside it; legacy
+  engine on two cores only, reproduces on demand, trace and next step in its section. KI-247 (a bystander raising after a
   holder died) and KI-248 (a large allocation passing the hard limit when the live snapshot
   had not seen an earlier large block) were found and fixed 2026-10-14 (night); KI-264 (a native
   tail call by name never hit its head's cache slot) and KI-265 (a memory-pressure test that
@@ -108,7 +110,7 @@ reason dropped what the process threw). The standard suite (`make test`) stays i
   native tier asserted first so it cannot pass vacuously. **`latency-gate`** joins `green-all`
   only: it is a benchmark-box gate, and a shared runner's p99 means nothing (benchmarking.md).
 
-**No KI is open.** Today's stability review found and fixed KI-271 (the run-check cache sweep
+**KI-280 is open** (see above; filed 2026-10-18). The 2026-10-17 stability review found and fixed KI-271 (the run-check cache sweep
 held every boot), KI-274 (a native self-loop never saw a `def` of itself), KI-275 (an edited
 `include-str` file did not stale the project image) and KI-276 (the project image was not keyed
 by contract mode). The nightly is
