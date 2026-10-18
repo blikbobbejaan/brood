@@ -58,6 +58,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   the page's input through `%tab-subscribe`. b2d's demo plays in a tab with no server at
   ~55 fps. A `release-tab-wasm` profile builds it at `opt-level = 3`.
 
+- A plain `assert`: `(assert expr message-parts…)` returns `expr`'s value, or raises
+  `assert failed: <the form>` (with the parts joined after it) when it is falsy — outside the
+  test framework too.
+- `monitor` takes a remote registered name — `(monitor {:name n :node peer})` — so `gen/call` to a server
+  registered by name on another node works; it used to fail at once (ADR-411). By-pid calls
+  already worked.
+
 **Changed.**
 - `editor/treesit`: what a DEFINITION is for `point-defun-start` / `point-defun-end` is now
   declared per language — `(register-definitions lang {:kinds #{…} :calls #{…}})`, read back
@@ -100,6 +107,16 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   64-slot mark every few turns and paid a whole-heap collection at each park plus the slab
   regrowth after it. Small and idle processes trim as before.
 
+- `receive` matches simple patterns (literals, keywords, binders, tuples of them) in the kernel
+  instead of calling a matcher closure per message (ADR-409), and a loop whose body begins
+  with its `receive` runs in native code, parking and resuming there (ADR-410).
+- A parked process costs **2 763 bytes, down from 3 201** (the BEAM's is 2 704): the
+  closure-template, const-closure and ability-dispatch caches hold one entry in one entry's
+  space; the mailbox's dead-alias set and pending exit reason, the slabs for bigints, decimals,
+  ratios, ropes and local natives, and the rarely-written heap fields (GC statistics,
+  `proc/flag` settings, the trace context) are allocated by their first use. Spawn + park runs
+  ~2-3% fewer instructions; a loop made of bigints or rope inserts ~1% more.
+
 **Fixed.**
 - `test/purge-stale-temp` removes only leftovers an hour old (`*stale-temp-age-ms*`). /tmp is
   shared by every run on the machine, so a second run of the same test file — another
@@ -138,6 +155,20 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   whole-pane memo around per-row memos could never pay.
 - A release build no longer warns that `Value::raw_tag` is never used: it is compiled only
   where its readers are, the debug-assertion tripwire and the layout test.
+- Every boot could stall 20-40 s under concurrent starts: the `nest run` check-verdict cache
+  (`~/.cache/brood/run-check/`, 108 000 files on one machine) was swept on every miss. It is
+  swept at most hourly, by one process, to 10 000 entries (KI-271).
+- A `receive` pattern with a decimal, ratio or bignum literal raised "expected a map" on every
+  message (KI-272).
+- A crashed process's exit reason lost what it threw: a monitor got the printed string where
+  a `catch` binds the map (KI-273).
+- A native compute or busy server loop kept running its old body after a redefinition; it now
+  picks up the new one within 128 iterations (KI-274).
+- The project startup image was not invalidated by an edit to a file read with `include-str`
+  (KI-275), and an image written with contracts armed was served to an unarmed run and the
+  other way round (KI-276).
+- A worker waiting in `os/cmd` still counted as free, so a process woken meanwhile could wait
+  for the command to finish; with two workers both could be stuck (KI-280).
 
 ## v0.39.1 — one bytecode executor
 
