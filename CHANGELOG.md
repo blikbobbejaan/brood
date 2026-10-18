@@ -91,6 +91,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   regrowth after it. Small and idle processes trim as before.
 
 **Fixed.**
+- `test/purge-stale-temp` removes only leftovers an hour old (`*stale-temp-age-ms*`). /tmp is
+  shared by every run on the machine, so a second run of the same test file — another
+  checkout, another terminal — deleted the first's live fixtures at load, and the first failed
+  on a file it had just written.
 - A program drawing on the GPU render target segfaulted on exit — every `nest run --for` on an
   NVIDIA driver: `exit` ran the driver's teardown while the GUI thread was still painting a
   queued frame. The GUI thread now stops touching the GPU before the driver's exit handler

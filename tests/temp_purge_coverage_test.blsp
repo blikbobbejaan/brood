@@ -72,3 +72,19 @@
                     (+ acc
                       (count (quoted-args (file/slurp (str tests-dir f)) "(temp-dir \""))))))
       (is (>= total 20)))))
+
+;; /tmp is shared by every run on the machine: two runs of one file at once (another
+;; checkout, another terminal) used to delete each other's live fixtures at load, and the
+;; victim failed on a file it had just written. Only what an hour has not touched goes.
+(describe "purge-stale-temp leaves a fixture that is in use"
+  (test "an old leftover is removed and a fresh fixture is kept"
+    (let (prefix (path/basename (temp-dir "brood-purge-age-"))
+          old (path/join "/tmp" (str prefix "old"))
+          fresh (path/join "/tmp" (str prefix "fresh"))
+          _ (file/spit old "left by a crashed run")
+          _ (file/spit fresh "a run beside this one is using it")
+          _ (os/cmd "touch" ["-d" "2 hours ago" old])
+          _ (purge-stale-temp prefix))
+      (is (not (file/exists? old)))
+      (is (file/exists? fresh))
+      (file/rm fresh))))

@@ -119,12 +119,17 @@ docs/testing.md for the full guide."
   "A fresh, unique /tmp path `<prefix><random>` (NOT created — `file/mkdir` it). Unique across processes and runs, so concurrent tests never collide. Prelude's `temp-path` under a test-shaped name."
   (path/temp prefix))
 
+(defdyn *stale-temp-age-ms* 3600000)
+
 (defn purge-stale-temp (prefix)
-  "Best-effort remove every `/tmp/<prefix>*` left by an earlier run — a directory tree *or* a plain file (a fixture may be either). Call once at FILE LOAD (a top-level form), before any test creates fixtures, so it never deletes a live one. Bounds /tmp growth to a single run and recovers from crashed runs."
-  (doseq (e (file/ls "/tmp"))
-    (when (string/starts-with? e prefix)
-      (let (p (path/join "/tmp" e))
-        (if (file/dir? p) (file/rmdir p) (file/rm p))))))
+  "Best-effort remove every `/tmp/<prefix>*` left by an earlier run — a directory tree *or* a plain file (a fixture may be either) — that was last modified more than `*stale-temp-age-ms*` (an hour) ago. Call once at FILE LOAD (a top-level form), before any test creates fixtures. The age is what keeps it off a LIVE fixture: /tmp is shared by every run on the machine, and a run of the same file beside this one (another checkout, another terminal) had its fixtures deleted under it. Bounds /tmp growth and recovers from crashed runs."
+  (let (cutoff (- (os/now) *stale-temp-age-ms*))
+    (doseq (e (file/ls "/tmp"))
+      (when (string/starts-with? e prefix)
+        (let (p (path/join "/tmp" e)
+              modified (file/mtime p))
+          (when (and (int? modified) (< modified cutoff))
+            (if (file/dir? p) (file/rmdir p) (file/rm p))))))))
 
 ;; Full source location of a form as (file line col), or nil. Captured at
 ;; macro-expansion time (by the assertion macros), while the original read form
