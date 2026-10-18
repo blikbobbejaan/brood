@@ -186,7 +186,27 @@
   (test "a trailing comment on a body form stays on its line"
     (let (out (source "(defn f (x)\n  (foo) ;; note\n  (bar))"))
       (is (includes? out "(foo) ;; note"))
-      (is (not (includes? out ";; note\n  (foo)"))))))
+      (is (not (includes? out ";; note\n  (foo)")))))
+  ;; Regression: a comment between an open bracket and the first form was never emitted —
+  ;; the head line and the body walk both start AT the first form — so `nest format`
+  ;; deleted it (an app's `:children [;; monitoring first …` lost its explanation).
+  (test "a comment before a vector's first element is kept, after the bracket"
+    (let (in "(start\n  {:children [;; first, so nothing runs unobserved\n              ;; a second line\n              (fn () 1)\n              (fn () 2)]})"
+          out (source in))
+      (is (includes? out "[;; first, so nothing runs unobserved\n"))
+      (is (includes? out ";; a second line\n"))
+      (assert= out (source out))))
+  (test "a comment before a list's head, and a set's first element, is kept"
+    (let (out (source "(def l (;; why\n  foo 1 2))\n\n(def s #{;; which\n  1 2})"))
+      (is (includes? out "(;; why\n"))
+      (is (includes? out "#{;; which\n"))
+      (assert= out (source out))))
+  (test "every comment in a file survives a format"
+    (let (in "(def v [;; a\n  1 ;; b\n  ;; c\n  2])\n(def m {;; d\n  :k 1})\n(f (;; e\n  g))"
+          count-comments (fn (text)
+                           (count (seq/filter (string/split text "\n")
+                                    (fn (line) (includes? line ";;"))))))
+      (assert= (count-comments in) (count-comments (source in))))))
 
 (describe "format: a comment just before a closing delimiter"
   ;; Regression (the bug that broke tests/adversarial_test.blsp): when the last

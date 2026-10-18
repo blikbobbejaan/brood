@@ -496,11 +496,30 @@ keyword (`:next`) is not one."
             ;; land *inside* the comment (`;; note)`), commenting out the `)`
             ;; and leaving the list unclosed (an unparseable file).
             (str open
+              (leading-comments kids (+ indent 2))
               header-line
               body-text
               (if (last-nonws-comment? kids) (str "\n" (indent-of indent)) "")
               close))))))
 (sig render-break (vector int string string -> string))
+
+;; The comments before the first structural form — `[;; why\n (fn () …)]` — each on its
+;; own line right after the open bracket, the head starting on the next line at `column` —
+;; the body indent, so it lines up with the elements after it.
+;; The head line and the body walker both start AT the head, so without this a comment
+;; ahead of it was never emitted at all: the formatter deleted it.
+(defn- leading-comments (kids column)
+  ;; Not `kids-index-of-form kids 0`: that answers 0 for the head without stepping over
+  ;; the trivia in front of it, which is the very slot this reads.
+  (let (head-i (first-form-index kids 0 (count kids)))
+    (string/join (map (seq/filter (take kids head-i) comment?)
+                   (fn (c) (str (comment-strip-trailing-nl (node-text c)) "\n" (indent-of column))))
+      "")))
+(defn- first-form-index (kids i n)
+  (cond
+    (= i n) n
+    (trivia? (nth kids i)) (first-form-index kids (inc i) n)
+    else i))
 
 (defn last-nonws-comment? (kids)
   "True if the body's LAST emitted block is a comment — the case where a closing
