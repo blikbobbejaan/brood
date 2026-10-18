@@ -1698,3 +1698,46 @@
     (assert-error (package/semver-bump "1.x.3" "patch")))
   (test "a missing segment raises too"
     (assert-error (package/semver-bump "1.2" "patch"))))
+
+;; ADR-212's TOFU on the RUNTIME install path (an editor's plugins): `registry-install` used to
+;; skip the signature as "a lock-file concern", so a plugin was checked only against a checksum
+;; from the same registry response. The install directory keeps the pins now.
+(defn mock-runtime-registry (nm version checksum bytes signature pubkey)
+  "The signed handler, plus the release listing `registry-install` asks for first."
+  (let (signed (mock-registry-handler-signed nm version checksum bytes signature pubkey))
+    (fn (req)
+      (if (= (get req :path) (str "/api/v1/packages/" nm "/releases"))
+        (http/ok (json/encode {:releases [{:version version :dependencies []}]}))
+        (signed req)))))
+
+(describe "package: a runtime install checks the signature and pins the key"
+  (test "the first signed install verifies and pins; a release signed by another key is reported"
+    (let (parent (pkg-fixture-root)
+          dest (path/join parent "plugins") ; not a _deps — the second install REPLACES it
+          [bytes checksum] (mock-package-tarball parent "signedplug")
+          [signature pubkey] (mock-sign "signedplug" "1.0.0" checksum)
+          first-install (binding (*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
+                                                                           "1.0.0" checksum bytes
+                                                                           signature pubkey)))
+                          (package/registry-install "signedplug" dest)))
+      (assert= (:signature first-install) :verified)
+      (assert= (:warning first-install) nil)
+      (is (includes? (file/slurp (path/join dest ".signing-pins.blsp")) pubkey))
+      ;; the same name, now signed by somebody else
+      (let ([other-signature other-pubkey] (mock-sign "signedplug" "1.0.0" checksum)
+            again (binding (*config-registry* (mock-registry-start (mock-runtime-registry "signedplug"
+                                                                     "1.0.0" checksum bytes
+                                                                     other-signature other-pubkey)))
+                    (package/registry-install "signedplug" dest)))
+        (assert= (:signature again) :key-changed)
+        (is (includes? (:warning again) "DIFFERENT key"))
+        ;; still installed (advisory), and the first key is still the pinned one
+        (is (file/dir? (path/join dest "signedplug")))
+        (refute (includes? (file/slurp (path/join dest ".signing-pins.blsp")) other-pubkey)))))
+  (test "the verdict is pure: unsigned, bad, dropped"
+    (assert= (:status (package/signature-verdict "p" "1.0.0" "abc" nil nil nil)) :unsigned)
+    (let ([_ pubkey] (mock-sign "p" "1.0.0" "abc"))
+      (assert= (:status (package/signature-verdict "p" "1.0.0" "abc" "00" pubkey nil))
+        :bad-signature)
+      (assert= (:status (package/signature-verdict "p" "1.0.0" "abc" nil nil pubkey))
+        :signature-dropped))))

@@ -131,6 +131,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   ~2-3% fewer instructions; a loop made of bigints or rope inserts ~1% more.
 
 **Fixed.**
+- `package/registry-install` — the runtime path an editor installs its plugins through — checks
+  the release's signature as the lock path does (ADR-212): the signing key is pinned on first
+  use in the install directory (`.signing-pins.blsp`), and the result carries the verdict
+  (`:signature` — `:verified`, `:key-changed`, `:bad-signature`, `:signature-dropped` or
+  `:unsigned` — and `:warning`). It skipped signatures entirely, so a plugin was checked only
+  against a checksum from the same registry response. Still advisory: reported, never refused.
+  The verdict itself is `package/signature-verdict`, pure. And a REINSTALL into such a
+  directory works: it replaced the old copy with `%rm-rf`, which deletes only inside a `_deps/`.
 - `test/purge-stale-temp` removes only leftovers an hour old (`*stale-temp-age-ms*`). /tmp is
   shared by every run on the machine, so a second run of the same test file — another
   checkout, another terminal — deleted the first's live fixtures at load, and the first failed
