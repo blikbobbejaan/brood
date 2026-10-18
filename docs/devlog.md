@@ -2510,3 +2510,14 @@ safepoint first. The leak is now primed to 64 MB before the hoarder fills up (KI
 Passes at every tier on four and twelve cores. On two cores the tree-walker still fails, for a
 different reason: the leak's published footprint jumps by about the hoarder's size and the
 selector raises in the leak. Filed as KI-280 (open) with the trace; it reproduces on demand.
+
+## 2026-10-18 (later) — KI-280: `os/cmd` blocked its worker without saying so
+
+KI-280 was starvation, not misattribution. With timestamps on the pressure trace, the leak
+did not run at all for the hoarder's whole `sleep 20`: on a two-worker pool, worker 0 sat in
+the hoarder's `os/cmd` and worker 1 in the root's tree-walked `receive`. The `receive` marks
+its worker dirty-blocked (ADR-100 §7.4); `os/cmd` did not, so the woken leak was routed to the
+worker inside the command and no overflow drainer started. `os/cmd` now holds `dirty_block()`
+for its wait. Guard `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd`
+(`BROOD_J=2`, two blockers, every tier), red without the guard. The stuck-victim memory test
+passes at every tier on two, four and twelve cores.

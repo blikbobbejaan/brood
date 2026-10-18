@@ -66,28 +66,7 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## Open and watching
 
-(An open entry's `## KI-N` section goes here until it is resolved.)
-
-## KI-280 — under the tree-walker on two workers, the pressure selector misattributes the hoarder
-
-**Open, 2026-10-18. Legacy engine only; reproduces on demand.** `cli::memory_pressure
-a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder` fails every time with
-`BROOD_TIER=0 taskset -c 0,1` (it passes at tiers 1 and 2 on two cores, and at every tier on
-four and twelve — CI's runners have four). The hoarder is never chosen, and the leak raises
-`E0043` in itself instead. Before and after the KI-279 test change alike, and with KI-278's
-`pre_exec` reset taken out, so neither of those.
-
-What a temporary trace in `pressure.rs` showed (the patch was a `DBG_PRESSURE` eprintln in
-`publish` and before `largest_holder`): the hoarder publishes ~248-265 MB under its own pid,
-then the leak — a different `Heap` — publishes 61 MB and, one period later, **309 MB**,
-growing ~1-2 MB a period after that; at the crossing the selector sees the leak as the
-largest holder and `me`, so it raises in place. `(self)` stays correct in a busy tier-0
-process on two cores (checked), so it is not a stale process context. The footprint is an
-estimate that counts uncollected garbage — `(string/repeat "x" 1000000)` kept 100 times reads
-+367 MiB process-wide at every tier, the doubling's intermediates — which accounts for part of
-the jump but not 248 MB in one 50 ms period. Next step: log `owned_bytes` per slab for the
-leak across that jump, and whether a collection ran.
-
+(An open entry's `## KI-N` section goes here until it is resolved.) None open.
 
 ## Index — status per issue
 
@@ -95,7 +74,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-280 | **under the tree-walker on two workers, the memory-pressure selector misattributes a hoarder's memory to a leak beside it**, so the leak raises `E0043` in itself and the stuck-victim test fails (`BROOD_TIER=0 taskset -c 0,1`; passes at tiers 1-2, and at every tier on 4+ cores) | 🔴 **OPEN** — see the section above |
+| KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |
 | KI-279 | **the stuck-victim memory test raced who reached a safepoint first** — after the hoarder's grace the leak had grown ~40-50 MB, under the eighth of the count a process must hold to be stopped, so nobody was attributable and the error was raised in whichever process got there first; on CI's tree-walker job that was the waiting root, which died instead of the leak (both tries, `8f345ed9`) | ✅ **FIXED 2026-10-18** — the leak is primed to 64 MB before the hoarder fills up, so it holds an attributable share whoever reaches the safepoint |
 | KI-278 | **a child spawned by a backgrounded runtime could not be interrupted** — an ignored SIGINT/SIGQUIT survives fork+exec, so a runtime started with `&` or `nohup` passed it to every `os/spawn`/`os/spawn-pty`/`os/cmd` child, and bedit's `C-c C-c` did nothing to a running shell command | ✅ **FIXED 2026-10-18** — `subprocess::reset_inherited_signals` (pre_exec, SIG_DFL). Guard: `a_spawned_child_does_not_inherit_ignored_interrupts` |
 | KI-277 | **a contracted self-recursive loop left through its own shim on every iteration** — `Inst::SelfCall`'s hot-reload guard read the function's PUBLIC name, which armed holds the contract shim, so the answer was always "redefined" and each iteration paid a full argument check (since `19a813ab` a fresh frame re-checks at its first back-edge). `std/vt`'s grapheme loop checked the whole terminal per character: `vt/feed` ~5000× slower under `nest run`, and every bedit pty driver timed out | ✅ **FIXED 2026-10-17** — the guard reads the name as the module's own code does (`contracts::self_call_binding`, the ADR-383 alias). Guard: `contract_test` "a contracted function's own tail self-call is inside the boundary" (red armed before) |

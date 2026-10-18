@@ -308,9 +308,16 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         LispError::runtime(format!("%os-cmd: {prog}: {e}"))
             .with_code(crate::error::error_codes::SUBPROCESS_FAILED)
     };
-    let child = cmd.spawn().map_err(fail)?;
-    let (status, stdout_bytes, stderr_bytes, timed_out) =
-        os_cmd_collect(child, stdin_text, timeout).map_err(fail)?;
+    // The child can run for as long as it likes, and this worker runs nothing else until it
+    // finishes: mark it dirty-blocked (ADR-100 §7.4) for the wait, so its queue is moved to
+    // a live worker and a process woken meanwhile is not routed to it. Without this, two
+    // `os/cmd` calls — or one beside a tree-walked `receive` — on a two-worker pool left no
+    // worker to run anything else until a command returned (KI-280).
+    let (status, stdout_bytes, stderr_bytes, timed_out) = {
+        let _dirty = crate::process::dirty_block();
+        let child = cmd.spawn().map_err(fail)?;
+        os_cmd_collect(child, stdin_text, timeout).map_err(fail)?
+    };
     let stdout = heap.alloc_string(&String::from_utf8_lossy(&stdout_bytes));
     let stderr = heap.alloc_string(&String::from_utf8_lossy(&stderr_bytes));
     let exit_code = status.code().unwrap_or(-1) as i64;

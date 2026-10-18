@@ -14290,4 +14290,31 @@ who reached a safepoint first: the leak (pass) or the tree-walked root polling i
 is stuck, so at the decision it holds an attributable share whoever reaches the safepoint; the
 total (~370 + 64 + its growth in the grace) stays under the 512 MiB hard limit. Passes at every
 tier on four and twelve cores, five runs in CI's tree-walker environment. Two cores under the
-tree-walker still fail for a different reason, KI-280.
+tree-walker failed for a different reason, KI-280.
+
+## KI-280 — a worker waiting in `os/cmd` still counted as live ✅ FIXED 2026-10-18
+
+**Symptom.** `cli::memory_pressure a_victim_stuck_in_a_native_call_does_not_shield_the_next_holder`
+failed every time under `BROOD_TIER=0 taskset -c 0,1`: the hoarder was never chosen, and the
+leak raised `E0043` in itself. It passed at tiers 1 and 2 on two cores, and at every tier on
+four or more.
+
+**Diagnosis.** A temporary trace in `process/pressure.rs` (each publish with its time, pid and a
+per-slab breakdown) first read as misattribution — the leak's footprint jumped from 61 MB to
+309 MB between two publishes. The timestamps settled it: the leak did not run at all between
+t=5 ms and t=20 028 ms, the length of the hoarder's `sleep 20`. Both workers were occupied:
+worker 0 by the hoarder inside `os/cmd`, worker 1 by the root's tree-walked `receive`. The
+`receive` marks its worker dirty-blocked (ADR-100 §7.4), which takes it out of `assign_worker`
+and re-routes its queue; `os/cmd` did not. So the scheduler still counted worker 0 as live, the
+leak woken by `:go` was routed there, and no overflow drainer was started (one live executor
+remained, on paper). When the command returned the hoarder exited, the leak ran alone, grew to
+the limit and, as the largest holder and the current process, raised in itself — which the
+test read as the hoarder never being chosen.
+
+**Fix.** `os/cmd` holds a `dirty_block()` guard from the spawn through the collect loop: its
+worker leaves `assign_worker`, its queue moves to a live worker, and if no live executor is
+left with work queued, the overflow drainer starts. Guard:
+`blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` — `BROOD_J=2`, two
+processes in `os/cmd sleep 4`, a third must answer the root within 2 s, at every tier; red
+without the guard (tier 0 first). The memory test passes at every tier on two, four and twelve
+cores.
