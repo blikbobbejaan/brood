@@ -15,7 +15,7 @@ pub use render::TextAa;
 use render::*;
 // The GPU render target (`gpu.rs`) paints with the same text metric and hairline snap.
 #[cfg(feature = "gui-gpu")]
-pub(crate) use {paint::text_px_width, render::snap_hairline};
+pub(crate) use {paint::paint_stall_ms, paint::text_px_width, render::snap_hairline};
 
 use super::{CursorShape, Key, Mouse, MouseAction, MouseButton, Op, WindowSpec};
 
@@ -923,6 +923,28 @@ pub fn sound(id: u64, snd: u32, rate: u32, channels: u16, pcm: Vec<u8>) -> Resul
     Ok(())
 }
 
+/// Make window `w`'s track what the frame `ops` asks for: its first `[:music …]` op's
+/// sound, at that op's volume — the one playing kept (only its volume set) when the handle
+/// is the same, replaced when it differs, stopped when the frame has none or names a sound
+/// this window does not hold.
+fn reconcile_music(w: &mut Win, ops: &[Op]) {
+    let wanted = ops.iter().find_map(|op| match op {
+        Op::Music { id, vol } => Some((*id, *vol)),
+        _ => None,
+    });
+    let Some((snd, vol)) = wanted.filter(|(snd, _)| w.sounds.contains_key(snd)) else {
+        w.music = None;
+        return;
+    };
+    match &w.music {
+        Some((playing, music)) if *playing == snd => music.set_volume(vol),
+        _ => {
+            w.music = None;
+            w.music = crate::host::audio::music(&w.sounds[&snd], vol).map(|music| (snd, music));
+        }
+    }
+}
+
 /// `(gui-sound-free id snd)` — forget sound `snd` of window `id`.
 pub fn sound_free(id: u64, snd: u32) -> Result<(), String> {
     if headless() {
@@ -1048,6 +1070,10 @@ struct Win {
     pixel_input: bool,
     /// The sounds uploaded for this window's `[:sound …]` ops, by handle.
     sounds: HashMap<u32, std::sync::Arc<crate::host::audio::SoundData>>,
+    /// The track the frames on screen keep looping (`[:music …]`): its handle and the
+    /// playing loop, which fades out when dropped — with the window, or by a frame
+    /// without it.
+    music: Option<(u32, crate::host::audio::Music)>,
     frame: Vec<Op>,
     mods: ModifiersState,
     cursor: (u16, u16),
@@ -1107,6 +1133,9 @@ struct Win {
     /// The earliest wall-clock time the next momentum step may fire. Guards against
     /// about_to_wait being called too frequently (e.g. on every UserEvent::Draw).
     scroll_next_tick: Instant,
+    /// When to repaint next for the particles in flight (`[:emitter …]`): they move between
+    /// frames, so the window repaints on its own, about 60 times a second, while any live.
+    particles_next: Option<Instant>,
     /// Time the previous momentum step was delivered, used for time-proportional decay
     /// (`0.97 ^ (elapsed_ms / 12)`). Keeps the physics correct when about_to_wait
     /// fires late so the coast speed is render-throughput independent.
@@ -1229,6 +1258,7 @@ fn build_window(
         subscriber,
         pixel_input: spec.pixel_input,
         sounds: HashMap::new(),
+        music: None,
         frame: Vec::new(),
         mods: ModifiersState::empty(),
         cursor: (0, 0),
@@ -1246,6 +1276,7 @@ fn build_window(
         wheel_last: None,
         wheel_streak: 0,
         scroll_next_tick: Instant::now(),
+        particles_next: None,
         scroll_last_tick: Instant::now(),
         scroll_pending: false,
     })
@@ -1316,6 +1347,60 @@ impl GuiApp {
     }
 }
 
+/// The GUI thread holds this while it handles an event; `true` once the process is exiting.
+/// `std::process::exit` — `nest run --for` running out, a game quitting, any CLI exit —
+/// runs the C exit handlers on its own thread while this one may still be painting a
+/// queued frame, and a GPU driver's handler tears its state down under it (NVIDIA's
+/// `vkCreateBuffer` segfaulted in a `write_buffer`, every `nest run --for` on the GPU
+/// target). `close_at_exit` shuts the gate before the driver's handler runs.
+static EXIT_GATE: Mutex<bool> = Mutex::new(false);
+
+/// How often a window with particles in flight repaints by itself (~60 Hz).
+const PARTICLE_FRAME: Duration = Duration::from_millis(16);
+
+/// The gate for one event: `None` once the process is exiting, when the event is dropped.
+fn enter_gate() -> Option<std::sync::MutexGuard<'static, bool>> {
+    let guard = lock(&EXIT_GATE);
+    if *guard { None } else { Some(guard) }
+}
+
+/// Shut the gate when the process exits, waiting out the event in hand. C exit handlers
+/// run last-registered first, so this is called once the GPU driver is loaded (a GPU
+/// window's device made): it then runs before the driver's own teardown.
+#[cfg(feature = "gui-gpu")]
+pub(crate) fn close_at_exit() {
+    static REGISTERED: std::sync::Once = std::sync::Once::new();
+    #[cfg(unix)]
+    REGISTERED.call_once(|| {
+        // SAFETY: `atexit` takes a plain `extern "C" fn()` that lives for the process.
+        unsafe {
+            libc::atexit(close_gate);
+        }
+    });
+}
+
+#[cfg(all(feature = "gui-gpu", unix))]
+extern "C" fn close_gate() {
+    // Bounded: an exit called FROM the GUI thread, mid-event, holds the gate itself.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        match EXIT_GATE.try_lock() {
+            Ok(mut exiting) => {
+                *exiting = true;
+                return;
+            }
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                *poisoned.into_inner() = true;
+                return;
+            }
+            Err(std::sync::TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        }
+    }
+}
+
 impl ApplicationHandler<UserEvent> for GuiApp {
     // The loop idles (`Wait`) until a proxy or window event arrives. Window
     // creation is now safe (the display is live), so drain any `Open` that
@@ -1329,6 +1414,9 @@ impl ApplicationHandler<UserEvent> for GuiApp {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
+        let Some(_gate) = enter_gate() else {
+            return;
+        };
         match event {
             // Create now if the display is live, else queue until `resumed`.
             UserEvent::Open {
@@ -1449,6 +1537,8 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                             crate::host::audio::play(data, *vol);
                         }
                     }
+                    reconcile_music(w, &ops);
+                    w.renderer.emitters.frame_arrived(&ops);
                     // Refresh the cursor hot-zones from this frame, then store it. The walk
                     // goes INTO the regions (`ScrollRegion`, `CellRegion`), resolving each
                     // zone to pixels with the metrics its own region is painted at.
@@ -1631,6 +1721,9 @@ impl ApplicationHandler<UserEvent> for GuiApp {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        let Some(_gate) = enter_gate() else {
+            return;
+        };
         let Some(w) = self.wins.get_mut(&window_id) else {
             return;
         };
@@ -2014,6 +2107,11 @@ impl ApplicationHandler<UserEvent> for GuiApp {
                         gpu.paint(&w.frame, &mut w.renderer);
                     }
                 }
+                w.particles_next = w
+                    .renderer
+                    .emitters
+                    .alive()
+                    .then(|| Instant::now() + PARTICLE_FRAME);
             }
             _ => {}
         }
@@ -2028,9 +2126,21 @@ impl ApplicationHandler<UserEvent> for GuiApp {
     // advanced by 12 ms after each step) so at most one step fires per 12 ms
     // regardless of how many times `about_to_wait` is called.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let Some(_gate) = enter_gate() else {
+            return;
+        };
         let now = Instant::now();
         let mut next_wakeup: Option<Instant> = None;
         for w in self.wins.values_mut() {
+            if let Some(due) = w.particles_next {
+                if now >= due {
+                    // the paint sets the next one while particles remain
+                    w.particles_next = None;
+                    w.window.request_redraw();
+                } else {
+                    next_wakeup = Some(next_wakeup.map_or(due, |t| t.min(due)));
+                }
+            }
             if !w.scroll_momentum_active {
                 continue;
             }

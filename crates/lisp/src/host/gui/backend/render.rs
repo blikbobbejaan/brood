@@ -265,6 +265,10 @@ pub(crate) struct Renderer {
     /// `[:sprite …]`: straight-alpha RGBA rows. The GPU target keeps its own copies on
     /// the device; a window has one or the other.
     pub(super) textures: HashMap<u32, CpuTexture>,
+    /// The window's particle emitters (`[:emitter …]`), stepped once per paint by whichever
+    /// target paints, and the CPU painter's own copy of their particles.
+    pub(crate) emitters: crate::host::gui::effects::EmitterBook,
+    pub(super) cpu_particles: crate::host::gui::effects::CpuParticles,
 }
 
 /// A texture as the CPU painter samples it: `w`×`h` straight-alpha RGBA bytes.
@@ -299,6 +303,8 @@ impl Renderer {
             damage_ring: Vec::new(),
             blit_rows: 0,
             textures: HashMap::new(),
+            emitters: Default::default(),
+            cpu_particles: Default::default(),
         };
         r.recompute();
         r

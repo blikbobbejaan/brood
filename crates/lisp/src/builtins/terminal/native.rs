@@ -1196,6 +1196,14 @@ struct GuiOpTags {
     sprite_t: value::Symbol,
     text_px_t: value::Symbol,
     sound_t: value::Symbol,
+    music_t: value::Symbol,
+    ambient_t: value::Symbol,
+    light_t: value::Symbol,
+    overlay_t: value::Symbol,
+    bloom_t: value::Symbol,
+    crt_t: value::Symbol,
+    emitter_t: value::Symbol,
+    burst_t: value::Symbol,
 }
 impl GuiOpTags {
     fn new() -> Self {
@@ -1218,6 +1226,14 @@ impl GuiOpTags {
             sprite_t: value::intern("sprite"),
             text_px_t: value::intern("text-px"),
             sound_t: value::intern("sound"),
+            music_t: value::intern("music"),
+            ambient_t: value::intern("ambient"),
+            light_t: value::intern("light"),
+            overlay_t: value::intern("overlay"),
+            bloom_t: value::intern("bloom"),
+            crt_t: value::intern("crt"),
+            emitter_t: value::intern("emitter"),
+            burst_t: value::intern("burst"),
         }
     }
 }
@@ -1588,6 +1604,93 @@ fn parse_gui_ops(
                 _ => 0.0,
             };
             ops.push(crate::host::gui::Op::Sound { id, vol });
+        } else if tag == tags.music_t {
+            // `[:music id]` / `[:music id vol]` — read exactly as `[:sound …]` is.
+            let Value::Int(snd) = arg(&parts, 1) else {
+                continue;
+            };
+            let Ok(id) = u32::try_from(snd) else {
+                continue;
+            };
+            let vol = match parts.get(2).copied() {
+                Some(v @ (Value::Int(_) | Value::Float(_))) => num(v),
+                _ => 0.0,
+            };
+            ops.push(crate::host::gui::Op::Music { id, vol });
+        } else if tag == tags.ambient_t {
+            // `[:ambient color]` — a colour lighting cannot read is no lighting.
+            let Some(color) = face_rgb(heap, arg(&parts, 1)) else {
+                continue;
+            };
+            ops.push(crate::host::gui::Op::Ambient { color });
+        } else if tag == tags.light_t {
+            // `[:light x y radius color]` / `… intensity` (default 1).
+            let Some(color) = face_rgb(heap, arg(&parts, 4)) else {
+                continue;
+            };
+            let intensity = match parts.get(5).copied() {
+                Some(v @ (Value::Int(_) | Value::Float(_) | Value::Ratio(_))) => num(v),
+                _ => 1.0,
+            };
+            ops.push(crate::host::gui::Op::Light {
+                x: num(arg(&parts, 1)),
+                y: num(arg(&parts, 2)),
+                radius: num(arg(&parts, 3)),
+                color,
+                intensity,
+            });
+        } else if tag == tags.overlay_t {
+            ops.push(crate::host::gui::Op::Overlay);
+        } else if tag == tags.bloom_t {
+            // `[:bloom threshold intensity radius]`; a missing one takes its default.
+            let or = |k: usize, default: f32| match parts.get(k).copied() {
+                Some(v @ (Value::Int(_) | Value::Float(_) | Value::Ratio(_))) => num(v),
+                _ => default,
+            };
+            ops.push(crate::host::gui::Op::Bloom {
+                threshold: or(1, 0.7),
+                intensity: or(2, 0.8),
+                radius: or(3, 8.0),
+            });
+        } else if tag == tags.crt_t {
+            // `[:crt scanlines curvature vignette]`; a missing one takes its default.
+            let or = |k: usize, default: f32| match parts.get(k).copied() {
+                Some(v @ (Value::Int(_) | Value::Float(_) | Value::Ratio(_))) => num(v),
+                _ => default,
+            };
+            ops.push(crate::host::gui::Op::Crt {
+                scanlines: or(1, 0.25),
+                curvature: or(2, 0.15),
+                vignette: or(3, 0.3),
+            });
+        } else if tag == tags.emitter_t {
+            // `[:emitter id x y opts]` — a handle that is not a non-negative int is not an
+            // emitter; every key of `opts` is optional.
+            let Value::Int(id) = arg(&parts, 1) else {
+                continue;
+            };
+            let Ok(id) = u32::try_from(id) else {
+                continue;
+            };
+            let spec = emitter_spec(heap, arg(&parts, 4), &num);
+            ops.push(crate::host::gui::Op::Emitter {
+                id,
+                x: num(arg(&parts, 2)),
+                y: num(arg(&parts, 3)),
+                spec,
+            });
+        } else if tag == tags.burst_t {
+            // `[:burst id count]`.
+            let (Value::Int(id), Value::Int(count)) = (arg(&parts, 1), arg(&parts, 2)) else {
+                continue;
+            };
+            let (Ok(id), Ok(count)) = (u32::try_from(id), u32::try_from(count)) else {
+                continue;
+            };
+            ops.push(crate::host::gui::Op::Burst {
+                id,
+                count: count.min(crate::host::gui::MAX_PARTICLES),
+            });
         } else if tag == tags.sprite_t {
             // `[:sprite tex x y w h]` with optional `uv` (`[u0 v0 du dv]`, default the
             // whole texture), `tint` (default opaque white) and `rot` (default 0) —
@@ -1648,6 +1751,79 @@ pub(in crate::builtins) fn rgba_of(heap: &Heap, v: Value) -> Option<[u8; 4]> {
         }
     }
     face_rgb(heap, v).map(|[r, g, b]| [r, g, b, 255])
+}
+
+/// An `[:emitter …]` op's options map read onto `EmitterSpec`'s defaults: `:rate`, `:life`
+/// `[min max]`, `:speed [min max]`, `:angle`, `:spread`, `:gravity [gx gy]`, `:drag`,
+/// `:size [birth death]`, `:color` / `:color-end` (a face colour or `[r g b a]`),
+/// `:blend :add`, `:shape :square`, `:max`. A key of the wrong shape keeps its default;
+/// every number is clamped to something drawable.
+fn emitter_spec(
+    heap: &Heap,
+    opts: Value,
+    num: &dyn Fn(Value) -> f32,
+) -> crate::host::gui::EmitterSpec {
+    use crate::host::gui::{EmitterSpec, MAX_PARTICLES};
+    let mut spec = EmitterSpec::default();
+    let Value::Map(map) = opts else {
+        return spec;
+    };
+    let get = |key: &str| heap.map_get(map, value::kw(key));
+    let number = |key: &str| match get(key) {
+        Some(v @ (Value::Int(_) | Value::Float(_) | Value::Ratio(_))) => Some(num(v)),
+        _ => None,
+    };
+    let pair = |key: &str| match get(key) {
+        Some(Value::Vector(id)) if heap.vector(id).len() == 2 => {
+            let xs = heap.vector(id);
+            Some([num(xs[0]), num(xs[1])])
+        }
+        Some(v @ (Value::Int(_) | Value::Float(_) | Value::Ratio(_))) => Some([num(v), num(v)]),
+        _ => None,
+    };
+    let finite = |x: f32, lo: f32, hi: f32| if x.is_finite() { x.clamp(lo, hi) } else { lo };
+    if let Some(rate) = number("rate") {
+        spec.rate = finite(rate, 0.0, 1_000_000.0);
+    }
+    if let Some([a, b]) = pair("life") {
+        spec.life = [finite(a, 0.001, 600.0), finite(b, 0.001, 600.0)];
+    }
+    if let Some([a, b]) = pair("speed") {
+        spec.speed = [finite(a, -1e6, 1e6), finite(b, -1e6, 1e6)];
+    }
+    if let Some(angle) = number("angle") {
+        spec.angle = finite(angle, -1e3, 1e3);
+    }
+    if let Some(spread) = number("spread") {
+        spec.spread = finite(spread, 0.0, std::f32::consts::TAU);
+    }
+    if let Some([gx, gy]) = pair("gravity") {
+        spec.gravity = [finite(gx, -1e6, 1e6), finite(gy, -1e6, 1e6)];
+    }
+    if let Some(drag) = number("drag") {
+        spec.drag = finite(drag, 0.0, 1e3);
+    }
+    if let Some([a, b]) = pair("size") {
+        spec.size = [finite(a, 0.0, 4096.0), finite(b, 0.0, 4096.0)];
+    }
+    if let Some(color) = get("color").and_then(|v| rgba_of(heap, v)) {
+        spec.color = color;
+        // without a :color-end, fade the same colour out
+        spec.color_end = [color[0], color[1], color[2], 0];
+    }
+    if let Some(color) = get("color-end").and_then(|v| rgba_of(heap, v)) {
+        spec.color_end = color;
+    }
+    if let Some(Value::Keyword(k)) = get("blend") {
+        spec.additive = k == value::intern("add");
+    }
+    if let Some(Value::Keyword(k)) = get("shape") {
+        spec.square = k == value::intern("square");
+    }
+    if let Some(Value::Int(max)) = get("max") {
+        spec.max = max.clamp(1, MAX_PARTICLES as i64) as u32;
+    }
+    spec
 }
 
 pub(in crate::builtins) fn gui_draw(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -2159,5 +2335,39 @@ mod key_to_value_tests {
         );
         assert_eq!(kw_of(KeyCode::BackTab, KeyModifiers::SHIFT), "back-tab");
         assert_eq!(kw_of(KeyCode::Esc, KeyModifiers::CONTROL), "escape");
+    }
+}
+
+#[cfg(test)]
+mod gui_music_op_tests {
+    use super::{GuiOpTags, parse_gui_ops};
+    use crate::core::heap::Heap;
+    use crate::core::value::{self, Value};
+    use crate::host::gui::Op;
+
+    // `[:music snd]` / `[:music snd vol]` read as `[:sound …]` does: a non-negative int
+    // handle, an optional number volume (absent or garbage: 0, the backend's default).
+    #[test]
+    fn a_music_op_reads_its_handle_and_volume_and_skips_a_bad_handle() {
+        let heap = Heap::new();
+        let music = value::intern("music");
+        let parsed = vec![
+            (
+                music,
+                vec![Value::Keyword(music), Value::int(3), Value::Float(0.4)],
+            ),
+            (music, vec![Value::Keyword(music), Value::int(5)]),
+            (music, vec![Value::Keyword(music), Value::int(-1)]),
+            (
+                music,
+                vec![Value::Keyword(music), Value::int(4_294_967_296)],
+            ),
+        ];
+        let ops = parse_gui_ops(&heap, parsed, &GuiOpTags::new());
+        assert!(
+            ops == vec![Op::Music { id: 3, vol: 0.4 }, Op::Music { id: 5, vol: 0.0 }],
+            "{} ops",
+            ops.len()
+        );
     }
 }
