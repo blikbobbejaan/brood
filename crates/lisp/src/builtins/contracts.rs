@@ -402,6 +402,24 @@ pub(crate) fn uncontracted_sibling(heap: &Heap, module: Symbol, sym: Symbol) -> 
         .then_some(alias)
 }
 
+/// The binding a function's OWN tail self-call stands for: its uncontracted alias when the
+/// name is a contracted function of a module, else the name. A self-call compiles to a
+/// loop back-edge (`Inst::SelfCall`) that never resolves its head, so lowering's
+/// [`uncontracted_sibling`] rewrite never reaches it — but its hot-reload guard re-reads
+/// the function's name to ask "is this still us?", and the PUBLIC name holds the shim. Read
+/// there, every contracted self-recursive loop answered "redefined", fell out through its
+/// own shim, and paid a full argument check per iteration: `std/vt`'s grapheme loop checked
+/// the whole terminal grid once per character, ~5000× slower under `nest run`. A `sig!`
+/// name's alias IS its shim, so a forced loop still checks every iteration, as `sig!` says.
+pub(crate) fn self_call_binding(heap: &Heap, name: Symbol) -> Symbol {
+    if !boundary_active() {
+        return name;
+    }
+    module_of_qualified_cached(name)
+        .and_then(|module| uncontracted_sibling(heap, module, name))
+        .unwrap_or(name)
+}
+
 /// The module a closure's code belongs to, for the boundary: what it recorded, else the
 /// module of its own qualified name (a top-level `def` the tree-walker built). The name
 /// half is memoised per symbol — it is a string split, and this runs on a call path.

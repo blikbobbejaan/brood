@@ -653,7 +653,10 @@
 (defn hof-hot (n) (hof-drive (fn (x) (f x)) n 0))
 (defn forced (x) (str \"forced:\" x))
 (sig! forced (int -> int))
-(defn via-forced (x) (forced x))")
+(defn via-forced (x) (forced x))
+(sig countdown (int int -> int))
+(check-allow :type-mismatch
+  (defn countdown (n acc) (if (string? n) acc (countdown (if (= n 1) \"done\" (- n 1)) (+ acc 1)))))")
 
 ;; The reload test's own copy: it redefines `f`, and the tests above run in any order
 ;; beside it, so on the shared fixture they read the reloaded body under `--seed`.
@@ -676,6 +679,13 @@
     (assert= (list "f:x") (contract-boundary-fixture/as-value ["x"])))
   (test "the boundary holds once the caller has tiered up"
     (assert= 90000 (contract-boundary-fixture/hot 30000 0)))
+  ;; A contracted function's tail call to ITSELF is a loop back-edge, not a call, and the
+  ;; back-edge's hot-reload guard re-reads the function's name. The public name holds the
+  ;; shim, so reading it sent every iteration out through the contract: here the last
+  ;; self-call's string `n` raised, and in `std/vt` the grapheme loop checked the whole
+  ;; terminal grid once per character.
+  (test "a contracted function's own tail self-call is inside the boundary"
+    (assert= 5 (contract-boundary-fixture/countdown 5 0)))
   ;; A thin wrapper called from native code runs its compiled arm (so it can tier up), not
   ;; the dispatcher's redirect: the compiled arm must apply the boundary the redirect did —
   ;; armed, a call that reached the shim would raise on the string `f` returns.

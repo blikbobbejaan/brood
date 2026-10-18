@@ -995,6 +995,11 @@ pub(crate) fn exec_chunk(
                             .load(std::sync::atomic::Ordering::Relaxed)
                             == stamp;
                     if let (false, Some(name)) = (proven, arm.dbg_name) {
+                        // The name as this module's own code reads it: a contracted
+                        // function's public name holds its shim (ADR-383), which is never
+                        // "us" — asking it made every contracted loop leave through its own
+                        // contract check, once per iteration.
+                        let name = crate::builtins::contracts::self_call_binding(heap, name);
                         let env = heap.read_root_env(genv);
                         // ADR-366: the epoch may also have moved because a miss IN THIS LOOP
                         // loaded a module, which marked this arm stale and dropped its cache
