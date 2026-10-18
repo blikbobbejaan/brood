@@ -36,7 +36,8 @@ use crate::process::keywords as pk;
 
 use super::links;
 use super::mailbox::{
-    Mailbox, REGISTRY, ST_RUNNABLE, ST_RUNNING, ST_WAITING, clear_parked, parked_count, set_status,
+    Mailbox, REGISTRY, ST_RUNNABLE, ST_RUNNING, ST_WAITING, book_cpu_ns, clear_parked,
+    parked_count, pin_cpu_clock_to_this_thread, set_status,
 };
 use super::message::Message;
 use super::monitor;
@@ -67,10 +68,10 @@ pub(crate) use lifecycle::{exit_propagate, exit_reason_phrase};
 // scheduling state stays in the root (reached via `use super::*`). Re-export the
 // public/`process`-facing surface so `scheduler::…`/`process::…` paths are unchanged.
 mod pool;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use pool::pump_until_quiescent;
 use pool::spawn_overflow_drainer;
-pub(crate) use pool::{enqueue, ensure_workers, wake_enqueue};
+pub(crate) use pool::{enqueue, ensure_workers, quantum_cpu_so_far, wake_enqueue};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use pool::{pump_due, pump_until_quiescent};
 pub use pool::{set_test_no_workers, test_drive_quanta};
 
 /// A green process (ADR-100 §8.4 — state capture, corosensei removed): its own `Heap`,
@@ -1195,6 +1196,9 @@ pub(super) fn ensure_ctx() -> Ctx {
         }
         let pid = NEXT_PID.fetch_add(1, Ordering::SeqCst);
         let mailbox = Mailbox::new();
+        // A root context lives on THIS thread for good and is never run in quanta, so its
+        // CPU time is the thread's own clock (`process-info` `:cpu-us`).
+        pin_cpu_clock_to_this_thread(&mailbox);
         // Stamp the owning runtime, so this context can later be retired by the `Interp`
         // that caused it and by no other (see `deregister_root_ctx_of`). A green process
         // gets its tag in `spawn`; a root context had none at all — it read 0, which also

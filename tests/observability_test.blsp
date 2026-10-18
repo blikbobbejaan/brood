@@ -58,3 +58,20 @@
     (dev/profile-start 500)
     (obs-churn 400000 ())
     (is (>= (count (dev/profile-stop)) 0))))
+
+(defn obs-other-churn (n acc) (if (= n 0) acc (obs-other-churn (- n 1) (cons n acc))))
+
+(describe "sampling one process"
+  ;; Every process that runs takes a sample per tick, so a busy program's profile is the
+  ;; sum of all of them; `(profile-start hz pid)` keeps only the process you asked about.
+  :isolated (test "a pid-scoped profile holds that process's frames and no other's"
+    (let (me (self)
+          _ (spawn (fn () (obs-other-churn 3000000 ()) (send me :other-done)))
+          _ (dev/profile-start 999 me))
+      (obs-churn 800000 ())
+      (obs-churn 800000 ())
+      (receive (:other-done nil) (after 60000 nil))
+      (let (frames (mapcat (dev/profile-stop) (fn (e) (get e :stack))))
+        (when (not (%tree-walker?))
+          (is (includes? frames "observability-test/obs-churn"))
+          (is (not (includes? frames "observability-test/obs-other-churn"))))))))

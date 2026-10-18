@@ -29,8 +29,76 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - `editor/list-motion`: the selection keys every list in an editor answers (C-n / ↓, C-p / ↑,
   M-< / M->) as data (`motion-keys`, `motion-of`), and `motion-index`, which wraps next and
   previous and is safe on an empty list.
+- A `[:music snd vol]` frame op: a game's looping track. Where `[:sound …]` is an event,
+  `:music` is state: a frame with the same handle keeps the track going (a new volume fades to
+  it), another handle switches tracks, and a frame without one fades it out — so a thin client
+  or a late joiner hears the music from the next frame it draws.
+- Frame effects, drawn by both window painters (ADR-413): 2D lighting (`[:ambient color]`,
+  `[:light x y radius color intensity]`, and `[:overlay]` for the unlit layer above it), bloom
+  (`[:bloom threshold intensity radius]`), a CRT pass (`[:crt scanlines curvature vignette]`),
+  and particles — `[:emitter id x y opts]` keeps a particle system alive in the window, stepped
+  by a compute shader on the GPU target, and `[:burst id n]` emits n at once. A frame carries
+  one op per light and per emitter; the GPU paints such a frame in about half a millisecond
+  at 800×600, and the CPU painter draws the same picture in software.
+- `crates/tab` (`brood-tab`): a bundled program kept running in a browser tab (ADR-414). The
+  page mounts a release bundle (`bundle::mount_bytes` — a `nest release` over an empty runtime
+  is the bundle alone), starts its `:main`, and pumps the cooperative scheduler from its event
+  loop: `pump(budget_ms)` fires the receive timeouts due on the wall clock and never holds the
+  page longer than the budget. The program posts display events with `%tab-post` and takes
+  the page's input through `%tab-subscribe`. b2d's demo plays in a tab with no server at
+  ~55 fps. A `release-tab-wasm` profile builds it at `opt-level = 3`.
+
+**Changed.**
+- `editor/treesit`: what a DEFINITION is for `point-defun-start` / `point-defun-end` is now
+  declared per language — `(register-definitions lang {:kinds #{…} :calls #{…}})`, read back
+  with `definitions` — instead of one private list of every grammar's node names. A language
+  the list had not heard of (Rust) got no definitions, so C-M-a inside an `impl` jumped to the
+  edge of the whole `impl`. Ruby and Elixir, the grammars a runtime can be built with, are
+  declared by std; a language with no declaration falls back to the top-level form.
+- `BROOD_GUI_TRACE=1` traces the GPU painter too (`[gui-paint-gpu]`: expand / upload /
+  acquire / submit / present per paint). The default render target in a `--with-gui-gpu`
+  build could not be measured at all before.
+- `process-info` (`proc/info`) answers `:cpu-us`: the CPU time a process has actually
+  consumed. Beside a wall-clock measurement it separates a step that did a lot of work from one
+  that WAITED to run — behind other processes, or other programs on the machine. Quanta are
+  timed on the worker thread's own CPU clock; a root context reads its thread's clock. Off
+  until the first read (two clock reads a quantum is ~0.3 µs, too much to charge every
+  program), so a green process counts from then. `BROOD_UI_TRACE=1` prints it for every
+  `ui-run` update and view: `update=25.10ms cpu=1.90ms` was starved, not slow.
+- `(dev/profile-start hz pid)` samples one process. Every process that runs takes a sample
+  per tick, so a busy program's profile was the sum of all of them — an editor's UI loop was
+  a few percent of its own profile, under the language servers and workers beside it.
+- `BROOD_UI_TRACE=1` lines carry the turn's cost: `update=6.20ms cpu=6.10ms gc=1.54ms/1` —
+  the CPU the loop actually used and how much of it was collection.
+- `BROOD_GC_TRACE=1`'s minor-collection line says where the pause went: roots (the survivor
+  copy), the remembered set, the source-position map (and its size), the install.
+
+**Performance.**
+- `encoding/base64-*` encode and decode natively (`%base64-encode` / `%base64-decode`), the
+  same output and the same refusals as before: a 500 KB payload 2968 → 1 ms to encode and
+  1925 → <1 ms to decode. A game's sound took three seconds to reach a browser tab, and an
+  embedded asset two to load.
+- `editor/treesit/fontify` resolves each face once per KIND instead of once per span — two
+  thirds of a tree-sitter fontify (1.28 → 0.41 ms on a 250-line Elixir window), paid on every
+  keystroke in every tree-sitter language.
+- `editor/markdown/markdown-spans` measures a line's leading whitespace once and lets a plain
+  prose line leave after one native scan: 7.1 → 3.2 ms for a 300-line window, the same spans
+  byte for byte over a 6,300-line document.
+- A parked process trims (collect + shrink its slabs) only once its heap has grown by half
+  again since the last trim, not by any 64 slots. A long-lived process that keeps
+  accumulating and parks after every message — an editor's UI loop — crossed a fresh
+  64-slot mark every few turns and paid a whole-heap collection at each park plus the slab
+  regrowth after it. Small and idle processes trim as before.
 
 **Fixed.**
+- `test/purge-stale-temp` removes only leftovers an hour old (`*stale-temp-age-ms*`). /tmp is
+  shared by every run on the machine, so a second run of the same test file — another
+  checkout, another terminal — deleted the first's live fixtures at load, and the first failed
+  on a file it had just written.
+- A program drawing on the GPU render target segfaulted on exit — every `nest run --for` on an
+  NVIDIA driver: `exit` ran the driver's teardown while the GUI thread was still painting a
+  queued frame. The GUI thread now stops touching the GPU before the driver's exit handler
+  runs.
 - A process spawned by a runtime that was itself started in the background (`cmd &`, `nohup`)
   inherited its ignored SIGINT and SIGQUIT, so it could not be interrupted (KI-278): an editor's
   `C-c C-c` did nothing to a running shell command. Spawned children now get the default

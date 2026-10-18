@@ -57,9 +57,44 @@ pub(super) fn used() -> u32 {
     reduction_budget().saturating_sub(REDUCTIONS.with(|r| r.get()))
 }
 
-/// Is some process waiting for a worker? One relaxed load of the queued count.
+/// Is some process waiting for a worker? One relaxed load of the queued count — or, on
+/// wasm, is the host waiting for its thread back ([`set_host_deadline`]).
 pub(crate) fn work_waiting() -> bool {
-    STEALABLE.load(Ordering::Relaxed) != 0
+    #[cfg(test)]
+    if let Some(waiting) = TEST_WORK_WAITING.with(|w| w.get()) {
+        return waiting;
+    }
+    STEALABLE.load(Ordering::Relaxed) != 0 || host_waiting()
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// When the host that is pumping this runtime wants its thread back (a browser page,
+    /// between paints): `None` when no pump is bounded.
+    static HOST_DEADLINE: Cell<Option<web_time::Instant>> = const { Cell::new(None) };
+}
+
+/// Bound the pump the host is running (`pump_due`): past `deadline` a spent quantum yields
+/// even with no other process queued, as it would to a waiting one, so a lone process with
+/// more work than time — a game behind its frame rate — still hands the page back. On wasm
+/// there is one thread and nothing else to preempt it.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn set_host_deadline(deadline: Option<web_time::Instant>) {
+    HOST_DEADLINE.with(|h| h.set(deadline));
+}
+
+#[cfg(target_arch = "wasm32")]
+fn host_waiting() -> bool {
+    HOST_DEADLINE.with(|h| {
+        h.get()
+            .is_some_and(|deadline| web_time::Instant::now() >= deadline)
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[inline]
+fn host_waiting() -> bool {
+    false
 }
 
 /// Charge one reduction where nothing can capture (the eval loop): on rollover, run on into
@@ -292,15 +327,18 @@ pub(crate) fn set_reduction_budget_for_test(n: u32) {
     REDUCTIONS.with(|r| r.set(n));
 }
 
-/// Unit tests that stand in for a scheduler: pretend `n` more processes are queued (and undo
-/// it with the negation), so a preemption has someone to make room for.
+#[cfg(test)]
+thread_local! {
+    static TEST_WORK_WAITING: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Unit tests that stand in for a scheduler: answer `work_waiting` on THIS thread as
+/// `waiting` says (`None` restores the real answer). Thread-local on purpose: the queued
+/// count is process-wide, and tests running beside this one spawn processes, so a test
+/// that needed "nothing is waiting" read a stranger's queue and preempted anyway.
 #[cfg(all(test, feature = "jit"))]
-pub(crate) fn test_pretend_queued(n: isize) {
-    if n >= 0 {
-        STEALABLE.fetch_add(n as usize, Ordering::SeqCst);
-    } else {
-        STEALABLE.fetch_sub(n.unsigned_abs(), Ordering::SeqCst);
-    }
+pub(crate) fn test_work_waiting(waiting: Option<bool>) {
+    TEST_WORK_WAITING.with(|w| w.set(waiting));
 }
 
 #[cfg(test)]

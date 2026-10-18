@@ -530,6 +530,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "brood-tab"
+version = "0.39.1"
+dependencies = [
+ "brood",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

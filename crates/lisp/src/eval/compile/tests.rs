@@ -580,14 +580,14 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     // a capture-mode green process, so simulate one (set/clear `capture_run`), with a
     // process waiting for the worker — nothing else is worth unwinding for.
     crate::process::set_capture_run(true);
-    crate::process::test_pretend_queued(1);
+    crate::process::test_work_waiting(Some(true));
     crate::process::yield_now(); // budget = REDUCTION_BUDGET
     let mut heap = Heap::new();
     let base = heap.roots_len();
     heap.push_root(Value::int(1_000_000)); // far more iterations than the budget
     heap.push_root(Value::int(0));
     let (outcome, _) = run_arm(f, &mut heap, base);
-    crate::process::test_pretend_queued(-1);
+    crate::process::test_work_waiting(Some(false));
     // The same unwindable loop with no process waiting: a preempt would re-queue it and pick
     // it straight back up, so it runs on through every spent budget and finishes.
     crate::process::yield_now();
@@ -606,6 +606,7 @@ fn jit_lowers_and_runs_a_self_recursive_int_loop() {
     heap.push_root(Value::int(0));
     let (nested_outcome, nested_ret) = run_arm_nested(f, &mut heap, base);
     crate::process::set_capture_run(false); // restore (cargo test shares threads)
+    crate::process::test_work_waiting(None);
     assert_eq!(
         outcome,
         crate::jit::outcome::PREEMPT,
@@ -2176,7 +2177,7 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
     // every resume exactly as `run_one` does, and a process waiting for the worker (with
     // none, a spent budget does not unwind — ADR-401).
     crate::process::set_capture_run(true);
-    crate::process::test_pretend_queued(1);
+    crate::process::test_work_waiting(Some(true));
     crate::process::set_reduction_budget_for_test(300);
     let heap = &mut interp.heap;
     let mut outcome = vm_run_bc(
@@ -2222,7 +2223,7 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
             VmOutcome::Killed => panic!("pre-f was killed"),
         }
     }
-    crate::process::test_pretend_queued(-1);
+    crate::process::test_work_waiting(None);
     crate::process::set_capture_run(false);
     assert!(
         captures_after_native >= 10,

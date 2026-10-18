@@ -64,6 +64,48 @@ pub fn play(sound: &SoundData, vol: f32) {
     backend::play(sound, vol);
 }
 
+/// A playing track — what a `[:music …]` op keeps going. It loops until this handle is
+/// dropped, which fades it out (a few tens of milliseconds, so a stop never clicks);
+/// `set_volume` fades to the new level the same way. Without `--features audio` it is
+/// an inert value, so a window can hold one either way.
+pub struct Music {
+    #[cfg(feature = "audio")]
+    control: std::sync::Arc<backend::MusicControl>,
+}
+
+impl Music {
+    /// Fade the track to peak amplitude `vol` (0..1; non-finite or <=0 is the default).
+    pub fn set_volume(&self, _vol: f32) {
+        #[cfg(feature = "audio")]
+        self.control.set_volume(_vol);
+    }
+}
+
+#[cfg(feature = "audio")]
+impl Drop for Music {
+    fn drop(&mut self) {
+        self.control.stop();
+    }
+}
+
+/// Start `sound` looping at peak amplitude `vol` (0..1). The track runs until the
+/// returned `Music` is dropped. `None` when there is nothing to loop (an empty sound);
+/// muted, or without `--features audio`, it is a handle to silence.
+pub fn music(sound: &SoundData, vol: f32) -> Option<Music> {
+    if sound.samples.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "audio")]
+    return Some(Music {
+        control: backend::music(sound, vol),
+    });
+    #[cfg(not(feature = "audio"))]
+    {
+        let _ = vol;
+        Some(Music {})
+    }
+}
+
 /// The longest a single `audio-beep` may run. `audio-beep` is fire-and-forget:
 /// nothing ever stops a tone early, and the mixer holds each one until it ends.
 /// So an unbounded duration is not "a long beep", it is a source that never
@@ -90,8 +132,9 @@ const MAX_BEEP_HZ: f32 = 20_000.0;
 mod backend {
     use rodio::source::SineWave;
     use rodio::{DeviceSinkBuilder, Source};
-    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::mpsc::{self, Sender};
+    use std::sync::{Arc, OnceLock};
     use std::time::Duration;
 
     /// Default peak amplitude (0..1) — modest so stacked tones don't clip.
@@ -100,6 +143,134 @@ mod backend {
     enum Cmd {
         Beep { freq: f32, ms: u64, vol: f32 },
         Play { sound: super::SoundData, vol: f32 },
+        Loop(LoopSource),
+    }
+
+    /// How long a track takes to fade to a new volume, or out when it stops.
+    const FADE_SECONDS: f32 = 0.05;
+
+    /// What a `Music` handle and its source on the mixer thread share: the volume the
+    /// track is fading towards, and whether it has been stopped.
+    pub struct MusicControl {
+        vol_bits: AtomicU32,
+        stopped: AtomicBool,
+    }
+
+    impl MusicControl {
+        pub fn set_volume(&self, vol: f32) {
+            self.vol_bits
+                .store(clamp_volume(vol).to_bits(), Ordering::Relaxed);
+        }
+
+        pub fn stop(&self) {
+            self.stopped.store(true, Ordering::Relaxed);
+        }
+
+        fn target(&self) -> f32 {
+            if self.stopped.load(Ordering::Relaxed) {
+                0.0
+            } else {
+                f32::from_bits(self.vol_bits.load(Ordering::Relaxed))
+            }
+        }
+    }
+
+    /// A sound played round and round, its gain ramped towards the control's target a
+    /// sample at a time. It ends once stopped and faded to silence.
+    pub struct LoopSource {
+        samples: std::sync::Arc<[f32]>,
+        position: usize,
+        channels: std::num::NonZeroU16,
+        rate: std::num::NonZeroU32,
+        gain: f32,
+        step: f32,
+        control: Arc<MusicControl>,
+    }
+
+    impl Iterator for LoopSource {
+        type Item = f32;
+
+        fn next(&mut self) -> Option<f32> {
+            let target = self.control.target();
+            // Only end on a frame boundary, so the next source's channels stay aligned.
+            if target == 0.0
+                && self.gain == 0.0
+                && self.position.is_multiple_of(self.channels.get() as usize)
+                && self.control.stopped.load(Ordering::Relaxed)
+            {
+                return None;
+            }
+            if self.gain < target {
+                self.gain = (self.gain + self.step).min(target);
+            } else if self.gain > target {
+                self.gain = (self.gain - self.step).max(target);
+            }
+            let sample = self.samples[self.position] * self.gain;
+            self.position = (self.position + 1) % self.samples.len();
+            Some(sample)
+        }
+    }
+
+    impl Source for LoopSource {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+
+        fn channels(&self) -> std::num::NonZeroU16 {
+            self.channels
+        }
+
+        fn sample_rate(&self) -> std::num::NonZeroU32 {
+            self.rate
+        }
+
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    fn clamp_volume(vol: f32) -> f32 {
+        if vol.is_finite() && vol > 0.0 {
+            vol.min(1.0)
+        } else {
+            VOLUME
+        }
+    }
+
+    /// Start `sound` looping, faded in to `vol`; the control is what its `Music` holds.
+    /// Muted, the source is never sent and the control steers nothing.
+    pub fn music(sound: &super::SoundData, vol: f32) -> Arc<MusicControl> {
+        let (control, source) = looping(sound, vol);
+        if let (Some(source), Some(tx)) = (source, sender()) {
+            let _ = tx.send(Cmd::Loop(source));
+        }
+        control
+    }
+
+    /// The control and the source for `sound` looping at `vol` — no source for a sound
+    /// with a zero rate or channel count, which has nothing to play.
+    fn looping(sound: &super::SoundData, vol: f32) -> (Arc<MusicControl>, Option<LoopSource>) {
+        let control = Arc::new(MusicControl {
+            vol_bits: AtomicU32::new(clamp_volume(vol).to_bits()),
+            stopped: AtomicBool::new(false),
+        });
+        let (Some(channels), Some(rate)) = (
+            std::num::NonZeroU16::new(sound.channels),
+            std::num::NonZeroU32::new(sound.rate),
+        ) else {
+            return (control, None);
+        };
+        let per_second = sound.rate as f32 * sound.channels as f32;
+        let source = LoopSource {
+            samples: sound.samples.clone(),
+            position: 0,
+            channels,
+            rate,
+            gain: 0.0,
+            step: 1.0 / (per_second * FADE_SECONDS).max(1.0),
+            control: control.clone(),
+        };
+        (control, Some(source))
     }
 
     fn muted() -> bool {
@@ -169,6 +340,7 @@ mod backend {
                             .amplify(vol);
                             mixer.add(buffer);
                         }
+                        Cmd::Loop(source) => mixer.add(source),
                     }
                 }
             });
@@ -222,6 +394,53 @@ mod backend {
                 },
                 vol,
             });
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn constant(rate: u32, channels: u16, len: usize) -> super::super::SoundData {
+            super::super::SoundData {
+                rate,
+                channels,
+                samples: vec![1.0; len].into(),
+            }
+        }
+
+        #[test]
+        fn a_track_fades_in_loops_and_ends_after_it_is_stopped() {
+            // 1000 Hz mono: the 50 ms fade is 50 samples.
+            let (control, source) = looping(&constant(1000, 1, 7), 0.5);
+            let mut source = source.unwrap();
+            let start: Vec<f32> = source.by_ref().take(100).collect();
+            assert!(start[0] > 0.0 && start[0] < 0.05, "fades in: {}", start[0]);
+            assert_eq!(start[99], 0.5, "reaches the volume, past the 7-sample end");
+            control.set_volume(0.25);
+            assert_eq!(source.by_ref().nth(60), Some(0.25), "fades to a new volume");
+            control.stop();
+            let tail: Vec<f32> = source.by_ref().take(1000).collect();
+            assert!(
+                tail.len() < 40,
+                "ends once faded out: {} samples",
+                tail.len()
+            );
+            assert!(tail.windows(2).all(|w| w[1] <= w[0]), "a fade, not a cut");
+        }
+
+        #[test]
+        fn a_stereo_track_ends_on_a_frame_boundary() {
+            let (control, source) = looping(&constant(1000, 2, 4), 1.0);
+            let mut source = source.unwrap();
+            source.by_ref().take(201).count();
+            control.stop();
+            let played = 201 + source.count();
+            assert_eq!(
+                played % 2,
+                0,
+                "{played} samples is a whole number of frames"
+            );
         }
     }
 }

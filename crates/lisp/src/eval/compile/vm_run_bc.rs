@@ -122,6 +122,13 @@ impl ProgramExit {
     /// completion — then read the slot. If the pump goes quiescent without a publish the
     /// program deadlocked in a top-level `receive` (no sender will ever wake it); return
     /// `:normal` rather than hang forever, as there is no other thread to make progress.
+    /// How the program ended, without waiting: `None` while it still runs. What a host
+    /// that drives a long-lived program itself (a browser tab's pump) checks after each
+    /// drive.
+    pub fn ended(&self) -> Option<Result<(), LispError>> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
     pub fn wait(&self) -> Result<(), LispError> {
         #[cfg(target_arch = "wasm32")]
         {

@@ -69,6 +69,7 @@
 //! → the globals lock, the load journal or `promote_lock` (`core/heap/env_globals.rs`,
 //! `runtime_code.rs`), and `promote_lock` → the published table's lock (`promote.rs`).
 
+pub(crate) mod cputime;
 mod io_source;
 pub(crate) mod keywords;
 mod links;
@@ -95,12 +96,13 @@ pub use timer::SchedDeadline;
 pub use timer::pending_timer_count;
 
 pub use mailbox::{
-    deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_gc_runs, process_mem,
-    process_reductions, process_status, receive_match, send, set_max_mailbox,
+    deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
+    process_mem, process_reductions, process_status, receive_match, send, set_max_mailbox,
 };
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub(crate) use scheduler::exit_reason_phrase;
+pub(crate) use scheduler::quantum_cpu_so_far;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.
@@ -121,8 +123,6 @@ pub(crate) use links::{
     deliver_remote_link_exit, drop_remote_link, handle_node_down as handle_link_node_down,
     record_remote_link,
 };
-#[cfg(target_arch = "wasm32")]
-pub(crate) use scheduler::pump_until_quiescent;
 pub use scheduler::{
     GcBlockGuard, MacroBlockGuard, NATIVE_STACK_MARGIN_BYTES, WORKER_STACK_BYTES, begin_capture,
     capture_append, current_pid, deregister_root_ctx, deregister_root_ctx_of,
@@ -135,6 +135,8 @@ pub use scheduler::{
     stack_budget, stack_overflow_check, steal_count, take_capture, test_drive_quanta, tick,
     with_minting_runtime_tag, worker_threads, yield_now,
 };
+#[cfg(target_arch = "wasm32")]
+pub(crate) use scheduler::{pump_due, pump_until_quiescent};
 /// Currently-parked process count, runtime-wide — teardown/leak test hook.
 pub fn parked_process_count() -> usize {
     mailbox::parked_count()
@@ -161,7 +163,7 @@ pub(crate) use scheduler::set_capture_run;
 #[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::set_reduction_budget_for_test;
 #[cfg(all(test, feature = "jit"))]
-pub(crate) use scheduler::test_pretend_queued;
+pub(crate) use scheduler::test_work_waiting;
 
 pub(crate) use mailbox::{deliver, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is

@@ -34,6 +34,11 @@ static SAMPLES: Mutex<Option<HashMap<Box<[Symbol]>, u64>>> = Mutex::new(None);
 /// Generation counter for the ticker thread: bumping it retires the previous
 /// ticker (it checks on each tick), so start/stop cycles never leak threads.
 static TICKER_GEN: AtomicU64 = AtomicU64::new(0);
+/// The one process to sample, or 0 for every process. Every process that runs takes a
+/// sample per tick, so a profile of a busy program is the sum of all of them — and an
+/// editor's UI loop, the process whose time a user feels, was a few percent of its own
+/// profile, under language servers, checkers and buffer processes running beside it.
+static TARGET_PID: AtomicU64 = AtomicU64::new(0);
 
 /// Is the profiler armed? The driver's per-iteration gate — a relaxed load.
 #[inline]
@@ -52,6 +57,10 @@ pub fn epoch() -> u64 {
 /// first (anonymous frames are skipped; a stack with no named frame at all is
 /// recorded under the empty stack, which the Brood side labels `<anonymous>`).
 pub fn record(stack: &[Symbol]) {
+    let target = TARGET_PID.load(Ordering::Relaxed);
+    if target != 0 && crate::process::current_pid() != Some(target) {
+        return;
+    }
     let mut g = SAMPLES.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(map) = g.as_mut() {
         *map.entry(Box::from(stack)).or_insert(0) += 1;
@@ -59,9 +68,11 @@ pub fn record(stack: &[Symbol]) {
 }
 
 /// Arm the profiler at `hz` samples/sec (clamped to 1..=10_000), resetting the
-/// histogram. Idempotent-ish: a second start re-arms at the new rate (the old
-/// ticker retires on its next tick via the generation counter).
-pub fn start(hz: u32) {
+/// histogram — sampling only process `pid` when it is `Some`, every process otherwise.
+/// Idempotent-ish: a second start re-arms at the new rate (the old ticker retires on its
+/// next tick via the generation counter).
+pub fn start(hz: u32, pid: Option<u64>) {
+    TARGET_PID.store(pid.unwrap_or(0), Ordering::SeqCst);
     let hz = hz.clamp(1, 10_000);
     {
         let mut g = SAMPLES.lock().unwrap_or_else(|p| p.into_inner());

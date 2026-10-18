@@ -1,0 +1,224 @@
+(defmodule editor/web
+  "A browser tab as a frontend. `listen` runs an HTTP server whose page paints the
+display protocol (ADR-046) on a canvas and posts the tab's input back, so a browser
+is one more thin client of a served app — like `nest attach --gui`, with the app
+running where it always did, in this runtime. The bridge speaks `editor/serve`'s
+attach protocol to whichever session manager is registered (bedit's, a b2d game's), and
+the painter (`std/editor/web/app.js`, built in) draws every op kind — the pixel-space
+ops and their effects included — so any served app plays in a tab.
+
+The same page paints a program running IN the tab (brood's wasm build, `crates/tab`):
+that program posts the events this bridge streams (`%tab-post`), with the encoders here.
+`listen-files` serves such a build, which is files and nothing else.
+
+Routes: `GET /` and `GET /app.js` the page; `GET
+/events` a server-sent event stream — `hello` with the tab's id, then `frame` (the op
+vector as JSON), `texture` (`{tex w h rgba}`, the pixels base64) and `window` (the
+options the app asked for); `POST /input/<id>` one input message as a Brood form
+(`[:mouse :press :left 20 10 [] 1]`, the shapes a window sends — read, never
+evaluated). Listens on 127.0.0.1 only.
+
+    (editor/web/listen 8040)   ; with an app served, open http://127.0.0.1:8040/"
+  (:use http))
+
+;; --- the tabs ---------------------------------------------------------------------------
+
+(def *web-tabs* nil)
+
+(defn- tabs ()
+  "Tab id → the session process its input goes to. Created on first use."
+  (when (nil? *web-tabs*) (def *web-tabs* (table/new)))
+  *web-tabs*)
+
+(defn- next-tab-id ()
+  (table/incr (tabs) :next))
+
+(defn- attach (cols rows)
+  "Attach THIS process (an event-stream handler) to the registered session manager, as
+`nest attach` does, and return the session pid — nil when nothing serves."
+  (let (mgr (proc/whereis editor/serve/serve-name))
+    (if (nil? mgr)
+      nil
+      (do
+        (send mgr [:attach (self) cols rows {:name "browser"}])
+        (receive
+          ([:attached s] s)
+          (after 5000 nil))))))
+
+;; --- wire encoding ------------------------------------------------------------------------
+
+(defn frame-json (frame)
+  "A frame as JSON for the painter, or nil for one the encoder cannot carry (a bitboard
+op holds raw bytes) — the tab keeps its last frame rather than the stream dying.
+
+    (editor/web/frame-json [[:clear] [:text 0 0 \"hi\"]])   → \"[[\\\"clear\\\"],[\\\"text\\\",0,0,\\\"hi\\\"]]\""
+  ;; The error IS the answer: a frame the encoder refuses is skipped, not fatal.
+  (check-allow :discarded-catch (try (json/encode frame) (catch _e nil))))
+
+(defn texture-json (tex rgba w h)
+  "A texture upload as JSON: the handle, the size, and the pixels as base64.
+
+    (get (json/decode (editor/web/texture-json 3 (bytes 1 2 3 4) 1 1)) :rgba)   → \"AQIDBA==\""
+  (let (pixels (if (bytes? rgba) rgba (fold rgba #b"" (fn (acc b) (bytes/concat acc (bytes b))))))
+    (json/encode {:tex tex :w w :h h :rgba (encoding/base64-encode-bytes pixels)})))
+
+(defn sound-json (snd pcm rate channels)
+  "A sound upload as JSON: the handle, the rate and channel count, the PCM16 bytes as
+base64 — the tab decodes them into an AudioBuffer.
+
+    (get (json/decode (editor/web/sound-json 2 (bytes 0 0 255 127) 8000 1)) :rate)   → 8000"
+  (let (samples (if (bytes? pcm) pcm (fold pcm #b"" (fn (acc b) (bytes/concat acc (bytes b))))))
+    (json/encode {:snd snd
+                  :rate rate
+                  :channels channels
+                  :pcm (encoding/base64-encode-bytes samples)})))
+
+(defn parse-input (text)
+  "One input message from the text a tab posted: the Brood form read (never
+evaluated), accepted only in the shapes a window sends — a string or keyword key, or
+a vector — anything else is nil and dropped.
+
+    (editor/web/parse-input \"[:mouse :press :left 20 10 [] 1]\")   → [:mouse :press :left 20 10 [] 1]
+    (editor/web/parse-input \"(system/halt 1)\")   → nil"
+  ;; Unreadable text from a tab is not an input message; nothing more to learn from it.
+  (let (m (check-allow :discarded-catch (try (reflect/read-string text) (catch _e nil))))
+    (if (or (string? m) (keyword? m) (vector? m)) m nil)))
+
+(defn input-tab (path)
+  "The tab id a `POST /input/<id>` names, or nil for any other path.
+
+    (editor/web/input-tab \"/input/7\")   → 7
+    (editor/web/input-tab \"/other\")     → nil"
+  (if (string/starts-with? path "/input/")
+    (let (n (string/->number (string/substring path 7)))
+      (if (int? n) n nil))
+    nil))
+
+;; --- the handlers ---------------------------------------------------------------------------
+
+(defn page (name)
+  "The text of the built-in page file `name` (`\"app.js\"`, `\"index.html\"`, `\"tab.html\"`,
+`\"tab.js\"`), compiled into the runtime from `std/editor/web/` — or nil for another name.
+A build of an app that runs in the tab copies these beside its bundle.
+
+    (string/starts-with? (editor/web/page \"index.html\") \"<!doctype html>\")   → true
+    (editor/web/page \"nope.js\")   → nil"
+  (%builtin-doc (str "editor/web/" name)))
+
+(defn- static (name mime)
+  "A handler serving the built-in page file `name`."
+  (fn (req)
+    (let (body (page name))
+      (if (nil? body)
+        (not-found)
+        (response 200 {"Content-Type" mime} body)))))
+
+(defn- stream (sock id session)
+  "Pump a tab's session to its event stream until the app quits, the session dies,
+or the tab goes away (its socket closes). Each message is one SSE event."
+  (receive
+    ([:frame f] (let (j (frame-json f)) (when j (sse/emit sock j "frame")) (stream sock id session)))
+    ([:texture tex rgba w h] (sse/emit sock (texture-json tex rgba w h) "texture")
+      (stream sock id session))
+    ([:texture-free tex] (sse/emit sock (json/encode {:tex tex}) "texture-free")
+      (stream sock id session))
+    ([:window o] (sse/emit sock (json/encode o) "window")
+      (stream sock id session))
+    ([:sound-data snd pcm rate channels] (sse/emit sock (sound-json snd pcm rate channels) "sound")
+      (stream sock id session))
+    ([:sound-free snd] (sse/emit sock (json/encode {:snd snd}) "sound-free")
+      (stream sock id session))
+    ([:bye] nil)
+    ([:down _ _ _] nil)
+    ([:tcp-closed _] (send session [:detach]))
+    (_ (stream sock id session))))
+
+(defn- events (req)
+  "The `/events` handler: attach a fresh session for this tab, announce its id, then
+stream. Runs in the connection's own process, which is exactly the process the
+session's `remote-display` sends to."
+  (stream-response 200
+    (sse/headers)
+    (fn (sock)
+      (let (id (next-tab-id)
+            session (attach 100 40))
+        (if (nil? session)
+          (sse/emit sock (json/encode {:error "nothing is being served"}) "error")
+          (do
+            (monitor session)
+            (table/put (tabs) id session)
+            (sse/emit sock (json/encode {:id id}) "hello")
+            (stream sock id session)
+            (table/delete (tabs) id)))
+        (tcp/close sock)))))
+
+(defn- input (req)
+  "The `/input/<id>` handler: the posted form to that tab's session, as a window's
+message would arrive (`[:key m]`)."
+  (let (id (input-tab (get req :path))
+        session (if (nil? id) nil (table/get (tabs) id))
+        m (parse-input (string/bytes-> (get req :body))))
+    (cond
+      (nil? session) (not-found)
+      (nil? m) (response 400 {} "not an input message")
+      else
+        (do
+          (send session [:key m])
+          (response 204 {} "")))))
+
+(defn handler ()
+  "The request handler: the static page, the event stream, and input by tab id."
+  (let (routes {"/" (static "index.html" "text/html; charset=utf-8")
+                "/app.js" (static "app.js" "text/javascript; charset=utf-8")
+                "/events" events})
+    (router routes
+      (fn (req)
+        (if (and (= (get req :method) "POST") (input-tab (get req :path)))
+          (input req)
+          (not-found))))))
+
+(defn listen (port)
+  "Serve the browser frontend on 127.0.0.1:`port` in a process of its own; returns
+its pid. A session manager must be registered (`editor/serve`) for a tab to get an app."
+  (spawn (serve port (handler))))
+
+;; --- a built page, served as files --------------------------------------------------------
+
+(def- types
+  {".html" "text/html; charset=utf-8"
+   ".js" "text/javascript; charset=utf-8"
+   ".wasm" "application/wasm"
+   ".json" "application/json"
+   ".css" "text/css; charset=utf-8"})
+
+(defn file-path (dir path)
+  "The file under `dir` a request `path` names — `tab.html` for `/` — or nil for a path
+that would leave `dir` (a `..` segment, or a backslash).
+
+    (editor/web/file-path \"web/tab\" \"/tab.js\")   → \"web/tab/tab.js\"
+    (editor/web/file-path \"web/tab\" \"/\")   → \"web/tab/tab.html\"
+    (editor/web/file-path \"web/tab\" \"/../project.blsp\")   → nil"
+  (let (relative (if (= path "/") "tab.html" (string/substring path 1)))
+    (if (or (includes? relative "..") (includes? relative "\\"))
+      nil
+      (str dir "/" relative))))
+
+(defn- serve-file (dir)
+  "A handler serving the files under `dir` by request path, typed by extension."
+  (fn (req)
+    (let (file (file-path dir (get req :path)))
+      (if (nil? file)
+        (not-found)
+        ;; A missing file is the 404 below.
+        (let (body (check-allow :discarded-catch (try (file/slurp-bytes file) (catch _e nil))))
+          (if (nil? body)
+            (not-found)
+            (response 200
+              {"Content-Type" (or (get types (path/extension file)) "application/octet-stream")}
+              body)))))))
+
+(defn listen-files (port dir)
+  "Serve the files under `dir` on 127.0.0.1:`port` — a build of an app that runs in the
+tab (`tab.html` and `tab.js` from `page`, the wasm runtime, the bundle), which needs nothing
+but files, a `.wasm` typed `application/wasm`. Returns the server's pid."
+  (spawn (serve port (router {} (serve-file dir)))))

@@ -19,7 +19,7 @@ pub(super) static PAINT_MISSES: AtomicU64 = AtomicU64::new(0);
 
 pub(super) static PAINT_BUILD_NS: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn paint_stall_ms() -> Option<u128> {
+pub(crate) fn paint_stall_ms() -> Option<u128> {
     static MS: OnceLock<Option<u128>> = OnceLock::new();
     *MS.get_or_init(|| {
         // `BROOD_GUI_TRACE=1` traces EVERY paint (threshold 0) without the runtime's
@@ -117,7 +117,17 @@ fn op_band(op: &Op, dy: isize, oy: usize, ch: usize) -> Option<(isize, isize)> {
         Op::Clear => Some((isize::MIN, isize::MAX)),
         Op::CursorZone { .. } => None,
         // A sound paints nothing.
-        Op::Sound { .. } => None,
+        Op::Sound { .. } | Op::Music { .. } => None,
+        // An event and state that paint nothing themselves.
+        Op::Burst { .. } => None,
+        // Lighting, post-processing and particles reach the whole frame (a frame carrying any
+        // of them is rasterised whole: `raster_frame`).
+        Op::Ambient { .. }
+        | Op::Light { .. }
+        | Op::Overlay
+        | Op::Bloom { .. }
+        | Op::Crt { .. }
+        | Op::Emitter { .. } => Some((isize::MIN, isize::MAX)),
         // A pixel-space quad turned about its centre: the band of its bounding box —
         // the centre plus or minus half the diagonal, whatever the angle (conservative).
         Op::Sprite { y, w, h, .. } | Op::Quad { y, w, h, .. } => {
@@ -1041,7 +1051,15 @@ pub(super) fn render_ops(
             // pointer-move in the window event handler (ADR-080).
             Op::CursorZone { .. } => {}
             // A sound is played by the window, not painted.
-            Op::Sound { .. } => {}
+            Op::Sound { .. } | Op::Music { .. } => {}
+            // The frame's effects are passes `raster_frame` runs around these ops.
+            Op::Ambient { .. }
+            | Op::Light { .. }
+            | Op::Overlay
+            | Op::Bloom { .. }
+            | Op::Crt { .. }
+            | Op::Burst { .. } => {}
+            Op::Emitter { id, .. } => paint_particles(canvas, r, *id),
             // The pixel-space ops, in software: the GPU target draws them instanced; here
             // each pixel of the quad's bounding box is turned back into the quad's own
             // frame and filled or sampled if it lands inside. Slow next to the GPU, but
@@ -1353,6 +1371,100 @@ fn paint_sprite(
     }
 }
 
+/// Emitter `id`'s live particles, each a `size`-wide disc (or square) of its colour —
+/// blended over the canvas, or added onto it for an additive emitter. The GPU's
+/// `fs_particle`, per pixel.
+fn paint_particles(canvas: &mut Canvas, r: &Renderer, id: u32) {
+    use crate::host::gui::effects::particle_coverage;
+    let Some(spec) = r.cpu_particles.spec(id).copied() else {
+        return;
+    };
+    let fb_w = canvas.w;
+    for (x, y, size, rgba) in r.cpu_particles.particles(id) {
+        if !(x.is_finite() && y.is_finite()) || size <= 0.0 {
+            continue;
+        }
+        let half = size / 2.0;
+        let x0 = (x - half).floor().max(0.0) as usize;
+        let x1 = ((x + half).ceil().max(0.0) as usize).min(fb_w);
+        let y0 = ((y - half).floor().max(0.0) as usize).max(canvas.y0);
+        let y1 = ((y + half).ceil().max(0.0) as usize).min(canvas.y1);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let dx = px as f32 + 0.5 - x;
+                let dy = py as f32 + 0.5 - y;
+                let distance = (dx * dx + dy * dy).sqrt() / size;
+                let alpha = rgba[3] * particle_coverage(distance, spec.square);
+                if alpha <= 0.0 {
+                    continue;
+                }
+                let i = py * fb_w + px;
+                let rgb = [
+                    (rgba[0] * 255.0) as u8,
+                    (rgba[1] * 255.0) as u8,
+                    (rgba[2] * 255.0) as u8,
+                ];
+                canvas.buf[i] = if spec.additive {
+                    let add = |shift: u32, c: u8| {
+                        let d = (canvas.buf[i] >> shift) & 0xff;
+                        ((d as f32 + c as f32 * alpha).min(255.0) as u32) << shift
+                    };
+                    add(16, rgb[0]) | add(8, rgb[1]) | add(0, rgb[2])
+                } else {
+                    over(canvas.buf[i], rgb, (alpha * 255.0) as u32)
+                };
+            }
+        }
+    }
+}
+
+/// A frame with lighting, post-processing or particles in flight, rasterised whole:
+/// the scene (the ops before the top-level `Overlay`), the particles of emitters the
+/// frame no longer carries, the light map over both, the overlay, then bloom and CRT —
+/// the GPU target's passes, in software.
+fn raster_effects(
+    r: &mut Renderer,
+    frame: &[Op],
+    pixels: &mut [u32],
+    fb_w: usize,
+    fb_h: usize,
+    fx: &crate::host::gui::effects::FrameEffects,
+) {
+    use crate::host::gui::effects::{apply_bloom, apply_crt, apply_lighting};
+    let (cw, ch) = (r.cell_w.max(1), r.cell_h.max(1));
+    let (ox, oy) = r.grid_origin(fb_w, fb_h);
+    let bg0 = pack(r.bg());
+    let split = fx.overlay_at.unwrap_or(frame.len());
+    let (scene, overlay) = frame.split_at(split);
+    let mut canvas = Canvas::band(pixels, fb_w, fb_h, 0, fb_h);
+    canvas.fill_rows(0, fb_h, bg0);
+    render_ops(scene, &mut canvas, r, ox, oy, cw, ch, bg0, 0);
+    let carried: Vec<u32> = frame
+        .iter()
+        .filter_map(|op| match op {
+            Op::Emitter { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let lingering: Vec<u32> = r
+        .cpu_particles
+        .ids()
+        .filter(|id| !carried.contains(id))
+        .collect();
+    for id in lingering {
+        paint_particles(&mut canvas, r, id);
+    }
+    apply_lighting(pixels, fb_w, fb_h, fx);
+    let mut canvas = Canvas::band(pixels, fb_w, fb_h, 0, fb_h);
+    render_ops(overlay, &mut canvas, r, ox, oy, cw, ch, bg0, 0);
+    if let Some(bloom) = fx.bloom {
+        apply_bloom(pixels, fb_w, fb_h, bloom);
+    }
+    if let Some(crt) = fx.crt {
+        apply_crt(pixels, fb_w, fb_h, crt);
+    }
+}
+
 pub(super) fn raster_frame(
     r: &mut Renderer,
     frame: &[Op],
@@ -1367,6 +1479,20 @@ pub(super) fn raster_frame(
     if fresh {
         r.canvas = vec![0u32; fb_w * fb_h];
         r.canvas_size = (fb_w, fb_h);
+    }
+    // Particles move between paints of the same frame, and an effect reaches every pixel,
+    // so neither has a damage to diff: the whole frame is rasterised.
+    let steps = r.emitters.step(frame);
+    r.cpu_particles.step(&steps);
+    let fx = crate::host::gui::effects::FrameEffects::of(frame);
+    if fx.any() || !steps.is_empty() {
+        let mut pixels = std::mem::take(&mut r.canvas);
+        raster_effects(r, frame, &mut pixels, fb_w, fb_h, &fx);
+        r.canvas = pixels;
+        r.blit_rows = 0;
+        // the next frame without effects starts from a full raster, not a diff
+        r.prev_ops.clear();
+        return vec![(0, fb_h)];
     }
     let same = frame == r.prev_ops.as_slice();
     // `changed`: every band whose pixels differ after this raster (what the present

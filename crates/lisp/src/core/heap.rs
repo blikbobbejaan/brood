@@ -1294,8 +1294,8 @@ pub use self::runtime_code::{
 mod slabs;
 mod small_map;
 use self::slabs::{
-    CodeSlabs, PARK_TRIM_GROWTH_SLOTS, Slabs, owned_bytes, park_trim_probe, shrink_slabs,
-    slab_bytes, slab_capacity_bytes, slab_live_count,
+    CodeSlabs, Slabs, owned_bytes, park_trim_due, park_trim_probe, shrink_slabs, slab_bytes,
+    slab_capacity_bytes, slab_live_count,
 };
 pub(crate) use self::slabs::{INLINE_VEC_CAP, VecStore};
 pub(crate) use self::small_map::SmallMap;

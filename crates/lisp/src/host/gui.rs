@@ -369,7 +369,124 @@ pub enum Op {
         id: u32,
         vol: f32,
     },
+    /// Keep sound `id` LOOPING at peak amplitude `vol` (0..1) for as long as the frames
+    /// drawn carry this op — a game's music. Where `Sound` is an event, `Music` is state:
+    /// a frame with the same handle keeps the track going (a new `vol` fades to it), a
+    /// different handle switches tracks, and a frame without one fades it out. So a
+    /// thin client or a late joiner hears what the game is playing from the next frame
+    /// it draws. The first `Music` op of a frame wins. Draws nothing; the terminal
+    /// ignores it.
+    Music {
+        id: u32,
+        vol: f32,
+    },
+    /// Turn LIGHTING on for this frame: what is drawn before the frame's `Overlay` (all
+    /// of it, without one) is multiplied by a light map that starts at `color` — the light
+    /// where no `Light` reaches — and adds every `Light` on top. Without an `Ambient` op a
+    /// frame is unlit, however many `Light`s it carries.
+    Ambient {
+        color: [u8; 3],
+    },
+    /// A point light at `(x, y)` pixels: `color` × `intensity` at its centre, falling off
+    /// smoothly to nothing at `radius`. Lights add. Where in the frame the op sits does
+    /// not matter; it takes effect only under an `Ambient`.
+    Light {
+        x: f32,
+        y: f32,
+        radius: f32,
+        color: [u8; 3],
+        intensity: f32,
+    },
+    /// The ops after this one are the UNLIT layer — a HUD over a lit scene: drawn after
+    /// the light map is applied, before post-processing. A second one changes nothing.
+    Overlay,
+    /// Bloom post-processing: what is brighter than `threshold` (0..1 luma) is blurred
+    /// `radius` pixels wide and added back at `intensity`. Applied to the finished frame.
+    Bloom {
+        threshold: f32,
+        intensity: f32,
+        radius: f32,
+    },
+    /// A CRT pass over the finished frame: `scanlines` darkens every other row by that
+    /// fraction, `curvature` bulges the picture as a tube's glass does (0 = flat), and
+    /// `vignette` darkens toward the corners by that fraction. After `Bloom`.
+    Crt {
+        scanlines: f32,
+        curvature: f32,
+        vignette: f32,
+    },
+    /// Keep particle emitter `id` alive at `(x, y)` pixels, emitting as `spec` says, for as
+    /// long as the frames drawn carry it: state, like `Music`. The particles live in the
+    /// window (simulated on the GPU by a compute shader, or natively by the CPU painter),
+    /// so a frame carries one op per emitter, never one per particle. When a frame stops
+    /// carrying it the emitter stops emitting and its particles live out their lives.
+    /// Drawn where the op sits in the frame's order.
+    Emitter {
+        id: u32,
+        x: f32,
+        y: f32,
+        spec: EmitterSpec,
+    },
+    /// Emit `count` particles at once from emitter `id` (an event, like `Sound`: once,
+    /// when the frame is drawn). Names an emitter of the same frame.
+    Burst {
+        id: u32,
+        count: u32,
+    },
 }
+
+/// How an emitter emits: what an `[:emitter id x y opts]` op's map says, with defaults
+/// for the keys it leaves out. Velocities and positions are in pixels, times in seconds,
+/// angles in radians (0 points right; y points down, so a positive angle turns clockwise).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct EmitterSpec {
+    /// Particles a second, emitted continuously.
+    pub rate: f32,
+    /// A particle's life, uniformly between the two.
+    pub life: [f32; 2],
+    /// Its launch speed, uniformly between the two.
+    pub speed: [f32; 2],
+    /// The direction of launch, and the full width of the cone around it.
+    pub angle: f32,
+    pub spread: f32,
+    /// Acceleration, and the fraction of its velocity a particle loses each second.
+    pub gravity: [f32; 2],
+    pub drag: f32,
+    /// Its size at birth and at death (linear between).
+    pub size: [f32; 2],
+    /// Its colour at birth and at death (straight rgba, linear between).
+    pub color: [u8; 4],
+    pub color_end: [u8; 4],
+    /// Added onto what is under it (fire, sparks) rather than blended over it.
+    pub additive: bool,
+    /// A square rather than a soft disc.
+    pub square: bool,
+    /// The most particles alive at once; a new one replaces the oldest beyond it.
+    pub max: u32,
+}
+
+impl Default for EmitterSpec {
+    fn default() -> EmitterSpec {
+        EmitterSpec {
+            rate: 0.0,
+            life: [1.0, 1.0],
+            speed: [50.0, 100.0],
+            angle: -std::f32::consts::FRAC_PI_2,
+            spread: std::f32::consts::TAU,
+            gravity: [0.0, 0.0],
+            drag: 0.0,
+            size: [4.0, 4.0],
+            color: [255, 255, 255, 255],
+            color_end: [255, 255, 255, 0],
+            additive: false,
+            square: false,
+            max: 1024,
+        }
+    }
+}
+
+/// The most particles one emitter may keep: 65 536 × 32 bytes is 2 MB of buffer.
+pub const MAX_PARTICLES: u32 = 65_536;
 
 /// A keystroke, in a backend-neutral shape the Brood side turns into the same
 /// values `term-poll` yields: `Char` → a 1-char string, the rest → keywords
@@ -513,6 +630,9 @@ mod disabled;
 
 #[cfg(feature = "gui")]
 pub(crate) mod backend;
+
+#[cfg(feature = "gui")]
+pub(crate) mod effects; // lighting, post-processing and particles, shared by both painters
 
 #[cfg(feature = "gui-gpu")]
 pub(crate) mod gpu; // the wgpu render target behind `BROOD_GUI_GPU=1`

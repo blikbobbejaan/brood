@@ -214,6 +214,8 @@ pub(crate) use exec_chunk::*;
 
 mod vm_run_bc;
 
+/// How a top-level program ended — handed to a host that drives one itself (`Interp::start_program`).
+pub use vm_run_bc::ProgramExit;
 pub(crate) use vm_run_bc::*;
 
 mod inline;

@@ -242,6 +242,21 @@
         ; inside def g → def g's start
         (assert= (editor/treesit/point-defun-start ex :elixir 36) 32)
         (assert= (editor/treesit/point-defun-start ex :elixir 14) 0)))
+
+    ;; What a definition is comes from the LANGUAGE's declaration: taking `:method` out of
+    ;; Ruby's kinds makes C-M-a inside a method land on the class around it instead.
+    (test "a language's declared definitions decide where beginning-of-defun lands"
+      (let (src "class A\n  def f\n    1\n  end\nend\n"
+            declared (editor/treesit/definitions :ruby)
+            inside (index-of src "1"))
+        (assert= (editor/treesit/point-defun-start src :ruby inside) (index-of src "def f"))
+        (editor/treesit/register-definitions :ruby {:kinds #{:class}})
+        (let (moved (editor/treesit/point-defun-start src :ruby inside))
+          (editor/treesit/register-definitions :ruby declared)
+          (assert= moved 0))))
+
+    (test "a language that declared nothing falls back to the top-level form"
+      (assert= (editor/treesit/definitions :no-such-language) {}))
     (test "point-up rises to the enclosing node's start"
       (let (up (editor/treesit/point-up rb :ruby 11))
         (is (>= up 0))

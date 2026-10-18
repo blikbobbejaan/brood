@@ -18,7 +18,7 @@
 //!   native-nested receive (the §7.4 dirty carve-out).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use crate::core::heap::Heap;
@@ -123,6 +123,13 @@ pub(super) struct Mailbox {
     /// accrues only in whole-budget increments (it's not scheduled via `run_one`),
     /// so its figure is coarse.
     pub(super) reductions: AtomicU64,
+    /// CPU time the process's quanta consumed, in ns, booked at each quantum's end on the
+    /// worker that ran it (`process-info`'s `:cpu-us`; see `cputime`).
+    pub(super) cpu_ns: AtomicU64,
+    /// For a ROOT context, pinned to its OS thread and never scheduled in quanta: that
+    /// thread's CPU clock (`cputime::current_thread_clock`), read live. -1 for a green
+    /// process, whose time is `cpu_ns`.
+    pub(super) thread_clock: AtomicI64,
     /// Set by `(exit pid …)`: an exit signal is pending. The lock-free fast flag;
     /// the reason lives in `MailboxState.kill`. The target notices at its next
     /// reduction tick (hard `:kill`, via `preempt`) or `receive` (soft), and `exit`
@@ -531,6 +538,8 @@ impl Mailbox {
             footprint_period: AtomicU64::new(0),
             gc_runs: AtomicU64::new(0),
             reductions: AtomicU64::new(0),
+            cpu_ns: AtomicU64::new(0),
+            thread_clock: AtomicI64::new(-1),
             kill_pending: AtomicBool::new(false),
             trap_exit: AtomicBool::new(false),
             max_mailbox: AtomicUsize::new(0),
@@ -2039,6 +2048,33 @@ pub fn process_gc_runs(pid: u64) -> Option<u64> {
 /// only in whole-budget increments (it bypasses `run_one`), so its figure is coarse.
 pub fn process_reductions(pid: u64) -> Option<u64> {
     with_mailbox(pid, |mb| mb.reductions.load(Ordering::Relaxed))
+}
+
+/// The CPU time process `pid` has consumed, in ns: its booked quanta, or — for a root
+/// context pinned to its thread — that thread's CPU clock. `None` for an unknown pid.
+pub fn process_cpu_ns(pid: u64) -> Option<u64> {
+    with_mailbox(pid, |mb| {
+        let clock = mb.thread_clock.load(Ordering::Relaxed);
+        let live = if clock >= 0 {
+            super::cputime::clock_ns(clock).unwrap_or(0)
+        } else {
+            0
+        };
+        mb.cpu_ns.load(Ordering::Relaxed) + live
+    })
+}
+
+/// Book `ns` of CPU time to `mailbox` — a quantum's, at its end.
+pub(super) fn book_cpu_ns(mailbox: &Mailbox, ns: u64) {
+    mailbox.cpu_ns.fetch_add(ns, Ordering::Relaxed);
+}
+
+/// Pin `mailbox`'s CPU time to the CALLING thread's clock — for a root context, which runs
+/// on that thread for its whole life and is never scheduled in quanta.
+pub(super) fn pin_cpu_clock_to_this_thread(mailbox: &Mailbox) {
+    if let Some(clock) = super::cputime::current_thread_clock() {
+        mailbox.thread_clock.store(clock, Ordering::Relaxed);
+    }
 }
 
 /// Set the run-status of the *current* process (used by `receive_match` for the

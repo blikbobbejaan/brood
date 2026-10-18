@@ -38,8 +38,11 @@ use winit::window::Window;
 
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::host::gui::backend::{CURSOR_FG, Renderer, snap_hairline, text_px_width};
-use crate::host::gui::{Align, CursorStyle, Op};
+use crate::host::gui::backend::{
+    CURSOR_FG, Renderer, paint_stall_ms, snap_hairline, text_px_width,
+};
+use crate::host::gui::effects::{EmitterStep, FrameEffects};
+use crate::host::gui::{Align, CursorStyle, MAX_PARTICLES, Op};
 use crate::host::text_width::{TAB_WIDTH, cluster_cells, cluster_cells_at};
 
 const DEFAULT_FG: [u8; 3] = [0xe5, 0xe5, 0xe5];
@@ -185,6 +188,279 @@ fn fs_tex(in: TexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// The effects' shaders (`effects.rs` holds the CPU painter's copy of every formula in
+/// them): lights drawn additively into a light map, here; the passes over a whole
+/// texture (`POST_SRC`); and the particles — a compute shader that spawns and steps them
+/// (`PARTICLES_SRC`) and the instanced quads that draw them straight out of the same
+/// buffer (`PARTICLE_DRAW_SRC`).
+const LIGHT_SRC: &str = r#"
+struct Viewport { size: vec2<f32>, _pad: vec2<f32> };
+@group(0) @binding(0) var<uniform> viewport: Viewport;
+
+fn corner(vi: u32) -> vec2<f32> {
+    return vec2<f32>(f32(vi & 1u), f32(vi >> 1u));
+}
+
+fn to_ndc(px: vec2<f32>) -> vec4<f32> {
+    return vec4<f32>(px.x / viewport.size.x * 2.0 - 1.0,
+                     1.0 - px.y / viewport.size.y * 2.0, 0.0, 1.0);
+}
+
+// --- lights: a quad per light, its falloff added into the light map --------------------
+
+struct LightInst {
+    @location(0) at: vec4<f32>,     // x, y, radius, intensity
+    @location(1) color: vec4<f32>,  // rgb 0..1
+};
+struct LightOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local: vec2<f32>,  // -1..1 across the light's square
+    @location(1) color: vec3<f32>,
+};
+
+@vertex
+fn vs_light(@builtin(vertex_index) vi: u32, inst: LightInst) -> LightOut {
+    var out: LightOut;
+    let c = corner(vi);
+    let r = inst.at.z;
+    out.pos = to_ndc(inst.at.xy - vec2<f32>(r, r) + c * 2.0 * r);
+    out.local = c * 2.0 - 1.0;
+    out.color = inst.color.rgb * inst.at.w;
+    return out;
+}
+
+// effects.rs `light_falloff`
+@fragment
+fn fs_light(in: LightOut) -> @location(0) vec4<f32> {
+    let d = length(in.local);
+    if (d >= 1.0) {
+        discard;
+    }
+    let k = 1.0 - d * d;
+    return vec4<f32>(in.color * k * k, 1.0);
+}
+
+"#;
+
+/// The passes over a whole texture: the light map multiplied onto the scene, bloom's bright
+/// pass and blur, and the final composite with the CRT.
+const POST_SRC: &str = r#"
+// --- passes over a whole texture -----------------------------------------------------
+
+struct Post {
+    threshold: f32, knee: f32, bloom: f32, curvature: f32,
+    scanlines: f32, vignette: f32, step: vec2<f32>,
+    sigma: f32, taps: f32, _pad: vec2<f32>,
+};
+@group(0) @binding(0) var source: texture_2d<f32>;
+@group(0) @binding(1) var glow: texture_2d<f32>;
+@group(0) @binding(2) var smooth_sampler: sampler;
+@group(0) @binding(3) var<uniform> post: Post;
+
+struct FullOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+// One triangle that covers the target; uv 0..1 from the top-left.
+@vertex
+fn vs_full(@builtin(vertex_index) vi: u32) -> FullOut {
+    var out: FullOut;
+    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
+    out.uv = uv;
+    out.pos = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
+    return out;
+}
+
+// The light map, blended as source × destination onto the scene.
+@fragment
+fn fs_multiply(in: FullOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(min(textureSample(source, smooth_sampler, in.uv).rgb, vec3<f32>(1.0)), 1.0);
+}
+
+// effects.rs `apply_bloom`'s bright pass: the light above the threshold, soft-kneed.
+@fragment
+fn fs_bright(in: FullOut) -> @location(0) vec4<f32> {
+    let c = textureSample(source, smooth_sampler, in.uv).rgb;
+    let luma = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let k = clamp((luma - post.threshold) / post.knee, 0.0, 1.0);
+    return vec4<f32>(c * k, 1.0);
+}
+
+// One axis of a gaussian blur, `post.step` apart (a texel along x, then along y).
+@fragment
+fn fs_blur(in: FullOut) -> @location(0) vec4<f32> {
+    var sum = textureSample(source, smooth_sampler, in.uv).rgb;
+    var weight = 1.0;
+    let taps = i32(post.taps);
+    for (var i = 1; i <= taps; i = i + 1) {
+        let w = exp(-f32(i * i) / (2.0 * post.sigma * post.sigma));
+        let off = post.step * f32(i);
+        sum = sum + (textureSample(source, smooth_sampler, in.uv + off).rgb
+                   + textureSample(source, smooth_sampler, in.uv - off).rgb) * w;
+        weight = weight + 2.0 * w;
+    }
+    return vec4<f32>(sum / weight, 1.0);
+}
+
+// effects.rs `crt_uv`
+fn crt_uv(uv: vec2<f32>, curvature: f32) -> vec2<f32> {
+    let c = uv * 2.0 - 1.0;
+    let b = vec2<f32>(c.x * (1.0 + curvature * c.y * c.y * 0.25),
+                      c.y * (1.0 + curvature * c.x * c.x * 0.25));
+    return b * 0.5 + 0.5;
+}
+
+// The scene (exact pixels), plus the bloom, through the CRT: effects.rs `apply_crt`.
+@fragment
+fn fs_final(in: FullOut) -> @location(0) vec4<f32> {
+    let uv = crt_uv(in.uv, post.curvature);
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let dims = vec2<f32>(textureDimensions(source));
+    let texel = vec2<i32>(min(uv * dims, dims - vec2<f32>(1.0)));
+    var c = textureLoad(source, texel, 0).rgb;
+    c = c + textureSample(glow, smooth_sampler, uv).rgb * post.bloom;
+    let row = u32(in.pos.y);
+    var shade = 1.0;
+    if (row % 2u == 1u) {
+        shade = 1.0 - post.scanlines;
+    }
+    let d = in.uv - vec2<f32>(0.5);
+    shade = shade * clamp(1.0 - post.vignette * dot(d, d) * 2.0, 0.0, 1.0);
+    return vec4<f32>(min(c, vec3<f32>(1.0)) * shade, 1.0);
+}
+"#;
+
+/// The particle compute shader and the particle quads. Separate from `EFFECTS_SRC`
+/// because the compute entry point's bindings (a writable buffer) are not allowed in a
+/// vertex stage.
+const PARTICLES_SRC: &str = r#"
+struct Particle { pos: vec2<f32>, vel: vec2<f32>, age: f32, life: f32, _pad: vec2<f32> };
+struct Params {
+    origin: vec2<f32>, gravity: vec2<f32>,
+    speed: vec2<f32>, life: vec2<f32>,
+    size: vec2<f32>, angle: f32, spread: f32,
+    color: vec4<f32>, color_end: vec4<f32>,
+    dt: f32, drag: f32, spawn_first: u32, spawn_count: u32,
+    capacity: u32, seed: u32, square: u32, _pad: u32,
+};
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read_write> particles: array<Particle>;
+
+// effects.rs `hash` (lowbias32) and `rand`.
+fn hash(x: u32) -> u32 {
+    var v = x;
+    v = v ^ (v >> 16u);
+    v = v * 0x7feb352du;
+    v = v ^ (v >> 15u);
+    v = v * 0x846ca68bu;
+    v = v ^ (v >> 16u);
+    return v;
+}
+fn rand(seed: u32, slot: u32, k: u32) -> f32 {
+    return f32(hash(seed ^ hash(slot * 4u + k)) >> 8u) / 16777216.0;
+}
+
+// effects.rs `spawn` then `integrate`.
+@compute @workgroup_size(64)
+fn cs_step(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.capacity) {
+        return;
+    }
+    var p = particles[i];
+    let rel = (i + params.capacity - params.spawn_first) % params.capacity;
+    if (rel < params.spawn_count) {
+        let angle = params.angle + (rand(params.seed, i, 0u) - 0.5) * params.spread;
+        let speed = params.speed.x + (params.speed.y - params.speed.x) * rand(params.seed, i, 1u);
+        let life = params.life.x + (params.life.y - params.life.x) * rand(params.seed, i, 2u);
+        p.pos = params.origin;
+        p.vel = vec2<f32>(cos(angle), sin(angle)) * speed;
+        p.age = 0.0;
+        p.life = max(life, 0.001);
+    }
+    if (p.life > 0.0 && p.age < p.life) {
+        let keep = max(1.0 - params.drag * params.dt, 0.0);
+        p.vel = (p.vel + params.gravity * params.dt) * keep;
+        p.pos = p.pos + p.vel * params.dt;
+        p.age = p.age + params.dt;
+    }
+    particles[i] = p;
+}
+"#;
+
+const PARTICLE_DRAW_SRC: &str = r#"
+struct Viewport { size: vec2<f32>, _pad: vec2<f32> };
+@group(0) @binding(0) var<uniform> viewport: Viewport;
+struct Params {
+    origin: vec2<f32>, gravity: vec2<f32>,
+    speed: vec2<f32>, life: vec2<f32>,
+    size: vec2<f32>, angle: f32, spread: f32,
+    color: vec4<f32>, color_end: vec4<f32>,
+    dt: f32, drag: f32, spawn_first: u32, spawn_count: u32,
+    capacity: u32, seed: u32, square: u32, _pad: u32,
+};
+@group(1) @binding(0) var<uniform> params: Params;
+
+struct ParticleInst {
+    @location(0) pos: vec2<f32>,
+    @location(1) age_life: vec2<f32>,
+};
+struct ParticleOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+@vertex
+fn vs_particle(@builtin(vertex_index) vi: u32, inst: ParticleInst) -> ParticleOut {
+    var out: ParticleOut;
+    let age = inst.age_life.x;
+    let life = inst.age_life.y;
+    if (life <= 0.0 || age >= life) {
+        // a free slot: a quad with no area, nothing rasterised
+        out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        out.local = vec2<f32>(0.0);
+        out.color = vec4<f32>(0.0);
+        return out;
+    }
+    let t = clamp(age / life, 0.0, 1.0);
+    let size = mix(params.size.x, params.size.y, t);
+    let c = vec2<f32>(f32(vi & 1u), f32(vi >> 1u));
+    let px = inst.pos + (c - vec2<f32>(0.5)) * size;
+    out.pos = vec4<f32>(px.x / viewport.size.x * 2.0 - 1.0,
+                        1.0 - px.y / viewport.size.y * 2.0, 0.0, 1.0);
+    out.local = c - vec2<f32>(0.5);
+    out.color = mix(params.color, params.color_end, t);
+    return out;
+}
+
+// effects.rs `particle_coverage`
+@fragment
+fn fs_particle(in: ParticleOut) -> @location(0) vec4<f32> {
+    var coverage = 1.0;
+    if (params.square == 0u) {
+        let edge = clamp(1.0 - 2.0 * length(in.local), 0.0, 1.0);
+        coverage = edge * edge;
+    }
+    let a = in.color.a * coverage;
+    if (a <= 0.0) {
+        discard;
+    }
+    return vec4<f32>(in.color.rgb, a);
+}
+"#;
+
+/// The uniform an emitter's compute step and its quads read (`Params` in the shaders).
+const PARTICLE_PARAMS_BYTES: u64 = 112;
+/// One light instance: x, y, radius, intensity, then rgb and a pad.
+const LIGHT_FLOATS: usize = 8;
+/// The `Post` uniform: twelve floats, padded to 48 bytes.
+const POST_BYTES: u64 = 48;
+
 /// One solid instance: rect (4) + rgba (4) + rot (1) + radius (1) + aa (1) + clip (4).
 const SOLID_FLOATS: usize = 15;
 /// One textured instance: rect (4) + uv (4) + tint (4) + mode (1 u32 as its bits) + rot (1)
@@ -271,8 +547,19 @@ impl InstanceBuffer {
 /// A run of consecutive quads drawn with one pipeline state: `count` instances starting
 /// at `first` in that pipeline's instance buffer.
 enum Batch {
-    Solid { first: u32, count: u32 },
-    Tex { key: TexKey, first: u32, count: u32 },
+    Solid {
+        first: u32,
+        count: u32,
+    },
+    Tex {
+        key: TexKey,
+        first: u32,
+        count: u32,
+    },
+    /// Emitter `id`'s particles, straight out of its buffer.
+    Particles {
+        id: u32,
+    },
 }
 
 /// A solid quad's edge treatment: a plain fill, or the SDF ramp (with a corner radius in
@@ -294,6 +581,11 @@ struct FrameBuilder {
     fw: f32,
     fh: f32,
     clip: [f32; 4],
+    /// The batch the top-level `Overlay` starts at: no batch merges across it, so the scene
+    /// and the unlit layer draw as separate runs.
+    overlay_at: Option<usize>,
+    /// How many regions deep the walk is (an `Overlay` counts only at the top).
+    nested: u32,
 }
 
 impl FrameBuilder {
@@ -305,6 +597,8 @@ impl FrameBuilder {
             fw,
             fh,
             clip: [0.0, 0.0, fw, fh],
+            overlay_at: None,
+            nested: 0,
         }
     }
 
@@ -362,13 +656,19 @@ impl FrameBuilder {
             self.clip[2],
             self.clip[3],
         ]);
+        let merge = self.can_merge();
         match self.batches.last_mut() {
-            Some(Batch::Solid { count, .. }) => *count += 1,
+            Some(Batch::Solid { count, .. }) if merge => *count += 1,
             _ => self.batches.push(Batch::Solid {
                 first: index,
                 count: 1,
             }),
         }
+    }
+
+    /// Whether a quad may join the last batch: not when that batch ends the scene.
+    fn can_merge(&self) -> bool {
+        self.overlay_at.is_none_or(|at| at < self.batches.len())
     }
 
     /// A plain opaque solid — the common cell-aligned fill.
@@ -414,8 +714,9 @@ impl FrameBuilder {
             self.clip[2].to_bits(),
             self.clip[3].to_bits(),
         ]);
+        let merge = self.can_merge();
         match self.batches.last_mut() {
-            Some(Batch::Tex { key: k, count, .. }) if *k == key => *count += 1,
+            Some(Batch::Tex { key: k, count, .. }) if *k == key && merge => *count += 1,
             _ => self.batches.push(Batch::Tex {
                 key,
                 first: index,
@@ -423,6 +724,548 @@ impl FrameBuilder {
             }),
         }
     }
+}
+
+/// A render pipeline over one shader module's entry points, the parts every pipeline here
+/// shares spelled once.
+#[allow(clippy::too_many_arguments)]
+fn pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    module: &wgpu::ShaderModule,
+    (vertex, fragment): (&str, &str),
+    layouts: &[&wgpu::BindGroupLayout],
+    instances: Option<wgpu::VertexBufferLayout>,
+    format: wgpu::TextureFormat,
+    blend: Option<wgpu::BlendState>,
+    topology: wgpu::PrimitiveTopology,
+) -> wgpu::RenderPipeline {
+    let layouts: Vec<Option<&wgpu::BindGroupLayout>> = layouts.iter().map(|l| Some(*l)).collect();
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &layouts,
+        immediate_size: 0,
+    });
+    let buffers = [instances];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module,
+            entry_point: Some(vertex),
+            compilation_options: Default::default(),
+            buffers: if buffers[0].is_some() { &buffers } else { &[] },
+        },
+        primitive: wgpu::PrimitiveState {
+            topology,
+            ..Default::default()
+        },
+        depth_stencil: None,
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module,
+            entry_point: Some(fragment),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Colour added onto what is there: a light into the light map.
+const ADD: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::One,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// Colour × alpha added onto what is there: an additive particle.
+const ADD_ALPHA: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::SrcAlpha,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent::OVER,
+};
+
+/// What is there × the colour drawn: the light map onto the scene.
+const MULTIPLY: wgpu::BlendState = wgpu::BlendState {
+    color: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Dst,
+        dst_factor: wgpu::BlendFactor::Zero,
+        operation: wgpu::BlendOperation::Add,
+    },
+    alpha: wgpu::BlendComponent {
+        src_factor: wgpu::BlendFactor::Zero,
+        dst_factor: wgpu::BlendFactor::One,
+        operation: wgpu::BlendOperation::Add,
+    },
+};
+
+/// The lighting and post-processing pipelines, made the first time a frame asks for an
+/// effect, and the frame-sized textures they render through.
+struct EffectsGpu {
+    light_pipeline: wgpu::RenderPipeline,
+    multiply_pipeline: wgpu::RenderPipeline,
+    bright_pipeline: wgpu::RenderPipeline,
+    blur_pipeline: wgpu::RenderPipeline,
+    final_pipeline: wgpu::RenderPipeline,
+    post_layout: wgpu::BindGroupLayout,
+    smooth_sampler: wgpu::Sampler,
+    light_instances: InstanceBuffer,
+    /// One `Post` uniform per pass that reads one: bright, blur across, blur down, final.
+    post_bright: wgpu::Buffer,
+    post_across: wgpu::Buffer,
+    post_down: wgpu::Buffer,
+    post_final: wgpu::Buffer,
+    targets: Option<EffectTargets>,
+}
+
+/// The textures an effect frame renders through, at one frame size: the scene, the light
+/// map, and bloom's two half-size ping-pong targets — with each pass's bind group.
+struct EffectTargets {
+    size: (u32, u32),
+    scene: wgpu::TextureView,
+    light: wgpu::TextureView,
+    bloom_a: wgpu::TextureView,
+    bloom_b: wgpu::TextureView,
+    half: (u32, u32),
+    multiply: wgpu::BindGroup,
+    bright: wgpu::BindGroup,
+    across: wgpu::BindGroup,
+    down: wgpu::BindGroup,
+    composite: wgpu::BindGroup,
+}
+
+impl EffectsGpu {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        viewport_layout: &wgpu::BindGroupLayout,
+    ) -> EffectsGpu {
+        let light_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("brood gui lights"),
+            source: wgpu::ShaderSource::Wgsl(LIGHT_SRC.into()),
+        });
+        let post_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("brood gui post"),
+            source: wgpu::ShaderSource::Wgsl(POST_SRC.into()),
+        });
+        let texture_entry = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let post_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post"),
+            entries: &[
+                texture_entry(0),
+                texture_entry(1),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let strip = wgpu::PrimitiveTopology::TriangleStrip;
+        let list = wgpu::PrimitiveTopology::TriangleList;
+        let light_pipeline = pipeline(
+            device,
+            "lights",
+            &light_module,
+            ("vs_light", "fs_light"),
+            &[viewport_layout],
+            Some(wgpu::VertexBufferLayout {
+                array_stride: (LIGHT_FLOATS * 4) as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4],
+            }),
+            format,
+            Some(ADD),
+            strip,
+        );
+        let full = |label: &str, fragment: &str, blend: Option<wgpu::BlendState>| {
+            pipeline(
+                device,
+                label,
+                &post_module,
+                ("vs_full", fragment),
+                &[&post_layout],
+                None,
+                format,
+                blend,
+                list,
+            )
+        };
+        let uniform = |label: &str| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: POST_BYTES,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        EffectsGpu {
+            light_pipeline,
+            multiply_pipeline: full("light map", "fs_multiply", Some(MULTIPLY)),
+            bright_pipeline: full("bloom bright pass", "fs_bright", None),
+            blur_pipeline: full("bloom blur", "fs_blur", None),
+            final_pipeline: full("final composite", "fs_final", None),
+            smooth_sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("linear"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                ..Default::default()
+            }),
+            post_layout,
+            light_instances: InstanceBuffer::new(device, "light instances", 4 * 1024),
+            post_bright: uniform("post: bright"),
+            post_across: uniform("post: blur across"),
+            post_down: uniform("post: blur down"),
+            post_final: uniform("post: final"),
+            targets: None,
+        }
+    }
+
+    /// The textures for a `w`×`h` frame, made (or remade, on a resize) as needed.
+    fn targets(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        w: u32,
+        h: u32,
+    ) -> &EffectTargets {
+        if self.targets.as_ref().is_none_or(|t| t.size != (w, h)) {
+            let view = |label: &str, w: u32, h: u32| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some(label),
+                        size: wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                            | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            };
+            let half = ((w / 2).max(1), (h / 2).max(1));
+            let scene = view("scene", w, h);
+            let light = view("light map", w, h);
+            let bloom_a = view("bloom a", half.0, half.1);
+            let bloom_b = view("bloom b", half.0, half.1);
+            // the `glow` of every pass but the final one, which reads no glow: a pass may not
+            // bind a texture it renders into
+            let none = view("no glow", 1, 1);
+            let group = |label: &str,
+                         source: &wgpu::TextureView,
+                         glow: &wgpu::TextureView,
+                         post: &wgpu::Buffer| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &self.post_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(glow),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.smooth_sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: post.as_entire_binding(),
+                        },
+                    ],
+                })
+            };
+            let targets = EffectTargets {
+                size: (w, h),
+                multiply: group("light map", &light, &none, &self.post_final),
+                bright: group("bright pass", &scene, &none, &self.post_bright),
+                across: group("blur across", &bloom_a, &none, &self.post_across),
+                down: group("blur down", &bloom_b, &none, &self.post_down),
+                composite: group("final", &scene, &bloom_a, &self.post_final),
+                scene,
+                light,
+                bloom_a,
+                bloom_b,
+                half,
+            };
+            self.targets = Some(targets);
+        }
+        self.targets.as_ref().expect("made above")
+    }
+}
+
+/// The particle pipelines — the compute step and the two ways of drawing a particle —
+/// made the first time a frame carries an emitter, and each live emitter's buffers.
+struct ParticlesGpu {
+    step_pipeline: wgpu::ComputePipeline,
+    step_layout: wgpu::BindGroupLayout,
+    draw_layout: wgpu::BindGroupLayout,
+    blend_pipeline: wgpu::RenderPipeline,
+    add_pipeline: wgpu::RenderPipeline,
+    emitters: HashMap<u32, GpuEmitter>,
+}
+
+/// One emitter on the device: its ring of particles (`capacity` × 32 bytes, read by the
+/// compute step and drawn as instances), and the `Params` uniform both read.
+struct GpuEmitter {
+    capacity: u32,
+    particles: wgpu::Buffer,
+    params: wgpu::Buffer,
+    step_group: wgpu::BindGroup,
+    draw_group: wgpu::BindGroup,
+    additive: bool,
+}
+
+impl ParticlesGpu {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        viewport_layout: &wgpu::BindGroupLayout,
+    ) -> ParticlesGpu {
+        let step_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("brood gui particle step"),
+            source: wgpu::ShaderSource::Wgsl(PARTICLES_SRC.into()),
+        });
+        let draw_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("brood gui particles"),
+            source: wgpu::ShaderSource::Wgsl(PARTICLE_DRAW_SRC.into()),
+        });
+        let uniform_entry = |visibility| wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let step_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("particle step"),
+            entries: &[
+                uniform_entry(wgpu::ShaderStages::COMPUTE),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let draw_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("particle draw"),
+            entries: &[uniform_entry(
+                wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            )],
+        });
+        let step_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("particle step"),
+            bind_group_layouts: &[Some(&step_layout)],
+            immediate_size: 0,
+        });
+        let step_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("particle step"),
+            layout: Some(&step_pipeline_layout),
+            module: &step_module,
+            entry_point: Some("cs_step"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let instances = || wgpu::VertexBufferLayout {
+            array_stride: (crate::host::gui::effects::PARTICLE_FLOATS * 4) as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 16,
+                    shader_location: 1,
+                },
+            ],
+        };
+        let draw = |label: &str, blend| {
+            pipeline(
+                device,
+                label,
+                &draw_module,
+                ("vs_particle", "fs_particle"),
+                &[viewport_layout, &draw_layout],
+                Some(instances()),
+                format,
+                Some(blend),
+                wgpu::PrimitiveTopology::TriangleStrip,
+            )
+        };
+        ParticlesGpu {
+            blend_pipeline: draw("particles", wgpu::BlendState::ALPHA_BLENDING),
+            add_pipeline: draw("additive particles", ADD_ALPHA),
+            step_pipeline,
+            step_layout,
+            draw_layout,
+            emitters: HashMap::new(),
+        }
+    }
+
+    /// Match the device's emitters to this paint's steps — a new one gets its buffers, a
+    /// new capacity a new ring, a finished one is dropped — and write each step's uniform.
+    fn sync(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, steps: &[EmitterStep]) {
+        self.emitters
+            .retain(|id, _| steps.iter().any(|step| step.id == *id));
+        for step in steps {
+            let capacity = step.spec.max.clamp(1, MAX_PARTICLES);
+            if self
+                .emitters
+                .get(&step.id)
+                .is_none_or(|e| e.capacity != capacity)
+            {
+                let emitter = self.emitter(device, capacity);
+                self.emitters.insert(step.id, emitter);
+            }
+            let emitter = self.emitters.get_mut(&step.id).expect("inserted above");
+            emitter.additive = step.spec.additive;
+            queue.write_buffer(
+                &emitter.params,
+                0,
+                as_bytes_u32(&params_words(step, capacity)),
+            );
+        }
+    }
+
+    fn emitter(&self, device: &wgpu::Device, capacity: u32) -> GpuEmitter {
+        // zero-initialised by wgpu: every slot starts free (`life` 0)
+        let particles = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particles"),
+            size: capacity as u64 * (crate::host::gui::effects::PARTICLE_FLOATS * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
+            mapped_at_creation: false,
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("particle params"),
+            size: PARTICLE_PARAMS_BYTES,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let step_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particle step"),
+            layout: &self.step_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: particles.as_entire_binding(),
+                },
+            ],
+        });
+        let draw_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("particle draw"),
+            layout: &self.draw_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: params.as_entire_binding(),
+            }],
+        });
+        GpuEmitter {
+            capacity,
+            particles,
+            params,
+            step_group,
+            draw_group,
+            additive: false,
+        }
+    }
+}
+
+/// A step as the shaders' `Params` uniform, word by word in its declared order.
+fn params_words(step: &EmitterStep, capacity: u32) -> [u32; 28] {
+    let s = &step.spec;
+    let f = |x: f32| x.to_bits();
+    let channel = |c: [u8; 4], i: usize| f(c[i] as f32 / 255.0);
+    [
+        f(step.x),
+        f(step.y),
+        f(s.gravity[0]),
+        f(s.gravity[1]),
+        f(s.speed[0]),
+        f(s.speed[1]),
+        f(s.life[0]),
+        f(s.life[1]),
+        f(s.size[0]),
+        f(s.size[1]),
+        f(s.angle),
+        f(s.spread),
+        channel(s.color, 0),
+        channel(s.color, 1),
+        channel(s.color, 2),
+        channel(s.color, 3),
+        channel(s.color_end, 0),
+        channel(s.color_end, 1),
+        channel(s.color_end, 2),
+        channel(s.color_end, 3),
+        f(step.dt),
+        f(s.drag),
+        step.spawn_first,
+        step.spawn_count,
+        capacity,
+        step.seed,
+        u32::from(s.square),
+        0,
+    ]
 }
 
 /// Where the ops being expanded land: the grid origin and cell size in effect (a
@@ -462,6 +1305,11 @@ pub struct GpuWindow {
     /// nothing (or was too big for a page), remembered so it is not retried each frame.
     glyphs: HashMap<u64, Option<AtlasGlyph>>,
     textures: HashMap<u32, GpuTexture>,
+    viewport_layout: wgpu::BindGroupLayout,
+    /// Lighting and post-processing, made the first time a frame asks for either.
+    effects: Option<EffectsGpu>,
+    /// The particle systems, made the first time a frame carries an emitter.
+    particles: Option<ParticlesGpu>,
 }
 
 /// Whether a quad at `(x, y)` sized `w x h` could put any pixel inside a `fw x fh`
@@ -587,6 +1435,8 @@ impl GpuWindow {
             trace: wgpu::Trace::Off,
         }))
         .map_err(|e| format!("gpu device: {e}"))?;
+        // The driver is loaded now: shut the GUI thread's gate before its exit handler runs.
+        crate::host::gui::backend::close_at_exit();
 
         let caps = surface.get_capabilities(&adapter);
         let format = pick_format(&caps.formats).ok_or("gpu surface: no supported format")?;
@@ -776,6 +1626,9 @@ impl GpuWindow {
             atlas: Vec::new(),
             glyphs: HashMap::new(),
             textures: HashMap::new(),
+            viewport_layout,
+            effects: None,
+            particles: None,
         })
     }
 
@@ -952,7 +1805,9 @@ impl GpuWindow {
                         scroll_dy: scroll_px(*dy_frac, g.ch),
                         ..g
                     };
+                    fb.nested += 1;
                     self.expand(fb, renderer, ops, inner);
+                    fb.nested -= 1;
                     fb.clip = saved_clip;
                 }
                 Op::CellRegion {
@@ -982,7 +1837,9 @@ impl GpuWindow {
                             ch: region.cell_h as f32,
                             scroll_dy: 0.0,
                         };
+                        fb.nested += 1;
                         self.expand(fb, renderer, ops, inner);
+                        fb.nested -= 1;
                         renderer.set_metrics(saved);
                     }
                     fb.clip = saved_clip;
@@ -1150,7 +2007,20 @@ impl GpuWindow {
                 // Hover metadata, hit-tested in the event loop (ADR-080); nothing to draw.
                 Op::CursorZone { .. } => {}
                 // Played when the frame arrived (`UserEvent::Draw`); nothing to draw.
-                Op::Sound { .. } => {}
+                Op::Sound { .. } | Op::Music { .. } => {}
+                // Read off the whole frame by `paint` (`FrameEffects`); nothing to expand.
+                Op::Ambient { .. }
+                | Op::Light { .. }
+                | Op::Bloom { .. }
+                | Op::Crt { .. }
+                | Op::Burst { .. } => {}
+                Op::Overlay => {
+                    if fb.nested == 0 && fb.overlay_at.is_none() {
+                        fb.overlay_at = Some(fb.batches.len());
+                    }
+                }
+                // Drawn in op order, out of the emitter's own buffer.
+                Op::Emitter { id, .. } => fb.batches.push(Batch::Particles { id: *id }),
                 Op::VSpans { row0, col0, cols } => {
                     let top0 = g.oy + *row0 as f32 * g.ch - g.scroll_dy;
                     for (i, segs) in cols.iter().enumerate() {
@@ -1340,6 +2210,10 @@ impl GpuWindow {
     /// same coordinate contract the CPU `paint` uses, so cell ops land on the same pixels
     /// whichever target paints them.
     pub(crate) fn paint(&mut self, frame: &[Op], renderer: &mut Renderer) {
+        // `BROOD_GUI_TRACE=1` (or a `BROOD_STALL_MS` threshold): the same per-paint line the
+        // CPU painter prints, split into this target's phases. Without it the GPU path —
+        // the default in a `--with-gui-gpu` build — could not be measured at all.
+        let trace = paint_stall_ms().map(|ms| (ms, std::time::Instant::now()));
         let (cw, ch) = (renderer.cell_w.max(1), renderer.cell_h.max(1));
         let size = self.window.inner_size();
         let (fw, fh) = (size.width.max(1), size.height.max(1));
@@ -1358,6 +2232,20 @@ impl GpuWindow {
             scroll_dy: 0.0,
         };
         self.expand(&mut fb, renderer, frame, grid);
+        // The particles step once per paint, as the CPU painter's do; an emitter the frame
+        // no longer carries still draws its last particles, at the end of the scene.
+        let steps = renderer.emitters.step(frame);
+        let fx = FrameEffects::of(frame);
+        let mut split = fb.overlay_at.unwrap_or(fb.batches.len());
+        let lingering: Vec<Batch> = steps
+            .iter()
+            .filter(|step| !step.present)
+            .map(|step| Batch::Particles { id: step.id })
+            .collect();
+        split += lingering.len();
+        fb.batches
+            .splice(split - lingering.len()..split - lingering.len(), lingering);
+        let t_expand = std::time::Instant::now();
 
         self.queue
             .write_buffer(&self.viewport_buffer, 0, as_bytes(&[fwf, fhf, 0.0, 0.0]));
@@ -1373,6 +2261,18 @@ impl GpuWindow {
             "textured instances",
             as_bytes_u32(&fb.texs),
         );
+        if !steps.is_empty() {
+            let format = self.config.format;
+            self.particles
+                .get_or_insert_with(|| {
+                    ParticlesGpu::new(&self.device, format, &self.viewport_layout)
+                })
+                .sync(&self.device, &self.queue, &steps);
+        }
+        if fx.any() {
+            self.prepare_effects(&fx, fw, fh);
+        }
+        let t_upload = std::time::Instant::now();
 
         let frame_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
@@ -1387,62 +2287,101 @@ impl GpuWindow {
             | wgpu::CurrentSurfaceTexture::Occluded
             | wgpu::CurrentSurfaceTexture::Validation => return,
         };
+        // acquiring the next swapchain image is where a vsync'd present waits for the display
+        let t_acquire = std::time::Instant::now();
         let view = frame_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let bg = renderer.bg();
+        let background = wgpu::Color {
+            r: bg[0] as f64 / 255.0,
+            g: bg[1] as f64 / 255.0,
+            b: bg[2] as f64 / 255.0,
+            a: 1.0,
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("frame"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg[0] as f64 / 255.0,
-                            g: bg[1] as f64 / 255.0,
-                            b: bg[2] as f64 / 255.0,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
+        if let Some(particles) = &self.particles {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("particle step"),
                 timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
             });
-            pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-            for batch in &fb.batches {
-                match batch {
-                    Batch::Solid { first, count } => {
-                        pass.set_pipeline(&self.solid_pipeline);
-                        pass.set_vertex_buffer(0, self.solid_instances.buffer.slice(..));
-                        pass.draw(0..4, *first..first + count);
-                    }
-                    Batch::Tex { key, first, count } => {
-                        let bind_group = match key {
-                            TexKey::Atlas(page) => self.atlas.get(*page).map(|p| &p.bind_group),
-                            TexKey::User(tex) => self.textures.get(tex).map(|t| &t.bind_group),
-                        };
-                        let Some(bind_group) = bind_group else {
-                            continue;
-                        };
-                        pass.set_pipeline(&self.tex_pipeline);
-                        pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
-                        pass.set_bind_group(1, bind_group, &[]);
-                        pass.draw(0..4, *first..first + count);
-                    }
-                }
+            pass.set_pipeline(&particles.step_pipeline);
+            for emitter in particles.emitters.values() {
+                pass.set_bind_group(0, &emitter.step_group, &[]);
+                pass.dispatch_workgroups(emitter.capacity.div_ceil(64), 1, 1);
             }
         }
+        match self.effects.as_ref().and_then(|e| e.targets.as_ref()) {
+            Some(targets) if fx.any() => {
+                let effects = self.effects.as_ref().expect("targets are effects'");
+                // the scene, lit, then the overlay: all into the scene texture
+                self.draw_pass(
+                    &mut encoder,
+                    &targets.scene,
+                    Some(background),
+                    &fb.batches[..split],
+                );
+                if let Some(ambient) = fx.ambient {
+                    let ambient = wgpu::Color {
+                        r: ambient[0] as f64 / 255.0,
+                        g: ambient[1] as f64 / 255.0,
+                        b: ambient[2] as f64 / 255.0,
+                        a: 1.0,
+                    };
+                    let mut pass =
+                        render_pass(&mut encoder, "light map", &targets.light, Some(ambient));
+                    pass.set_pipeline(&effects.light_pipeline);
+                    pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+                    pass.set_vertex_buffer(0, effects.light_instances.buffer.slice(..));
+                    pass.draw(0..4, 0..fx.lights.len() as u32);
+                    drop(pass);
+                    let mut pass = render_pass(&mut encoder, "lighting", &targets.scene, None);
+                    pass.set_pipeline(&effects.multiply_pipeline);
+                    pass.set_bind_group(0, &targets.multiply, &[]);
+                    pass.draw(0..3, 0..1);
+                }
+                self.draw_pass(&mut encoder, &targets.scene, None, &fb.batches[split..]);
+                if fx.bloom.is_some() {
+                    for (label, target, group, pipeline) in [
+                        (
+                            "bloom bright pass",
+                            &targets.bloom_a,
+                            &targets.bright,
+                            &effects.bright_pipeline,
+                        ),
+                        (
+                            "bloom blur across",
+                            &targets.bloom_b,
+                            &targets.across,
+                            &effects.blur_pipeline,
+                        ),
+                        (
+                            "bloom blur down",
+                            &targets.bloom_a,
+                            &targets.down,
+                            &effects.blur_pipeline,
+                        ),
+                    ] {
+                        let mut pass =
+                            render_pass(&mut encoder, label, target, Some(wgpu::Color::BLACK));
+                        pass.set_pipeline(pipeline);
+                        pass.set_bind_group(0, group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                }
+                let mut pass = render_pass(&mut encoder, "final", &view, Some(wgpu::Color::BLACK));
+                pass.set_pipeline(&effects.final_pipeline);
+                pass.set_bind_group(0, &targets.composite, &[]);
+                pass.draw(0..3, 0..1);
+            }
+            _ => self.draw_pass(&mut encoder, &view, Some(background), &fb.batches),
+        }
         self.queue.submit(std::iter::once(encoder.finish()));
+        let t_submit = std::time::Instant::now();
         if let Some(path) = dump_path() {
             dump_frame(
                 &self.device,
@@ -1455,7 +2394,166 @@ impl GpuWindow {
             );
         }
         self.queue.present(frame_texture);
+        if let Some((ms, t0)) = trace {
+            let el = t0.elapsed();
+            if el.as_millis() >= ms {
+                let us =
+                    |a: std::time::Instant, b: std::time::Instant| b.duration_since(a).as_micros();
+                eprintln!(
+                    "[gui-paint-gpu] {}us: fb={fw}x{fh} ops={} batches={} | expand={}us upload={}us \
+                     acquire={}us submit={}us present={}us",
+                    el.as_micros(),
+                    frame.len(),
+                    fb.batches.len(),
+                    us(t0, t_expand),
+                    us(t_expand, t_upload),
+                    us(t_upload, t_acquire),
+                    us(t_acquire, t_submit),
+                    t_submit.elapsed().as_micros(),
+                );
+            }
+        }
     }
+}
+
+impl GpuWindow {
+    /// Draw `batches` in order into `view` — cleared to `clear` first, or drawn over what
+    /// is there.
+    fn draw_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        clear: Option<wgpu::Color>,
+        batches: &[Batch],
+    ) {
+        let mut pass = render_pass(encoder, "frame", view, clear);
+        pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+        for batch in batches {
+            match batch {
+                Batch::Solid { first, count } => {
+                    pass.set_pipeline(&self.solid_pipeline);
+                    pass.set_vertex_buffer(0, self.solid_instances.buffer.slice(..));
+                    pass.draw(0..4, *first..first + count);
+                }
+                Batch::Tex { key, first, count } => {
+                    let bind_group = match key {
+                        TexKey::Atlas(page) => self.atlas.get(*page).map(|p| &p.bind_group),
+                        TexKey::User(tex) => self.textures.get(tex).map(|t| &t.bind_group),
+                    };
+                    let Some(bind_group) = bind_group else {
+                        continue;
+                    };
+                    pass.set_pipeline(&self.tex_pipeline);
+                    pass.set_vertex_buffer(0, self.tex_instances.buffer.slice(..));
+                    pass.set_bind_group(1, bind_group, &[]);
+                    pass.draw(0..4, *first..first + count);
+                }
+                Batch::Particles { id } => {
+                    let Some(particles) = &self.particles else {
+                        continue;
+                    };
+                    let Some(emitter) = particles.emitters.get(id) else {
+                        continue;
+                    };
+                    pass.set_pipeline(if emitter.additive {
+                        &particles.add_pipeline
+                    } else {
+                        &particles.blend_pipeline
+                    });
+                    pass.set_vertex_buffer(0, emitter.particles.slice(..));
+                    pass.set_bind_group(1, &emitter.draw_group, &[]);
+                    pass.draw(0..4, 0..emitter.capacity);
+                }
+            }
+        }
+    }
+
+    /// Ready the effect passes for a `w`×`h` frame: the pipelines and targets, the lights'
+    /// instances, and each pass's uniform.
+    fn prepare_effects(&mut self, fx: &FrameEffects, w: u32, h: u32) {
+        let format = self.config.format;
+        let effects = self
+            .effects
+            .get_or_insert_with(|| EffectsGpu::new(&self.device, format, &self.viewport_layout));
+        let half = effects.targets(&self.device, format, w, h).half;
+        let lights: Vec<f32> = fx
+            .lights
+            .iter()
+            .flat_map(|&(x, y, radius, color, intensity)| {
+                [
+                    x,
+                    y,
+                    radius,
+                    intensity,
+                    color[0] as f32 / 255.0,
+                    color[1] as f32 / 255.0,
+                    color[2] as f32 / 255.0,
+                    1.0,
+                ]
+            })
+            .collect();
+        effects.light_instances.upload(
+            &self.device,
+            &self.queue,
+            "light instances",
+            as_bytes(&lights),
+        );
+        let (threshold, intensity, radius) = fx.bloom.unwrap_or((1.0, 0.0, 0.0));
+        let (scanlines, curvature, vignette) = fx.crt.unwrap_or((0.0, 0.0, 0.0));
+        // the blur runs at half size: a radius of r frame pixels is r/2 texels there
+        let texels = radius / 2.0;
+        let sigma = (texels / 2.0).max(0.5);
+        let taps = texels.ceil().clamp(1.0, 32.0);
+        let post = |step: [f32; 2], bloom: f32| {
+            [
+                threshold,
+                (1.0 - threshold).max(1e-3),
+                bloom,
+                curvature,
+                scanlines,
+                vignette,
+                step[0],
+                step[1],
+                sigma,
+                taps,
+                0.0,
+                0.0,
+            ]
+        };
+        let write = |buffer: &wgpu::Buffer, words: [f32; 12]| {
+            self.queue.write_buffer(buffer, 0, as_bytes(&words));
+        };
+        write(&effects.post_bright, post([0.0, 0.0], 0.0));
+        write(&effects.post_across, post([1.0 / half.0 as f32, 0.0], 0.0));
+        write(&effects.post_down, post([0.0, 1.0 / half.1 as f32], 0.0));
+        write(&effects.post_final, post([0.0, 0.0], intensity));
+    }
+}
+
+/// A render pass over `view` with one colour attachment: cleared to `clear`, or loading
+/// what is there when it is `None`.
+fn render_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    label: &str,
+    view: &wgpu::TextureView,
+    clear: Option<wgpu::Color>,
+) -> wgpu::RenderPass<'e> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
 }
 
 /// The atlas key of a cluster under a face at a font size: what it is drawn from depends
@@ -1685,6 +2783,7 @@ mod tests {
             .map(|b| match b {
                 Batch::Solid { first, count } => (true, *first, *count),
                 Batch::Tex { first, count, .. } => (false, *first, *count),
+                Batch::Particles { .. } => unreachable!("no emitter in this frame"),
             })
             .collect();
         // Two solids → one batch; two sprites of texture 7 → one; texture 9 → its own;
@@ -1733,6 +2832,52 @@ mod tests {
         assert_eq!(scroll_px(0.5, 16.0), 8.0);
         assert_eq!(scroll_px(-0.26, 16.0), -4.0);
         assert_eq!(scroll_px(1.0e9, 16.0), MAX_SCROLL_PX);
+    }
+
+    #[test]
+    fn no_batch_merges_across_the_overlay() {
+        let mut fb = FrameBuilder::new(100.0, 100.0);
+        fb.solid(0.0, 0.0, 10.0, 10.0, [255, 0, 0, 255], 0.0, Edge::Plain);
+        fb.overlay_at = Some(fb.batches.len());
+        fb.solid(20.0, 0.0, 10.0, 10.0, [0, 255, 0, 255], 0.0, Edge::Plain);
+        fb.solid(40.0, 0.0, 10.0, 10.0, [0, 0, 255, 255], 0.0, Edge::Plain);
+        let counts: Vec<u32> = fb
+            .batches
+            .iter()
+            .map(|b| match b {
+                Batch::Solid { count, .. } => *count,
+                _ => 0,
+            })
+            .collect();
+        assert_eq!(
+            counts,
+            vec![1, 2],
+            "the scene's run ends at the overlay; the overlay's merge"
+        );
+    }
+
+    #[test]
+    fn a_step_is_the_shaders_params_word_for_word() {
+        let step = EmitterStep {
+            id: 1,
+            x: 3.0,
+            y: 4.0,
+            spec: crate::host::gui::EmitterSpec::default(),
+            dt: 0.5,
+            spawn_first: 6,
+            spawn_count: 7,
+            seed: 8,
+            present: true,
+        };
+        let words = params_words(&step, 9);
+        assert_eq!(words.len() as u64 * 4, PARTICLE_PARAMS_BYTES);
+        assert_eq!(f32::from_bits(words[0]), 3.0);
+        assert_eq!(f32::from_bits(words[20]), 0.5, "dt");
+        assert_eq!(
+            &words[22..26],
+            &[6, 7, 9, 8],
+            "spawn_first, spawn_count, capacity, seed"
+        );
     }
 
     #[test]

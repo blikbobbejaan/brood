@@ -557,6 +557,59 @@ pub(crate) fn pump_until_quiescent() {
     }
 }
 
+/// The real-time pump: run every runnable process until none is, firing only the receive
+/// timeouts whose wall-clock deadline has passed, then return how long until the next one
+/// is due (`None` with none pending). A host that keeps a program alive — a game in a
+/// browser tab — calls this from its event loop: on each animation frame, after each
+/// input, and when the returned delay elapses. `pump_until_quiescent` is the to-completion
+/// version, which jumps logical time to each deadline instead of waiting for it.
+///
+/// Bounded by `budget`: past it the pump returns at once with a delay of zero, the rest
+/// of the work still queued. The page it runs in has one thread, and a program with more
+/// to do than time to do it in — a game whose tick takes longer than its frame, so its
+/// next deadline is always already due — would otherwise never hand it back to paint.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn pump_due(budget: std::time::Duration) -> Option<std::time::Duration> {
+    crate::process::timer::use_real_time();
+    let started = web_time::Instant::now();
+    super::set_host_deadline(Some(started + budget));
+    let next = pump_due_until(started, budget);
+    super::set_host_deadline(None);
+    next
+}
+
+#[cfg(target_arch = "wasm32")]
+fn pump_due_until(
+    started: web_time::Instant,
+    budget: std::time::Duration,
+) -> Option<std::time::Duration> {
+    loop {
+        let mut ran_any = false;
+        for wid in 0..WORKERS.len() {
+            loop {
+                if started.elapsed() >= budget {
+                    return Some(std::time::Duration::ZERO);
+                }
+                let next = crate::core::sync::lock(&WORKERS[wid].0.0).pop_front();
+                match next {
+                    Some(p) => {
+                        run_one(p);
+                        ran_any = true;
+                    }
+                    None => break,
+                }
+            }
+        }
+        if !ran_any {
+            if crate::process::timer::fire_due_timer() {
+                continue;
+            }
+            break;
+        }
+    }
+    crate::process::timer::next_timer_in()
+}
+
 /// Start the worker pool exactly once (on the first `spawn`).
 pub(crate) fn ensure_workers() {
     WORKERS_STARTED.call_once(|| {
@@ -795,6 +848,11 @@ fn run_one_timed(mut proc: Box<Process>) {
     // Mark this worker busy for `assign_worker`'s load metric while we're inside the run
     // (cleared in `finish_quantum`).
     WORKER_BUSY[wid].store(true, Ordering::Relaxed);
+    // The quantum's CPU time is this worker thread's from here to `finish_quantum` — once
+    // something has asked for it (`cputime::armed`); one relaxed load until then.
+    if crate::process::cputime::armed() {
+        QUANTUM_CPU_START.with(|c| c.set(crate::process::cputime::thread_cpu_ns()));
+    }
     // A fresh quantum (`quantum`): at its end the driver captures and re-enqueues — preempt.
     super::quantum::begin();
 
@@ -904,6 +962,32 @@ fn finish_quantum(mailbox: &Arc<Mailbox>, wid: usize) {
     WORKER_BUSY[wid].store(false, Ordering::Relaxed);
     let used = super::quantum::used();
     mailbox.reductions.fetch_add(used as u64, Ordering::Relaxed);
+    let start = QUANTUM_CPU_START.with(|c| c.replace(0));
+    if start != 0 {
+        book_cpu_ns(
+            mailbox,
+            crate::process::cputime::thread_cpu_ns().saturating_sub(start),
+        );
+    }
+}
+
+thread_local! {
+    /// This worker thread's CPU clock at the start of the quantum it is running — the
+    /// quantum's CPU time is the difference at `finish_quantum` (`process-info` `:cpu-us`).
+    /// 0 between quanta.
+    static QUANTUM_CPU_START: Cell<u64> = const { Cell::new(0) };
+}
+
+/// CPU time the quantum running on this thread has used so far, in ns — what a process
+/// asking about ITSELF adds to its booked total, since its current quantum is booked only
+/// when it ends. 0 off a worker or between quanta.
+pub(crate) fn quantum_cpu_so_far() -> u64 {
+    let start = QUANTUM_CPU_START.with(|c| c.get());
+    if start == 0 {
+        0
+    } else {
+        crate::process::cputime::thread_cpu_ns().saturating_sub(start)
+    }
 }
 
 /// Handle a quantum's outcome (ADR-100 §8.3): `Done` retires `:normal`, an `Err` retires `[:error …]`,
