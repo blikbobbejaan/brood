@@ -24,6 +24,7 @@ pub(crate) enum SmallMap<K, V, S> {
     Inline(Vec<(K, V)>),
     /// Past the spill point. Boxed so the map is a `Vec`'s 24 bytes, not a `HashMap`'s 32:
     /// every process carries several of these, and almost none ever spill.
+    #[allow(clippy::box_collection)] // the box is the point: it pays only on a spill
     Hashed(Box<HashMap<K, V, S>>),
 }
 
