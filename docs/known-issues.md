@@ -66,7 +66,23 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 ## Open and watching
 
-(An open entry's `## KI-N` section goes here until it is resolved.) None open.
+(An open entry's `## KI-N` section goes here until it is resolved.)
+
+## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
+
+**Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
+`911e6474` failed `jit_runtime::link::tests::a_thin_wrapper_called_by_name_publishes_its_fast_link`
+after its 90 s deadline: `(wcaller 20000 0)` run for 90 s and the caller's site never published
+a fast-link mirror for the thin wrapper `wrapped`. It normally passes in ~0.4 s, including in
+the same job on the previous commit, and the commit touched only `os/cmd`. Locally it passed 30/30
+under `BROOD_TIER=0`, 20/20 on four cores under 12 busy spinners, and 20/20 pinned to one core
+beside four. (A first 30/30 "failure" was a stale incremental build failing to link, not the
+test.) The ceiling is forced per thread, but no `tier_ceiling()` read runs on the compiler thread,
+so that is not it. Ninety seconds without a publish reads as a permanent state rather than slowness.
+
+Armed: the helper's failure now reports the run count, what was published, and every compiled
+arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
+occurrence says whether an arm never compiled, latched, or kept deopting.
 
 ## Index — status per issue
 
@@ -74,6 +90,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, once, in CI's tree-walker job | 👁 **WATCH** — not reproduced in 70 local runs; diagnostic armed (see the section above) |
 | KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |
 | KI-279 | **the stuck-victim memory test raced who reached a safepoint first** — after the hoarder's grace the leak had grown ~40-50 MB, under the eighth of the count a process must hold to be stopped, so nobody was attributable and the error was raised in whichever process got there first; on CI's tree-walker job that was the waiting root, which died instead of the leak (both tries, `8f345ed9`) | ✅ **FIXED 2026-10-18** — the leak is primed to 64 MB before the hoarder fills up, so it holds an attributable share whoever reaches the safepoint |
 | KI-278 | **a child spawned by a backgrounded runtime could not be interrupted** — an ignored SIGINT/SIGQUIT survives fork+exec, so a runtime started with `&` or `nohup` passed it to every `os/spawn`/`os/spawn-pty`/`os/cmd` child, and bedit's `C-c C-c` did nothing to a running shell command | ✅ **FIXED 2026-10-18** — `subprocess::reset_inherited_signals` (pre_exec, SIG_DFL). Guard: `a_spawned_child_does_not_inherit_ignored_interrupts` |

@@ -194,6 +194,69 @@ impl std::ops::DerefMut for VecStore {
     }
 }
 
+/// A slab for a kind most processes never allocate — bigints, decimals, ratios, ropes,
+/// local natives: one pointer until the first push, where a `Vec` is three words. Every
+/// process carries two sets of slabs (nursery and old generation), so five of these are
+/// 80 bytes a set off the floor of a process that holds none of them (`process_floor.rs`).
+/// Reads go through the slice it dereferences to, empty while unallocated.
+#[allow(clippy::box_collection)] // the box is the point: one word until the first push
+pub(super) struct LazyVec<T>(Option<Box<Vec<T>>>);
+
+impl<T> Default for LazyVec<T> {
+    fn default() -> Self {
+        LazyVec(None)
+    }
+}
+
+impl<T> LazyVec<T> {
+    pub(super) fn with_capacity(n: usize) -> Self {
+        LazyVec((n > 0).then(|| Box::new(Vec::with_capacity(n))))
+    }
+
+    #[inline]
+    pub(super) fn push(&mut self, value: T) {
+        self.0.get_or_insert_with(Default::default).push(value);
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.0.as_ref().map_or(0, |v| v.capacity())
+    }
+
+    pub(super) fn truncate(&mut self, len: usize) {
+        if let Some(v) = self.0.as_mut() {
+            v.truncate(len);
+        }
+    }
+
+    /// Releases the box too once empty, so a process that allocated one bigint long ago
+    /// goes back to costing one pointer.
+    pub(super) fn shrink_to_fit(&mut self) {
+        match self.0.as_mut() {
+            Some(v) if v.is_empty() => self.0 = None,
+            Some(v) => v.shrink_to_fit(),
+            None => {}
+        }
+    }
+}
+
+impl<T> std::ops::Deref for LazyVec<T> {
+    type Target = [T];
+    #[inline]
+    fn deref(&self) -> &[T] {
+        self.0.as_deref().map_or(&[], |v| v.as_slice())
+    }
+}
+
+impl<T> std::ops::DerefMut for LazyVec<T> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [T] {
+        match self.0.as_deref_mut() {
+            Some(v) => v.as_mut_slice(),
+            None => &mut [],
+        }
+    }
+}
+
 /// The slabs holding heap objects in the LOCAL data heap and the PRELUDE region.
 #[derive(Default)]
 pub(super) struct Slabs {
@@ -211,17 +274,17 @@ pub(super) struct Slabs {
     /// `num_bigint::BigInt` per live value that overflowed i64; immutable, holds
     /// no `Value` children. Every entry satisfies the normalize invariant
     /// (strictly outside the i64 range) — `Heap::int_from_bigint` enforces it.
-    pub(super) bigints: Vec<num_bigint::BigInt>,
+    pub(super) bigints: LazyVec<num_bigint::BigInt>,
     /// Arbitrary-precision base-10 decimals (mirrors `bigints` exactly). One
     /// `bigdecimal::BigDecimal` per live `Value::Decimal`; immutable, holds no
     /// `Value` children. Unlike `bigints` there is no normalize-into-`Int`
     /// invariant — a decimal is its own type and any value is stored as-is.
-    pub(super) decimals: Vec<bigdecimal::BigDecimal>,
+    pub(super) decimals: LazyVec<bigdecimal::BigDecimal>,
     /// Exact rationals (mirrors `decimals`). One `num_rational::BigRational` per live
     /// `Value::Ratio`; immutable, holds no `Value` children. Always reduced with a
     /// positive denominator; a denominator of 1 is demoted to `Int` at construction
     /// (`Heap::alloc_ratio`), so no entry here is ever integer-valued.
-    pub(super) ratios: Vec<num_rational::BigRational>,
+    pub(super) ratios: LazyVec<num_rational::BigRational>,
     /// **Raw bytes** — byte-clean immutable leaves, one `Arc<SharedBlob>` per live
     /// value (arbitrary bytes, never UTF-8, own slab + handle). The `Arc` is the unit
     /// of cross-process sharing (a refcount bump, not a byte copy).
@@ -230,9 +293,9 @@ pub(super) struct Slabs {
     /// so this slab owns one cheap handle per live rope; cloning for an edit
     /// bumps refcounts, not bytes. Always inline (no SharedBlob split — ropes
     /// don't cross processes, so there's no cross-heap aliasing to optimise).
-    pub(super) ropes: Vec<ropey::Rope>,
+    pub(super) ropes: LazyVec<ropey::Rope>,
     pub(super) closures: Vec<Closure>,
-    pub(super) natives: Vec<NativeFn>,
+    pub(super) natives: LazyVec<NativeFn>,
     pub(super) envs: Vec<EnvFrame>,
 }
 
@@ -277,13 +340,13 @@ impl Slabs {
             vectors: Vec::with_capacity(like.vectors.len()),
             maps: Vec::with_capacity(like.maps.len()),
             strings: Vec::with_capacity(like.strings.len()),
-            bigints: Vec::with_capacity(like.bigints.len()),
-            decimals: Vec::with_capacity(like.decimals.len()),
-            ratios: Vec::with_capacity(like.ratios.len()),
+            bigints: LazyVec::with_capacity(like.bigints.len()),
+            decimals: LazyVec::with_capacity(like.decimals.len()),
+            ratios: LazyVec::with_capacity(like.ratios.len()),
             bytes: Vec::with_capacity(like.bytes.len()),
-            ropes: Vec::with_capacity(like.ropes.len()),
+            ropes: LazyVec::with_capacity(like.ropes.len()),
             closures: Vec::with_capacity(like.closures.len()),
-            natives: Vec::new(), // never GC'd, never grows here
+            natives: LazyVec::default(), // never GC'd, never grows here
             envs: Vec::with_capacity(like.envs.len()),
         }
     }
@@ -575,5 +638,31 @@ mod vecstore_layout_tests {
             assert_eq!(*ptr, vec.as_ptr(), "cached ptr matches the buffer");
             assert_eq!(*len as usize, vec.len(), "cached len matches");
         }
+    }
+}
+
+#[cfg(test)]
+mod lazy_vec_tests {
+    use super::LazyVec;
+
+    /// One pointer until used, a `Vec` while used, and one pointer again once emptied and
+    /// shrunk — the property the per-process floor counts on.
+    #[test]
+    fn a_lazy_slab_costs_a_pointer_until_used_and_after_it_empties() {
+        assert_eq!(std::mem::size_of::<LazyVec<u64>>(), 8);
+        let mut v: LazyVec<u64> = LazyVec::default();
+        assert!(v.is_empty() && v.0.is_none() && v.capacity() == 0);
+        assert!(
+            LazyVec::<u64>::with_capacity(0).0.is_none(),
+            "no box for a zero reserve"
+        );
+        v.push(7);
+        v.push(8);
+        assert_eq!((v.len(), v[1]), (2, 8));
+        v[0] = 9;
+        assert_eq!(&v[..], &[9, 8]);
+        v.truncate(0);
+        v.shrink_to_fit();
+        assert!(v.0.is_none(), "an emptied slab gives its box back");
     }
 }

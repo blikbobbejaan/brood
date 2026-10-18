@@ -38,10 +38,14 @@
 //! pending exit reason (a 32 B `Message`) were boxed, both being empty on almost every
 //! process: 2 978–2 979. Jitter is ±4 B. Sabotage: the tree without the mailbox half
 //! (3 053) reds this bound, and the HEAD build (3 195) reds it further.
+//!
+//! Lowered 3 040 → 2 940 (2026-10-18, later): the bigint, decimal, ratio, rope and native
+//! slabs are `LazyVec`s — one pointer until a process allocates that kind — for 2 875–2 876.
+//! The tree before it (2 978–2 979) reds this bound.
 
 use brood::Interp;
 
-const FLOOR_BYTES: i64 = 3040;
+const FLOOR_BYTES: i64 = 2940;
 
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {

@@ -530,10 +530,10 @@ is the `Box<Process>` itself (1352 — 168 B of fields grew since July; shave 1:
 first-touch slabs, and the closure template/promote pair — each 100–250 B and each a
 design question rather than a fix.
 
-**2026-10-18: 3 195 → 2 979 B per parked process, measured as a slope** (devlog that day).
+**2026-10-18: 3 195 → 2 876 B per parked process, measured as a slope** (devlog that day).
 The closure-template, const-closure and ability-dispatch memos are `SmallMap`s, `SmallMap`'s
-spill is boxed, two rare memos left the inline `Heap`, and the mailbox's dead-alias set and
-pending exit reason are boxed. `process_floor.rs` now measures
+spill is boxed, two rare memos left the inline `Heap`, the mailbox's dead-alias set and
+pending exit reason are boxed, and the five rare-kind slabs are one pointer until used. `process_floor.rs` now measures
 the slope between a warm-up fleet and a measured one: dividing one fleet's growth by N
 counted one-time allocations as per-process and moved ~200 B between builds of one tree, so
 figures in this section from before that day are not comparable with it cell for cell.

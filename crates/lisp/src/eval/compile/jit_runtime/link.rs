@@ -460,8 +460,10 @@ mod tests {
         callee: value::Symbol,
     ) -> (usize, crate::core::heap::FastLink) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+        let mut runs = 0u64;
         while std::time::Instant::now() < deadline {
             interp.eval_str(run).expect("run the pair");
+            runs += 1;
             if let Some(hit) = interp
                 .heap
                 .vm_fast_links_published()
@@ -471,8 +473,44 @@ mod tests {
                 return hit;
             }
         }
+        // Seen once in CI (the tree-walker job, 2026-10-18) and not reproduced locally in 70
+        // runs, loaded and unloaded: report what the JIT made of every arm, so the next time
+        // says whether an arm never compiled, latched BAILED, or kept deopting.
+        use std::sync::atomic::Ordering::Relaxed;
+        let arms: Vec<String> = interp
+            .heap
+            .dbg_compiled_arms()
+            .iter()
+            .map(|arm| {
+                let code = arm.jit_code.load(Relaxed);
+                let state = if code.is_null() {
+                    "uncompiled"
+                } else if code == crate::jit::BAILED {
+                    "BAILED"
+                } else {
+                    "native"
+                };
+                format!(
+                    "uid {} nsites {} {state} calls {} deopts {} (total {}) entry-deopts {}",
+                    arm.uid,
+                    arm.nsites,
+                    arm.jit_calls.load(Relaxed),
+                    arm.jit_deopts.load(Relaxed),
+                    arm.jit_deopts_total.load(Relaxed),
+                    arm.jit_entry_deopts.load(Relaxed),
+                )
+            })
+            .collect();
         panic!(
-            "the pair never published a fast-link mirror — the state under test was never reached"
+            "the pair never published a fast-link mirror — the state under test was never \
+             reached ({runs} runs of {run} in 90 s; published: {:?})\narms:\n  {}",
+            interp
+                .heap
+                .vm_fast_links_published()
+                .iter()
+                .map(|(_, fl)| crate::core::value::symbol_name(fl.sym))
+                .collect::<Vec<_>>(),
+            arms.join("\n  ")
         );
     }
 

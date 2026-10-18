@@ -2521,3 +2521,24 @@ worker inside the command and no overflow drainer started. `os/cmd` now holds `d
 for its wait. Guard `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd`
 (`BROOD_J=2`, two blockers, every tier), red without the guard. The stuck-victim memory test
 passes at every tier on two, four and twelve cores.
+
+## 2026-10-18 (later) — the rare slabs cost a pointer until used
+
+A heap's slabs are twelve `Vec`s, one per kind, in each of two generations. Five hold kinds most
+processes never allocate — bigints, decimals, ratios, ropes and local natives — and are now
+`slabs::LazyVec`: one pointer until the first push, dereferencing to an empty slice, and back to
+one pointer when `shrink_to_fit` finds it empty. Every slab macro (`alloc_slot!`, the flush
+leaves, the region readers) compiled unchanged against it.
+
+Parked process (slope, test profile): **2 978–2 979 → 2 875–2 876 B (−103 B)**; the floor bound
+moves 3 040 → 2 940, which the previous tree reds. Guard for the type itself:
+`slabs::lazy_vec_tests`. Instructions (`perf stat -r 5`, release, `BROOD_J=1`, interleaved
+twice, outputs equal) against `911e6474`: factorial-300 bignums 877-882M → 889M (+0.8-1.4%),
+harmonic ratios 2.018G → 2.020G (+0.1%), 200k rope inserts 1.708G → 1.723-1.728G (+0.9-1.2%),
+spawn + park 1.67-1.70G → 1.64-1.66G. The rare kinds pay one pointer hop, about a percent on a
+loop made of them; every process pays 103 B less.
+
+KI-281 filed as a watch: CI's tree-walker job on `911e6474` failed a JIT fast-link test after
+its 90 s deadline, once; 70 local runs (plain, loaded, single core) did not reproduce it. The
+test helper's failure now reports every compiled arm's JIT state, so the next one explains
+itself.
