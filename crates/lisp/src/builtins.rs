@@ -51,6 +51,7 @@ mod evaluation;
 mod filesystem;
 mod fuzzy;
 mod io;
+mod json;
 mod regex_native;
 mod text_search;
 // `pub(crate)` for `eval::unbound_error`'s KI-120 diagnostic, which asks whether a missing
@@ -184,6 +185,8 @@ pub fn register(heap: &mut Heap, root: EnvId) {
     regex_native::register(&mut primitives);
     // Appended for the same order reason: the browser-tab display primitives.
     tab::register(&mut primitives);
+    // And again: the native half of `json/encode`.
+    json::register(&mut primitives);
 }
 
 #[cfg(test)]

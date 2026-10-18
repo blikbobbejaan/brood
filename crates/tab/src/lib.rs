@@ -5,6 +5,9 @@
 //! The page fetches the bundle (`nest release` over an empty runtime writes one: the
 //! project's manifest and modules, nothing else) and calls, in order:
 //!
+//! - `use_prelude_image(bytes)`, optionally — the prelude booted from an image this build
+//!   wrote (`prelude_image()`, run once at build time in a fresh instance) rather than from
+//!   source;
 //! - `mount(bytes)` — make it the bundle `require` loads modules from;
 //! - `start(args)` — run its `:main` with `args`, as a release binary would;
 //! - `pump(budget_ms)` after every `input` and when the delay it returns elapses — it runs
@@ -31,6 +34,23 @@ thread_local! {
 #[wasm_bindgen]
 pub fn mount(bundle: &[u8]) -> Result<(), JsError> {
     brood::bundle::mount_bytes(bundle).map_err(|e| JsError::new(&e))
+}
+
+/// Boot the prelude from `image` — what `prelude_image` answered for this same build —
+/// instead of evaluating its source, which is most of the runtime's own startup in a tab.
+/// Call before `start`; an image from another build is refused by its fingerprint and the
+/// boot reads the source, as without one.
+#[wasm_bindgen]
+pub fn use_prelude_image(image: Vec<u8>) {
+    brood::boot::provide_prelude_image(image);
+}
+
+/// The prelude image of this build, booting the prelude from source to make it: what a
+/// build step saves beside the bundle for `use_prelude_image`. Empty when the prelude had
+/// already booted (call it in a fresh instance).
+#[wasm_bindgen]
+pub fn prelude_image() -> Vec<u8> {
+    brood::boot::capture_prelude_image().unwrap_or_default()
 }
 
 /// Start the mounted bundle's `:main` with `args`, the way a release binary boots

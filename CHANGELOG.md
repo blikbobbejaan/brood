@@ -6,6 +6,20 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Performance.**
+- `json/encode` encodes plain data natively (`%json-encode-plain`) — nil, bools, ints, finite
+  floats, strings, keywords and symbols, vectors, lists and maps — and keeps its Brood path
+  for the rest (records, `JsonEncode` impls, the refusals), checked value for value against
+  it. A 400-op game frame: 14 → 0.3 ms without the JIT, so a b2d game in a browser tab
+  runs at its full 60 fps with the thread 7% busy (was 55 fps at 91%).
+- A program in a browser tab can boot its prelude from an image (`boot::provide_prelude_image`;
+  `brood-tab`'s `prelude_image` / `use_prelude_image`): the runtime's own startup 210 → 30 ms.
+- The page decodes a sound off the main thread (`decodeAudioData`), so a large track does not
+  stall the frames being drawn.
+
+**Fixed.**
+- Writing a startup image no longer panics on wasm (`std::time::Instant` → `web_time`).
+
 ## v0.40.0 — guest links, Org-mode, and what a process costs
 
 A node can now let someone in without handing over its machine cookie: a guest link reaches
