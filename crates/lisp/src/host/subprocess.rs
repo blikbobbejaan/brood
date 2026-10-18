@@ -740,6 +740,33 @@ pub fn apply_env(command: &mut Command, env: &[EnvEntry]) {
     }
 }
 
+/// Give the child the default disposition of SIGINT and SIGQUIT, whatever the runtime
+/// inherited.
+///
+/// An IGNORED signal survives `fork` and `exec` (POSIX), and a process started in the
+/// background by a script — `cmd &`, `nohup cmd` — runs with SIGINT and SIGQUIT ignored.
+/// Everything such a runtime spawned inherited that too, so interrupting a child did
+/// nothing: an editor's `C-c C-c` sent SIGINT to a running shell command and the command
+/// never noticed. A non-interactive `sh` cannot undo it either — POSIX forbids it from
+/// resetting a signal that was ignored on entry. Interactive shells reset both for a
+/// foreground job for exactly this reason; a spawned child is the runtime's foreground job.
+#[cfg(unix)]
+pub fn reset_inherited_signals(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: runs in the forked child before exec, where only async-signal-safe calls are
+    // allowed; `signal` is one.
+    unsafe {
+        command.pre_exec(|| {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+            libc::signal(libc::SIGQUIT, libc::SIG_DFL);
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub fn reset_inherited_signals(_command: &mut Command) {}
+
 pub fn spawn(
     prog: &str,
     args: &[String],
@@ -766,6 +793,7 @@ pub fn spawn(
         command.current_dir(dir);
     }
     apply_env(&mut command, env);
+    reset_inherited_signals(&mut command);
     // Before the spawn: once there is a child, every failure would have to clean it up.
     let lifecycle = Arc::new(Lifecycle::new(2)?);
     let ChildThreads {
@@ -1233,6 +1261,7 @@ pub fn spawn_pty(
         command.current_dir(dir);
     }
     apply_env(&mut command, env);
+    reset_inherited_signals(&mut command);
     // A terminal-oriented program wants to know it has one — unless `:env` named `TERM`,
     // to set it or (with nil) to remove it.
     if !env.iter().any(|(k, _)| k == "TERM") && std::env::var_os("TERM").is_none() {
@@ -1349,4 +1378,48 @@ pub fn pty_resize(_id: u64, _cols: u16, _rows: u16) -> std::io::Result<()> {
         std::io::ErrorKind::Unsupported,
         "pty-resize: pseudo-terminals are a Unix facility",
     ))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod inherited_signal_tests {
+    use super::*;
+
+    /// The child's ignored-signal mask, read from its own `/proc/self/status`.
+    fn child_ignored_mask(reset: bool) -> u64 {
+        let mut command = Command::new("grep");
+        command.args(["SigIgn", "/proc/self/status"]);
+        if reset {
+            reset_inherited_signals(&mut command);
+        }
+        let output = command.output().expect("grep runs");
+        let text = String::from_utf8_lossy(&output.stdout);
+        let hex = text.split_whitespace().nth(1).expect("a SigIgn line");
+        u64::from_str_radix(hex, 16).expect("a hex mask")
+    }
+
+    /// A runtime started with SIGINT/SIGQUIT ignored (a script's `cmd &`, `nohup`) must
+    /// not pass that on: a child it spawns has to be interruptible. The control spawn,
+    /// without the reset, shows the inheritance is real — the mask bits are set there.
+    #[test]
+    fn a_spawned_child_does_not_inherit_ignored_interrupts() {
+        let interrupt = 1u64 << (libc::SIGINT - 1);
+        let quit = 1u64 << (libc::SIGQUIT - 1);
+        // SAFETY: this test process is its own (nextest runs each test in a process).
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN);
+        }
+        let inherited = child_ignored_mask(false);
+        assert_eq!(
+            inherited & (interrupt | quit),
+            interrupt | quit,
+            "control: ignores are inherited"
+        );
+        let reset = child_ignored_mask(true);
+        assert_eq!(
+            reset & (interrupt | quit),
+            0,
+            "the child must get default SIGINT/SIGQUIT"
+        );
+    }
 }

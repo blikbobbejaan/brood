@@ -278,6 +278,7 @@ pub(super) fn os_cmd(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         cmd.current_dir(dir);
     }
     crate::host::subprocess::apply_env(&mut cmd, &env);
+    crate::host::subprocess::reset_inherited_signals(&mut cmd);
     if let Value::Map(opts) = arg(args, 2) {
         if let Some(v) = heap.map_get(opts, kw("stdin"))
             && !matches!(v, Value::Nil)
