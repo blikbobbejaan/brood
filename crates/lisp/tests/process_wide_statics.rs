@@ -81,6 +81,9 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("dist.rs", "LISTEN_ADDRS", OneMachine),
     ("dist.rs", "DIAL_ROUTES", OneMachine),
     ("dist.rs", "PENDING_DIALS", OneMachine),
+    // Guest links (ADR-415): the grants the node accepts and the guests connected to it.
+    ("dist/guest.rs", "GRANTS", OneMachine),
+    ("dist/guest.rs", "GUESTS", OneMachine),
     ("process/monitor.rs", "PENDING_REMOTE", OneMachine),
     // Native code lives in one executable mapping for the process, keyed by code pointer.
     ("jit.rs", "GLOBAL_JIT", OneMachine),
