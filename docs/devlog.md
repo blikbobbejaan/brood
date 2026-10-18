@@ -2560,3 +2560,13 @@ words); bound 2 940 → 2 800, which the previous tree reds. Today: 3 195–3 20
 Instructions against `c6a0c600` (`perf stat -r 5`, release, `BROOD_J=1`, interleaved twice,
 outputs equal): a depth-14 binary tree built and walked 20 times 1.008G → 1.008-1.011G, closure
 creation flat, ability dispatch −0.1%, spawn + park 1.67-1.69G → 1.64-1.65G.
+
+## 2026-10-18 (late) — the read that arms CPU accounting times its own quantum (KI-282)
+
+The nightly's GC stress job failed `cpu_time_test`'s self-timing test. Not a GC fault: the first
+`:cpu-us` read arms quantum accounting from inside a quantum that began unarmed, so that quantum
+never got a clock, and a process timing its own work across the runtime's first read got 0.
+`pool::arm_cpu_accounting` starts the running quantum's clock at the arming moment, on executors
+only. Guard `cpu_time_first_read`, red without it. Also on the way to a release: the
+`jit_eq_join` polymorphic-param tests wait out a queued re-lowering before reading its state,
+and two gates upstream's commits left red (two process-wide statics, one bare name) are green.

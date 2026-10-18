@@ -102,8 +102,8 @@ pub use mailbox::{
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub(crate) use scheduler::exit_reason_phrase;
-pub(crate) use scheduler::quantum_cpu_so_far;
 pub(crate) use scheduler::take_current_mailbox_overflow;
+pub(crate) use scheduler::{arm_cpu_accounting, quantum_cpu_so_far};
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.
 pub(crate) use message::{MAX_MESSAGE_DEPTH, grow};

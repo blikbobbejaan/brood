@@ -172,6 +172,9 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - The project startup image was not invalidated by an edit to a file read with `include-str`
   (KI-275), and an image written with contracts armed was served to an unarmed run and the
   other way round (KI-276).
+- `process-info`'s `:cpu-us`: the read that turns CPU accounting on now times the rest of its
+  own quantum, so a process timing its own work across the runtime's first read no longer gets
+  0 for it (KI-282).
 - A worker waiting in `os/cmd` still counted as free, so a process woken meanwhile could wait
   for the command to finish; with two workers both could be stuck (KI-280).
 

@@ -984,7 +984,7 @@ pub(super) fn process_info(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             // quantum it is in, which is booked only when that quantum ends.
             // The first read arms quantum accounting (it costs ~0.3 µs a quantum, so it is
             // off until something looks — see `process/cputime.rs`).
-            crate::process::cputime::arm();
+            crate::process::arm_cpu_accounting();
             let in_flight = if id == crate::process::self_pid() {
                 crate::process::quantum_cpu_so_far()
             } else {

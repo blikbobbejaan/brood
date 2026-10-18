@@ -69,7 +69,9 @@ pub(crate) use lifecycle::{exit_propagate, exit_reason_phrase};
 // public/`process`-facing surface so `scheduler::…`/`process::…` paths are unchanged.
 mod pool;
 use pool::spawn_overflow_drainer;
-pub(crate) use pool::{enqueue, ensure_workers, quantum_cpu_so_far, wake_enqueue};
+pub(crate) use pool::{
+    arm_cpu_accounting, enqueue, ensure_workers, quantum_cpu_so_far, wake_enqueue,
+};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use pool::{pump_due, pump_until_quiescent};
 pub use pool::{set_test_no_workers, test_drive_quanta};

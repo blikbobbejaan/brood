@@ -978,6 +978,23 @@ thread_local! {
     static QUANTUM_CPU_START: Cell<u64> = const { Cell::new(0) };
 }
 
+/// Arm quantum CPU accounting (`process-info` `:cpu-us`, `cputime::arm`) — and if this
+/// thread is a worker inside a quantum that began before the arming, start that quantum's
+/// clock now. Without it the arming read's own quantum was never timed: a process that read
+/// its `:cpu-us` before some work and again after it, in the runtime's first read, got 0 for
+/// the work (the in-flight part had no start to measure from). A root context is not timed
+/// in quanta — its figure is its thread's clock — so only an executor stamps.
+pub(crate) fn arm_cpu_accounting() {
+    crate::process::cputime::arm();
+    if IS_EXECUTOR.with(|e| e.get()) && crate::process::current_pid().is_some() {
+        QUANTUM_CPU_START.with(|c| {
+            if c.get() == 0 {
+                c.set(crate::process::cputime::thread_cpu_ns());
+            }
+        });
+    }
+}
+
 /// CPU time the quantum running on this thread has used so far, in ns — what a process
 /// asking about ITSELF adds to its booked total, since its current quantum is booked only
 /// when it ends. 0 off a worker or between quanta.

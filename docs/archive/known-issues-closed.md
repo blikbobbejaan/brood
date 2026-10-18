@@ -14318,3 +14318,25 @@ left with work queued, the overflow drainer starts. Guard:
 processes in `os/cmd sleep 4`, a third must answer the root within 2 s, at every tier; red
 without the guard (tier 0 first). The memory test passes at every tier on two, four and twelve
 cores.
+
+## KI-282 — the read that arms `:cpu-us` accounting never timed its own quantum ✅ FIXED 2026-10-18
+
+**Symptom.** The nightly's GC stress job on `e63b70c8` failed `tests/cpu_time_test.blsp:40`, "a
+process asking about itself counts the quantum it is in": the process read its `:cpu-us`, spun a
+million iterations, read it again, and the difference was not positive. About one run in three
+locally, with or without GC stress.
+
+**Cause.** Quantum CPU accounting is off until the first read of `:cpu-us` arms it
+(`process/cputime.rs`, `15716c2b`): a quantum's clock starts at the quantum's beginning only if
+accounting is armed by then. The arming read itself happens INSIDE a quantum that began unarmed,
+so that quantum had no start, its in-flight part read 0, and it was never booked. Sampling 30
+fresh `before`/`after` pairs in one runtime read `[0 6035 5703 …]`: always the first. The suite
+runs its tests concurrently, so the test failed exactly when it made the suite's first read;
+GC stress only moved the ordering.
+
+**Fix.** `pool::arm_cpu_accounting` arms and, on an executor inside a quantum with no clock yet,
+starts that quantum's clock at the arming moment — what the module doc already promised ("counts
+from that moment"). A root context is not timed in quanta (its figure is its thread's clock), so
+only an executor stamps. The first sample now reads ~216 ms where the cold first `spin` takes
+~212 ms of wall time. Guard: `crates/cli/tests/cpu_time_first_read.rs` — a fresh runtime whose
+first read is the `before`; red without the stamp (0 µs).
