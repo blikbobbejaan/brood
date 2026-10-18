@@ -60,6 +60,10 @@ pub(super) fn used() -> u32 {
 /// Is some process waiting for a worker? One relaxed load of the queued count — or, on
 /// wasm, is the host waiting for its thread back ([`set_host_deadline`]).
 pub(crate) fn work_waiting() -> bool {
+    #[cfg(test)]
+    if let Some(waiting) = TEST_WORK_WAITING.with(|w| w.get()) {
+        return waiting;
+    }
     STEALABLE.load(Ordering::Relaxed) != 0 || host_waiting()
 }
 
@@ -323,15 +327,18 @@ pub(crate) fn set_reduction_budget_for_test(n: u32) {
     REDUCTIONS.with(|r| r.set(n));
 }
 
-/// Unit tests that stand in for a scheduler: pretend `n` more processes are queued (and undo
-/// it with the negation), so a preemption has someone to make room for.
+#[cfg(test)]
+thread_local! {
+    static TEST_WORK_WAITING: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Unit tests that stand in for a scheduler: answer `work_waiting` on THIS thread as
+/// `waiting` says (`None` restores the real answer). Thread-local on purpose: the queued
+/// count is process-wide, and tests running beside this one spawn processes, so a test
+/// that needed "nothing is waiting" read a stranger's queue and preempted anyway.
 #[cfg(all(test, feature = "jit"))]
-pub(crate) fn test_pretend_queued(n: isize) {
-    if n >= 0 {
-        STEALABLE.fetch_add(n as usize, Ordering::SeqCst);
-    } else {
-        STEALABLE.fetch_sub(n.unsigned_abs(), Ordering::SeqCst);
-    }
+pub(crate) fn test_work_waiting(waiting: Option<bool>) {
+    TEST_WORK_WAITING.with(|w| w.set(waiting));
 }
 
 #[cfg(test)]

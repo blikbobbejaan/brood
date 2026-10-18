@@ -599,6 +599,7 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // model (ADR-090): the app runs on the daemon, a thin `attach` client paints
     // pushed frames + ships back keys. Pure Brood over `ui-run` + the node link.
     embedded_module!("editor/serve", "std/editor/serve.blsp"),
+    embedded_module!("editor/web", "std/editor/web.blsp"),
     // Emacs-style tiled window splits: an immutable binary layout tree + pure
     // pane/divider geometry + drag-to-resize over `:drag` mouse events (ADR-077).
     // Reusable editor toolkit (content-agnostic); the keybindings + payload are
@@ -783,7 +784,7 @@ const DEV_MODULES: &[EmbeddedModule] = &[
 #[cfg(not(feature = "dev-tools"))]
 const DEV_MODULES: &[EmbeddedModule] = &[];
 
-/// Baked-in reference *documents* (markdown), the counterpart to
+/// Baked-in reference *documents* (markdown) and page files, the counterpart to
 /// [`EMBEDDED_MODULES`] for non-module text. `(%builtin-doc 'brood-for-claude)`
 /// returns the language guide that `nest new` scaffolds into each new project,
 /// so a freshly-scaffolded project is self-contained without depending on a
@@ -804,6 +805,24 @@ const EMBEDDED_DOCS: &[(&str, &str)] = &[
     (
         "writing-brood-skill",
         include_str!("../../../../docs/writing-brood-skill.md"),
+    ),
+    // The browser page `editor/web` serves, and the loader of a program running IN the
+    // tab: text a running app hands out, so it travels inside the binary like the rest.
+    (
+        "editor/web/app.js",
+        include_str!("../../../../std/editor/web/app.js"),
+    ),
+    (
+        "editor/web/index.html",
+        include_str!("../../../../std/editor/web/index.html"),
+    ),
+    (
+        "editor/web/tab.html",
+        include_str!("../../../../std/editor/web/tab.html"),
+    ),
+    (
+        "editor/web/tab.js",
+        include_str!("../../../../std/editor/web/tab.js"),
     ),
 ];
 

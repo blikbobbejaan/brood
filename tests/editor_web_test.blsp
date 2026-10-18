@@ -1,0 +1,39 @@
+;; The bridge's pure half: what goes on the wire and what is accepted off it. The
+;; server itself is exercised by hand (serve an app, `editor/web/listen`, then curl or a
+;; tab) — a test that bound a port would fight other suites for it.
+(defmodule editor-web-test (:use editor/web) (:use test))
+
+(describe "frame-json"
+  (test "a frame's ops become JSON arrays, keywords as strings"
+    (assert= (frame-json [[:clear] [:quad 0 0 1 1 :red 0.0]])
+      "[[\"clear\"],[\"quad\",0,0,1,1,\"red\",0.0]]"))
+
+  (test "a frame the encoder cannot carry (raw bytes in a bitboard op) is nil, not an error"
+    (assert= (frame-json [[:cells 0 0 8 1 (bytes 255) :red]]) nil)))
+
+(describe "texture-json"
+  (test "bytes and int vectors both encode as base64 pixels"
+    (let (expected {:tex 3 :w 1 :h 1 :rgba "AQIDBA=="})
+      (assert= (json/decode (texture-json 3 (bytes 1 2 3 4) 1 1)) expected)
+      (assert= (json/decode (texture-json 3 [1 2 3 4] 1 1)) expected))))
+
+(describe "parse-input: read, never evaluated, only a window's shapes"
+  (test "a key, a keyword and a mouse vector are accepted as data"
+    (assert= (parse-input "\"a\"") "a")
+    (assert= (parse-input ":escape") :escape)
+    (assert= (parse-input "[:mouse :press :left 20 10 [] 1]") [:mouse :press :left 20 10 [] 1])
+    (assert= (parse-input "[:key-up \"a\"]") [:key-up "a"]))
+
+  (test "a call form, a map, a number and garbage are dropped"
+    (assert= (parse-input "(system/halt 1)") nil)
+    (assert= (parse-input "{:a 1}") nil)
+    (assert= (parse-input "42") nil)
+    (assert= (parse-input "[:unterminated") nil)
+    (assert= (parse-input "") nil)))
+
+(describe "input-tab"
+  (test "the tab id is the path's tail, and nothing else matches"
+    (assert= (input-tab "/input/7") 7)
+    (assert= (input-tab "/input/") nil)
+    (assert= (input-tab "/input/x") nil)
+    (assert= (input-tab "/events") nil)))

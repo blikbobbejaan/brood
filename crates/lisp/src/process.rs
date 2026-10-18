@@ -163,7 +163,7 @@ pub(crate) use scheduler::set_capture_run;
 #[cfg(all(test, feature = "jit"))]
 pub(crate) use scheduler::set_reduction_budget_for_test;
 #[cfg(all(test, feature = "jit"))]
-pub(crate) use scheduler::test_pretend_queued;
+pub(crate) use scheduler::test_work_waiting;
 
 pub(crate) use mailbox::{deliver, is_alive, read_name_address};
 // Inbound flow control (socket backpressure): a credit rides in the envelope and is
