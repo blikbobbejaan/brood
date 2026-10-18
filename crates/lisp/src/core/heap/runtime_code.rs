@@ -59,13 +59,16 @@ pub type VmCacheMap<V> = HashMap<VmCacheKey, V, std::hash::BuildHasherDefault<Sy
 /// [`ClosureTemplate`] plus a **sighting count**, on the fast [`SymbolHasher`] (a `PairId`
 /// writes one `u64`). The count is what gates the const-closure promote — see
 /// [`Heap::lookup_closure_template`].
+///
+/// A [`SmallMap`]: a process typically creates closures from a handful of literals, and a
+/// `HashMap` would spend four buckets on the first one.
 pub(super) type ClosureTemplateMap =
-    HashMap<PairId, (Arc<ClosureTemplate>, u32), std::hash::BuildHasherDefault<SymbolHasher>>;
+    SmallMap<PairId, (Arc<ClosureTemplate>, u32), std::hash::BuildHasherDefault<SymbolHasher>>;
 
 /// The [`Heap::lookup_const_closure`] cache map: a capture-free `(fn …)` literal's
 /// `fn_rest` [`PairId`] → the **promoted RUNTIME closure handle** built for it once.
 pub(super) type ConstClosureMap =
-    HashMap<PairId, Value, std::hash::BuildHasherDefault<SymbolHasher>>;
+    SmallMap<PairId, Value, std::hash::BuildHasherDefault<SymbolHasher>>;
 
 /// `BROOD_REG_TRACE=1` — name every registry write (pid, registry, op, first key) and
 /// every globals restore on stderr. The tool for attributing a leaked or orphaned

@@ -2,16 +2,16 @@
 //! an exact-capacity vector and turns into a hash map only past [`SPILL`].
 //!
 //! Every process carries a handful of these — its body cache, its global-lookup cache, its
-//! arm IC-block index — and a process that parks after one call holds ONE entry in each.
-//! `hashbrown` cannot hold one entry in less than four buckets, which made those three maps
-//! a large share of a parked process's floor (`runtime-frontier.md` §B). Here one entry
-//! costs one entry —
-//! the vector grows 1 → 2 → 4 → 8 by `reserve_exact`, never `Vec`'s four-minimum — and the
+//! arm IC-block index, its closure-template, const-closure and ability-dispatch memos — and
+//! a process that parks after one call holds ONE entry in each. `hashbrown` cannot hold one
+//! entry in less than four buckets, which made those maps a large share of a parked
+//! process's floor (`runtime-frontier.md` §B). Here one entry costs one entry — the vector
+//! grows 1 → 2 → 4 → 8 by `reserve_exact`, never `Vec`'s four-minimum — and the
 //! probe is a linear scan of at most eight `Copy` keys, which is faster than hashing at that
 //! size. Past eight the entries move into a `HashMap`, so a large program pays nothing extra.
 //!
-//! Only the surface the three maps use is provided. Add to it when a fourth caller needs
-//! more; do not reach for `HashMap` again for something a process holds per instance.
+//! Only the surface those maps use is provided. Add to it when a new caller needs more; do
+//! not reach for `HashMap` again for something a process holds per instance.
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hash};
@@ -22,8 +22,9 @@ const SPILL: usize = 8;
 pub(crate) enum SmallMap<K, V, S> {
     /// Up to [`SPILL`] entries, unordered, keys unique.
     Inline(Vec<(K, V)>),
-    /// Past the spill point.
-    Hashed(HashMap<K, V, S>),
+    /// Past the spill point. Boxed so the map is a `Vec`'s 24 bytes, not a `HashMap`'s 32:
+    /// every process carries several of these, and almost none ever spill.
+    Hashed(Box<HashMap<K, V, S>>),
 }
 
 impl<K, V, S: Default> Default for SmallMap<K, V, S> {
@@ -76,7 +77,7 @@ impl<K: Copy + Eq + Hash, V, S: BuildHasher + Default> SmallMap<K, V, S> {
                     m.insert(kk, vv);
                 }
                 m.insert(k, val);
-                *self = SmallMap::Hashed(m);
+                *self = SmallMap::Hashed(Box::new(m));
                 None
             }
             SmallMap::Hashed(m) => m.insert(k, val),
@@ -199,5 +200,16 @@ mod tests {
             assert_eq!(m.capacity(), 0, "a cleared map holds no storage");
             assert!(matches!(m, SmallMap::Inline(_)));
         }
+    }
+
+    #[test]
+    fn the_map_costs_a_vec_inline() {
+        // Every process carries several of these on its `Heap`; the boxed spill keeps each
+        // at a `Vec`'s three words rather than a `HashMap`'s four.
+        type Hasher = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+        assert_eq!(
+            std::mem::size_of::<SmallMap<u64, u32, Hasher>>(),
+            std::mem::size_of::<Vec<(u64, u32)>>()
+        );
     }
 }

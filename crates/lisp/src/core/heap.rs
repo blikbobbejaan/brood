@@ -329,7 +329,22 @@ pub(crate) struct ColdHeap {
     /// whether a referenced module name is *intra-package* (root it) or external
     /// (a std/other-dep name, leave it bare). Empty when `package_prefix` is `None`.
     pub(crate) package_modules: HashSet<Symbol>,
+    /// Memoized `mod/name` → `prefix/mod/name` rooting for intra-package *qualified
+    /// references* (ADR-070). A miss in the global table falls back to the rooted name
+    /// (see [`Heap::root_qualified_ref`]); this caches the symbol→symbol answer — including
+    /// the negative one (`None` = not intra-package, don't retry) — so the fallback costs
+    /// one lookup rather than a `format!` + intern per reference. Keyed only by symbol,
+    /// which is safe because [`Heap::set_package_context`] clears it: the mapping is a
+    /// property of the *active* package context, and that's the one place the context
+    /// changes. Here rather than on [`Heap`] because outside a package there is nothing to
+    /// root and nothing to memoise. `RefCell` because `env_get` is `&self`.
+    pub(crate) rooted_ref_ic: RefCell<
+        SmallMap<Symbol, Option<Symbol>, std::hash::BuildHasherDefault<runtime_code::SymbolHasher>>,
+    >,
 }
+
+/// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.
+type TypeAliasCache = RefCell<(u64, HashMap<Symbol, Option<Symbol>>)>;
 
 /// Checker-only heap state, lazily boxed off [`Heap`] (see [`Heap::check`]). None of it
 /// is touched by running Brood code — only by `nest check` / `check-file-deps`.
@@ -487,7 +502,9 @@ pub struct Heap {
     closure_const_ver: Cell<u64>,
     /// The contract's alias-by-suffix memo — `(declared_sigs_version, name → alias key)`;
     /// see [`Heap::alias_key_by_suffix`]. Keys only, so a relocation cannot strand it.
-    type_alias_cache: RefCell<(u64, HashMap<Symbol, Option<Symbol>>)>,
+    /// Boxed at its first use: only a process running contracts ever reads it, and inline
+    /// it was 64 bytes on every process.
+    type_alias_cache: std::cell::OnceCell<Box<TypeAliasCache>>,
     /// This process's global scope. For a real runtime this is [`EnvId::GLOBAL`]
     /// (routing to `runtime.globals`); for the prelude *builder* it's a real
     /// local root frame (so the prelude can be evaluated, then frozen).
@@ -560,17 +577,6 @@ pub struct Heap {
     /// `env_get` is `&self`; per-process, so never shared across threads.
     global_ic: RefCell<
         SmallMap<Symbol, (u64, Value), std::hash::BuildHasherDefault<runtime_code::SymbolHasher>>,
-    >,
-    /// Memoized `mod/name` → `prefix/mod/name` rooting for intra-package *qualified
-    /// references* (ADR-070). A miss in the global table falls back to the rooted name
-    /// (see [`root_qualified_ref`](Self::root_qualified_ref)); this caches the symbol→symbol answer —
-    /// including the negative one (`None` = not intra-package, don't retry) — so the
-    /// fallback costs one hash lookup rather than a `format!` + intern per reference.
-    /// Keyed only by symbol, which is safe because [`set_package_context`] clears it:
-    /// the mapping is a property of the *active* package context, and that's the one
-    /// place the context changes. `RefCell` because `env_get` is `&self`; per-process.
-    rooted_ref_ic: RefCell<
-        SmallMap<Symbol, Option<Symbol>, std::hash::BuildHasherDefault<runtime_code::SymbolHasher>>,
     >,
     /// Cached `mod/` prefix → that module's public exports (`(bare, qualified)` pairs).
     /// Used ONLY by the advisory whole-project checker's direct import setup
@@ -969,7 +975,7 @@ pub struct Heap {
     /// ICs; validated by (`id`, `global_epoch`) so it self-heals on any `def *impls*` /
     /// compaction. See [`Self::vm_dispatch`].
     dispatch_ics:
-        RefCell<HashMap<u64, DispatchIcEntry, std::hash::BuildHasherDefault<SymbolHasher>>>,
+        RefCell<SmallMap<u64, DispatchIcEntry, std::hash::BuildHasherDefault<SymbolHasher>>>,
     /// JIT execution state, per process. These were thread-locals; moved onto the heap so
     /// (a) they travel with a process that migrates worker threads — notably `jit_force_vm`,
     /// which must stay set across a yield during an over-deep VM drain — and (b) each access
@@ -1479,7 +1485,7 @@ impl Heap {
             closure_tpl_ver: Cell::new(u64::MAX),
             closure_const_cache: RefCell::new(ConstClosureMap::default()),
             closure_const_ver: Cell::new(u64::MAX),
-            type_alias_cache: RefCell::new((u64::MAX, HashMap::new())),
+            type_alias_cache: std::cell::OnceCell::new(),
             prelude,
             runtime,
             global: EnvId::local(0),
@@ -1489,7 +1495,6 @@ impl Heap {
             #[cfg(feature = "dev-tools")]
             trace_context_own: false,
             global_ic: RefCell::new(SmallMap::new()),
-            rooted_ref_ic: RefCell::new(SmallMap::new()),
             msg_roots: None,
             cold: None,
             check: RefCell::new(None),
@@ -1543,7 +1548,7 @@ impl Heap {
             arm_ic_blocks: RefCell::new(SmallMap::new()),
             cur_ic_base: Cell::new(0),
             cur_gic_base: Cell::new(0),
-            dispatch_ics: RefCell::new(HashMap::default()),
+            dispatch_ics: RefCell::new(SmallMap::new()),
             jit_call_env: EnvRoot::Stable(EnvId::GLOBAL),
             jit_native_depth: 0,
             jit_stack_limit: 0,

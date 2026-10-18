@@ -934,7 +934,7 @@ fn handle_capture_outcome(
             // a short body reported a clean exit, so links did not cascade and monitors
             // read `:normal`. The signal outlives the body, so take it as the reason;
             // absent one, the body really did finish normally.
-            let pending = crate::core::sync::lock(&mailbox.state).kill.take();
+            let pending = crate::core::sync::lock(&mailbox.state).take_kill();
             proc.retire(pending.unwrap_or_else(|| Message::Keyword(value::intern(pk::NORMAL))));
         }
         Ok(Ok(VmOutcome::Suspended(s))) => {
@@ -951,8 +951,7 @@ fn handle_capture_outcome(
             // forever past `(exit pid :kill)` or a link cascade (KI-225). Once per quantum.
             if mailbox.pending_hard_kill() {
                 let reason = crate::core::sync::lock(&mailbox.state)
-                    .kill
-                    .take()
+                    .take_kill()
                     .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
                 proc.retire(reason);
                 return;
@@ -967,8 +966,7 @@ fn handle_capture_outcome(
         Ok(Ok(VmOutcome::Killed)) => {
             // A hard `:kill` was observed at a loop-top safepoint. Take its reason.
             let reason = crate::core::sync::lock(&mailbox.state)
-                .kill
-                .take()
+                .take_kill()
                 .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
             proc.retire(reason);
         }
@@ -979,8 +977,7 @@ fn handle_capture_outcome(
             // "process died" noise (a killed process is expected to die).
             if e.is_kill_signal() {
                 let reason = crate::core::sync::lock(&mailbox.state)
-                    .kill
-                    .take()
+                    .take_kill()
                     .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
                 proc.retire(reason);
                 return;
@@ -1029,8 +1026,7 @@ fn park_on_receive(proc: Box<Process>, mailbox: &Arc<Mailbox>) {
     let mut st = crate::core::sync::lock(&mailbox.state);
     if mailbox.kill_pending.load(Ordering::Relaxed) {
         let reason = st
-            .kill
-            .take()
+            .take_kill()
             .unwrap_or_else(|| Message::Keyword(value::intern(pk::KILLED)));
         drop(st);
         proc.retire(reason);

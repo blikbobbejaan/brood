@@ -709,13 +709,19 @@ impl Heap {
         // the RUNTIME-promoted `*impls*`, so this holds; the guard is belt-and-braces.
         if !is_movable(callee) {
             let mut ics = self.dispatch_ics.borrow_mut();
-            let e = ics.entry(key).or_insert_with(|| DispatchIcEntry {
-                epoch,
-                ids: [0; DISPATCH_IC_WAYS],
-                callees: [Value::nil(); DISPATCH_IC_WAYS],
-                len: 0,
-                cursor: 0,
-            });
+            if ics.get(&key).is_none() {
+                ics.insert(
+                    key,
+                    DispatchIcEntry {
+                        epoch,
+                        ids: [0; DISPATCH_IC_WAYS],
+                        callees: [Value::nil(); DISPATCH_IC_WAYS],
+                        len: 0,
+                        cursor: 0,
+                    },
+                );
+            }
+            let e = ics.get_mut(&key).expect("inserted above");
             // A stale epoch invalidates every way at once — reset before inserting.
             if e.epoch != epoch {
                 e.epoch = epoch;

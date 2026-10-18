@@ -1750,8 +1750,8 @@ impl Heap {
             .runtime
             .declared_sigs_version
             .load(std::sync::atomic::Ordering::Acquire);
-        {
-            let cache = self.type_alias_cache.borrow();
+        if let Some(cache) = self.type_alias_cache.get() {
+            let cache = cache.borrow();
             if cache.0 == version
                 && let Some(hit) = cache.1.get(&name)
             {
@@ -1772,7 +1772,10 @@ impl Heap {
                 found = Some(key);
             }
         }
-        let mut cache = self.type_alias_cache.borrow_mut();
+        let mut cache = self
+            .type_alias_cache
+            .get_or_init(|| Box::new(RefCell::new((u64::MAX, HashMap::new()))))
+            .borrow_mut();
         if cache.0 != version {
             cache.0 = version;
             cache.1.clear();

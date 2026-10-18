@@ -181,7 +181,7 @@ pub(super) fn retire_root_ctx(pid: u64) {
 /// with nothing after it.
 pub fn pending_kill_phrase(pid: u64) -> Option<String> {
     let mailbox = REGISTRY.get(pid)?;
-    let reason = crate::core::sync::lock(&mailbox.state).kill.clone()?;
+    let reason = crate::core::sync::lock(&mailbox.state).kill_reason()?;
     Some(exit_reason_phrase(&reason))
 }
 

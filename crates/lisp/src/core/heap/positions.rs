@@ -212,7 +212,7 @@ impl Heap {
         // holds `mod/name` → rooted spellings, and `global_ic` may hold a value cached
         // under an unrooted key that resolved through one (see `global_lookup_cached`).
         // Context switches are load-time and rare, so clearing costs nothing at run time.
-        self.rooted_ref_ic.borrow_mut().clear();
+        cold.rooted_ref_ic.get_mut().clear();
         self.global_ic.borrow_mut().clear();
         (prev_prefix, prev_modules)
     }
@@ -273,11 +273,13 @@ impl Heap {
     /// An already-rooted `bedit/commands/cmd-open` asks about `bedit/commands` — also not
     /// in the short-name set — so rooting is idempotent. `None` = nothing to root.
     pub(crate) fn root_qualified_ref(&self, sym: Symbol) -> Option<Symbol> {
-        if let Some(&cached) = self.rooted_ref_ic.borrow().get(&sym) {
+        // Outside a package there is nothing to root, and no cold state to memoise in.
+        let cold = self.cold().filter(|c| c.package_prefix.is_some())?;
+        if let Some(&cached) = cold.rooted_ref_ic.borrow().get(&sym) {
             return cached;
         }
         let answer = self.root_qualified_ref_uncached(sym);
-        self.rooted_ref_ic.borrow_mut().insert(sym, answer);
+        cold.rooted_ref_ic.borrow_mut().insert(sym, answer);
         answer
     }
 

@@ -2458,3 +2458,39 @@ keeps the ops as emitted. The painted frame is unchanged, since the harvest stil
 on the way out. Guard in `tests/ui_test.blsp` "an outer fragment that hits keeps its inner
 fragments in the next table"; with the flattened storage put back, it and the existing
 nesting test red.
+
+## 2026-10-18 — the per-process floor: three caches become `SmallMap`s; the ratchet measures a slope
+
+Picked from `runtime-frontier.md` / brood-benchmarks `FRONTIER.md`: residency, not spawn
+bookkeeping, is the spawn-and-park gap to the BEAM (spawn machinery was measured at 17% of
+it on 2026-07-29), so the lever is bytes per parked process. `-Zprint-type-sizes` puts
+`Process` at 1 504 B, 1 400 of it the inline `Heap`: 288 B of slabs and ~80 small fields,
+with no single fat one.
+
+- The closure-template, const-closure and ability-dispatch memos were `HashMap`s, which
+  spend four buckets on a first entry; they are `SmallMap`s now.
+- `SmallMap`'s spill variant is boxed, so each map is a `Vec`'s 24 B, not a `HashMap`'s 32
+  (`small_map::tests::the_map_costs_a_vec_inline`).
+- The package-rooting memo moved into `ColdHeap`: outside a package `root_qualified_ref`
+  answers `None` without memoising, which is what the uncached rule already returned.
+- The contract alias-by-suffix memo is boxed at first use (64 B inline before).
+- The mailbox's dead-alias set (ADR-244; a 72 B inline array) is boxed only while it
+  holds something, and its pending exit reason (a 32 B `Message`) is boxed: both are empty
+  on almost every process (`mailbox::tests::dead_aliases_cost_nothing_until_used_and_free_when_emptied`).
+
+**The ratchet was measuring the wrong thing.** `process_floor.rs` divided one fleet's
+growth by N, so one-time allocations in the window counted as per-process: 3 587 B/proc at
+n = 5 000 against 3 131 at 40 000 on one binary, and ~200 B between two builds of the same
+tree at 20 000 — enough that its 4 040 bound had gone stale by ~800 B without anyone
+noticing. It now spawns a warm-up fleet, then measures the slope over a second one. The
+slope is stable to ±4 B and does not depend on `treesit-grammars` (an apparent 220 B
+difference between feature sets was the old probe's noise).
+
+Measured on the slope, test profile, clean build of `8f345ed9` vs the change: **3 195–3 207
+→ 2 978–2 979 B per parked process (−222 B, −6.9%)**: the heap half 3 051–3 055, the
+mailbox half the rest. Bound lowered 4 040 → 3 040; the heap-half-only tree (3 053) reds it. Instructions (`perf stat -e instructions:u -r 5`, `BROOD_J=1`,
+`BROOD_NO_CHECK=1`, release, interleaved twice, outputs checked equal): closure creation
+(3 literals × 400k) 3.157G → 3.136G, ability dispatch (300k × 3 ops) 5.326G → 5.304G,
+spawn + park of 50k 1.67–1.69G → 1.64–1.67G — flat to slightly better on all three
+(measured on the heap half; the mailbox half touches only the retire path and a `None`
+check on delivery).

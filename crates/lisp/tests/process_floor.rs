@@ -26,10 +26,22 @@
 //! Raised 4 020 → 4 040 (2026-10-14): KI-246's hash memo (`Heap::hash_memo`, a lazily boxed
 //! `OnceCell`) is a second 8 B pointer, and it buys nested-set hashing in linear time.
 //! Measured 4 020–4 021 with both memos, which left no headroom against the jitter above.
+//!
+//! Lowered 4 040 → 3 040 (2026-10-18), and the probe changed from growth-over-one-fleet ÷ N
+//! to the slope between a warm-up fleet and a measured one (the comment in the test says
+//! why): the old figure moved ~200 B between two builds of the same tree, which is more than
+//! most shavings. On the slope, HEAD read 3 195–3 207 and the change 3 051–3 055: three
+//! per-process caches went from a `HashMap` to a `SmallMap` (the closure-template,
+//! const-closure and ability-dispatch memos), `SmallMap`'s spill is boxed (32 → 24 B each),
+//! and the package-rooting and contract alias memos left the inline `Heap` for lazily
+//! allocated homes (3 051–3 055). Then the mailbox's dead-alias set (72 B inline) and its
+//! pending exit reason (a 32 B `Message`) were boxed, both being empty on almost every
+//! process: 2 978–2 979. Jitter is ±4 B. Sabotage: the tree without the mailbox half
+//! (3 053) reds this bound, and the HEAD build (3 195) reds it further.
 
 use brood::Interp;
 
-const FLOOR_BYTES: i64 = 4040;
+const FLOOR_BYTES: i64 = 3040;
 
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {
@@ -42,8 +54,13 @@ fn a_parked_process_costs_no_more_than_the_floor() {
         return;
     }
     let mut interp = Interp::new();
+    // The SLOPE between two fleet sizes in one run, not the growth over one fleet divided by
+    // its size: a one-time allocation inside the window (a body compiled, a cache warmed, a
+    // table grown) is in the second and divides out of the first, and how big it is varies
+    // from build to build — 3 587 B/proc at n = 5 000 against 3 131 at 40 000 on one binary,
+    // and ~200 B between two builds of the same tree at 20 000 (2026-10-18). The warm-up
+    // fleet takes the one-time costs; the measured fleet pays only for itself.
     let prog = r#"
-        (def n 20000)
         (defn parked () (receive ([:go] nil)))
         ;; NOT `(spawn-hold (+ i 1) (cons (spawn (parked)) acc))`: under the tree-walker
         ;; (`BROOD_TIER=0`, CI's differential job) a spawn copies the spawner's whole env
@@ -51,13 +68,16 @@ fn a_parked_process_costs_no_more_than_the_floor() {
         ;; O(n²) — 20k children asked for a 7 GiB block and a 7 GB GitHub runner was
         ;; shut down rather than failed, three pushes running (2026-09-21). A `mapv`
         ;; frame holds one index and nothing that grows.
-        (defn spawn-all () (mapv (range n) (fn (_) (spawn (parked)))))
+        (defn spawn-all (n) (mapv (range n) (fn (_) (spawn (parked)))))
+        (def warm (spawn-all 5000))
+        (sleep 200)
         (def b0 (%mem-bytes))
-        (def kids (spawn-all))
+        (def n 20000)
+        (def kids (spawn-all n))
         (sleep 200)
         (def per (math/quot (- (%mem-bytes) b0) n))
         ;; Release them so the runtime tears down cleanly.
-        (fold kids nil (fn (_ p) (send p [:go])))
+        (fold (into warm kids) nil (fn (_ p) (send p [:go])))
         per
     "#;
     let v = interp.eval_str(prog).expect("the probe ran");

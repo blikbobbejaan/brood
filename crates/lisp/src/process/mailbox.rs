@@ -293,7 +293,11 @@ pub(super) struct MailboxState {
     /// `kill_pending`. Read (and cleared) when the target dies; written under this
     /// lock before the flag is published, so a reader that sees the flag set always
     /// sees the reason.
-    pub(super) kill: Option<Message>,
+    ///
+    /// Boxed: a pending exit reason is rare, and an inline `Message` is 32 bytes on every
+    /// process's mailbox. Read through [`take_kill`](Self::take_kill) /
+    /// [`kill_reason`](Self::kill_reason).
+    pub(super) kill: Option<Box<Message>>,
     /// Is the pending `kill` **hard** (untrappable: die at the next reduction tick,
     /// not the next `receive`)? Hardness is a property of the *request*, separate
     /// from the reason value: `(exit pid :kill)` is hard with reason `:kill`, and
@@ -363,9 +367,14 @@ const DEAD_ALIAS_CAP: usize = 8;
 ///
 /// A tiny insertion-ordered array rather than a set: it is capped at
 /// [`DEAD_ALIAS_CAP`], so a linear scan is a handful of `u64` compares on one cache
-/// line — cheaper than hashing, and it never allocates on the delivery path.
+/// line — cheaper than hashing. Boxed, and only while non-empty: every process's mailbox
+/// carries one, and almost none ever deactivates a ref (a call has to time out first), so
+/// inline it was 72 bytes on every process for a set that is empty in steady state. The
+/// delivery path still never allocates — it only reads and [`take`](Self::take)s.
 #[derive(Default)]
-pub(super) struct DeadAliases {
+pub(super) struct DeadAliases(Option<Box<DeadAliasIds>>);
+
+struct DeadAliasIds {
     ids: [u64; DEAD_ALIAS_CAP],
     len: usize,
 }
@@ -374,32 +383,45 @@ impl DeadAliases {
     /// Nothing deactivated — the case every delivery to every ordinary process takes.
     #[inline(always)]
     fn is_empty(&self) -> bool {
-        self.len == 0
+        self.0.is_none()
     }
 
     /// Deactivate `id`. Idempotent; evicts the oldest entry when full (see
     /// [`DEAD_ALIAS_CAP`] for why that is the right way to fail).
     fn insert(&mut self, id: u64) {
-        if self.ids[..self.len].contains(&id) {
+        let set = self.0.get_or_insert_with(|| {
+            Box::new(DeadAliasIds {
+                ids: [0; DEAD_ALIAS_CAP],
+                len: 0,
+            })
+        });
+        if set.ids[..set.len].contains(&id) {
             return;
         }
-        if self.len == DEAD_ALIAS_CAP {
-            self.ids.copy_within(1..DEAD_ALIAS_CAP, 0);
-            self.len -= 1;
+        if set.len == DEAD_ALIAS_CAP {
+            set.ids.copy_within(1..DEAD_ALIAS_CAP, 0);
+            set.len -= 1;
         }
-        self.ids[self.len] = id;
-        self.len += 1;
+        set.ids[set.len] = id;
+        set.len += 1;
     }
 
     /// Is `id` deactivated? If so, **forget it** — an alias is one-shot, so the entry
     /// has done its job the moment the reply it was waiting to swallow arrives. This
-    /// is what keeps the set at zero in steady state rather than at its cap.
+    /// is what keeps the set at zero in steady state rather than at its cap, and the
+    /// last one out frees the box.
     fn take(&mut self, id: u64) -> bool {
-        let Some(i) = self.ids[..self.len].iter().position(|&x| x == id) else {
+        let Some(set) = self.0.as_mut() else {
             return false;
         };
-        self.ids.copy_within(i + 1..self.len, i);
-        self.len -= 1;
+        let Some(i) = set.ids[..set.len].iter().position(|&x| x == id) else {
+            return false;
+        };
+        set.ids.copy_within(i + 1..set.len, i);
+        set.len -= 1;
+        if set.len == 0 {
+            self.0 = None;
+        }
         true
     }
 }
@@ -537,7 +559,7 @@ impl Mailbox {
             // reason; the first hard reason wins thereafter.
             let latched_hard = st.kill.is_some() && st.kill_hard;
             if !latched_hard {
-                st.kill = Some(reason);
+                st.kill = Some(Box::new(reason));
                 st.kill_hard = hard;
             }
         }
@@ -552,7 +574,7 @@ impl Mailbox {
         if !self.kill_pending.load(Ordering::Relaxed) {
             return None;
         }
-        crate::core::sync::lock(&self.state).kill.clone()
+        crate::core::sync::lock(&self.state).kill_reason()
     }
 
     /// Post-push bound check (ADR-307): called by every site that enqueues a NEW
@@ -790,6 +812,16 @@ impl Wake {
 }
 
 impl MailboxState {
+    /// Take the pending exit reason (the retire path owns it).
+    pub(super) fn take_kill(&mut self) -> Option<Message> {
+        self.kill.take().map(|reason| *reason)
+    }
+
+    /// Peek at the pending exit reason, leaving it for the retire path.
+    pub(super) fn kill_reason(&self) -> Option<Message> {
+        self.kill.as_deref().cloned()
+    }
+
     /// Mark this mailbox as needing a re-scan and take what must be woken for it.
     pub(super) fn take_wake(&mut self) -> Wake {
         let parked = self.waiter.take();
@@ -2018,6 +2050,36 @@ fn set_self_status(ctx: &Ctx, status: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dead-alias set allocates only while it holds something, and keeps its
+    /// one-shot, evict-the-oldest semantics through the box.
+    #[test]
+    fn dead_aliases_cost_nothing_until_used_and_free_when_emptied() {
+        let mut d = DeadAliases::default();
+        assert!(d.is_empty() && d.0.is_none());
+        assert!(!d.take(1), "nothing to take from an empty set");
+        d.insert(1);
+        d.insert(1);
+        assert!(
+            d.0.as_ref().is_some_and(|s| s.len == 1),
+            "insert is idempotent"
+        );
+        assert!(d.take(1), "a deactivated alias swallows its reply once");
+        assert!(d.0.is_none(), "the last one out frees the box");
+        assert!(!d.take(1), "and only once");
+        for id in 0..=DEAD_ALIAS_CAP as u64 {
+            d.insert(id);
+        }
+        assert!(!d.take(0), "the oldest was evicted at the cap");
+        for id in 1..=DEAD_ALIAS_CAP as u64 {
+            assert!(d.take(id), "alias {id} kept");
+        }
+        assert!(d.is_empty());
+        assert!(
+            std::mem::size_of::<DeadAliases>() <= 8,
+            "one pointer per mailbox"
+        );
+    }
 
     /// Seq ordering after a candidate is re-inserted — the invariant the receive-mark
     /// (ADR-195) binary-searches on. A scan optimistically popped a candidate, then a
