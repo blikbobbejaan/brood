@@ -16,13 +16,15 @@
 (defn info (pid)
   "A snapshot map of a live local process:
 {:id :pid :node :name :status :mailbox :monitored-by :parent :memory :collections
-:reductions} (:pid the process's pid value, for acting on it with exit/send/monitor;
+:reductions :cpu-us} (:pid the process's pid value, for acting on it with exit/send/monitor;
 :status is :running or :waiting; :name nil if unregistered; :parent the spawner's id,
 nil for the root; :memory the LOCAL heap bytes and :collections the cumulative GC count,
 both as of the process's last receive; :reductions the cumulative reduction count — the
 scheduling unit, updated every quantum; exact for spawned processes, coarse for the
-root). nil for a remote/dead pid. The process-introspection snapshot the observer reads;
-see std/tool/observer.blsp."
+root; :cpu-us the CPU time the process has actually consumed, in µs — set beside a
+wall-clock measurement it says whether a slow step did work or WAITED to run; 0 where
+the platform has no per-thread CPU clock). nil for a remote/dead pid. The
+process-introspection snapshot the observer reads; see std/tool/observer.blsp."
   (%process-info pid))
 (sig info (pid -> (or (map keyword any) nil)))
 

@@ -69,6 +69,7 @@
 //! → the globals lock, the load journal or `promote_lock` (`core/heap/env_globals.rs`,
 //! `runtime_code.rs`), and `promote_lock` → the published table's lock (`promote.rs`).
 
+pub(crate) mod cputime;
 mod io_source;
 pub(crate) mod keywords;
 mod links;
@@ -95,12 +96,13 @@ pub use timer::SchedDeadline;
 pub use timer::pending_timer_count;
 
 pub use mailbox::{
-    deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_gc_runs, process_mem,
-    process_reductions, process_status, receive_match, send, set_max_mailbox,
+    deactivate_alias, list_local_pids, mailbox_len, max_mailbox, process_cpu_ns, process_gc_runs,
+    process_mem, process_reductions, process_status, receive_match, send, set_max_mailbox,
 };
 pub use message::{ClosureArmMsg, ClosureMsg, Message, from_message, to_message};
 pub(crate) use message::{chunk_flush, chunk_payload, error_reason};
 pub(crate) use scheduler::exit_reason_phrase;
+pub(crate) use scheduler::quantum_cpu_so_far;
 pub(crate) use scheduler::take_current_mailbox_overflow;
 // The wire codec (`dist::wire`) defines its decode-depth cap in terms of this so
 // the two can't diverge; crate-internal, hence `pub(crate)`.

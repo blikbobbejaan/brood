@@ -434,17 +434,43 @@ Brood-level walk cost about a millisecond — more than the paint the memo saves
 snapshotted into the startup image (ADR-218) and the env var never consulted again."
   (= (os/env "BROOD_UI_TRACE") "1"))
 
-(defn- ui-timed (thunk)
-  "`[result elapsed-ms]` for `(thunk)` — the elapsed a float in ms, off `os/now-ns`."
-  (let (started (os/now-ns)
-        r (thunk))
-    [r (/ (- (os/now-ns) started) 1000000.0)]))
+(defn- ui-cost-snapshot ()
+  ;; `[cpu-us gc-pause-us gc-collections]` for this process — read only when tracing
+  (let (gc (%gc-stats))
+    [(:cpu-us (%process-info (self)) 0) (:pause-total-us gc 0) (:collections gc 0)]))
 
-(defn- ui-trace (phase ms detail)
-  "One `ui-run: <phase>=<ms> <detail>` line to stderr when `BROOD_UI_TRACE=1`; nil
-otherwise (and the caller pays nothing but the two clock reads)."
+(defn- ui-timed (thunk)
+  "`[result elapsed-ms cost]` for `(thunk)` — the wall time a float in ms, off `os/now-ns`,
+and, when tracing, what it cost this process as trace text (nil otherwise): the CPU time
+it actually used, and how much of that was garbage collection (pause ms / collections)."
+  (let (tracing (ui-trace?)
+        before (when tracing (ui-cost-snapshot))
+        started (os/now-ns)
+        r (thunk)
+        ms (/ (- (os/now-ns) started) 1000000.0))
+    [r
+      ms
+      (when tracing
+        (let ([cpu0 pause0 runs0] before
+              [cpu1 pause1 runs1] (ui-cost-snapshot))
+          (string/format "cpu=%.2fms gc=%.2fms/%d"
+            (/ (- cpu1 cpu0) 1000.0)
+            (/ (- pause1 pause0) 1000.0)
+            (- runs1 runs0))))]))
+
+(defn- ui-trace (phase ms detail &optional (cost nil))
+  "One `ui-run: <phase>=<ms> cpu=<ms> gc=<ms>/<n> <detail>` line to stderr when
+`BROOD_UI_TRACE=1`; nil otherwise (and the caller pays nothing but the two clock reads).
+
+The cost figures are what tell a slow turn's causes apart. `update=25ms cpu=24ms` did that
+much work; `update=25ms cpu=2ms` spent 23 ms WAITING for a CPU — behind other processes or
+other programs — and no change to the code it timed will help; `cpu=24ms gc=18ms/1` was a
+collection, and the lever is what the process keeps alive, not the code that ran."
   (when (ui-trace?)
-    (io/puts (string/format "ui-run: %s=%.2fms %s" phase ms detail) :to *err*)))
+    (io/puts (if (nil? cost)
+               (string/format "ui-run: %s=%.2fms %s" phase ms detail)
+               (string/format "ui-run: %s=%.2fms %s %s" phase ms cost detail))
+      :to *err*)))
 
 (defn- ui-abbrev (s)
   "`s` cut to 72 characters for a trace line (an input can carry a paste or a task reply)."
@@ -454,11 +480,11 @@ otherwise (and the caller pays nothing but the two clock reads)."
   "`(update model input cols rows)`, timed and traced as `update` — and survived: a
 throwing `update` is logged (`ui-log-error`) and drops that one input, returning
 `model` unchanged. Every fold in the loop and the drain goes through here."
-  (let ([next ms] (ui-timed (fn ()
-                              (try
-                                (update model input cols rows)
-                                (catch e (ui-log-error "update" e) model)))))
-    (ui-trace "update" ms (ui-abbrev (pr-str input)))
+  (let ([next ms cost] (ui-timed (fn ()
+                                   (try
+                                     (update model input cols rows)
+                                     (catch e (ui-log-error "update" e) model)))))
+    (ui-trace "update" ms (ui-abbrev (pr-str input)) cost)
     next))
 
 (defn- ui-drain-input (model update display cols rows fuel)
@@ -518,12 +544,16 @@ re-raises, surfacing a genuine startup bug instead of spinning."
           rendered (try
                      ;; the previous turn's memoised fragments are in scope for `ui-memo`
                      ;; (ADR-336) — nil outside a loop, `{}` on the first turn
-                     (let ([frame ms] (ui-timed (fn ()
-                                                  (binding (*ui-memo* (or (get clock :memo) {}))
-                                                    (view model cols rows))))
+                     (let ([frame ms cost] (ui-timed (fn ()
+                                                       (binding (*ui-memo* (or (get clock :memo)
+                                                                             {}))
+                                                         (view model cols rows))))
                            [flat table] (ui-harvest frame))
                        (do
-                         (ui-trace "view" ms (str (count flat) " ops, " (count table) " memo"))
+                         (ui-trace "view"
+                           ms
+                           (str (count flat) " ops, " (count table) " memo")
+                           cost)
                          [:frame flat table]))
                      (catch e
                        (if (nil? last-good)

@@ -977,6 +977,21 @@ pub(super) fn process_info(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
             // "is this process doing work / busy?" signal. Exact for spawned
             // processes; coarse (whole-budget increments) for the root.
             let reductions = Value::int(crate::process::process_reductions(id).unwrap_or(0) as i64);
+            // `:cpu-us` — the CPU time the process has actually consumed, in µs. Set beside
+            // a wall-clock measurement it says whether a slow step did a lot of work or
+            // spent its time WAITING to run (`process/cputime.rs`). 0 where the platform has
+            // no per-thread CPU clock. A process asking about ITSELF also counts the
+            // quantum it is in, which is booked only when that quantum ends.
+            // The first read arms quantum accounting (it costs ~0.3 µs a quantum, so it is
+            // off until something looks — see `process/cputime.rs`).
+            crate::process::cputime::arm();
+            let in_flight = if id == crate::process::self_pid() {
+                crate::process::quantum_cpu_so_far()
+            } else {
+                0
+            };
+            let cpu_ns = crate::process::process_cpu_ns(id).unwrap_or(0) + in_flight;
+            let cpu_us = Value::int((cpu_ns / 1_000) as i64);
             let pairs = vec![
                 (value::kw("id"), Value::int(id as i64)),
                 // The process's actual pid value (not just its numeric id), so a
@@ -992,6 +1007,7 @@ pub(super) fn process_info(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRes
                 (value::kw("memory"), memory),
                 (value::kw("collections"), collections),
                 (value::kw("reductions"), reductions),
+                (value::kw("cpu-us"), cpu_us),
             ];
             Ok(heap.map_from_pairs(pairs))
         }

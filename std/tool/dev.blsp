@@ -50,8 +50,11 @@
   (%runtime-collect))
 
 (defn profile-start (& more)
-  "Arm the sampling CPU profiler at hz samples/sec (default 99, clamped 1..10000), resetting the histogram. Sampling walks each process's reified call stack (named frames) at its next VM frame boundary after every tick — no signals, near-zero cost when off (one relaxed load per frame boundary). A JIT-resident loop is attributed when it yields at its reduction-budget preempt (~once a quantum); the legacy tree-walker isn't sampled. Stop and read with (profile-stop)."
-  (if (empty? more) (%profile-start) (%profile-start (first more))))
+  "Arm the sampling CPU profiler at hz samples/sec (default 99, clamped 1..10000), resetting the histogram. `(profile-start hz pid)` samples ONLY that local process — every process that runs takes a sample per tick, so without it a busy program's profile is the sum of all of them, and the process you care about (a UI loop beside its language servers and workers) is a few percent of its own profile. Sampling walks each process's reified call stack (named frames) at its next VM frame boundary after every tick — no signals, near-zero cost when off (one relaxed load per frame boundary). A JIT-resident loop is attributed when it yields at its reduction-budget preempt (~once a quantum); the legacy tree-walker isn't sampled. Stop and read with (profile-stop)."
+  (cond
+    (empty? more) (%profile-start)
+    (empty? (rest more)) (%profile-start (first more))
+    else (%profile-start (first more) (second more))))
 
 (defn profile-stop ()
   "Disarm the sampling profiler and return the histogram: a list of {:stack (fn-names... innermost-first) :count n} maps, most-sampled first. Empty list if never armed. A sample whose frames were all anonymous appears with :stack (\"<anonymous>\")."

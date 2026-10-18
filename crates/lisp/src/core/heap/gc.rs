@@ -239,6 +239,7 @@ impl Heap {
     /// tripwire). Roots, dynamics, the operand stack, and the write-barrier
     /// remembered set are relocated/rewritten in place.
     fn minor_collect(&mut self, tenure: bool, value_roots: &mut [Value], env_roots: &mut [EnvId]) {
+        let t_start = web_time::Instant::now();
         let before_young = self.local_live_count();
         let old_before = self.old_live_count();
         self.local_epoch = self.local_epoch.wrapping_add(1);
@@ -262,6 +263,7 @@ impl Heap {
         forward.src_old = false; // copy nursery objects
         forward.dest_old = dest_old;
         self.flush_roots(&young, &mut dest, &mut forward, value_roots, env_roots);
+        let t_roots = web_time::Instant::now();
         // Write barrier: an old frame that gained a young binding (`env_define`
         // after a mid-bind tenure) holds an OLD->YOUNG edge not reachable from the
         // normal roots. Its frame lives in `dest` while tenuring (we took the old
@@ -298,6 +300,8 @@ impl Heap {
         // destination's age bit (old when tenuring, young when flipping); dead
         // nursery entries drop; existing OLD entries are untouched (old didn't move
         // in a minor).
+        let t_remembered = web_time::Instant::now();
+        let positions = self.cold.as_ref().map_or(0, |c| c.form_pos.len());
         let new_age_bit: u64 = if tenure { 1 << 32 } else { 0 };
         if self.cold.is_some() {
             // An OLD entry keeps its exact key — old doesn't move in a minor — so only the
@@ -339,6 +343,7 @@ impl Heap {
                     .shrink_to(len.saturating_mul(HEADROOM).max(SHRINK_FLOOR));
             }
         }
+        let t_positions = web_time::Instant::now();
         // Install the relocated space. Tenure: `dest` is the grown old gen; the
         // nursery restarts empty but with the outgoing nursery's capacity (same
         // doubling-ladder rationale as the flip path). Flip: `dest` is the fresh
@@ -372,13 +377,21 @@ impl Heap {
             .saturating_add(before_young.saturating_sub(survivors) as u64);
         self.note_proc_limit();
         if self.gc_trace {
+            let us = |a: web_time::Instant, b: web_time::Instant| b.duration_since(a).as_micros();
             eprintln!(
-                "[gc] minor {}: {} nursery objects, {} {}, {} reclaimed",
+                "[gc] minor {}: {} nursery objects, {} {}, {} reclaimed | {}us: roots={}us \
+                 remembered={}us positions={}us ({} entries) install={}us",
                 if tenure { "tenure" } else { "flip" },
                 before_young,
                 survivors,
                 if tenure { "tenured" } else { "kept young" },
                 before_young.saturating_sub(survivors),
+                t_start.elapsed().as_micros(),
+                us(t_start, t_roots),
+                us(t_roots, t_remembered),
+                us(t_remembered, t_positions),
+                positions,
+                t_positions.elapsed().as_micros(),
             );
         }
         // `young` drops here, reclaiming every nursery object that didn't survive.

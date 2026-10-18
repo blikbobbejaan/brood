@@ -1,0 +1,44 @@
+;; tests/cpu_time_test.blsp — `process-info`'s `:cpu-us`: the CPU time a process actually
+;; consumed, as against how long it took. The bounds are generous on purpose: what is pinned
+;; is the DISTINCTION — work accrues CPU, waiting does not — not a number a loaded CI box
+;; could miss.
+(defmodule cpu-time-test (:use test))
+
+(defn- spin (n acc) (if (= n 0) acc (spin (dec n) (+ acc 1))))
+(defn- cpu-us (pid) (:cpu-us (proc/info pid)))
+
+(describe "process-info :cpu-us"
+  (test "a process that works accrues CPU time, read from another process"
+    ;; quantum accounting is armed by the first read, so read once before the work starts
+    (let (_ (cpu-us (self))
+          me (self)
+          worker (spawn (fn () (spin 3000000 0) (send me :done) (receive ([:never] nil))))
+          _ (receive (:done nil) (after 30000 nil)))
+      (is (> (cpu-us worker) 1000)) ; at least a millisecond of real work
+      (exit worker :kill)))
+
+  (test "a process that waits accrues next to none"
+    (let (me (self)
+          sleeper (spawn (fn ()
+                           (receive ([:never] nil) (after 200 nil))
+                           (send me :done)
+                           (receive ([:never] nil))))
+          _ (receive (:done nil) (after 30000 nil)))
+      (is (< (cpu-us sleeper) 50000)) ; 200 ms asleep, well under a quarter of it charged
+      (exit sleeper :kill)))
+
+  (test "a process asking about itself counts the quantum it is in"
+    ;; booked only when a quantum ends, so without the in-flight part a process timing its
+    ;; own work read 0 for it
+    (let (me (self)
+          _ (spawn (fn ()
+                     (let (before (cpu-us (self))
+                           _ (spin 1000000 0)
+                           after (cpu-us (self)))
+                       (send me (- after before)))))
+          used (receive (n n) (after 30000 -1)))
+      (is (> used 0))))
+
+  (test "it is a non-negative integer for any live process, the caller included"
+    (is (int? (cpu-us (self))))
+    (is (>= (cpu-us (self)) 0))))

@@ -380,7 +380,23 @@ pub(super) fn slab_live_count(s: &Slabs) -> usize {
 ///
 /// Counted in [`park_trim_probe`] slots rather than bytes so the gate stays a few loads:
 /// 64 slots is roughly a few KiB of pairs.
+///
+/// **And proportional above that** ([`park_trim_due`]): the growth must also reach half
+/// the last trim's high-water. A long-lived process that keeps ACCUMULATING — an editor's
+/// UI loop, whose caches, buffers and history grow a little with every edit, and which
+/// parks after every event — crossed a fresh 64-slot mark every few turns, and each time
+/// paid a whole-heap collection at the park and then the slab regrowth after the shrink:
+/// 28 trims in a 20-second session, which made its turns cost twice the CPU they cost
+/// with collection off. Proportional, a growing heap trims a logarithmic number of times,
+/// and an idle one still gives back everything beyond 1.5× what it last settled at.
 pub(super) const PARK_TRIM_GROWTH_SLOTS: usize = 64;
+
+/// Whether a parked process whose slab capacity is now `probe` should trim, having last
+/// trimmed at high-water `mark` — grown by at least [`PARK_TRIM_GROWTH_SLOTS`] AND by half
+/// of `mark` since.
+pub(super) fn park_trim_due(probe: usize, mark: usize) -> bool {
+    probe.saturating_sub(mark) >= PARK_TRIM_GROWTH_SLOTS.max(mark / 2)
+}
 
 /// Retained *capacity* of a slab set, in bytes — what the process is holding from the
 /// allocator, as opposed to [`slab_bytes`]'s live contents. The two diverge sharply for a
@@ -664,5 +680,40 @@ mod lazy_vec_tests {
         v.truncate(0);
         v.shrink_to_fit();
         assert!(v.0.is_none(), "an emptied slab gives its box back");
+    }
+}
+
+#[cfg(test)]
+mod park_trim_tests {
+    use super::*;
+
+    #[test]
+    fn a_small_heap_trims_after_the_fixed_minimum() {
+        assert!(!park_trim_due(63, 0));
+        assert!(park_trim_due(64, 0));
+        assert!(park_trim_due(100 + 64, 100));
+    }
+
+    #[test]
+    fn a_large_growing_heap_trims_only_after_growing_by_half() {
+        // the editor's case: 1M slots of capacity, growing a little per turn
+        let mark = 1_000_000;
+        assert!(!park_trim_due(mark + 64, mark));
+        assert!(!park_trim_due(mark + 499_999, mark));
+        assert!(park_trim_due(mark + 500_000, mark));
+    }
+
+    #[test]
+    fn a_steadily_growing_heap_trims_logarithmically_often() {
+        // grow by 1000 slots per park from 10K to 10M: count the trims
+        let (mut probe, mut mark, mut trims) = (10_000usize, 10_000usize, 0);
+        while probe < 10_000_000 {
+            probe += 1000;
+            if park_trim_due(probe, mark) {
+                trims += 1;
+                mark = probe;
+            }
+        }
+        assert!(trims < 20, "{trims} trims growing 10K → 10M");
     }
 }

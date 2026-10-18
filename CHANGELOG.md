@@ -58,6 +58,20 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - `BROOD_GUI_TRACE=1` traces the GPU painter too (`[gui-paint-gpu]`: expand / upload /
   acquire / submit / present per paint). The default render target in a `--with-gui-gpu`
   build could not be measured at all before.
+- `process-info` (`proc/info`) answers `:cpu-us`: the CPU time a process has actually
+  consumed. Beside a wall-clock measurement it separates a step that did a lot of work from one
+  that WAITED to run — behind other processes, or other programs on the machine. Quanta are
+  timed on the worker thread's own CPU clock; a root context reads its thread's clock. Off
+  until the first read (two clock reads a quantum is ~0.3 µs, too much to charge every
+  program), so a green process counts from then. `BROOD_UI_TRACE=1` prints it for every
+  `ui-run` update and view: `update=25.10ms cpu=1.90ms` was starved, not slow.
+- `(dev/profile-start hz pid)` samples one process. Every process that runs takes a sample
+  per tick, so a busy program's profile was the sum of all of them — an editor's UI loop was
+  a few percent of its own profile, under the language servers and workers beside it.
+- `BROOD_UI_TRACE=1` lines carry the turn's cost: `update=6.20ms cpu=6.10ms gc=1.54ms/1` —
+  the CPU the loop actually used and how much of it was collection.
+- `BROOD_GC_TRACE=1`'s minor-collection line says where the pause went: roots (the survivor
+  copy), the remembered set, the source-position map (and its size), the install.
 
 **Performance.**
 - `encoding/base64-*` encode and decode natively (`%base64-encode` / `%base64-decode`), the
@@ -70,6 +84,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - `editor/markdown/markdown-spans` measures a line's leading whitespace once and lets a plain
   prose line leave after one native scan: 7.1 → 3.2 ms for a 300-line window, the same spans
   byte for byte over a 6,300-line document.
+- A parked process trims (collect + shrink its slabs) only once its heap has grown by half
+  again since the last trim, not by any 64 slots. A long-lived process that keeps
+  accumulating and parks after every message — an editor's UI loop — crossed a fresh
+  64-slot mark every few turns and paid a whole-heap collection at each park plus the slab
+  regrowth after it. Small and idle processes trim as before.
 
 **Fixed.**
 - A program drawing on the GPU render target segfaulted on exit — every `nest run --for` on an

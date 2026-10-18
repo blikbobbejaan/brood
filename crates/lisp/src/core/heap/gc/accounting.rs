@@ -151,7 +151,7 @@ impl Heap {
         // `park_trim_probe`. Only capacity accumulated *since the last trim* counts; an
         // absolute threshold fails in both directions (`PARK_TRIM_GROWTH_SLOTS`).
         let probe = park_trim_probe(&self.local);
-        if probe.saturating_sub(self.park_trim_mark) < PARK_TRIM_GROWTH_SLOTS {
+        if !park_trim_due(probe, self.park_trim_mark) {
             return 0;
         }
         let before =

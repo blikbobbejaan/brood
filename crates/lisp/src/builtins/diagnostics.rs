@@ -72,10 +72,10 @@ pub(super) fn register(primitives: &mut super::Primitives) {
     );
     primitives.def(
         "%profile-start",
-        Arity::range(0, 1),
-        Sig::new(vec![any], nil_ty),
-        &["&optional", "hz"],
-        "Arm the sampling CPU profiler at hz samples/sec (default 99, clamped 1..10000), resetting the histogram. Sampling walks each process's reified call stack (named frames) at its next VM frame boundary after every tick — no signals, near-zero cost when off (one relaxed load per frame boundary). A JIT-resident loop is attributed when it yields at its reduction-budget preempt (~once a quantum); the legacy tree-walker isn't sampled. Stop and read with (dev/profile-stop).",
+        Arity::range(0, 2),
+        Sig::new(vec![any, any], nil_ty),
+        &["&optional", "hz", "pid"],
+        "Arm the sampling CPU profiler at hz samples/sec (default 99, clamped 1..10000), resetting the histogram — only process `pid` when one is given, else every process. Sampling walks each process's reified call stack (named frames) at its next VM frame boundary after every tick — no signals, near-zero cost when off (one relaxed load per frame boundary). A JIT-resident loop is attributed when it yields at its reduction-budget preempt (~once a quantum); the legacy tree-walker isn't sampled. Stop and read with (dev/profile-stop).",
         profile_start);
     primitives.def(
         "%profile-stop",
@@ -224,8 +224,9 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         gc_trace);
 }
 
-/// `(profile-start [hz])` — arm the sampling CPU profiler at `hz` samples/sec
-/// (default 99, clamped 1..10000). Resets the histogram; see `profile-stop`.
+/// `(profile-start [hz [pid]])` — arm the sampling CPU profiler at `hz` samples/sec
+/// (default 99, clamped 1..10000), for local process `pid` alone when given. Resets the
+/// histogram; see `profile-stop`.
 pub(super) fn profile_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let hz = match arg(args, 0) {
         Value::Nil => 99,
@@ -239,7 +240,20 @@ pub(super) fn profile_start(args: &[Value], _: EnvId, heap: &mut Heap) -> LispRe
             ));
         }
     };
-    crate::diagnostics::profile::start(hz);
+    // An optional local pid narrows the profile to that one process.
+    let pid = match arg(args, 1) {
+        Value::Nil => None,
+        Value::Pid { node, id } if crate::dist::is_local(node) => Some(id),
+        other => {
+            return Err(LispError::wrong_type(
+                heap,
+                "dev/profile-start",
+                "a local pid or absent",
+                other,
+            ));
+        }
+    };
+    crate::diagnostics::profile::start(hz, pid);
     Ok(Value::nil())
 }
 
