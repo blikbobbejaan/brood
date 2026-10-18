@@ -346,3 +346,16 @@
       (assert= (get-in km [:ctrl-x "s"]) 'layers-test/cmd-y)))
   (test "a layer with no keymap contributes nothing and breaks nothing"
     (assert= (count (scope-bindings (list {:layers (list {:name 'bare})}))) 0)))
+
+(describe "layer-facet — the first layer's value, without resolving the rest"
+  (test "answers what the head of layer-collect does"
+    (let (ctx {:layers [{:name 'a} {:name 'b :x 1} {:name 'c :x 2}]})
+      (assert= (first (layer-collect ctx :x)) (layer-facet ctx :x))
+      (assert= 1 (layer-facet ctx :x))))
+  (test "nil when no layer defines the facet"
+    (assert= nil (layer-facet {:layers [{:name 'a}]} :x))
+    (assert= nil (layer-facet {} :x)))
+  (test "stops at the first layer that has it — later layers are never resolved"
+    ;; the third layer is an unbound symbol: resolving it would raise
+    (let (ctx {:layers [{:name 'a} {:name 'b :x 1} 'layers-test/no-such-layer]})
+      (assert= 1 (layer-facet ctx :x)))))

@@ -189,6 +189,21 @@ first (head of `:layers`); layers lacking the facet are dropped. The one generic
 resolver — keymaps and hooks are just facets over it."
   (seq/reject (map (layers-list ctx) (fn (l) (get (layers-resolve l) facet))) nil?))
 
+(defn- layer-facet-in (layers facet)
+  (if (empty? layers)
+    nil
+    (let (v (get (layers-resolve (first layers)) facet))
+      (if (nil? v) (layer-facet-in (rest layers) facet) v))))
+
+(defn layer-facet (ctx facet)
+  "The `facet` value of the highest-precedence active layer that defines it, or nil — what
+`(first (layer-collect ctx facet))` answers, but it stops at the first layer that has one
+instead of resolving every layer and collecting every value. An editor asks this for a
+mode's services several times per pane per frame, where the difference is the frame.
+
+    (editor/layers/layer-facet {:layers [{:name 'a} {:name 'b :x 1} {:name 'c :x 2}]} :x)   → 1"
+  (layer-facet-in (layers-list ctx) facet))
+
 (defn active-layers (ctx)
   "The active layers of `ctx` as **resolved maps**, highest-precedence first — for
 inspecting whole layers (e.g. to skip `:system` ones when naming the mode), where

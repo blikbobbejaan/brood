@@ -169,3 +169,43 @@
     (let (row (nth (transient-rows (tt-open)) 5))
       (assert= (:suffix-kind row) :command)
       (assert= (:on? row) false))))
+
+;; The same push menu as SHORT ROWS (`[key command label]`, `[key kind target label extras]`)
+;; must be the same menu: every behaviour above goes through the normalised spec.
+(def tt-short-remote-spec
+  {:name 'push-remote
+   :title "another remote"
+   :groups [{:title "Remote"
+             :suffixes [["o" 'tt/push-origin "origin"] ["u" 'tt/push-upstream "upstream"]]}]})
+
+(def tt-short-spec
+  {:name 'push
+   :title "Push"
+   :groups [{:title "Arguments"
+             :suffixes [["-f" :switch "--force-with-lease" "Force with lease"]
+                         ["-n" :switch "--dry-run" "Dry run"]
+                         ["=u" :option "--set-upstream=" "Set upstream" {:prompt "Upstream"}]]}
+             {:title "Push to"
+              :suffixes [["p" 'tt/push-current "current"]
+                          ["e" :menu tt-short-remote-spec "elsewhere…"]]}]})
+
+(describe "short rows are the same menu"
+  (test "they expand to exactly the maps they abbreviate"
+    ;; the `:menu` row carries its sub-spec as written, so that half is compared on its own
+    (let (without-menus (fn (sp) (map (spec-suffixes sp) (fn (s) (dissoc s :menu)))))
+      (assert= (without-menus tt-short-spec) (without-menus tt-spec))
+      (assert= (spec-suffixes tt-short-remote-spec) (spec-suffixes tt-remote-spec))))
+  (test "a chorded switch and a command carry the arguments"
+    (let ([_ out] (tt-press (transient-open tt-short-spec) ["-" "f" "p"]))
+      (assert= out [:run 'tt/push-current ["--force-with-lease"]])))
+  (test "an option keeps the prompt from its extras map"
+    (let ([_ out] (tt-press (transient-open tt-short-spec) ["=" "u"]))
+      (assert= out [:read "--set-upstream=" "Upstream" nil])))
+  (test "a short-row sub-menu is entered and its short rows resolve"
+    (let ([_ out] (tt-press (transient-open tt-short-spec) ["e" "o"]))
+      (assert= out [:run 'tt/push-origin []])))
+  (test "the rendering is the long form's"
+    (assert= (transient-rows (transient-open tt-short-spec)) (transient-rows (tt-open))))
+  (test "a map row is left as it is"
+    (assert= (suffix-of {:key "x" :kind :command :command 'go :label "Go"})
+      {:key "x" :kind :command :command 'go :label "Go"})))

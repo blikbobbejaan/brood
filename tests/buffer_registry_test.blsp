@@ -126,3 +126,57 @@
       (assert= (registry-rekey reg "/nope" "c" {:file "/c"}) nil)
       (assert= (count (registry-entries reg)) 2)
       (registry-stop reg))))
+
+;; `{:mirror true}`: the registry keeps every document's text, folded from the process's own
+;; pushes, and a process that dies comes back from it under the same key. Barriers, not
+;; sleeps: a `buffer-query` returns once the process has handled our edit (and so queued its
+;; push to the registry), and a `registry-share` returns once the registry has folded
+;; everything before it. Only the runtime's `[:down]` cannot be ordered against anything we
+;; send, so the respawn is awaited on the watcher notice that announces it.
+(defn- await-added (key)
+  (receive ([:registry-added ^key _ p _] p) (after *test-wait-ms* :timeout)))
+
+(describe "buffer-registry with a mirror"
+  (test "a process that dies is respawned from the mirror, every acknowledged edit kept"
+    (let (reg (registry-start {:mirror true})
+          p1 (registry-share reg "doc" "seed" {:file "/tmp/mirror-doc"}))
+      (registry-watch reg (self))
+      (buffer-splice p1 4 4 "+more" :someone)
+      (assert= (buffer-query p1 buffer-text) "seed+more")
+      (registry-share reg "doc" "ignored" {:file "/tmp/mirror-doc"}) ; the registry folded it
+      (exit p1 :kill)
+      (assert= :died
+        (receive ([:registry-removed "/tmp/mirror-doc" why] why) (after *test-wait-ms* :timeout)))
+      (let (p2 (await-added "/tmp/mirror-doc"))
+        (is (pid? p2))
+        (is (not (= p1 p2)))
+        (assert= (buffer-query p2 buffer-text) "seed+more")
+        (assert= p2 (registry-share reg "doc" "stale-local" {:file "/tmp/mirror-doc"})))
+      (registry-stop reg)))
+  (test "edits on the respawned process keep folding into the mirror"
+    (let (reg (registry-start {:mirror true})
+          p1 (registry-share reg "doc" "a" {}))
+      (registry-watch reg (self))
+      (exit p1 :kill)
+      (let (p2 (await-added "doc"))
+        (buffer-splice p2 1 1 "b" :someone)
+        (assert= (buffer-query p2 buffer-text) "ab")
+        (registry-share reg "doc" "" {})
+        (exit p2 :kill)
+        (assert= (buffer-query (await-added "doc") buffer-text) "ab"))
+      (registry-stop reg)))
+  (test "a removed document is not respawned"
+    (let (reg (registry-start {:mirror true})
+          _ (registry-share reg "gone" "x" {}))
+      (registry-remove reg "gone")
+      (assert= (registry-entries reg) [])
+      (registry-stop reg)))
+  (test "without the option nothing changes: a died process is dropped, not respawned"
+    (let (reg (registry-start)
+          p1 (registry-share reg "plain" "x" {}))
+      (registry-watch reg (self))
+      (exit p1 :kill)
+      (assert= :died
+        (receive ([:registry-removed "plain" why] why) (after *test-wait-ms* :timeout)))
+      (assert= (registry-entries reg) [])
+      (registry-stop reg))))

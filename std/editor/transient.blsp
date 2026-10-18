@@ -88,12 +88,61 @@ binds a key that is not a character: `{:key [:ctrl-c \"p\"] …}`.
     (if (string? k) (into [] (string/->graphemes k)) (into [] k))))
 (sig suffix-keys (any -> vector))
 
+;; ---- short rows -------------------------------------------------------------------------
+;; A menu is mostly rows of "this key runs that command, labelled so". Written as maps, each
+;; is four keys the formatter spreads over four or five lines, so a ten-command menu was a
+;; screen of `:kind :command` — bedit's git menus ran to ~750 lines of it. A suffix may also
+;; be written as a vector, read once (`transient-open`) into the map every other function
+;; sees:
+;;
+;;   ["p" 'git/cmd-push "where it pushes"]                      a command
+;;   ["-f" :switch "--force-with-lease" "Force with lease"]     a switch
+;;   ["=u" :option "--set-upstream=" "Set upstream"]            an option
+;;   ["o" :menu other-remote-spec "another remote…"]            a sub-menu
+;;
+;; and any of them may end with a map of extra entries (`:prompt`, or whatever a host hangs
+;; on a suffix — bedit's `:face` and `:doc`), merged in. A map is taken as it stands.
+
+(def- short-row-kinds {:switch :arg :option :arg :menu :menu})
+
+(defn suffix-of (row)
+  "The suffix map a spec row stands for: a map as it is, a short-row vector expanded —
+`[key command label extras?]`, or `[key kind target label extras?]` for a `:switch` /
+`:option` (target: the `:arg`) or a `:menu` (target: the sub-spec).
+
+    (editor/transient/suffix-of [\"p\" 'push \"Push\"])   → {:key \"p\", :kind :command, :command push, :label \"Push\"}
+    (:arg (editor/transient/suffix-of [\"-f\" :switch \"--force\" \"Force\" {:face :x}]))   → \"--force\""
+  (if (not (vector? row))
+    row
+    (let (key (nth row 0)
+          kind-or-command (nth row 1)
+          slot (get short-row-kinds kind-or-command)
+          [base rest-of-row] (if (nil? slot)
+                               [{:key key
+                                 :kind :command
+                                 :command kind-or-command
+                                 :label (nth row 2)}
+                                 (drop row 3)]
+                               [{:key key :kind kind-or-command slot (nth row 2) :label (nth row 3)}
+                                 (drop row 4)])
+          extras (first rest-of-row))
+      (if (map? extras) (merge base extras) base))))
+
+(defn normalize-spec (sp)
+  "`sp` with every short-row suffix expanded to its map ([[suffix-of]]). Idempotent."
+  (assoc sp
+    :groups
+      (into []
+        (map (or (:groups sp) [])
+          (fn (g) (assoc g :suffixes (into [] (map (or (:suffixes g) []) suffix-of))))))))
+
 (defn spec-suffixes (sp)
   "Every suffix in `sp`, groups in order then suffixes in order — the order that decides
-what [[transient-args]] emits and what [[transient-rows]] shows.
+what [[transient-args]] emits and what [[transient-rows]] shows. Short rows come back as
+their maps.
 
-    (count (editor/transient/spec-suffixes {:groups [{:suffixes [{:key \"a\"} {:key \"b\"}]}]}))   → 2"
-  (fold (:groups sp) [] (fn (acc g) (into acc (or (:suffixes g) [])))))
+    (count (editor/transient/spec-suffixes {:groups [{:suffixes [{:key \"a\"} [\"b\" 'go \"Go\"]]}]}))   → 2"
+  (fold (:groups sp) [] (fn (acc g) (into acc (map (or (:suffixes g) []) suffix-of)))))
 (sig spec-suffixes (any -> vector))
 
 (defn- spec-keymap (sp)
@@ -113,7 +162,8 @@ last time and it opens where the reader left it, which is most of why a transien
 pleasant to use. The keymap is built once, here, rather than per keystroke.
 
     (:stack (editor/transient/transient-open {:groups []}))   → ()"
-  {:spec sp :args args :keymap (spec-keymap sp) :pending nil :stack '()})
+  (let (spec (normalize-spec sp))
+    {:spec spec :args args :keymap (spec-keymap spec) :pending nil :stack '()}))
 (sig transient-open (any -> map))
 
 (defn transient-args (menu-state)
