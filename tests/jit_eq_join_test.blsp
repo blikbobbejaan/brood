@@ -322,6 +322,9 @@
       (drive-poly 4000 0)
       (assert= :native (settle ej-poly 2 (fn () (drive-poly 4000 0)) 40))
       (drive-poly 20000 0)
+      ;; The re-lowering the sixteen deopts earn can be queued mid-drive and still be on the
+      ;; compiler thread here (`:queued`, CI 2026-10-18): wait for it without driving more.
+      (assert= :native (settle-queued ej-poly 2 1000))
       (let (st (%jit-arm-state ej-poly 2))
         (assert= :native (get st :state))
         ;; At most the sixteen that earned the re-lowering; the 600+ list activations
@@ -332,6 +335,8 @@
     (when (%native-tier?)
       (assert= :native (settle ej-poly2 3 (fn () (drive-poly2 4000 0)) 40))
       (drive-poly2 40000 0)
+      ;; As above: a re-lowering queued mid-drive may still be compiling.
+      (assert= :native (settle-queued ej-poly2 3 1000))
       (let (st (%jit-arm-state ej-poly2 3))
         (assert= :native (get st :state))
         ;; two slots, at most two firings' worth; 1 250 mixed activations follow them
