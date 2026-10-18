@@ -759,7 +759,7 @@ impl Heap {
         // it the drain frees a generation still referenced by a queued message.
         work.extend(self.msg_roots.iter().flat_map(|t| t.slots.iter()).copied());
         #[cfg(feature = "dev-tools")]
-        work.extend(self.trace_context.iter().copied());
+        work.extend(self.trace_context());
         // --- Live VM arms mid-execution: RUNTIME literals baked into Const/MakeClosure
         // (the one holder off the GC root graph, mirroring compaction's step 3b). Read
         // them via the arm-handle visitor, returning each value unchanged. ---
@@ -1296,7 +1296,7 @@ impl Heap {
             *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         #[cfg(feature = "dev-tools")]
-        if let Some(v) = &mut self.trace_context {
+        if let Some(v) = self.extras.as_mut().and_then(|e| e.trace_context.as_mut()) {
             *v = flush_rt_value(&old_code, &new, &mut forward, *v);
         }
         // ...and the caller's extra live roots (the auto path's `expr`/`env`).

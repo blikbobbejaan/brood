@@ -180,36 +180,40 @@ impl Heap {
     /// the limit also clears a pending hit, so `(process-flag :max-heap nil)`
     /// inside a `catch` genuinely rescues the process.
     pub fn set_proc_mem_limit(&mut self, limit: Option<usize>) -> Option<usize> {
-        if limit.is_none() {
-            self.proc_limit_hit = None;
+        if limit.is_none() && self.extras.is_none() {
+            return None; // clearing a limit nobody set
         }
-        std::mem::replace(&mut self.proc_mem_limit, limit)
+        let extras = self.extras_mut();
+        if limit.is_none() {
+            extras.proc_limit_hit = None;
+        }
+        std::mem::replace(&mut extras.proc_mem_limit, limit)
     }
 
     /// This process's heap limit, if set. Backs the `(process-flag :max-heap)` read.
     pub fn proc_mem_limit(&self) -> Option<usize> {
-        self.proc_mem_limit
+        self.extras().and_then(|e| e.proc_mem_limit)
     }
 
     /// `(process-flag :send-errors on)` — should a `send` to a disconnected node
     /// raise `:noconnection` (vs Erlang's silent drop)? Setter returns the
     /// previous value.
     pub fn proc_send_errors(&self) -> bool {
-        self.proc_send_errors
+        self.extras().is_some_and(|e| e.proc_send_errors)
     }
 
     pub fn set_proc_send_errors(&mut self, on: bool) -> bool {
-        std::mem::replace(&mut self.proc_send_errors, on)
+        std::mem::replace(&mut self.extras_mut().proc_send_errors, on)
     }
 
     /// `(proc/flag :no-break)` — does a breakpoint pass this process through rather than
     /// park it? Setter returns the previous value.
     pub fn proc_no_break(&self) -> bool {
-        self.proc_no_break
+        self.extras().is_some_and(|e| e.proc_no_break)
     }
 
     pub fn set_proc_no_break(&mut self, on: bool) -> bool {
-        std::mem::replace(&mut self.proc_no_break, on)
+        std::mem::replace(&mut self.extras_mut().proc_no_break, on)
     }
 
     /// Take the sticky over-limit flag (post-collection live bytes) — the eval/VM
@@ -217,13 +221,13 @@ impl Heap {
     /// if the process catches it and keeps allocating, the next collection
     /// re-arms the flag.
     pub fn take_proc_limit_hit(&mut self) -> Option<usize> {
-        self.proc_limit_hit.take()
+        self.extras.as_mut().and_then(|e| e.proc_limit_hit.take())
     }
 
     /// Is a per-process heap-limit breach waiting to be raised? A peek for the native
     /// loop's poll, which must not consume it — the VM raises it at its own safepoint.
     pub fn proc_limit_pending(&self) -> bool {
-        self.proc_limit_hit.is_some()
+        self.extras().is_some_and(|e| e.proc_limit_hit.is_some())
     }
 
     /// Post-collection heap-limit check: called at the end of both collection
@@ -231,10 +235,10 @@ impl Heap {
     /// survivors — so the figure is *live* data, never reclaimable garbage.
     /// O(1) (slab lens × sizes); no-op unless a limit is set.
     pub(super) fn note_proc_limit(&mut self) {
-        if let Some(limit) = self.proc_mem_limit {
+        if let Some(limit) = self.proc_mem_limit() {
             let live = slab_bytes(&self.local) + self.old_opt().map_or(0, slab_bytes);
             if live > limit {
-                self.proc_limit_hit = Some(live);
+                self.extras_mut().proc_limit_hit = Some(live);
             }
         }
     }
@@ -245,14 +249,18 @@ impl Heap {
     /// dropped. Backs the `(dev/gc-stats)` builtin. Minor and major collections
     /// each count as one run.
     pub fn gc_counters(&self) -> (u64, u64, u64) {
-        (self.gc_runs, self.gc_copied, self.gc_reclaimed)
+        let (copied, reclaimed) = self
+            .extras()
+            .map_or((0, 0), |e| (e.gc_copied, e.gc_reclaimed));
+        (self.gc_runs, copied, reclaimed)
     }
 
     /// GC pause durations `(total_ns, max_ns, last_ns)` — the timing tier's
     /// per-process figures (cumulative wall time in collections, worst single
     /// pause, most recent pause). Backs `(dev/gc-stats)`'s `:pause-*-us` keys.
     pub fn gc_pause_ns(&self) -> (u64, u64, u64) {
-        (self.gc_ns_total, self.gc_ns_max, self.gc_ns_last)
+        self.extras()
+            .map_or((0, 0, 0), |e| (e.gc_ns_total, e.gc_ns_max, e.gc_ns_last))
     }
 
     /// The current adaptive GC threshold (LOCAL live-object count that triggers
@@ -273,13 +281,56 @@ impl Heap {
     /// Whether per-collection GC tracing is on for this process. Backs the
     /// no-arg `(%)` query.
     pub fn gc_trace(&self) -> bool {
-        self.gc_trace
+        self.extras()
+            .and_then(|e| e.gc_trace)
+            .unwrap_or_else(super::gc_trace_default)
     }
 
     /// Turn per-collection GC trace logging on/off for this process (each
     /// minor/major collection then prints a one-line stderr summary). Backs
     /// `(gc-trace on/off)`.
     pub fn set_gc_trace(&mut self, on: bool) {
-        self.gc_trace = on;
+        self.extras_mut().gc_trace = Some(on);
+    }
+}
+
+#[cfg(test)]
+mod extras_tests {
+    use crate::core::heap::Heap;
+
+    /// Reading any of the rarely-written fields at its default must not allocate their box
+    /// (`Heap::extras`): every process reads several on its way to parking, and a read that
+    /// allocated would put the bytes back on the floor (`process_floor.rs`) unnoticed by
+    /// anything else. Writing one allocates, and the value reads back.
+    #[test]
+    fn reading_the_defaults_leaves_the_extras_unallocated() {
+        let mut heap = Heap::new();
+        assert_eq!(heap.proc_mem_limit(), None);
+        assert!(!heap.proc_send_errors() && !heap.proc_no_break());
+        assert_eq!(heap.take_proc_limit_hit(), None);
+        assert!(!heap.proc_limit_pending());
+        assert_eq!(heap.gc_counters().1, 0);
+        assert_eq!(heap.gc_pause_ns(), (0, 0, 0));
+        let _ = heap.gc_trace();
+        let _ = heap.floor();
+        assert_eq!(heap.set_proc_mem_limit(None), None);
+        #[cfg(feature = "dev-tools")]
+        {
+            assert!(heap.trace_context().is_none());
+            assert!(!heap.trace_context_own());
+            heap.set_trace_context(None, false);
+        }
+        assert!(
+            heap.extras().is_none(),
+            "a default read or a no-op clear allocated"
+        );
+
+        assert_eq!(heap.set_proc_mem_limit(Some(1 << 20)), None);
+        assert!(heap.extras().is_some());
+        assert_eq!(heap.proc_mem_limit(), Some(1 << 20));
+        assert!(!heap.set_proc_no_break(true));
+        assert!(heap.proc_no_break());
+        heap.set_gc_trace(true);
+        assert!(heap.gc_trace());
     }
 }

@@ -63,9 +63,10 @@ impl Heap {
         self.collect_inner(extra_roots, extra_envs);
         if self.gc_runs != runs_before {
             let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-            self.gc_ns_total = self.gc_ns_total.saturating_add(ns);
-            self.gc_ns_max = self.gc_ns_max.max(ns);
-            self.gc_ns_last = ns;
+            let extras = self.extras_mut();
+            extras.gc_ns_total = extras.gc_ns_total.saturating_add(ns);
+            extras.gc_ns_max = extras.gc_ns_max.max(ns);
+            extras.gc_ns_last = ns;
             // System-monitor GC event (the observability event stream). Emitted
             // *after* the collection completes — the heap is consistent and the
             // event build/deliver touches only Rust data, never this heap. The
@@ -201,7 +202,7 @@ impl Heap {
             *v = flush_value(source, dest, forward, *v);
         }
         #[cfg(feature = "dev-tools")]
-        if let Some(v) = &mut self.trace_context {
+        if let Some(v) = self.extras.as_mut().and_then(|e| e.trace_context.as_mut()) {
             *v = flush_value(source, dest, forward, *v);
         }
         for v in self.roots.iter_mut() {
@@ -366,12 +367,13 @@ impl Heap {
             self.local_live_count()
         };
         self.gc_runs = self.gc_runs.saturating_add(1);
-        self.gc_copied = self.gc_copied.saturating_add(survivors as u64);
-        self.gc_reclaimed = self
+        let extras = self.extras_mut();
+        extras.gc_copied = extras.gc_copied.saturating_add(survivors as u64);
+        extras.gc_reclaimed = extras
             .gc_reclaimed
             .saturating_add(before_young.saturating_sub(survivors) as u64);
         self.note_proc_limit();
-        if self.gc_trace {
+        if self.gc_trace() {
             eprintln!(
                 "[gc] minor {}: {} nursery objects, {} {}, {} reclaimed",
                 if tenure { "tenure" } else { "flip" },
@@ -454,11 +456,12 @@ impl Heap {
         self.old = Some(Box::new(dest));
         let survivors = self.old_live_count();
         self.gc_runs = self.gc_runs.saturating_add(1);
-        self.gc_copied = self.gc_copied.saturating_add(survivors as u64);
-        self.gc_reclaimed = self
+        let extras = self.extras_mut();
+        extras.gc_copied = extras.gc_copied.saturating_add(survivors as u64);
+        extras.gc_reclaimed = extras
             .gc_reclaimed
             .saturating_add(before_old.saturating_sub(survivors) as u64);
-        if self.gc_trace {
+        if self.gc_trace() {
             eprintln!(
                 "[gc] major: {} old objects, {} survived, {} reclaimed",
                 before_old,
@@ -535,7 +538,7 @@ impl Heap {
         work.extend(self.env_roots.iter().map(|&e| Pending::Env(e, 0)));
         work.extend(self.dynamics.iter().map(|&(_, v)| Pending::Value(v, 0)));
         #[cfg(feature = "dev-tools")]
-        if let Some(v) = self.trace_context {
+        if let Some(v) = self.trace_context() {
             work.push(Pending::Value(v, 0));
         }
         for &frame_id in &self.remembered {

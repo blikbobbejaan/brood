@@ -1475,7 +1475,7 @@ impl Heap {
     /// ships it, `receive` overwrites it on pop. GC-traced with [`dynamics`].
     #[cfg(feature = "dev-tools")]
     pub fn trace_context(&self) -> Option<Value> {
-        self.trace_context
+        self.extras().and_then(|e| e.trace_context)
     }
 
     /// Set (or clear) the durable per-process trace context. `own` marks it as this
@@ -1484,15 +1484,19 @@ impl Heap {
     /// it is then traced like a root.
     #[cfg(feature = "dev-tools")]
     pub fn set_trace_context(&mut self, v: Option<Value>, own: bool) {
-        self.trace_context = v;
-        self.trace_context_own = own;
+        if v.is_none() && self.extras.is_none() {
+            return; // clearing a context nobody set
+        }
+        let extras = self.extras_mut();
+        extras.trace_context = v;
+        extras.trace_context_own = own;
     }
 
     /// Whether the current [`trace_context`] is the process's OWN (propagate on spawn),
     /// not merely adopted from a message.
     #[cfg(feature = "dev-tools")]
     pub fn trace_context_own(&self) -> bool {
-        self.trace_context_own
+        self.extras().is_some_and(|e| e.trace_context_own)
     }
 
     /// Snapshot the runtime's global bindings (`symbol -> value`). Cheap: the
@@ -1569,8 +1573,9 @@ impl Heap {
     /// `mod/*` globals) — the checker then `require`s it first. Checker use only.
     pub fn module_public_exports(&self, prefix: &str) -> Vec<(Symbol, Symbol)> {
         let shape = self.globals_shape();
-        let fresh = matches!(self.check.borrow().as_ref()
-            .and_then(|c| c.exports.as_ref()), Some((c, _)) if *c == shape);
+        let fresh = self.check.get().is_some_and(
+            |c| matches!(c.borrow().exports.as_ref(), Some((built, _)) if *built == shape),
+        );
         if !fresh {
             let mut map: std::collections::HashMap<String, Vec<(Symbol, Symbol)>> =
                 std::collections::HashMap::new();
@@ -1591,10 +1596,13 @@ impl Heap {
             self.check_mut().exports = Some((shape, std::sync::Arc::new(map)));
         }
         self.check
-            .borrow()
-            .as_ref()
-            .and_then(|c| c.exports.as_ref())
-            .and_then(|(_, m)| m.get(prefix).cloned())
+            .get()
+            .and_then(|c| {
+                c.borrow()
+                    .exports
+                    .as_ref()
+                    .and_then(|(_, m)| m.get(prefix).cloned())
+            })
             .unwrap_or_default()
     }
 
@@ -1605,11 +1613,8 @@ impl Heap {
     /// all but the first file (was an O(globals) scan per file → O(files²)).
     pub fn known_ns_prefixes(&self) -> std::sync::Arc<std::collections::HashSet<String>> {
         let shape = self.globals_shape();
-        if let Some((c, arc)) = self
-            .check
-            .borrow()
-            .as_ref()
-            .and_then(|c| c.known_ns.as_ref())
+        if let Some(cell) = self.check.get()
+            && let Some((c, arc)) = cell.borrow().known_ns.as_ref()
             && *c == shape
         {
             return std::sync::Arc::clone(arc);
@@ -1637,10 +1642,7 @@ impl Heap {
     }
     /// Drain and return the recorded observations (clearing the recorder).
     pub(crate) fn take_check_dep_record(&self) -> Option<CheckDepRec> {
-        self.check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.take())
+        self.check.get().and_then(|c| c.borrow_mut().dep_rec.take())
     }
     /// Record an observed global symbol (binding/arity/sig).
     pub(crate) fn rec_check_dep_sym(&self, sym: Symbol) {
@@ -1650,22 +1652,16 @@ impl Heap {
         if crate::core::value::is_gensym(sym) {
             return;
         }
-        if let Some(d) = self
-            .check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.as_mut())
+        if let Some(cell) = self.check.get()
+            && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
         {
             d.syms.insert(sym);
         }
     }
     /// Record a queried `mod/` known-namespace prefix.
     pub(crate) fn rec_check_dep_ns(&self, prefix: &str) {
-        if let Some(d) = self
-            .check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.as_mut())
+        if let Some(cell) = self.check.get()
+            && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
             && !d.known_ns.contains(prefix)
         {
             d.known_ns.insert(prefix.to_string());
@@ -1673,11 +1669,8 @@ impl Heap {
     }
     /// Record a `mod/` prefix whose export set was read.
     pub(crate) fn rec_check_dep_exports(&self, prefix: &str) {
-        if let Some(d) = self
-            .check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.as_mut())
+        if let Some(cell) = self.check.get()
+            && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
             && !d.exports.contains(prefix)
         {
             d.exports.insert(prefix.to_string());
@@ -1685,22 +1678,16 @@ impl Heap {
     }
     /// Record that the `*protocols*` table was consulted.
     pub(crate) fn rec_check_dep_protocols(&self) {
-        if let Some(d) = self
-            .check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.as_mut())
+        if let Some(cell) = self.check.get()
+            && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
         {
             d.protocols = true;
         }
     }
     /// Record a global DEFINED in the file being checked (excluded from dep-keys).
     pub(crate) fn rec_check_dep_own(&self, sym: Symbol) {
-        if let Some(d) = self
-            .check
-            .borrow_mut()
-            .as_mut()
-            .and_then(|c| c.dep_rec.as_mut())
+        if let Some(cell) = self.check.get()
+            && let Some(d) = cell.borrow_mut().dep_rec.as_mut()
         {
             d.own.insert(sym);
         }

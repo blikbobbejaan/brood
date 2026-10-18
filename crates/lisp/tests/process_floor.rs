@@ -42,10 +42,16 @@
 //! Lowered 3 040 → 2 940 (2026-10-18, later): the bigint, decimal, ratio, rope and native
 //! slabs are `LazyVec`s — one pointer until a process allocates that kind — for 2 875–2 876.
 //! The tree before it (2 978–2 979) reds this bound.
+//!
+//! Lowered 2 940 → 2 800 (2026-10-18, later still): the GC statistics, the `proc/flag`
+//! settings, the debugger's trace context and a test's shared-code floor moved into
+//! `HeapExtras`, boxed at first write; the retired code-generation list is a `LazyVec`; the
+//! checker slot is one pointer. 2 747–2 748 B, against the BEAM's 2 704 (338 words). The tree
+//! before it (2 875–2 876) reds this bound.
 
 use brood::Interp;
 
-const FLOOR_BYTES: i64 = 2940;
+const FLOOR_BYTES: i64 = 2800;
 
 #[test]
 fn a_parked_process_costs_no_more_than_the_floor() {

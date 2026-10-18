@@ -2542,3 +2542,21 @@ KI-281 filed as a watch: CI's tree-walker job on `911e6474` failed a JIT fast-li
 its 90 s deadline, once; 70 local runs (plain, loaded, single core) did not reproduce it. The
 test helper's failure now reports every compiled arm's JIT state, so the next one explains
 itself.
+
+## 2026-10-18 (later still) — the rarely-written heap fields move off the inline `Heap`
+
+The GC statistics (copied, reclaimed, three pause timings), the `proc/flag` settings (max heap
+and its pending hit, send errors, no-break, GC trace), the debugger's trace context and a test's
+shared-code floor override now live in `HeapExtras`, boxed at the first write
+(`Heap::extras`/`extras_mut`). Every read treats `None` as the defaults, and the two clears that
+could allocate — `set_proc_mem_limit(None)` and `set_trace_context(None, _)` — return early when
+nothing is set. `gen_cache_retired` is a `LazyVec`, and the checker slot is a
+`OnceCell<Box<RefCell<CheckHeap>>>` (one pointer). Guard for the no-allocation property:
+`accounting::extras_tests::reading_the_defaults_leaves_the_extras_unallocated`, red with the
+no-op-clear early return removed.
+
+Parked process (slope): **2 875–2 876 → 2 747–2 748 B (−129 B)**, against the BEAM's 2 704 (338
+words); bound 2 940 → 2 800, which the previous tree reds. Today: 3 195–3 207 → 2 747 (−14%).
+Instructions against `c6a0c600` (`perf stat -r 5`, release, `BROOD_J=1`, interleaved twice,
+outputs equal): a depth-14 binary tree built and walked 20 times 1.008G → 1.008-1.011G, closure
+creation flat, ability dispatch −0.1%, spawn + park 1.67-1.69G → 1.64-1.65G.

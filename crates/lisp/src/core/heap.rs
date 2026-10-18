@@ -343,6 +343,85 @@ pub(crate) struct ColdHeap {
     >,
 }
 
+/// [`Heap::extras`]: the per-process fields almost no process writes, boxed at the first
+/// write so a process that never collects or sets a flag pays one pointer for them.
+#[derive(Default)]
+pub(crate) struct HeapExtras {
+    /// A per-heap override of [`rt_gc_floor`] — the process-wide floor is a `OnceLock`
+    /// read from `BROOD_RT_GC_FLOOR` exactly once, so a test that lowered it through the
+    /// environment lowered it for every test that ran after it in the same process.
+    /// `runtime_collector`'s three promotion-count tests read 231 promoted closures for
+    /// 3000 redefs whenever a floor-setting test happened to run first (KI-86). A test
+    /// that wants a low floor says so on ITS heap ([`Heap::set_rt_gc_floor`]).
+    pub(crate) rt_gc_floor_override: Option<usize>,
+
+    pub(crate) gc_copied: u64,
+
+    pub(crate) gc_reclaimed: u64,
+
+    /// GC **pause durations** (the observability timing tier, ROADMAP survey
+    /// gap #4 — counts alone can't answer "is GC why this frame stuttered").
+    /// Cumulative / max / most-recent collection wall time in nanoseconds,
+    /// measured around [`collect`](Heap::collect)'s body (covers both the
+    /// legacy flip and the generational path). Timing cost is two `Instant`
+    /// reads per *collection* — noise against the µs–ms the collection itself
+    /// takes. Surfaced by `(%)` as `:pause-total-us` / `:pause-max-us` /
+    /// `:pause-last-us`.
+    pub(crate) gc_ns_total: u64,
+
+    pub(crate) gc_ns_max: u64,
+
+    pub(crate) gc_ns_last: u64,
+
+    /// Per-process heap limit (bytes), the BEAM `max_heap_size` analogue — set by
+    /// this process on itself via `(proc/flag :max-heap n)`, `None` = unlimited
+    /// (the default; the ADR-043 global soft/hard cap is separate). Checked
+    /// **after** each collection against the *surviving* footprint (nursery +
+    /// old gen), so transient garbage a collection reclaims never trips it.
+    pub(crate) proc_mem_limit: Option<usize>,
+
+    /// Sticky post-collection flag: `Some(live_bytes)` when the last collection
+    /// left the heap over `proc_mem_limit`. Probed (and cleared) at the eval/VM
+    /// safepoints, which raise a catchable error **in this process only** — the
+    /// per-process isolation the global hard cap (whole-OS-process abort) lacks.
+    pub(crate) proc_limit_hit: Option<usize>,
+
+    /// `(proc/flag :send-errors on)` — when set, a `send` whose target *node*
+    /// is unknown/disconnected raises a catchable `:noconnection` error instead
+    /// of silently dropping the message (the dist self-healing seam). Default
+    /// off: Erlang's silent-send semantics.
+    pub(crate) proc_send_errors: bool,
+
+    /// `(proc/flag :no-break on)` — a breakpoint (`std/debug` `break`) passes this process
+    /// through instead of parking it. For infrastructure that other processes wait on — a
+    /// buffer process, a registry — where a parked caller would freeze whoever asked it
+    /// something, and nothing could ever resume it. Default off.
+    pub(crate) proc_no_break: bool,
+
+    /// Per-process GC **trace** switch (`(gc-trace on/off)`, defaulted from
+    /// `BROOD_GC_TRACE`). When set, each minor/major collection prints a one-line
+    /// summary to stderr — a Tier-1 observability aid for tests/benchmarks (the
+    /// numbers `(%)` reports as cumulative totals, but per collection as
+    /// they happen). Per-process like every other heap field: a spawned child
+    /// starts from the `BROOD_GC_TRACE` default, not the parent's setting.
+    /// `None` until set: the `BROOD_GC_TRACE` default, read lazily.
+    pub(crate) gc_trace: Option<bool>,
+    /// The debugger's durable per-process causal context (ADR-174 send-level slice):
+    /// a settable slot that, unlike a `binding` on [`Heap::dynamics`], survives across
+    /// `receive` and migration (so a long-lived server adopts the sender's context
+    /// per message). GC-traced exactly where `dynamics` is. `#[cfg(dev-tools)]` — a
+    /// lean release has no such field, so the whole send-level path compiles out.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) trace_context: Option<Value>,
+    /// Whether [`Self::trace_context`] is the process's OWN context (set by `with-debugger`
+    /// / `span`) — which `spawn` propagates to children — versus one merely ADOPTED
+    /// from a received message, which is used to handle that message but must NOT
+    /// propagate onward (else an adopted context leaks transitively through unrelated
+    /// spawns). Meaningful only when `trace_context` is `Some`.
+    #[cfg(feature = "dev-tools")]
+    pub(crate) trace_context_own: bool,
+}
+
 /// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.
 type TypeAliasCache = RefCell<(u64, HashMap<Symbol, Option<Symbol>>)>;
 
@@ -392,12 +471,8 @@ impl Heap {
 impl Heap {
     /// The checker state, allocating it on first use. Callers hold `&self` (see
     /// [`Heap::check`]), so this returns a guard rather than a reference.
-    fn check_mut(&self) -> std::cell::RefMut<'_, Box<CheckHeap>> {
-        let mut b = self.check.borrow_mut();
-        if b.is_none() {
-            *b = Some(Box::default());
-        }
-        std::cell::RefMut::map(b, |o| o.as_mut().expect("just filled"))
+    fn check_mut(&self) -> std::cell::RefMut<'_, CheckHeap> {
+        self.check.get_or_init(Box::default).borrow_mut()
     }
 }
 
@@ -467,7 +542,7 @@ pub struct Heap {
     /// Generation `Arc`s the cache replaced, kept alive until `&mut self` — what makes
     /// [`code_gen_ref`](Self::code_gen_ref)'s borrow sound. Pushed only on a generation
     /// replacement (a Stage-4 free or a compaction store), so it stays tiny.
-    gen_cache_retired: RefCell<Vec<Arc<CodeSlabs>>>,
+    gen_cache_retired: RefCell<slabs::LazyVec<Arc<CodeSlabs>>>,
     gen_cache_ver: [Cell<u64>; 2],
     /// **Per-process parse cache for `(fn …)` literals**, keyed by the `MakeClosure`
     /// site's `fn_rest` AST handle. Building a closure re-parses its param
@@ -551,20 +626,6 @@ pub struct Heap {
     /// Empty whenever no `binding` is active — so it's free on the common path
     /// and holds no LOCAL handles across a top-level arena reset.
     dynamics: Vec<(Symbol, Value)>,
-    /// The debugger's durable per-process causal context (ADR-174 send-level slice):
-    /// a settable slot that, unlike a `binding` on [`dynamics`], survives across
-    /// `receive` and migration (so a long-lived server adopts the sender's context
-    /// per message). GC-traced exactly where `dynamics` is. `#[cfg(dev-tools)]` — a
-    /// lean release has no such field, so the whole send-level path compiles out.
-    #[cfg(feature = "dev-tools")]
-    trace_context: Option<Value>,
-    /// Whether [`trace_context`] is the process's OWN context (set by `with-debugger`
-    /// / `span`) — which `spawn` propagates to children — versus one merely ADOPTED
-    /// from a received message, which is used to handle that message but must NOT
-    /// propagate onward (else an adopted context leaks transitively through unrelated
-    /// spawns). Meaningful only when `trace_context` is `Some`.
-    #[cfg(feature = "dev-tools")]
-    trace_context_own: bool,
     /// Per-process **global inline cache** (perf): `symbol -> (runtime version,
     /// resolved value)`. Consulted by [`env_get`](Self::env_get) only after the
     /// local env chain misses *and* no dynamic binding shadows the name — i.e.
@@ -637,7 +698,7 @@ pub struct Heap {
     /// inline in `Box<Process>`; a spawned worker never checks anything. Behind a
     /// `RefCell` rather than a plain `Option<Box<_>>` (the shape [`ColdHeap`] uses)
     /// because it is filled through `&self` (the checker's read paths).
-    check: RefCell<Option<Box<CheckHeap>>>,
+    check: std::cell::OnceCell<Box<RefCell<CheckHeap>>>,
     /// The GC root stack. A [`roots_buf::RootsBuf`], not a `Vec<Value>`, so its
     /// (ptr, len, cap) header sits at fixed offsets for the JIT (§7.5); same semantics.
     roots: roots_buf::RootsBuf,
@@ -665,13 +726,6 @@ pub struct Heap {
     /// `usize::MAX` while [`gc_enabled`] is false. See [`rt_gc_floor`] and
     /// [`maybe_runtime_collect`](Self::maybe_runtime_collect).
     rt_gc_threshold: usize,
-    /// A per-heap override of [`rt_gc_floor`] — the process-wide floor is a `OnceLock`
-    /// read from `BROOD_RT_GC_FLOOR` exactly once, so a test that lowered it through the
-    /// environment lowered it for every test that ran after it in the same process.
-    /// `runtime_collector`'s three promotion-count tests read 231 promoted closures for
-    /// 3000 redefs whenever a floor-setting test happened to run first (KI-86). A test
-    /// that wants a low floor says so on ITS heap ([`Heap::set_rt_gc_floor`]).
-    rt_gc_floor_override: Option<usize>,
     /// GC switch. `false` during the prelude *build* (`Heap::new`), `true` for
     /// real process heaps (`Heap::with_regions`); also forced `false` when the
     /// prelude `SharedCode` `Arc` is the default (empty) one, since a missing
@@ -731,8 +785,6 @@ pub struct Heap {
     /// traversal-free figure (cf. [`local_bytes`](Self::local_bytes) for a byte
     /// estimate).
     gc_runs: u64,
-    gc_copied: u64,
-    gc_reclaimed: u64,
     /// Remembered hashes of LOCAL sets and maps whose hash took real work
     /// (`equality::HASH_MEMO_MIN_WORK`), so a set nested in a set nested in a set is hashed
     /// once, not once per level above it. Stamped with `gc_runs`: a collection moves
@@ -740,45 +792,6 @@ pub struct Heap {
     /// one pointer in a heap that never needs it, because every spawn pays for this
     /// struct (`process_floor`).
     pub(crate) hash_memo: std::cell::OnceCell<Box<std::cell::RefCell<HashMemo>>>,
-    /// GC **pause durations** (the observability timing tier, ROADMAP survey
-    /// gap #4 — counts alone can't answer "is GC why this frame stuttered").
-    /// Cumulative / max / most-recent collection wall time in nanoseconds,
-    /// measured around [`collect`](Self::collect)'s body (covers both the
-    /// legacy flip and the generational path). Timing cost is two `Instant`
-    /// reads per *collection* — noise against the µs–ms the collection itself
-    /// takes. Surfaced by `(%)` as `:pause-total-us` / `:pause-max-us` /
-    /// `:pause-last-us`.
-    gc_ns_total: u64,
-    gc_ns_max: u64,
-    gc_ns_last: u64,
-    /// Per-process heap limit (bytes), the BEAM `max_heap_size` analogue — set by
-    /// this process on itself via `(proc/flag :max-heap n)`, `None` = unlimited
-    /// (the default; the ADR-043 global soft/hard cap is separate). Checked
-    /// **after** each collection against the *surviving* footprint (nursery +
-    /// old gen), so transient garbage a collection reclaims never trips it.
-    proc_mem_limit: Option<usize>,
-    /// Sticky post-collection flag: `Some(live_bytes)` when the last collection
-    /// left the heap over `proc_mem_limit`. Probed (and cleared) at the eval/VM
-    /// safepoints, which raise a catchable error **in this process only** — the
-    /// per-process isolation the global hard cap (whole-OS-process abort) lacks.
-    proc_limit_hit: Option<usize>,
-    /// `(proc/flag :send-errors on)` — when set, a `send` whose target *node*
-    /// is unknown/disconnected raises a catchable `:noconnection` error instead
-    /// of silently dropping the message (the dist self-healing seam). Default
-    /// off: Erlang's silent-send semantics.
-    proc_send_errors: bool,
-    /// `(proc/flag :no-break on)` — a breakpoint (`std/debug` `break`) passes this process
-    /// through instead of parking it. For infrastructure that other processes wait on — a
-    /// buffer process, a registry — where a parked caller would freeze whoever asked it
-    /// something, and nothing could ever resume it. Default off.
-    proc_no_break: bool,
-    /// Per-process GC **trace** switch (`(gc-trace on/off)`, defaulted from
-    /// `BROOD_GC_TRACE`). When set, each minor/major collection prints a one-line
-    /// summary to stderr — a Tier-1 observability aid for tests/benchmarks (the
-    /// numbers `(%)` reports as cumulative totals, but per collection as
-    /// they happen). Per-process like every other heap field: a spawned child
-    /// starts from the `BROOD_GC_TRACE` default, not the parent's setting.
-    gc_trace: bool,
     /// Compiling-VM body cache (ADR-076). Maps a closure handle's raw
     /// bits to its compiled single-arm body, or `None` if the closure isn't
     /// VM-eligible (so we don't re-attempt). Per-process (a `RefCell`, like
@@ -1065,6 +1078,11 @@ pub struct Heap {
     /// fetched once at arm entry (`brood_rt_i64_overflow_ptr`).
     #[cfg_attr(not(feature = "jit"), allow(dead_code))]
     pub(crate) jit_i64_overflow: bool,
+    /// Per-process state almost no process touches — the GC statistics, the `proc/flag`
+    /// settings, a test's shared-code floor — boxed at its first write. Inline it was ~130
+    /// bytes on every process; most never collect, never set a flag, and park
+    /// (`process_floor.rs`). Readers treat `None` as every field at its default.
+    extras: Option<Box<HeapExtras>>,
 }
 
 impl Default for Heap {
@@ -1254,8 +1272,7 @@ mod gc;
 // sibling children resolve them unqualified, as they did when they were defined here.
 use self::gc::{
     DRAIN_REPORT_STRIDE, P1_LARGE_SEED, P1_REVALIDATE_STRIDE, P2_REVALIDATE_STRIDE,
-    RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor, gc_trace_default,
-    major_floor, rt_gc_floor,
+    RT_DRAIN_SCAN_STRIDE, WALKER_RED_ZONE, WALKER_STACK_CHUNK, gc_floor, major_floor, rt_gc_floor,
 };
 mod gc_runtime;
 mod local_string;
@@ -1440,6 +1457,17 @@ impl Heap {
         (local_cap * local_slot, rt_cap * rt_slot)
     }
 
+    /// The rarely-written fields, if any has been written — see [`Heap::extras`].
+    #[inline]
+    pub(crate) fn extras(&self) -> Option<&HeapExtras> {
+        self.extras.as_deref()
+    }
+
+    /// The rarely-written fields, allocating them on first use.
+    pub(crate) fn extras_mut(&mut self) -> &mut HeapExtras {
+        self.extras.get_or_insert_with(Default::default)
+    }
+
     fn cold(&self) -> Option<&ColdHeap> {
         self.cold.as_deref()
     }
@@ -1479,7 +1507,7 @@ impl Heap {
             local: Slabs::default(),
             old: None,
             gen_cache: [RefCell::new(None), RefCell::new(None)],
-            gen_cache_retired: RefCell::new(Vec::new()),
+            gen_cache_retired: RefCell::new(slabs::LazyVec::default()),
             gen_cache_ver: [Cell::new(u64::MAX), Cell::new(u64::MAX)],
             closure_tpl_cache: RefCell::new(ClosureTemplateMap::default()),
             closure_tpl_ver: Cell::new(u64::MAX),
@@ -1490,20 +1518,15 @@ impl Heap {
             runtime,
             global: EnvId::local(0),
             dynamics: Vec::new(),
-            #[cfg(feature = "dev-tools")]
-            trace_context: None,
-            #[cfg(feature = "dev-tools")]
-            trace_context_own: false,
             global_ic: RefCell::new(SmallMap::new()),
             msg_roots: None,
             cold: None,
-            check: RefCell::new(None),
+            check: std::cell::OnceCell::new(),
             roots: roots_buf::RootsBuf::new(),
             env_roots: Vec::new(),
             gc_threshold: gc_floor(),
             park_trim_mark: 0,
             rt_gc_threshold: rt_gc_floor(),
-            rt_gc_floor_override: None,
             gc_enabled: true,
             rt_collect_block: std::cell::Cell::new(0),
             local_epoch: 0,
@@ -1511,17 +1534,8 @@ impl Heap {
             old_epoch: 0,
             major_threshold: major_floor(),
             gc_runs: 0,
-            gc_copied: 0,
-            gc_reclaimed: 0,
+            extras: None,
             hash_memo: Default::default(),
-            gc_ns_total: 0,
-            gc_ns_max: 0,
-            gc_ns_last: 0,
-            proc_mem_limit: None,
-            proc_limit_hit: None,
-            proc_send_errors: false,
-            proc_no_break: false,
-            gc_trace: gc_trace_default(),
             vm_cache: vm_cache::VmCacheCell::default(),
             seen_free_epoch: Cell::new(0),
             seen_stale_gen: Cell::new(0),
@@ -1746,7 +1760,9 @@ impl Heap {
     /// The runtime-region GC floor this heap uses: its own override, else the process-wide
     /// [`rt_gc_floor`].
     pub(crate) fn floor(&self) -> usize {
-        self.rt_gc_floor_override.unwrap_or_else(rt_gc_floor)
+        self.extras()
+            .and_then(|e| e.rt_gc_floor_override)
+            .unwrap_or_else(rt_gc_floor)
     }
 
     /// Set THIS heap's runtime-GC floor — for a test that needs a compaction to trip on a
@@ -1755,7 +1771,7 @@ impl Heap {
     /// `BROOD_RT_GC_FLOOR` in a test, which — being read once per process — leaked into
     /// every test scheduled after it (KI-86).
     pub fn set_rt_gc_floor(&mut self, floor: usize) {
-        self.rt_gc_floor_override = Some(floor);
+        self.extras_mut().rt_gc_floor_override = Some(floor);
         if self.rt_gc_threshold != usize::MAX {
             self.rt_gc_threshold = floor;
         }
@@ -2059,7 +2075,8 @@ impl Heap {
     pub(crate) fn release_retired_gens(&mut self) {
         let retired = self.gen_cache_retired.get_mut();
         if !retired.is_empty() {
-            retired.clear();
+            retired.truncate(0);
+            retired.shrink_to_fit();
         }
     }
 
