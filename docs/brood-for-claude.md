@@ -1036,6 +1036,11 @@ in the REPL. (`nest doc <module>` does the same for an opt-in module like
   every key and never forgets) · `defmemo` from the `memo` module (`(:use memo)`, then
   `(defmemo rows-of 8 (rope width) …)`: a `defn` that remembers its last N calls compared
   by `=` — bounded, and immediate for the same big value such as a rope) ·
+  `registry` for tables your modules fill as they load (`(registry/put! :app/hooks :save
+  'app/on-save)`, read with `registry/entries` / `registry/lookup` / `registry/ranked` — by an
+  entry's `:rank`): atomic across processes and carried by the image, which a `defonce` + `def`
+  table is not. Store hooks as symbols and call them with `(reflect/call-if-bound sym
+  fallback args…)`, so a redefinition takes and an unloaded module is simply absent ·
   `if-let`/`when-let` test truth, `if-some`/`when-some` test presence (`false` counts) ·
   `condp` asks `(pred value test)`, value first: `(condp < 15 10 :small 100 :medium
   :large)` → `:medium`.

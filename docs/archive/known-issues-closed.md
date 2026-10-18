@@ -14221,3 +14221,52 @@ reads only an image its own mode wrote (and the check-cache replay, which shares
 **Guard.** `nest::startup_image the_image_is_keyed_by_contract_mode`: armed, then unarmed, then
 armed again; red before the fix (the unarmed run read `:contract`), green after. bedit's
 `view_scroll_test` passes armed → unarmed → armed in one checkout.
+
+## KI-277 — a contracted self-recursive loop left through its own shim on every iteration ✅ FIXED 2026-10-17
+
+**Symptom.** Under armed contracts — every `nest run` and `nest test` — `std/vt`'s `feed` cost
+~55 ms per character on a 140×34 terminal: 200 characters took 10.9 s against 2 ms unarmed. Every
+bedit pty driver (`make drive`) failed with "the editor never switched to the alternate screen",
+because the harness's own `vt/feed` fell minutes behind the editor's first frame. The cost scaled
+with the SCREEN (40 characters on a 10×3 terminal: 25 ms), and it was gone at tier 0.
+**Cause.** A tail call to the function itself compiles to `Inst::SelfCall`, a loop back-edge that
+never resolves its head, so the ADR-383 rewrite of a same-module reference to the uncontracted
+alias never reaches it. The back-edge's hot-reload guard (ADR-013) then asks "does this name still
+denote this arm?" by reading the PUBLIC name — which, armed, holds the contract shim. The answer
+was always "redefined": the loop handed the call to the shim, the shim checked every argument
+(`print-graphemes` carries the whole terminal: one ~50 ms deep check) and entered the original in
+a fresh frame, and since `19a813ab` (2026-10-09) a fresh frame runs the guard at its first
+back-edge — so every iteration took the same exit.
+**Why it survived.** The boundary tests (`tests/contract_test.blsp`) cover direct, wrapped,
+nested, value and hot calls to a contracted SIBLING; none had a contracted function calling
+itself in tail position. The shim's check is correct, just repeated, so nothing failed — only
+`std/vt` carries a value big enough to make the repetition visible.
+**Fix.** The guard resolves the name as the module's own code does
+(`contracts::self_call_binding`): the uncontracted alias when the boundary has one, the name
+otherwise. A `sig!` name's alias is its shim, so a forced loop still checks each iteration. vt's
+feed is now flat in the input (40 characters: 157 ms, which is three whole-terminal checks at the
+`feed` boundary itself).
+**Guard.** `tests/contract_test.blsp` "a contracted function's own tail self-call is inside the
+boundary": a `(sig countdown (int int -> int))` whose last self-call passes a string. Armed, it
+raised a caller-blamed contract error before the fix; 119/119 armed on tiers 1 and 2 after.
+
+## KI-278 — a child spawned by a backgrounded runtime could not be interrupted ✅ FIXED 2026-10-18
+
+**Symptom.** bedit's `tests/bshell_test.blsp:364` "interrupts a running command and everything
+it started" failed 40/40 when the suite was started in the background (`cmd &` from a script)
+and passed 40/40 in the foreground. In the editor: `C-c C-c` on a shell command did nothing when
+bedit had been launched by anything that ignores SIGINT (`nohup`, a script's `&`).
+**Cause.** A signal set to IGNORED survives `fork` and `exec` (POSIX), and a non-interactive
+shell started in the background ignores SIGINT and SIGQUIT. The runtime inherited that, and so
+did every child it spawned (`os/spawn`, `os/spawn-pty`, `os/cmd`): `nest` → `sh` → `sleep` all
+ignored the SIGINT the editor sent. A child `sh` cannot undo it, because POSIX forbids a
+non-interactive shell from resetting a signal that was ignored on entry.
+**Why it survived.** Every gate runs the suite in the foreground. The failure looked like a
+load-dependent flake because the parallel runs that showed it were the backgrounded ones.
+**Fix.** `subprocess::reset_inherited_signals`: a `pre_exec` that gives SIGINT and SIGQUIT their
+default disposition in every spawned child, the reset an interactive shell gives a foreground job.
+**Guard.** `inherited_signal_tests::a_spawned_child_does_not_inherit_ignored_interrupts`: with
+both signals ignored in the test process, a child spawned without the reset shows them ignored in
+`/proc/self/status` (the control) and one spawned with it does not. bedit's bshell suite run under
+`trap "" INT`: 0/3 before, 3/3 after.
+

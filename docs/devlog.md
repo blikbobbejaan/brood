@@ -2365,3 +2365,96 @@ guard, sabotage-verified unless noted. Writing them found two real bugs.
 - **`fuzzy_ranker_test`'s burst test** raced on a 2-core runner under GC stress (nightly
   `gcstress-all`'s first catch): the session is now held while the burst is queued.
 
+## 2026-10-17 (later) — a contracted loop left through its own shim (KI-277); `std/registry` (ADR-412)
+
+bedit's pty drivers all timed out: under `nest run`'s armed contracts, `vt/feed` took ~55 ms
+per character on a 140×34 screen. The cost scaled with the SCREEN, not the input, and was gone
+at tier 0. A tail call to the function itself is `Inst::SelfCall`, a back-edge that never
+resolves its head, so ADR-383's same-module rewrite never reaches it. Its hot-reload guard then
+asked the PUBLIC name "is this still us?", and armed, that name holds the shim. The loop
+always answered "redefined" and left through its own contract. vt's `print-graphemes` carries
+the whole terminal, so each character paid a whole-grid `type-matches?`. Since `19a813ab`, a
+fresh frame checks at its first back-edge, so every iteration took the same exit. The guard
+now reads the name as the module's code does (`contracts::self_call_binding`). The boundary
+fixture gains a contracted `countdown` whose last self-call passes a string: armed, it raised
+before. All twenty bedit drivers pass armed again.
+
+What is left is the boundary itself: an outside `vt/feed` still pays three whole-terminal
+checks, ~150 ms. `type-matches?` interprets the type on every call, resolving `deftype`
+aliases each time, ~10 µs a cell. Compiling a contract's types into predicates once, when its
+shim is built, is the fix. It is a change to `std/contract` worth its own ADR.
+
+`std/registry` (ADR-412) is the other half of the same bedit review. bedit kept seventeen
+load-filled tables as `defonce` + `def`, each open to the lost-update race, the `%isolate`
+restore and the image omission the kernel's registries were fixed for. The kernel's
+`%registry-update!` handles all three but wants a qualified global a project cannot spell. So
+`registry` keeps one global, `id → key → entry`, and writes it through the primitive's
+two-level path. `reflect/call-if-bound` is the late call its symbol hooks want. Guards in
+`tests/std_registry_test.blsp`; the concurrency case reds when `put!` is a plain `def`.
+
+`editor/transient` short rows. bedit's git menus are 139 command rows, 41 switches and 9
+options, each a four-key map the formatter spreads over four or five lines, ~750 lines of
+`:kind :command`. A suffix may now be a vector, `["p" 'cmd "label"]` or `[key kind target
+label extras?]`, normalised once in `transient-open` (and by `spec-suffixes`, idempotently), so
+nothing past the spec sees anything but the map it always saw. Guards in
+`tests/transient_test.blsp`: the push menu written short is the same menu (expansion, chords,
+an option's prompt from the extras, a short sub-menu, identical rows). With normalisation
+removed from `transient-open`, the rendering case reds.
+
+`editor/buffer-registry` gains an opt-in mirror. bedit's collab daemon kept a private copy
+of the registry for one difference: a buffer process that dies comes back from the
+registry's own text, not from whichever holder re-shares first, since that holder may be the
+one that missed the last edits. `{:mirror true}` subscribes the registry to each process it
+spawns, folds the pushes through `link-fold` + the new `buffer-client/text-apply-action`,
+respawns a died process from the mirror under the same key (announced as the
+removed-then-added pair frames already relinks on), and seeds a share that overtakes the
+`[:down]` from the mirror too. Off by default, so frames is unchanged. Guards in
+`tests/buffer_registry_test.blsp`; with the respawn or the fold sabotaged, both mirror cases
+red.
+
+`std/editor/list-motion`: bedit moved a selection through a list in four places — the
+minibuffer, the completion popup, the context menu, the vertical completion list — and the
+copies drifted (the context menu swallowed C-n). The key vocabulary is now data and the index
+one function, wrapping next and previous and safe on an empty list, which bedit's copy
+divided by. Guards in `tests/list_motion_test.blsp`.
+
+Three costs bedit's performance pass traced into Brood, each O(file) where O(nearby) would
+do. `closer-redundant?` and `bracket-match` scanned for the enclosing opener from offset 0
+in interpreted Brood (a `)` typed near the end of a 44k-line file: 562 ms). They now start
+at `reflect/scan-form-start`, where nothing is open, which is the same answer: 10 ms, all of
+it the native scan table. `point-kill-end` parsed the whole text for the enclosing list;
+it now uses `sexp-site`'s narrowed window like every other motion (262 ms → 1 ms). And
+the tree-sitter cache kept one tree per language, so the view's windowed parse and the
+indenter's whole-file parse evicted each other and every keystroke reparsed in full. The
+near-hit search now takes the cached tree whose derived edit is SMALLEST and replaces that
+entry. The first version took the most recent match, which let a whole-document parse claim
+the window's entry, since a small text is "an edit" of anything; the new unit test caught it
+on its first run. ~16 ms → ~2.5 ms a keystroke in a 1,300-line Elixir file.
+
+Left as a proposal: a FRESH string pays a whole-text pass on first use, both the char index
+(`CharIndex::build`) and the form-scan table, even for an offset near the start. Every
+keystroke makes a fresh buffer string, so RET in a 44k-line Brood file still costs ~10 ms of
+the indenter's `scan-form-start`. The real fix is incremental: scan checkpoints that survive
+an edit, kept on the ROPE, so a keystroke rescans from the checkpoint before the edit rather
+than from 0. That is ADR-sized and is not done here.
+
+`%rope-find` walked the rope a character at a time through a ring buffer, about 200 MB/s,
+so isearch typing into a failing search on a 1.5 MB buffer paid ~9 ms a key. It now searches
+each leaf with the standard library's substring search, carrying the previous leaf's last
+`m - 1` characters in front so a match across two leaves is found. Folding is one char to one
+char, so the char index found in a folded leaf is an index into the rope. Guard
+`find_tests::chunked_search_agrees_with_a_flat_search`: every start offset over a many-leaf
+rope agrees with a flat search, for straddling, self-overlapping, multi-byte and absent
+needles, folded and not; with the carry dropped, it reds. 9 → ~3 ms exact, 10 → ~5 ms folded.
+`find_last_before` (C-r) still re-scans forward from 0, now at the faster rate. A true
+backward leaf search is the next step if C-r ever shows up in a profile.
+
+`ui-memo` nesting (ADR-336). `%ui-harvest` stored each fragment's ops FLATTENED, with the
+inner markers already spliced out. When an outer fragment hit, `ui-memo` replayed those
+flattened ops, the inner fragments were never re-tabled, and the next turn the outer missed
+they all missed too. A pane-body memo around bedit's per-row memos was useless for that
+reason, and it is what stands between a memo-hit frame and a millisecond. The entry now
+keeps the ops as emitted. The painted frame is unchanged, since the harvest still flattens
+on the way out. Guard in `tests/ui_test.blsp` "an outer fragment that hits keeps its inner
+fragments in the next table"; with the flattened storage put back, it and the existing
+nesting test red.

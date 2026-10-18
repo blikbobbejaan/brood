@@ -6,6 +6,61 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Added.**
+- `std/registry`: named registries a program fills as its modules load. `registry/put!`
+  replaces by key; read with `entries`, `lookup`, `ranked` (by an entry's `:rank`). Writes are
+  atomic across processes, survive an `%isolate` restore, and are carried by the startup image
+  (ADR-412).
+- `reflect/call-if-bound`: call a function by symbol if it is bound, else answer a fallback —
+  the late call a hook kept as a symbol wants.
+- `editor/transient` accepts SHORT ROWS for suffixes — `["p" 'cmd "label"]` for a command,
+  `["-f" :switch "--force" "label"]`, `["=u" :option "--upstream=" "label"]`,
+  `["o" :menu sub-spec "label"]`, each with an optional trailing map of extras — expanded once
+  when the menu opens (`suffix-of`, `normalize-spec`). A menu of ten commands is ten lines
+  instead of forty.
+- `editor/buffer-registry`: `(registry-start {:mirror true})` keeps a text mirror of every
+  document, folded from the process's pushes, and respawns a process that dies from it under
+  the same key (watchers see the usual removed-then-added pair). Off by default.
+- `editor/buffer-client/text-apply-action`: apply a `link-fold` action to a plain string.
+- `editor/layers/layer-facet`: the facet value of the highest-precedence layer that defines it,
+  stopping there — what `(first (layer-collect ctx facet))` answered, without resolving every
+  layer and collecting every value. An editor asks it for a mode's services several times per
+  pane per frame.
+- `editor/list-motion`: the selection keys every list in an editor answers (C-n / ↓, C-p / ↑,
+  M-< / M->) as data (`motion-keys`, `motion-of`), and `motion-index`, which wraps next and
+  previous and is safe on an empty list.
+
+**Fixed.**
+- A process spawned by a runtime that was itself started in the background (`cmd &`, `nohup`)
+  inherited its ignored SIGINT and SIGQUIT, so it could not be interrupted (KI-278): an editor's
+  `C-c C-c` did nothing to a running shell command. Spawned children now get the default
+  disposition of both.
+- Under armed contracts (every `nest run` and `nest test`), a contracted function that called
+  itself in tail position went out through its own contract check on every iteration, instead
+  of staying inside its module's boundary (KI-277). `vt/feed` checked the whole terminal once
+  per character and ran ~5000× slower, which made a terminal emulator under `nest run` fall
+  minutes behind its program.
+- Typing a closer next to an existing one (`editor/highlight/closer-redundant?`) and matching a
+  closing bracket (`bracket-match`) scan from the top-level form around the cursor, not from the
+  start of the text: 562 ms → 10 ms near the end of a 44k-line file.
+- `sexp/point-kill-end` (a structural C-k) reads the enclosing list from the window around
+  point instead of parsing the whole text: 262 ms → 1 ms on a 44k-line file.
+- The tree-sitter parse cache reuses the CLOSEST cached tree of the same language as the base
+  for an incremental reparse, and replaces that entry, instead of keeping one tree per
+  language. An editor parsing a document both whole (the indenter) and windowed (the view) no
+  longer evicts one with the other: a keystroke in a 1,300-line Elixir file went from a full
+  reparse to an incremental one (~16 ms → ~2.5 ms for both parses).
+- Searching a rope (`%rope-find`, behind `buffer-search-forward` and isearch) runs the
+  standard library's substring search over each leaf instead of walking one character at a time
+  through a ring buffer: a missed search over a 1.5 MB buffer 9 ms → ~3 ms (exact) and
+  10 ms → ~5 ms (case-folded).
+- A memoised view fragment nested inside another (`ui-memo`, ADR-336) survives the outer one
+  hitting: the harvested table now keeps a fragment's ops as emitted, inner markers included,
+  so a replay re-tables them. Before, the first outer hit dropped every inner entry, and a
+  whole-pane memo around per-row memos could never pay.
+- A release build no longer warns that `Value::raw_tag` is never used: it is compiled only
+  where its readers are, the debug-assertion tripwire and the layout test.
+
 ## v0.39.1 — one bytecode executor
 
 The VM now runs everything as bytecode. Top-level forms and `&optional` defaults used to go
