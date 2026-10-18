@@ -552,6 +552,18 @@
       (file/spit (path/join (or root "") "src" "lib.blsp") "(defmodule lib)\n(defn shipped () 1)\n")
       (is (includes? (try (project-release/bundle-collect root) (catch e (error-message e)))
             "requires Brood"))))
+  (test "bundle-collect refuses a project module named like one Brood ships"
+    ;; the baked module wins in a release, so the project's would never run
+    (let (root (temp-dir "brood-shadow-"))
+      (file/mkdir root)
+      (file/mkdir (path/join (or root "") "src"))
+      (file/spit (path/join (or root "") "project.blsp")
+        "(project :name \"shadow\" :source-paths [\"src\"] :main app)\n")
+      (file/spit (path/join (or root "") "src" "app.blsp") "(defmodule app)\n(defn main () 1)\n")
+      (file/spit (path/join (or root "") "src" "json.blsp") "(defmodule json)\n(defn mine () 1)\n")
+      (let (message (try (project-release/bundle-collect root) (catch e (error-message e))))
+        (is (includes? message "'json'"))
+        (is (includes? message "Brood ships")))))
   ;; ---- include-str: the file travels as a literal, not as a path ------------
   ;; A bundle carries module source and no asset files (ADR-038), so a program that
   ;; needs a foreign file has to carry its TEXT. These two tests are the two halves of

@@ -240,6 +240,7 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
         ;; the same module, or a root-project module keyed identically to a dep's rooted name —
         ;; a loud stop beats the silent last-embedded-wins clobber.
         (bundle-reject-duplicate-names (map pairs first))
+        (bundle-reject-builtin-names (map pairs first))
         (bundle-reject-missing-entry (map pairs first))
         (cons (bundle-augment-manifest manifest dep-packages)
           (fold pairs nil (fn (acc p) (cons (first p) (cons (second p) acc)))))))))
@@ -294,6 +295,23 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
 ;; project's own when reading the `*module-files*` registry in `bundle-collect`.
 (defn- bundle-dep-file? (path dep-dirs)
   (any? dep-dirs (fn (d) (string/starts-with? path (if (string/ends-with? d "/") d (str d "/"))))))
+
+;; A root-project module named like one the runtime bakes in never runs in a release: the
+;; bundle resolves the name to the baked module first, so every call into the project's lands
+;; in std's instead (`unbound symbol: registry/package`) — while `nest test`, which roots the
+;; project's modules, passes, and the boot check, which loads but does not call them, says ok.
+;; hive's `registry` went down this way the day brood 0.40 shipped `std/registry`. A
+;; dependency's modules are keyed `pkg/mod`, so only a root module can collide.
+(defn- bundle-reject-builtin-names (names)
+  (let (builtin (into #{} (map (reflect/builtin-modules) ->string))
+        clashes (seq/filter names (fn (name) (contains? builtin name))))
+    (when (not (empty? clashes))
+      (error "bundle: the project defines "
+        (string/join (map clashes (fn (name) (str "'" name "'"))) ", ")
+        ", which Brood ships as a module of its own — in a release the shipped one wins"
+        " and the project's never runs. Rename the project's module (ADR-166: names Brood"
+        " ships are reserved).")))
+  nil)
 
 ;; Error on the first require-name two bundled files share (see `bundle-collect`);
 ;; returns nil when all are distinct (a guard, called for effect).
