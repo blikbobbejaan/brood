@@ -90,10 +90,15 @@ fn fold_case(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 
 /// The first char index at or after `from` where `needle` occurs, or `None`.
 ///
-/// One streaming pass with a ring buffer of the last `needle.len()` characters: the rope is
-/// read through `chars_at`, which walks its leaves, so no slice is ever built. The last-
-/// character test in front of the full comparison is what keeps the common position at one
-/// comparison rather than `m`.
+/// Chunk by chunk, with the standard library's substring search over each leaf of the rope
+/// and the last `needle.len() - 1` characters of the previous leaf carried in front, so a
+/// match spanning two leaves is found. No slice of the whole text is ever built. A
+/// character-at-a-time walk with a ring buffer read ~200 MB/s, which made a missed search
+/// over a 1.5 MB buffer (isearch typing into a failing search, query-replace's last step)
+/// cost ~8 ms; the substring search is several times that.
+///
+/// Folding is one char to one char ([`fold_char`]), so a folded leaf has exactly the char
+/// count of the original and a char index found in it is an index into the rope.
 fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Option<usize> {
     let n = rope.len_chars();
     let m = needle.len();
@@ -103,24 +108,46 @@ fn find_from(rope: &ropey::Rope, needle: &[char], from: usize, fold: bool) -> Op
     if from >= n || n - from < m {
         return None;
     }
-    let mut ring = vec!['\0'; m];
-    let mut slot = 0usize;
-    let mut filled = 0usize;
-    let mut index = from;
-    for raw in rope.chars_at(from) {
-        let c = if fold { fold_char(raw) } else { raw };
-        ring[slot] = c;
-        slot = (slot + 1) % m;
-        if filled < m {
-            filled += 1;
-        }
-        index += 1;
-        if filled == m && c == needle[m - 1] {
-            let oldest = slot; // the ring's head is the next slot to overwrite
-            if (0..m).all(|k| ring[(oldest + k) % m] == needle[k]) {
-                return Some(index - m);
+    let pattern: String = needle.iter().collect();
+    let (chunks, _, chunk_char_start, _) = rope.chunks_at_char(from);
+    // `window` is the carried tail of the previous leaf followed by this leaf (from `from`
+    // on); `window_start` is the char index of its first character.
+    let mut carry = String::new();
+    let mut window_start = from;
+    let mut first = true;
+    for chunk in chunks {
+        let piece: &str = if first {
+            first = false;
+            // the first leaf may begin before `from`
+            let skip = from - chunk_char_start;
+            match chunk.char_indices().nth(skip) {
+                Some((byte, _)) => &chunk[byte..],
+                None => "",
             }
+        } else {
+            chunk
+        };
+        let mut window = std::mem::take(&mut carry);
+        if fold && piece.is_ascii() {
+            // an ASCII leaf (most source): `fold_char` is `to_ascii_lowercase` there, done whole
+            window.push_str(&piece.to_ascii_lowercase());
+        } else if fold {
+            window.extend(piece.chars().map(fold_char));
+        } else {
+            window.push_str(piece);
         }
+        if let Some(byte) = window.find(&pattern) {
+            return Some(window_start + window[..byte].chars().count());
+        }
+        // Keep the last m-1 chars: a match that starts in them can finish in the next leaf.
+        let window_chars = window.chars().count();
+        let keep = (m - 1).min(window_chars);
+        let cut = window
+            .char_indices()
+            .nth(window_chars - keep)
+            .map_or(window.len(), |(byte, _)| byte);
+        carry = window[cut..].to_string();
+        window_start += window_chars - keep;
     }
     None
 }
@@ -239,4 +266,70 @@ fn rope_skip(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let at = expect_int(heap, who, arg(args, 1))?.max(0) as usize;
     let rope = expect_rope_ref(heap, who, arg(args, 0))?;
     Ok(Value::Int(skip_run(rope, at, forward, &set, inside) as i64))
+}
+
+#[cfg(test)]
+mod find_tests {
+    use super::*;
+
+    /// The naive answer: flatten, fold, search, convert the byte offset to a char index.
+    fn naive(text: &str, needle: &str, from: usize, fold: bool) -> Option<usize> {
+        let folded: String = if fold {
+            text.chars().map(fold_char).collect()
+        } else {
+            text.to_string()
+        };
+        let needle: String = if fold {
+            needle.chars().map(fold_char).collect()
+        } else {
+            needle.to_string()
+        };
+        let start_byte = folded
+            .char_indices()
+            .nth(from)
+            .map_or(folded.len(), |(b, _)| b);
+        folded[start_byte..]
+            .find(&needle)
+            .map(|b| from + folded[start_byte..start_byte + b].chars().count())
+    }
+
+    /// Searching a rope of many leaves agrees with searching the flattened text: at every
+    /// start offset, for needles that straddle leaf boundaries, repeat their own prefix
+    /// ("aab" in "aaab"), contain multi-byte characters, or do not occur — folded and not.
+    #[test]
+    fn chunked_search_agrees_with_a_flat_search() {
+        let unit = "lorem IPSUM aaab ταχύ Ωmega (def x) ";
+        let text: String = unit.repeat(600) + "THE-END";
+        let rope = ropey::Rope::from_str(&text);
+        assert!(
+            rope.chunks().count() > 4,
+            "the text must span several leaves"
+        );
+        let total = rope.len_chars();
+        for needle in [
+            "aab",
+            "ipsum",
+            "IPSUM",
+            "ταχύ",
+            "ωmega (def",
+            "the-end",
+            "x) lorem",
+            "absent!",
+        ] {
+            for fold in [false, true] {
+                let needle_chars: Vec<char> = if fold {
+                    needle.chars().map(fold_char).collect()
+                } else {
+                    needle.chars().collect()
+                };
+                for from in (0..total).step_by(97).chain([total - 7, total - 1]) {
+                    assert_eq!(
+                        find_from(&rope, &needle_chars, from, fold),
+                        naive(&text, needle, from, fold),
+                        "needle {needle:?} fold {fold} from {from}"
+                    );
+                }
+            }
+        }
+    }
 }

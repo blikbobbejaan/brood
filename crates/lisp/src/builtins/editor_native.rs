@@ -112,8 +112,13 @@ fn harvest_into(
             };
             let mut flat = Vec::with_capacity(inner_ops.len());
             harvest_into(heap, inner_ops, tags, &mut flat, table);
-            let flat_list = heap.list(flat.clone());
-            let entry = heap.alloc_vector2(deps, flat_list);
+            // The entry keeps the ops AS EMITTED — inner markers included — not the
+            // flattened ones. A hit replays them inside a fresh marker, so this walk sees
+            // the inner markers again and every inner fragment stays in the next table.
+            // Storing them flattened dropped the inner entries the first time the outer one
+            // hit: a frame whose whole-pane fragment then missed had to recompute every
+            // row, so nesting a memo around rows could never pay.
+            let entry = heap.alloc_vector2(deps, inner);
             table.push((key, entry));
             out.extend(flat);
         } else if let Some(at) = nested_ops_at(tag, tags, parts.len()) {

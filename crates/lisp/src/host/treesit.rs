@@ -63,7 +63,7 @@ static TREE_CACHE: LazyLock<Mutex<Vec<(String, String, tree_sitter::Tree)>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
 #[cfg(feature = "treesit")]
-const TREE_CACHE_CAP: usize = 4;
+const TREE_CACHE_CAP: usize = 8;
 
 /// The edit that turns `old` into `new`, derived from their common prefix and suffix.
 ///
@@ -119,8 +119,7 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
     // common case while typing, and is what decides how a large file feels. A full parse
     // of 250 KB of Elixir is ~500 ms, so paying it per edit is the whole of "the editor
     // is sluggish"; reparsing from the previous tree is ~1 ms.
-    let mut reuse: Option<tree_sitter::Tree> = None;
-    {
+    let reuse: Option<(usize, tree_sitter::Tree)> = {
         let mut cache = crate::core::sync::lock(&TREE_CACHE);
         if let Some(i) = cache
             .iter()
@@ -133,31 +132,55 @@ fn parse_cached(src: &str, lang: &str) -> Result<tree_sitter::Tree, LispError> {
             cache.push(hit);
             return Ok(tree);
         }
-        // No exact match: take this language's most recent text — the buffer being typed
-        // in — and derive the edit that turns it into this one.
-        if let Some((_, old_src, old_tree)) = cache.iter().rev().find(|(l, _, _)| l == lang)
-            && let Some(edit) = derive_edit(old_src, src)
-        {
-            let mut t = old_tree.clone();
-            t.edit(&edit);
-            reuse = Some(t);
-        }
-    }
+        // No exact match: the entry this text is an EDIT of — the same document one
+        // keystroke earlier. Searched over every entry of the language, most recent first,
+        // not just the latest one: an editor parses the same document in more than one
+        // shape (the view colours the visible window, the indenter asks about the whole
+        // file), and with only the latest entry consulted each shape evicted the other,
+        // so every keystroke was a full reparse (18 ms a RET in a 1,300-line Elixir file).
+        // The CLOSEST such entry, not the first: a small text (the view's window) is "an edit"
+        // of anything by `derive_edit`'s measure, so taking the first match let a whole-document
+        // parse claim — and then replace — the window's entry. The edit touching the fewest
+        // bytes is the document's own previous version.
+        cache
+            .iter()
+            .enumerate()
+            .filter(|(_, (l, _, _))| l == lang)
+            .filter_map(|(i, (_, old_src, old_tree))| {
+                derive_edit(old_src, src).map(|edit| (i, old_tree, edit))
+            })
+            .min_by_key(|(_, _, edit)| {
+                (edit.old_end_byte - edit.start_byte) + (edit.new_end_byte - edit.start_byte)
+            })
+            .map(|(i, old_tree, edit)| {
+                let mut t = old_tree.clone();
+                t.edit(&edit);
+                (i, t)
+            })
+    };
     let language = language_for(lang)?;
     let mut parser = checkout_parser(lang, &language)?;
-    let tree = parser.parse(src, reuse.as_ref());
+    let tree = parser.parse(src, reuse.as_ref().map(|(_, t)| t));
     return_parser(lang, parser);
     let tree =
         tree.ok_or_else(|| LispError::runtime(format!("tree-sitter: {lang}: parse failed")))?;
     {
         let mut cache = crate::core::sync::lock(&TREE_CACHE);
-        // One entry per language, not four generations of the buffer being typed in:
-        // the older versions can never be asked for again, and keeping them evicts the
-        // other files that can.
-        if let Some(i) = cache.iter().position(|(l, _, _)| l == lang) {
+        // The entry this was an edit of is the same document's older version: it can never
+        // be asked for again, so the new one takes its place — one entry per document (and
+        // per window of one), not a generation per keystroke. Another thread may have reshuffled
+        // the cache since, so the slot can hold another document now: dropping it costs at
+        // most a reparse later, never a wrong tree — a hit always needs the EXACT text.
+        let replaced = reuse.and_then(|(i, _)| {
+            cache
+                .get(i)
+                .map(|(l, _, _)| l == lang)
+                .filter(|same| *same)
+                .map(|_| i)
+        });
+        if let Some(i) = replaced {
             cache.remove(i);
-        }
-        if cache.len() >= TREE_CACHE_CAP {
+        } else if cache.len() >= TREE_CACHE_CAP {
             cache.remove(0);
         }
         cache.push((lang.to_string(), src.to_string(), tree.clone()));
@@ -716,4 +739,46 @@ pub fn kids(heap: &mut crate::core::heap::Heap, src: &str, lang: &str, _o: i64) 
 #[cfg(not(feature = "treesit"))]
 pub fn errors(heap: &mut crate::core::heap::Heap, src: &str, lang: &str) -> LispResult {
     parse(heap, src, lang)
+}
+
+#[cfg(all(test, feature = "treesit-grammars"))]
+mod parse_cache_tests {
+    use super::*;
+
+    fn cached_texts() -> Vec<String> {
+        crate::core::sync::lock(&TREE_CACHE)
+            .iter()
+            .map(|(_, src, _)| src.clone())
+            .collect()
+    }
+
+    /// An editor parses one document in two shapes: the indenter the whole text, the view
+    /// the window on screen. A keystroke's whole-text parse must replace the whole text's
+    /// OWN older entry and leave the window's, so the window's next parse is incremental
+    /// too. With one entry per language, each shape evicted the other and every keystroke
+    /// paid a full reparse.
+    #[test]
+    fn an_edit_replaces_its_own_document_and_keeps_the_other_shape() {
+        crate::core::sync::lock(&TREE_CACHE).clear();
+        let document: String = (0..200)
+            .map(|i| format!("def method_{i}\n  {i}\nend\n"))
+            .collect();
+        let window = document[1000..2000].to_string();
+        let edited = format!("{}x{}", &document[..3000], &document[3000..]);
+
+        parse_cached(&document, "ruby").expect("document parses");
+        parse_cached(&window, "ruby").expect("window parses");
+        parse_cached(&edited, "ruby").expect("edited document parses");
+
+        let texts = cached_texts();
+        assert!(
+            texts.contains(&window),
+            "the window's tree was evicted by the document's edit"
+        );
+        assert!(texts.contains(&edited), "the edited document is cached");
+        assert!(
+            !texts.contains(&document),
+            "the document's older version is replaced, not kept"
+        );
+    }
 }

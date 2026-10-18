@@ -313,3 +313,21 @@
   (test "answers the position itself: any line start is a safe restart"
     (assert= (editor/highlight/line-restart "a\nb\nc" 4) 4)
     (assert= (editor/highlight/line-restart "" 0) 0)))
+
+;; The closer scans start at the top-level form around the cursor, not at 0. Earlier forms
+;; full of unbalanced-looking text — a `(` inside a string, a `)` in a comment, a char
+;; literal — must not leak into a later form's answer.
+(def hl-later-form-text "(def a \"((\") ; ))\n(def b [1 2])\n(foo (bar 1))")
+
+(describe "closer scans in a later top-level form"
+  (test "a closer that closes the innermost form is redundant"
+    ;; `(foo (bar 1|))`: the `)` at point closes `(bar`
+    (let (pos (+ (index-of hl-later-form-text "1))") 1))
+      (is (closer-redundant? hl-later-form-text pos ")"))))
+  (test "a mismatched closer is not"
+    (let (pos (+ (index-of hl-later-form-text "1))") 1))
+      (refute (closer-redundant? hl-later-form-text pos "]"))))
+  (test "bracket-match pairs a closer with its opener in the later form"
+    (let (close (+ (index-of hl-later-form-text "1))") 2)
+          open (index-of hl-later-form-text "(foo"))
+      (assert= [open close] (bracket-match hl-later-form-text (inc close))))))

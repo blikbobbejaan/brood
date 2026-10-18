@@ -537,12 +537,14 @@ but never past the enclosing list's closing delimiter — so a kill never breaks
 parens. At end of line, kills the newline. At least `point` (a no-op at the close).
 
     (sexp/point-kill-end \"(a b c)\" 3)  → 6"
+  ;; The enclosing list from the narrowed window around point ([[sexp-site]]), not a parse
+  ;; of the whole text: a C-k in a 44k-line file parsed all of it, 140-230 ms a keystroke.
   (let (n (string/length text)
         le (sexp-line-end text point n)
-        enc (enclosing (tree text) point))
-    (if (= (get enc :kind) :root)
+        site (sexp-site text point))
+    (if (sexp-top-level? site)
       (if (= point le) (math/min n (inc point)) le)
-      (let (cp (dec (sexp-end enc)))
+      (let (cp (sexp-abs site (dec (sexp-end (:enc site)))))
         (cond
           (<= cp le) (math/max point cp)
           ; close on this line → kill up to (not incl) it

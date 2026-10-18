@@ -324,3 +324,16 @@
   (test "wrap-region is a no-op without a region"
     (let (b (goto-char (make-buffer "a b c") 2))
       (assert= b (sexp/wrap-region b "(" ")")))))
+
+;; `point-kill-end` reads the enclosing list from the window around point, not a parse of the
+;; whole text — the answer must not change when earlier forms hold unbalanced-looking text.
+(describe "point-kill-end in a later top-level form"
+  (test "stops at the enclosing list's close, past earlier string and comment parens"
+    (let (text "(def a \"((\") ; ))\n(foo (bar 1 2) baz)"
+          pos (index-of text "1 2"))
+      ;; kill from `1` stops before `)` of `(bar …)`
+      (assert= (+ pos 3) (point-kill-end text pos))))
+  (test "at top level kills to the line end"
+    (let (text "(a)\n(b) (c)\n(d)"
+          pos (index-of text "(c)"))
+      (assert= (+ pos 3) (point-kill-end text pos)))))

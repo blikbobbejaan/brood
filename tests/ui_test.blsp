@@ -613,7 +613,19 @@
           [:scroll-region 0.5 [[:text 2 0 "b"]]]
           [:cursor 0 0]])
       (assert= (get table [:l 2]) [[:d2] (list [:text 2 0 "b"])])
-      (assert= (get table [:pane]) [[:d1] (list [:text 1 0 "a"] [:text 2 0 "b"])])))
+      ;; an entry keeps its ops as emitted, inner marker included, so a hit replays it
+      (assert= (get table [:pane]) [[:d1] (list [:text 1 0 "a"] inner)])))
+
+  (test "an outer fragment that hits keeps its inner fragments in the next table"
+    ;; The second turn replays the outer entry (what `ui-memo` does on a hit). Its inner
+    ;; fragment must be tabled again, or the first turn the outer misses recomputes it.
+    (let (inner [:ui/memo [:l 2] [:d2] (list (text 2 0 "b"))]
+          outer [:ui/memo [:pane] [:d1] (list (text 1 0 "a") inner)]
+          [_ first-table] (ui-harvest [outer])
+          replayed [:ui/memo [:pane] [:d1] (second (get first-table [:pane]))]
+          [frame second-table] (ui-harvest [replayed]))
+      (assert= frame [[:text 1 0 "a"] [:text 2 0 "b"]])
+      (assert= (get second-table [:l 2]) [[:d2] (list [:text 2 0 "b"])])))
 
   (test "ui-harvest recurses into a cell-region the way it does a scroll-region"
     ;; a memoised pane body zoomed to another size is a marker INSIDE a cell-region: the

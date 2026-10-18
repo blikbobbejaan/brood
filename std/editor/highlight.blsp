@@ -463,7 +463,10 @@ the character the reader will complain about is more honest than silently steppi
 False inside a string or a comment — `\";)\"` is text — and false at the end of the buffer."
   (and (< pos (string/length full))
     (= (string/char-at full pos) c)
-    (let (open (hl-close-scan full 0 pos (string/length full) '()))
+    ;; From the start of the top-level form `pos` is in, not from 0: there nothing is open and
+    ;; no string or comment is, so the scan answers exactly what one from 0 would — and a
+    ;; `)` typed near the end of a 44k-line file stopped costing 1.2 s of interpreted scan.
+    (let (open (hl-close-scan full (reflect/scan-form-start full pos) pos (string/length full) '()))
       (and (int? open)
         (>= open 0)
         (= (hl-closer-of (string/char-at full open)) c)))))
@@ -486,7 +489,8 @@ and comments are ignored."
         (if (hl-open? c)
           (let (m (hl-fwd-match full (inc bi) n 0))
             (if (< m 0) [bi :unmatched] [bi m]))
-          (let (m (hl-opener-scan full 0 n bi '()))
+          ;; from the top-level form the closer is in (nothing open there), not from 0
+          (let (m (hl-opener-scan full (reflect/scan-form-start full bi) n bi '()))
             (if (< m 0) [bi :unmatched] [m bi])))))))
 (sig bracket-match (string int -> (or nil (vector any))))
 
