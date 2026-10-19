@@ -1516,8 +1516,14 @@ fn apply_matcher(
     v: Value,
 ) -> LispResult {
     if hof.is_none() {
+        // Below the bytecode tier no arm resolves, so the matcher tree-walks (ADR-416).
+        let use_vm = crate::eval::compile::tier_ceiling() >= crate::eval::compile::Tier::Bytecode;
         *hof = Some(crate::perf_time!(ns_match_resolve, {
-            crate::eval::compile::hof_resolve(heap, matcher, 1)
+            if use_vm {
+                crate::eval::compile::hof_resolve(heap, matcher, 1)
+            } else {
+                None
+            }
         }));
     }
     crate::perf_time!(ns_match_run, {

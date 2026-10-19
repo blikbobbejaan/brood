@@ -2691,3 +2691,19 @@ red.
 
 Also: `MEMORY_IMAGES` (e9ddd4c6) was missing from `process_wide_statics`' list, red on both
 engines in CI; listed.
+
+## 2026-10-19 (later) — the three ceiling-blind doors closed; tier 0 now escapes only through process bodies
+
+The audit's three doors from tree-walked code into the VM each take the ceiling now:
+primitives calling back into Brood (`num_multi_dispatch`, `compare_multi_dispatch`,
+`record_seq`) go through `apply_engine` instead of `apply_value`; `mailbox::apply_matcher`
+resolves no arm below the bytecode tier (as `Reducer` already did), so the matcher tree-walks;
+`%eval-in` runs its forms with `run_top_form`. Guard: `tier0_escape_audit.rs`'s
+`tree_walked_callbacks_stay_on_the_tree_walker`, a top-level tier-0 program through each door,
+audit empty; each of the five sites sabotaged red. The matcher door needed a specific shape to
+be reachable at all: a guard (a plain pattern is a native spec, ADR-409) inside a `defn` (an
+inline top-level closure has a LOCAL body, so `compiled_arm_for` has no key for it).
+
+`make test-both` green (1946/1946 on each engine) with the audit armed: every remaining site is
+`run_process_body` or VM code started inside such a body, plus the one Rust unit test that
+calls `vm_run_bc` directly. That is ADR-416 stages 2–5's whole job.

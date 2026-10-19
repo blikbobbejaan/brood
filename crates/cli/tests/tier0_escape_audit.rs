@@ -9,6 +9,10 @@
 //! A spawned process body is the escape known before the audit existed (`run_process_body`
 //! runs a VM-eligible body on the VM whatever the ceiling). When stage 5 makes tier 0 reach
 //! process bodies, this test's first half inverts: the file must then stay empty.
+//!
+//! The rest of what the audit found (devlog 2026-10-19) were doors from tree-walked code into
+//! the VM that ignored the ceiling; `DOORS` walks through each at the top level, where tier 0
+//! does reach, and the audit must stay empty.
 
 use std::process::Command;
 
@@ -19,15 +23,40 @@ const PROGRAM: &str = r#"
 (io/puts (str "answer = " (receive (y y))))
 "#;
 
-/// Run the program at `tier`, auditing into a fresh file; answer stdout and the file's lines
-/// (`None` when no file was written).
-fn run(tier: &str) -> (String, Option<String>) {
-    let dir = std::env::temp_dir().join(format!("brood-tier0-audit-{}-{tier}", std::process::id()));
+/// One call per closed door: a primitive calling back into Brood (`num/add` and `compare-to`
+/// on a record, `->seq` under `first`), a `receive` matcher, and `%eval-in`'s forms.
+const DOORS: &str = r#"
+(defrecord usd (cents))
+(defmethod num/add [usd usd] (a b) (usd (+ (get a :cents) (get b :cents))))
+(defmethod compare-to [usd usd] (a b) (compare (get a :cents) (get b :cents)))
+(defrecord stack (items))
+(impl Seqable stack (->seq [s] (get s :items)))
+(io/puts (str "add = " (get (+ (usd 3) (usd 4)) :cents)))
+(io/puts (str "lt = " (< (usd 3) (usd 4))))
+(io/puts (str "first = " (first (stack (list 10 20)))))
+;; A guard makes the matcher a closure (a plain pattern is a native spec, ADR-409), and the
+;; `defn` makes its body shared code, which is what gives it a compiled arm to resolve.
+(defn wait-hi () (receive ([:hi n] :when (> n 3) (+ n 1))))
+(send (self) [:hi 5])
+(io/puts (str "receive = " (wait-hi)))
+(io/puts (str "eval-in = " (%eval-in "(+ x 1)" {:x 41})))
+"#;
+
+const DOORS_ANSWER: &str = "add = 7\nlt = true\nfirst = 10\nreceive = 6\neval-in = 42";
+
+/// Run `source` at `tier`, auditing into a fresh file; check it printed `answer` and answer
+/// the file's lines (`None` when no file was written).
+fn run(source: &str, answer: &str, tier: &str) -> Option<String> {
+    let dir = std::env::temp_dir().join(format!(
+        "brood-tier0-audit-{}-{tier}-{}",
+        std::process::id(),
+        answer.len()
+    ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let program = dir.join("program.blsp");
     let audit = dir.join("audit.txt");
     let _ = std::fs::remove_file(&audit);
-    std::fs::write(&program, PROGRAM).expect("write program");
+    std::fs::write(&program, source).expect("write program");
     let out = Command::new(env!("CARGO_BIN_EXE_brood"))
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
@@ -38,19 +67,19 @@ fn run(tier: &str) -> (String, Option<String>) {
         .expect("run brood");
     let lines = std::fs::read_to_string(&audit).ok();
     let _ = std::fs::remove_dir_all(&dir);
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
         stdout.trim(),
-        "answer = 2",
+        answer,
         "the program did not run to its answer at tier {tier}.\nstderr:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    (stdout, lines)
+    lines
 }
 
 #[test]
 fn a_tier0_process_body_is_recorded_by_name() {
-    let (_, lines) = run("0");
+    let lines = run(PROGRAM, "answer = 2", "0");
     let lines = lines.expect("the audit wrote no file: no escape recorded at tier 0");
     assert!(
         lines
@@ -67,7 +96,16 @@ fn a_tier0_process_body_is_recorded_by_name() {
 #[test]
 fn above_tier0_the_audit_writes_nothing() {
     for tier in ["1", "2"] {
-        let (_, lines) = run(tier);
+        let lines = run(PROGRAM, "answer = 2", tier);
         assert_eq!(lines, None, "the audit wrote under BROOD_TIER={tier}");
     }
+}
+
+#[test]
+fn tree_walked_callbacks_stay_on_the_tree_walker() {
+    let lines = run(DOORS, DOORS_ANSWER, "0");
+    assert_eq!(
+        lines, None,
+        "tier-0 top-level code reached the VM through a door that ignores the ceiling"
+    );
 }

@@ -700,7 +700,7 @@ pub(super) fn eval_in(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
             let v = heap.root_at(lbase + j);
             heap.env_define(frame, s, v);
         }
-        match crate::eval::compile::run(heap, form, frame) {
+        match crate::eval::compile::run_top_form(heap, form, frame) {
             Ok(v) => result = Ok(v),
             Err(e) => {
                 result = Err(e);

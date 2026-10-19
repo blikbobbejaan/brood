@@ -605,7 +605,7 @@ fn num_multi_dispatch(heap: &mut Heap, who: &str, a: Value, b: Value) -> LispRes
         .ok_or_else(|| {
             LispError::runtime(format!("{who}: the `{op}` multimethod is not loaded"))
         })?;
-    crate::eval::compile::apply_value(heap, callee, &[a, b], genv)
+    crate::eval::compile::apply_engine(heap, callee, &[a, b], genv)
 }
 
 /// Dispatch a comparison operator to the `Ord` MULTIMETHOD (`compare-to`, ADR-179) when a
@@ -624,7 +624,7 @@ fn compare_multi_dispatch(
         .ok_or_else(|| {
             LispError::runtime(format!("{who}: the `compare-to` multimethod is not loaded"))
         })?;
-    match crate::eval::compile::apply_value(heap, callee, &[a, b], genv)? {
+    match crate::eval::compile::apply_engine(heap, callee, &[a, b], genv)? {
         Value::Int(n) => Ok(n.cmp(&0)),
         _ => Err(LispError::runtime(format!(
             "{who}: `compare-to` must return an int (-1/0/1)"

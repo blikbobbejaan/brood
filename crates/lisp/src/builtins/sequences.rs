@@ -508,7 +508,7 @@ pub(super) fn record_seq(heap: &mut Heap, v: Value) -> Result<Option<Value>, Lis
     let callee = heap
         .env_get(genv, crate::core::value::intern("->seq"))
         .ok_or_else(|| LispError::runtime("->seq: the Seqable protocol is unavailable"))?;
-    Ok(Some(crate::eval::compile::apply_value(
+    Ok(Some(crate::eval::compile::apply_engine(
         heap,
         callee,
         &[v],
