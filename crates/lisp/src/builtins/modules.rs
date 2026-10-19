@@ -437,10 +437,6 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // URL encoding/decoding and parsing: percent-encode/decode, query-string
     // encode/decode, parse-url, build. Pure Brood over string primitives.
     embedded_module!("url", "std/url.blsp"),
-    // Internet mail: RFC 5322 headers, the MIME part tree, encoded words, quoted-printable
-    // and base64 bodies, a few legacy charsets. parse, header, decode-header, text-part,
-    // body-text, leaves. Pure Brood over regex + encoding. What a mail reader stands on.
-    embedded_module!("mime", "std/mime.blsp"),
     // CSV parsing and emitting: csv-parse, csv-parse-maps, csv-emit,
     // csv-emit-maps. Handles quoted fields, escaped quotes, \r\n endings.
     embedded_module!("csv", "std/csv.blsp"),
@@ -545,10 +541,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // edits, resync fallback) a subscriber uses to track a hosted document.
     embedded_module!("editor/buffer-client", "std/editor/buffer-client.blsp"),
     embedded_module!("editor/buffer-registry", "std/editor/buffer-registry.blsp"),
-    // A line-oriented lexer from a table of rules, and the configuration formats
-    // (JSON / YAML / TOML / Makefile / INI / commit message) as tables over it.
+    // A line-oriented lexer from a table of rules (the format tables over it live in
+    // bedit, ADR-417).
     embedded_module!("editor/lexer", "std/editor/lexer.blsp"),
-    embedded_module!("editor/configs", "std/editor/configs.blsp"),
     // The display/input seam (M3, ADR-046): `display` is the render-op protocol
     // (pure data constructors); `keymap` is the rebindable key→command dispatcher
     // shared by the line editor and the observer; `observer` is a process-viewer
@@ -589,22 +584,9 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Reusable editor toolkit (content-agnostic); the keybindings + payload are
     // editor policy. Opt-in, never in the prelude.
     embedded_module!("editor/pane", "std/editor/pane.blsp"),
-    // FORM BUFFERS (ADR-199): generated text with editable regions in it — a shell's
-    // input line, a commit message's help block, a tutorial's code boxes, a rebase
-    // todo. Region algebra + `splice` (re-render, keep what the user typed) + the two
-    // `:post-key` guard policies (`:veto` / `:clamp`). Pure over text; opt-in.
-    embedded_module!("editor/formbuf", "std/editor/formbuf.blsp"),
-    // Transient menus: a prefix that opens a menu of switches, options and commands and
-    // builds an argument vector you can see (Magit's `transient.el`). A keymap, a value
-    // and a rendering — the keys go through `editor/keymap`, the rendering comes out as
-    // plain rows, and the host services `:run` / `:read`. Pure; opt-in.
-    embedded_module!("editor/transient", "std/editor/transient.blsp"),
     // Moving a selection through a list (C-n / C-p wrap, M-< / M->): the key vocabulary as
     // data and the index arithmetic, shared by every picker, popup and menu. Pure; opt-in.
     embedded_module!("editor/list-motion", "std/editor/list-motion.blsp"),
-    // Foldable section trees (Magit's `magit-section`): sections as data, rendered to lines
-    // plus parallel rows, walked by index. Pure; opt-in.
-    embedded_module!("editor/section", "std/editor/section.blsp"),
     // Bare ANSI escape *strings* for simple terminal scripts (`print` them
     // directly) — the lightweight counterpart to the `display` render-op
     // protocol. Opt-in, never in the prelude.
@@ -680,20 +662,6 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // Brood, Elixir or Python differs only in the backend. CORE, like the rest of
     // the editor framework; opt-in, never prelude.
     embedded_module!("editor/evalsession", "std/editor/evalsession.blsp"),
-    // Lexical Markdown highlighter — the `highlight` analogue for `.md` buffers
-    // (`markdown-spans` → `[start end face]` spans, ADR-092). Pure UI a shipped app
-    // may `require` (bedit's markdown-mode), so it stays in CORE alongside
-    // `highlight`/`lineedit`; opt-in, never in the prelude.
-    embedded_module!("editor/markdown", "std/editor/markdown.blsp"),
-    embedded_module!("editor/org", "std/editor/org.blsp"),
-    // Lexical `.env` and Dockerfile highlighters, the dotenv/Dockerfile analogues of
-    // `markdown` (`env-spans` / `dockerfile-spans` → `[start end face]` spans). Pure
-    // UI a shipped app may `require` (bedit's env-/docker-mode); CORE, like markdown.
-    embedded_module!("editor/dotenv", "std/editor/dotenv.blsp"),
-    embedded_module!("editor/dockerfile", "std/editor/dockerfile.blsp"),
-    // Shell scripts (sh / bash / zsh) the same way — `shell-spans`, one regex
-    // alternation per line so a band re-lexes at native speed on every keystroke.
-    embedded_module!("editor/shell", "std/editor/shell.blsp"),
     embedded_module!("editor/lineedit", "std/editor/lineedit.blsp"),
     embedded_module!("format", "std/format.blsp"),
     // The process-native tracing debugger — `break` (park without timeout),

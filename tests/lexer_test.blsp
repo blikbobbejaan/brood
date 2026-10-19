@@ -1,0 +1,42 @@
+;; editor/lexer — the table-driven line lexer. Each check names the TOKEN a span covers
+;; (`spans-of`), so a wrong extent fails by text, not by offset. The format tables built on
+;; it (JSON, YAML, …) live in bedit (ADR-417).
+(defmodule lexer-test
+  (:use test)
+  (:use editor/face)
+  (:use editor/lexer))
+
+(defn- spans-of (spans src role)
+  "The texts of the spans painted in `role`'s face, in order."
+  (let (f (face (get lexer-roles role)))
+    (map (seq/filter spans (fn ([s e face]) (= face f)))
+      (fn ([s e _]) (string/substring src s e)))))
+
+(defn- ordered? (spans)
+  "Ascending and non-overlapping — the `highlight-spans` contract."
+  (or (< (count spans) 2)
+    (every? (map (range (dec (count spans))) (fn (i) [(nth spans i) (nth spans (inc i))]))
+      (fn ([a b]) (<= (second a) (first b))))))
+
+(describe "editor/lexer — a lexer from a table"
+  (test "structured rules: leftmost match wins, the group says which rule"
+    (let (g (lexer-grammar {:structured [["#.*" :comment] ["\"[^\"]*\"" :string]]})
+          src "x = \"a # not a comment\" # yes")
+      (assert= (spans-of (lexer-spans g src) src :string) (list "\"a # not a comment\""))
+      (assert= (spans-of (lexer-spans g src) src :comment) (list "# yes"))))
+  (test "words are classified by exact lookup, outside structured tokens only"
+    (let (g (lexer-grammar {:structured [["\"[^\"]*\"" :string]]
+                            :words "[a-z]+"
+                            :classes {"true" :special}})
+          src "true \"true\" truer")
+      (assert= (spans-of (lexer-spans g src) src :special) (list "true"))))
+  (test "a line rule paints its first group at the line's start, and only there"
+    (let (g (lexer-grammar {:line [["^(\\w+):" :function]]})
+          src "build: x\n  not: a target\nall:")
+      (assert= (spans-of (lexer-spans g src) src :function) (list "build" "all"))))
+  (test "every span list is ascending and non-overlapping"
+    (let (g (lexer-grammar {:structured [["#.*" :comment] ["\\d+" :number]]
+                            :words "[a-z]+"
+                            :classes {"if" :special}
+                            :line [["^(\\w+)=" :keyword]]}))
+      (is (ordered? (lexer-spans g "a=1 if 2 # if 3\nb=if"))))))

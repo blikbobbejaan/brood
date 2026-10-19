@@ -68,8 +68,9 @@ This is the part of dispatch that is not about calling: [[keymap-step]] is this 
 `reflect/eval`, and it exists separately because several callers want the binding
 itself. `describe-key` reports what a key sequence WOULD run without running it; a
 `which-key` panel names the command under a pending prefix; and a dispatcher with a
-different calling convention — `std/editor/transient`, whose bindings are switches and
-options rather than `(state key)` commands — cannot use `keymap-step` at all, because
+different calling convention — a transient menu (bedit's `transient-core`), whose
+bindings are switches and options rather than `(state key)` commands — cannot use
+`keymap-step` at all, because
 `keymap-step`'s only way to tell you what it found is to call it. Each of those
 otherwise re-implements this six-line walk, and a second implementation of chord
 resolution is a second set of chord bugs.

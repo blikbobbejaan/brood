@@ -78,7 +78,7 @@ day: tab stops in the display seam (ADR-342), the scroll blit (ADR-343),
 - ⬜ **The window-id half of ADR-059.** Frames chose one process per window (ADR-345), so
   input routing needs nothing; a sound "two windows, one process" still needs a per-window
   mailbox, not a tag (the loop's catch-all poll arm would swallow the other window's keys).
-- ⬜ **`editor/shell` onto `editor/lexer`** — its function-name rule is contextual (a word
+- ⬜ **bedit's `lex-shell` onto `editor/lexer`** — its function-name rule is contextual (a word
   before `()`), one step past what a table expresses; a `:context` hook on the lexer would
   fold it in and delete its walker.
 - ⬜ **`collab.blsp`'s file registry onto `editor/buffer-registry`** — keyed by path with a

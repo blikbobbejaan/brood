@@ -3664,7 +3664,6 @@ its names bare. Run `nest doc <module>` for the full API of any module.
 | `std/stats.blsp` | `'stats` | Descriptive statistics: `mean`, `median`, `variance`, `stddev`, `percentile`, `mode`, `stats-min`, `stats-max` (`mode` uses `seq/frequencies` internally) |
 | `std/stream.blsp` | `'stream` | Process-based pull streams (lazy, I/O-friendly): sources (`stream-from-list`, `stream-range`, `stream-from-socket`), transformers (`stream-map`, `stream-filter`, `stream-chunk`, `stream-lines`), terminals (`stream-fold`, `stream-to-vector`, `stream-pipe`) |
 | `std/url.blsp` | `'url` | URL encoding/parsing: `percent-encode`, `percent-decode`, `query-encode`, `query-decode`, `parse-url`, `build-url` |
-| `std/mime.blsp` | `'mime` | Internet mail: `parse` a message into its MIME part tree, `header` / `decode-header` (RFC 2047), `text-part` / `body-text` (quoted-printable, base64, legacy charsets), `leaves`, `attachment?`, `filename` |
 | `std/csv.blsp` | `'csv` | CSV parse and emit: `csv-parse`, `csv-parse-maps`, `csv-emit`, `csv-emit-maps` |
 | `std/uuid.blsp` | `'uuid` | UUID generation: `uuid-v4` (random), `uuid-v7` (time-ordered, RFC 9562), `uuid-nil`, `uuid?` |
 | `std/template.blsp` | `'template` | `{{var}}` string templating: `render`, `render-all` |

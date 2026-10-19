@@ -114,30 +114,39 @@ fn two_used_declarers_still_decline() {
 }
 
 /// KI-187: inside a LOADED module's declarations, a bare alias name means what it meant
-/// where it was declared. `vt` and `editor/section` each declare a `row` — a `(vector cell)`
-/// and a record. `vt`'s `terminal` (`:grid (vector row)`) and `(sig line (row any -> …))`
-/// were read from the CHECKED file's namespace, where two loaded `row`s are ambiguous: once
-/// a file referenced `editor/section`, `terminal` widened to `any` (a bad `(vt/lines 7)`
-/// went unreported) and `row` to a bare vector — so `nest check`'s verdict on a file
-/// depended on which files it had reached before (the order differential found it).
+/// where it was declared. `vt` declares `row` as a `(vector cell)`; a second loaded module
+/// declaring its own `row` (a record, as `editor/section` did when it was in std) made two
+/// loaded `row`s. `vt`'s `terminal` (`:grid (vector row)`) and `(sig line (row any -> …))`
+/// were read from the CHECKED file's namespace, where the two are ambiguous: once a file
+/// referenced the other declarer, `terminal` widened to `any` (a bad `(vt/lines 7)` went
+/// unreported) and `row` to a bare vector — so `nest check`'s verdict on a file depended
+/// on which files it had reached before (the order differential found it).
 #[test]
 fn a_loaded_modules_alias_means_what_it_meant_where_it_was_declared() {
     let dir = write_fixture();
     std::fs::write(
-        dir.path.join("vt-beside-section.blsp"),
-        "(defmodule vt-beside-section)\n\
-         (defn- s () (editor/section/section-render (editor/section/section :root nil nil [])))\n\
+        dir.path.join("rows.blsp"),
+        "(defmodule rows)\n\
+         (deftype row (record &open :id vector :depth int))\n\
+         (sig make (int -> row))\n\
+         (defn make (depth) {:id [] :depth depth})\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path.join("vt-beside-rows.blsp"),
+        "(defmodule vt-beside-rows)\n\
+         (defn- s () (rows/make 0))\n\
          (defn- a () (vt/line 5 nil))\n\
          (defn- b () (vt/lines 7))\n",
     )
     .unwrap();
-    let text = check(&dir.path, "vt-beside-section.blsp");
+    let text = check(&dir.path, "vt-beside-rows.blsp");
     assert!(
         text.contains("vt/line: argument 1 expects row, got 5"),
-        "`vt`'s `row` must stay vt's with editor/section loaded:\n{text}"
+        "`vt`'s `row` must stay vt's with another `row` loaded:\n{text}"
     );
     assert!(
         text.contains("vt/lines: argument 1 expects terminal, got 7"),
-        "`vt`'s `terminal` must not widen to any with editor/section loaded:\n{text}"
+        "`vt`'s `terminal` must not widen to any with another `row` loaded:\n{text}"
     );
 }
