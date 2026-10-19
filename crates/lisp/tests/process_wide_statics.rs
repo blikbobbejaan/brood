@@ -111,6 +111,9 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("host/gui/backend.rs", "EXIT_GATE", OneMachine),
     // The `brood-tab` page's display outbox: one page drains one wasm instance.
     ("host/tab.rs", "OUTBOX", OneMachine),
+    // The prelude image a host hands over, taken by the one shared prelude boot (`SHARED`)
+    // every runtime in the process starts from.
+    ("boot.rs", "PROVIDED_PRELUDE_IMAGE", OneMachine),
     ("host/clipboard.rs", "CLIPBOARD", OneMachine),
     ("host/treesit.rs", "DYNAMIC", OneMachine),
     // Facts of the binary: the std sources baked into it, and the signatures derived from
