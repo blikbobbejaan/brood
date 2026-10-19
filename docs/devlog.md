@@ -2749,3 +2749,33 @@ stale program. Guard:
 `crates/cli/tests/tree_walker_frames.rs` (a 200 000-deep non-tail recursion completes at tier
 0, a runaway one stops at the frame limit, catchably); red with HEAD's `eval.rs` put back.
 Not measured: tier-0 speed (`make ab` with `BROOD_TIER=0` belongs on the benchmark machine).
+
+## 2026-10-19 (evening) — ADR-416 stage 2b: entering a closure is one path, and its defaults are frames
+
+Inside one tree-walked run nothing recurses natively now. `Machine::enter` is the single way
+into a closure body, for three callers: a call the running frame makes; a macro expander, run
+as a frame under a new `Expand` continuation whose value replaces the call (it was a nested
+`apply_closure`); and `apply_closure` itself, which runs the whole body on one machine instead
+of a nested `eval` per non-last form. `bind_params` now runs nothing: it binds what the call
+supplied and hands back the `&optional` defaults still owed, which `enter` evaluates in the
+closure's scope as frames (`KontKind::Defaults`). An error leaving one is attributed as a
+failed bind, as before (the call's position, a name-only trace entry for the callee). The
+passthrough redirect's slow head is a symbol lookup (`lookup`, shared with `step`), not an
+`eval`. `eval_at` is gone.
+
+A native-boundary entry keeps two pieces of bookkeeping its old loop had. Its trace entry
+starts as the callee's name with no call site (`TwFrame::boundary`). An error leaving its
+body's tail takes the tail form's position (`TailTag`, a frame register beside the trace
+tracker): `(try (do … (let)))` reports the `do`'s line at tier 0, as the VM does; without the
+tag it reports no position. `apply_closure` keeps the native byte-budget guard: a native
+calling back into Brood is still real Rust stack, one machine per level.
+
+Observable: a recursion through an `&optional` default
+(`(defn depth (n &optional (acc (… (depth (- n 1))))) acc)`) now reaches 100 000 levels at
+tier 0; before, each level was a nested native `eval` and the run failed. Guards in
+`crates/cli/tests/tree_walker_frames.rs`: the defaults depth (red with HEAD's `eval.rs` and
+`machine.rs` put back), and the boundary tail position (red with `TailTag` made a no-op).
+
+Evidence: `make test-both` 1949/1949 on each engine; `gcstress-all` at `BROOD_TIER=0`, all 289
+files clean; all thirteen fuzz generators (tree-walker as reference), 2990 programs plus
+metamorphic variants, no divergence, crash or stale program. Not measured: tier-0 speed.

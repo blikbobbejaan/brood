@@ -112,14 +112,14 @@ closed (devlog 2026-10-19 "later"; guarded in `tier0_escape_audit.rs`). Re-audit
 those bodies). To re-run: `BROOD_TIER=0 BROOD_TIER0_AUDIT=<file> cargo nextest run`, then
 `cut -f2 <file> | sed -E 's/@[^ ]*//g' | sort | uniq -c`.
 
-**Stage 2a is done** (devlog 2026-10-19 "later still"): `eval/machine.rs`, the frame stack,
-behaviour-identical, green on `test-both`, tier-0 `gcstress-all` and the fuzzers.
-**Next: stage 2b** — the remaining native recursions inside a tree-walked frame become frames
-too: macro expansion (`Machine::expand_macro` calls `apply_closure`), `&optional` defaults
-(`bind_params`' `eval_at`), the passthrough redirect's slow head (`eval`), `apply_closure`'s
-own body (it should push the closure's forms on a machine, not run `eval_at` per form). Then
-stage 3 (`try`/`binding` frames: `%try` and `%binding` call back through `apply_engine`, so
-they are native boundaries today). Owed: a tier-0 `make ab` on the benchmark machine.
+**Stages 2a and 2b are done** (devlog 2026-10-19 "later still" and "evening"):
+`eval/machine.rs`, the frame stack. Inside one tree-walked run nothing recurses natively any
+more: closure entry is one path (`Machine::enter`) for calls, macro expanders and
+`apply_closure`, and `&optional` defaults are frames. What remains native is every native
+calling back into Brood (`%try`, `%binding`, a seq-view realise, …), one
+`apply_closure` machine per level. **Next: stage 3** — `try`/`binding` as frames (`%try` and
+`%binding` call back through `apply_engine`, so they are native boundaries today), then
+stage 4 (capture). Owed: a tier-0 `make ab` on the benchmark machine (2a and 2b both).
 
 **After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
 `scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.

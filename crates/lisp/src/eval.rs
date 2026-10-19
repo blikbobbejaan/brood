@@ -37,13 +37,6 @@ pub fn truthy(v: Value) -> bool {
     !matches!(v.unpack(), ValueRef::Nil | ValueRef::Bool(false))
 }
 
-/// Evaluate `form` and attach its source position to any error.
-/// Collapses the recurring `eval(heap, form, env).map_err(|e| e.or_form_pos(heap, form))`.
-#[inline]
-fn eval_at(heap: &mut Heap, form: Value, env: EnvId) -> LispResult {
-    eval(heap, form, env).map_err(|e| e.or_form_pos(heap, form))
-}
-
 /// The evaluator's special forms, as a closed enum. The hot path (every
 /// combination) dispatches on the head symbol's interned id (a `u32`) to one of
 /// these — or `None` for an ordinary call — then `match`es the *enum* (a jump on
@@ -118,6 +111,20 @@ struct TwFrame {
     shim_call: Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>,
 }
 
+impl TwFrame {
+    /// The frame a native-boundary entry into a closure named `name` starts: the name, no
+    /// call site (the caller is native code).
+    fn boundary(name: Option<Symbol>) -> TwFrame {
+        TwFrame {
+            name,
+            call_pos: None,
+            call_file: None,
+            shim_file: None,
+            shim_call: None,
+        }
+    }
+}
+
 /// The contract module's name as an interned symbol, for the per-entry shim test.
 static CONTRACT_MODULE_SYM: LazyLock<Symbol> =
     LazyLock::new(|| value::intern(crate::eval::compile::CONTRACT_MODULE));
@@ -188,9 +195,9 @@ fn untag_shim(
 fn record_tw_entry(
     heap: &Heap,
     entered: &mut Option<TwFrame>,
-    // The closure's name, captured by the caller *before* `bind_params` — which can
-    // evaluate an `&optional` default that triggers a RUNTIME compaction and
-    // invalidates the closure's `ClosureId`. A `Symbol` is an interned `u32`, GC-
+    // The closure's name, captured by the caller *before* binding — whose `&optional`
+    // defaults can run code that triggers a RUNTIME compaction and invalidates the
+    // closure's `ClosureId`. A `Symbol` is an interned `u32`, GC-
     // stable, so it survives; re-reading `heap.closure(id)` here would deref a stale
     // handle (a use-after-GC crash on the tree-walker, kernel-audit #2's twin).
     name: Option<value::Symbol>,
@@ -266,11 +273,11 @@ fn eval_tail_loop(
     let _gc_block = crate::process::GcBlockGuard::enter();
 
     // Stack-budget guard (ADR-043). A run's own frames live on its heap frame stack
-    // (`machine`), so this bites only a run re-entered through native code — a native
-    // callback, `eval`, an `&optional` default — each of which is real Rust stack. An
-    // unbounded recursion through one would overflow the coroutine stack as a SIGSEGV the
-    // host can't `catch_unwind`; probing the stack pointer against the budget fails *here*
-    // with a clean, catchable error instead. (Bytes, not frame count — see
+    // (`machine`), so this bites only a run re-entered through native code — `eval`, or a
+    // native callback (`apply_closure` carries the same guard) — each of which is real Rust
+    // stack. An unbounded recursion through one would overflow the coroutine stack as a
+    // SIGSEGV the host can't `catch_unwind`; probing the stack pointer against the budget
+    // fails *here* with a clean, catchable error instead. (Bytes, not frame count — see
     // `process::stack_overflow_check` for why.)
     let stack_probe = 0u8;
     if let Some(used) = crate::process::stack_overflow_check(&stack_probe as *const u8 as usize) {
@@ -468,68 +475,26 @@ pub fn apply_closure(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> LispResu
     // keeps native calls shimmed through `apply`, e.g. `%receive` itself,
     // capture-eligible).
     let _tw = crate::process::TreeWalkGuard::enter();
+    // A native calling back into Brood is real Rust stack, so this entry carries the same
+    // byte-budget guard as `eval_tail_loop`.
+    let _gc_block = crate::process::GcBlockGuard::enter();
+    let stack_probe = 0u8;
+    if let Some(used) = crate::process::stack_overflow_check(&stack_probe as *const u8 as usize) {
+        let name = heap.closure(cl).name;
+        return Err(close_frame(
+            stack_depth_error(used),
+            Some(TwFrame::boundary(name)),
+        ));
+    }
     // Error-trace bookkeeping: this native-boundary entry into `cl` (a `map`/`try`/
     // macro-expansion callback) is one logical frame, mirrored on the VM by a
     // `vm_apply` driver whose arm0 is `cl`. The call site is native code, so the
-    // frame's entry carries the name only. Non-last body forms attach it directly
-    // on error (they run *in* this frame — nested calls are their own `eval`
-    // frames); the last body form instead runs on `eval_tail_loop` with the
-    // tracker **seeded** to this frame, so a tail call out of `cl` renames the
-    // entry rather than adding one — the VM's frame-reuse behaviour exactly.
-    let trace_name = heap.closure(cl).name;
-    let module = heap.closure(cl).module;
-    let boundary_entry = |name: Option<Symbol>| crate::error::TraceFrame {
-        name: name.map(value::symbol_name_ref),
-        file: None,
-        pos: None,
-    };
-    // `bind_params` selects the arm for `argv`'s arity and returns its body. An
-    // arity/bind error names the callee, matching the VM's `push_frame` attribution.
-    let (scope, body) = bind_params(heap, cl, argv).map_err(|mut e| {
-        e.push_trace(boundary_entry(trace_name));
-        e
-    })?;
-    if body.is_empty() {
-        return Ok(Value::nil());
-    }
-    let shim_file = contract_shim_file(heap, module, &body);
-    // Each body-form eval can collect at ANY depth (ADR-061), so keep `scope` and
-    // the remaining body forms on the operand stack across them (the intermediate
-    // results of non-last forms are dead immediately, so they need no slot).
-    // Tag each body form's position on any error so the diagnostic points at the
-    // failing line (same as the closure body branch in the main eval loop).
-    heap.root_scope(|heap| {
-        let scope_r = heap.root_env(scope);
-        let (last, init) = body.split_last().expect("checked non-empty");
-        let last_r = heap.root(*last);
-        let init_r: SmallVec<[Root; 8]> = init.iter().map(|&f| heap.root(f)).collect();
-        for &fr in &init_r {
-            let scope_now = heap.read_root_env(scope_r);
-            let form = heap.read_root(fr);
-            eval_at(heap, form, scope_now).map_err(|mut e| {
-                if shim_file.is_some() {
-                    untag_shim(&mut e, shim_file.as_deref(), None, None);
-                } else {
-                    e.push_trace(boundary_entry(trace_name));
-                }
-                e
-            })?;
-        }
-        // The last form is this frame's tail: run it on the loop with the frame
-        // tracker pre-seeded, so the entry starts as `cl` and follows any tail
-        // chain out of it (first entry wins the — native, so absent — call site).
-        let scope_now = heap.read_root_env(scope_r);
-        let form = heap.read_root(last_r);
-        let mut entered = Some(TwFrame {
-            name: trace_name,
-            call_pos: None,
-            call_file: None,
-            shim_file: shim_file.clone(),
-            shim_call: None,
-        });
-        eval_tail_loop(heap, form, scope_now, &mut entered)
-            .map_err(|e| close_frame(e.or_form_pos(heap, form), entered))
-    })
+    // frame's entry carries the name only, and a tail call out of `cl` renames the
+    // entry rather than adding one — the VM's frame-reuse behaviour exactly. The whole
+    // body, `&optional` defaults included, runs on one machine (`Machine::run_closure`).
+    let mut entered: Option<TwFrame> = None;
+    heap.root_scope(|heap| machine::Machine::run_closure(heap, cl, argv, &mut entered))
+        .map_err(|e| close_frame(e, entered))
 }
 
 /// Thin-wrapper elision (perf). If the arm `cl` selects for an `argc`-argument
@@ -561,11 +526,22 @@ pub(crate) fn passthrough_arm(
     arm.passthrough.as_ref().map(|p| (p.head, p.map.clone()))
 }
 
-fn bind_params(
-    heap: &mut Heap,
-    cl: ClosureId,
-    argv: &[Value],
-) -> Result<(EnvId, SmallVec<[Value; 4]>), LispError> {
+/// What binding a call's arguments leaves for the machine: the closure's new frame, the
+/// selected arm's body, and the `&optional` defaults the call did not supply. Each default is
+/// evaluated in `scope`, in order, as a frame of its own; `rest` is the rest parameter still
+/// to bind after them — to the empty list, since an optional left unsupplied means no argument
+/// was left over. With no default owed, the rest parameter is already bound and `rest` is
+/// `None`.
+struct Bound {
+    scope: EnvId,
+    body: SmallVec<[Value; 4]>,
+    defaults: SmallVec<[(Symbol, Value); 4]>,
+    rest: Option<Symbol>,
+}
+
+/// Select `cl`'s arm for `argv` and bind it in a fresh frame. Runs nothing, so it cannot
+/// collect: `argv` needs no rooting.
+fn bind_params(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> Result<Bound, LispError> {
     // Snapshot the selected arm's metadata once. Every re-read of `heap.closure`
     // is a region-dispatch + slab index, and the binding loop below would
     // otherwise re-read it once per parameter. Closures are immutable once
@@ -588,7 +564,6 @@ fn bind_params(
     // A global-capturing closure (env == None) resolves to this process's global.
     let cl_env = cl_env_opt.unwrap_or_else(|| heap.global());
     let required = params.len();
-    let n_opt = optionals.len();
 
     let scope = heap.new_env(Some(cl_env));
     // The tree-walker's half of the contract boundary (ADR-383): a frame carries its
@@ -598,60 +573,28 @@ fn bind_params(
     for (i, &arg) in argv.iter().enumerate().take(required) {
         heap.env_define(scope, params[i], arg);
     }
-    // Fast path: no `&optional` params. Binding the rest list (if any) does no
-    // eval, so no GC can run — `argv` / `body` stay valid, no rooting needed.
-    if n_opt == 0 {
-        if let Some(rs) = rest_sym {
-            let rest_list = heap.list_from_slice(&argv[required..]);
-            heap.env_define(scope, rs, rest_list);
+    let mut idx = required;
+    let mut defaults: SmallVec<[(Symbol, Value); 4]> = SmallVec::new();
+    for &(name, default) in &optionals {
+        if idx < argv.len() {
+            heap.env_define(scope, name, argv[idx]);
+            idx += 1;
+        } else {
+            defaults.push((name, default));
         }
-        return Ok((scope, body));
     }
-    // `&optional` defaults present: each default's eval can collect at ANY depth
-    // (ADR-061). The caller's `argv` slice, `scope`, every default form, and the
-    // body forms are LOCAL transients a deep collection would relocate — root them
-    // all on the operand stack and read back relocated handles. (Only paid by
-    // functions that actually declare `&optional` params.)
-    heap.root_scope(|heap| {
-        let scope_rt = heap.root_env(scope);
-        let argv_r: SmallVec<[Root; 8]> = argv.iter().map(|&a| heap.root(a)).collect();
-        let argn = argv.len();
-        let opt_r: SmallVec<[Root; 8]> = optionals.iter().map(|&(_, d)| heap.root(d)).collect();
-        let body_rt: SmallVec<[Root; 4]> = body.iter().map(|&f| heap.root(f)).collect();
-        let mut idx = required;
-        for j in 0..n_opt {
-            let name = optionals[j].0;
-            let scope_now = heap.read_root_env(scope_rt);
-            if idx < argn {
-                let arg = heap.read_root(argv_r[idx]);
-                heap.env_define(scope_now, name, arg);
-                idx += 1;
-            } else {
-                // Tag the default-form's source position on any error so a
-                // diagnostic from inside an `&optional` default points at the
-                // default's line (not at the enclosing top-level form's start).
-                let default_form = heap.read_root(opt_r[j]);
-                let value = eval_at(heap, default_form, scope_now)?;
-                let scope_now = heap.read_root_env(scope_rt);
-                heap.env_define(scope_now, name, value);
-            }
-        }
-        if let Some(rs) = rest_sym {
-            let mut rest_items: SmallVec<[Value; 8]> = SmallVec::new();
-            for i in idx..argn {
-                rest_items.push(heap.read_root(argv_r[i]));
-            }
-            let rest_list = heap.list_from_slice(&rest_items);
-            let scope_now = heap.read_root_env(scope_rt);
-            heap.env_define(scope_now, rs, rest_list);
-        }
-        Ok((
-            heap.read_root_env(scope_rt),
-            body_rt
-                .iter()
-                .map(|&r| heap.read_root(r))
-                .collect::<SmallVec<_>>(),
-        ))
+    let mut rest = rest_sym;
+    if defaults.is_empty()
+        && let Some(rs) = rest.take()
+    {
+        let rest_list = heap.list_from_slice(&argv[idx..]);
+        heap.env_define(scope, rs, rest_list);
+    }
+    Ok(Bound {
+        scope,
+        body,
+        defaults,
+        rest,
     })
 }
 

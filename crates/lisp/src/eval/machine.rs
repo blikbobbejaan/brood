@@ -24,9 +24,13 @@
 //! anything — it cannot collect or fail — so a sub-form that is one ([`leaf_value`]) is read
 //! directly and costs no frame. `(+ a b)` pushes nothing.
 //!
-//! Still native recursion (ADR-416 stage 2b): macro expansion, `&optional` defaults, the
-//! passthrough redirect's slow head lookup, a seq-view realised for `apply`, and every native
-//! that calls back into Brood (`apply_closure` runs its own machine).
+//! **Entering a closure is one path** ([`Machine::enter`]), whoever calls: a call this frame
+//! makes, a macro expander (whose expansion then replaces the call, `KontKind::Expand`), or a
+//! native calling back into Brood (`apply_closure`, which runs the body on a machine of its
+//! own). Its unsupplied `&optional` defaults run as frames too (`KontKind::Defaults`).
+//!
+//! Still native recursion: a seq-view realised for `apply`, and every native that calls back
+//! into Brood (each such callback is one `apply_closure`, so one machine per native level).
 
 use super::*;
 use crate::core::heap::EnvRoot;
@@ -70,13 +74,36 @@ impl Marks {
     }
 }
 
+/// A frame entered across a native boundary (`apply_closure`, a macro expander) ran its
+/// body's last form on its own loop, and an error leaving that loop took the form's position.
+/// The frame keeps the form until its tail is reached (`Pending`), and from then on an error
+/// unwinding out of it is tagged with it (`Armed`) — before the frame's trace entry closes,
+/// as the old loop's `map_err` did. Errors from the non-last forms are tagged with their own
+/// forms instead.
+#[derive(Clone, Copy)]
+enum TailTag {
+    None,
+    Pending(Root),
+    Armed(Root),
+}
+
+impl TailTag {
+    fn tag(self, heap: &Heap, e: LispError) -> LispError {
+        match self {
+            TailTag::Armed(r) => e.or_form_pos(heap, heap.read_root(r)),
+            _ => e,
+        }
+    }
+}
+
 /// A pending piece of work: what the frame that pushed it does with the value of the
 /// sub-form now running.
 struct Kont {
-    /// The pushing frame's trace tracker and lazy-expansion count, set aside while the
-    /// sub-form runs as a frame of its own.
+    /// The pushing frame's registers — trace tracker, lazy-expansion count, tail tag — set
+    /// aside while the sub-form runs as a frame of its own.
     entered: Option<TwFrame>,
     lazy: u32,
+    tail: TailTag,
     /// The sub-form, when an error leaving it takes its position (the old `eval_at`).
     form: Option<Root>,
     marks: Marks,
@@ -109,6 +136,10 @@ enum KontKind {
     Head { call_form_r: Root, env_r: EnvRoot },
     /// An argument of a call.
     Args(ArgsState),
+    /// An `&optional` default of a closure being entered.
+    Defaults(EntryState),
+    /// A macro expander's body: its value is the form that replaces the call.
+    Expand { env_r: EnvRoot },
 }
 
 struct BindState {
@@ -148,6 +179,55 @@ struct ArgsState {
     args: SmallVec<[Root; 4]>,
 }
 
+/// A closure entry waiting on its unsupplied `&optional` defaults (`Bound` holds the
+/// unrooted original).
+struct EntryState {
+    /// Read before binding: a default may compact the RUNTIME region and stale the
+    /// closure's id, and a `Symbol` is GC-stable.
+    name: Option<Symbol>,
+    module: Option<Symbol>,
+    /// The call form, for a call this frame made; `None` across a native boundary.
+    site: Option<Root>,
+    scope_r: EnvRoot,
+    defaults: SmallVec<[(Symbol, Root); 4]>,
+    /// The default whose value is pending.
+    i: usize,
+    rest: Option<Symbol>,
+    body: SmallVec<[Root; 4]>,
+}
+
+impl EntryState {
+    fn define(&mut self, heap: &mut Heap, val: Value) {
+        let scope = heap.read_root_env(self.scope_r);
+        heap.env_define(scope, self.defaults[self.i].0, val);
+        self.i += 1;
+    }
+
+    /// An error leaving a default: a failed bind, attributed as one.
+    fn unwound(&self, heap: &Heap, e: LispError) -> LispError {
+        bind_failed(heap, e, self.name, self.site.map(|r| heap.read_root(r)))
+    }
+}
+
+/// A bind failure (arity, or an `&optional` default's error) for a call of a closure named
+/// `name`: from a call site, tagged with the call and carrying a name-only trace entry for
+/// the callee, as the VM attributes it; across a native boundary the boundary frame's own
+/// entry already names the callee.
+fn bind_failed(heap: &Heap, e: LispError, name: Option<Symbol>, site: Option<Value>) -> LispError {
+    match site {
+        None => e,
+        Some(call_form) => {
+            let mut e = e.or_form_pos(heap, call_form);
+            e.push_trace(crate::error::TraceFrame {
+                name: name.map(value::symbol_name_ref),
+                file: None,
+                pos: None,
+            });
+            e
+        }
+    }
+}
+
 /// What one step left for the driver.
 enum Step {
     /// The running frame produced its value.
@@ -169,6 +249,15 @@ fn leaf_value(heap: &Heap, form: Value, env: EnvId) -> Option<Value> {
             .map(|v| crate::builtins::contracts::boundary_resolve(heap, env, v)),
         ValueRef::Pair(_) | ValueRef::Vector(_) | ValueRef::Map(_) | ValueRef::Set(_) => None,
         _ => Some(form),
+    }
+}
+
+/// A symbol's value in `env`. A miss may autoload the name's module (ADR-335), which runs
+/// code and can collect; the caller roots what it holds across that.
+fn lookup(heap: &mut Heap, env: EnvId, s: Symbol) -> LispResult {
+    match heap.env_get(env, s) {
+        Some(v) => Ok(crate::builtins::contracts::boundary_resolve(heap, env, v)),
+        None => crate::eval::derive::global_miss(heap, env, s),
     }
 }
 
@@ -207,6 +296,8 @@ pub(super) struct Machine<'e> {
     /// The running frame's trace tracker. At the bottom of the stack this is the caller's
     /// (`eval` reads it after the run).
     entered: &'e mut Option<TwFrame>,
+    /// The running frame's tail tag (see [`TailTag`]).
+    tail: TailTag,
     konts: Vec<Kont>,
 }
 
@@ -217,15 +308,41 @@ impl<'e> Machine<'e> {
             env,
             lazy: 0,
             entered,
+            tail: TailTag::None,
             konts: Vec::new(),
         }
     }
 
+    /// Apply closure `cl` to `argv` across a native boundary (`apply_closure`): its body,
+    /// `&optional` defaults included, runs on this machine as the bottom frame. `entered`
+    /// is the frame's trace tracker, for the caller to close. Runs under the caller's
+    /// `root_scope`, which drops the roots the bottom frame keeps.
+    pub(super) fn run_closure(
+        heap: &mut Heap,
+        cl: ClosureId,
+        argv: &[Value],
+        entered: &'e mut Option<TwFrame>,
+    ) -> LispResult {
+        // `expr`/`env` are placeholders until `enter` hands the loop a form.
+        let mut m = Machine::new(Value::nil(), EnvId::GLOBAL, entered);
+        let first = m.enter(heap, cl, argv, None);
+        m.drive(heap, first)
+    }
+
     /// Run until the bottom frame has its value or its error.
     pub(super) fn run(&mut self, heap: &mut Heap) -> LispResult {
+        let first = self.step(heap);
+        self.drive(heap, first)
+    }
+
+    /// Drive the loop on from the running frame's step `next`.
+    fn drive(&mut self, heap: &mut Heap, mut next: Result<Step, LispError>) -> LispResult {
         loop {
-            let mut outcome = match self.step(heap) {
-                Ok(Step::Continue) => continue,
+            let mut outcome = match next {
+                Ok(Step::Continue) => {
+                    next = self.step(heap);
+                    continue;
+                }
                 Ok(Step::Value(v)) => Ok(v),
                 Err(e) => Err(e),
             };
@@ -233,28 +350,34 @@ impl<'e> Machine<'e> {
             // has more to evaluate.
             loop {
                 let Some(k) = self.konts.pop() else {
-                    return outcome;
+                    // The bottom frame's trace entry is the caller's to close.
+                    return outcome.map_err(|e| self.tail.tag(heap, e));
                 };
                 let inner = std::mem::replace(self.entered, k.entered);
+                let inner_tail = std::mem::replace(&mut self.tail, k.tail);
                 self.lazy = k.lazy;
-                let next = match outcome {
+                let resumed = match outcome {
                     Ok(v) => self.resume(heap, k.kind, k.marks, v),
                     Err(e) => {
-                        let mut e = close_frame(e, inner);
+                        let mut e = close_frame(inner_tail.tag(heap, e), inner);
                         if let Some(form_r) = k.form {
                             let form = heap.read_root(form_r);
                             e = e.or_form_pos(heap, form);
+                        }
+                        if let KontKind::Defaults(st) = &k.kind {
+                            e = st.unwound(heap, e);
                         }
                         k.marks.restore(heap);
                         Err(e)
                     }
                 };
-                match next {
+                match resumed {
                     Ok(Step::Continue) => break,
                     Ok(Step::Value(v)) => outcome = Ok(v),
                     Err(e) => outcome = Err(e),
                 }
             }
+            next = self.step(heap);
         }
     }
 
@@ -270,22 +393,30 @@ impl<'e> Machine<'e> {
         tag: bool,
         env: EnvId,
     ) -> Result<Step, LispError> {
-        let form_r = tag.then(|| heap.root(form));
-        self.konts.push(Kont {
-            entered: self.entered.take(),
-            lazy: std::mem::take(&mut self.lazy),
-            form: form_r,
-            marks,
-            kind,
-        });
+        let within = self.save(heap, marks, kind, tag.then_some(form));
         eval_trace(heap, form);
-        if self.konts.len() > MAX_TW_FRAMES {
+        if !within {
             // Raised by the new frame, as the old nested `eval` raised it on entry.
             return Err(tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, form));
         }
         self.expr = form;
         self.env = env;
         Ok(Step::Continue)
+    }
+
+    /// Set the running frame aside behind `kind` and clear the registers for a new frame;
+    /// `false` when that frame is past the limit (the new frame raises it).
+    fn save(&mut self, heap: &mut Heap, marks: Marks, kind: KontKind, tag: Option<Value>) -> bool {
+        let form = tag.map(|f| heap.root(f));
+        self.konts.push(Kont {
+            entered: self.entered.take(),
+            lazy: std::mem::take(&mut self.lazy),
+            tail: std::mem::replace(&mut self.tail, TailTag::None),
+            form,
+            marks,
+            kind,
+        });
+        self.konts.len() <= MAX_TW_FRAMES
     }
 
     /// Continue the frame that pushed `kind`, now that its sub-form produced `v`. The
@@ -352,6 +483,24 @@ impl<'e> Machine<'e> {
                 st.spine_r = heap.advance_root(st.spine_r, next);
                 self.args_next(heap, st, marks)
             }
+            KontKind::Defaults(mut st) => {
+                st.define(heap, v);
+                self.defaults(heap, st, marks)
+            }
+            KontKind::Expand { env_r } => {
+                // A template may emit `/name` — the root escape (ADR-236) that stops a user
+                // module capturing a prelude reference. The compile pass resolves it, but a
+                // macro reached HERE was not expanded at compile time (it was defined after
+                // its use site, or defined at runtime), so nothing has rewritten it and the
+                // evaluator would see the literal symbol `/nil?` and call it unbound. Strip it
+                // on the way out — the runtime half of `macros::resolve`'s root case. Cheap:
+                // the scan allocates nothing and rebuilds only when an escape is present.
+                let expanded = crate::eval::macros::strip_root_escapes(heap, v);
+                self.env = heap.read_root_env(env_r);
+                marks.restore(heap);
+                self.expr = expanded;
+                Ok(Step::Continue)
+            }
         }
     }
 
@@ -359,25 +508,7 @@ impl<'e> Machine<'e> {
     /// answers, hands a tail position back to the loop, or pushes a sub-form.
     fn step(&mut self, heap: &mut Heap) -> Result<Step, LispError> {
         match self.expr.unpack() {
-            ValueRef::Sym(s) => {
-                let env = self.env;
-                let expr = self.expr;
-                return match heap.env_get(env, s) {
-                    Some(v) => Ok(Step::Value(crate::builtins::contracts::boundary_resolve(
-                        heap, env, v,
-                    ))),
-                    // A miss may autoload the name's module (ADR-335) — a collection — so
-                    // the form is rooted across it for the position tag.
-                    None => heap
-                        .root_scope(|heap| {
-                            let expr_r = heap.root(expr);
-                            let looked_up = crate::eval::derive::global_miss(heap, env, s);
-                            let expr = heap.read_root(expr_r);
-                            looked_up.map_err(|e| e.or_form_pos(heap, expr))
-                        })
-                        .map(Step::Value),
-                };
-            }
+            ValueRef::Sym(s) => return lookup(heap, self.env, s).map(Step::Value),
             ValueRef::Vector(id) => {
                 let items = heap.vector(id).to_vec();
                 return self.literal(heap, LiteralKind::Vector, &items);
@@ -650,8 +781,8 @@ impl<'e> Machine<'e> {
         self.call(heap, callee, call_form, spine, self.env)
     }
 
-    /// A macro call: expand it (native recursion — stage 2b) and re-enter the loop with the
-    /// expansion.
+    /// A macro call: run the expander as a frame of its own (`KontKind::Expand`), whose
+    /// value — the expansion — this frame then evaluates in the call's place.
     fn expand_macro(
         &mut self,
         heap: &mut Heap,
@@ -668,28 +799,24 @@ impl<'e> Machine<'e> {
             ))
             .or_form_pos(heap, call_form));
         }
-        // Macro expansion can collect at any depth (ADR-061); root `env` across it so the
-        // loop re-reads the relocated handle. `arg_forms` is consumed by `bind_params`
-        // inside `apply_closure`, which roots it itself.
+        // The argument forms go straight into the expander's frame: binding runs nothing,
+        // so they need no rooting.
         let arg_forms = heap.list_to_vec(spine)?;
-        let env = self.env;
-        let (expanded, new_env) = heap.root_scope(|heap| {
-            let env_r = heap.root_env(env);
-            let out =
-                apply_closure(heap, mid, &arg_forms).map_err(|e| e.or_form_pos(heap, call_form))?;
-            // A template may emit `/name` — the root escape (ADR-236) that stops a user
-            // module capturing a prelude reference. The compile pass resolves it, but a
-            // macro reached HERE was not expanded at compile time (it was defined after its
-            // use site, or defined at runtime), so nothing has rewritten it and the
-            // evaluator would see the literal symbol `/nil?` and call it unbound. Strip it
-            // on the way out — the runtime half of `macros::resolve`'s root case. Cheap: the
-            // scan allocates nothing and rebuilds only when an escape is actually present.
-            let out = crate::eval::macros::strip_root_escapes(heap, out);
-            Ok((out, heap.read_root_env(env_r)))
-        })?;
-        self.env = new_env;
-        self.expr = expanded;
-        Ok(Step::Continue)
+        let marks = Marks::take(heap);
+        let env_r = heap.root_env(self.env);
+        // Above tier 0 an expander with a compiled arm runs on the VM, as any native-boundary
+        // call of it would (`apply_closure`).
+        if let Some(out) = tw_vm_route(heap, mid, &arg_forms) {
+            let out = out.map(|v| crate::eval::macros::strip_root_escapes(heap, v));
+            self.env = heap.read_root_env(env_r);
+            marks.restore(heap);
+            self.expr = out.map_err(|e| e.or_form_pos(heap, call_form))?;
+            return Ok(Step::Continue);
+        }
+        if !self.save(heap, marks, KontKind::Expand { env_r }, Some(call_form)) {
+            return Err(tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form));
+        }
+        self.enter(heap, mid, &arg_forms, None)
     }
 
     /// `(def name value?)`.
@@ -953,6 +1080,9 @@ impl<'e> Machine<'e> {
             );
         }
         self.lazy = 0;
+        if let TailTag::Pending(r) = self.tail {
+            self.tail = TailTag::Armed(r);
+        }
         self.expr = last;
         self.env = env;
         Ok(Step::Continue)
@@ -1146,17 +1276,21 @@ impl<'e> Machine<'e> {
                     if let Some((head, map)) = passthrough_arm(heap, id, cur_argv.len()) {
                         let cl_env = heap.closure(id).env.unwrap_or_else(|| heap.global());
                         // Inner-head resolution. A bound, non-dynamic symbol is a plain
-                        // lookup, which cannot collect. Anything else goes through a full
-                        // `eval` — and that CAN collect: an unbound qualified head is a lazy
+                        // lookup, which cannot collect. Anything else is a full symbol
+                        // lookup — and that CAN collect: an unbound qualified head is a lazy
                         // module load (ADR-335), i.e. arbitrary evaluation. So the slow path
                         // roots the args across it (a `bytes` arg reached `seq` stale under
                         // `BROOD_TIER=0 nest test` before it did, deterministic with
                         // `BROOD_GC_STRESS=1`). The shared `passthrough_redirect_ok` then
                         // gates the redirect (callable inner only), counts the reduction, and
                         // honours the deadline.
-                        let fast = match head {
-                            Value::Sym(s) if !heap.is_dynamic(s) => heap.env_get(cl_env, s),
-                            _ => None,
+                        let Value::Sym(head) = head else {
+                            unreachable!("a passthrough head is a symbol (compute_passthrough)")
+                        };
+                        let fast = if heap.is_dynamic(head) {
+                            None
+                        } else {
+                            heap.env_get(cl_env, head)
                         };
                         let inner = match fast {
                             Some(v) => v,
@@ -1166,7 +1300,7 @@ impl<'e> Machine<'e> {
                                         cur_argv.iter().map(|&v| heap.root(v)).collect();
                                     let form_r = heap.root(call_form);
                                     let env_r = heap.root_env(env);
-                                    let inner = eval(heap, head, cl_env)?;
+                                    let inner = lookup(heap, cl_env, head)?;
                                     for (slot, &r) in cur_argv.iter_mut().zip(arg_roots.iter()) {
                                         *slot = heap.read_root(r);
                                     }
@@ -1208,31 +1342,7 @@ impl<'e> Machine<'e> {
                             .map(Step::Value)
                             .map_err(|e| e.or_form_pos(heap, call_form));
                     }
-                    // `bind_params` selects the arm matching this call's arity, binds it,
-                    // and hands back that arm's body. An arity/bind failure appends a
-                    // name-only trace entry for the callee — the same attribution the VM
-                    // produces (a no-arm call defers to `apply_closure`, whose bind error is
-                    // name-only).
-                    let cl_name = heap.closure(id).name;
-                    let cl_module = heap.closure(id).module;
-                    let (scope, body) = bind_params(heap, id, &cur_argv).map_err(|e| {
-                        let mut e = e.or_form_pos(heap, call_form);
-                        e.push_trace(crate::error::TraceFrame {
-                            name: cl_name.map(value::symbol_name_ref),
-                            file: None,
-                            pos: None,
-                        });
-                        e
-                    })?;
-                    // Error-trace bookkeeping: this frame is now entering `id`'s body. Pass
-                    // the name captured *above* (pre-`bind_params`): the default eval may
-                    // have compacted the RUNTIME region and staled `id`.
-                    let shim_file = contract_shim_file(heap, cl_module, &body);
-                    record_tw_entry(heap, self.entered, cl_name, shim_file, call_form);
-                    if body.is_empty() {
-                        return Ok(Step::Value(Value::nil()));
-                    }
-                    return self.forms(heap, &body, scope);
+                    return self.enter(heap, id, &cur_argv, Some(call_form));
                 }
                 // A keyword in head position is an accessor (ADR-165); the same helper
                 // `apply` uses, so a direct `(:k m)` and a routed `(apply :k …)` can't
@@ -1247,6 +1357,104 @@ impl<'e> Machine<'e> {
                 }
             }
         }
+    }
+}
+
+impl Machine<'_> {
+    /// Enter closure `id`'s arm for `argv` as the running frame's body. `site` is the call
+    /// form when this frame made the call. `None` is a native-boundary entry (`apply_closure`,
+    /// a macro expander): the frame's trace entry starts as the callee's name with no call
+    /// site, and an error leaving the body's tail takes the tail form's position
+    /// ([`TailTag`]).
+    fn enter(
+        &mut self,
+        heap: &mut Heap,
+        id: ClosureId,
+        argv: &[Value],
+        site: Option<Value>,
+    ) -> Result<Step, LispError> {
+        // Read before binding: an `&optional` default may compact the RUNTIME region and
+        // stale `id`.
+        let (name, module) = {
+            let cl = heap.closure(id);
+            (cl.name, cl.module)
+        };
+        if site.is_none() {
+            *self.entered = Some(TwFrame::boundary(name));
+        }
+        let bound = bind_params(heap, id, argv).map_err(|e| bind_failed(heap, e, name, site))?;
+        if bound.defaults.is_empty() {
+            return self.start_body(heap, name, module, bound.scope, &bound.body, site);
+        }
+        let marks = Marks::take(heap);
+        let st = EntryState {
+            name,
+            module,
+            site: site.map(|f| heap.root(f)),
+            scope_r: heap.root_env(bound.scope),
+            defaults: bound
+                .defaults
+                .iter()
+                .map(|&(n, d)| (n, heap.root(d)))
+                .collect(),
+            i: 0,
+            rest: bound.rest,
+            body: bound.body.iter().map(|&f| heap.root(f)).collect(),
+        };
+        self.defaults(heap, st, marks)
+    }
+
+    /// Evaluate the entry's `&optional` defaults from `st.i` on, each in the closure's scope,
+    /// pushing at the first that is not a leaf; then start the body.
+    fn defaults(
+        &mut self,
+        heap: &mut Heap,
+        mut st: EntryState,
+        marks: Marks,
+    ) -> Result<Step, LispError> {
+        while st.i < st.defaults.len() {
+            let form = heap.read_root(st.defaults[st.i].1);
+            let scope = heap.read_root_env(st.scope_r);
+            match leaf_value(heap, form, scope) {
+                Some(v) => st.define(heap, v),
+                None => return self.push(heap, marks, KontKind::Defaults(st), form, true, scope),
+            }
+        }
+        let scope = heap.read_root_env(st.scope_r);
+        if let Some(rs) = st.rest {
+            let empty = heap.list_from_slice(&[]);
+            heap.env_define(scope, rs, empty);
+        }
+        let body: SmallVec<[Value; 4]> = st.body.iter().map(|&r| heap.read_root(r)).collect();
+        let site = st.site.map(|r| heap.read_root(r));
+        marks.restore(heap);
+        self.start_body(heap, st.name, st.module, scope, &body, site)
+    }
+
+    /// The closure is bound: record the entry and run its body as this frame's.
+    fn start_body(
+        &mut self,
+        heap: &mut Heap,
+        name: Option<Symbol>,
+        module: Option<Symbol>,
+        scope: EnvId,
+        body: &[Value],
+        site: Option<Value>,
+    ) -> Result<Step, LispError> {
+        let Some(&last) = body.last() else {
+            return Ok(Step::Value(Value::nil()));
+        };
+        let shim_file = contract_shim_file(heap, module, body);
+        match site {
+            Some(call_form) => record_tw_entry(heap, self.entered, name, shim_file, call_form),
+            None => {
+                if let Some(fr) = self.entered.as_mut() {
+                    fr.shim_file = shim_file;
+                }
+                self.tail = TailTag::Pending(heap.root(last));
+            }
+        }
+        self.forms(heap, body, scope)
     }
 }
 
