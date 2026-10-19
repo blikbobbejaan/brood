@@ -237,6 +237,8 @@ const CORPUS: &[&str] = &[
     "(let (x 1 f (fn () x) x 2) (f))",
     "(defn h (x) (let (f (fn () x) x 99) (f))) (h 5)",
     "(defn lg () (let (f (fn () (count [1])) count 5) [(f) count])) (lg)",
+    // … yet a `fn` still sees its own `let` name after a list-valued binding (2026-10-19), …
+    "(let (x (+ 1 2) f (fn (n) (if (= n 0) x (f (- n 1))))) (f 3))",
     // … a self-tail loop called through an alias after its name was rebound hands its
     // tail call to the new binding (the VM looped on the old body; native too), …
     "(defn cnt (n acc) (if (= n 0) acc (cnt (- n 1) (+ acc 1)))) \

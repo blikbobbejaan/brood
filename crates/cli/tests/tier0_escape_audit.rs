@@ -6,13 +6,17 @@
 //! rendering (names qualified or not, locations present or not) would otherwise leave a file
 //! of `unplaced` lines, or none, which reads as "tier 0 reaches everything".
 //!
-//! A spawned process body is the escape known before the audit existed (`run_process_body`
-//! runs a VM-eligible body on the VM whatever the ceiling). When stage 5 makes tier 0 reach
-//! process bodies, this test's first half inverts: the file must then stay empty.
+//! A spawned process body was the escape known before the audit existed (`run_process_body`
+//! ran a VM-eligible body on the VM whatever the ceiling). Since ADR-416 stage 4 a tier-0 body
+//! runs on the tree-walker's capturing machine, so `PROGRAM` — a spawned body that parks in
+//! `receive`, and a top level that does too — must leave the audit empty.
 //!
 //! The rest of what the audit found (devlog 2026-10-19) were doors from tree-walked code into
-//! the VM that ignored the ceiling; `DOORS` walks through each at the top level, where tier 0
-//! does reach, and the audit must stay empty.
+//! the VM that ignored the ceiling; `DOORS` walks through each, and the audit must stay empty.
+//!
+//! An empty file is also what a broken audit writes, so the audit's positive control lives
+//! where bytecode can still be started under a tree-walk ceiling — directly, in the lisp
+//! crate (`the_tier0_audit_records_bytecode_started_under_a_tree_walk_ceiling`).
 
 use std::process::Command;
 
@@ -77,19 +81,15 @@ fn run(source: &str, answer: &str, tier: &str) -> Option<String> {
     lines
 }
 
+/// The escape the audit was built to find: before stage 4 the scheduler ran this body on the
+/// VM (`run_process_body`) whatever the ceiling. Both the spawned body and the top level park
+/// in `receive`, so this also covers capture and resume on the tree-walker.
 #[test]
-fn a_tier0_process_body_is_recorded_by_name() {
+fn a_tier0_process_body_stays_on_the_tree_walker() {
     let lines = run(PROGRAM, "answer = 2", "0");
-    let lines = lines.expect("the audit wrote no file: no escape recorded at tier 0");
-    assert!(
-        lines
-            .lines()
-            .any(|l| l.starts_with("top\trun_process_body <- drive@")),
-        "the audit did not name the process-body escape from the scheduler:\n{lines}"
-    );
-    assert!(
-        !lines.lines().any(|l| l.starts_with("unplaced")),
-        "the audit could not find vm_run_bc in its own backtrace:\n{lines}"
+    assert_eq!(
+        lines, None,
+        "a tier-0 process body (or its receive) started bytecode"
     );
 }
 

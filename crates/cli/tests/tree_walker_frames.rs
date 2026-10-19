@@ -27,6 +27,10 @@ const DEFAULTS: &str = r#"
 
 /// Run `source` at tier 0; its stdout and stderr.
 fn run_tier0(name: &str, source: &str) -> (String, String) {
+    run_tier0_with(name, source, &[])
+}
+
+fn run_tier0_with(name: &str, source: &str, envs: &[(&str, &str)]) -> (String, String) {
     let dir = std::env::temp_dir().join(format!("brood-tw-frames-{}-{name}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let program = dir.join("program.blsp");
@@ -35,6 +39,7 @@ fn run_tier0(name: &str, source: &str) -> (String, String) {
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_TIER", "0")
+        .envs(envs.iter().copied())
         .arg(&program)
         .output()
         .expect("run brood");
@@ -123,5 +128,51 @@ fn tier0_try_and_binding_run_as_frames() {
         "a 20 000-deep recursion through `try` and `binding` did not complete on the \
          tree-walker.\nstderr:\n{}",
         stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// Three processes wait in `receive`, each for the one before it. A tier-0 `receive` that
+/// finds nothing parks (ADR-416 stage 4): the machine's frames go back to the scheduler and
+/// are resumed when a message comes. The answer alone cannot tell that from a `receive` that
+/// blocks its worker — the runtime makes up for a blocked worker, so the chain completes
+/// either way — so the scheduler's own log (`BROOD_SCHED_DBG`) is what is asserted: a park
+/// of a tree-walker continuation at a `receive`, and its resume.
+const PARKING: &str = r#"
+(def me (self))
+(defn relay (next) (receive (n (send next (+ n 1))) (after 3000 (send next :blocked))))
+(def c (spawn (fn () (receive (n (send me [:end n])) (after 3000 (send me [:end :blocked]))))))
+(def b (spawn (fn () (relay c))))
+(def a (spawn (fn () (relay b))))
+(sleep 50)
+(send a 1)
+(io/puts (str "chain = " (receive ([:end n] n) (after 10000 :lost))))
+"#;
+
+#[test]
+fn tier0_receive_parks_and_resumes() {
+    let (stdout, stderr) = run_tier0_with(
+        "parking",
+        PARKING,
+        &[("BROOD_J", "1"), ("BROOD_SCHED_DBG", "1")],
+    );
+    assert_eq!(
+        stdout.trim(),
+        "chain = 3",
+        "the chain did not complete at tier 0.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let parks = stderr
+        .lines()
+        .filter(|l| l.starts_with("[sched] park pid=") && l.contains(" tw receive "))
+        .count();
+    assert!(
+        parks >= 3,
+        "expected each relay to park its tree-walker frames at `receive`, saw {parks} \
+         such parks.\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.starts_with("[sched] resume pid=") && l.contains(" tw receive ")),
+        "no parked tree-walker continuation was resumed.\nstderr:\n{stderr}"
     );
 }

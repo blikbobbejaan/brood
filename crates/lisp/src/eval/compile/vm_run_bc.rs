@@ -15,15 +15,22 @@ use crate::jit::outcome;
 pub(crate) fn run_process_body(
     heap: &mut Heap,
     body: Value,
-    resume: Option<Box<Suspended>>,
+    resume: Option<Continuation>,
 ) -> Result<VmOutcome, LispError> {
     match resume {
         // Resume: the continuation's own `cur.arm` drives; `arm0`/`genv0` are ignored
         // by the resume branch, so pass a (cheap) clone of it as the placeholder.
-        Some(s) => {
+        Some(Continuation::Vm(s)) => {
             let arm = s.cur.arm.clone();
             vm_run_bc(heap, arm, &[], EnvId::GLOBAL, Some(s), true)
         }
+        Some(Continuation::Tw(s)) => crate::eval::resume_captured(heap, s),
+        // Under a tier-0 ceiling the body runs on the tree-walker's capturing machine
+        // (ADR-416 stage 4), whose `receive` parks and whose budget preempts as the VM's do.
+        None if tier_ceiling() == Tier::TreeWalk => match body.unpack() {
+            ValueRef::Fn(id) => crate::eval::run_captured(heap, crate::eval::TwStart::Closure(id)),
+            _ => Err(LispError::type_err("process body must be a function")),
+        },
         // Fresh: run the 0-arg body. A VM-eligible body (the overwhelming case — every
         // body in the whole suite is) runs on the capture driver, so its `receive`s
         // capture + migrate. A body that defers to the tree-walker (no compiled 0-arg
@@ -222,7 +229,7 @@ pub(crate) fn build_program_thunk(heap: &mut Heap, form: Value) -> Value {
 pub(crate) fn run_program_body(
     heap: &mut Heap,
     prog: &mut ProgramState,
-    resume: Option<Box<Suspended>>,
+    resume: Option<Continuation>,
 ) -> Result<VmOutcome, LispError> {
     let root = heap.global();
     // First entry: install the file + root namespace + forward-ref pre-scan into the heap
@@ -270,15 +277,12 @@ pub(crate) fn run_program_body(
         let step = (|| -> Result<VmOutcome, LispError> {
             let expanded = crate::eval::macros::compile(heap, form, root)?;
             heap.note_definition(expanded, pos);
-            // `BROOD_TIER=0` — the tree-walking debug engine. The top level is a
-            // capture-mode process driven by the VM (ADR-135), so the ceiling must be
-            // honored here or `brood file.blsp` would silently run on the VM: run the
-            // whole form synchronously on the tree-walker — `def` is its special form,
-            // and a top-level `receive` blocks the worker (the documented tree-walker behavior;
-            // it's a debug engine, not the production path).
+            // `BROOD_TIER=0`: the whole form runs on the tree-walker's capturing machine
+            // (ADR-416 stage 4) — `def` is its special form, and a top-level `receive`
+            // parks like any green process's.
             if tier_ceiling() == Tier::TreeWalk {
                 prog.def_name = None;
-                return Ok(VmOutcome::Done(crate::eval::eval(heap, expanded, root)?));
+                return crate::eval::run_captured(heap, crate::eval::TwStart::Form(expanded, root));
             }
             // A top-level `(def name rhs)` runs its RHS on the capture path and binds after
             // (`def` is a special form the VM won't body-compile, so wrapping the whole form
@@ -738,10 +742,10 @@ pub(crate) fn vm_run_bc(
     // ADR-416 stage 1: under a tier-0 ceiling no bytecode should start, so name each path
     // that starts it anyway. The flag is read first — this is the VM's entry.
     if resume.is_none()
-        && let Some(path) = crate::diagnostics::debug_flags::tier0_audit_path()
+        && let Some(path) = tier0_audit_path()
         && tier_ceiling() == Tier::TreeWalk
     {
-        record_tier0_escape(path, top_level);
+        record_tier0_escape(&path, top_level);
     }
     // Keep the GC-block depth consistent for any nested native / tree-walked sub-call
     // (their own `stack_overflow_check` reads it). The driver itself doesn't recurse
@@ -983,7 +987,7 @@ pub(crate) fn vm_run_bc(
     // marks — as `VmOutcome::$outcome`, WITHOUT unwinding (ADR-100 §8).
     macro_rules! return_captured {
         ($outcome:ident, $cur:expr, $deadline:expr) => {
-            return Ok(VmOutcome::$outcome(Box::new(Suspended {
+            return Ok(VmOutcome::$outcome(Continuation::Vm(Box::new(Suspended {
                 frames,
                 cur: $cur,
                 entry_roots,
@@ -992,7 +996,7 @@ pub(crate) fn vm_run_bc(
                 handler_floor,
                 dyn_floor,
                 deadline: $deadline,
-            })))
+            }))))
         };
     }
 
@@ -1641,6 +1645,22 @@ fn contract_check_pending(heap: &Heap, frames: &[BcFrame], base: usize, ret: Val
 }
 
 // ===================== entry =====================
+
+#[cfg(test)]
+thread_local! {
+    /// A per-thread audit file, so a unit test can check the audit fires without depending on
+    /// whether some earlier test in the same process already read `BROOD_TIER0_AUDIT`.
+    pub(crate) static TIER0_AUDIT_OVERRIDE: std::cell::RefCell<Option<String>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn tier0_audit_path() -> Option<String> {
+    #[cfg(test)]
+    if let Some(path) = TIER0_AUDIT_OVERRIDE.with(|p| p.borrow().clone()) {
+        return Some(path);
+    }
+    crate::diagnostics::debug_flags::tier0_audit_path().map(str::to_string)
+}
 
 /// `BROOD_TIER0_AUDIT=<file>` (ADR-416 stage 1): under a tier-0 ceiling, record the call path
 /// by which bytecode just started. `vm_run_bc` is the one place bytecode starts, so every

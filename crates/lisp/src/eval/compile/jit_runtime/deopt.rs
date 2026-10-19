@@ -227,6 +227,7 @@ pub(crate) fn vm_resume_deopt(
         VmOutcome::Done(v) => Ok(v),
         // Native-nested receive-suspend: same discipline as `vm_apply`.
         VmOutcome::Suspended(s) => {
+            let s = s.into_vm();
             let deadline = s.deadline;
             heap.truncate_roots(s.entry_roots);
             heap.truncate_env_roots(s.entry_env);

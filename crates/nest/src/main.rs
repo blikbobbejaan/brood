@@ -305,11 +305,11 @@ fn arm_test_env(argv: &[String]) {
         // SAFETY: called before any thread or interpreter is created.
         unsafe {
             std::env::set_var("BROOD_COVERAGE", "1");
-            // Cap the ceiling at the VM (native code would run without the recording),
-            // keeping an explicit tree-walker request.
-            if std::env::var("BROOD_TIER").as_deref() != Ok("0") {
-                std::env::set_var("BROOD_TIER", "1");
-            }
+            // Pin the ceiling at the VM, whatever was asked: the recording is a bytecode
+            // instruction, so native code runs without it and the tree-walker (which
+            // runs every body at `BROOD_TIER=0`, ADR-416) never sees it — either would
+            // report a measured 0%.
+            std::env::set_var("BROOD_TIER", "1");
         }
     }
     if has(&[

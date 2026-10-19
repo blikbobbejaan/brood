@@ -103,8 +103,9 @@ pub(super) struct Process {
     /// whole program and a top-level `receive` park-captures. `None` for an ordinary
     /// `spawn`ed process.
     program: Option<Box<crate::eval::compile::ProgramState>>,
-    /// The parked/preempted VM continuation, or `None` if not yet started.
-    resume: Option<Box<crate::eval::compile::Suspended>>,
+    /// The parked/preempted continuation (the VM's or the tree-walker's), or `None` if not
+    /// yet started.
+    resume: Option<crate::eval::compile::Continuation>,
     /// The output-capture stack snapshot (the process carries it — no coroutine holds a
     /// `Ctx`). `run_one` installs it into `CURRENT` per quantum and reads it back after,
     /// so `begin_capture`/`take_capture` persist across `receive` suspends.
@@ -859,7 +860,7 @@ impl Process {
 
     /// Stash a captured continuation back into the process before it parks or re-queues
     /// (so the next `run_one` resumes from it).
-    fn store_resume(&mut self, s: Box<crate::eval::compile::Suspended>) {
+    fn store_resume(&mut self, s: crate::eval::compile::Continuation) {
         if super::scheduler::pool::sched_dbg() {
             eprintln!("[sched] park pid={} {}", self.pid, s.dbg_line());
         }
@@ -1386,7 +1387,8 @@ mod charge_tests {
         eprintln!("[floor] size_of::<Mailbox>()      = {mailbox_sz}");
         eprintln!("[floor]   of which MailboxState    = {state_sz}");
         // The parked continuation: an idle process is parked in `receive`, so it holds one.
-        let susp_sz = size_of::<crate::eval::compile::Suspended>();
+        let susp_sz =
+            size_of::<crate::eval::compile::Suspended>().max(size_of::<crate::eval::TwSuspended>());
         eprintln!("[floor] size_of::<Suspended>()    = {susp_sz} (a parked process holds one)");
         eprintln!(
             "[floor] structural total            = {} bytes (measured floor ~4190)",

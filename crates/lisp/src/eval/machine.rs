@@ -36,17 +36,31 @@
 //! restores the dynamic stack on the way out either way. Above tier 0 they stay natives: their
 //! `apply_engine` routes the thunk to the VM.
 //!
+//! **Capture** (ADR-416 stage 4). A green process's body, and each top-level form of a
+//! program, runs at tier 0 on a capturing machine ([`run_captured`]): a `%receive` that finds
+//! nothing, or a spent reduction budget at a step's safepoint, stops the machine with its
+//! frames intact ([`Park`]) and hands them to the scheduler as a [`TwSuspended`], which
+//! [`resume_captured`] continues on any worker. Like the VM's, the continuation is control
+//! state only: everything it references is already on the heap's root stacks, which a
+//! collection while parked relocates in place. A `receive` is redone from scratch on resume,
+//! as the VM re-runs its rewound call.
+//!
 //! Still native recursion: a seq-view realised for `apply`, and every other native that calls
 //! back into Brood (each such callback is one `apply_closure`, so one machine per native
-//! level).
+//! level). A `receive` under one blocks its worker, as on the VM (`TreeWalkGuard`).
 
 use super::*;
 use crate::core::heap::EnvRoot;
 
 /// The deepest the frame stack may grow: runaway non-tail recursion fails here, catchably,
-/// as it does at the VM's frame limit. Each level of a non-tail recursion is one
-/// continuation (plus its few operand slots).
-const MAX_TW_FRAMES: usize = 1 << 18;
+/// as it does at the VM's frame limit. A level of non-tail recursion costs at least one
+/// continuation and often two or three (an inline `try` pushes its `Try` frame as well as
+/// the pending call's), so `1 << 18` stopped tier 0 well short of a depth the VM reaches
+/// (`vm_nested_stack_guard_test.blsp`: 200 000 levels through `try` died near 131 000). It
+/// is not the VM's `1 << 20` either: a tree-walked level holds several KB of heap besides
+/// its frames, and at that cap a runaway `%try` recursion hit the test runner's 2 GB
+/// memory limit before this error — the catchable answer has to come first.
+const MAX_TW_FRAMES: usize = 1 << 19;
 
 /// "recursion too deep …" — the tree-walker's frame-count guard.
 fn tw_frame_depth_error(frames: usize) -> LispError {
@@ -135,17 +149,17 @@ enum KontKind {
         env_r: EnvRoot,
     },
     /// A `let`/`letrec` binding's value.
-    Bind(BindState),
+    Bind(Box<BindState>),
     /// `def`'s value, under a tier-0 ceiling.
     Def { name: Symbol, env_r: EnvRoot },
     /// An element of a vector, set or map literal.
-    Literal(LiteralState),
+    Literal(Box<LiteralState>),
     /// A computed head (`((f) …)`).
     Head { call_form_r: Root, env_r: EnvRoot },
     /// An argument of a call.
     Args(ArgsState),
     /// An `&optional` default of a closure being entered.
-    Defaults(EntryState),
+    Defaults(Box<EntryState>),
     /// A macro expander's body: its value is the form that replaces the call.
     Expand { env_r: EnvRoot },
     /// `%try`'s thunk (`%try-described`'s, when `described`): its value is the call's, and an
@@ -162,11 +176,13 @@ enum KontKind {
     Callback,
 }
 
-/// The natives the tree-walker runs as frames under a tier-0 ceiling.
+/// The natives the tree-walker treats specially under a tier-0 ceiling: `try`/`binding` run
+/// as frames, and a capturing machine can park at a `receive`.
 #[derive(Clone, Copy)]
 enum FrameNative {
     Try { described: bool },
     Binding,
+    Receive,
 }
 
 impl FrameNative {
@@ -175,9 +191,182 @@ impl FrameNative {
             ("%try", 2) => Some(FrameNative::Try { described: false }),
             ("%try-described", 2) => Some(FrameNative::Try { described: true }),
             ("%binding", 3) => Some(FrameNative::Binding),
+            ("%receive", 4) => Some(FrameNative::Receive),
             _ => None,
         }
     }
+}
+
+/// Why a capturing machine stopped with its frames intact, and how to go on.
+struct Park {
+    /// A `receive` that found nothing; else a preemption. (The `receive`'s `after` deadline
+    /// is already the mailbox's: `receive_match` persisted it and armed its timer.)
+    suspend: bool,
+    redo: Redo,
+    /// The root-stack depths from before `redo` rooted anything.
+    marks: Marks,
+}
+
+/// Where a parked machine picks up.
+enum Redo {
+    /// Step `expr` in `env`: preempted at a step's safepoint, before the step did anything.
+    Step { expr: Root, env: EnvRoot },
+    /// Apply `callee` (a `%receive`) to `argv` again.
+    Apply {
+        callee: Root,
+        argv: SmallVec<[Root; 4]>,
+        call_form: Root,
+        env: EnvRoot,
+    },
+}
+
+/// The depths of the heap's stacks when a capturing run started: where it leaves them when
+/// it ends, by a value or an error.
+#[derive(Clone, Copy)]
+struct Floors {
+    marks: Marks,
+    dynamics: usize,
+}
+
+impl Floors {
+    fn take(heap: &Heap) -> Floors {
+        Floors {
+            marks: Marks::take(heap),
+            dynamics: heap.dynamics_len(),
+        }
+    }
+
+    fn restore(self, heap: &mut Heap) {
+        self.marks.restore(heap);
+        heap.truncate_dynamics(self.dynamics);
+    }
+}
+
+/// A tree-walked process's continuation: the frame stack and the bottom frame's registers of
+/// a capturing machine that parked (ADR-416 stage 4). `Send` control state; the values live
+/// on the process heap's root stacks.
+pub(crate) struct TwSuspended {
+    konts: Vec<Kont>,
+    entered: Option<TwFrame>,
+    lazy: u32,
+    tail: TailTag,
+    redo: Redo,
+    redo_marks: Marks,
+    floors: Floors,
+}
+
+impl TwSuspended {
+    /// One-line park/resume descriptor for `BROOD_SCHED_DBG`.
+    pub(crate) fn dbg_line(&self) -> String {
+        let at = match self.redo {
+            Redo::Step { .. } => "step",
+            Redo::Apply { .. } => "receive",
+        };
+        format!("tw {at} frames={}", self.konts.len())
+    }
+}
+
+/// Where a capturing run starts.
+pub(crate) enum TwStart {
+    /// A process body: a 0-argument closure, entered across the boundary the scheduler is.
+    Closure(ClosureId),
+    /// A top-level form, evaluated in `env` as `eval` would.
+    Form(Value, EnvId),
+}
+
+/// Marks the capturing machine as the innermost driver for its lifetime, so a `%receive` it
+/// calls directly suspends instead of blocking (`capture_top_level`). Restores the previous
+/// value on drop; a nested tree-walk (`TreeWalkGuard`) clears it again beneath.
+struct DriverGuard(bool);
+
+impl DriverGuard {
+    fn enter() -> DriverGuard {
+        DriverGuard(crate::process::set_capture_top_level(true))
+    }
+}
+
+impl Drop for DriverGuard {
+    fn drop(&mut self) {
+        crate::process::set_capture_top_level(self.0);
+    }
+}
+
+/// Run a green process's body, or one top-level form, on a capturing machine: the tier-0
+/// driver `run_one` reaches through `run_process_body` (ADR-416 stage 4). `Done` with the
+/// value, `Suspended`/`Preempted` with the frames to resume, or the error — whose trace
+/// entry for the bottom frame is closed here, as `apply_closure`/`eval` close theirs.
+pub(crate) fn run_captured(
+    heap: &mut Heap,
+    start: TwStart,
+) -> Result<crate::eval::compile::VmOutcome, LispError> {
+    let floors = Floors::take(heap);
+    let _gc_block = crate::process::GcBlockGuard::enter();
+    let _driver = DriverGuard::enter();
+    let mut entered = None;
+    let mut m = Machine::new(Value::nil(), EnvId::GLOBAL, &mut entered);
+    m.capture = crate::process::in_capture_run();
+    let first = match start {
+        TwStart::Closure(id) => m.enter(heap, id, &[], None),
+        TwStart::Form(expr, env) => {
+            eval_trace(heap, expr);
+            m.expr = expr;
+            m.env = env;
+            Ok(Step::Continue)
+        }
+    };
+    let out = m.drive(heap, first);
+    m.finish(heap, out, floors)
+}
+
+/// Continue a parked tree-walked run on this worker.
+pub(crate) fn resume_captured(
+    heap: &mut Heap,
+    s: Box<TwSuspended>,
+) -> Result<crate::eval::compile::VmOutcome, LispError> {
+    let TwSuspended {
+        konts,
+        mut entered,
+        lazy,
+        tail,
+        redo,
+        redo_marks,
+        floors,
+    } = *s;
+    let _gc_block = crate::process::GcBlockGuard::enter();
+    let _driver = DriverGuard::enter();
+    let mut m = Machine {
+        expr: Value::nil(),
+        env: EnvId::GLOBAL,
+        lazy,
+        entered: &mut entered,
+        tail,
+        konts,
+        capture: crate::process::in_capture_run(),
+        park: None,
+    };
+    let first = match redo {
+        Redo::Step { expr, env } => {
+            m.expr = heap.read_root(expr);
+            m.env = heap.read_root_env(env);
+            redo_marks.restore(heap);
+            Ok(Step::Continue)
+        }
+        Redo::Apply {
+            callee,
+            argv,
+            call_form,
+            env,
+        } => {
+            let callee = heap.read_root(callee);
+            let argv = argv.iter().map(|&r| heap.read_root(r)).collect();
+            let call_form = heap.read_root(call_form);
+            let env = heap.read_root_env(env);
+            redo_marks.restore(heap);
+            m.apply(heap, callee, argv, call_form, env)
+        }
+    };
+    let out = m.drive(heap, first);
+    m.finish(heap, out, floors)
 }
 
 struct BindState {
@@ -337,6 +526,10 @@ pub(super) struct Machine<'e> {
     /// The running frame's tail tag (see [`TailTag`]).
     tail: TailTag,
     konts: Vec<Kont>,
+    /// The process's body driver (a green process at tier 0): may park ([`run_captured`]).
+    capture: bool,
+    /// Set when a capturing machine parks; the run then returns with its frames intact.
+    park: Option<Park>,
 }
 
 impl<'e> Machine<'e> {
@@ -348,7 +541,38 @@ impl<'e> Machine<'e> {
             entered,
             tail: TailTag::None,
             konts: Vec::new(),
+            capture: false,
+            park: None,
         }
+    }
+
+    /// The end of a capturing run: the continuation if it parked, else the outcome, with the
+    /// heap's stacks back at `floors`.
+    fn finish(
+        &mut self,
+        heap: &mut Heap,
+        out: LispResult,
+        floors: Floors,
+    ) -> Result<crate::eval::compile::VmOutcome, LispError> {
+        use crate::eval::compile::{Continuation, VmOutcome};
+        if let Some(park) = self.park.take() {
+            let cont = Box::new(TwSuspended {
+                konts: std::mem::take(&mut self.konts),
+                entered: self.entered.take(),
+                lazy: self.lazy,
+                tail: self.tail,
+                redo: park.redo,
+                redo_marks: park.marks,
+                floors,
+            });
+            return Ok(match park.suspend {
+                true => VmOutcome::Suspended(Continuation::Tw(cont)),
+                false => VmOutcome::Preempted(Continuation::Tw(cont)),
+            });
+        }
+        let out = out.map_err(|e| close_frame(e, self.entered.take()));
+        floors.restore(heap);
+        out.map(VmOutcome::Done)
     }
 
     /// Apply closure `cl` to `argv` across a native boundary (`apply_closure`): its body,
@@ -387,6 +611,10 @@ impl<'e> Machine<'e> {
             // Hand the finished frame's outcome to the frames below it until one of them
             // has more to evaluate.
             loop {
+                // A parked machine keeps its frames: the run returns as it stands.
+                if outcome.is_err() && self.park.is_some() {
+                    return outcome;
+                }
                 let Some(k) = self.konts.pop() else {
                     // The bottom frame's trace entry is the caller's to close.
                     return outcome.map_err(|e| self.tail.tag(heap, e));
@@ -693,7 +921,35 @@ impl<'e> Machine<'e> {
         // body driver. Without this (and the same check in the passthrough redirect, where
         // thin-wrapper-heavy loops actually tick), a green process spinning inside `eval`
         // could not be killed at all.
-        if crate::process::tick_reporting_hard_kill() {
+        //
+        // A capturing machine is its process's driver, so it takes the driver's safepoint
+        // instead, as the VM's loop top does: on a spent budget with work waiting it parks
+        // here, before the step has done anything, and resumes by stepping `expr` again.
+        if self.capture {
+            if let crate::process::Safepoint::Quantum { yield_now } =
+                crate::process::driver_safepoint(true)
+            {
+                // The once-per-quantum half of the VM's checks (`quantum_checks`); the rest
+                // run on every step above.
+                crate::core::alloc::refresh_container_limits();
+                if crate::process::capture_hard_kill_pending() {
+                    return Err(LispError::kill_signal());
+                }
+                if yield_now {
+                    let marks = Marks::take(heap);
+                    let redo = Redo::Step {
+                        expr: heap.root(self.expr),
+                        env: heap.root_env(self.env),
+                    };
+                    self.park = Some(Park {
+                        suspend: false,
+                        redo,
+                        marks,
+                    });
+                    return Err(LispError::suspend(None));
+                }
+            }
+        } else if crate::process::tick_reporting_hard_kill() {
             // Deliberately undecorated (no `or_form_pos`): a control signal is not a
             // user-visible error — it never prints, it only unwinds to the driver.
             return Err(LispError::kill_signal());
@@ -1055,14 +1311,14 @@ impl<'e> Machine<'e> {
             heap.new_env(Some(self.env))
         };
         let marks = Marks::take(heap);
-        let st = BindState {
+        let st = Box::new(BindState {
             binds: binds.iter().map(|&b| heap.root(b)).collect(),
             i: 0,
             scope_r: heap.root_env(scope),
             body_r: heap.root(body),
             lexical: !rec,
             captured: false,
-        };
+        });
         self.binds(heap, st, marks)
     }
 
@@ -1071,7 +1327,7 @@ impl<'e> Machine<'e> {
     fn binds(
         &mut self,
         heap: &mut Heap,
-        mut st: BindState,
+        mut st: Box<BindState>,
         marks: Marks,
     ) -> Result<Step, LispError> {
         while st.i < st.binds.len() {
@@ -1081,6 +1337,7 @@ impl<'e> Machine<'e> {
                 return Err(e);
             }
             let rhs = heap.read_root(st.binds[st.i + 1]);
+            st.open_frame_for_fn(heap, rhs);
             let scope = heap.read_root_env(st.scope_r);
             match leaf_value(heap, rhs, scope) {
                 Some(v) => {
@@ -1168,19 +1425,19 @@ impl<'e> Machine<'e> {
         items: &[Value],
     ) -> Result<Step, LispError> {
         let marks = Marks::take(heap);
-        let st = LiteralState {
+        let st = Box::new(LiteralState {
             kind,
             src: items.iter().map(|&it| heap.root(it)).collect(),
             out: SmallVec::with_capacity(items.len()),
             env_r: heap.root_env(self.env),
-        };
+        });
         self.literal_next(heap, st, marks)
     }
 
     fn literal_next(
         &mut self,
         heap: &mut Heap,
-        mut st: LiteralState,
+        mut st: Box<LiteralState>,
         marks: Marks,
     ) -> Result<Step, LispError> {
         while st.out.len() < st.src.len() {
@@ -1337,10 +1594,17 @@ impl<'e> Machine<'e> {
                 ValueRef::Native(id) => {
                     if compile::tier_ceiling() < compile::Tier::Bytecode
                         && let Some(native) = FrameNative::of(heap, id, cur_argv.len())
-                        && let Some(step) =
-                            self.native_frame(heap, native, &cur_argv, call_form, env)
                     {
-                        return step;
+                        if let FrameNative::Receive = native {
+                            if self.capture {
+                                return self
+                                    .receive(heap, id, cur_callee, &cur_argv, call_form, env);
+                            }
+                        } else if let Some(step) =
+                            self.native_frame(heap, native, &cur_argv, call_form, env)
+                        {
+                            return step;
+                        }
                     }
                     return call_native(heap, id, &cur_argv, env)
                         .map(Step::Value)
@@ -1466,7 +1730,7 @@ impl Machine<'_> {
             return self.start_body(heap, name, module, bound.scope, &bound.body, site);
         }
         let marks = Marks::take(heap);
-        let st = EntryState {
+        let st = Box::new(EntryState {
             name,
             module,
             site: site.map(|f| heap.root(f)),
@@ -1479,7 +1743,7 @@ impl Machine<'_> {
             i: 0,
             rest: bound.rest,
             body: bound.body.iter().map(|&f| heap.root(f)).collect(),
-        };
+        });
         self.defaults(heap, st, marks)
     }
 
@@ -1488,7 +1752,7 @@ impl Machine<'_> {
     fn defaults(
         &mut self,
         heap: &mut Heap,
-        mut st: EntryState,
+        mut st: Box<EntryState>,
         marks: Marks,
     ) -> Result<Step, LispError> {
         while st.i < st.defaults.len() {
@@ -1564,6 +1828,7 @@ impl Machine<'_> {
                 };
                 (thunk, (marks, kind))
             }
+            FrameNative::Receive => return None,
             FrameNative::Binding => {
                 let ValueRef::Fn(thunk) = argv[2].unpack() else {
                     return None;
@@ -1582,6 +1847,46 @@ impl Machine<'_> {
             ));
         }
         Some(self.enter(heap, thunk, &[], None))
+    }
+
+    /// A capturing machine's `%receive`: the call is rooted across the native, so when the
+    /// mailbox has nothing it matches (`Control::Suspend`) the machine parks, to redo the call
+    /// on resume.
+    fn receive(
+        &mut self,
+        heap: &mut Heap,
+        id: NativeId,
+        callee: Value,
+        argv: &[Value],
+        call_form: Value,
+        env: EnvId,
+    ) -> Result<Step, LispError> {
+        let marks = Marks::take(heap);
+        let redo = Redo::Apply {
+            callee: heap.root(callee),
+            argv: argv.iter().map(|&a| heap.root(a)).collect(),
+            call_form: heap.root(call_form),
+            env: heap.root_env(env),
+        };
+        match call_native(heap, id, argv, env) {
+            Err(e) if e.is_suspend_signal() => {
+                self.park = Some(Park {
+                    suspend: true,
+                    redo,
+                    marks,
+                });
+                Err(e)
+            }
+            out => {
+                let Redo::Apply { call_form, .. } = redo else {
+                    unreachable!("built as Apply above")
+                };
+                let call_form = heap.read_root(call_form);
+                marks.restore(heap);
+                out.map(Step::Value)
+                    .map_err(|e| e.or_form_pos(heap, call_form))
+            }
+        }
     }
 
     /// An error `e` unwound into a `Try` frame (whose registers are restored): run the handler
@@ -1619,6 +1924,20 @@ impl Machine<'_> {
 }
 
 impl BindState {
+    /// A `(fn …)` value sees its own name (the VM's `compile_let` matches this through
+    /// `letrec_self`), because the closure captures the frame it is then bound into. So when
+    /// [`define`](Self::define) would open a fresh frame for this binding, open it BEFORE the
+    /// closure is built: opened after, the closure captured the parent and its own name was
+    /// unbound — `(let (x (+ 1 2) f (fn (n) (f n))) …)` failed at tier 0 and ran on the VM.
+    fn open_frame_for_fn(&mut self, heap: &mut Heap, rhs: Value) {
+        if self.lexical && self.captured && crate::eval::compile::is_fn_form(heap, rhs) {
+            let scope = heap.read_root_env(self.scope_r);
+            let scope = heap.new_env(Some(scope));
+            self.scope_r = heap.root_env(scope);
+            self.captured = false;
+        }
+    }
+
     /// Bind the pending binding (`i`) to `val`. Plain `let`: once a value that could have
     /// built a closure has been bound, the next binding goes into a fresh CHILD frame instead
     /// of being appended to the frame that closure may have captured. Frame lookup is by name

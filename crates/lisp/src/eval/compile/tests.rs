@@ -219,7 +219,7 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
     )
     .expect("first run errored");
     let suspended = match outcome {
-        VmOutcome::Suspended(s) => s,
+        VmOutcome::Suspended(s) => s.into_vm(),
         _ => panic!("expected a captured suspend"),
     };
     assert!(
@@ -258,6 +258,51 @@ fn vm_run_bc_captures_and_resumes_a_suspend() {
         heap.roots_len(),
         roots_before,
         "a completed resume must tear its frame stack back down to entry"
+    );
+}
+
+/// The tier-0 escape audit's positive control (ADR-416). Since stage 4 no program reaches the
+/// VM under `BROOD_TIER=0`, so the CLI guard (`crates/cli/tests/tier0_escape_audit.rs`)
+/// asserts an EMPTY audit — which is also what a broken audit writes. Here bytecode is started
+/// directly under a tree-walk ceiling, and the audit must name a placed site for it.
+#[test]
+fn the_tier0_audit_records_bytecode_started_under_a_tree_walk_ceiling() {
+    let path = std::env::temp_dir().join(format!("brood-tier0-audit-unit-{}", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    vm_run_bc::TIER0_AUDIT_OVERRIDE
+        .with(|p| *p.borrow_mut() = Some(path.to_string_lossy().into_owned()));
+    set_forced_ceiling(Some(Tier::TreeWalk));
+
+    let mut heap = Heap::new();
+    let arm = Arc::new(CompiledArm {
+        nslots: 0,
+        body: Node::Const(ConstVal::new(Value::int(7))),
+        chunk: Some(Chunk {
+            code: vec![Inst::Const(ConstVal::new(Value::int(7)))],
+        }),
+        ..CompiledArm::default()
+    });
+    let outcome = vm_run_bc(
+        &mut heap,
+        ArmHandle::new(arm),
+        &[],
+        EnvId::GLOBAL,
+        None,
+        true,
+    );
+
+    set_forced_ceiling(None);
+    vm_run_bc::TIER0_AUDIT_OVERRIDE.with(|p| *p.borrow_mut() = None);
+    let lines = std::fs::read_to_string(&path).unwrap_or_default();
+    let _ = std::fs::remove_file(&path);
+    assert!(
+        matches!(outcome, Ok(VmOutcome::Done(_))),
+        "the arm did not run"
+    );
+    assert!(
+        lines.lines().any(|l| l.starts_with("top\t")
+            && l.contains("the_tier0_audit_records_bytecode_started_under_a_tree_walk_ceiling")),
+        "the audit did not record the bytecode this test started at tier 0:\n{lines}"
     );
 }
 
@@ -2201,6 +2246,7 @@ fn a_native_preempt_captures_the_loop_frame_not_its_callee() {
                 break;
             }
             VmOutcome::Preempted(s) => {
+                let s = s.into_vm();
                 if installed(&f_arm) {
                     captures_after_native += 1;
                     let cur = s.cur.arm.arc();

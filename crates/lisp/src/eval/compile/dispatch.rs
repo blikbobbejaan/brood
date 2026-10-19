@@ -506,6 +506,7 @@ pub(crate) fn vm_apply(
         // *would* repeat a side effect is gated off this path by `capture_top_level()`
         // and blocks its worker instead — the §7.4 dirty carve-out.)
         VmOutcome::Suspended(s) => {
+            let s = s.into_vm();
             let deadline = s.deadline;
             heap.truncate_roots(s.entry_roots);
             heap.truncate_env_roots(s.entry_env);

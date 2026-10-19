@@ -2805,3 +2805,61 @@ tier 0, checking the handler's value and the dynamic stack's restore; red with t
 interception disabled. Evidence: `make test-both` 1950/1950 on each engine; `gcstress-all` at
 `BROOD_TIER=0`, all 289 files clean; all thirteen fuzz generators, no divergence, crash or
 stale program.
+
+## 2026-10-19 (late night) — ADR-416 stages 4 and 5: a tier-0 process body runs on the tree-walker, and its `receive` parks
+
+At `BROOD_TIER=0` a process body and each top-level form now run on the tree-walker's
+**capturing machine** (`machine::run_captured`). A `%receive` that finds nothing, and a
+reduction budget that runs out at a step's safepoint, leave the machine's frames intact and
+return them to `run_one` as `Continuation::Tw(TwSuspended)` beside the VM's
+`Continuation::Vm`; the scheduler parks, re-enqueues or resumes it on any worker
+(`resume_captured`). A `receive` is redone from scratch on resume, as the VM re-runs its
+rewound call; a preemption redoes the step it stopped before. A `receive` under a native
+that calls back into Brood still blocks its worker, as on the VM. `run_process_body`'s
+"VM-eligible body runs on the VM whatever the ceiling" branch and `run_program_body`'s
+synchronous tier-0 branch are gone, so under tier 0 no program starts bytecode: the escape
+audit over the whole workspace suite at tier 0 records one site, a Rust unit test that calls
+`vm_run_bc` itself.
+
+The audit stays a diagnostic, not a runtime hard check: nothing on a program's path reaches
+the VM any more, and the paths that do (unit tests driving `vm_run_bc`) are legitimate. It
+is kept honest by a positive control in the lisp crate
+(`the_tier0_audit_records_bytecode_started_under_a_tree_walk_ceiling`, red with the hook
+disabled), since the CLI guard now asserts an empty audit, which a broken audit also writes.
+
+Test bodies really tree-walk at tier 0 for the first time, and that found four things:
+
+- **A real `let` divergence, older than this work.** A `fn` that calls itself by its `let`
+  name was unbound inside itself at tier 0 whenever a list-valued binding came before it:
+  `(let (x (+ 1 2) f (fn (n) (if (= n 0) x (f (- n 1))))) (f 3))`. The 2026-10-08 rule
+  (a binding after a list-valued RHS goes into a fresh child frame) opened that frame after
+  the closure had captured its parent. It now opens before a `(fn …)` RHS is evaluated
+  (`BindState::open_frame_for_fn`), which is what the VM's `compile_let` already matched
+  (`letrec_self`). Guarded in `tests/let_capture_shadow_test.blsp` (in-process and across a
+  `spawn`) and the differential corpus; all three red with the fix removed.
+- **The frame cap stopped tier 0 short of the VM.** An inline `try` recursion costs two
+  continuations a level, so `MAX_TW_FRAMES = 1 << 18` died near 131 000 levels where
+  `vm_nested_stack_guard_test.blsp` expects 200 000. Now `1 << 19`, not the VM's `1 << 20`:
+  a tree-walked level holds several KB of heap besides its frames, and at `1 << 20` a runaway
+  `%try` recursion hit the runner's 2 GB memory limit before the catchable depth error. A plain
+  runaway at tier 0 now peaks near 1 GB. `KontKind`'s three per-form states are boxed
+  (`Bind`, `Literal`, `Defaults`), which takes a continuation from 592 to 360 bytes. That
+  file's two native-`%try` cases ask for two million levels, past every engine's limit; at tier 0
+  `%try` is a frame since stage 3, so 200 000 no longer reached the bound they assert.
+- **Line coverage is a bytecode instruction**, so `nest test --cover-lines` at tier 0
+  measured 0%. `nest` now pins the VM ceiling for `--cover-lines`/`--cover-branches` whatever
+  `BROOD_TIER` says (it used to keep an explicit tier 0).
+- **`quantum_tail_panic.rs`'s spinners** were sized for the VM: four 40M-iteration loops on one
+  worker outlast its 30 s `after` on the tree-walker. 4M is still thousands of quanta on
+  every engine.
+
+Guards: `tree_walker_frames.rs` `tier0_receive_parks_and_resumes` (three processes chained
+through `receive`; it asserts the scheduler's `BROOD_SCHED_DBG` log shows tree-walker
+continuations parked at `receive` and resumed. The answer alone cannot: a sabotage that made
+the `receive` block still completed the chain, because the runtime makes up for a blocked
+worker. Red with that sabotage); `tier0_escape_audit.rs`
+`a_tier0_process_body_stays_on_the_tree_walker`. The in-language suite's wrapper now takes
+370 s at tier 0 (196 s before, when its bodies ran on the VM), so its nextest budget is 1800 s.
+
+Evidence: `make test-both` 1952/1952 on each engine; `gcstress-all` at `BROOD_TIER=0`, all 289
+files clean; all thirteen fuzz generators, no divergence, crash or stale program.

@@ -8,6 +8,7 @@
 pub mod compile; // the compiling-VM execution engine (ADR-076) — gated by BROOD_TIER
 pub mod derive; // auto-derived stdlib imports (ADR-227 follow-up)
 mod machine; // the tree-walker's frame stack (ADR-416)
+pub(crate) use machine::{TwStart, TwSuspended, resume_captured, run_captured};
 pub mod macros;
 
 use std::sync::LazyLock;

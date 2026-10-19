@@ -449,6 +449,33 @@ impl Suspended {
     }
 }
 
+/// A parked or preempted process's continuation: the VM's frame stack ([`Suspended`]) or the
+/// tree-walker's ([`TwSuspended`](crate::eval::TwSuspended), ADR-416). Both are control state
+/// only — what they reference stays on the owning heap's root stacks — so either can resume on
+/// any worker.
+pub(crate) enum Continuation {
+    Vm(Box<Suspended>),
+    Tw(Box<crate::eval::TwSuspended>),
+}
+
+impl Continuation {
+    /// The VM's continuation. A nested VM run only ever captures its own.
+    pub(crate) fn into_vm(self) -> Box<Suspended> {
+        match self {
+            Continuation::Vm(s) => s,
+            Continuation::Tw(_) => unreachable!("a VM run captured a tree-walker continuation"),
+        }
+    }
+
+    /// One-line park/resume descriptor for `BROOD_SCHED_DBG`.
+    pub(crate) fn dbg_line(&self) -> String {
+        match self {
+            Continuation::Vm(s) => s.dbg_line(),
+            Continuation::Tw(s) => s.dbg_line(),
+        }
+    }
+}
+
 /// What a [`vm_run_bc`] call produced (ADR-100 §8). A real error is the `Err` of the
 /// enclosing `Result`. A **nested** run (`vm_apply`, `top_level=false`) only ever
 /// produces `Done` (it can't capture across the native boundary); the other three are
@@ -459,11 +486,11 @@ pub(crate) enum VmOutcome {
     Done(Value),
     /// A clean `receive` parked: the captured continuation to store + resume on a
     /// wake (§8.2). `run_one` parks it on the mailbox.
-    Suspended(Box<Suspended>),
+    Suspended(Continuation),
     /// The reduction budget was exhausted at a loop-top safepoint (the state-capture
     /// analogue of `Suspend::Preempt`): captured the continuation so `run_one` can
     /// **re-enqueue** it (possibly onto another worker — live migration, §7).
-    Preempted(Box<Suspended>),
+    Preempted(Continuation),
     /// A hard `:kill` was pending at a loop-top safepoint (the analogue of
     /// `Suspend::Kill`): stop now, no capture — `run_one` retires the process with the
     /// mailbox's kill reason. Untrappable by construction (fires below `%try`).

@@ -92,38 +92,23 @@ devlog entries of the same dates.
 
 ## Open threads, in value order
 
-### NOW (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
+### DONE (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
 
-**State.** Stage 1 (the escape audit) is done and committed: `BROOD_TIER0_AUDIT=<file>`,
-guarded by `crates/cli/tests/tier0_escape_audit.rs`; the inventory is in the devlog
-(2026-10-19). Read ADR-416 (bottom of `docs/decisions/adr-400-499.md`, status proposed) for
-the design and the five stages.
+All five stages are in (devlog 2026-10-19, stage 1 through "late night"). At `BROOD_TIER=0`
+every process body and top-level form runs on the tree-walker's capturing machine
+(`eval/machine.rs`): its `receive` parks and its budget preempts, so tier 0 is the reference
+semantics for whole programs and `make test-both`'s tree-walker half finally runs test
+bodies on the tree-walker. The escape audit (`BROOD_TIER0_AUDIT=<file>`) over the whole
+workspace at tier 0 records only a Rust unit test that drives `vm_run_bc` itself.
 
-**Why.** `BROOD_TIER=0` does not reach process bodies (Older threads item 6): every test body
-runs on the VM, so the tree-walker differential compares only top-level forms. The user
-wants the correct fix even at large cost: the tree-walker's pending work becomes heap frames
-(as ADR-100 did for the VM), so a tier-0 `receive` parks and tier-0 processes preempt and
-migrate, and then the ceiling can hold everywhere.
-
-**What the audit found, and what is left.** Three ceiling-blind doors from tree-walked code
-into the VM (primitive callbacks via `apply_value`, the `receive` matcher, `%eval-in`) are
-closed (devlog 2026-10-19 "later"; guarded in `tier0_escape_audit.rs`). Re-audited over
-`make test-both`: the only escape left is `run_process_body` (and VM code started inside
-those bodies). To re-run: `BROOD_TIER=0 BROOD_TIER0_AUDIT=<file> cargo nextest run`, then
-`cut -f2 <file> | sed -E 's/@[^ ]*//g' | sort | uniq -c`.
-
-**Stages 2a and 2b are done** (devlog 2026-10-19 "later still" and "evening"):
-`eval/machine.rs`, the frame stack. Inside one tree-walked run nothing recurses natively any
-more: closure entry is one path (`Machine::enter`) for calls, macro expanders and
-`apply_closure`, and `&optional` defaults are frames. What remains native is every native
-calling back into Brood (`%try`, `%binding`, a seq-view realise, …), one
-`apply_closure` machine per level. **Stage 3 is done** too (devlog 2026-10-19 "night"): at
-tier 0, `%try`/`%try-described`/`%binding` with a closure thunk are frames, so a `receive`
-inside a `try` is no longer under native code. **Next: stage 4** — capture: a non-matching
-`receive`, the reduction budget and a kill return the machine's frame stack to `run_one` as
-the tree-walker's `Suspended`. Owed: a tier-0 `make ab` on the benchmark machine (2a, 2b, 3).
-Noted, not fixed: under N active `binding`s a tree-walked global read scans all N
-(`Heap::env_get`), quadratic only for deep recursion through `binding`.
+Running test bodies on the tree-walker found a real, older `let` divergence (a `fn` lost its
+own name after a list-valued binding; fixed) and re-sized three budgets (the tree-walker's
+frame cap `1 << 19`; `quantum_tail_panic.rs`'s spinners; the suite wrapper's nextest cap,
+1800 s, for 370 s measured). **Owed:** a tier-0 `make ab` on the benchmark machine (stages
+2a–5). **Noted, not fixed:** under N active `binding`s a tree-walked global read scans all N
+(`Heap::env_get`), quadratic only for deep recursion through `binding`; a tree-walked level
+of recursion holds several KB of heap, so a runaway tier-0 recursion peaks near 1 GB before
+its depth error.
 
 **After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
 `scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.
@@ -266,7 +251,7 @@ corpus.
    `CLAUDE.md`). Not on this machine.
 5. **Done 2026-10-18:** the tree-walker no longer reports a contract shim's position
    (devlog "the tree-walker stops reporting contract shims").
-6. **Being fixed — ADR-416 (see "NOW" above).** `BROOD_TIER=0` does not reach process bodies. `run_process_body` runs
+6. **Done 2026-10-19 — ADR-416 (see "DONE" above).** `BROOD_TIER=0` did not reach process bodies. `run_process_body` runs
    a VM-eligible body on the VM whatever the ceiling, so `make test-both`'s tree-walker half
    and CI's differential job tree-walk only each test file's top-level forms: every test
    body runs on the bytecode VM. Either tree-walk process bodies at tier 0 (a `receive` then
