@@ -265,6 +265,59 @@ jobs:
       - name: cargo check — brood-lsp
         run: cargo check -p brood-lsp
 
+  # Windows: the third desktop the runtime is meant for (the GPU target is wgpu so that DX12
+  # draws what Vulkan and Metal do), and until 2026-10-18 no job compiled the tree for it.
+  # A cross-check from Linux (`cargo check --target x86_64-pc-windows-gnu --all-targets`,
+  # build scripts' C stubbed out) found the library already compiling and only test code
+  # reaching for Unix sockets and modes; those now run over loopback TCP or gate on `unix`.
+  #
+  # `--all-targets` from the start, unlike macOS above: the tests are where the Unix
+  # assumptions were, and they compile clean. The feature set is the release's plus the GPU
+  # GUI and audio — what a game built with b2d ships with on this platform.
+  windows-check:
+    name: Windows compiles
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: cargo check — the workspace, every target, with the GPU gui and audio
+        run: >
+          cargo check --workspace --exclude brood-tab --exclude brood-playground --all-targets
+          --features brood/gui-gpu --features brood/audio --features brood/treesit-grammars
+
+  # Whether the runtime RUNS on Windows, which nothing has yet shown: build `brood` and run
+  # a program that spawns, sends, receives and requires a std module. Allowed to fail while
+  # the port is new — its log is the to-do list — and to be made a gate (drop
+  # `continue-on-error`) once it has passed.
+  windows-smoke:
+    name: Windows runs a program (the port's probe)
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: cargo build — brood
+        run: cargo build -p cli
+      - name: brood runs a program
+        shell: bash
+        run: |
+          cat > smoke.blsp <<'BLSP'
+          (let (me (self)
+                child (spawn (fn () (receive ([:ping from] (send from [:pong (+ 1 2)]))))))
+            (send child [:ping me])
+            (receive ([:pong n] (io/puts (str "pong " n)))))
+          (io/puts (json/encode {:ok true}))
+          BLSP
+          out=$(target/debug/brood smoke.blsp)
+          echo "$out"
+          test "$out" = "$(printf 'pong 3\n{"ok":true}')"
+
   build-test:
     name: test
     runs-on: ubuntu-latest

@@ -345,7 +345,6 @@ fn wrong_cookie_rejected_over_unix() {
 /// the same sandboxed `$HOME` print the *same* secret (ADR-068).
 #[test]
 fn cookie_file_autogen_and_reuse() {
-    use std::os::unix::fs::PermissionsExt;
     let home = std::env::temp_dir().join(format!("brood-cookie-{}", std::process::id()));
     std::fs::create_dir_all(&home).unwrap();
     let cfg = home.join(".config");
@@ -365,16 +364,23 @@ fn cookie_file_autogen_and_reuse() {
     let s2 = String::from_utf8_lossy(&second.stdout).trim().to_string();
 
     let cookie_path = home.join(".config").join("brood").join("cookie");
-    let mode = std::fs::metadata(&cookie_path)
+    let permissions = std::fs::metadata(&cookie_path)
         .expect("cookie file exists")
-        .permissions()
-        .mode()
-        & 0o777;
+        .permissions();
     let _ = std::fs::remove_dir_all(&home);
 
     assert_eq!(s1.len(), 64, "cookie should be 32 bytes hex");
     assert_eq!(s1, s2, "second run must reuse the persisted cookie");
-    assert_eq!(mode, 0o600, "cookie file must be owner-only");
+    // Owner-only is a Unix mode. Windows has ACLs instead, and the file sits in the
+    // per-user profile, so there it is enough that it exists.
+    #[cfg(unix)]
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&permissions) & 0o777,
+        0o600,
+        "cookie file must be owner-only"
+    );
+    #[cfg(not(unix))]
+    let _ = permissions;
 }
 
 /// Cross-node closure shipping (ADR-033, the wire codec's `M_CLOSURE` path).

@@ -1,5 +1,6 @@
 //! The module system's kernel: the catalogue of **baked-in** std modules
-//! ([`CORE_MODULES`] always, [`DEV_MODULES`] under `dev-tools`), the namespace and
+//! ([`CORE_MODULES`] always, [`TOOLCHAIN_MODULES`] under `toolchain`, [`DEV_MODULES`] under
+//! `dev-tools`), the namespace and
 //! compile-context primitives (`%in-ns`, `%refer`, `%alias`, `%mark-private`,
 //! `%register-sig`), and the bundle manifest a released binary answers from.
 
@@ -318,28 +319,12 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // a warm start learns which file declares which module without opening a source file.
     embedded_module!("module-index", "std/tool/module-index.blsp"),
     embedded_module!("project-image", "std/tool/project-image.blsp"),
-    embedded_module!("project-check", "std/tool/project-check.blsp"),
     embedded_module!("project-run", "std/tool/project-run.blsp"),
     embedded_module!("project-release", "std/tool/project-release.blsp"),
     embedded_module!("stdimage", "std/tool/stdimage.blsp"),
     // The rename ledger as Brood data (ADR-304) — a thin wrapper over `%renames`, so
     // `nest check --fix-renames` reads the table the runtime error reads.
     embedded_module!("renames", "std/tool/renames.blsp"),
-    embedded_module!("coverage", "std/tool/coverage.blsp"),
-    embedded_module!("complete", "std/tool/complete.blsp"),
-    embedded_module!("nest", "std/tool/nest.blsp"),
-    // `nest new` scaffolding (templates + new-project), split out of `project` so
-    // the analysis half stays lean. `(:use project)` for *config-git-init*. Opt-in.
-    embedded_module!("scaffold", "std/tool/scaffold.blsp"),
-    // `nest update-brood`: replace the installed brood/nest/brood-lsp with a GitHub
-    // release, verified by its .sha256 — install.sh from the binary itself. Opt-in.
-    embedded_module!("update-brood", "std/tool/update-brood.blsp"),
-    // Identifier-aware whole-token rewrites over a project's .blsp sources — drives
-    // `nest rename` for an ecosystem-wide rename that a plain sed would corrupt. Opt-in.
-    embedded_module!("codemod", "std/tool/codemod.blsp"),
-    // Fan a check/commit/push across every sibling Brood repo in the workspace — drives
-    // `nest ws`, over `%os-cmd`/`run-process`. Opt-in, never in the prelude.
-    embedded_module!("workspace", "std/tool/workspace.blsp"),
     // The package manager (ADR-037): resolves the manifest's :dependencies into a
     // lock file + load-path entries. Required lazily by `project-setup` only when a
     // project actually declares deps. Opt-in, never in the prelude.
@@ -365,11 +350,6 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // the `%wasm-*` primitives (feature `wasm`; without it the primitives are
     // unbound and requiring this module errors clearly). Opt-in.
     embedded_module!("wasm", "std/wasm.blsp"),
-    // Teach-the-error + intent→idiom lookup (LLM-native errors): explain/error
-    // (a stable E-code → summary/causes/fix/example) and find-pattern (an
-    // intent → the idiomatic Brood pattern). Curated Brood data; backs the
-    // `nest mcp` tools of the same names. Opt-in.
-    embedded_module!("explain", "std/tool/explain.blsp"),
     // Supervised node auto-reconnect (dist self-healing): `watch` keeps a peer
     // link alive with exponential-backoff `(connect …)` retries; subscribers get
     // [:nodeup]/[:nodedown]. Pure Brood over connect/monitor-node/nodes. Opt-in.
@@ -739,6 +719,47 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     embedded_module!("eval-server", "std/tool/eval-server.blsp"),
 ];
 
+/// The toolchain's own modules — baked in under the `toolchain` feature, which every
+/// native binary has (`crates/cli` asks for it, `nest` and `brood-lsp` take the defaults)
+/// and the tab (`crates/tab`) does not. They serve the commands a program is BUILT with —
+/// `nest`'s dispatch, `nest check`'s driver, scaffolding, codemods, coverage, completion,
+/// the error explainer — and none of them is reached by a program running, so a game in a
+/// page does not download them. The rule is the one [`DEV_MODULES`] states: a module a
+/// shipped app's own features are built on stays in [`CORE_MODULES`] (the package manager
+/// does — a bundle with dependencies sets up through it).
+#[cfg(feature = "toolchain")]
+const TOOLCHAIN_MODULES: &[EmbeddedModule] = &[
+    // `nest check`'s driver: the file walk, the require closures, the verdict cache.
+    embedded_module!("project-check", "std/tool/project-check.blsp"),
+    // `nest test --cover`'s line and branch reports.
+    embedded_module!("coverage", "std/tool/coverage.blsp"),
+    // Shell completion for `nest`'s commands and `nest doc` names.
+    embedded_module!("complete", "std/tool/complete.blsp"),
+    // `nest`'s command dispatch (ADR-322).
+    embedded_module!("nest", "std/tool/nest.blsp"),
+    // `nest new` scaffolding (templates + new-project), split out of `project` so
+    // the analysis half stays lean. `(:use project)` for *config-git-init*. Opt-in.
+    embedded_module!("scaffold", "std/tool/scaffold.blsp"),
+    // `nest update-brood`: replace the installed brood/nest/brood-lsp with a GitHub
+    // release, verified by its .sha256 — install.sh from the binary itself. Opt-in.
+    embedded_module!("update-brood", "std/tool/update-brood.blsp"),
+    // Identifier-aware whole-token rewrites over a project's .blsp sources — drives
+    // `nest rename` for an ecosystem-wide rename that a plain sed would corrupt. Opt-in.
+    embedded_module!("codemod", "std/tool/codemod.blsp"),
+    // Fan a check/commit/push across every sibling Brood repo in the workspace — drives
+    // `nest ws`, over `%os-cmd`/`run-process`. Opt-in, never in the prelude.
+    embedded_module!("workspace", "std/tool/workspace.blsp"),
+    // Teach-the-error + intent→idiom lookup (LLM-native errors): explain/error
+    // (a stable E-code → summary/causes/fix/example) and find-pattern (an
+    // intent → the idiomatic Brood pattern). Curated Brood data; backs the
+    // `nest mcp` tools of the same names. Opt-in.
+    embedded_module!("explain", "std/tool/explain.blsp"),
+];
+
+/// Empty without the `toolchain` feature — the modules above are not compiled in.
+#[cfg(not(feature = "toolchain"))]
+const TOOLCHAIN_MODULES: &[EmbeddedModule] = &[];
+
 /// Dev/tooling modules — baked in only under the `dev-tools` feature (the dev
 /// `brood`/`nest` + tests). A `nest release` lean runtime
 /// (`--no-default-features`) omits them, so a shipped app carries no test
@@ -795,6 +816,9 @@ const DEV_MODULES: &[EmbeddedModule] = &[];
 /// so a freshly-scaffolded project is self-contained without depending on a
 /// Brood install path.
 const EMBEDDED_DOCS: &[(&str, &str)] = &[
+    // The two reference documents ride with the toolchain that hands them out (`nest new`,
+    // `nest mcp`); a game in a tab has no use for 100 KB of prose.
+    #[cfg(feature = "toolchain")]
     (
         "brood-for-claude",
         include_str!("../../../../docs/brood-for-claude.md"),
@@ -807,6 +831,7 @@ const EMBEDDED_DOCS: &[(&str, &str)] = &[
     // `.claude/skills/writing-brood/SKILL.md` is a local symlink to it — `.claude/`
     // is gitignored, and a compile-time `include_str!` must not depend on an
     // untracked path (it would break a fresh clone's build).
+    #[cfg(feature = "toolchain")]
     (
         "writing-brood-skill",
         include_str!("../../../../docs/writing-brood-skill.md"),
@@ -863,22 +888,25 @@ pub(super) fn lookup_embedded(
     }
 }
 
+/// Every baked-in module: core, then the toolchain's, then the dev tooling's — the tables
+/// a build has compiled in.
+fn all_modules() -> impl Iterator<Item = &'static EmbeddedModule> {
+    CORE_MODULES
+        .iter()
+        .chain(TOOLCHAIN_MODULES.iter())
+        .chain(DEV_MODULES.iter())
+}
+
 /// The baked-in module registered under `key`, core table first then dev/tooling
 /// (absent in a lean release runtime).
 fn embedded_module(key: &str) -> Option<&'static EmbeddedModule> {
-    CORE_MODULES
-        .iter()
-        .chain(DEV_MODULES.iter())
-        .find(|m| m.key == key)
+    all_modules().find(|m| m.key == key)
 }
 
 /// Every baked-in std module as `(key, source)`, core table first — the scanner behind the
 /// stdlib image's signature index reads them all (ADR-370, `check::std_signature_index`).
 pub(crate) fn embedded_modules() -> impl Iterator<Item = (&'static str, &'static str)> {
-    CORE_MODULES
-        .iter()
-        .chain(DEV_MODULES.iter())
-        .map(|m| (m.key, m.source))
+    all_modules().map(|m| (m.key, m.source))
 }
 
 /// The source of the baked-in std module registered under `key`, or `None` when there is
@@ -988,11 +1016,7 @@ pub(super) fn builtin_doc(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 /// candidates, and it is generally useful for validating a module name before
 /// `require`ing it.
 pub(super) fn builtin_modules(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
-    let mut names: Vec<&str> = CORE_MODULES
-        .iter()
-        .chain(DEV_MODULES.iter())
-        .map(|module| module.key)
-        .collect();
+    let mut names: Vec<&str> = all_modules().map(|module| module.key).collect();
     names.sort_unstable();
     names.dedup();
     let mut items = Vec::with_capacity(names.len());
@@ -1728,11 +1752,7 @@ mod tests {
     /// whichever list `embedded_module` scans first — a silent split-brain.
     #[test]
     fn embedded_module_keys_are_unique() {
-        let mut keys: Vec<&str> = CORE_MODULES
-            .iter()
-            .chain(DEV_MODULES.iter())
-            .map(|m| m.key)
-            .collect();
+        let mut keys: Vec<&str> = super::all_modules().map(|m| m.key).collect();
         keys.sort_unstable();
         let before = keys.len();
         keys.dedup();

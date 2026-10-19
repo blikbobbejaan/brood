@@ -93,7 +93,8 @@ pub(crate) fn clock_ns(_clock: i64) -> Option<u64> {
     None
 }
 
-#[cfg(test)]
+// Every test reads a thread clock, which only Unix has.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

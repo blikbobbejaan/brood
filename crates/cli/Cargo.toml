@@ -27,7 +27,11 @@ perf-stats = ["brood/perf-stats"]
 # with `--features brood/jit` directly — see the Makefile's JIT_FEATURES.)
 
 [dependencies]
-brood = { path = "../lisp", default-features = false }
+# Always, even in the lean `--no-default-features` runtime `nest release` ships: `brood
+# --check` walks source with the checker, and a shipped app may check code (an editor),
+# reach the toolchain's modules, serve brotli or decode a JPEG. Only a runtime with no CLI
+# at all (the tab, `crates/tab`) leaves these out.
+brood = { path = "../lisp", default-features = false, features = ["brotli", "checker", "image-formats", "toolchain"] }
 # Argument parsing + help text. The CLI is small enough to hand-roll, but
 # we've already paid for one typo-detection bug from doing so — clap's
 # typo suggestions and uniform `--foo=bar`/`--foo bar` handling pay for

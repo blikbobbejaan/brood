@@ -102,6 +102,18 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "wasm") {
         out.push("wasm");
     }
+    if cfg!(feature = "brotli") {
+        out.push("brotli");
+    }
+    if cfg!(feature = "checker") {
+        out.push("checker");
+    }
+    if cfg!(feature = "image-formats") {
+        out.push("image-formats");
+    }
+    if cfg!(feature = "toolchain") {
+        out.push("toolchain");
+    }
     if cfg!(feature = "dev-tools") {
         out.push("dev-tools");
     }

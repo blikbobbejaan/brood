@@ -583,10 +583,12 @@ mod tests {
     /// pair against a hand-written dialer that presents a bogus MAC.
     #[test]
     fn unauthenticated_dialer_mints_no_symbol_and_gets_no_mac() {
-        use std::os::unix::net::UnixStream;
         use std::time::Duration;
         let junk_name = "preauth-hello-name-that-must-never-be-interned-7f3a";
-        let (mut responder_end, mut dialer_end) = UnixStream::pair().unwrap();
+        // Over loopback TCP, which every platform has, rather than a Unix socket pair.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut dialer_end = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut responder_end, _) = listener.accept().unwrap();
         responder_end
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();

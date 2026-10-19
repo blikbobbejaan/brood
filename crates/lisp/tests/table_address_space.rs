@@ -10,6 +10,7 @@
 //! again, or a chunk that grew back to the region) fails here whatever piece of the
 //! table it moved to. Linux only: `/proc/self/status` is the meter.
 
+#[cfg(target_os = "linux")]
 use brood::Interp;
 
 #[cfg(target_os = "linux")]

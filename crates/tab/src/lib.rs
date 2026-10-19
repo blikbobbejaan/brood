@@ -8,6 +8,8 @@
 //! - `use_prelude_image(bytes)`, optionally — the prelude booted from an image this build
 //!   wrote (`prelude_image()`, run once at build time in a fresh instance) rather than from
 //!   source;
+//! - `use_std_image(bytes)`, optionally — std modules materialised from an image this build
+//!   wrote (`std_image()`, likewise run once at build time) rather than loaded from source;
 //! - `mount(bytes)` — make it the bundle `require` loads modules from;
 //! - `start(args)` — run its `:main` with `args`, as a release binary would;
 //! - `pump(budget_ms)` after every `input` and when the delay it returns elapses — it runs
@@ -51,6 +53,49 @@ pub fn use_prelude_image(image: Vec<u8>) {
 #[wasm_bindgen]
 pub fn prelude_image() -> Vec<u8> {
     brood::boot::capture_prelude_image().unwrap_or_default()
+}
+
+/// The path the stdlib image is held at in memory: the prelude installs an image there
+/// before looking for one in a cache directory, which a tab does not have.
+const STD_IMAGE: &str = "mem:std-image";
+
+/// Materialise std modules from `image` — what `std_image` answered for this same build —
+/// instead of evaluating their source on each first `require`, which is most of what
+/// remains of a tab's startup once the prelude is imaged. Call before `start`; an image
+/// from another build is refused by its stamp (`system/stdlib-id`) and modules load from
+/// source, as without one.
+#[wasm_bindgen]
+pub fn use_std_image(image: Vec<u8>) {
+    brood::boot::provide_memory_image(STD_IMAGE, image);
+}
+
+/// The stdlib image of this build, loading std modules from source to make it (`nest
+/// stdimage`, with the image held in memory rather than a cache file): what a build step
+/// saves beside the bundle for `use_std_image`. `modules` names the std modules to image —
+/// what `loaded_modules` answered for a run of the game; the others are not a game's and
+/// would only make the page heavier, so they load from source if it ever reaches one. Empty,
+/// every std module. Call it in a fresh instance — the image attributes each module's
+/// globals by loading it alone, which a module already loaded defeats.
+#[wasm_bindgen]
+pub fn std_image(modules: Vec<String>) -> Result<Vec<u8>, JsError> {
+    let wanted = if modules.is_empty() {
+        "nil".to_string()
+    } else {
+        let names: Vec<String> = modules.iter().map(|m| brood_string(m)).collect();
+        format!(
+            "(let (wanted (into #{{}} (list {}))) \
+               (seq/filter (reflect/builtin-modules) (fn (m) (contains? wanted (->string m)))))",
+            names.join(" ")
+        )
+    };
+    let mut interp = Interp::new();
+    interp
+        .run_program_repr(&format!(
+            "(require-one 'stdimage) (stdimage/build-at {STD_IMAGE:?} {wanted})"
+        ))
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    brood::boot::memory_image(STD_IMAGE)
+        .ok_or_else(|| JsError::new("std_image: the build wrote no image"))
 }
 
 /// Start the mounted bundle's `:main` with `args`, the way a release binary boots
@@ -111,6 +156,28 @@ pub fn ended() -> Option<String> {
                 Ok(()) => String::new(),
                 Err(e) => e.to_string(),
             })
+    })
+}
+
+/// The modules the running program has loaded, std and its own alike: what a build step
+/// runs the game to its first frames for, and hands `std_image` (which keeps the std ones).
+#[wasm_bindgen]
+pub fn loaded_modules() -> Result<Vec<String>, JsError> {
+    PROGRAM.with(|p| {
+        let mut program = p.borrow_mut();
+        let (interp, _) = program
+            .as_mut()
+            .ok_or_else(|| JsError::new("loaded_modules: no program has started"))?;
+        let names = interp
+            .eval_str("(string/join (map (keys *features*) ->string) \" \")")
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let printed = interp.print(names);
+        // `print` renders the string as a literal; a module name holds no quote or space.
+        Ok(printed
+            .trim_matches('"')
+            .split_whitespace()
+            .map(str::to_string)
+            .collect())
     })
 }
 

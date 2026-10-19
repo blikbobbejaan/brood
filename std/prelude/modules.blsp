@@ -730,15 +730,20 @@ Deliberately NOT `system/build-id`, which embeds the running binary's mtime: tha
   ;; which is the single choke point for that choice: no path means nothing installs and
   ;; nothing is written, so such a build never touches a cache directory at all.
   ;; `%cache-dir` is the kernel's own rule, so this path agrees with every Rust-side cache.
-  (let (dir (when (%build-stdimage?) (%cache-dir)))
-    (when dir (str dir "/std-image-" (system/stdlib-id) ".bin"))))
+  ;; An image the HOST handed over (`mem:std-image`) comes first and needs no cache
+  ;; directory: it is how a runtime with no filesystem — the tab (ADR-414) — boots its std
+  ;; modules from an image built for it once, at build time.
+  (if (%image-exists? "mem:std-image")
+    "mem:std-image"
+    (let (dir (when (%build-stdimage?) (%cache-dir)))
+      (when dir (str dir "/std-image-" (system/stdlib-id) ".bin")))))
 
 (defn- %std-image-install ()
   "Install this binary's stdlib image as an additional feature source, if one exists and is
 current. Returns the section count, or nil on a miss (absent, stale, unreadable) — in which
 case `require` keeps loading stdlib modules from source exactly as before."
   (let (path (%std-image-path))
-    (when (and path (file/exists? path))
+    (when (and path (%image-exists? path))
       ;; check-allow :discarded-catch — a best-effort probe (doc / parse / ls / image index): absence is the answer
       (let (idx (check-allow :discarded-catch
                   (try (%image-index path (system/stdlib-id)) (catch _ nil))))

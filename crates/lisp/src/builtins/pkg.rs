@@ -582,6 +582,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    // A symlink needs a privilege on Windows that a test run does not have.
+    #[cfg(unix)]
     #[test]
     fn untar_gz_refuses_a_symlink_member() {
         let root = scratch("symlink");

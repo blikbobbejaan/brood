@@ -1370,7 +1370,7 @@ fn enter_gate() -> Option<std::sync::MutexGuard<'static, bool>> {
 #[cfg(feature = "gui-gpu")]
 pub(crate) fn close_at_exit() {
     static REGISTERED: std::sync::Once = std::sync::Once::new();
-    #[cfg(unix)]
+    // `atexit` is the C runtime's on Windows as on Unix.
     REGISTERED.call_once(|| {
         // SAFETY: `atexit` takes a plain `extern "C" fn()` that lives for the process.
         unsafe {
@@ -1379,7 +1379,7 @@ pub(crate) fn close_at_exit() {
     });
 }
 
-#[cfg(all(feature = "gui-gpu", unix))]
+#[cfg(feature = "gui-gpu")]
 extern "C" fn close_gate() {
     // Bounded: an exit called FROM the GUI thread, mid-event, holds the gate itself.
     let deadline = Instant::now() + Duration::from_secs(1);

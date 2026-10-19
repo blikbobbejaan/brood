@@ -516,10 +516,11 @@ pub(super) const IMAGE_MAX_SIDE: u32 = 16384;
 /// The largest buffer, in bytes, an image primitive will allocate for one image.
 pub(super) const IMAGE_MAX_ALLOC: u64 = 512 * 1024 * 1024;
 
-/// Decode an encoded image (any format the `image` build reads: PNG / JPEG / GIF / WebP
-/// / BMP) from bytes nobody vouches for — a file, the clipboard. Per-call `Limits`
-/// bound a decompression bomb (`IMAGE_MAX_SIDE` a side, `IMAGE_MAX_ALLOC` in all), and
-/// anything that is not a decodable image within them is `None`, never an error.
+/// Decode an encoded image (any format the `image` build reads: PNG, and JPEG / GIF /
+/// WebP / BMP with `image-formats`) from bytes nobody vouches for — a file, the clipboard.
+/// Per-call `Limits` bound a decompression bomb (`IMAGE_MAX_SIDE` a side, `IMAGE_MAX_ALLOC`
+/// in all), and anything that is not a decodable image within them is `None`, never an
+/// error.
 pub(super) fn decode_untrusted_image(bytes: &[u8]) -> Option<image::DynamicImage> {
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(IMAGE_MAX_SIDE);
@@ -833,10 +834,7 @@ pub(super) fn file_swap(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// An exclusive advisory lock held for a scope, released on drop (and by the OS if
 /// the process dies, which is what keeps a crash from leaving a stale lock).
 struct FileLock<'a> {
-    #[cfg(unix)]
     file: &'a std::fs::File,
-    #[cfg(not(unix))]
-    _file: &'a std::fs::File,
 }
 
 impl<'a> FileLock<'a> {
@@ -858,12 +856,18 @@ impl<'a> FileLock<'a> {
         }
     }
 
-    // Non-unix has no `flock`. The compare-and-swap still runs (so behaviour is
-    // unchanged for a single process) but is NOT serialised across processes; the
-    // platforms this project builds for are unix.
+    // Off Unix (Windows: `LockFileEx`), std's own exclusive lock, which blocks as `flock`
+    // does and is likewise released by the OS when the process dies.
     #[cfg(not(unix))]
     fn acquire(file: &'a std::fs::File) -> std::io::Result<Self> {
-        Ok(FileLock { _file: file })
+        match file.lock() {
+            Ok(()) => {}
+            // A target with no file locks at all (wasm32): the compare-and-swap still runs,
+            // unserialised, which is all one process needs.
+            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {}
+            Err(error) => return Err(error),
+        }
+        Ok(FileLock { file })
     }
 }
 
@@ -874,5 +878,13 @@ impl Drop for FileLock<'_> {
         // SAFETY: same live descriptor; failure to unlock is not actionable here,
         // and closing the fd would release it regardless.
         unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(not(unix))]
+impl Drop for FileLock<'_> {
+    fn drop(&mut self) {
+        // Not actionable here, and closing the file would release it regardless.
+        let _ = self.file.unlock();
     }
 }

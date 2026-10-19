@@ -1601,7 +1601,7 @@ impl Heap {
     /// This runtime's held image files by path (see `RuntimeCode::image_files`).
     pub(crate) fn image_files(
         &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<Mutex<std::fs::File>>>> {
+    ) -> std::sync::MutexGuard<'_, HashMap<String, Arc<crate::boot::image::ImageFile>>> {
         crate::core::sync::lock(&self.runtime.image_files)
     }
 

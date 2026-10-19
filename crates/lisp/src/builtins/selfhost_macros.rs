@@ -19,6 +19,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         macroexpand_1,
     );
     // advisory type checker (the Ty lattice's first consumer; see docs/types.md)
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check",
         Arity::exact(1),
@@ -27,6 +28,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Advisory type-check a quoted form: a list of warning strings, or nil. Never raises.",
         check_builtin,
     );
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-string-here",
         Arity::exact(1),
@@ -34,6 +36,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["src"],
         "Advisory type-check the source string `src` under THIS process's compile context — the namespace last opened and its imports, as `eval` would resolve it — returning `{:line :col :message}` maps like `%check-string-structured`; `()` when `src` does not parse. Forms that open a `(defmodule …)` of their own are checked under it instead.",
         check_string_here);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-file",
         Arity::range(1, 2),
@@ -43,6 +46,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["path", "&optional required-mods"],
         "Advisory type-check every top-level form in the file at path: a list of `path:line:col: warning: …` strings, or nil. Does not evaluate the file. `required-mods` is the file's transitive require-closure (module-name strings) — the KI-17 reachability set that flags a qualified `mod/name` whose module the file never requires; omit it (single-file / editor) to disable that lint.",
         check_file_builtin);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%file-signatures",
         Arity::exact(1),
@@ -50,6 +54,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["path"],
         "The signature the checker holds for every function the file at path defines: a list of `{:name :sig :declared? :informative?}` maps, `:sig` written in source syntax (`\"(int int -> int)\"`) and ready to paste into a `(sig …)`, or nil where the type names a runtime kind the grammar cannot write. `:declared?` marks the ones a `(sig …)` already states; `:informative?` marks the ones saying something an all-`any` arrow does not. Does not evaluate the file. The bulk counterpart of the editor's declare-sig action.",
         file_signatures_builtin);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%source-signatures",
         Arity::exact(1),
@@ -57,6 +62,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["src"],
         "`%file-signatures` for source TEXT rather than a file: the checker's signature for every function `src` defines, as `{:name :sig :declared? :informative?}` maps. `()` when `src` doesn't parse, so a live editor buffer never errors mid-edit. The question `%expr-type` cannot answer — a `(defn …)` form evaluates to its own name, so the type of its VALUE says nothing about the function.",
         source_signatures);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-file-structured",
         Arity::range(1, 2),
@@ -64,6 +70,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["path", "&optional required-mods"],
         "Like check-file but returns a list of `{:file :line :col :message}` maps instead of GNU-format strings — for tools (the `nest mcp` `check` tool, editor diagnostics). `required-mods`: see check-file.",
         check_file_structured);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-file-deps",
         Arity::range(1, 2),
@@ -94,6 +101,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Is STRICT checking on for this process (`nest check --strict`, or BROOD_CHECK_STRICT=1)? A verdict depends on the mode that produced it, so the incremental check cache keys its manifest on this — without it a plain run's cached verdicts are reused by a strict one, and the strict gate silently reports less than it found.",
         check_strict,
     );
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-materialise-referenced!",
         Arity::exact(0),
@@ -110,6 +118,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "Set STRICT checking for this process and return the new value. The setter behind the Brood-implemented `nest check --strict` (ADR-322): the mode is a process-wide flag the checker reads, so the command line flips it before the first file is checked.",
         check_strict_set,
     );
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-deps-fp",
         Arity::exact(1),
@@ -117,6 +126,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["dep-keys"],
         "Recompute the fingerprint of a file's dep-keys (from check-file-deps) against the current global image. The incremental check cache reuses a file's warnings iff this equals the stored fingerprint.",
         check_deps_fp);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%check-string-structured",
         Arity::exact(1),
@@ -124,6 +134,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         &["src"],
         "Advisory type-check the source string `src`, returning a list of `{:line :col :message}` maps (1-based positions), or `()` when `src` doesn't parse (e.g. incomplete input) — the string-source counterpart of check-file-structured, for live editor-buffer diagnostics.",
         check_string_structured);
+    #[cfg(feature = "checker")]
     primitives.def(
         "%expr-type",
         Arity::exact(1),
@@ -159,6 +170,7 @@ pub(super) fn macroexpand_1(args: &[Value], env: EnvId, heap: &mut Heap) -> Lisp
 /// `(check 'form)` — run the advisory type checker over `form` (macro-expanded
 /// first, like the real compile pass) and return a list of warning strings, or
 /// `nil` when nothing is provably wrong. Advisory only: it never raises.
+#[cfg(feature = "checker")]
 pub(super) fn check_builtin(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let root = heap.env_root(env);
     let _plain = crate::eval::macros::NoSourceRewrites::enter();
@@ -174,6 +186,7 @@ pub(super) fn check_builtin(args: &[Value], env: EnvId, heap: &mut Heap) -> Lisp
 /// `check_file_ext` over forms read from `path`, with `path` as the heap's current file
 /// for the walk (restored after) — so the checker knows which file it is reading, as a
 /// `load` of it would.
+#[cfg(feature = "checker")]
 fn check_file_at(
     heap: &mut Heap,
     path: &str,
@@ -196,6 +209,7 @@ fn check_file_at(
 /// foo …)` at line 1 silence the unbound check on `(foo …)` at line 100. Used
 /// by `(check)` in `std/tool/project.blsp` for the `nest test` / `nest run`
 /// pre-flight.
+#[cfg(feature = "checker")]
 pub(super) fn check_file_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/check-file", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
@@ -225,6 +239,7 @@ pub(super) fn check_file_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -
 /// has no word for — is reported with `:sig nil` rather than a wrong string.
 ///
 /// Reads but does not evaluate, exactly like `check-file`.
+#[cfg(feature = "checker")]
 pub(super) fn file_signatures_builtin(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/file-signatures", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
@@ -248,6 +263,7 @@ pub(super) fn file_signatures_builtin(args: &[Value], _env: EnvId, heap: &mut He
 /// FUNCTION is typed as has no answer to give. This does, for every definition in the
 /// text, and shares one code path with the file variant so a buffer and the file it will
 /// be saved as can never disagree.
+#[cfg(feature = "checker")]
 pub(super) fn source_signatures(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "reflect/source-signatures", arg(args, 0))?;
     let forms = match reader::read_all_positioned(heap, &src) {
@@ -261,6 +277,7 @@ pub(super) fn source_signatures(args: &[Value], _env: EnvId, heap: &mut Heap) ->
 }
 
 /// The `{:name :sig :declared? :informative?}` list both signature builtins return.
+#[cfg(feature = "checker")]
 fn signatures_of(heap: &mut Heap, forms: &[Value]) -> Value {
     let signatures = crate::types::check::file_signatures(heap, forms);
     let mut out = Vec::with_capacity(signatures.len());
@@ -369,6 +386,7 @@ pub(super) fn meta_of(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResul
 /// One GNU-style diagnostic line. A budget the checker ran out of (B6, `checker gave
 /// up: …`) is a NOTE about the check, not a finding about the code; the project checker
 /// prints it as advisory and never gates on it (`project-advisory-warning?`).
+#[cfg(feature = "checker")]
 fn diagnostic_line(path: &str, pos: Option<crate::error::Pos>, msg: &str) -> String {
     let kind = if msg.starts_with("checker gave up:") {
         "note"
@@ -400,6 +418,7 @@ fn list_or_vec_items(heap: &Heap, v: Value) -> Vec<Value> {
 /// A `required-mods` argument (a list/vector of module-name strings or symbols) → a
 /// `Vec<String>`. `nil` / absent → empty. Backs the optional KI-17 reachability set on
 /// the `check-file*` builtins.
+#[cfg(feature = "checker")]
 fn required_mods_arg(heap: &Heap, v: Value) -> Vec<String> {
     list_or_vec_items(heap, v)
         .into_iter()
@@ -458,6 +477,7 @@ pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Hea
 ///   - `fingerprint`: a stamp of those observations against the CURRENT image; a
 ///     later run whose `(check-deps-fp dep-keys)` still equals this (and whose file
 ///     mtime is unchanged) may reuse `warnings` verbatim.
+#[cfg(feature = "checker")]
 pub(super) fn check_file_deps(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/check-file-deps", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
@@ -495,6 +515,7 @@ pub(super) fn check_file_deps(args: &[Value], _env: EnvId, heap: &mut Heap) -> L
 /// cache reuses a file's warnings iff this equals the stored fingerprint (and the
 /// file's mtime is unchanged). A pure read of the image — no allocation of Brood
 /// values beyond the returned string.
+#[cfg(feature = "checker")]
 pub(super) fn check_deps_fp(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let dep_keys = arg(args, 0);
     let fp = crate::types::check::deps_fingerprint(heap, dep_keys);
@@ -505,6 +526,7 @@ pub(super) fn check_deps_fp(args: &[Value], _env: EnvId, heap: &mut Heap) -> Lis
 /// cache reads it to key its manifest: a stored verdict is only reusable by a run in the
 /// mode that produced it, and without the key a plain `nest check` poisons the cache for
 /// the next `nest check --strict`, which then reports what the plain run found.
+#[cfg(feature = "checker")]
 pub(super) fn check_materialise_referenced(
     _args: &[Value],
     _env: EnvId,
@@ -542,6 +564,7 @@ pub(super) fn check_strict_set(args: &[Value], _env: EnvId, _heap: &mut Heap) ->
 /// checker doesn't carry spans through macroexpansion yet, ADR-024). Used
 /// by the `nest mcp` `check` tool (step 1c-a) and any other consumer that
 /// wants structured diagnostics rather than a GNU-line string to re-parse.
+#[cfg(feature = "checker")]
 pub(super) fn check_file_structured(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let path = expect_string(heap, "reflect/check-file-structured", arg(args, 0))?;
     let src = std::fs::read_to_string(&path).map_err(|e| {
@@ -585,6 +608,7 @@ pub(super) fn check_file_structured(args: &[Value], _env: EnvId, heap: &mut Heap
 /// expression you just typed, whose name is nothing. Nil rather than an error for
 /// unparsable input, matching `%check-string-structured`: both are read live, from a
 /// buffer that is mid-edit half the time.
+#[cfg(feature = "checker")]
 pub(super) fn expr_type(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "reflect/expr-type", arg(args, 0))?;
     let forms = match reader::read_all_positioned(heap, &src) {
@@ -611,6 +635,7 @@ pub(super) fn expr_type(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispRes
 /// buffer is mid-edit — so a live diagnostics loop never errors on an unbalanced
 /// buffer; warnings reappear once it parses. Reuses the same checker as the file
 /// variant (`types::check::check_file`).
+#[cfg(feature = "checker")]
 pub(super) fn check_string_structured(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "reflect/check-string-structured", arg(args, 0))?;
     check_string_as(heap, &src, false)
@@ -619,11 +644,13 @@ pub(super) fn check_string_structured(args: &[Value], _env: EnvId, heap: &mut He
 /// `%check-string-here`: [`check_string_structured`] under the CURRENT compile context —
 /// what a REPL or an editor's eval-in-buffer wants, since that is how the form is about
 /// to be resolved (`types::check::check_forms_here`).
+#[cfg(feature = "checker")]
 pub(super) fn check_string_here(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "reflect/check-string-here", arg(args, 0))?;
     check_string_as(heap, &src, true)
 }
 
+#[cfg(feature = "checker")]
 fn check_string_as(heap: &mut Heap, src: &str, here: bool) -> LispResult {
     let forms = match reader::read_all_positioned(heap, src) {
         Ok(fs) => fs,

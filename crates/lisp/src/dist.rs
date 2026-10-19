@@ -2186,20 +2186,12 @@ mod tests {
         // connector "nonode", one the peer dialed has the peer's name. "nonode" sorts
         // before "zz-…", so the second (Initiator) link evicts the first.
         let peer = value::intern("zz-evicted-peer@test");
-        let (first, _first_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 5),
-            Stream::Unix(first),
-            Role::Responder,
-        );
+        let (first, _first_far_end) = stream_pair();
+        establish(authenticated_as(peer, 5), first, Role::Responder);
         // A monitor that went out over the first link.
         process::record_pending_remote(peer, 21, me, process::next_ref());
-        let (second, _second_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 5),
-            Stream::Unix(second),
-            Role::Initiator,
-        );
+        let (second, _second_far_end) = stream_pair();
+        establish(authenticated_as(peer, 5), second, Role::Initiator);
         assert_eq!(
             crate::core::sync::read(&NODES)
                 .get(&peer)
@@ -2212,6 +2204,15 @@ mod tests {
             Some(1),
             "the evicted link's pending monitor must get its :noconnection"
         );
+    }
+
+    /// A connected link carrier and its far end, over loopback TCP: the transport every
+    /// platform has, so these tests run on Windows as on Unix.
+    fn stream_pair() -> (Stream, TcpStream) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let near = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (far, _) = listener.accept().unwrap();
+        (Stream::Tcp(near), far)
     }
 
     /// What a completed handshake with `peer` (in its life `incarnation`) hands
@@ -2244,12 +2245,8 @@ mod tests {
     fn a_restarted_peer_replaces_its_previous_life_and_fires_its_node_down() {
         let me = process::self_pid();
         let peer = value::intern("restarted-peer@test");
-        let (old_life, _old_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 1),
-            Stream::Unix(old_life),
-            Role::Responder,
-        );
+        let (old_life, _old_far_end) = stream_pair();
+        establish(authenticated_as(peer, 1), old_life, Role::Responder);
         let (old_id, _) = registered_link(peer).expect("the first life registers");
         monitor_node(peer, me);
         // A pid monitor made over the old life.
@@ -2261,12 +2258,8 @@ mod tests {
         );
 
         // The peer comes back and dials us: the same connector (the peer) as before.
-        let (new_life, _new_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 2),
-            Stream::Unix(new_life),
-            Role::Responder,
-        );
+        let (new_life, _new_far_end) = stream_pair();
+        establish(authenticated_as(peer, 2), new_life, Role::Responder);
         let (new_id, new_incarnation) = registered_link(peer).expect("the new life registers");
         assert_ne!(
             new_id, old_id,
@@ -2289,23 +2282,15 @@ mod tests {
     fn a_second_link_to_the_same_life_leaves_the_live_link_alone() {
         let me = process::self_pid();
         let peer = value::intern("same-life-peer@test");
-        let (first, _first_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 7),
-            Stream::Unix(first),
-            Role::Responder,
-        );
+        let (first, _first_far_end) = stream_pair();
+        establish(authenticated_as(peer, 7), first, Role::Responder);
         let registered = registered_link(peer).expect("the first link registers");
         monitor_node(peer, me);
         let mref = process::next_ref();
         process::record_pending_remote(peer, 41, me, mref);
 
-        let (second, _second_far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 7),
-            Stream::Unix(second),
-            Role::Responder,
-        );
+        let (second, _second_far_end) = stream_pair();
+        establish(authenticated_as(peer, 7), second, Role::Responder);
         assert_eq!(
             registered_link(peer),
             Some(registered),
@@ -2328,12 +2313,8 @@ mod tests {
     fn a_connect_spelled_differently_reuses_the_link_its_address_reached() {
         let peer = value::intern("spelled-peer@127.0.0.1");
         let address = "unix:/nonexistent/brood-test/spelled-peer.sock";
-        let (link, _far_end) = UnixStream::pair().unwrap();
-        establish(
-            authenticated_as(peer, 9),
-            Stream::Unix(link),
-            Role::Responder,
-        );
+        let (link, _far_end) = stream_pair();
+        establish(authenticated_as(peer, 9), link, Role::Responder);
         crate::core::sync::write(&DIAL_ROUTES).insert(address.to_string(), peer);
         let other_spelling = value::intern("spelled-peer@some-host");
         assert_eq!(

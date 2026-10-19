@@ -6,6 +6,31 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Performance.**
+- A program in a tab materialises the std modules it calls from an image instead of loading
+  their source (`mem:` image paths; `brood-tab`'s `std_image` / `use_std_image` /
+  `loaded_modules`): b2d's first frame ~540 → ~250 ms. The tab wasm is 7.4 MB (2.6 MB gzipped),
+  was 10.8 MB (3.7 MB).
+
+**Fixed.**
+- `project_test.blsp` purges its `brood-gate-` and `brood-shadow-` fixtures, which
+  `temp_purge_coverage_test` requires.
+- Off Unix the lock behind the compare-and-swap file writes was a no-op; it is `File::lock`
+  (`LockFileEx` on Windows) now.
+
+**Platforms.**
+- Windows: the workspace compiles for it with every target and feature, checked in CI
+  (`windows-check`), and a smoke job runs a program there (`windows-smoke`, allowed to fail
+  while the port is new). Dist tests run over loopback TCP instead of Unix socket pairs.
+
+**Changed.**
+- Four default-on features — `brotli`, `checker`, `image-formats` (JPEG/GIF/WebP/BMP; PNG is
+  always in), `toolchain` (the std modules and documents only the toolchain uses). The `brood`
+  binary and the playground ask for all four; a build with `--no-default-features` and no
+  `crates/cli` (the tab) leaves them out. `dev-tools` implies `toolchain`.
+- `stdimage/build-at path modules` writes a stdlib image anywhere, including a `mem:` path;
+  `stdimage/build` keeps the cache-directory policy.
+
 ## v0.41.0 — mail, and a program in a browser tab at full speed
 
 `std/mime` reads a mail message: its headers decoded, its part tree, its text and its
