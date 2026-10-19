@@ -22,7 +22,7 @@ loom-model = []
 # `cargo build`/`cargo test`/rust-analyzer and the shipped `brood`/`nest` binaries.
 # The lean `nest release` bundle and unsupported hosts strip it via
 # `--no-default-features` (then re-add what they need), same as `dev-tools`/`treesit`.
-default = ["dev-tools", "treesit", "jit", "wasm", "stdimage"]
+default = ["dev-tools", "treesit", "jit", "wasm", "stdimage", "brotli", "checker", "image-formats", "toolchain"]
 # The stdlib startup image (ADR-256/281), on by default: a `require`d std module
 # materialises its bindings from `~/.cache/brood` instead of re-reading and re-evaluating
 # its source. A feature as well as a runtime switch for the same reason the JIT is both —
@@ -31,13 +31,33 @@ default = ["dev-tools", "treesit", "jit", "wasm", "stdimage"]
 # file), where `BROOD_NO_STDIMAGE=1` is the per-run lever. Costs nothing to leave on: with
 # no image present the install is one absent-file check.
 stdimage = []
+# Brotli (`%brotli`/`%unbrotli`, `zlib/brotli`): the `Content-Encoding: br` codec an HTTP
+# server wants and a game never calls. On by default and in every native build; off in the
+# tab (`crates/tab`), where its encoder was ~340 KB of the wasm. Without it the two builtins
+# raise an error that names the feature.
+brotli = ["dep:brotli"]
+# The advisory type checker's entry points (`%check`, `%check-file`, `%file-signatures`,
+# `%expr-type`, … — `nest check`, `brood --check`, an editor's diagnostics). A running
+# program never checks itself, so a game in a tab leaves it out (~420 KB of its wasm); every
+# native binary has it (`crates/cli` asks for it). The lattice, sigs and contracts are not
+# behind it — only the walk over source.
+checker = []
+# Image codecs beyond PNG for the image decoders (`image-thumb`, a pasted image): JPEG, GIF,
+# WebP, BMP. PNG is always in. Off in the tab, where the four decoders were ~450 KB of the
+# wasm and a game's art is PNG; on everywhere else.
+image-formats = ["image/jpeg", "image/gif", "image/webp", "image/bmp"]
+# The toolchain's own std modules (`nest`'s dispatch, `nest check`'s driver, scaffolding,
+# codemods, coverage, completion, the error explainer) and the reference documents `nest new`
+# and `nest mcp` hand out: what a program is BUILT with, never what it runs on. Every native
+# binary has it; the tab leaves its ~400 KB of source out.
+toolchain = []
 # Dev/tooling surface baked into the runtime: the test framework (`test`), the
 # process observer (`observer`), the agent/doc/hot-reload tooling (`mcp`/`docs`/
 # `reload`), the interactive REPL (`repl`/`lineedit`), and the GC debug builtins
 # (`gc-stats`/`gc-collect`/`gc-trace`/`runtime-collect`). On for `brood`/`nest`/
 # tests. `nest release` builds the runtime *without* it (`--no-default-features`)
 # so a shipped app carries no test/observer/debug code (ADR-038, docs/release.md).
-dev-tools = []
+dev-tools = ["toolchain"]
 # A windowed (GUI) frontend for the M3 display/input seam (ADR-046), alongside
 # the always-on terminal (crossterm) frontend. Off by default so the core lib —
 # which `nest`/`brood-lsp` embed — pulls no windowing stack; opt in with
@@ -161,13 +181,13 @@ stacker = "0.1"
 # generation is freed by storing a fresh empty slab; readers hold a guard so the old
 # slab can't drop while in use — lock-free reads, safe whole-generation reclamation.
 arc-swap = "1"
-# Image decoding (PNG/JPEG/GIF/WebP/BMP) for the `image-thumb` primitive — the one
+# Image decoding (PNG; JPEG/GIF/WebP/BMP with `image-formats`) for the `image-thumb` primitive — the one
 # thing an image renderer genuinely can't bootstrap in Brood (a decoder + resampler).
 # `default-features = false` pulls only the common web/raster codecs (no TIFF/EXR/…
 # and their heavy transitive deps); per-call decode `Limits` bound a decompression
 # bomb. Rendering (half-block cells, a GUI texture) stays Brood policy over the
 # decoded RGBA buffer this returns.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 # The matching engine under `std/regex` (ADR-389): lazy DFA + Pike VM, linear time, no
 # backtracking — the guarantees the Brood engine had, at native speed. Brood keeps the
 # pattern LANGUAGE (its parser translates the dialect into this crate's syntax); the crate
@@ -224,7 +244,7 @@ getrandom = "0.4"
 flate2 = "1"
 # Brotli compression (the `%brotli`/`%unbrotli` builtins) — the `Content-Encoding: br`
 # wire format, which beats gzip on text at a comparable cost. Pure-Rust, no_std-friendly.
-brotli = "9"
+brotli = { version = "9", optional = true }
 # Node-link channel encryption (ADR-089): a Noise-style session that gives the
 # steady-state node link confidentiality + per-frame integrity, closing ADR-081's
 # cleartext/injection gap. `x25519-dalek` does the ephemeral ECDH (forward secrecy);
@@ -340,8 +360,9 @@ cranelift-frontend = { version = "0.136", optional = true }
 wasmtime = { version = "49",default-features = false, features = ["runtime", "component-model", "cranelift", "wat"], optional = true }
 
 # uid/gid → owner/group name resolution for `file-stat`'s `ls -l`-style listing
-# (getpwuid/getgrgid). Unix-only; already in the dependency tree (transitive).
-[target.'cfg(unix)'.dependencies]
+# (getpwuid/getgrgid) and the rest of the Unix system calls; on Windows, the C runtime's
+# `atexit` the GPU window's exit gate registers. Already in the dependency tree (transitive).
+[target.'cfg(any(unix, windows))'.dependencies]
 libc = "0.2"
 
 # Non-wasm substrate: mimalloc (its C build + per-thread heaps don't cross to wasm,

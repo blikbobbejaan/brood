@@ -166,8 +166,21 @@ it is dropped, since nothing materialises it back."
             (%map-assoc acc mn (append (or (%map-get acc mn nil) []) [[aname op key f from]]))))))))
 
 (defn build (&optional modules)
-  "Build (or rebuild) this binary's stdlib image and return `[path entry-count]`, or nil
-when there is no cache directory. `modules` defaults to every baked-in module.
+  "Build (or rebuild) this binary's stdlib image in the cache directory and return
+`[path entry-count]`, or nil when there is no cache directory. `modules` defaults to every
+baked-in module; see [[build-at]] for what goes in."
+  (let (path (image-path))
+    (when path
+      (let (dir (path/dirname path))
+        (when (not (file/dir? dir)) (file/mkdir dir))
+        ;; Drop older images before writing this one — see `prune`.
+        (prune dir path))
+      (build-at path modules))))
+
+(defn build-at (path &optional modules)
+  "Build this binary's stdlib image at `path` and return `[path entry-count]`. `path` may
+name a file or a `mem:` image (`%image-exists?`) — the tab's, which has no filesystem and
+hands the bytes to its host (ADR-414). `modules` defaults to every baked-in module.
 
 A binding is attributed to the module that DEFINES it, by two different routes:
 
@@ -191,114 +204,108 @@ since the prelude is always present."
   ;; contracts in every unarmed run that read it. Refuse rather than write a wrong image;
   ;; `nest` builds in a child process with the variable removed for exactly this reason.
   (when (%contracts-armed?)
-    (error "stdimage/build: refusing to write a stdlib image with runtime contracts armed "
+    (error "stdimage/build-at: refusing to write a stdlib image with runtime contracts armed "
       "(BROOD_CONTRACTS=1) — the image would carry every contract shim into unarmed runs. "
       "Build with the variable unset: `env -u BROOD_CONTRACTS nest stdimage`."))
-  (let (path (image-path))
-    (when path
-      (let (dir (path/dirname path)
-            _ (when (not (file/dir? dir)) (file/mkdir dir))
-            ;; Drop older images before writing this one — see `prune`.
-            _ (prune dir path)
-            names (or modules (reflect/builtin-modules))
-            probed (fold names
-                     {}
-                     (fn (acc m)
-                       (%map-assoc acc
-                         (->string m)
-                         ;; `-discard-loads`: this probe exists to learn what `m` introduces
-                         ;; and then UNDO the load, so the next probe starts clean. A plain
-                         ;; `%isolate` keeps a module load (KI-134, ADR-339) — which is right
-                         ;; for a test and would credit every later probe with this one's
-                         ;; globals here.
-                         (%isolate-discard-loads
-                           (fn ()
-                             (let (before (into #{} (reflect/global-names))
-                                   ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
-                                   _ (check-allow :discarded-catch
-                                       (try (require-one m) (catch _ nil))))
-                               (into #{}
-                                 (seq/filter (reflect/global-names)
-                                   (fn (s) (not (contains? before s)))))))))))
-            ;; now load them for real, so the globals being imaged are live in THIS heap
-            ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
-            _ (doseq (m names) (check-allow :discarded-catch (try (require-one m) (catch _ nil))))
-            ;; The edges every restored module needs replayed, held in a ROOT global so the
-            ;; section that carries them belongs to no module — named `stdimage/…` it made
-            ;; `stdimage` look already-loaded at boot, and its source then never loaded.
-            _ (%set-std-require-edges! *require-edges*)
-            ;; …and the ability registrations, partitioned by the module that DECLARED each
-            ;; (`*impl-from*`'s tag), so a materialised module replays its own and only its
-            ;; own. An `impl` form is a top-level CALL: materialising defines bindings and
-            ;; evaluates nothing, so without this a restored `http` is bound but not
-            ;; dispatchable, and the failure surfaces at `(send-response r)`, not at load.
-            _ (%set-std-impls! (%std-impls-by-module))
-            _ (%set-std-regs! (%std-regs-by-module))
-            roots (seq/filter (reflect/global-names)
-                    (fn (s) (not (prefixed-by-any? (->string s) names))))
-            owner-of (fold roots
-                       {}
-                       (fn (acc g)
-                         (let (best (fold names
-                                      nil
-                                      (fn (winner m)
-                                        (let (probe (%map-get probed (->string m) nil))
-                                          (if (and probe
-                                                (contains? probe g)
-                                                (or (nil? winner)
-                                                  (< (count probe) (second winner))))
-                                            [m (count probe)]
-                                            winner)))))
-                           (if best (%map-assoc acc g (->string (first best))) acc))))
-            ;; KI-112. A root global no probe claimed is dropped from the image, and the
-            ;; probe claims nothing for a module this process had ALREADY loaded when it ran
-            ;; (`require-one` is a no-op then, and the diff sees no introductions). That is
-            ;; how `nest stdimage`, dispatched from `std/tool/nest.blsp` — whose load pulls the
-            ;; toolchain in — wrote an image with none of `project`'s 31 root globals, and
-            ;; every later `nest check` died on an unbound `*ns-package*`. A root the PRELUDE
-            ;; binds (its own definitions, the kernel's natives, the registries it seeds) is
-            ;; always present and needs no section; any other unowned root is a std module's
-            ;; that the probe missed. Refuse — a missing image costs one source boot, a wrong
-            ;; one costs a day.
-            ;; Only the FULL build can judge: with an explicit `modules` subset, a root may
-            ;; belong to a module outside it and has no section by design; and only names
-            ;; with no prefix at all — `roots` also holds the prefixed globals of modules
-            ;; outside `names`, which were always the prelude's business here.
-            orphans (if modules
-                      (list)
-                      (seq/filter roots
-                        (fn (g)
-                          (and (not (includes? (->string g) "/"))
-                            (nil? (%map-get owner-of g nil))
-                            (not (%prelude-global? g))))))
-            _ (when (not (empty? orphans))
-                (error "stdimage/build: "
-                  (count orphans)
-                  " root global(s) belong to no module — a std module was already loaded "
-                  "when the probe ran, so its root globals cannot be attributed: "
-                  (string/join (sort (map orphans ->string)) " ")
-                  ". Build from a fresh process (`nest stdimage`); nothing was written."))
-            sections (append [["%std-edges" ['*std-require-edges*]]
-                               ["%std-impls" ['*std-impls*]]
-                               ["%std-regs" ['*std-regs*]]]
-                       (seq/keep names
-                         (fn (m)
-                           (let (mn (->string m)
-                                 pfx (str mn "/")
-                                 owned (seq/filter (reflect/global-names)
-                                         (fn (s) (string/starts-with? (->string s) pfx)))
-                                 mine (seq/filter roots (fn (g) (= (%map-get owner-of g nil) mn)))
-                                 syms (apply vector (append owned mine)))
-                             ;; A module contributing nothing would image as materialisable-but-empty,
-                             ;; and a later require would restore no bindings rather than fall back.
-                             (when (> (count syms) 0) [mn syms]))))))
-        ;; Written from a scope in which every module-owned registration is pruned, so a
-        ;; registry's snapshot holds only what no load replays (KI-136); the `%isolate`
-        ;; puts them back once the file is on disk.
-        [path
-          (%isolate (fn ()
-                      (%prune-attributed-registrations!)
-                      (%image-write path sections (system/stdlib-id))))]))))
+  (let (names (or modules (reflect/builtin-modules))
+        probed (fold names
+                 {}
+                 (fn (acc m)
+                   (%map-assoc acc
+                     (->string m)
+                     ;; `-discard-loads`: this probe exists to learn what `m` introduces
+                     ;; and then UNDO the load, so the next probe starts clean. A plain
+                     ;; `%isolate` keeps a module load (KI-134, ADR-339) — which is right
+                     ;; for a test and would credit every later probe with this one's
+                     ;; globals here.
+                     (%isolate-discard-loads
+                       (fn ()
+                         (let (before (into #{} (reflect/global-names))
+                               ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
+                               _ (check-allow :discarded-catch
+                                   (try (require-one m) (catch _ nil))))
+                           (into #{}
+                             (seq/filter (reflect/global-names)
+                               (fn (s) (not (contains? before s)))))))))))
+        ;; now load them for real, so the globals being imaged are live in THIS heap
+        ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
+        _ (doseq (m names) (check-allow :discarded-catch (try (require-one m) (catch _ nil))))
+        ;; The edges every restored module needs replayed, held in a ROOT global so the
+        ;; section that carries them belongs to no module — named `stdimage/…` it made
+        ;; `stdimage` look already-loaded at boot, and its source then never loaded.
+        _ (%set-std-require-edges! *require-edges*)
+        ;; …and the ability registrations, partitioned by the module that DECLARED each
+        ;; (`*impl-from*`'s tag), so a materialised module replays its own and only its
+        ;; own. An `impl` form is a top-level CALL: materialising defines bindings and
+        ;; evaluates nothing, so without this a restored `http` is bound but not
+        ;; dispatchable, and the failure surfaces at `(send-response r)`, not at load.
+        _ (%set-std-impls! (%std-impls-by-module))
+        _ (%set-std-regs! (%std-regs-by-module))
+        roots (seq/filter (reflect/global-names)
+                (fn (s) (not (prefixed-by-any? (->string s) names))))
+        owner-of (fold roots
+                   {}
+                   (fn (acc g)
+                     (let (best (fold names
+                                  nil
+                                  (fn (winner m)
+                                    (let (probe (%map-get probed (->string m) nil))
+                                      (if (and probe
+                                            (contains? probe g)
+                                            (or (nil? winner)
+                                              (< (count probe) (second winner))))
+                                        [m (count probe)]
+                                        winner)))))
+                       (if best (%map-assoc acc g (->string (first best))) acc))))
+        ;; KI-112. A root global no probe claimed is dropped from the image, and the
+        ;; probe claims nothing for a module this process had ALREADY loaded when it ran
+        ;; (`require-one` is a no-op then, and the diff sees no introductions). That is
+        ;; how `nest stdimage`, dispatched from `std/tool/nest.blsp` — whose load pulls the
+        ;; toolchain in — wrote an image with none of `project`'s 31 root globals, and
+        ;; every later `nest check` died on an unbound `*ns-package*`. A root the PRELUDE
+        ;; binds (its own definitions, the kernel's natives, the registries it seeds) is
+        ;; always present and needs no section; any other unowned root is a std module's
+        ;; that the probe missed. Refuse — a missing image costs one source boot, a wrong
+        ;; one costs a day.
+        ;; Only the FULL build can judge: with an explicit `modules` subset, a root may
+        ;; belong to a module outside it and has no section by design; and only names
+        ;; with no prefix at all — `roots` also holds the prefixed globals of modules
+        ;; outside `names`, which were always the prelude's business here.
+        orphans (if modules
+                  (list)
+                  (seq/filter roots
+                    (fn (g)
+                      (and (not (includes? (->string g) "/"))
+                        (nil? (%map-get owner-of g nil))
+                        (not (%prelude-global? g))))))
+        _ (when (not (empty? orphans))
+            (error "stdimage/build: "
+              (count orphans)
+              " root global(s) belong to no module — a std module was already loaded "
+              "when the probe ran, so its root globals cannot be attributed: "
+              (string/join (sort (map orphans ->string)) " ")
+              ". Build from a fresh process (`nest stdimage`); nothing was written."))
+        sections (append [["%std-edges" ['*std-require-edges*]]
+                           ["%std-impls" ['*std-impls*]]
+                           ["%std-regs" ['*std-regs*]]]
+                   (seq/keep names
+                     (fn (m)
+                       (let (mn (->string m)
+                             pfx (str mn "/")
+                             owned (seq/filter (reflect/global-names)
+                                     (fn (s) (string/starts-with? (->string s) pfx)))
+                             mine (seq/filter roots (fn (g) (= (%map-get owner-of g nil) mn)))
+                             syms (apply vector (append owned mine)))
+                         ;; A module contributing nothing would image as materialisable-but-empty,
+                         ;; and a later require would restore no bindings rather than fall back.
+                         (when (> (count syms) 0) [mn syms]))))))
+    ;; Written from a scope in which every module-owned registration is pruned, so a
+    ;; registry's snapshot holds only what no load replays (KI-136); the `%isolate`
+    ;; puts them back once the file is on disk.
+    [path
+      (%isolate (fn ()
+                  (%prune-attributed-registrations!)
+                  (%image-write path sections (system/stdlib-id))))]))
 
 (defn install ()
   "Install this binary's stdlib image as an additional feature source, if one exists and is

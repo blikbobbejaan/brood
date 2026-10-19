@@ -22,6 +22,10 @@
 //! `check` (the advisory type checker — the lattice's first consumer) lives
 //! alongside it here.
 
+// Without the `checker` feature (a game in a tab) the checker's entry points are not
+// registered, and what the runtime still reaches — the signature index lazy loading reads
+// (ADR-370), the introspection that prints a sig — is all that is linked.
+#[cfg_attr(not(feature = "checker"), allow(dead_code))]
 pub mod check;
 
 use std::collections::{BTreeMap, BTreeSet};

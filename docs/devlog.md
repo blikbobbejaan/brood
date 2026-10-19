@@ -2595,3 +2595,28 @@ chunked backward search of its own. It now reads 64K-char slices back from `befo
 overlapping the next by the needle's length, and `rfind`s each. Guard
 `backward_search_agrees_with_the_last_forward_match` (overlapping matches, slice-straddling
 matches, multi-byte, folded).
+
+## 2026-10-18 (late) — the tab images its std modules; the tab wasm loses a third; Windows checks
+
+b2d's handoff, both items. **The tab** (ADR-414 addendum 2): image paths under `mem:` are bytes
+held in memory, so the sectioned stdlib image works where there is no filesystem.
+`stdimage/build-at` writes one anywhere; `crates/tab` gained `std_image(modules)`,
+`use_std_image` and `loaded_modules`. The image holds only the std modules the game CALLS —
+learned by running it on an image of all of std, because a source boot also loads every module
+a body merely names. b2d demo, first frame in node: ~540 → ~250 ms; the image is 347 KB
+gzipped. Four new default-on features — `brotli`, `checker`, `image-formats`, `toolchain` —
+that the tab leaves out and `crates/cli` and the playground ask for: the tab wasm 10.8 → 7.4 MB
+(2.61 MB gzipped, was 3.71), with the name section dropped at bindgen.
+
+**Windows.** Cross-checked from Linux (`cargo check --target x86_64-pc-windows-gnu
+--all-targets` with build scripts' C stubbed): the library already compiled; only test code
+reached for Unix. The dist tests' socket pairs are loopback TCP now (they run everywhere), the
+symlink and cookie-mode checks gate on `unix`, two warnings went. Behaviour: the file lock behind
+the compare-and-swap writes was a no-op off Unix and is `File::lock` (`LockFileEx`) now; the
+GPU window's exit gate registers its `atexit` on Windows too (`libc` is a Windows dependency for
+the CRT's). CI: `windows-check` (the workspace, every target, GPU gui and audio) and
+`windows-smoke` (build `brood`, run a program that spawns, sends and requires; allowed to fail
+until it has passed once). macOS: the same cross-check with every target is clean.
+
+Also: `temp_purge_coverage_test` was red on `main` — `project_test.blsp`'s new `brood-gate-` and
+`brood-shadow-` fixtures were never purged; they are.

@@ -78,6 +78,13 @@ pub(crate) fn register(primitives: &mut crate::builtins::Primitives) {
         "Open the sectioned startup image at `path` if its stamp equals `fingerprint`, returning its section directory as a map {name -> [offset len]} — `\"\"` is the always-materialised root section, every other key a module's feature name. nil for any miss (absent, unreadable, older format, stale), which is the rebuild-me signal. Reads the header and directory only, never the payload (ADR-218).",
         image_index);
     primitives.def(
+        "%image-exists?",
+        Arity::exact(1),
+        Sig::new(vec![any], bool_ty),
+        &["path"],
+        "Whether an image exists at `path`: a file, or — for a path under `mem:` — bytes the host handed the runtime (a tab has no filesystem, ADR-414) or `%image-write` wrote there. Says nothing about whether it is current; `%image-index` checks the stamp.",
+        image_exists_prim);
+    primitives.def(
         "%image-load-section",
         Arity::range(3, 5),
         Sig::new(vec![any, any, any, any, any], any),
@@ -475,6 +482,10 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     put_u64(&mut body, directory_offset);
 
     let t_io = web_time::Instant::now();
+    if path.starts_with(MEMORY_IMAGE_PREFIX) {
+        provide_memory_image(&path, body);
+        return Ok(Value::int(total as i64));
+    }
     // ATOMIC: write a sibling temp file, then rename over the target. A plain
     // `fs::write` truncates in place, so a reader that indexes the image while
     // another process is rebuilding it sees a torn file — and images are now built
@@ -523,11 +534,73 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
 // not per process (KI-224): two runtimes in one process may index the same path across a
 // rebuild, and a process-wide handle let the second's index re-point the first's directory
 // at the new file.
+//
+// A path under `mem:` names no file: it is an image the HOST handed over as bytes
+// (`provide_memory_image`) or one `%image-write` wrote there — how a runtime with no
+// filesystem, the tab's wasm build (ADR-414), reads a stdlib image. The bytes are immutable
+// once provided, so holding the `Arc` pins them as a descriptor pins an inode.
+
+/// The prefix of an image path that names host-provided bytes rather than a file.
+pub const MEMORY_IMAGE_PREFIX: &str = "mem:";
+
+/// The images held in memory under `mem:` paths, process-wide: the host provides them
+/// before any runtime boots, and every runtime that indexes one reads the same bytes.
+static MEMORY_IMAGES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<[u8]>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Hold `bytes` as the image at `path` (`mem:…`), for `%image-index` and
+/// `%image-load-section` to read as they read a file.
+pub fn provide_memory_image(path: &str, bytes: Vec<u8>) {
+    crate::core::sync::lock(&MEMORY_IMAGES).insert(path.to_string(), bytes.into());
+}
+
+/// The bytes held at `path` (`mem:…`), if any: what `%image-write` wrote there, for a host
+/// to save.
+pub fn memory_image(path: &str) -> Option<Vec<u8>> {
+    crate::core::sync::lock(&MEMORY_IMAGES)
+        .get(path)
+        .map(|bytes| bytes.to_vec())
+}
+
+/// Whether an image exists at `path`: a file, or bytes held under a `mem:` path.
+pub(crate) fn image_exists(path: &str) -> bool {
+    if path.starts_with(MEMORY_IMAGE_PREFIX) {
+        crate::core::sync::lock(&MEMORY_IMAGES).contains_key(path)
+    } else {
+        std::path::Path::new(path).is_file()
+    }
+}
+
+/// An image a runtime reads sections from: a file held open, or bytes held in memory.
+pub(crate) enum ImageFile {
+    Disk(std::sync::Mutex<std::fs::File>),
+    Memory(std::sync::Arc<[u8]>),
+}
+
+impl ImageFile {
+    fn size(&self) -> Option<u64> {
+        match self {
+            ImageFile::Disk(file) => file
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .metadata()
+                .ok()
+                .map(|m| m.len()),
+            ImageFile::Memory(bytes) => Some(bytes.len() as u64),
+        }
+    }
+}
 
 /// Open `path` and make it THE file this runtime reads `path`'s sections from, replacing any
 /// earlier handle for the same path — an index deliberately adopts whatever is on disk now.
-fn open_image(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
-    let file = std::sync::Arc::new(std::sync::Mutex::new(std::fs::File::open(path).ok()?));
+fn open_image(heap: &Heap, path: &str) -> Option<std::sync::Arc<ImageFile>> {
+    let file = if path.starts_with(MEMORY_IMAGE_PREFIX) {
+        ImageFile::Memory(crate::core::sync::lock(&MEMORY_IMAGES).get(path)?.clone())
+    } else {
+        ImageFile::Disk(std::sync::Mutex::new(std::fs::File::open(path).ok()?))
+    };
+    let file = std::sync::Arc::new(file);
     heap.image_files().insert(path.to_string(), file.clone());
     Some(file)
 }
@@ -535,7 +608,7 @@ fn open_image(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex
 /// The held handle for `path`, opening (and holding) it if this runtime has not indexed it.
 /// The miss path exists for a caller that got its directory from somewhere other than this
 /// runtime's own `%image-index` — it is exactly as safe as a read by path, no more.
-fn image_file(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex<std::fs::File>>> {
+fn image_file(heap: &Heap, path: &str) -> Option<std::sync::Arc<ImageFile>> {
     // Take the hit out from under the lock BEFORE the miss path re-locks it in `open_image` —
     // `std::sync::Mutex` is not reentrant, and an `if let` on the guard would keep it alive
     // across that call.
@@ -549,12 +622,28 @@ fn image_file(heap: &Heap, path: &str) -> Option<std::sync::Arc<std::sync::Mutex
 /// Read `len` bytes at `off` from an open image handle without reading the rest of the file.
 /// Seek + read under the handle's lock, so two concurrent section loads cannot interleave
 /// their seeks.
-fn read_at(file: &std::sync::Mutex<std::fs::File>, off: u64, len: usize) -> Option<Vec<u8>> {
-    let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
-    f.seek(SeekFrom::Start(off)).ok()?;
-    let mut buf = vec![0u8; len];
-    f.read_exact(&mut buf).ok()?;
-    Some(buf)
+fn read_at(file: &ImageFile, off: u64, len: usize) -> Option<Vec<u8>> {
+    match file {
+        ImageFile::Disk(file) => {
+            let mut f = file.lock().unwrap_or_else(|e| e.into_inner());
+            f.seek(SeekFrom::Start(off)).ok()?;
+            let mut buf = vec![0u8; len];
+            f.read_exact(&mut buf).ok()?;
+            Some(buf)
+        }
+        ImageFile::Memory(bytes) => {
+            let start = usize::try_from(off).ok()?;
+            bytes
+                .get(start..start.checked_add(len)?)
+                .map(<[u8]>::to_vec)
+        }
+    }
+}
+
+/// `(%image-exists? path)` — see `image_exists`.
+pub(crate) fn image_exists_prim(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let path = expect_string(heap, "%image-exists?", arg(args, 0))?;
+    Ok(Value::Bool(image_exists(&path)))
 }
 
 /// `(%boot-source)` — how this process's prelude arrived, as a keyword.
@@ -611,12 +700,7 @@ pub(crate) fn image_index(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     let Some(file) = open_image(heap, &path) else {
         return Ok(Value::Nil);
     };
-    let Ok(size) = file
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .metadata()
-        .map(|m| m.len())
-    else {
+    let Some(size) = file.size() else {
         return Ok(Value::Nil);
     };
     if size < (MAGIC.len() + 8) as u64 {
@@ -1303,5 +1387,56 @@ mod per_runtime_handle_tests {
             "7",
             "the first runtime's section was read from the file the second runtime indexed"
         );
+    }
+}
+
+#[cfg(test)]
+mod memory_image_tests {
+    /// A `mem:` image is the whole round trip of a file one — written, found, indexed by its
+    /// stamp, a section restored — with no file anywhere: what a runtime without a
+    /// filesystem (the tab, ADR-414) boots its std modules from.
+    #[test]
+    fn an_image_written_to_memory_restores_like_a_file() {
+        let path = format!("mem:test-image-{}", std::process::id());
+        let mut interp = crate::Interp::new();
+        let restored = interp
+            .eval_str(&format!(
+                "(do (def held-in-memory 42)
+                     (%image-write {path:?} [[\"\" ['held-in-memory]]] \"fp\")
+                     (def held-in-memory :clobbered)
+                     (let (section (get (%image-index {path:?} \"fp\") \"\"))
+                       (%image-load-section {path:?} (first section) (second section))
+                       [(%image-exists? {path:?}) (%image-index {path:?} \"stale\") held-in-memory]))"
+            ))
+            .expect("write, index and restore an image held in memory");
+        assert_eq!(interp.print(restored), "[true nil 42]");
+        assert!(
+            super::memory_image(&path).is_some(),
+            "the host can take the image back"
+        );
+        assert!(!std::path::Path::new(&path).exists(), "no file was written");
+    }
+
+    /// Bytes a host provides are the image: the stamp is checked as for a file, and a `mem:`
+    /// path nobody provided is simply absent.
+    #[test]
+    fn a_provided_image_is_read_and_an_unprovided_one_is_absent() {
+        let source = format!("mem:test-source-{}", std::process::id());
+        let mut interp = crate::Interp::new();
+        interp
+            .eval_str(&format!(
+                "(do (def provided 5) (%image-write {source:?} [[\"\" ['provided]]] \"fp\"))"
+            ))
+            .expect("write the image to hand over");
+        let provided = format!("mem:test-provided-{}", std::process::id());
+        super::provide_memory_image(&provided, super::memory_image(&source).expect("written"));
+        let answer = interp
+            .eval_str(&format!(
+                "[(nil? (%image-index {provided:?} \"fp\"))
+                  (%image-exists? \"mem:test-never-provided\")
+                  (%image-index \"mem:test-never-provided\" \"fp\")]"
+            ))
+            .expect("index the provided image");
+        assert_eq!(interp.print(answer), "[false false nil]");
     }
 }

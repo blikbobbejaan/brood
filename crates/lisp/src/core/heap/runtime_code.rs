@@ -494,7 +494,7 @@ pub struct RuntimeCode {
     /// later reads for it must come from the same inode, and the pairing is per RUNTIME —
     /// another runtime in the same process may index a rebuilt file at the same path. Dropped
     /// with the runtime, so its descriptors close with it.
-    pub(super) image_files: Mutex<HashMap<String, Arc<Mutex<std::fs::File>>>>,
+    pub(super) image_files: Mutex<HashMap<String, Arc<crate::boot::image::ImageFile>>>,
     /// The kind index of the images this runtime has indexed (ADR-335, KI-226): the modules
     /// they hold, and which of those modules' names are macros. Additive — a stdlib and a
     /// project image both register. Per runtime because another runtime in the same process

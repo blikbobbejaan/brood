@@ -113,9 +113,9 @@ struct Proc {
     /// unix target; the unix-only code below converts at its own boundary.
     ///
     /// Its only reader (`pty_resize`) is unix-gated while this struct is not, so on wasm32
-    /// nothing reads it and that target warned. Allowed rather than cfg'd out: gating the
-    /// field would fork the constructor for one dead word.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    /// and Windows nothing reads it and those targets warned. Allowed rather than cfg'd out:
+    /// gating the field would fork the constructor for one dead word.
+    #[cfg_attr(not(unix), allow(dead_code))]
     pty: Option<i32>,
 }
 

@@ -12,6 +12,7 @@ use crate::core::value::{Symbol, Value};
 use crate::{builtins, core, eval, syntax};
 
 pub(crate) mod image; // the startup-image mechanism (ADR-218): sectioned stdlib image + the prelude image
+pub use image::{MEMORY_IMAGE_PREFIX, memory_image, provide_memory_image};
 
 /// The shared code region (prelude closures, code data, builtins) plus the
 /// global bindings to seed each process's global env. Built once, lazily.

@@ -231,6 +231,7 @@ pub(super) fn inflate(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 /// The brotli quality for the encoder's optional 2nd arg: absent → 5 (a balanced
 /// default suited to per-request compression), else an integer clamped to the valid
 /// `0..=11` (0 = fastest, 11 = best). Out of range is a clean runtime error.
+#[cfg(feature = "brotli")]
 fn brotli_quality(name: &str, args: &[Value], heap: &Heap) -> Result<u32, LispError> {
     match arg(args, 1) {
         Value::Nil => Ok(5),
@@ -249,6 +250,7 @@ fn brotli_quality(name: &str, args: &[Value], heap: &Heap) -> Result<u32, LispEr
 /// `(%brotli bytes [quality])` — brotli-compress a byte sequence (the
 /// `Content-Encoding: br` wire format) at optional `quality` (0-11, default 5),
 /// returned as `bytes`.
+#[cfg(feature = "brotli")]
 pub(super) fn brotli(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let quality = brotli_quality("%brotli", args, heap)?;
     let data = collect_bytes("%brotli", arg(args, 0), heap)?;
@@ -265,6 +267,7 @@ pub(super) fn brotli(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
 }
 
 /// `(%unbrotli bytes [max-bytes])` — decompress brotli data, returned as `bytes`.
+#[cfg(feature = "brotli")]
 pub(super) fn unbrotli(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let limit = decompress_limit("%unbrotli", args, heap)?;
     let data = collect_bytes("%unbrotli", arg(args, 0), heap)?;
@@ -274,6 +277,26 @@ pub(super) fn unbrotli(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult 
         limit,
     )?;
     Ok(bytes_to_value(&out, heap))
+}
+
+/// `%brotli` in a runtime built without the `brotli` feature (a game in a tab): a clean error
+/// naming the feature, rather than an unbound symbol that reads as a typo.
+#[cfg(not(feature = "brotli"))]
+pub(super) fn brotli(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+    Err(without_brotli("%brotli"))
+}
+
+/// `%unbrotli` without the `brotli` feature — see `brotli`.
+#[cfg(not(feature = "brotli"))]
+pub(super) fn unbrotli(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+    Err(without_brotli("%unbrotli"))
+}
+
+#[cfg(not(feature = "brotli"))]
+fn without_brotli(name: &str) -> LispError {
+    LispError::runtime(format!(
+        "{name}: this runtime was built without brotli (the `brotli` feature)"
+    ))
 }
 
 #[cfg(test)]
