@@ -80,6 +80,12 @@ beside four. (A first 30/30 "failure" was a stale incremental build failing to l
 test.) The ceiling is forced per thread, but no `tier_ceiling()` read runs on the compiler thread,
 so that is not it. Ninety seconds without a publish reads as a permanent state rather than slowness.
 
+2026-10-18 (evening), in CI's full environment — `BROOD_TIER=0 BROOD_NO_STDIMAGE=1
+BROOD_NO_PRELUDE_IMAGE=1`, which the attempts above did not set: 400/400 sixteen at a time; green
+with the background compiler delayed 50-500 ms before lowering and again before install, under
+`BROOD_GC_STRESS`/`BROOD_GC_VERIFY`, and with `BROOD_J=1`; and one full run of CI's tree-walker
+job, 1939/1939.
+
 Armed: the helper's failure now reports the run count, what was published, and every compiled
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.

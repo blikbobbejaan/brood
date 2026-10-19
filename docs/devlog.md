@@ -2570,3 +2570,44 @@ never got a clock, and a process timing its own work across the runtime's first 
 only. Guard `cpu_time_first_read`, red without it. Also on the way to a release: the
 `jit_eq_join` polymorphic-param tests wait out a queued re-lowering before reading its state,
 and two gates upstream's commits left red (two process-wide statics, one bare name) are green.
+
+## 2026-10-18 (evening) — the tree-walker stops reporting contract shims; what `BROOD_TIER=0` does not reach
+
+**Contract errors on the tree-walker.** The handoff's known limit was wider than written:
+under `BROOD_TIER=0` every error that left a contract shim reported `std/contract.blsp`, not
+only a caught contract error. A thin contracted function's primitive runs at the shim's own
+`(%contract-orig a b)` (the tree-walker's thin-wrapper redirect goes straight to `+`), and a
+failed argument check raises in `%contract-error`, so a `(+ "s" 1)` the user wrote read
+`std/contract.blsp:162` and a bad argument `:30`, with trace frames in the same file. The VM
+has filtered shims out since KI-184. The tree-walker now applies the same rule
+(`eval.rs` `untag_shim`): a frame running a contract shim records the file its forms carry,
+and an error leaving it with a position in that file is re-tagged at the user's call of the
+contracted function, its trace entries re-pointed there, and the shim is not named. Non-tail
+calls agree with the VM exactly. After a TAIL call into a shim the VM, having reused the
+frame, names the call that entered the frame; the tree-walker names the tail call itself.
+Guard `crates/lisp/tests/contract_error_position.rs` (every tier; red at `TreeWalk` with the
+shim test disabled).
+
+**Why the guard is a Rust test.** Written first as cases in `tests/contract_test.blsp`, it
+passed with the fix disabled: a `--test` body runs in a spawned process, and
+`run_process_body` runs any VM-eligible process body on the VM whatever `BROOD_TIER` says.
+Only top-level forms honour the ceiling (`vm_run_bc`'s carve-out exists so that `brood
+file.blsp` does not "silently run on the VM"). So the tree-walker differential —
+`make test-both`'s second half and CI's `differential (tree-walker)` job — tree-walks each
+test file's top-level forms and runs the test BODIES on the bytecode VM. Recorded as an open
+question in the handoff, not changed: tree-walking process bodies makes every `receive` block
+a worker.
+
+**Brood column refresh at 099abd59 (brood-benchmarks).** `collatz` +7.1% wall, +6.6%
+instructions, and `primes` +3.0% instructions are `ef80547d` (KI-274: a native self-loop
+snapshots the epoch at entry and compares it on the back-edge poll), measured on rebuilt
+`ef80547d~1`/`ef80547d`. The poll runs once per tick batch, but the cost scales with
+iterations (~2.7 instructions each on `collatz`), so the suspect is the entry epoch held live
+across the loop body — not yet verified. `base64` −38% is the row switching to the native
+codec (`a85044ab`), not language speed.
+
+KI-281: CI's tree-walker job also sets `BROOD_NO_STDIMAGE=1` and `BROOD_NO_PRELUDE_IMAGE=1`,
+which none of the earlier local attempts did. With them: 400/400 in parallel (16 at a time),
+and with the background compiler delayed 50-500 ms before lowering or before install, GC
+stress and one worker, all green; one full tree-walker job, CI's exact shape, 1939/1939. Still
+a watch.

@@ -109,6 +109,76 @@ struct TwFrame {
     name: Option<Symbol>,
     call_pos: Option<crate::error::Pos>,
     call_file: Option<std::sync::Arc<str>>,
+    /// `Some(file)` while the closure this frame is in is a contract shim — the source
+    /// file its own forms carry (`std/contract.blsp`). See [`contract_shim_file`].
+    shim_file: Option<std::sync::Arc<str>>,
+    /// The call form that entered that shim — the user's call of the contracted function,
+    /// which a TAIL entry knows and `call_pos` (the frame's first entry) does not.
+    shim_call: Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>,
+}
+
+/// The contract module's name as an interned symbol, for the per-entry shim test.
+static CONTRACT_MODULE_SYM: LazyLock<Symbol> =
+    LazyLock::new(|| value::intern(crate::eval::compile::CONTRACT_MODULE));
+
+/// A contract shim — any closure authored by `std/contract.blsp` (ADR-385) — is machinery,
+/// on this engine as on the VM (`exec_chunk::attach_vm_trace`, KI-184): never named in a
+/// trace, never the position an error is reported at. For a shim, the file its own body's
+/// forms were read from, so the error path can tell a position the shim's code tagged from
+/// one a deeper user frame did; `None` for every other closure (one symbol compare).
+fn contract_shim_file(
+    heap: &Heap,
+    module: Option<Symbol>,
+    body: &[Value],
+) -> Option<std::sync::Arc<str>> {
+    if module != Some(*CONTRACT_MODULE_SYM) {
+        return None;
+    }
+    body.iter()
+        .find_map(|&f| heap.form_pos(f).and_then(|(_, file)| file))
+}
+
+/// Where an error leaving a shim frame is reported: the call form that entered the shim,
+/// else the frame's own first call site.
+fn shim_call_site(
+    shim_call: Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>,
+    call_file: Option<std::sync::Arc<str>>,
+    call_pos: Option<crate::error::Pos>,
+) -> (Option<std::sync::Arc<str>>, Option<crate::error::Pos>) {
+    match shim_call {
+        Some((p, file)) => (file, Some(p)),
+        None => (call_file, call_pos),
+    }
+}
+
+/// An error unwinding out of a contract shim whose own forms live in `shim_file`. What the
+/// shim's code tagged — the error's position, and the call sites of the frames it entered
+/// (the original, entered at the shim's `(%contract-orig …)`) — is the template's line in a
+/// file the user never wrote. Both move to `call_file`/`call_pos`: the user's call of the
+/// contracted function. From a native boundary there is no such call; the error is left
+/// untagged for the frame further out. The shim itself is not named. The VM's
+/// `attach_vm_trace` applies the same rule (KI-184) — except after a TAIL call into the shim,
+/// where the VM, having reused the frame, names the call that entered the frame the tail
+/// chain began in, and this engine names the tail call itself.
+fn untag_shim(
+    e: &mut LispError,
+    shim_file: Option<&str>,
+    call_file: Option<std::sync::Arc<str>>,
+    call_pos: Option<crate::error::Pos>,
+) {
+    if e.is_control() || shim_file.is_none() {
+        return;
+    }
+    if e.file.as_deref() == shim_file {
+        e.pos = call_pos;
+        e.file = call_pos.and(call_file.as_deref().map(str::to_string));
+    }
+    for t in &mut e.trace {
+        if t.file.as_deref() == shim_file {
+            t.file = call_file.clone();
+            t.pos = call_pos;
+        }
+    }
 }
 
 /// Record that this eval frame entered closure `id` via `call_form`. First entry
@@ -123,19 +193,32 @@ fn record_tw_entry(
     // stable, so it survives; re-reading `heap.closure(id)` here would deref a stale
     // handle (a use-after-GC crash on the tree-walker, kernel-audit #2's twin).
     name: Option<value::Symbol>,
+    shim_file: Option<std::sync::Arc<str>>,
     call_form: Value,
 ) {
+    // Only a shim entry looks its call form up on a tail entry: every other closure keeps
+    // the one lookup per frame.
+    let shim_call = shim_file.as_ref().and_then(|_| heap.form_pos(call_form));
     match entered {
-        Some(fr) => fr.name = name,
+        Some(fr) => {
+            fr.name = name;
+            fr.shim_file = shim_file;
+            fr.shim_call = shim_call;
+        }
         None => {
-            let (call_pos, call_file) = match heap.form_pos(call_form) {
-                Some((p, file)) => (Some(p), file),
-                None => (None, None),
+            let (call_pos, call_file) = match &shim_call {
+                Some((p, file)) => (Some(*p), file.clone()),
+                None => match heap.form_pos(call_form) {
+                    Some((p, file)) => (Some(p), file),
+                    None => (None, None),
+                },
             };
             *entered = Some(TwFrame {
                 name,
                 call_pos,
                 call_file,
+                shim_file,
+                shim_call,
             });
         }
     }
@@ -148,6 +231,11 @@ pub fn eval(heap: &mut Heap, expr: Value, env: EnvId) -> LispResult {
     let mut entered: Option<TwFrame> = None;
     let r = eval_tail_loop(heap, expr, env, &mut entered);
     match (r, entered) {
+        (Err(mut e), Some(fr)) if fr.shim_file.is_some() => {
+            let (file, pos) = shim_call_site(fr.shim_call, fr.call_file, fr.call_pos);
+            untag_shim(&mut e, fr.shim_file.as_deref(), file, pos);
+            Err(e)
+        }
         (Err(mut e), Some(fr)) => {
             // This frame entered a closure and the error is unwinding out of it —
             // append its `:trace` entry (innermost first; `push_trace` caps the
@@ -1044,6 +1132,7 @@ fn eval_tail_loop(
                     // callee — the same attribution the VM produces (a no-arm call
                     // defers to `apply_closure`, whose bind error is name-only).
                     let cl_name = heap.closure(id).name;
+                    let cl_module = heap.closure(id).module;
                     let (scope, body) = bind_params(heap, id, &cur_argv).map_err(|e| {
                         let mut e = e.or_form_pos(heap, call_form);
                         e.push_trace(crate::error::TraceFrame {
@@ -1056,7 +1145,8 @@ fn eval_tail_loop(
                     // Error-trace bookkeeping: this frame is now entering `id`'s body.
                     // Pass the name captured *above* (pre-`bind_params`): the default
                     // eval may have compacted the RUNTIME region and staled `id`.
-                    record_tw_entry(heap, entered, cl_name, call_form);
+                    let shim_file = contract_shim_file(heap, cl_module, &body);
+                    record_tw_entry(heap, entered, cl_name, shim_file, call_form);
                     if body.is_empty() {
                         return Ok(Value::nil());
                     }
@@ -1369,6 +1459,7 @@ pub fn apply_closure(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> LispResu
     // tracker **seeded** to this frame, so a tail call out of `cl` renames the
     // entry rather than adding one — the VM's frame-reuse behaviour exactly.
     let trace_name = heap.closure(cl).name;
+    let module = heap.closure(cl).module;
     let boundary_entry = |name: Option<Symbol>| crate::error::TraceFrame {
         name: name.map(value::symbol_name_ref),
         file: None,
@@ -1383,6 +1474,7 @@ pub fn apply_closure(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> LispResu
     if body.is_empty() {
         return Ok(Value::nil());
     }
+    let shim_file = contract_shim_file(heap, module, &body);
     // Each body-form eval can collect at ANY depth (ADR-061), so keep `scope` and
     // the remaining body forms on the operand stack across them (the intermediate
     // results of non-last forms are dead immediately, so they need no slot).
@@ -1397,7 +1489,11 @@ pub fn apply_closure(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> LispResu
             let scope_now = heap.read_root_env(scope_r);
             let form = heap.read_root(fr);
             eval_at(heap, form, scope_now).map_err(|mut e| {
-                e.push_trace(boundary_entry(trace_name));
+                if shim_file.is_some() {
+                    untag_shim(&mut e, shim_file.as_deref(), None, None);
+                } else {
+                    e.push_trace(boundary_entry(trace_name));
+                }
                 e
             })?;
         }
@@ -1410,15 +1506,22 @@ pub fn apply_closure(heap: &mut Heap, cl: ClosureId, argv: &[Value]) -> LispResu
             name: trace_name,
             call_pos: None,
             call_file: None,
+            shim_file: shim_file.clone(),
+            shim_call: None,
         });
         eval_tail_loop(heap, form, scope_now, &mut entered).map_err(|e| {
             let mut e = e.or_form_pos(heap, form);
-            if let Some(fr) = entered {
-                e.push_trace(crate::error::TraceFrame {
+            match entered {
+                Some(fr) if fr.shim_file.is_some() => {
+                    let (file, pos) = shim_call_site(fr.shim_call, fr.call_file, fr.call_pos);
+                    untag_shim(&mut e, fr.shim_file.as_deref(), file, pos);
+                }
+                Some(fr) => e.push_trace(crate::error::TraceFrame {
                     name: fr.name.map(value::symbol_name_ref),
                     file: fr.call_file,
                     pos: fr.call_pos,
-                });
+                }),
+                None => {}
             }
             e
         })

@@ -228,9 +228,18 @@ corpus.
    The interpreter running the process bodies (`exec_chunk` 30%) is thread 1's lever.
 4. **Refresh the benchmark column** once 1 or 2 lands (protocol in brood-benchmarks'
    `CLAUDE.md`). Not on this machine.
-5. **Known limit:** under the tree-walker a caught contract error's position is the raise
-   inside `std/contract.blsp`, not the caller — only the VM filters contract machinery out of
-   positions (`exec_chunk.rs` `is_contract_arm`). Tier 0 is the legacy engine.
+5. **Done 2026-10-18:** the tree-walker no longer reports a contract shim's position
+   (devlog "the tree-walker stops reporting contract shims").
+6. **Open question — `BROOD_TIER=0` does not reach process bodies.** `run_process_body` runs
+   a VM-eligible body on the VM whatever the ceiling, so `make test-both`'s tree-walker half
+   and CI's differential job tree-walk only each test file's top-level forms: every test
+   body runs on the bytecode VM. Either tree-walk process bodies at tier 0 (a `receive` then
+   blocks its worker; the suite's many-process tests may starve) or document that tier 0 is
+   top-level only and say what the differential covers. A tree-walker guard has to pin the
+   ceiling itself (`set_forced_ceiling`), as `contract_error_position.rs` does.
+7. **Perf lead from the 099abd59 column:** `ef80547d` (KI-274) costs `collatz` +6.3% and
+   `primes` +3.0% in instructions — per iteration, not per poll; check whether the entry
+   epoch held across the self-loop spills.
 
 ## Flake hunting
 
