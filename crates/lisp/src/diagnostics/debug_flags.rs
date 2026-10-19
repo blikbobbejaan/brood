@@ -310,6 +310,11 @@ pub const FLAGS: &[DebugFlag] = &[
         "the tier ceiling: 0 tree-walk, 1 bytecode VM, 2 native (ADR-222). Measured 57.4s/3.2s/0.12s",
     ),
     f(
+        "BROOD_TIER0_AUDIT",
+        ENGINE,
+        "=<file>: under BROOD_TIER=0, append each distinct call path that starts bytecode anyway, once per OS process (ADR-416's escape audit; `sort | uniq -c` the file)",
+    ),
+    f(
         "BROOD_NO_PRELUDE_IMAGE",
         OPTOUT,
         "opt OUT of the prelude image (ADR-314, default ON since 2026-09-04): neither read nor written, so every boot is the full source boot (a cold boot is ~11x a warm one). The only boot-artifact knob since the ADR-138 text cache was deleted (2026-09-12). KI-105/KI-106 were the image's two same-day reverts, both fixed and gated",
@@ -665,6 +670,17 @@ pub fn jit_verify_function() -> Option<&'static str> {
     static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     NAME.get_or_init(|| std::env::var("BROOD_JIT_VERIFY_FN").ok())
         .as_deref()
+}
+
+/// `BROOD_TIER0_AUDIT=<file>`: the file a tier-0 run appends each path that starts bytecode to.
+pub fn tier0_audit_path() -> Option<&'static str> {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        std::env::var("BROOD_TIER0_AUDIT")
+            .ok()
+            .filter(|p| !p.is_empty())
+    })
+    .as_deref()
 }
 
 /// `BROOD_NO_JIT_COMPUTED`: keep arms with a computed-head non-tail call on the VM.

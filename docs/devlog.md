@@ -2661,3 +2661,33 @@ until it has passed once). macOS: the same cross-check with every target is clea
 
 Also: `temp_purge_coverage_test` was red on `main` — `project_test.blsp`'s new `brood-gate-` and
 `brood-shadow-` fixtures were never purged; they are.
+
+## 2026-10-19 — ADR-416 stage 1: what `BROOD_TIER=0` does not reach, by audit
+
+`BROOD_TIER0_AUDIT=<file>` (catalogued under Engine selection): under a tier-0 ceiling,
+`vm_run_bc` (the one place bytecode starts) appends the call path that started it, once per
+distinct site per OS process. The site is read off a rendered backtrace: the frame names are
+unqualified debuginfo names, so a frame counts as ours unless its location is in std or a
+dependency, and is written `name@path:line`. A trace without `vm_run_bc` in it still writes an
+`unplaced` line, so the audit cannot go quietly empty. Guard: `crates/cli/tests/tier0_escape_audit.rs`
+(names the process-body escape at tier 0; writes nothing at tiers 1 and 2), each half sabotaged
+red.
+
+**The inventory**, over the whole suite at `BROOD_TIER=0` (1943 tests; processes per site):
+- `run_process_body`: 181 (from the scheduler's `drive`, `test_drive_quanta`, `overflow_drain`).
+  The known escape. 64 more sites are VM code started from inside those VM bodies; they go
+  with it.
+- **Tree-walked code reaching the VM through a ceiling-blind door**, each independent of the
+  frame stack:
+  - `compile::apply_value`, from primitives calling back into Brood: `num_multi_dispatch`
+    (`+ - * /` on a user number type) and `compare_multi_dispatch` (`< <=`), and `record_seq`
+    (`first`/`rest`/`empty?` on a seq-protocol record). `apply_engine` is the ceiling-honouring
+    twin; 9 `apply_value` callers in all.
+  - the `receive` matcher: `mailbox::apply_matcher` resolves it with `hof_resolve` and runs it
+    with `hof_apply_step`, whatever the ceiling.
+  - `eval_in` (`builtins/evaluation.rs`) calls `compile::run` per form, not `run_top_form`.
+- One Rust unit test calls `vm_run_bc` directly (`vm_run_bc_captures_and_resumes_a_suspend`);
+  not an escape.
+
+Also: `MEMORY_IMAGES` (e9ddd4c6) was missing from `process_wide_statics`' list, red on both
+engines in CI; listed.

@@ -136,6 +136,8 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     ("diagnostics/coverage.rs", "LINES", Diagnostic),
     ("diagnostics/profile.rs", "SAMPLES", Diagnostic),
     ("core/heap/features_audit.rs", "EVER_BOUND", Diagnostic),
+    // The tier-0 escape audit's sites already written (ADR-416 stage 1).
+    ("eval/compile/vm_run_bc.rs", "SEEN", Diagnostic),
     ("core/heap/vm_cache.rs", "PUBLISHED_FAST_LINKS", Diagnostic),
     ("process/scheduler/pool.rs", "QUANTUM_LEDGER", Diagnostic),
     ("eval/compile/closure.rs", "SEEN", Diagnostic),

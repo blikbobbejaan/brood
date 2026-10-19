@@ -735,6 +735,14 @@ pub(crate) fn vm_run_bc(
     top_level: bool,
 ) -> Result<VmOutcome, LispError> {
     crate::perf_bump!(vm_apply);
+    // ADR-416 stage 1: under a tier-0 ceiling no bytecode should start, so name each path
+    // that starts it anyway. The flag is read first — this is the VM's entry.
+    if resume.is_none()
+        && let Some(path) = crate::diagnostics::debug_flags::tier0_audit_path()
+        && tier_ceiling() == Tier::TreeWalk
+    {
+        record_tier0_escape(path, top_level);
+    }
     // Keep the GC-block depth consistent for any nested native / tree-walked sub-call
     // (their own `stack_overflow_check` reads it). The driver itself doesn't recurse
     // per Brood call — runaway non-tail recursion is caught by `MAX_BC_FRAMES` below,
@@ -1633,3 +1641,80 @@ fn contract_check_pending(heap: &Heap, frames: &[BcFrame], base: usize, ret: Val
 }
 
 // ===================== entry =====================
+
+/// `BROOD_TIER0_AUDIT=<file>` (ADR-416 stage 1): under a tier-0 ceiling, record the call path
+/// by which bytecode just started. `vm_run_bc` is the one place bytecode starts, so every
+/// line names a way tier 0 does not reach. The site is the first few `brood::` frames above
+/// this driver, with the symbol hashes stripped; each distinct site is written once per OS
+/// process, so `sort | uniq -c` over a suite's file counts the processes that took it.
+#[cold]
+#[inline(never)]
+fn record_tier0_escape(path: &str, top_level: bool) {
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    const DEPTH: usize = 6;
+
+    // The rendered trace is `N: name` lines, each followed by an `at file:line` line when
+    // the location is known. Names come from debuginfo and are unqualified, so a frame is
+    // ours unless its location is in std or a dependency.
+    let trace = std::backtrace::Backtrace::force_capture().to_string();
+    let mut frames: Vec<(&str, Option<&str>)> = Vec::new();
+    for line in trace.lines() {
+        let line = line.trim_start();
+        if let Some(location) = line.strip_prefix("at ") {
+            if let Some(last) = frames.last_mut() {
+                last.1 = Some(location);
+            }
+        } else if let Some((index, name)) = line.split_once(": ")
+            && index.parse::<u32>().is_ok()
+        {
+            frames.push((name, None));
+        }
+    }
+    let foreign = |location: Option<&str>| {
+        location.is_some_and(|l| l.contains("/rustlib/") || l.contains("/.cargo/"))
+    };
+    // A trace without this driver's own frame still records a line: an audit that drops
+    // what it cannot place reads as "no escapes".
+    let entry = frames
+        .iter()
+        .position(|(name, _)| *name == "vm_run_bc")
+        .map_or(0, |i| i + 1);
+    let site: Vec<String> = frames[entry..]
+        .iter()
+        .filter(|(_, location)| !foreign(*location))
+        .take(DEPTH)
+        .map(|(name, location)| match location {
+            // The path under `src/`, with its line: two calls in one function are two sites.
+            Some(l) => format!("{name}@{}", l.rsplit("src/").next().unwrap_or(l)),
+            None => name.to_string(),
+        })
+        .collect();
+    let line = format!(
+        "{}\t{}\n",
+        match (entry, top_level) {
+            (0, _) => "unplaced",
+            (_, true) => "top",
+            (_, false) => "nested",
+        },
+        site.join(" <- ")
+    );
+    let fresh = SEEN
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(line.clone());
+    if fresh {
+        // One `write_all` of one short line under O_APPEND: concurrent test processes
+        // appending to the same file do not interleave within a line.
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}

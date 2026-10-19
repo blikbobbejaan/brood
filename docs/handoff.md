@@ -94,12 +94,10 @@ devlog entries of the same dates.
 
 ### NOW (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
 
-**State at the restart.** `3c72a7c1` (the contract-shim position fix) is committed and merged
-with origin (`3792a05a`), **not pushed**. `make prepush` passed on the merged tree; `make
-test-both` was still running when the session ended, so re-run it (`( make test-both )`,
-read both `Summary` lines) and push only on green. ADR-416 is drafted, **uncommitted**, at
-the bottom of `docs/decisions/adr-400-499.md` (status: proposed): read it first, it holds the
-design and the five stages.
+**State.** Stage 1 (the escape audit) is done and committed: `BROOD_TIER0_AUDIT=<file>`,
+guarded by `crates/cli/tests/tier0_escape_audit.rs`; the inventory is in the devlog
+(2026-10-19). Read ADR-416 (bottom of `docs/decisions/adr-400-499.md`, status proposed) for
+the design and the five stages.
 
 **Why.** `BROOD_TIER=0` does not reach process bodies (Older threads item 6): every test body
 runs on the VM, so the tree-walker differential compares only top-level forms. The user
@@ -107,18 +105,20 @@ wants the correct fix even at large cost: the tree-walker's pending work becomes
 (as ADR-100 did for the VM), so a tier-0 `receive` parks and tier-0 processes preempt and
 migrate, and then the ceiling can hold everywhere.
 
-**Next: stage 1, the escape audit** (designed, no code written). `vm_run_bc`
-(`eval/compile/vm_run_bc.rs`) is the single place bytecode starts; native needs ceiling
-Native and deopt is reached only from native code. Plan: at its entry, when
-`tier_ceiling() == Tier::TreeWalk` and `BROOD_TIER0_AUDIT=<file>` is set (check the flag
-first, it is a hot path), capture a backtrace, take the first few `brood::` frames after
-`vm_run_bc` (hashes stripped) as the site, dedupe per process, append one line per new site
-to the file (O_APPEND). Catalogue the flag in `diagnostics/debug_flags.rs` (both directions
-are gated). Then run the suite at `BROOD_TIER=0` with it and aggregate the unique sites.
-Known escape: `run_process_body`; suspected: receive matchers, HOF callbacks
-(`apply_engine`/`Reducer` already honour the ceiling; `tw_vm_route` is off below Bytecode).
-Report the inventory to the user before starting stage 2 (the risky one: `eval`'s
-recursion becomes an explicit, GC-traced frame stack, behaviour-identical).
+**What the audit found.** Apart from `run_process_body` (and VM code started from inside
+those bodies), tree-walked code reaches the VM through three ceiling-blind doors, none of
+which needs the frame stack: `compile::apply_value` from primitives that call back into Brood
+(numeric/compare multi-dispatch, seq-protocol records; `apply_engine` is the honouring twin),
+the `receive` matcher (`mailbox::apply_matcher` → `hof_resolve`/`hof_apply_step`), and
+`eval_in` calling `compile::run` instead of `run_top_form`. The suite only shows doors it
+exercises; re-run the audit after the doors close
+(`BROOD_TIER=0 BROOD_TIER0_AUDIT=<file> cargo nextest run`, then
+`cut -f2 <file> | sed -E 's/@[^ ]*//g' | sort | uniq -c`).
+
+**Next.** Waiting on the user (they asked to see the inventory before stage 2). Proposed:
+close the three doors first (small; the tier-0 suite then exercises the tree-walker on those
+callbacks), then stage 2 (the risky one: `eval`'s recursion becomes an explicit, GC-traced
+frame stack, behaviour-identical).
 
 **After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
 `scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.
