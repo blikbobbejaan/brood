@@ -438,7 +438,7 @@ test discovery, lints, release, config)."
 ;;   project.blsp (overwritten with hatch + store-postgres deps)
 ;;   src/main.blsp           — entry point: logger + DB + HTTP
 ;;   src/db.blsp             — DB singleton (schema + CRUD helpers)
-;;   src/web/endpoint.blsp   — HTTP listener
+;;   src/web/server.blsp     — HTTP listener (configures hatch's web/endpoint)
 ;;   src/web/layout.blsp     — HTML shell (Tailwind + daisyUI via CDN)
 ;;   src/web/routes.blsp     — routes with session/CSRF pipeline
 ;;   src/web/views/home.blsp — home page
@@ -457,7 +457,7 @@ test discovery, lints, release, config)."
 
 (defn- project-hatch-main-template (nm)
   (str "(defmodule main \"Entry point for "
-    nm ".\"\n" "  (:use web/endpoint :only [serve])\n"
+    nm ".\"\n" "  (:use web/server :only [serve])\n"
     "  (:use web/application :only [start default-logger-opts])\n" "  (:alias db)\n"
     "  (:alias pg))\n" "\n" "(defn main ()\n"
     "  \"Start logging, open the DB pool, boot the endpoint, and park.\"\n" "  (start\n"
@@ -496,73 +496,24 @@ test discovery, lints, release, config)."
     "(defn main ()\n" "  (let (o (pg/opts-from-env \"" nm "\"))\n" "    (pg/create-database o)\n"
     "    (db/start o)\n" "    (io/puts \"Done. Run `nest run` to start the server.\")))\n"))
 
-(defn- project-hatch-endpoint-template (_nm)
-  (str "(defmodule web/endpoint \"HTTP endpoint: bridges raw requests through the router.\"\n"
-    "  (:alias http/server)\n" "  (:alias web/conn)\n" "  (:alias web/routes)\n"
-    "  (:alias web/live)\n" "  (:alias web/errors)\n" "  (:alias task))\n" "\n"
-    "; Hard deadline per request — kills a wedged handler and returns 504.\n"
-    "(def *handler-timeout-ms* 30000)\n" "\n" "(defn adapter (request)\n"
-    "  \"Bridge an http/server request through the router to a response.\"\n"
-    "  (let (conn (conn/build request)\n" "        h (task/task\n"
-    "            (fn () (conn/conn->response (routes/app-router conn)))\n"
-    "            {:timeout *handler-timeout-ms*}))\n" "    (receive\n"
-    "      ([:task-done ^h resp] (errors/themed resp))\n"
-    "      ([:task-error ^h _msg] (errors/error-response 500))\n"
-    "      ([:task-timeout ^h] (errors/error-response 504)))))\n" "\n" "(defn port ()\n"
-    "  \"Serve on $HATCH_PORT if set and numeric, else 5000.\"\n"
-    "  (let (n (string/->number (or (os/env \"HATCH_PORT\") \"\")))\n"
-    "    (if (failure? n) 5000 n)))\n" "\n" "(defn serve ()\n"
-    "  \"Start the HTTP listener on `(port)`.\"\n"
-    "  (server/start (port) adapter (live/live-dispatcher) {}))\n"))
-
-(defn- project-hatch-errors-template (_nm)
-  (str "(defmodule web/errors\n"
-    "  \"The app's error pages, in one place. `error-meta` maps a status code to a\n"
-    "  `[title blurb]`; edit or add a clause to override a page. `error-response` builds a\n"
-    "  standalone page (for errors the endpoint raises — a 500 crash, a 504 timeout) and\n"
-    "  `themed` re-skins a real upstream response (e.g. the router's 404) while keeping its\n"
-    "  headers, so a 401 challenge or a redirect Location survives.\"\n"
-    "  (:use web/template :only [html])\n" "  (:use web/layout))\n" "\n" "(defn error-meta (code)\n"
-    "  \"`[title blurb]` for error `code`, or nil for a non-error (2xx/3xx).\"\n" "  (match code\n"
-    "    (400 [\"Bad request\" \"The request couldn't be understood.\"])\n"
-    "    (401 [\"Sign-in required\" \"You need to sign in to view this page.\"])\n"
-    "    (403 [\"Forbidden\" \"You don't have access to this page.\"])\n"
-    "    (404 [\"Page not found\" \"That page doesn't exist or may have moved.\"])\n"
-    "    (500 [\"Something went wrong\" \"An unexpected error occurred.\"])\n"
-    "    (504 [\"Request timed out\" \"The request took too long and was stopped.\"])\n"
-    "    (_ (if (>= code 400) [\"Error\" \"Something went wrong.\"] nil))))\n" "\n"
-    "(defn error-node (code title blurb)\n"
-    "  \"The Hiccup for an error page, through the shared layout.\"\n"
-    "  (layout (str code \" — \" title)\n" "    [:div {:class \"text-center py-16\"}\n"
-    "      [:h1 {:class \"text-7xl font-bold text-primary\"} (str code)]\n"
-    "      [:p {:class \"text-2xl mt-4 mb-2\"} title]\n"
-    "      [:p {:class \"opacity-70 mb-8\"} blurb]\n"
-    "      [:a {:href \"/\" :class \"btn btn-primary\"} \"Back home\"]]))\n" "\n"
-    "(defn error-body (code)\n"
-    "  \"Rendered HTML for error `code`, or nil if `code` isn't an error page.\"\n"
-    "  (let (m (error-meta code))\n"
-    "    (when m (html (error-node code (first m) (second m))))))\n" "\n"
-    "(def- error-html-headers {:content-type \"text/html; charset=utf-8\"})\n" "\n"
-    "(defn error-response (code)\n"
-    "  \"A standalone error response map for `code` (500 crash, 504 timeout), or nil.\"\n"
-    "  (let (body (error-body code))\n"
-    "    (when body {:status code :headers error-html-headers :body body})))\n" "\n"
-    "(defn themed (resp)\n"
-    "  \"Re-skin an upstream `resp`'s body with the app's HTML error page when its status is\n"
-    "  an error; 2xx/3xx — and responses that already carry a JSON body (an API error) —\n"
-    "  pass through unchanged, so the browser skin never clobbers an API contract.\"\n"
-    "  (if (api-response? resp)\n" "    resp\n" "    (let (body (error-body (get resp :status)))\n"
-    "      (if body\n" "        (assoc resp :body body\n"
-    "          :headers (merge (get resp :headers {}) error-html-headers))\n" "        resp))))\n"
-    "\n" "(defn api-response? (resp)\n"
-    "  \"True when `resp` already declares a JSON content-type — the handler produced its\n"
-    "  own body, so the HTML error page must not replace it.\"\n"
-    "  (let (content-type (get (get resp :headers {}) :content-type))\n"
-    "    (and (string? content-type) (includes? content-type \"application/json\"))))\n"))
+(defn- project-hatch-server-template (_nm)
+  (str "(defmodule web/server\n"
+    "  \"The app's endpoint: its configuration of hatch's standard response pipeline\n"
+    "  (`web/endpoint`: the per-request task and deadline, the crash log, compression,\n"
+    "  security headers, themed error pages).\n" "\n"
+    "  Not named `web/endpoint`: that is hatch's module, and a release bundle would load it\n"
+    "  in place of this one.\"\n" "  (:alias web/endpoint)\n" "  (:alias web/routes)\n"
+    "  (:alias web/layout))\n" "\n" "(def *config*\n" "  {:router web/routes/app-router\n"
+    "   ;; The status table is hatch's; the page around it is the app's.\n"
+    "   :errors {:render web/layout/error-page}})\n" "\n" "(defn serve ()\n"
+    "  \"Start the HTTP listener on $HATCH_PORT, else 5000.\"\n"
+    "  (web/endpoint/serve *config*))\n"))
 
 (defn- project-hatch-layout-template (nm)
   (str "(defmodule web/layout \"Shared HTML page shell — Tailwind + daisyUI via CDN.\n"
-    "  Returns plain Hiccup; the caller (web/page / web/errors) renders it.\")\n" "\n"
+    "  `layout` returns plain Hiccup, which web/page renders; `error-page` is the error\n"
+    "  page's HTML, for hatch's web/endpoint (`:errors {:render …}` in web/server).\"\n"
+    "  (:use web/template :only [html]))\n" "\n"
     "(defn layout (title & children)\n" "  [:html {:data-theme \"light\"}\n" "    [:head {}\n"
     "      [:meta {:charset \"utf-8\"}]\n"
     "      [:meta {:name \"viewport\" :content \"width=device-width, initial-scale=1\"}]\n"
@@ -575,7 +526,14 @@ test discovery, lints, release, config)."
     "          [:a {:href \"/\" :class \"btn btn-ghost text-xl\"} \"" nm "\"]]\n"
     "        [:div {:class \"navbar-end\"}\n"
     "          [:a {:href \"/messages\" :class \"btn btn-ghost btn-sm\"} \"Messages\"]]]\n"
-    "      [:main {:class \"max-w-2xl mx-auto p-6\"} children]]])\n"))
+    "      [:main {:class \"max-w-2xl mx-auto p-6\"} children]]])\n" "\n"
+    "(defn error-page (code title blurb)\n"
+    "  \"The page for error `code`, in the shared layout.\"\n"
+    "  (html (layout (str code \" — \" title)\n" "    [:div {:class \"text-center py-16\"}\n"
+    "      [:h1 {:class \"text-7xl font-bold text-primary\"} (str code)]\n"
+    "      [:p {:class \"text-2xl mt-4 mb-2\"} title]\n"
+    "      [:p {:class \"opacity-70 mb-8\"} blurb]\n"
+    "      [:a {:href \"/\" :class \"btn btn-primary\"} \"Back home\"]])))\n"))
 
 (defn- project-hatch-routes-template (_nm)
   (str "(defmodule web/routes \"HTTP routes — session + CSRF protected.\"\n"
@@ -583,7 +541,8 @@ test discovery, lints, release, config)."
     "; Set $SECRET_KEY_BASE in production. Never ship this dev fallback.\n" "(def session-secret\n"
     "  (or (os/env \"SECRET_KEY_BASE\") \"dev-only-insecure-secret-change-me\"))\n" "\n"
     "(defrouter app-router\n" "  (get \"/\" web/views/home/index)\n"
-    "  (through [(session/fetch-session session-secret) session/fetch-flash csrf/protect-from-forgery]\n"
+    "  (through [(session/fetch-session (session/cookie-store session-secret {:encrypt true}))\n"
+    "            session/fetch-flash csrf/protect-from-forgery]\n"
     "    (get \"/messages\" web/views/messages/index)\n"
     "    (post \"/messages\" web/views/messages/create)))\n"))
 
@@ -663,7 +622,7 @@ test discovery, lints, release, config)."
 ;; Files generated (in addition to the shared manifest + docs):
 ;;   project.blsp (overwritten with just the hatch dep)
 ;;   src/main.blsp           — entry point: logger + HTTP
-;;   src/web/endpoint.blsp   — HTTP listener (no ws-handler); JSON 500/504
+;;   src/web/server.blsp     — HTTP listener (no ws-handler); JSON 500/504
 ;;   src/web/routes.blsp     — the JSON routes
 ;;   src/web/api.blsp        — the JSON handlers
 ;;   tests/main_test.blsp
@@ -679,13 +638,15 @@ test discovery, lints, release, config)."
 
 (defn- project-web-api-main-template (nm)
   (str "(defmodule main \"Entry point for "
-    nm ".\"\n" "  (:use web/endpoint :only [serve])\n"
+    nm ".\"\n" "  (:use web/server :only [serve])\n"
     "  (:use web/application :only [start default-logger-opts]))\n" "\n" "(defn main ()\n"
     "  \"Start logging, boot the endpoint, and park.\"\n" "  (start\n"
     "    {:logger   (default-logger-opts)\n" "     :children [(fn () (serve))]}))\n"))
 
-(defn- project-web-api-endpoint-template (_nm)
-  (str "(defmodule web/endpoint \"HTTP endpoint: bridges raw requests through the router.\"\n"
+(defn- project-web-api-server-template (_nm)
+  (str "(defmodule web/server\n"
+    "  \"HTTP endpoint: bridges raw requests through the router. Not named `web/endpoint`:\n"
+    "  that is hatch's module, and a release bundle would load it in place of this one.\"\n"
     "  (:alias http/server)\n" "  (:alias web/conn)\n" "  (:alias web/routes)\n"
     "  (:alias task))\n" "\n"
     "; Hard deadline per request — kills a wedged handler and returns 504.\n"
@@ -774,8 +735,7 @@ test discovery, lints, release, config)."
         ["src/main.blsp" (project-hatch-main-template actual-name)]
         ["src/db.blsp" (project-hatch-db-template actual-name)]
         ["src/db-setup.blsp" (project-hatch-db-setup-template actual-name)]
-        ["src/web/endpoint.blsp" (project-hatch-endpoint-template actual-name)]
-        ["src/web/errors.blsp" (project-hatch-errors-template actual-name)]
+        ["src/web/server.blsp" (project-hatch-server-template actual-name)]
         ["src/web/layout.blsp" (project-hatch-layout-template actual-name)]
         ["src/web/routes.blsp" (project-hatch-routes-template actual-name)]
         ["src/web/views/home.blsp" (project-hatch-home-template actual-name)]
@@ -785,7 +745,7 @@ test discovery, lints, release, config)."
     (= tmpl "web-api")
       [["project.blsp" (project-web-api-manifest-template actual-name)]
         ["src/main.blsp" (project-web-api-main-template actual-name)]
-        ["src/web/endpoint.blsp" (project-web-api-endpoint-template actual-name)]
+        ["src/web/server.blsp" (project-web-api-server-template actual-name)]
         ["src/web/routes.blsp" (project-web-api-routes-template actual-name)]
         ["src/web/api.blsp" (project-web-api-handlers-template actual-name)]
         ["tests/main_test.blsp" (project-hatch-main-test-template actual-name)]
