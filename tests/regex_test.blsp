@@ -45,6 +45,24 @@
     ; '-' isn't a word char
     (is (not (matches? "\\w+" "foo-bar")))
     (is (match? "\\s" "a b")))
+  ;; Before these were parsed, `\S` was the letter S, so `brood\s+(\S+)` matched nothing in
+  ;; `brood 0.42.0 (b3deae5a)` and said nothing (found porting the benchmark harness).
+  (test "\\D \\W \\S are the negations, standing alone and inside a set"
+    (is (matches? "\\S+" "0.42.0"))
+    (is (not (match? "\\S" " \t ")))
+    (is (matches? "\\D+" "abc-"))
+    (is (not (match? "\\D" "123")))
+    (is (matches? "\\W+" " .-"))
+    (is (not (match? "\\W" "foo_9")))
+    (is (= (get-in (find "brood\\s+(\\S+)\\s+\\(([0-9a-f]+)\\)" "brood 0.42.0 (b3deae5a)")
+             [:groups 0 :text])
+          "0.42.0"))
+    (is (matches? "[\\S]+" "ab"))
+    (is (matches? "[\\D.]+" "a.b"))
+    (is (not (match? "[\\D]" "7")))
+    (is (matches? "[^\\S]+" " \t"))
+    ;; `\d` is ASCII, so `\D` is its ASCII complement: a non-ASCII digit is not a `\d`
+    (is (matches? "\\D" "٣")))
   (test "[...] set and [^...] negated set (explicit chars, no ranges yet)"
     (is (matches? "[abc]+" "cabba"))
     (is (not (matches? "[abc]+" "cabx")))

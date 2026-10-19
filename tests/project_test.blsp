@@ -93,6 +93,16 @@
       (is (includes? msg "lib, gen"))
       ;; not the no-:main advice — the manifest DOES declare one
       (is (not (includes? msg "declares no `:main`")))))
+  (test "--main names a nested module by spelling its fn: the last segment is the fn"
+    (project/set-project-main "app")
+    (assert= *project-main-override* '(app main))
+    (project/set-project-main "app/start")
+    (assert= *project-main-override* '(app start))
+    (project/set-project-main "bench/harness/main")
+    (assert= *project-main-override* (list (symbol "bench/harness") 'main))
+    (is (includes? (try (project/set-project-main "bench//main") (catch e (error-message e)))
+          "a/nested/module/fn"))
+    (def *project-main-override* nil))
   (test "a --main override is blamed on --main, not on the manifest"
     (def *project-main* '(main main))
     (def *project-main-override* '(app main))

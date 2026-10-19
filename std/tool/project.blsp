@@ -152,21 +152,27 @@ identity and may override those paths. The rest of the tool is its siblings:
         (second v))
     else (error "project: :main must be a module symbol or '(module fn), got " v)))
 
-;; Parse a CLI entry spec — "module" or "module/fn" — into a `(module fn)` pair.
-;; The `nest run --main` override: a one-off entry without editing the manifest.
-;;   "app"        => (app main)
-;;   "app/start"  => (app start)
+;; Parse a CLI entry spec into a `(module fn)` pair. The `nest run --main` override: a
+;; one-off entry without editing the manifest.
+;;   "app"                 => (app main)
+;;   "app/start"           => (app start)
+;;   "bench/harness/main"  => (bench/harness main)   ; a nested module: the LAST segment
+;;                                                   ; is the fn, the rest the module
+;; A nested module (ADR-085) needs its fn spelled out, because "bench/harness" already
+;; means module `bench`, fn `harness`.
 (defn- project-parse-main-spec (spec)
-  ; reject blank module/fn halves so a typo like "" or "/start" errors cleanly
-  ; here, not as a malformed load downstream.
-  (let (ok? (fn (p) (not (string/blank? p))))
-    (match (string/split spec "/")
-      ((m) :when (ok? m) (list (symbol m) 'main))
-      ((m f) :when (and (ok? m) (ok? f)) (list (symbol m) (symbol f)))
-      (_ (error "nest run --main: expected \"module\" or \"module/fn\", got " spec)))))
+  ; reject blank segments so a typo like "" or "/start" errors cleanly here, not as a
+  ; malformed load downstream.
+  (let (parts (string/split spec "/"))
+    (cond
+      (or (empty? parts) (any? parts string/blank?))
+        (error "nest run --main: expected \"module\", \"module/fn\" or \"a/nested/module/fn\", got "
+          spec)
+      (= (count parts) 1) (list (symbol (first parts)) 'main)
+      else (list (symbol (string/join (seq/drop-last parts 1) "/")) (symbol (last parts))))))
 
 (defn set-project-main (spec)
-  "Override the `nest run` entry point from a CLI spec string (`\"module\"` or `\"module/fn\"`), without editing the manifest's `:main`. Sets a dedicated override slot that wins over the manifest even though `run` re-applies the manifest internally. Backs `nest run --main`."
+  "Override the `nest run` entry point from a CLI spec string (`\"module\"`, `\"module/fn\"`, or `\"a/nested/module/fn\"` — with three or more segments the last is the fn), without editing the manifest's `:main`. Sets a dedicated override slot that wins over the manifest even though `run` re-applies the manifest internally. Backs `nest run --main`."
   (def *project-main-override* (project-parse-main-spec spec)))
 
 ;; --- dependency manifest parsing (ADR-037, packages.md) ----------------------
