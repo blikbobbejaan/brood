@@ -41,6 +41,17 @@ const PROGRAM: &str = r#"
 (defn run (n)
   (let (w (spawn (send root [:r (drive n 0)])))
     (receive ([:r v] v) (after 60000 :timeout))))
+;; The JIT compiles on a background thread, so "hot" is not "native": on a loaded runner with
+;; std loaded from source (BROOD_NO_STDIMAGE, the tree-walker job), dozens of prelude arms
+;; queue ahead of `via` and the measured runs could finish before it lowers — the vacuity
+;; guard below then fails on a tree with nothing wrong. Warm until `via` settles first, so
+;; the measured runs are the native path every time.
+(defn settle (rounds)
+  (let (st (get (%jit-arm-state via 1) :state))
+    (if (or (= rounds 0) (not (contains? #{:untried :queued} st)))
+      st
+      (do (run 2000) (settle (- rounds 1))))))
+(settle 200)
 (io/puts (str "run = " (pr-str (run 20000))))
 (io/puts (str "run2 = " (pr-str (run 20000))))
 "#;
