@@ -31,25 +31,39 @@
 (require-one 'seq)
 
 ;; Dependency order, not alphabetical: a package must be published before anything that
-;; names it. `store` and `s3` are leaves; `store-postgres` and `hatch` both take `store`;
-;; the themes declare `:enhances bedit`, which the registry checks against a bedit that has
-;; to exist first. The apps at the end are verified and never published — nothing resolves
-;; against them, and hive pins its deps by git commit on purpose ("hive never uses hive").
+;; names it. `store`, `s3` and `observe` are leaves; `store-postgres` and `hatch` both take
+;; `store`; `observe-appsignal` takes `observe`, and `observe-local` and `mail` take `hatch`
+;; as well; the themes declare `:enhances bedit`, which the registry checks against a bedit
+;; that has to exist first. The apps at the end are verified and never published — nothing
+;; resolves against them, and hive and mur-forge pin their deps by git commit on purpose
+;; ("hive never uses hive"). `mail-local` and `mail-mailjet` are archived (folded into
+;; `mail` 0.2.0) and are not in the train.
 (def *repos*
   [{:dir "store" :publish? true}
     {:dir "s3" :publish? true}
+    {:dir "observe" :publish? true}
     {:dir "store-postgres" :publish? true}
     {:dir "hatch" :publish? true}
+    {:dir "observe-appsignal" :publish? true}
+    {:dir "observe-local" :publish? true}
+    {:dir "mail" :publish? true}
     {:dir "bedit" :publish? true}
     {:dir "bedit-theme-dracula" :publish? true}
     {:dir "bedit-theme-monokai" :publish? true}
     {:dir "bedit-theme-rose-pine" :publish? true}
     {:dir "bedit-theme-solarized-light" :publish? true}
     {:dir "hive" :publish? false}
+    {:dir "mur-forge" :publish? false}
+    {:dir "b2d" :publish? false}
     {:dir "pong" :publish? false}
+    {:dir "pong2" :publish? false}
+    {:dir "swarm" :publish? false}
     {:dir "brood-chat" :publish? false}
     {:dir "brood-life" :publish? false}
-    {:dir "brood-terminal" :publish? false}])
+    {:dir "brood-terminal" :publish? false}
+    {:dir "mylife" :publish? false}
+    {:dir "zubr" :publish? false}
+    {:dir "zubr-relay" :publish? false}])
 
 (defn- env-flag? (name)
   "Whether environment variable `name` is set to anything but the empty string."

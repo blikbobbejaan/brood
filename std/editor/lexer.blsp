@@ -1,7 +1,7 @@
 ;; std/editor/lexer.blsp — a line-oriented lexer from a table of rules.
 ;;
-;; `editor/shell` set the shape every lexical (non-tree-sitter) language mode wants: per
-;; line, ONE `regex/tokens` scan over a table of rules — the structured tokens (comments,
+;; A shell highlighter (bedit's `lex-shell` now) set the shape every lexical
+;; (non-tree-sitter) language mode wants: per line, ONE `regex/tokens` scan over a table of rules — the structured tokens (comments,
 ;; strings, …) first and the word pattern as the last row, so a word inside a string is
 ;; never produced and a lookup classifies each one that is; on the bitset DFA, so the
 ;; per-character work is a memo lookup and never a capture thread (ADR-352). The next six formats an

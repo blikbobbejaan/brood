@@ -6,6 +6,25 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.42.0 — std keeps the mechanisms; a tab boots from an image
+
+Ten modules that only bedit used left std (ADR-417): Org-mode, Magit's transient menus and
+section trees, form buffers, the per-format highlighters and the mail parser. A std module is
+now a mechanism that something besides one application needs. In a browser tab, a program
+loads the std modules it calls from an in-memory image, and the tab's wasm is a third smaller.
+The narrative is the devlog's 2026-10-18 and 2026-10-19 entries.
+
+**Added.**
+- `BROOD_TIER0_AUDIT=<file>`: under a tier-0 ceiling, record each distinct call path by which
+  bytecode started anyway (ADR-416 stage 1).
+
+**Removed.**
+- Ten modules left std for bedit, their only user (ADR-417): `editor/org`, `editor/transient`,
+  `editor/section`, `editor/formbuf`, the format highlighters `editor/configs` / `shell` /
+  `dotenv` / `dockerfile` / `markdown`, and `mime`. std keeps the mechanisms that something
+  besides one application needs (`editor/lexer`, `markdown` the renderer), and an editor's
+  features live in the editor.
+
 **Performance.**
 - A program in a tab materialises the std modules it calls from an image instead of loading
   their source (`mem:` image paths; `brood-tab`'s `std_image` / `use_std_image` /
@@ -13,6 +32,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   was 10.8 MB (3.7 MB).
 
 **Fixed.**
+- The tree-walker reports an error raised inside a contracted function's shim at the user's
+  call, as the VM does, including on tail calls.
+- `nest new`'s hatch and web-api templates named their server module `web/endpoint`, which is
+  hatch's own, so a release bundle loaded hatch's instead and failed at boot. It is
+  `web/server` now.
 - `project_test.blsp` purges its `brood-gate-` and `brood-shadow-` fixtures, which
   `temp_purge_coverage_test` requires.
 - Off Unix the lock behind the compare-and-swap file writes was a no-op; it is `File::lock`

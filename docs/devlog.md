@@ -2708,6 +2708,20 @@ inline top-level closure has a LOCAL body, so `compiled_arm_for` has no key for 
 `run_process_body` or VM code started inside such a body, plus the one Rust unit test that
 calls `vm_run_bc` directly. That is ADR-416 stages 2–5's whole job.
 
+## 2026-10-19 — an editor's features leave std (ADR-417)
+
+`std/editor` had collected bedit's features alongside the toolkit: Org-mode, Magit's transient
+menus and section trees, form buffers, a highlighter for each file format, and a mail parser.
+Each had one user, bedit, and each was a std name that versioned with the kernel. ADR-417 sets
+the test: a std module is a mechanism, something besides one application uses it, and it has
+to version with the kernel. Ten modules failed it and moved to bedit with their tests:
+`org`, `transient-core`, `section`, `formbuf`, the `lex-*` highlighters and `mail-message`
+(previously `mime`). Two shared test files were split, so the parts that test code still in
+std stayed here: `lexer_test.blsp` keeps the `editor/lexer` cases from `configs_test`, and
+`layers_test.blsp` gains the `shebang-interpreter` cases from `shell_test`. The KI-187 test in
+`deftype_through_imports.rs` used to borrow `editor/section`'s `row` to collide with `vt`'s;
+it now declares its own.
+
 ## 2026-10-19 (later still) — ADR-416 stage 2a: the tree-walker's pending work is a heap frame stack
 
 `eval/machine.rs`. `eval_tail_loop` is now a driver over an explicit stack of continuations
