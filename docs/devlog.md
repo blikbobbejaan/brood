@@ -2802,4 +2802,6 @@ takes 5 s at tier 0 (0.06 s on the VM, which reads globals through its caches).
 
 Guard: `tree_walker_frames.rs` runs a 20 000-deep recursion through `try` and `binding` at
 tier 0, checking the handler's value and the dynamic stack's restore; red with the
-interception disabled.
+interception disabled. Evidence: `make test-both` 1950/1950 on each engine; `gcstress-all` at
+`BROOD_TIER=0`, all 289 files clean; all thirteen fuzz generators, no divergence, crash or
+stale program.
