@@ -19,6 +19,11 @@
 ;; A later binding of a name the closure reads as a GLOBAL.
 (def lcs-g :global)
 (defn lcs-global () (let (f (fn () lcs-g) lcs-g :local) [(f) lcs-g]))
+;; A `fn` that calls itself by its `let` name, after a list-valued binding. The fresh-frame
+;; rule above opened the frame for `f` AFTER the closure had captured its parent, so `f`
+;; was unbound inside itself at tier 0 (2026-10-19, found once tier-0 process bodies
+;; stopped running on the VM).
+(defn lcs-self (n) (let (base (+ 0 1) f (fn (k) (if (= k 0) base (f (- k 1))))) (f n)))
 
 (describe "let bindings are lexical for the closures they build"
   (test "a rebinding after a closure does not reach into it"
@@ -33,6 +38,17 @@
 
   (test "a binding shadowing a global does not reach a closure built before it"
     (assert= [:global :local] (lcs-global)))
+
+  (test "a fn bound after a list-valued binding still sees its own name"
+    (assert= 1 (lcs-self 5))
+    (assert= :done (let (x (list 1) f (fn (k) (if (= k 0) :done (f (- k 1))))) (f 3))))
+
+  (test "a self-recursive let fn still sees its own name in another process"
+    (let (me (self)
+          base (+ 0 1)
+          f (fn (k) (if (= k 0) base (f (- k 1)))))
+      (spawn (send me [:self (f 4)]))
+      (assert= 1 (receive ([:self v] v) (after 5000 :timeout)))))
 
   (test "sequential bindings still see the ones before them"
     (assert= 6 (let (a 1 b (+ a 2) c (+ a b 2)) c))
