@@ -29,8 +29,16 @@
 //! native calling back into Brood (`apply_closure`, which runs the body on a machine of its
 //! own). Its unsupplied `&optional` defaults run as frames too (`KontKind::Defaults`).
 //!
-//! Still native recursion: a seq-view realised for `apply`, and every native that calls back
-//! into Brood (each such callback is one `apply_closure`, so one machine per native level).
+//! **`try` and `binding` are frames** under a tier-0 ceiling (ADR-416 stage 3), as the VM runs
+//! them inline (ADR-400/402): a call of `%try`/`%try-described`/`%binding` with a closure
+//! thunk pushes `KontKind::Try`/`Binding` and enters the thunk; an error unwinding into a
+//! `Try` frame runs its handler as a frame (`KontKind::Callback`), and a `Binding` frame
+//! restores the dynamic stack on the way out either way. Above tier 0 they stay natives: their
+//! `apply_engine` routes the thunk to the VM.
+//!
+//! Still native recursion: a seq-view realised for `apply`, and every other native that calls
+//! back into Brood (each such callback is one `apply_closure`, so one machine per native
+//! level).
 
 use super::*;
 use crate::core::heap::EnvRoot;
@@ -140,6 +148,36 @@ enum KontKind {
     Defaults(EntryState),
     /// A macro expander's body: its value is the form that replaces the call.
     Expand { env_r: EnvRoot },
+    /// `%try`'s thunk (`%try-described`'s, when `described`): its value is the call's, and an
+    /// error that is not a control signal runs the handler instead ([`Machine::catch`]).
+    Try {
+        handler_r: Root,
+        env_r: EnvRoot,
+        described: bool,
+    },
+    /// `%binding`'s thunk: `dynamics` is the dynamic stack's depth from before its bindings,
+    /// restored when the thunk ends, by a value or an error.
+    Binding { dynamics: usize },
+    /// A callback whose value is the call's (a `%try` handler).
+    Callback,
+}
+
+/// The natives the tree-walker runs as frames under a tier-0 ceiling.
+#[derive(Clone, Copy)]
+enum FrameNative {
+    Try { described: bool },
+    Binding,
+}
+
+impl FrameNative {
+    fn of(heap: &Heap, id: NativeId, argc: usize) -> Option<FrameNative> {
+        match (heap.native(id).name.as_str(), argc) {
+            ("%try", 2) => Some(FrameNative::Try { described: false }),
+            ("%try-described", 2) => Some(FrameNative::Try { described: true }),
+            ("%binding", 3) => Some(FrameNative::Binding),
+            _ => None,
+        }
+    }
 }
 
 struct BindState {
@@ -360,15 +398,40 @@ impl<'e> Machine<'e> {
                     Ok(v) => self.resume(heap, k.kind, k.marks, v),
                     Err(e) => {
                         let mut e = close_frame(inner_tail.tag(heap, e), inner);
-                        if let Some(form_r) = k.form {
-                            let form = heap.read_root(form_r);
-                            e = e.or_form_pos(heap, form);
+                        match k.kind {
+                            // A control signal (a kill, a suspend) is never caught.
+                            KontKind::Try {
+                                handler_r,
+                                env_r,
+                                described,
+                            } if !e.is_control() => {
+                                let call_form_r = k.form.expect("a Try frame keeps its call");
+                                self.catch(
+                                    heap,
+                                    e,
+                                    handler_r,
+                                    env_r,
+                                    described,
+                                    call_form_r,
+                                    k.marks,
+                                )
+                            }
+                            kind => {
+                                if let Some(form_r) = k.form {
+                                    let form = heap.read_root(form_r);
+                                    e = e.or_form_pos(heap, form);
+                                }
+                                match &kind {
+                                    KontKind::Defaults(st) => e = st.unwound(heap, e),
+                                    KontKind::Binding { dynamics } => {
+                                        heap.truncate_dynamics(*dynamics)
+                                    }
+                                    _ => {}
+                                }
+                                k.marks.restore(heap);
+                                Err(e)
+                            }
                         }
-                        if let KontKind::Defaults(st) = &k.kind {
-                            e = st.unwound(heap, e);
-                        }
-                        k.marks.restore(heap);
-                        Err(e)
                     }
                 };
                 match resumed {
@@ -500,6 +563,15 @@ impl<'e> Machine<'e> {
                 marks.restore(heap);
                 self.expr = expanded;
                 Ok(Step::Continue)
+            }
+            KontKind::Try { .. } | KontKind::Callback => {
+                marks.restore(heap);
+                Ok(Step::Value(v))
+            }
+            KontKind::Binding { dynamics } => {
+                heap.truncate_dynamics(dynamics);
+                marks.restore(heap);
+                Ok(Step::Value(v))
             }
         }
     }
@@ -1263,6 +1335,13 @@ impl<'e> Machine<'e> {
 
             match cur_callee.unpack() {
                 ValueRef::Native(id) => {
+                    if compile::tier_ceiling() < compile::Tier::Bytecode
+                        && let Some(native) = FrameNative::of(heap, id, cur_argv.len())
+                        && let Some(step) =
+                            self.native_frame(heap, native, &cur_argv, call_form, env)
+                    {
+                        return step;
+                    }
                     return call_native(heap, id, &cur_argv, env)
                         .map(Step::Value)
                         .map_err(|e| e.or_form_pos(heap, call_form));
@@ -1455,6 +1534,87 @@ impl Machine<'_> {
             }
         }
         self.forms(heap, body, scope)
+    }
+}
+
+impl Machine<'_> {
+    /// Run `native`'s call as frames: push its continuation and enter the thunk across a
+    /// native boundary, as the native's `apply_engine` did at tier 0. `None` when the thunk
+    /// is not a closure (the native runs it). An error the native itself would raise before
+    /// running the thunk — a bad `binding` — takes the call's position, as `call_native`'s
+    /// did.
+    fn native_frame(
+        &mut self,
+        heap: &mut Heap,
+        native: FrameNative,
+        argv: &[Value],
+        call_form: Value,
+        env: EnvId,
+    ) -> Option<Result<Step, LispError>> {
+        let (thunk, kind) = match native {
+            FrameNative::Try { described } => {
+                let ValueRef::Fn(thunk) = argv[0].unpack() else {
+                    return None;
+                };
+                let marks = Marks::take(heap);
+                let kind = KontKind::Try {
+                    handler_r: heap.root(argv[1]),
+                    env_r: heap.root_env(env),
+                    described,
+                };
+                (thunk, (marks, kind))
+            }
+            FrameNative::Binding => {
+                let ValueRef::Fn(thunk) = argv[2].unpack() else {
+                    return None;
+                };
+                let dynamics = match crate::builtins::binding_enter(heap, argv[0], argv[1]) {
+                    Ok(d) => d,
+                    Err(e) => return Some(Err(e.or_form_pos(heap, call_form))),
+                };
+                (thunk, (Marks::take(heap), KontKind::Binding { dynamics }))
+            }
+        };
+        let (marks, kind) = kind;
+        if !self.save(heap, marks, kind, Some(call_form)) {
+            return Some(Err(
+                tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form)
+            ));
+        }
+        Some(self.enter(heap, thunk, &[], None))
+    }
+
+    /// An error `e` unwound into a `Try` frame (whose registers are restored): run the handler
+    /// on what `catch` binds, as a frame whose value is the call's.
+    #[allow(clippy::too_many_arguments)]
+    fn catch(
+        &mut self,
+        heap: &mut Heap,
+        e: LispError,
+        handler_r: Root,
+        env_r: EnvRoot,
+        described: bool,
+        call_form_r: Root,
+        marks: Marks,
+    ) -> Result<Step, LispError> {
+        // Allocation only, so `handler`, `env` and the arguments stay valid until the handler
+        // is bound.
+        let argv = crate::builtins::handler_args(&e, heap, described);
+        let handler = heap.read_root(handler_r);
+        let call_form = heap.read_root(call_form_r);
+        if let ValueRef::Fn(id) = handler.unpack() {
+            // The handler's frame keeps the Try's marks: its slots go when the handler ends.
+            if !self.save(heap, marks, KontKind::Callback, Some(call_form)) {
+                return Err(tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form));
+            }
+            return self.enter(heap, id, &argv, None);
+        }
+        let env = heap.read_root_env(env_r);
+        let out = apply(heap, handler, &argv, env).map(Step::Value);
+        let call_form = heap.read_root(call_form_r);
+        let out = out.map_err(|e| e.or_form_pos(heap, call_form));
+        marks.restore(heap);
+        out
     }
 }
 

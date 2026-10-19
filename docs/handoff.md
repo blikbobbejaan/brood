@@ -117,9 +117,13 @@ those bodies). To re-run: `BROOD_TIER=0 BROOD_TIER0_AUDIT=<file> cargo nextest r
 more: closure entry is one path (`Machine::enter`) for calls, macro expanders and
 `apply_closure`, and `&optional` defaults are frames. What remains native is every native
 calling back into Brood (`%try`, `%binding`, a seq-view realise, …), one
-`apply_closure` machine per level. **Next: stage 3** — `try`/`binding` as frames (`%try` and
-`%binding` call back through `apply_engine`, so they are native boundaries today), then
-stage 4 (capture). Owed: a tier-0 `make ab` on the benchmark machine (2a and 2b both).
+`apply_closure` machine per level. **Stage 3 is done** too (devlog 2026-10-19 "night"): at
+tier 0, `%try`/`%try-described`/`%binding` with a closure thunk are frames, so a `receive`
+inside a `try` is no longer under native code. **Next: stage 4** — capture: a non-matching
+`receive`, the reduction budget and a kill return the machine's frame stack to `run_one` as
+the tree-walker's `Suspended`. Owed: a tier-0 `make ab` on the benchmark machine (2a, 2b, 3).
+Noted, not fixed: under N active `binding`s a tree-walked global read scans all N
+(`Heap::env_get`), quadratic only for deep recursion through `binding`.
 
 **After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
 `scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.

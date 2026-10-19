@@ -96,3 +96,32 @@ fn tier0_boundary_tail_error_takes_the_tail_forms_position() {
          position.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
+
+/// A recursion whose every level is inside a `try` and a `binding`: under a tier-0 ceiling
+/// `%try` and `%binding` are frames (ADR-416 stage 3), not natives calling their thunk back,
+/// so the depth is the frame stack's. The handler and the dynamic stack's restore are checked
+/// on the way back out. (20 000, not more: a global read on the tree-walker scans every active
+/// binding first, so this program is quadratic in its depth — devlog 2026-10-19 "night".)
+const TRY_BINDING: &str = r#"
+(defdyn *level* 0)
+(defn deep (n)
+  (if (= n 0)
+    (throw *level*)
+    (+ 1 (try (binding (*level* n) (deep (- n 1))) (catch e (+ e *level*))))))
+(io/puts (str "deep = " (deep 20000) " level = " *level*))
+"#;
+
+#[test]
+fn tier0_try_and_binding_run_as_frames() {
+    let (stdout, stderr) = run_tier0("try-binding", TRY_BINDING);
+    // Every level adds 1. The innermost throws `*level*` = 1, and the handler that catches
+    // it, outside that level's binding, adds the enclosing `*level*` = 2: 20 000 + 1 + 2.
+    // Back at the top the dynamic stack is restored.
+    assert_eq!(
+        stdout.lines().next(),
+        Some("deep = 20003 level = 0"),
+        "a 20 000-deep recursion through `try` and `binding` did not complete on the \
+         tree-walker.\nstderr:\n{}",
+        stderr.lines().take(8).collect::<Vec<_>>().join("\n")
+    );
+}

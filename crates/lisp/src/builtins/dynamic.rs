@@ -71,18 +71,25 @@ pub(super) fn dynamic_p(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult
 /// certainly a typo — a plain global won't track the rebind). The bindings live
 /// in this process's heap, so they don't reach a `spawn`ed child.
 pub(super) fn binding(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let syms = heap.seq_items(arg(args, 0))?;
-    let vals = heap.seq_items(arg(args, 1))?;
-    let thunk = arg(args, 2);
+    let len = binding_enter(heap, arg(args, 0), arg(args, 1))?;
+    let result = apply_engine(heap, arg(args, 2), &[], env);
+    heap.truncate_dynamics(len);
+    result
+}
+
+/// `%binding`'s entry, shared with the tree-walker's `Binding` frame: push `syms` (a sequence
+/// of dynamic names) bound to `vals`, answering the dynamic stack's depth from before, which
+/// the thunk's end — value or error — truncates back to.
+pub(crate) fn binding_enter(heap: &mut Heap, syms: Value, vals: Value) -> Result<usize, LispError> {
+    let syms = heap.seq_items(syms)?;
+    let vals = heap.seq_items(vals)?;
     let mut names = Vec::with_capacity(syms.len());
     for s in &syms {
         names.push(expect_symbol(heap, "binding", *s)?);
     }
     let len = heap.dynamics_len();
     push_bindings(heap, &names, &vals)?;
-    let result = apply_engine(heap, thunk, &[], env);
-    heap.truncate_dynamics(len);
-    result
+    Ok(len)
 }
 
 /// Push `names` bound to `vals` on the dynamic stack — the one implementation behind the

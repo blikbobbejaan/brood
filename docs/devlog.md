@@ -2779,3 +2779,27 @@ tier 0; before, each level was a nested native `eval` and the run failed. Guards
 Evidence: `make test-both` 1949/1949 on each engine; `gcstress-all` at `BROOD_TIER=0`, all 289
 files clean; all thirteen fuzz generators (tree-walker as reference), 2990 programs plus
 metamorphic variants, no divergence, crash or stale program. Not measured: tier-0 speed.
+
+## 2026-10-19 (night) — ADR-416 stage 3: `try` and `binding` are tree-walker frames
+
+Under a tier-0 ceiling a call of `%try`, `%try-described` or `%binding` whose thunk is a
+closure no longer runs the native: the machine pushes a `Try` or `Binding` continuation and
+enters the thunk across a native boundary (`Machine::enter`, as the native's `apply_engine`
+reached `apply_closure` at tier 0, so traces and positions are unchanged). A value pops the
+frame as the call's value. An error that is not a control signal unwinding into a `Try` frame
+runs the handler (`Machine::catch`) on what the native gave it (`builtins::handler_args`, now
+shared), as a frame whose value is the call's (`Callback`); a control signal passes through,
+as `run_guarded` re-raised it. A `Binding` frame truncates the dynamic stack on the way out,
+by a value or an error; the bindings are pushed by `builtins::binding_enter`, shared with the
+native, whose errors keep the call's position. A non-closure thunk, and every tier above 0,
+still runs the native (there `apply_engine` routes the thunk to the VM).
+
+Found on the way, not fixed: under N active `binding`s, every global read on the tree-walker
+scans all N dynamic entries before the global table (`Heap::env_get`). Only dynamic names are
+ever on that stack, but `is_dynamic` takes the shared `RwLock`, so asking it first is not
+obviously cheaper. Harmless at ordinary depths; a 50 000-deep recursion through `binding`
+takes 5 s at tier 0 (0.06 s on the VM, which reads globals through its caches).
+
+Guard: `tree_walker_frames.rs` runs a 20 000-deep recursion through `try` and `binding` at
+tier 0, checking the handler's value and the dynamic stack's restore; red with the
+interception disabled.

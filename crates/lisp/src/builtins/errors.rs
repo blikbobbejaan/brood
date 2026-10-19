@@ -180,8 +180,21 @@ pub(super) fn blob_strong_count(args: &[Value], _: EnvId, heap: &mut Heap) -> Li
 
 pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     run_guarded(args, env, heap, |error, heap| {
-        vec![error.caught_value(heap)]
+        handler_args(error, heap, false)
     })
+}
+
+/// What a `%try` handler is called with for `error`: what `catch` binds, and for
+/// `%try-described` also the raise's structured description. Shared with the tree-walker's
+/// `Try` frame. No rooting needed between the two allocations: allocation never collects
+/// (the GC fires only at eval safepoints).
+pub(crate) fn handler_args(error: &LispError, heap: &mut Heap, described: bool) -> Vec<Value> {
+    let caught = error.caught_value(heap);
+    if described {
+        vec![caught, error.to_value_map(heap)]
+    } else {
+        vec![caught]
+    }
 }
 
 /// `(%try-described thunk handler)` — `%try` whose handler also receives the raise's
@@ -191,10 +204,7 @@ pub(super) fn try_catch(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResu
 /// the compiler (its handler takes two parameters), so it always runs here.
 pub(super) fn try_described(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     run_guarded(args, env, heap, |error, heap| {
-        let caught = error.caught_value(heap);
-        // No rooting needed between the two allocations: allocation never collects (the
-        // GC fires only at eval safepoints).
-        vec![caught, error.to_value_map(heap)]
+        handler_args(error, heap, true)
     })
 }
 
