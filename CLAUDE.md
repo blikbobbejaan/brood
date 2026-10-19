@@ -118,7 +118,8 @@ crates/lisp/src/   (the directory tree mirrors the layers — see lib.rs)
                in common), roots_buf}; alloc.rs, blob.rs, map_champ.rs, table.rs (the
                shared mutable table, ADR-107), sync.rs
   syntax/      reader, scanner, printer, and the tooling CST (atom / cst / scope)
-  eval.rs + eval/   the tree-walking evaluator (a `'tail: loop`) + compile.rs/compile/,
+  eval.rs + eval/   the tree-walking evaluator (machine.rs: a loop over a heap frame stack,
+               ADR-416) + compile.rs/compile/,
                the closure-compiling VM (default engine, ADR-076): ir (IR types), lower
                (front-end), walkers, closure (compile_arm, shared body cache), emit
                (Node -> bytecode), prim_exec (the Prim2/Prim3 executors), dispatch (arm dispatcher, IC, JIT fast
@@ -296,9 +297,10 @@ commits in this repo.**
 
 ## Conventions & invariants (don't break these)
 
-- **Proper tail calls are load-bearing.** `eval` is a `'tail: loop`. When adding a special
-  form with a body or branches, evaluate all-but-last for effect and hand the *last* form back
-  to the loop (`expr = …; continue 'tail;` — see `tail_of`/`tail_of_vec`). The test
+- **Proper tail calls are load-bearing.** The tree-walker (`eval/machine.rs`) is a loop over
+  an explicit frame stack (ADR-416). When adding a special form with a body or branches, push a
+  continuation (`KontKind`) for each non-last sub-form and hand the *last* form back to the
+  loop (`self.expr = …; Ok(Step::Continue)`) — never a nested `eval`. The test
   `tail_calls_do_not_overflow` guards this.
 - **All heap construction goes through `value.rs` helpers** (`cons`, `list`, `sym`,
   `str_val`, …), never scattered constructors (ADR-002).

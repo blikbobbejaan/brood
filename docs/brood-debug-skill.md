@@ -34,8 +34,9 @@ failures. `brood --debug-flags` is the index of every `BROOD_*` knob below.
 
 Deep *non-tail* recursion is a clean, catchable error, not a segfault: the VM raises
 `E0044 recursion too deep: exceeded the VM's 1048576-frame non-tail-call limit`
-(the tree-walker raises the same code from its byte budget, tuned by
-`BROOD_STACK_BUDGET`). It is still a bug — slow to reach and wasteful. Run the linter:
+(the tree-walker raises the same code at its own 262144-frame limit; a recursion that
+re-enters the evaluator through native code — `eval`, a callback — hits the native-stack
+byte budget instead, tuned by `BROOD_STACK_BUDGET`). It is still a bug — slow to reach and wasteful. Run the linter:
 
 ```
 nest check path/to/file.blsp

@@ -2707,3 +2707,31 @@ inline top-level closure has a LOCAL body, so `compiled_arm_for` has no key for 
 `make test-both` green (1946/1946 on each engine) with the audit armed: every remaining site is
 `run_process_body` or VM code started inside such a body, plus the one Rust unit test that
 calls `vm_run_bc` directly. That is ADR-416 stages 2–5's whole job.
+
+## 2026-10-19 (later still) — ADR-416 stage 2a: the tree-walker's pending work is a heap frame stack
+
+`eval/machine.rs`. `eval_tail_loop` is now a driver over an explicit stack of continuations
+(`Kont`): an `if` test, a cons body's non-last forms (`do`/`let`/`letrec`), a closure body's
+non-last forms, a `let`/`letrec` binding's value, `def`'s value at tier 0, a vector/set/map
+literal's elements, a computed head and a call's arguments each push one and run on the same
+loop, where each was a nested Rust `eval`. A continuation is exactly the old nested call: it
+sets the pushing frame's trace tracker and lazy-expansion count aside, and an error popping it
+closes the inner frame's trace (`close_frame`, shared with `eval` and `apply_closure`), takes
+the sub-form's position where the old site used `eval_at`, and drops its operand roots as
+`root_scope` did. It holds `Root`/`EnvRoot` slots only, so both collectors relocate it in
+place. Leaves (atoms, bound symbols) are read in place, so `(+ a b)` pushes nothing.
+`eval_arguments`, `tail_of_cons` and `bind_sequential` are gone into it.
+
+Runaway non-tail recursion now stops at a frame count (262144,
+`recursion too deep: exceeded the tree-walker's …`, `E0044` as before); the native-stack byte
+budget still guards a run re-entered through native code. `docs/error-codes.md` and
+`brood-debug-skill.md` say so. Still native recursion (stage 2b): macro expansion, `&optional`
+defaults, the passthrough redirect's slow head lookup, a seq-view realised for `apply`, and
+natives calling back (`apply_closure` runs a machine of its own).
+
+Evidence: `make test-both` 1946/1946 on each engine; `gcstress-all` at `BROOD_TIER=0`, all 297
+files clean; all thirteen fuzz generators (tree-walker as reference), 3000 programs, no divergence, crash or
+stale program. Guard:
+`crates/cli/tests/tree_walker_frames.rs` (a 200 000-deep non-tail recursion completes at tier
+0, a runaway one stops at the frame limit, catchably); red with HEAD's `eval.rs` put back.
+Not measured: tier-0 speed (`make ab` with `BROOD_TIER=0` belongs on the benchmark machine).
