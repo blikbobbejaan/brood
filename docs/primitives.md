@@ -62,6 +62,7 @@ arg silently becoming `nil`.
 | | `bytes->list` | 1 | The bytes b as a list of integers 0–255. |
 | | `%base64-encode` | 2 | Padded Base64 of a byte sequence (bytes, or a vector/list of byte ints): the standard `+/` alphabet, or the URL-safe `-_` one when url? is truthy. The engine of `encoding/base64-encode-bytes` and its siblings. |
 | | `%base64-decode` | 2 | The bytes a Base64 string encodes (URL-safe alphabet when url? is truthy), or nil when it is not Base64: a character outside the alphabet, a `=` anywhere but a trailing run of at most two, or one character left over from a group of four. |
+| | `%json-encode-plain` | 1 | `v` as JSON text when it is plain data (nil, bool, int, finite float, string, keyword/symbol, vector, proper list, a non-record map keyed by strings/keywords/symbols/ints) — exactly as `json/encode` writes it; nil for anything else, which `json/encode` then handles itself. The native half of `json/encode`. |
 | **Table** (Brood's ETS — the one identity-mutable structure; shared by identity, deep-clones in/out) | `table` | 0 | create a new empty in-memory table: a shared, mutable key→value store behind an opaque handle — mutated in place and shared by identity (the handle can be sent to other processes, which all see the same store); keys/values are deep-cloned in and out, so no two processes alias stored data. Local to this runtime; returns the handle |
 | | `table-put` | 3 | store `v` under key `k` (overwriting; structural key equality); returns `t` for threading |
 | | `table-get` | 2–3 | a fresh copy of the value stored under `k`, or the default (nil if omitted) when absent |
@@ -270,7 +271,7 @@ literal — no constructor call.
 |  | `string/char->int` | 1 | Unicode codepoint of the first character of string s (identical to the byte value for ASCII). |
 |  | `string/int->char` | 1 | A 1-char string for Unicode codepoint n. Errors on an invalid codepoint. |
 |  | `string->utf8-bytes` | 1 | The UTF-8 encoding of s as a bytes value. |
-|  | `utf8-bytes->string` | 1 | Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8. |
+|  | `utf8-bytes->string` | 1–2 | Decode UTF-8 bytes (a bytes value, vector, or list of ints 0–255) into a string. Errors on invalid UTF-8, unless the optional `lossy` flag is truthy: then each invalid sequence becomes U+FFFD. |
 | **Regex** (the matching engine, ADR-389; `%`-internal — `std/regex.blsp` owns the pattern language and translates into these) | `%regex-match?` | 2 | Whether a pattern in the engine's syntax matches anywhere in s. |
 |  | `%regex-find` | 3 | The leftmost-first match at or after char index `from`: `{:start :end :text :groups [...]}` in CHAR offsets, or nil. |
 |  | `%regex-find-all` | 2 | Every non-overlapping match, as a vector of those maps; an empty match steps one character on. |

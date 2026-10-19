@@ -60,6 +60,35 @@ pub(crate) static SHARED: LazyLock<SharedBundle> = LazyLock::new(|| {
     boot_from_source()
 });
 
+/// A prelude image the host handed over (`provide_prelude_image`), taken by the first boot.
+static PROVIDED_PRELUDE_IMAGE: std::sync::Mutex<Option<Vec<u8>>> = std::sync::Mutex::new(None);
+/// Set by `capture_prelude_image`: the source boot keeps the image bytes it would write.
+static CAPTURE_PRELUDE_IMAGE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static CAPTURED_PRELUDE_IMAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+/// Boot the prelude from `bytes` — a prelude image this same build wrote — instead of from a
+/// file in the cache directory: for a host that has no cache directory, a browser tab,
+/// which ships the image beside the program. Call before the first runtime is made. An
+/// image another build wrote fails its fingerprint and the boot falls back to the source,
+/// as a stale file does.
+pub fn provide_prelude_image(bytes: Vec<u8>) {
+    *crate::core::sync::lock(&PROVIDED_PRELUDE_IMAGE) = Some(bytes);
+}
+
+fn take_provided_prelude_image() -> Option<Vec<u8>> {
+    crate::core::sync::lock(&PROVIDED_PRELUDE_IMAGE).take()
+}
+
+/// Boot the prelude from source and answer the prelude image that boot produces, for a
+/// build that ships it (`provide_prelude_image`). `None` when the prelude was already booted
+/// before this was asked, or the encoding failed.
+pub fn capture_prelude_image() -> Option<Vec<u8>> {
+    CAPTURE_PRELUDE_IMAGE.store(true, std::sync::atomic::Ordering::Release);
+    std::sync::LazyLock::force(&SHARED);
+    CAPTURED_PRELUDE_IMAGE.get().cloned()
+}
+
 /// **The install's own bookkeeping** — globals that record which artifacts *this process*
 /// loaded, rather than anything a module or the prelude defines.
 ///
@@ -200,14 +229,17 @@ fn boot_from_prelude_image() -> Option<SharedBundle> {
         return None;
     }
     let started = web_time::Instant::now();
-    let path = prelude_image_path()?;
+    let bytes = match take_provided_prelude_image() {
+        Some(bytes) => bytes,
+        None => std::fs::read(prelude_image_path()?).ok()?,
+    };
     let (mut heap, root) = builder_heap();
     let registered = started.elapsed();
     // Like the source boot: materialise the on-disk prelude copy the def sites name, so
     // stdlib `M-.` can actually open the file the image points at.
     heap.set_current_file(prelude_source_path());
     let (entries, gensym_floor) =
-        image::load_prelude_image(&mut heap, root, &path, &builtins::build_id_string())?;
+        image::load_prelude_image_bytes(&mut heap, root, bytes, &builtins::build_id_string())?;
     heap.set_current_file(None);
     // REPLAY what the prelude's evaluation DID, not just what it recorded. The prelude has a
     // top-level form that runs `%std-image-install`, and the imaged path never evaluates it —
@@ -331,6 +363,18 @@ fn boot_from_source() -> SharedBundle {
     // cold boot is allowed to be slow — it runs once per binary build — so this is pure
     // addition; every later boot skips the read+eval this one just did. Best-effort: a
     // failure leaves the next boot on the source path, which is where it was before.
+    if CAPTURE_PRELUDE_IMAGE.load(std::sync::atomic::Ordering::Acquire) {
+        let image = image::prelude_image_bytes(
+            &mut heap,
+            root,
+            &builtin_names,
+            &builtins::build_id_string(),
+            core::value::gensym_counter(),
+        );
+        if let Ok(image) = image {
+            let _ = CAPTURED_PRELUDE_IMAGE.set(image);
+        }
+    }
     if write_image && let Some(image_path) = prelude_image_path() {
         let _ = image::write_prelude_image(
             &mut heap,

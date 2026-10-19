@@ -132,13 +132,16 @@ inverse of the `string/->codepoints` primitive.
   (%string->utf8-bytes s))
 (sig ->bytes (string -> bytes))
 
-(defn bytes-> (b)
+(defn bytes-> (b &optional mode)
   "Decode UTF-8 bytes back to a string — a bytes value, or a list or vector of byte ints
-(nil is the empty case). Inverse of `string/->bytes`.
+(nil is the empty case). Inverse of `string/->bytes`. Invalid UTF-8 raises; pass
+`:lossy` to read each invalid sequence as U+FFFD instead — text off the wire (a mail
+part, a legacy file) is not always what it claims to be.
 
-    (string/bytes-> #b\"hi\")   → \"hi\""
-  (%utf8-bytes->string b))
-(sig bytes-> ((or nil bytes (list int) (vector int)) -> string))
+    (string/bytes-> #b\"hi\")   → \"hi\"
+    (string/->codepoints (string/bytes-> [104 255 105] :lossy))   → [104 65533 105]"
+  (%utf8-bytes->string b (= mode :lossy)))
+(sig bytes-> ((or nil bytes (list int) (vector int)) &optional keyword -> string))
 
 (def- number->digits "0123456789abcdefghijklmnopqrstuvwxyz")
 

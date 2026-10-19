@@ -809,7 +809,10 @@ rules merged in declaration order, then this project's own `:format-headers` on 
 ;; runtime doesn't satisfy it, stop with a clear error rather than failing obscurely
 ;; deeper in on whatever newer feature the project assumed. Policy in Brood; the only
 ;; kernel input is the `(system/brood-version)` primitive.
-(defn- project-check-brood-version ()
+(defn project-check-brood-version ()
+  "Refuse a runtime the manifest's `:brood` constraint does not admit (ADR-209) — what `setup`
+  checks before anything runs, and `nest release` before it bundles: a release built on a
+  brood the project refuses would ship the very mismatch the gate exists to stop."
   (when *project-brood*
     (when (not (string? *project-brood*))
       (error "project: :brood must be a version-constraint string (e.g. \">= 0.2\"), got "

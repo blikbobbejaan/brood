@@ -457,6 +457,10 @@ const CORE_MODULES: &[EmbeddedModule] = &[
     // URL encoding/decoding and parsing: percent-encode/decode, query-string
     // encode/decode, parse-url, build. Pure Brood over string primitives.
     embedded_module!("url", "std/url.blsp"),
+    // Internet mail: RFC 5322 headers, the MIME part tree, encoded words, quoted-printable
+    // and base64 bodies, a few legacy charsets. parse, header, decode-header, text-part,
+    // body-text, leaves. Pure Brood over regex + encoding. What a mail reader stands on.
+    embedded_module!("mime", "std/mime.blsp"),
     // CSV parsing and emitting: csv-parse, csv-parse-maps, csv-emit,
     // csv-emit-maps. Handles quoted fields, escaped quotes, \r\n endings.
     embedded_module!("csv", "std/csv.blsp"),

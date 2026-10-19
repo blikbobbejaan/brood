@@ -281,7 +281,7 @@ fn encode_section(
             }
             other => (other, KIND_GLOBAL),
         };
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         // A value with no portable form (a pid, a table, an open socket) raises: silently
         // dropping a binding would make the image a *different program* from the source, which
         // is far worse than failing loudly. The caller reports it and loads from source
@@ -296,7 +296,7 @@ fn encode_section(
             ))
         })?;
         *ns_to_msg += t0.elapsed().as_nanos() as u64;
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         entries.push(kind);
         put_str(&mut entries, &value::symbol_name(sym));
         encode_msg(&mut entries, &msg).map_err(|e| {
@@ -474,7 +474,7 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     }
     put_u64(&mut body, directory_offset);
 
-    let t_io = std::time::Instant::now();
+    let t_io = web_time::Instant::now();
     // ATOMIC: write a sibling temp file, then rename over the target. A plain
     // `fs::write` truncates in place, so a reader that indexes the image while
     // another process is rebuilding it sees a torn file — and images are now built
@@ -886,16 +886,16 @@ fn load_section_entries(
             done += 1;
             continue;
         }
-        let t0 = std::time::Instant::now();
+        let t0 = web_time::Instant::now();
         let Ok(msg) = decode_msg(r) else {
             return Ok(None);
         };
         ns_decode += t0.elapsed().as_nanos() as u64;
-        let t1 = std::time::Instant::now();
+        let t1 = web_time::Instant::now();
         let v = from_message(heap, &msg);
         ns_from_msg += t1.elapsed().as_nanos() as u64;
         let sym = value::intern(&name);
-        let t2 = std::time::Instant::now();
+        let t2 = web_time::Instant::now();
         // A sig is not callable and cannot open the door, so it is never deferred.
         if kind != KIND_SIG && heap.env_get(global, sym).is_some() {
             deferred.push((kind, sym, v));
@@ -1084,6 +1084,28 @@ pub(crate) fn write_prelude_image(
     fingerprint: &str,
     gensym_floor: u64,
 ) -> Result<(), LispError> {
+    let out = prelude_image_bytes(heap, root, skip, fingerprint, gensym_floor)?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| LispError::runtime("prelude image: no parent dir"))?;
+    std::fs::create_dir_all(dir).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
+    // Temp + rename, so a concurrently booting process never reads a torn file — the same
+    // write-then-rename discipline, and it matters here (many nextest processes boot at once).
+    let tmp = path.with_extension(format!("tmp.{}", temp_suffix()));
+    std::fs::write(&tmp, &out).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
+    std::fs::rename(&tmp, path).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
+    Ok(())
+}
+
+/// The prelude image as bytes: what `write_prelude_image` writes, for a host with no file
+/// to write it to (a browser tab ships it beside the program, `boot::provide_prelude_image`).
+pub(crate) fn prelude_image_bytes(
+    heap: &mut Heap,
+    root: EnvId,
+    skip: &std::collections::HashSet<value::Symbol>,
+    fingerprint: &str,
+    gensym_floor: u64,
+) -> Result<Vec<u8>, LispError> {
     // `skip` is the set of names bound immediately after `builtins::register` — exactly
     // what the warm path re-creates for itself, and therefore the only thing safe to leave
     // out (395 of ~1109 bindings).
@@ -1124,17 +1146,7 @@ pub(crate) fn write_prelude_image(
     let mut out = Vec::with_capacity(body.len() + 64);
     write_prelude_header(&mut out, fingerprint, gensym_floor);
     out.extend_from_slice(&body);
-
-    let dir = path
-        .parent()
-        .ok_or_else(|| LispError::runtime("prelude image: no parent dir"))?;
-    std::fs::create_dir_all(dir).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
-    // Temp + rename, so a concurrently booting process never reads a torn file — the same
-    // write-then-rename discipline, and it matters here (many nextest processes boot at once).
-    let tmp = path.with_extension(format!("tmp.{}", temp_suffix()));
-    std::fs::write(&tmp, &out).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
-    std::fs::rename(&tmp, path).map_err(|e| LispError::runtime(format!("prelude image: {e}")))?;
-    Ok(())
+    Ok(out)
 }
 
 /// A temp-file suffix unique to one write: the pid separates processes, the counter separates
@@ -1173,16 +1185,16 @@ fn read_prelude_header(r: &mut Cursor<Vec<u8>>, fingerprint: &str) -> Option<u64
     get_u64(r)
 }
 
-/// Restore a prelude image into `root`. `None` for any miss — absent, stale, truncated,
-/// or a value that will not decode — and the caller falls back to the source boot. Returns
-/// the number of entries defined.
-pub(crate) fn load_prelude_image(
+/// Restore a prelude image's bytes into `root` — read from the cache file, or handed over by
+/// a host with no cache directory (`boot::provide_prelude_image`). `None` for any miss —
+/// stale, truncated, or a value that will not decode — and the caller falls back to the
+/// source boot. Returns the number of entries defined and the gensym floor.
+pub(crate) fn load_prelude_image_bytes(
     heap: &mut Heap,
     root: EnvId,
-    path: &std::path::Path,
+    bytes: Vec<u8>,
     fingerprint: &str,
 ) -> Option<(usize, u64)> {
-    let bytes = std::fs::read(path).ok()?;
     let mut r = Cursor::new(bytes);
     let gensym_floor = read_prelude_header(&mut r, fingerprint)?;
     let count = get_u32(&mut r)?;

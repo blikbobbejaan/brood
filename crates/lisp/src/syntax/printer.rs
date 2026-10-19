@@ -314,7 +314,7 @@ fn write_range_items(
     }
 }
 
-fn format_float(f: f64) -> String {
+pub(crate) fn format_float(f: f64) -> String {
     // Non-finite floats print as `inf`/`-inf`/`nan` — which the READER parses
     // back as float literals (see float_roundtrip_test.blsp), so the round-trip
     // holds. Any change here must be checked through the FULL round trip.

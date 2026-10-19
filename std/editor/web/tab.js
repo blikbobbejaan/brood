@@ -18,6 +18,9 @@ function fail(message) {
 
 try {
   await init();
+  // The prelude as an image, when the build wrote one: the runtime then skips evaluating it.
+  const image = await fetch("prelude.img").catch(() => null);
+  if (image && image.ok) brood.use_prelude_image(new Uint8Array(await image.arrayBuffer()));
   const response = await fetch("game.bundle");
   if (!response.ok) throw new Error(`game.bundle: ${response.status}`);
   brood.mount(new Uint8Array(await response.arrayBuffer()));

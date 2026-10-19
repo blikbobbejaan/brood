@@ -758,25 +758,55 @@ function playSound(snd, vol) {
   source.start();
 }
 
-events.addEventListener("sound", (e) => {
+// A sound is decoded off the main thread: the base64 by a `data:` fetch, the PCM by the
+// browser's own decoder, as the WAV it is once given a header — a track of half a megabyte
+// no longer stalls the page that is drawing frames. Until it is ready, a frame playing it
+// plays nothing (and music starts on the next frame after).
+const decoding = new Set(); // handles in flight, so a free that overtakes a decode wins
+
+// The 44-byte RIFF/WAVE header for `length` bytes of PCM16 at `rate` Hz.
+function wavHeader(length, rate, channels) {
+  const header = new DataView(new ArrayBuffer(44));
+  const text = (offset, s) => [...s].forEach((c, i) => header.setUint8(offset + i, c.charCodeAt(0)));
+  text(0, "RIFF");
+  header.setUint32(4, 36 + length, true);
+  text(8, "WAVE");
+  text(12, "fmt ");
+  header.setUint32(16, 16, true);
+  header.setUint16(20, 1, true);
+  header.setUint16(22, channels, true);
+  header.setUint32(24, rate, true);
+  header.setUint32(28, rate * channels * 2, true);
+  header.setUint16(32, channels * 2, true);
+  header.setUint16(34, 16, true);
+  text(36, "data");
+  header.setUint32(40, length, true);
+  return header.buffer;
+}
+
+events.addEventListener("sound", async (e) => {
   const s = JSON.parse(e.data);
-  const bytes = decodeBase64(s.pcm);
-  const frames = Math.floor(bytes.length / 2 / s.channels);
-  if (!(window.AudioContext || window.webkitAudioContext) || frames === 0) return;
-  const ctxForDecode = audio || new (window.AudioContext || window.webkitAudioContext)();
-  audio = ctxForDecode;
-  const buffer = audio.createBuffer(s.channels, frames, s.rate);
-  const view = new DataView(bytes.buffer);
-  for (let c = 0; c < s.channels; c++) {
-    const data = buffer.getChannelData(c);
-    for (let i = 0; i < frames; i++) {
-      data[i] = view.getInt16((i * s.channels + c) * 2, true) / 32768;
-    }
+  if (!(window.AudioContext || window.webkitAudioContext)) return;
+  audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+  decoding.add(s.snd);
+  try {
+    const pcm = await (await fetch(`data:application/octet-stream;base64,${s.pcm}`)).arrayBuffer();
+    if (pcm.byteLength < 2) return;
+    const wav = new Uint8Array(44 + pcm.byteLength);
+    wav.set(new Uint8Array(wavHeader(pcm.byteLength, s.rate, s.channels)), 0);
+    wav.set(new Uint8Array(pcm), 44);
+    const buffer = await audio.decodeAudioData(wav.buffer);
+    if (decoding.has(s.snd)) sounds.set(s.snd, buffer);
+  } catch (error) {
+    console.warn(`sound ${s.snd}: ${error}`);
+  } finally {
+    decoding.delete(s.snd);
   }
-  sounds.set(s.snd, buffer);
 });
 events.addEventListener("sound-free", (e) => {
-  sounds.delete(JSON.parse(e.data).snd);
+  const snd = JSON.parse(e.data).snd;
+  decoding.delete(snd);
+  sounds.delete(snd);
 });
 
 events.addEventListener("bye", () => {

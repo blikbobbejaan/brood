@@ -478,5 +478,7 @@ has a `JsonEncode` impl, which then decides the wire shape. Any other kind (a pi
 errors unless it has a `JsonEncode` impl. Pure.
 
     (json/encode [1 2])   → \"[1,2]\""
-  (apply str (reverse (emit v nil))))
+  ;; Plain data — almost every call — encodes natively; the rest takes the Brood path below,
+  ;; which is the definition (a record, a JsonEncode impl, the refusals).
+  (or (%json-encode-plain v) (apply str (reverse (emit v nil)))))
 (sig encode (any -> string))

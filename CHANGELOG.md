@@ -6,6 +6,41 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.41.0 — mail, and a program in a browser tab at full speed
+
+`std/mime` reads a mail message: its headers decoded, its part tree, its text and its
+attachments. A backward search in a rope now costs the distance it walks, not the offset it
+starts from. In a browser tab, `json/encode` runs natively and the prelude boots from an
+image. The narrative is the devlog's 2026-10-18 entries.
+
+**Added.**
+- `std/mime`: RFC 5322 headers (unfolded, looked up case-insensitively), RFC 2045 parameters
+  with RFC 2231 continuations and encoded values, RFC 2047 encoded words, quoted-printable
+  and base64 bodies, ISO-8859-1 / -15 and windows-1252 beside UTF-8, multipart trees and
+  `message/rfc822` parts. `mime/text-part` picks what a reader sees (text/plain over HTML in
+  an alternative); `mime/attachment?`, `mime/filename` and `mime/body-bytes` save the rest.
+  Malformed mail reads as written rather than raising.
+- `(string/bytes-> b :lossy)` reads invalid UTF-8 as U+FFFD instead of raising.
+
+**Performance.**
+- `buffer-search-backward` (`%rope-rfind`) scanned forward from offset 0 and kept the last
+  match, so a search from the end of a 45 MB file cost the whole file. It reads slices
+  backward from the start point now.
+- `json/encode` encodes plain data natively (`%json-encode-plain`) — nil, bools, ints, finite
+  floats, strings, keywords and symbols, vectors, lists and maps — and keeps its Brood path
+  for the rest (records, `JsonEncode` impls, the refusals), checked value for value against
+  it. A 400-op game frame: 14 → 0.3 ms without the JIT, so a b2d game in a browser tab
+  runs at its full 60 fps with the thread 7% busy (was 55 fps at 91%).
+- A program in a browser tab can boot its prelude from an image (`boot::provide_prelude_image`;
+  `brood-tab`'s `prelude_image` / `use_prelude_image`): the runtime's own startup 210 → 30 ms.
+- The page decodes a sound off the main thread (`decodeAudioData`), so a large track does not
+  stall the frames being drawn.
+
+**Fixed.**
+- Writing a startup image no longer panics on wasm (`std::time::Instant` → `web_time`).
+- `nest release` refuses a brood the manifest's `:brood` does not admit, and a project
+  module named like one Brood ships.
+
 ## v0.40.0 — guest links, Org-mode, and what a process costs
 
 A node can now let someone in without handing over its machine cookie: a guest link reaches
