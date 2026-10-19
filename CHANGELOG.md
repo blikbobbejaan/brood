@@ -6,6 +6,17 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Added.**
+- The regex dialect reads `\D`, `\W` and `\S` as the negations of `\d`, `\w` and `\s`, standing
+  alone and inside a set. They used to be the letters D, W and S (an unknown escape is its
+  character), so a pattern written in every other dialect — `brood\s+(\S+)` — matched nothing
+  and said nothing. `\D` is the ASCII complement, as `\d` is ASCII.
+
+**Fixed.**
+- `nest run --main` names a nested module: with three or more segments the last is the fn
+  (`--main bench/harness/main`). It accepted only `module` and `module/fn`, so no module under
+  a directory could be an entry point.
+
 ## v0.42.0 — std keeps the mechanisms; a tab boots from an image
 
 Ten modules that only bedit used left std (ADR-417): Org-mode, Magit's transient menus and

@@ -19,9 +19,12 @@
 ;;   {m} {m,} {m,n}      counted repetition (expanded at parse time; *max-repeat* caps it)
 ;;   ^ $                 the start / end of the WHOLE string (never of a line)
 ;;   [...] [^...]        a set / negated set: literal chars, `a-z` ranges, and the
-;;                       `\d`/`\w`/`\s` classes written inside the brackets
+;;                       `\d`/`\w`/`\s` classes and their negations, written inside the
+;;                       brackets
 ;;   \d                  an ASCII digit, 0-9 — what `string/->number` can read
 ;;   \w \s               a Unicode word character (letter, mark, digit, `_`) / whitespace
+;;   \D \W \S            the negations: not an ASCII digit / not a word character / not
+;;                       whitespace
 ;;   \b \B               a word boundary / not one, by `\w`
 ;;   \x                  any other escaped character is that character: `\.` `\*`, and
 ;;                       `\n` is an `n` (write a newline as a newline)
@@ -45,7 +48,7 @@ build on those. `tokens` lexes a line with a rule table, `paint` finds the text 
 line rule colours.
 
 The dialect: literals, `.`, `* + ?` (and their lazy `*? +? ??` forms), `{m,n}`,
-`^ $`, `[...]`/`[^...]` sets with ranges and classes, `\\d \\w \\s \\b \\B`, escapes,
+`^ $`, `[...]`/`[^...]` sets with ranges and classes, `\\d \\w \\s \\D \\W \\S \\b \\B`, escapes,
 `|`, capturing `(...)` and non-capturing `(?:...)`. No backreferences or
 lookaround. Each pattern is parsed once and compiled once, then cached.")
 
@@ -66,6 +69,12 @@ lookaround. Each pattern is parsed once and compiled once, then cached.")
       (= c "d") [{:t :class :k :digit} (inc i)]
       (= c "w") [{:t :class :k :word} (inc i)]
       (= c "s") [{:t :class :k :space} (inc i)]
+      ;; the negated classes: what `\d` `\w` `\s` do not match. Without them `\S` read as
+      ;; the letter S (an unknown escape is its character), so a pattern written in
+      ;; every other dialect matched nothing and said nothing.
+      (= c "D") [{:t :class :k :not-digit} (inc i)]
+      (= c "W") [{:t :class :k :not-word} (inc i)]
+      (= c "S") [{:t :class :k :not-space} (inc i)]
       ;; word-boundary assertions: zero-width, like the anchors
       (= c "b") [{:t :wordb} (inc i)]
       (= c "B") [{:t :nwordb} (inc i)]
@@ -98,6 +107,9 @@ of) says what it looks like it says."
             (= e "d") (regex-set-body pcs (+ i 2) chars ranges (cons :digit classes))
             (= e "w") (regex-set-body pcs (+ i 2) chars ranges (cons :word classes))
             (= e "s") (regex-set-body pcs (+ i 2) chars ranges (cons :space classes))
+            (= e "D") (regex-set-body pcs (+ i 2) chars ranges (cons :not-digit classes))
+            (= e "W") (regex-set-body pcs (+ i 2) chars ranges (cons :not-word classes))
+            (= e "S") (regex-set-body pcs (+ i 2) chars ranges (cons :not-space classes))
             ; a trailing backslash is itself
             (nil? e) (regex-set-body pcs (inc i) (cons "\\" chars) ranges classes)
             ; `\]`, `\-`, `\\` → that char, literally
@@ -303,17 +315,25 @@ characters the engine reads as syntax, itself otherwise."
 (sig regex-lit (string -> string))
 
 (defn- regex-class-src (k)
-  "A `\\d`/`\\w`/`\\s` class, standing alone."
+  "A `\\d`/`\\w`/`\\s` class or its negation `\\D`/`\\W`/`\\S`, standing alone. `\\d` is
+ASCII, so its negation is the ASCII complement, not the engine's Unicode `\\D`."
   (case k
     :digit "[0-9]"
     :word "\\w"
+    :not-digit "[^0-9]"
+    :not-word "\\W"
+    :not-space "\\S"
     "\\s"))
 
 (defn- regex-class-member-src (k)
-  "A `\\d`/`\\w`/`\\s` class written inside a set."
+  "A `\\d`/`\\w`/`\\s` class or its negation written inside a set. The ASCII complement of
+`\\d` is a nested class, which the engine reads as a union member."
   (case k
     :digit "0-9"
     :word "\\w"
+    :not-digit "[^0-9]"
+    :not-word "\\W"
+    :not-space "\\S"
     "\\s"))
 
 (defn- regex-set-src (a)
