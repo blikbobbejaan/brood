@@ -114,6 +114,9 @@ const PROCESS_WIDE: &[(&str, &str, Reason)] = &[
     // The prelude image a host hands over, taken by the one shared prelude boot (`SHARED`)
     // every runtime in the process starts from.
     ("boot.rs", "PROVIDED_PRELUDE_IMAGE", OneMachine),
+    // The `mem:` images: the in-memory stand-in for the file system a host without one
+    // provides (a tab), keyed by path as files are, read alike by every runtime.
+    ("boot/image.rs", "MEMORY_IMAGES", OneMachine),
     ("host/clipboard.rs", "CLIPBOARD", OneMachine),
     ("host/treesit.rs", "DYNAMIC", OneMachine),
     // Facts of the binary: the std sources baked into it, and the signatures derived from
