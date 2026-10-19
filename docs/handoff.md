@@ -92,6 +92,37 @@ devlog entries of the same dates.
 
 ## Open threads, in value order
 
+### NOW (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
+
+**State at the restart.** `3c72a7c1` (the contract-shim position fix) is committed and merged
+with origin (`3792a05a`), **not pushed**. `make prepush` passed on the merged tree; `make
+test-both` was still running when the session ended, so re-run it (`( make test-both )`,
+read both `Summary` lines) and push only on green. ADR-416 is drafted, **uncommitted**, at
+the bottom of `docs/decisions/adr-400-499.md` (status: proposed): read it first, it holds the
+design and the five stages.
+
+**Why.** `BROOD_TIER=0` does not reach process bodies (Older threads item 6): every test body
+runs on the VM, so the tree-walker differential compares only top-level forms. The user
+wants the correct fix even at large cost: the tree-walker's pending work becomes heap frames
+(as ADR-100 did for the VM), so a tier-0 `receive` parks and tier-0 processes preempt and
+migrate, and then the ceiling can hold everywhere.
+
+**Next: stage 1, the escape audit** (designed, no code written). `vm_run_bc`
+(`eval/compile/vm_run_bc.rs`) is the single place bytecode starts; native needs ceiling
+Native and deopt is reached only from native code. Plan: at its entry, when
+`tier_ceiling() == Tier::TreeWalk` and `BROOD_TIER0_AUDIT=<file>` is set (check the flag
+first, it is a hot path), capture a backtrace, take the first few `brood::` frames after
+`vm_run_bc` (hashes stripped) as the site, dedupe per process, append one line per new site
+to the file (O_APPEND). Catalogue the flag in `diagnostics/debug_flags.rs` (both directions
+are gated). Then run the suite at `BROOD_TIER=0` with it and aggregate the unique sites.
+Known escape: `run_process_body`; suspected: receive matchers, HOF callbacks
+(`apply_engine`/`Reducer` already honour the ceiling; `tw_vm_route` is off below Bytecode).
+Report the inventory to the user before starting stage 2 (the risky one: `eval`'s
+recursion becomes an explicit, GC-traced frame stack, behaviour-identical).
+
+**After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
+`scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.
+
 ### DONE (2026-10-17): the design promises without a guard now have one
 
 An audit mapped the design's promises to tests and closed the eight that had none (devlog
@@ -230,7 +261,7 @@ corpus.
    `CLAUDE.md`). Not on this machine.
 5. **Done 2026-10-18:** the tree-walker no longer reports a contract shim's position
    (devlog "the tree-walker stops reporting contract shims").
-6. **Open question — `BROOD_TIER=0` does not reach process bodies.** `run_process_body` runs
+6. **Being fixed — ADR-416 (see "NOW" above).** `BROOD_TIER=0` does not reach process bodies. `run_process_body` runs
    a VM-eligible body on the VM whatever the ceiling, so `make test-both`'s tree-walker half
    and CI's differential job tree-walk only each test file's top-level forms: every test
    body runs on the bytecode VM. Either tree-walk process bodies at tier 0 (a `receive` then
