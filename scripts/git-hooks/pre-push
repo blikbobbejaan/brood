@@ -26,7 +26,8 @@
 #     - a change under crates/lisp/src/types/ or std/ runs CI's two checker gates over the
 #       tree — `nest check` on std/tests/examples and `nest check --strict` on std + tests, both at
 #       zero — because a checker change is judged by what it says about std/: ADR-341's
-#       second cut landed with `math/clamp` red in strict (2026-09-13).
+#       second cut landed with `math/clamp` red in strict (2026-09-13). A push touching only
+#       tests/ or examples/ runs the same two gates over just the changed files.
 #
 # Not here, deliberately: the Rust suite and the full `nest test` (12 minutes each — CI's
 # job, `make green` reads the verdict), clippy (`make check`), and anything that needs a
@@ -163,6 +164,24 @@ if [ "$types_touched" -gt 0 ] || [ "$std_changed" -eq 1 ]; then
     if ! out=$("$nest_bin" check --strict "$@" 2>&1); then
         printf '%s\n' "$out" | grep -E 'warning|error|OLDER than' | head -10 | sed 's/^/  /' >&2
         fail "nest check --strict over std/ tests/ would fail CI"
+    fi
+else
+    # A push that touches only tests/ or examples/ still meets those gates in CI, and a
+    # warning in the file itself is the usual way to fail them (an unused `let` binding in
+    # a new test reddened 9fda7da8). Check the changed files, as CI checks them.
+    # shellcheck disable=SC2086
+    set -- $(printf '%s\n' "$changed" | grep -E '^(tests|examples)/.*\.blsp$' | while read -r f; do [ -f "$f" ] && echo "$f"; done)
+    if [ "$#" -gt 0 ]; then
+        echo "pre-push: running the checker gate over the changed tests/examples (zero warnings)" >&2
+        if ! out=$("$nest_bin" check "$@" 2>&1); then
+            printf '%s\n' "$out" | grep -E 'warning|error|OLDER than' | head -10 | sed 's/^/  /' >&2
+            fail "nest check would fail CI on a changed file"
+        fi
+        set -- $(printf '%s\n' "$@" | grep '^tests/')
+        if [ "$#" -gt 0 ] && ! out=$("$nest_bin" check --strict "$@" 2>&1); then
+            printf '%s\n' "$out" | grep -E 'warning|error|OLDER than' | head -10 | sed 's/^/  /' >&2
+            fail "nest check --strict would fail CI on a changed test file"
+        fi
     fi
 fi
 if [ -n "$tests" ]; then
