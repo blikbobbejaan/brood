@@ -2863,3 +2863,41 @@ worker. Red with that sabotage); `tier0_escape_audit.rs`
 
 Evidence: `make test-both` 1952/1952 on each engine; `gcstress-all` at `BROOD_TIER=0`, all 289
 files clean; all thirteen fuzz generators, no divergence, crash or stale program.
+
+## 2026-10-20 — the slow gates are green; `binding` stops costing every global read, and a tier-0 level costs less
+
+**The slow gates on the ADR-416 tree** (the user's item 1): `make gcstress` clean at the
+default ceiling and at `BROOD_TIER=0` (12/12 each); the distribution tests 41/41 in five
+loops on each engine; `make runtime-soak`, 495 rounds clean in 600 s; KI-281's test 300/300
+at sixteen in parallel in CI's tree-walker environment, so it stays a watch. CI on `9fda7da8`
+was red on `nest check` — an unused binding in a test of mine. The pre-push hook ran CI's
+checker gates only for a change under `std/` or the checker, so a push of test files alone
+skipped them; it now checks the changed `tests/`/`examples/` files (red on that file).
+
+**A global read under N `binding`s scanned all N.** `Heap::env_get` searched the dynamic
+stack for every global name, dynamic or not, so a deep recursion through `binding` was
+quadratic on the tree-walker: 5.5 s for 50 000 levels in a release build. The stack now
+keeps a count of each symbol on it (`core::heap::Dynamics`), and a read scans only for a name
+that is on it; the scan finds the innermost binding first. Now 0.22 s in a debug build. The
+stack and its index are one box, allocated by the first `binding`: a first cut put the index
+beside the `Vec` and `process_floor` caught the 8 bytes on every process (2803 B against its
+2800 B floor). One word in place of the `Vec`'s three, a parked process now counts 2778 B.
+Guards: `dynamics_index_tests` (the index is a count, not a set — red when a pop clears it),
+and `tree_walker_frames.rs` `tier0_global_reads_under_deep_binding_stay_linear`, 100 000
+levels timed against the same recursion without `binding` (25.4 s vs 0.24 s with the scan
+back, 0.3 s with the index).
+
+**A tree-walked level of recursion cost ~1 KB, the VM's ~0.2 KB.** Measured at 400 000
+levels: three quarters of the growth was the frame stack, a `Vec` that doubles and briefly
+holds the old buffer and the new one. It is now a `KontStack` of fixed 1024-frame segments
+— a shallow machine grows exactly as before — and `TwFrame`'s contract-shim fields, set only
+inside a shim, are boxed (a continuation is 320 bytes, from 360; 592 before yesterday's
+boxing). 400 000 levels peak at 338 MB (480 MB), and a runaway recursion to the frame cap at
+~750 MB (989 MB). What is left is intrinsic to tree-walking: an environment frame per call
+(~280 B a level at the cap) and the root stack, which the JIT reads in place and so stays one
+buffer. Guard: `kont_stack_tests` (LIFO across segments, segments set aside — red with
+segmenting disabled).
+
+Evidence: `make test-both` 1955/1955 on each engine; `gcstress-all` clean at the default
+ceiling and at `BROOD_TIER=0` (289 files each); all thirteen fuzz generators, no divergence,
+crash or stale program.

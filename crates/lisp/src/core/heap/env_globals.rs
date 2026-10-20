@@ -104,9 +104,7 @@ impl Heap {
                 // unless a `binding` is in scope, so this costs nothing on the
                 // ordinary path; when active it shadows only at the global level
                 // (dynamic vars are never lexically bound).
-                if !self.dynamics.is_empty()
-                    && let Some(&(_, v)) = self.dynamics.iter().rev().find(|&&(s, _)| s == sym)
-                {
+                if let Some(v) = self.dynamics.lookup(sym) {
                     return Some(v);
                 }
                 return self.global_lookup_cached(sym);
@@ -1455,7 +1453,7 @@ impl Heap {
     /// The `%binding` primitive records [`Heap::dynamics_len`] first and truncates back
     /// to it when its body returns — even on error.
     pub fn push_dynamic(&mut self, sym: Symbol, val: Value) {
-        self.dynamics.push((sym, val));
+        self.dynamics.push(sym, val);
     }
 
     /// How many dynamic bindings are in force — what an inline `try` records, and a bytecode
@@ -2033,5 +2031,53 @@ impl Heap {
                 None => return cur, // the prelude builder's local root
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dynamics_index_tests {
+    use super::*;
+
+    /// The index a global read consults before scanning the dynamic stack must name exactly
+    /// the symbols on it: a stale entry costs a scan, but a MISSING one would hide a live
+    /// `binding` and read the global default instead.
+    #[test]
+    fn a_global_read_sees_exactly_the_bindings_left_on_the_dynamic_stack() {
+        let mut heap = Heap::new();
+        let (a, b) = (
+            crate::core::value::intern("dyn-index-a"),
+            crate::core::value::intern("dyn-index-b"),
+        );
+        // `Value` has no `==`; every value bound here is an int.
+        let read = |heap: &Heap, s| {
+            heap.env_get(EnvId::GLOBAL, s).map(|v| match v.unpack() {
+                ValueRef::Int(n) => n,
+                _ => panic!("only ints are bound here"),
+            })
+        };
+
+        heap.push_dynamic(a, Value::int(1));
+        heap.push_dynamic(b, Value::int(2));
+        heap.push_dynamic(a, Value::int(3));
+        assert_eq!(read(&heap, a), Some(3), "the innermost binding wins");
+        assert_eq!(read(&heap, b), Some(2));
+
+        // Dropping the inner `a` leaves the outer one visible: a count, not a set.
+        heap.truncate_dynamics(2);
+        assert_eq!(read(&heap, a), Some(1), "the outer `a` is still bound");
+        assert_eq!(read(&heap, b), Some(2));
+
+        heap.truncate_dynamics(1);
+        assert_eq!(read(&heap, b), None, "`b` has left the stack");
+        assert_eq!(read(&heap, a), Some(1));
+        assert!(heap.dynamics.binds(a) && !heap.dynamics.binds(b));
+
+        // Rebinding after a truncation is indexed again.
+        heap.push_dynamic(b, Value::int(4));
+        assert_eq!(read(&heap, b), Some(4));
+
+        heap.truncate_dynamics(0);
+        assert_eq!((read(&heap, a), read(&heap, b)), (None, None));
+        assert!(!heap.dynamics.binds(a) && !heap.dynamics.binds(b));
     }
 }

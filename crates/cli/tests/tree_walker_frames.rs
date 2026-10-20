@@ -176,3 +176,41 @@ fn tier0_receive_parks_and_resumes() {
         "no parked tree-walker continuation was resumed.\nstderr:\n{stderr}"
     );
 }
+
+/// The same 100 000-deep recursion with and without a `binding` per level. A global read
+/// used to scan the whole dynamic stack (`Heap::env_get`), so N nested `binding`s cost N
+/// per read and this took quadratic time — 5.5 s at 50 000 levels in a release build,
+/// against 0.2 s now. Each run is timed against its own control rather than a fixed
+/// budget, so a slow machine slows both: linear lookup keeps the ratio small, the scan
+/// made it about a hundredfold.
+const BINDING_DEEP: &str = r#"
+(defdyn *level* 0)
+(defn deep (n) (if (= n 0) *level* (binding (*level* (+ *level* 1)) (+ 0 (deep (- n 1))))))
+(io/puts (str "deep = " (deep 100000)))
+"#;
+const PLAIN_DEEP: &str = r#"
+(def level 0)
+(defn deep (n) (if (= n 0) 100000 (let (l (+ level 1)) (+ 0 (deep (- n 1))))))
+(io/puts (str "deep = " (deep 100000)))
+"#;
+
+#[test]
+fn tier0_global_reads_under_deep_binding_stay_linear() {
+    let timed = |name: &str, source: &str| {
+        let started = std::time::Instant::now();
+        let (stdout, stderr) = run_tier0(name, source);
+        assert_eq!(
+            stdout.trim(),
+            "deep = 100000",
+            "{name} did not complete.\nstderr:\n{stderr}"
+        );
+        started.elapsed()
+    };
+    let plain = timed("deep-plain", PLAIN_DEEP);
+    let bound = timed("deep-binding", BINDING_DEEP);
+    assert!(
+        bound < plain * 10 + std::time::Duration::from_secs(2),
+        "100 000 nested `binding`s took {bound:?} against {plain:?} without: a global read \
+         is scanning the dynamic stack again"
+    );
+}

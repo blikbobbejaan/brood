@@ -132,6 +132,50 @@ struct Kont {
     kind: KontKind,
 }
 
+/// How many frames a full segment of [`KontStack`] holds.
+const KONT_SEGMENT: usize = 1024;
+
+/// The frame stack, in fixed segments. A `Vec` doubles, so a deep recursion held up to twice
+/// the frames it had and, while growing, the old buffer and the new one at once: at 400 000
+/// levels that was ~280 MB of a tier-0 run's ~390 MB. Here the top segment grows as a `Vec`
+/// does — a shallow machine, the usual one, pays nothing more — until it holds
+/// [`KONT_SEGMENT`] frames; then it is set aside whole and never moves again. One emptied
+/// segment is kept, so a recursion going up and down across a boundary does not allocate and
+/// free a segment each time.
+#[derive(Default)]
+struct KontStack {
+    full: Vec<Vec<Kont>>,
+    top: Vec<Kont>,
+    spare: Vec<Kont>,
+}
+
+impl KontStack {
+    fn push(&mut self, k: Kont) {
+        if self.top.len() == KONT_SEGMENT {
+            let next = std::mem::take(&mut self.spare);
+            let next = if next.capacity() == KONT_SEGMENT {
+                next
+            } else {
+                Vec::with_capacity(KONT_SEGMENT)
+            };
+            self.full.push(std::mem::replace(&mut self.top, next));
+        }
+        self.top.push(k);
+    }
+
+    fn pop(&mut self) -> Option<Kont> {
+        if self.top.is_empty() {
+            let below = self.full.pop()?;
+            self.spare = std::mem::replace(&mut self.top, below);
+        }
+        self.top.pop()
+    }
+
+    fn len(&self) -> usize {
+        self.full.len() * KONT_SEGMENT + self.top.len()
+    }
+}
+
 enum KontKind {
     /// `if`: choose a branch on the test's value.
     If {
@@ -246,7 +290,7 @@ impl Floors {
 /// a capturing machine that parked (ADR-416 stage 4). `Send` control state; the values live
 /// on the process heap's root stacks.
 pub(crate) struct TwSuspended {
-    konts: Vec<Kont>,
+    konts: KontStack,
     entered: Option<TwFrame>,
     lazy: u32,
     tail: TailTag,
@@ -525,7 +569,7 @@ pub(super) struct Machine<'e> {
     entered: &'e mut Option<TwFrame>,
     /// The running frame's tail tag (see [`TailTag`]).
     tail: TailTag,
-    konts: Vec<Kont>,
+    konts: KontStack,
     /// The process's body driver (a green process at tier 0): may park ([`run_captured`]).
     capture: bool,
     /// Set when a capturing machine parks; the run then returns with its frames intact.
@@ -540,7 +584,7 @@ impl<'e> Machine<'e> {
             lazy: 0,
             entered,
             tail: TailTag::None,
-            konts: Vec::new(),
+            konts: KontStack::default(),
             capture: false,
             park: None,
         }
@@ -1792,7 +1836,9 @@ impl Machine<'_> {
             Some(call_form) => record_tw_entry(heap, self.entered, name, shim_file, call_form),
             None => {
                 if let Some(fr) = self.entered.as_mut() {
-                    fr.shim_file = shim_file;
+                    // A boundary entry has no call form: a shim keeps the call it had.
+                    let call = fr.shim.take().and_then(|shim| shim.call);
+                    fr.shim = shim_file.map(|file| Box::new(crate::eval::ShimEntry { file, call }));
                 }
                 self.tail = TailTag::Pending(heap.root(last));
             }
@@ -2039,4 +2085,66 @@ fn def_bind(heap: &mut Heap, name: Symbol, val: Value, env: EnvId) -> LispResult
         )?;
     }
     Ok(Value::symbol(name))
+}
+
+#[cfg(test)]
+mod kont_stack_tests {
+    use super::*;
+
+    fn kont(i: u32) -> Kont {
+        Kont {
+            entered: None,
+            lazy: i,
+            tail: TailTag::None,
+            form: None,
+            marks: Marks { roots: 0, envs: 0 },
+            kind: KontKind::Callback,
+        }
+    }
+
+    /// The frame stack is last-in first-out across segment boundaries, and a deep stack holds
+    /// no growth slack: every set-aside segment is exactly [`KONT_SEGMENT`] frames, where a
+    /// doubling `Vec` held up to twice its frames (and both buffers while it grew).
+    #[test]
+    fn the_frame_stack_is_lifo_across_segments_and_holds_no_slack() {
+        let mut stack = KontStack::default();
+        let n = 3 * KONT_SEGMENT + 5;
+        for i in 0..n {
+            stack.push(kont(i as u32));
+        }
+        assert_eq!(stack.len(), n);
+        assert_eq!(
+            stack.full.len(),
+            n / KONT_SEGMENT,
+            "the stack did not set segments aside"
+        );
+        assert!(
+            stack.top.capacity() <= KONT_SEGMENT,
+            "the top segment grew past a segment"
+        );
+        assert!(
+            stack
+                .full
+                .iter()
+                .all(|s| s.capacity() == KONT_SEGMENT && s.len() == KONT_SEGMENT),
+            "a full segment holds more than its frames"
+        );
+        // Down across a boundary and back up again reuses the spare segment.
+        for i in (2 * KONT_SEGMENT..n).rev() {
+            assert_eq!(stack.pop().map(|k| k.lazy), Some(i as u32));
+        }
+        for i in 2 * KONT_SEGMENT..n {
+            stack.push(kont(i as u32));
+        }
+        assert!(stack.full.iter().all(|s| s.capacity() == KONT_SEGMENT));
+        for i in (0..n).rev() {
+            assert_eq!(
+                stack.pop().map(|k| k.lazy),
+                Some(i as u32),
+                "frame {i} out of order"
+            );
+        }
+        assert!(stack.pop().is_none());
+        assert_eq!(stack.len(), 0);
+    }
 }

@@ -104,12 +104,19 @@ struct TwFrame {
     name: Option<Symbol>,
     call_pos: Option<crate::error::Pos>,
     call_file: Option<std::sync::Arc<str>>,
-    /// `Some(file)` while the closure this frame is in is a contract shim — the source
-    /// file its own forms carry (`std/contract.blsp`). See [`contract_shim_file`].
-    shim_file: Option<std::sync::Arc<str>>,
-    /// The call form that entered that shim — the user's call of the contracted function,
+    /// `Some` while the closure this frame is in is a contract shim. Boxed: every frame on
+    /// the tree-walker's stack carries a `TwFrame`, and almost none is in a shim.
+    shim: Option<Box<ShimEntry>>,
+}
+
+/// What a frame inside a contract shim needs to move the shim's positions to the user's call.
+struct ShimEntry {
+    /// The source file the shim's own forms carry (`std/contract.blsp`). See
+    /// [`contract_shim_file`].
+    file: std::sync::Arc<str>,
+    /// The call form that entered the shim — the user's call of the contracted function,
     /// which a TAIL entry knows and `call_pos` (the frame's first entry) does not.
-    shim_call: Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>,
+    call: Option<(crate::error::Pos, Option<std::sync::Arc<str>>)>,
 }
 
 impl TwFrame {
@@ -120,8 +127,7 @@ impl TwFrame {
             name,
             call_pos: None,
             call_file: None,
-            shim_file: None,
-            shim_call: None,
+            shim: None,
         }
     }
 }
@@ -211,8 +217,12 @@ fn record_tw_entry(
     match entered {
         Some(fr) => {
             fr.name = name;
-            fr.shim_file = shim_file;
-            fr.shim_call = shim_call;
+            fr.shim = shim_file.map(|file| {
+                Box::new(ShimEntry {
+                    file,
+                    call: shim_call,
+                })
+            });
         }
         None => {
             let (call_pos, call_file) = match &shim_call {
@@ -226,8 +236,12 @@ fn record_tw_entry(
                 name,
                 call_pos,
                 call_file,
-                shim_file,
-                shim_call,
+                shim: shim_file.map(|file| {
+                    Box::new(ShimEntry {
+                        file,
+                        call: shim_call,
+                    })
+                }),
             });
         }
     }
@@ -246,9 +260,14 @@ pub fn eval(heap: &mut Heap, expr: Value, env: EnvId) -> LispResult {
 /// or, for a contract shim, move what the shim tagged to the user's call instead.
 fn close_frame(mut e: LispError, frame: Option<TwFrame>) -> LispError {
     match frame {
-        Some(fr) if fr.shim_file.is_some() => {
-            let (file, pos) = shim_call_site(fr.shim_call, fr.call_file, fr.call_pos);
-            untag_shim(&mut e, fr.shim_file.as_deref(), file, pos);
+        Some(TwFrame {
+            shim: Some(shim),
+            call_file,
+            call_pos,
+            ..
+        }) => {
+            let (file, pos) = shim_call_site(shim.call, call_file, call_pos);
+            untag_shim(&mut e, Some(&shim.file), file, pos);
         }
         Some(fr) => e.push_trace(crate::error::TraceFrame {
             name: fr.name.map(value::symbol_name_ref),

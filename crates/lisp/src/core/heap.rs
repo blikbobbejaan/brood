@@ -121,6 +121,79 @@ macro_rules! local_gc_check {
 /// with atomics on the hot path. Spills to the heap past the inline capacity.
 type EnvVars = SmallVec<[(Symbol, Value); 4]>;
 
+/// A process's dynamic-binding stack (see `Heap::dynamics`) and, beside it, how many entries
+/// each symbol has on it. A global read scans the stack only for a name that is on it:
+/// scanning for every global read made N nested `binding`s cost N per read, and a deep
+/// recursion through `binding` quadratic. Boxed and allocated by the first `binding`, so a
+/// process that never binds carries one word — the `Vec` this replaced was three, and a
+/// `Heap` is inline in every `Box<Process>` (`process_floor.rs`).
+#[derive(Default)]
+pub(crate) struct Dynamics(Option<Box<DynamicStack>>);
+
+#[derive(Default)]
+pub(crate) struct DynamicStack {
+    stack: Vec<(Symbol, Value)>,
+    index: SymbolMap<u32>,
+}
+
+impl Dynamics {
+    pub(crate) fn len(&self) -> usize {
+        self.0.as_ref().map_or(0, |d| d.stack.len())
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, (Symbol, Value)> {
+        self.0.as_ref().map_or([].iter(), |d| d.stack.iter())
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> std::slice::IterMut<'_, (Symbol, Value)> {
+        self.0
+            .as_mut()
+            .map_or([].iter_mut(), |d| d.stack.iter_mut())
+    }
+
+    pub(crate) fn push(&mut self, sym: Symbol, val: Value) {
+        let d = self.0.get_or_insert_with(Default::default);
+        d.stack.push((sym, val));
+        *d.index.entry(sym).or_insert(0) += 1;
+    }
+
+    /// Drop every binding pushed since the stack was `len` long.
+    pub(crate) fn truncate(&mut self, len: usize) {
+        let Some(d) = self.0.as_mut() else { return };
+        if len >= d.stack.len() {
+            return;
+        }
+        for &(sym, _) in &d.stack[len..] {
+            if let Some(n) = d.index.get_mut(&sym) {
+                *n -= 1;
+                if *n == 0 {
+                    d.index.remove(&sym);
+                }
+            }
+        }
+        d.stack.truncate(len);
+    }
+
+    /// `sym`'s innermost binding, scanning only when `sym` is on the stack at all.
+    #[inline]
+    pub(crate) fn lookup(&self, sym: Symbol) -> Option<Value> {
+        let d = self.0.as_ref()?;
+        if !d.index.contains_key(&sym) {
+            return None;
+        }
+        d.stack
+            .iter()
+            .rev()
+            .find(|&&(s, _)| s == sym)
+            .map(|&(_, v)| v)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn binds(&self, sym: Symbol) -> bool {
+        self.0.as_ref().is_some_and(|d| d.index.contains_key(&sym))
+    }
+}
+
 struct EnvFrame {
     // A small association list, not a `HashMap`: frames hold a handful of
     // bindings (function params, a `let`'s names), and they're immutable after
@@ -625,7 +698,7 @@ pub struct Heap {
     /// so dynamic bindings never cross to another process (data isn't shared).
     /// Empty whenever no `binding` is active — so it's free on the common path
     /// and holds no LOCAL handles across a top-level arena reset.
-    dynamics: Vec<(Symbol, Value)>,
+    dynamics: Dynamics,
     /// Per-process **global inline cache** (perf): `symbol -> (runtime version,
     /// resolved value)`. Consulted by [`env_get`](Self::env_get) only after the
     /// local env chain misses *and* no dynamic binding shadows the name — i.e.
@@ -1517,7 +1590,7 @@ impl Heap {
             prelude,
             runtime,
             global: EnvId::local(0),
-            dynamics: Vec::new(),
+            dynamics: Dynamics::default(),
             global_ic: RefCell::new(SmallMap::new()),
             msg_roots: None,
             cold: None,

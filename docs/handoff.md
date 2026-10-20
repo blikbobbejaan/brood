@@ -105,13 +105,13 @@ Running test bodies on the tree-walker found a real, older `let` divergence (a `
 own name after a list-valued binding; fixed) and re-sized three budgets (the tree-walker's
 frame cap `1 << 19`; `quantum_tail_panic.rs`'s spinners; the suite wrapper's nextest cap,
 1800 s, for 370 s measured). **Owed:** a tier-0 `make ab` on the benchmark machine (stages
-2a–5). **Noted, not fixed:** under N active `binding`s a tree-walked global read scans all N
-(`Heap::env_get`), quadratic only for deep recursion through `binding`; a tree-walked level
-of recursion holds several KB of heap, so a runaway tier-0 recursion peaks near 1 GB before
-its depth error.
+2a–5, and 2026-10-20's frame-stack and `binding` changes). Fixed 2026-10-20: a global read no
+longer scans the dynamic stack for names not on it, and a tree-walked level costs ~600 B
+(was ~1 KB; the VM's ~220 B — the rest is an env frame per call and the root stack).
 
-**After ADR-416, the user's item 1:** the slow gates on 2026-10-18's code: `make gcstress`,
-`scripts/fuzz/run.sh` (check `stale=0`), the dist tests looped, `make runtime-soak`.
+**Done 2026-10-20, the user's item 1:** the slow gates on this code — `make gcstress` (both
+ceilings), the fuzzers, the dist tests looped, `make runtime-soak` — all clean (devlog
+2026-10-20).
 
 ### DONE (2026-10-17): the design promises without a guard now have one
 
