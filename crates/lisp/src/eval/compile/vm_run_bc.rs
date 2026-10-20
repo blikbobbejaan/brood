@@ -1697,10 +1697,13 @@ fn record_tier0_escape(path: &str, top_level: bool) {
         location.is_some_and(|l| l.contains("/rustlib/") || l.contains("/.cargo/"))
     };
     // A trace without this driver's own frame still records a line: an audit that drops
-    // what it cannot place reads as "no escapes".
+    // what it cannot place reads as "no escapes". The name is bare from ordinary debuginfo
+    // and fully qualified (`brood::eval::compile::vm_run_bc::vm_run_bc`) under the nightly
+    // toolchain the AddressSanitizer job builds with — where an exact match never found the
+    // driver and every line read `unplaced`, failing the audit's own guard.
     let entry = frames
         .iter()
-        .position(|(name, _)| *name == "vm_run_bc")
+        .position(|(name, _)| *name == "vm_run_bc" || name.ends_with("::vm_run_bc"))
         .map_or(0, |i| i + 1);
     let site: Vec<String> = frames[entry..]
         .iter()

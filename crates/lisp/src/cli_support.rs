@@ -398,6 +398,13 @@ where
     crate::host::gui::host_main_thread(handle, name)
 }
 
+/// Arm runtime contracts for this process when `BROOD_CONTRACTS` is unset — the `nest run` /
+/// `nest test` dev-mode default (ADR-381) — without exporting the variable to the
+/// processes the program starts. Call before the interpreter boots.
+pub fn arm_contracts_by_default() {
+    crate::builtins::contracts::arm_by_default();
+}
+
 /// Warn once if this binary's baked-in standard library is **older than the tree it is
 /// running in** — a trap that comes in several disguises.
 ///
