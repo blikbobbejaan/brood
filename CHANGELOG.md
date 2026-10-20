@@ -6,6 +6,33 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.42.1 — HTTP that parks, and a tree-walker that can
+
+A function containing a bytes literal compiles to the VM, so `http/request` no longer
+blocks an OS thread per request; listeners take bursts the size of the system's backlog. The
+regex dialect reads `\D \W \S`; `nest run` arms contracts without exporting them to its
+children and names nested modules. At tier 0 the tree-walker now runs on a heap frame stack
+(ADR-416), so a tier-0 process parks its `receive` like the VM. The narrative is the devlog's
+2026-10-19 and 2026-10-20 entries.
+
+**Changed.**
+- At `BROOD_TIER=0` the tree-walker keeps its pending work on a heap frame stack instead of
+  the Rust stack (ADR-416 stages 2-5): closure entry and `&optional` defaults, `try` and
+  `binding` are frames, process bodies and top-level forms run on it, and a `receive` that
+  finds nothing parks the process for any worker to resume. No program starts bytecode at
+  tier 0. Runaway recursion stops at a `1 << 19`-frame limit.
+
+**Security.**
+- wasmtime 49.0.4 and cranelift 0.136.4: RUSTSEC-2026-0378 (a panic lowering a host-created
+  component-model stream into a guest expecting another payload type) and RUSTSEC-2026-0379
+  (Cranelift on aarch64 could jump to the wrong target on a large `br_table`).
+
+**Performance.**
+- A global read no longer scans the whole dynamic stack: N nested `binding`s cost N per read,
+  which made deep recursion through `binding` quadratic at tier 0 (50 000 levels 5.5 s ->
+  0.22 s). Tree-walker frames are fixed 1 024-frame segments; peak memory at 400 000 levels
+  480 -> 338 MB.
+
 **Added.**
 - The regex dialect reads `\D`, `\W` and `\S` as the negations of `\d`, `\w` and `\s`, standing
   alone and inside a set. They used to be the letters D, W and S (an unknown escape is its
@@ -24,13 +51,6 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   tree-walker, where a `receive` cannot park and blocks its OS worker instead: every
   `http/request` dirty-blocked twice, and 500 concurrent `http/fetch`es grew past 64 overflow
   scheduler threads. Now 0 dirty blocks and no warning.
-- The wasm host and the JIT are on wasmtime 49.0.4 / Cranelift 0.136.4, for RUSTSEC-2026-0378 (a
-  host-created component-model stream lowered into a guest expecting another payload type
-  panicked) and RUSTSEC-2026-0379 (Cranelift on aarch64 could jump to the wrong target on a
-  large Wasm `br_table`).
-- `binding` no longer slows every global read in its scope: a read scanned the whole
-  dynamic-binding stack, so a recursion through `binding` was quadratic on the tree-walker
-  (50 000 levels: 5.5 s, now 0.2 s).
 - `tcp/listen` and `tls/listen` ask for the system's maximum accept backlog instead of std's 128.
   A burst past that waited out a one-second SYN retransmit per dropped client: 1 000 concurrent
   GETs against a Brood server took 1 152 ms, and take 151 ms now.

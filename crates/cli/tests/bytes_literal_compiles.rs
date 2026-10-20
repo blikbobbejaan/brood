@@ -18,14 +18,18 @@ const PROGRAM: &str = r#"
   (let (marker #b"\r\n")
     (receive ([^tag v] (+ v (bytes/length marker))) (after 5000 :timeout))))
 (io/puts (str "compiled=" (not (nil? (%vm-arm-ops waits 1)))))
-;; Load `bytes` here, once. Its first use otherwise happens in fifty fresh processes at once,
-;; and every one but the loader waits for that load inside the global-miss path — a native
-;; frame, so the wait is a dirty receive by design. That counted here, not the literal, and
-;; reddened this test in most runs under a live stdlib image (2026-10-20).
+;; Load `bytes` here, before the children exist: fifty first uses racing one module's load wait
+;; inside the native `require`, which is a dirty block too, and not the one this counts.
 (bytes/length #b"")
 (def kids (map (range 0 50) (fn (i) (spawn (send me [:r (waits :go)])))))
+;; Every child reaches its `receive` before `:go` exists, so all fifty park: the thing under
+;; test happens fifty times rather than whenever the scheduler happens to be slow.
+(sleep 100)
 (doseq (k kids) (send k [:go 1]))
-(io/puts (str "sum=" (fold kids 0 (fn (acc _) (+ acc (receive ([:r v] v)))))))
+;; Collected by a tail loop, not a `fold` callback: a `receive` under a native HOF is the
+;; unparkable shape this test counts, and the collector must not be one.
+(defn collect (left acc) (if (= left 0) acc (collect (dec left) (+ acc (receive ([:r v] v))))))
+(io/puts (str "sum=" (collect 50 0)))
 "#;
 
 #[test]
@@ -37,8 +41,8 @@ fn a_bytes_literal_keeps_its_function_on_the_vm_and_its_receive_clean() {
         .env("BROOD_NO_CHECK", "1")
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_JIT_BAIL_TRACE", "1")
-        // The tree-walker job runs everything on tier 0, where nothing compiles to the VM;
-        // this is about the VM.
+        // The tree-walker job runs everything on tier 0, where every receive is dirty by
+        // design; this is about the VM.
         .env_remove("BROOD_TIER")
         .arg(&path)
         .output()
