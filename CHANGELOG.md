@@ -24,6 +24,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   tree-walker, where a `receive` cannot park and blocks its OS worker instead: every
   `http/request` dirty-blocked twice, and 500 concurrent `http/fetch`es grew past 64 overflow
   scheduler threads. Now 0 dirty blocks and no warning.
+- The wasm host and the JIT are on wasmtime 49.0.4 / Cranelift 0.136.4, for RUSTSEC-2026-0378 (a
+  host-created component-model stream lowered into a guest expecting another payload type
+  panicked) and RUSTSEC-2026-0379 (Cranelift on aarch64 could jump to the wrong target on a
+  large Wasm `br_table`).
+- `binding` no longer slows every global read in its scope: a read scanned the whole
+  dynamic-binding stack, so a recursion through `binding` was quadratic on the tree-walker
+  (50 000 levels: 5.5 s, now 0.2 s).
 - `tcp/listen` and `tls/listen` ask for the system's maximum accept backlog instead of std's 128.
   A burst past that waited out a one-second SYN retransmit per dropped client: 1 000 concurrent
   GETs against a Brood server took 1 152 ms, and take 151 ms now.

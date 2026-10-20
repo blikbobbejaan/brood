@@ -2901,3 +2901,42 @@ segmenting disabled).
 Evidence: `make test-both` 1955/1955 on each engine; `gcstress-all` clean at the default
 ceiling and at `BROOD_TIER=0` (289 files each); all thirteen fuzz generators, no divergence,
 crash or stale program.
+
+## 2026-10-20 (later) — what ADR-416 costs at tier 0, measured; two reds on main
+
+**The owed tier-0 A/B**, as this machine can answer it: instruction counts
+(`perf stat -e instructions:u -r 3`), which load does not move, not times. Base `a3b7b99f`
+(the last commit before stage 2a) against HEAD, both through `make release-brood` with the
+same `config.mk`, both on a `:live` stdlib image, the base measured twice as the control
+(every row's control within 0.05%). At `BROOD_TIER=0`, on `ab-bench`'s default rows:
+
+| row | Δ instructions | | row | Δ instructions |
+|---|---|---|---|---|
+| fib | +9.0% | | loop | +5.2% |
+| bintree | +10.0% | | collatz | +6.7% |
+| nqueens | +6.3% | | primes | +6.0% |
+| nbody | +8.8% | | json | +5.9% |
+| sieve | +3.0% | | sort | +8.8% |
+| pfib | +1009% | | | |
+
+The single-process rows pay 3–10% for pending work on heap frames instead of the native stack.
+`pfib` is the point of ADR-416, not a regression: on the base its process bodies ran on the VM
+whatever the ceiling said, and now they tree-walk — 11× is the engines' ratio. At the default
+ceiling the same eleven rows are flat, every one within ±0.6% (controls to 0.46%), so the
+tree-walker's cost does not reach the VM path. A wall-clock `make ab` on the benchmark machine
+would only restate these as times.
+
+**`bytes_literal_compiles` red in CI on `1b9a62e7` and `fcf3fc38`**, 24 runs in 30 locally. Not the
+literal (the fix it guards is right; red with it removed, as before): its program's fifty
+processes are the first to call `bytes/length`, and under a live stdlib image `bytes` is loaded
+on that first use. Every process but the loader waits for the load inside the global-miss path
+(`global_miss` → `ensure_required` → `require-one`), a native frame, so its `receive` blocks
+the worker by design — and the test counts exactly those. 0 in 15 with `BROOD_NO_STDIMAGE=1`,
+0 in 15 with the literal kept and `bytes/length` dropped. The program now loads `bytes` once
+before spawning: 40/40.
+
+**`cargo-deny` red**: RUSTSEC-2026-0378 and -0379 against wasmtime 49.0.3. Now 49.0.4 and
+Cranelift 0.136.4. The lockfile change is exactly those 29 packages: a plain `cargo update`
+also re-resolved unrelated `windows-sys` edges, so the updated blocks were spliced into the
+committed lock and `cargo metadata --locked` confirms it.
+

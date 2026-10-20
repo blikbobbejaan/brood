@@ -104,8 +104,9 @@ workspace at tier 0 records only a Rust unit test that drives `vm_run_bc` itself
 Running test bodies on the tree-walker found a real, older `let` divergence (a `fn` lost its
 own name after a list-valued binding; fixed) and re-sized three budgets (the tree-walker's
 frame cap `1 << 19`; `quantum_tail_panic.rs`'s spinners; the suite wrapper's nextest cap,
-1800 s, for 370 s measured). **Owed:** a tier-0 `make ab` on the benchmark machine (stages
-2a–5, and 2026-10-20's frame-stack and `binding` changes). Fixed 2026-10-20: a global read no
+1800 s, for 370 s measured). **Measured 2026-10-20** (instruction counts, devlog "what ADR-416 costs at tier 0"): +3–10% at
+tier 0 on single-process rows, `pfib` 11× (its bodies now really tree-walk), the default ceiling
+flat. Fixed 2026-10-20: a global read no
 longer scans the dynamic stack for names not on it, and a tree-walked level costs ~600 B
 (was ~1 KB; the VM's ~220 B — the rest is an env frame per call and the root stack).
 
