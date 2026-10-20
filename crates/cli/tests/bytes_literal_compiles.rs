@@ -18,9 +18,18 @@ const PROGRAM: &str = r#"
   (let (marker #b"\r\n")
     (receive ([^tag v] (+ v (bytes/length marker))) (after 5000 :timeout))))
 (io/puts (str "compiled=" (not (nil? (%vm-arm-ops waits 1)))))
+;; Load `bytes` here, before the children exist: fifty first uses racing one module's load wait
+;; inside the native `require`, which is a dirty block too, and not the one this counts.
+(bytes/length #b"")
 (def kids (map (range 0 50) (fn (i) (spawn (send me [:r (waits :go)])))))
+;; Every child reaches its `receive` before `:go` exists, so all fifty park: the thing under
+;; test happens fifty times rather than whenever the scheduler happens to be slow.
+(sleep 100)
 (doseq (k kids) (send k [:go 1]))
-(io/puts (str "sum=" (fold kids 0 (fn (acc _) (+ acc (receive ([:r v] v)))))))
+;; Collected by a tail loop, not a `fold` callback: a `receive` under a native HOF is the
+;; unparkable shape this test counts, and the collector must not be one.
+(defn collect (left acc) (if (= left 0) acc (collect (dec left) (+ acc (receive ([:r v] v))))))
+(io/puts (str "sum=" (collect 50 0)))
 "#;
 
 #[test]
