@@ -20,6 +20,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   `BROOD_CONTRACTS=1` to every process it starts. A benchmark harness under `nest run` measured
   its subjects with contracts on (quick `fib` 37.4 ms against 27.9 ms), and a `nest stdimage`
   child refused to build. An explicit `BROOD_CONTRACTS` is still inherited.
+- A function containing a bytes literal (`#b"…"`) compiles to the VM. It ran on the
+  tree-walker, where a `receive` cannot park and blocks its OS worker instead: every
+  `http/request` dirty-blocked twice, and 500 concurrent `http/fetch`es grew past 64 overflow
+  scheduler threads. Now 0 dirty blocks and no warning.
 
 ## v0.42.0 — std keeps the mechanisms; a tab boots from an image
 

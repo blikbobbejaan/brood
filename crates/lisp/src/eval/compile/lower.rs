@@ -979,10 +979,15 @@ fn compile_node_inner(heap: &Heap, form: Value, scope: &mut Scope, tail: bool) -
         // `const_node`), a no-op for the inline/interned atoms.
         // A ratio (`1/3`) and a decimal (`1.5M`) are literals too: outside this list they were
         // outside the VM's vocabulary, so any function containing one ran on the tree-walker.
+        // So was a bytes literal (`#b"\r\n"`) until 2026-10-20 — and a `receive` under the
+        // tree-walker cannot park, so it blocks its OS worker: every `http/request` (`#b""`
+        // in its body) dirty-blocked twice, and 500 concurrent fetches grew past 64 overflow
+        // scheduler threads (found porting brood-benchmarks' `http` row).
         ValueRef::Int(_)
         | ValueRef::BigInt(_)
         | ValueRef::Ratio(_)
         | ValueRef::Decimal(_)
+        | ValueRef::Bytes(_)
         | ValueRef::Float(_)
         | ValueRef::Bool(_)
         | ValueRef::Nil
