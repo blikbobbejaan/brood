@@ -41,7 +41,7 @@
 
   (test "a fn bound after a list-valued binding still sees its own name"
     (assert= 1 (lcs-self 5))
-    (assert= :done (let (x (list 1) f (fn (k) (if (= k 0) :done (f (- k 1))))) (f 3))))
+    (assert= 1 (let (x (list 1) f (fn (k) (if (= k 0) (first x) (f (- k 1))))) (f 3))))
 
   (test "a self-recursive let fn still sees its own name in another process"
     (let (me (self)
