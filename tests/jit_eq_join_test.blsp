@@ -241,6 +241,15 @@
 (defn- ej-empty-str (s) (empty? s))
 (defn- ej-empty-set (s) (empty? s))
 (defn- ej-empty-bytes (b) (empty? b))
+;; `any?`'s exact body in an arm only this file touches, for the same reason as
+;; `ej-own-second`: the prelude's `any?` is shared by every test the suite runs at once, and a
+;; sibling handing it a map or a seq-view can latch it or deopt it legitimately.
+(defn ej-own-any? (coll pred)
+  (cond (empty? coll) false (pred (first coll)) true else (ej-own-any? (rest coll) pred)))
+(defn- drive-own-any (i acc)
+  (if (= i 0)
+    acc
+    (drive-own-any (- i 1) (if (ej-own-any? ej-cps (fn (c) (< c 32))) acc (+ acc 1)))))
 (defn- drive-any (i acc)
   (if (= i 0) acc (drive-any (- i 1) (if (ej-any-ctrl? ej-cps) acc (+ acc 1)))))
 
@@ -269,16 +278,18 @@
   (test "`any?` over a vector keeps the arm native with NO entry deopts (was: one per call)"
     (when (%native-tier?)
       (assert= 4000 (drive-any 4000 0))
-      (assert= :native (settle any? 2 (fn () (drive-any 4000 0)) 40))
+      (assert= 4000 (drive-own-any 4000 0))
+      ;; `any?`'s body in an arm of its own (`ej-own-any?`), so neither the settle nor the
+      ;; count can be moved by a sibling test's calls to the shared prelude `any?`.
+      (assert= :native (settle ej-own-any? 2 (fn () (drive-own-any 4000 0)) 40))
       ;; `:deopts` is the feedback's and never moves for a `SelfCall` loop; the class
       ;; this guards is only visible in the cumulative count (sabotage: deopt a vector in
-      ;; `is_empty_without_eval` → ~20 000 here, `:deopts` still 0). Counted across THIS
-      ;; drive's 4 000 calls, not from zero: `any?` is a prelude arm every test shares, and a
-      ;; sibling handing it a map or a seq-view deopts it legitimately (the nightly ASAN run
-      ;; read 1). The bug is one per call; a tenth of the calls separates it from that.
-      (let (before (get (%jit-arm-state any? 2) :deopts-total))
-        (drive-any 4000 0)
-        (is (< (- (get (%jit-arm-state any? 2) :deopts-total) before) 400))))))
+      ;; `is_empty_without_eval` → ~20 000 here, `:deopts` still 0). Counted across this
+      ;; drive's 4 000 calls; the bug is one per call, and a tenth of the calls separates it
+      ;; from any warm-up deopt.
+      (let (before (get (%jit-arm-state ej-own-any? 2) :deopts-total))
+        (drive-own-any 4000 0)
+        (is (< (- (get (%jit-arm-state ej-own-any? 2) :deopts-total) before) 400))))))
 
 ;; --- 5. A polymorphic param on a `SelfCall` arm ---------------------------------------
 
