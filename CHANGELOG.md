@@ -16,6 +16,10 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 - `nest run --main` names a nested module: with three or more segments the last is the fn
   (`--main bench/harness/main`). It accepted only `module` and `module/fn`, so no module under
   a directory could be an entry point.
+- `nest run` and `nest test` arm contracts for their own program without exporting
+  `BROOD_CONTRACTS=1` to every process it starts. A benchmark harness under `nest run` measured
+  its subjects with contracts on (quick `fib` 37.4 ms against 27.9 ms), and a `nest stdimage`
+  child refused to build. An explicit `BROOD_CONTRACTS` is still inherited.
 
 ## v0.42.0 — std keeps the mechanisms; a tab boots from an image
 

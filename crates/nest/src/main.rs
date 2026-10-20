@@ -331,7 +331,7 @@ fn arm_test_env(argv: &[String]) {
 }
 
 /// Runtime contracts are ON by default in dev mode (ADR-381): `nest run` and `nest test`
-/// arm `BROOD_CONTRACTS=1` unless the environment already says otherwise, so every `(sig …)`
+/// arm contracts unless `BROOD_CONTRACTS` says otherwise, so every `(sig …)`
 /// in the project and in std is enforced while the code is being developed and tested, and
 /// never in a released bundle (a bundle runs the `brood` runtime, which reads the variable
 /// and defaults it off). `BROOD_CONTRACTS=0` — or any value but `1` — opts out explicitly.
@@ -344,10 +344,10 @@ fn arm_contracts_default(argv: &[String]) {
     if !matches!(argv.first().map(String::as_str), Some("run" | "test")) {
         return;
     }
-    if std::env::var_os("BROOD_CONTRACTS").is_none() {
-        // SAFETY: called before any thread or interpreter is created.
-        unsafe { std::env::set_var("BROOD_CONTRACTS", "1") };
-    }
+    // A process flag, not `set_var`: the default is THIS process's, and an exported
+    // variable armed every program it started too (a benchmark's measured subjects, a
+    // `nest stdimage` child). An explicit `BROOD_CONTRACTS` still wins, and is inherited.
+    brood::cli_support::arm_contracts_by_default();
 }
 
 /// Run a Brood-implemented subcommand: `(nest/main argv)` returns the exit code.

@@ -157,8 +157,24 @@ fn contract_tail_p(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
 /// return, and a `var_os` on either path would be the cost the flag exists to avoid.
 pub fn contracts_armed() -> bool {
     static ARMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ARMED
-        .get_or_init(|| std::env::var_os("BROOD_CONTRACTS").is_some_and(|v| v == "1" || v == "all"))
+    *ARMED.get_or_init(|| match std::env::var_os("BROOD_CONTRACTS") {
+        Some(v) => v == "1" || v == "all",
+        None => ARMED_BY_DEFAULT.load(std::sync::atomic::Ordering::Relaxed),
+    })
+}
+
+/// The dev-mode default (ADR-381), for THIS process only: `nest run` and `nest test` arm
+/// contracts when `BROOD_CONTRACTS` says nothing. It is a process flag and not
+/// `set_var("BROOD_CONTRACTS", "1")`, which is what it was: the variable then reached every
+/// child the program started, so a benchmark harness under `nest run` measured its
+/// subjects with contracts armed (quick `fib` 37.4 ms against 27.9 ms), a `nest stdimage`
+/// child refused to build, and tests that spawn a runtime had to pass
+/// `BROOD_CONTRACTS=0` to get the program they meant. Must run before the first
+/// `contracts_armed` read, which caches.
+static ARMED_BY_DEFAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn arm_by_default() {
+    ARMED_BY_DEFAULT.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Whether the PRELUDE's own declarations are enforced too — `BROOD_CONTRACTS=all`. Off
