@@ -176,6 +176,12 @@
 ;; and the checker reads that site into `v`.
 (check-allow :type-mismatch
   (defn ej-second (v) (second v)))
+;; `second`'s exact body, private to this file. The prelude's own `second` is ONE arm shared by
+;; every test the suite runs in this process at once — lists, nil and vectors from all of
+;; them — and that churn may legitimately latch it off the native tier (the ASan nightly
+;; read `:bailed` once and passed on the retry). What this file guards is the vector path
+;; through `(first (rest x))`, which this copy takes and nothing else touches.
+(defn ej-own-second (coll) (first (rest coll)))
 (defn ej-first-range (r) (first r))
 (defn ej-rest-vec-sum (v) (+ (first (rest v)) (first (rest (rest v)))))
 ;; `rest` of a vector ALLOCATES a list, which can grow the pair slab and move its base —
@@ -212,9 +218,10 @@
 
   (test "`second` of a vector keeps the arm native (was: deopt per activation, latched)"
     (when (%native-tier?)
-      ;; `second` itself — the prelude arm that latched on `http`; `ej-second` is a
-      ;; one-call forwarder to it and never becomes the hot arm.
-      (assert= :native (settle second 1 (fn () (times 4000 (fn () (ej-second [1 2 3])))) 40))
+      ;; `second`'s body in an arm of its own (see `ej-own-second`) — the shape that
+      ;; latched on `http`.
+      (assert= :native
+        (settle ej-own-second 1 (fn () (times 4000 (fn () (ej-own-second [1 2 3])))) 40))
       (assert= :native (settle ej-rest-then-pair 2 (fn () (drive-rest-pair 4000 0)) 40)))))
 
 ;; --- 4. `empty?` beyond nil / pair -----------------------------------------------------
