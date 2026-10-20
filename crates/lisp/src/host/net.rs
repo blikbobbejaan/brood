@@ -1890,11 +1890,34 @@ fn fail_dial(id: u64, owner: &SocketOwner, message: &str) {
     }
 }
 
+/// Raise a just-bound listener's accept backlog to the system's maximum.
+///
+/// `std::net::TcpListener::bind` listens with a backlog of 128, so a Brood server dropped
+/// connections once a burst outran its accept loop by that many, and each dropped client
+/// waited out the kernel's one-second SYN retransmit: brood-benchmarks' `http` fixture
+/// answered 500 concurrent GETs in 160 ms and 1 000 in 1 152 ms (2026-10-20; the Python server
+/// it replaced asked for 1 024). `listen` on a listening socket only resets the backlog, and
+/// the kernel clamps `SOMAXCONN` to its own ceiling (`net.core.somaxconn` on Linux).
+fn widen_backlog(listener: &std::net::TcpListener) {
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: `listener` owns a valid, bound, listening fd; re-listening only changes
+        // the backlog. A failure leaves the old one, which is no worse than before.
+        unsafe {
+            libc::listen(listener.as_raw_fd(), libc::SOMAXCONN);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = listener;
+}
+
 /// `(tcp-listen host port)` — bind; connections are announced as
 /// `[:tcp-accept lid client]` to `subscriber`. Port 0 = OS-assigned.
 pub fn listen(host: &str, port: u16, subscriber: u64) -> std::io::Result<u64> {
     reactor_up()?;
     let std_listener = std::net::TcpListener::bind((host, port))?;
+    widen_backlog(&std_listener);
     let local = std_listener.local_addr()?.port();
     std_listener.set_nonblocking(true)?;
     let listener = listener_slot(MioListener::from_std(std_listener));
@@ -2247,6 +2270,7 @@ pub fn tls_listen(
     reactor_up()?;
     let config = build_server_config(cert_pem, key_pem)?;
     let std_listener = std::net::TcpListener::bind((host, port))?;
+    widen_backlog(&std_listener);
     let local = std_listener.local_addr()?.port();
     std_listener.set_nonblocking(true)?;
     let listener = listener_slot(MioListener::from_std(std_listener));
@@ -2287,4 +2311,36 @@ fn bad_socket() -> std::io::Error {
         std::io::ErrorKind::NotFound,
         "no such socket (already closed?)",
     )
+}
+
+#[cfg(all(test, unix))]
+mod backlog_tests {
+    /// A Brood listener holds a burst of connections the accept loop has not reached yet.
+    /// With std's backlog of 128 every connect past ~129 waited out a one-second SYN
+    /// retransmit; here none is accepted, so the backlog alone must hold all 600.
+    #[test]
+    fn a_listener_holds_a_burst_bigger_than_std_s_backlog() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        super::widen_backlog(&listener);
+        let addr = listener.local_addr().unwrap();
+        let somaxconn = std::fs::read_to_string("/proc/sys/net/core/somaxconn")
+            .ok()
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .unwrap_or(4096);
+        // The kernel's ceiling bounds what any process can ask for; below 600 the
+        // question this asks cannot be answered on this machine.
+        if somaxconn < 600 {
+            return;
+        }
+        let held: Vec<_> = (0..600)
+            .map(|_| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250))
+            })
+            .collect();
+        let failed = held.iter().filter(|c| c.is_err()).count();
+        assert_eq!(
+            failed, 0,
+            "{failed} of 600 connects did not complete: the backlog is too small"
+        );
+    }
 }

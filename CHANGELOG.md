@@ -24,6 +24,9 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   tree-walker, where a `receive` cannot park and blocks its OS worker instead: every
   `http/request` dirty-blocked twice, and 500 concurrent `http/fetch`es grew past 64 overflow
   scheduler threads. Now 0 dirty blocks and no warning.
+- `tcp/listen` and `tls/listen` ask for the system's maximum accept backlog instead of std's 128.
+  A burst past that waited out a one-second SYN retransmit per dropped client: 1 000 concurrent
+  GETs against a Brood server took 1 152 ms, and take 151 ms now.
 
 ## v0.42.0 — std keeps the mechanisms; a tab boots from an image
 
