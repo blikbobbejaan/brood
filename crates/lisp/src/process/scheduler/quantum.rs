@@ -209,10 +209,13 @@ pub(crate) fn stop_between_elements() -> bool {
 /// A quantum ran out where the code cannot yield: book it into `process-info`'s
 /// `:reductions`, refill the budget, and — in a green process, with a process waiting — owe
 /// the preemption to the next point that can capture. The root thread never preempts and
-/// owes nothing.
+/// owes nothing. A green process that cannot pay soon — it is still running nested when its
+/// quantum rolls over — also takes its worker out of the pool until it can
+/// ([`cpu_dirty_enter`]), so the waiting process gets another.
 pub(crate) fn refill_nested_quantum() {
     if in_capture_run() && work_waiting() {
         OWED.with(|o| o.set(OWED_FRESH));
+        cpu_dirty_enter();
     }
     book_quantum();
     REDUCTIONS.with(|r| r.set(reduction_budget()));

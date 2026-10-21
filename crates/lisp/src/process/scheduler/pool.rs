@@ -876,6 +876,9 @@ fn run_one_timed(mut proc: Box<Process>) {
     ledger_watchdog();
     let pid = proc.pid;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| proc.drive()));
+    // However the run left — returned, preempted, killed, panicked — no native frame holds
+    // this worker now, so it is back in the pool (normally the guards already did this).
+    super::cpu_dirty_leave();
     super::quantum::end(pid);
     drop(_sg);
     // The tail is caught too, not just `drive()`. A panic in HERE — a bad handle in

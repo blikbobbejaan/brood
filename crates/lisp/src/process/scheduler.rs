@@ -199,16 +199,29 @@ static WORKER_DIRTY: LazyLock<Vec<AtomicBool>> =
 /// clears the flag on drop. A no-op off a worker thread (the root, which owns no queue).
 /// Called by the native-nested `receive` block (`wait_for_message`).
 pub(crate) fn dirty_block() -> DirtyBlockGuard {
-    if !IS_EXECUTOR.with(|e| e.get()) {
+    if !IS_EXECUTOR.with(|e| e.get()) || CPU_DIRTY.with(|d| d.get()) {
         // Root thread (or any non-executor): it blocks on its own mailbox but owns no
         // queue and runs no other process, so it strands nothing and isn't a vanishing
-        // executor — no accounting, no re-route.
+        // executor — no accounting, no re-route. A worker already CPU-dirty
+        // ([`cpu_dirty_enter`]) was accounted when it went dirty.
         return DirtyBlockGuard {
             executor: false,
             wid: None,
         };
     }
     let wid = CURRENT_WORKER.with(|c| c.get());
+    leave_executors(wid);
+    DirtyBlockGuard {
+        executor: true,
+        wid,
+    }
+}
+
+/// Take this executor out of the pool that can run queued work: a native frame holds it
+/// and it will not return to its run loop until that frame does. Shared by both ways a
+/// worker goes dirty — blocked in a native-nested `receive` ([`dirty_block`]) and busy in a
+/// native-nested run ([`cpu_dirty_enter`]).
+fn leave_executors(wid: Option<usize>) {
     if let Some(wid) = wid {
         // A fixed worker: exclude it from `assign_worker` and re-route its backlog so a
         // *live* idle peer can steal it within `STEAL_BACKOFF` without spawning a drainer.
@@ -222,9 +235,48 @@ pub(crate) fn dirty_block() -> DirtyBlockGuard {
     if remaining == 0 && STEALABLE.load(Ordering::SeqCst) > 0 {
         spawn_overflow_drainer();
     }
-    DirtyBlockGuard {
-        executor: true,
-        wid,
+}
+
+/// [`leave_executors`] undone: the native frame returned and this thread goes back to the
+/// process it was running.
+fn rejoin_executors(wid: Option<usize>) {
+    if let Some(wid) = wid {
+        WORKER_DIRTY[wid].store(false, Ordering::Relaxed);
+    }
+    // This thread goes back to the process it was running, not to the queues, so if
+    // a refused thread stranded queued work, now is the chance to start one for it.
+    pool::retry_stranded_work();
+    LIVE_EXECUTORS.fetch_add(1, Ordering::SeqCst);
+}
+
+thread_local! {
+    /// True while this executor is CPU-dirty ([`cpu_dirty_enter`]): a native-nested run on
+    /// it spent a quantum with other work waiting, and it is out of the pool until the run
+    /// returns to a frame that can capture.
+    static CPU_DIRTY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A native-nested run — Brood under a builtin's frame (`reflect/eval-string`, `%isolate`,
+/// a native callback) — spent its quantum while other work waits. It cannot yield: the
+/// native frame cannot be captured. Without this the worker stays counted as live, so
+/// nothing replaces it, and as many such runs as there are workers starve every other
+/// process for as long as they run — including whichever one was going to kill them. A
+/// two-worker suite sat 30 minutes with both workers looping under `eval`. So it goes
+/// dirty, as a worker blocked in a native-nested `receive` does: its queue moves to live
+/// workers, and the last live executor going dirty starts an overflow drainer (BEAM's
+/// dirty CPU schedulers, at the moment the run proves long). Until [`cpu_dirty_leave`].
+pub(crate) fn cpu_dirty_enter() {
+    if !IS_EXECUTOR.with(|e| e.get()) || CPU_DIRTY.with(|d| d.replace(true)) {
+        return;
+    }
+    leave_executors(CURRENT_WORKER.with(|c| c.get()));
+}
+
+/// The CPU-dirty run returned to a frame that can capture (or its process left the
+/// worker): rejoin the pool. A no-op on a worker that is not CPU-dirty.
+pub(crate) fn cpu_dirty_leave() {
+    if CPU_DIRTY.with(|d| d.replace(false)) {
+        rejoin_executors(CURRENT_WORKER.with(|c| c.get()));
     }
 }
 
@@ -236,14 +288,8 @@ pub(crate) struct DirtyBlockGuard {
 }
 impl Drop for DirtyBlockGuard {
     fn drop(&mut self) {
-        if let Some(wid) = self.wid {
-            WORKER_DIRTY[wid].store(false, Ordering::Relaxed);
-        }
         if self.executor {
-            // This thread goes back to the process it was running, not to the queues, so if
-            // a refused thread stranded queued work, now is the chance to start one for it.
-            pool::retry_stranded_work();
-            LIVE_EXECUTORS.fetch_add(1, Ordering::SeqCst);
+            rejoin_executors(self.wid);
         }
     }
 }
@@ -296,6 +342,11 @@ pub(crate) fn capture_top_level() -> bool {
 /// Set the top-level-driver flag, returning the previous value (so `vm_run_bc` can
 /// restore it on exit — nested runs set it `false`, the outer run restores `true`).
 pub(crate) fn set_capture_top_level(on: bool) -> bool {
+    if on {
+        // The innermost frames can capture again: whatever native frame held this worker
+        // has returned, so a CPU-dirty worker rejoins the pool.
+        cpu_dirty_leave();
+    }
     CAPTURE_TOP_LEVEL.with(|c| c.replace(on))
 }
 

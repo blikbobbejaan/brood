@@ -14340,3 +14340,45 @@ from that moment"). A root context is not timed in quanta (its figure is its thr
 only an executor stamps. The first sample now reads ~216 ms where the cold first `spin` takes
 ~212 ms of wall time. Guard: `crates/cli/tests/cpu_time_first_read.rs` — a fresh runtime whose
 first read is the `before`; red without the stamp (0 µs).
+
+## KI-283 — a worker busy under a native frame still counted as live ✅ FIXED 2026-10-21
+
+**Symptom.** `make test` failed `brood_suite_passes` with the same 344 assertions twice running:
+`unbound symbol: multimap/empty`, `mcp/handle`, `nest/parse`, `markdown/->html`… across 23 test
+files, with `ability_test`'s orphan check naming record ids registered but constructor-less
+(`:multimap/multimap`, `:pq/pq`). One test above them was the cause:
+`fuzzy/nearest › answers the same in many processes at once` — `test timed out after 600s`,
+`worker …: waiting, nothing queued`. The retry passed in 114 s. Pinned to two cores
+(`taskset -c 0,1`), the suite went silent after `fuzzy_test.blsp:145` and never finished — the
+runner's own timeout did not fire either — at HEAD (v0.42.2) exactly as on the working tree.
+
+**Cause.** gdb on the stalled suite: both workers in Brood code nested under a builtin —
+`eval_string` → `run_top_form` → `exec_chunk` on one, `eval_builtin` → `loop_safepoint` on the
+other. A nested run cannot capture, so on a spent quantum `driver_safepoint` only refilled its
+budget (`refill_nested_quantum`) and owed the preemption to a point that never came. The worker
+stayed counted in `LIVE_EXECUTORS`, so nothing replaced it: with one such loop per worker,
+nothing else — the process that would kill them, the runner's timer — ever ran again. Seven
+lines reproduce it: two processes spawning `(reflect/eval-string "(defn spin (n) (spin (inc n)))
+(spin 0)")`, the parent sleeping 300 ms to kill them, `BROOD_J=2` — hangs forever; `BROOD_J=3`
+finishes.
+
+**Why it survived.** The dirty-scheduler carve-out (ADR-100 §7.4) covered a worker BLOCKED under
+a native frame (`dirty_block`, and `os/cmd` since KI-280), not one BUSY under it. Every run on a
+many-core box has spare workers; only two cores, or a machine oversubscribed enough that the
+suite crawls (750 s against 114 s), runs out. The 343 downstream failures read as a module-loading
+bug — the change in progress at the time was one — which cost most of a day: the timed-out unit's
+isolate clean-up rolled back the modules its processes had loaded, so `*features*` kept them and
+their definitions were gone.
+
+**Fix.** A nested run whose quantum rolls over with work waiting goes CPU-dirty
+(`scheduler::cpu_dirty_enter`): the same accounting as `dirty_block` (now shared,
+`leave_executors` / `rejoin_executors`) — its queue moves to live workers, and the last live
+executor going dirty starts an overflow drainer. It rejoins when the innermost frames can
+capture again (`set_capture_top_level(true)`, the restore every native-call guard makes) and,
+as a backstop, when its process leaves the worker (`run_one_timed`). A worker already CPU-dirty
+that then blocks in a nested `receive` is not counted twice.
+
+**Guard.** `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` — the
+seven-line program at tiers 0, 1 and 2 under `BROOD_J=2`, killed at 20 s if starved.
+Sabotage-verified: with the `cpu_dirty_enter()` call removed it fails after 20 s at tier 0;
+restored, green at every tier.

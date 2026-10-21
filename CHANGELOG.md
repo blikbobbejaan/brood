@@ -7,6 +7,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 ## Unreleased
 
 **Fixed.**
+- As many processes looping inside `reflect/eval-string` (or any Brood run nested under a
+  builtin) as there are workers no longer starve every other process. Such a run cannot yield
+  its worker, which stayed counted as available, so nothing replaced it: on two cores the
+  in-language suite hung for good. A nested run that outlasts its quantum while work waits now
+  takes its worker out of the pool until it returns, as a blocked one already did (KI-283).
 - A process LOADING a module now parks while it waits for a dependency another process is
   mid-load of. Three native frames sat under that wait, so it blocked an OS worker: the
   journal wrapper every `require-one` load runs in, the native load of the module's source,

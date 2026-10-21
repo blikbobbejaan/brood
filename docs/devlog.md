@@ -2984,3 +2984,23 @@ find module" or "still loading" — a dependency's error deep in the load includ
 load could surface as an unbound name; it now passes over only the target module's own absence
 or cycle.
 
+
+## 2026-10-21 — a worker busy under a native frame leaves the pool (KI-283)
+
+Proving the loader change above green turned up an older bug. `make test` failed the in-language
+suite with 344 assertions — the same 344 twice — nearly all `unbound symbol` in modules loaded
+late (`multimap`, `mcp`, `nest`, `markdown`…). Not a loading bug: one test,
+`fuzzy/nearest › answers the same in many processes at once`, had hit its 600 s timeout, and the
+timed-out unit's clean-up rolled back the modules its processes had loaded while `*features*`
+kept them. Pinned to two cores the suite stalled outright, at v0.42.2 as on this tree. gdb showed
+both workers running Brood under a builtin's frame (`reflect/eval-string`, `eval`): such a run
+cannot yield, and its worker stayed counted as live, so nothing replaced it. One looping eval per
+worker and nothing else runs again — not the process meant to kill them, not the runner's timer.
+
+The fix is the CPU twin of the dirty-blocked `receive` (ADR-100 §7.4): a nested run whose quantum
+rolls over with work waiting takes its worker out of the pool (`scheduler::cpu_dirty_enter`),
+re-routing its queue and starting an overflow drainer if it was the last live executor, and
+rejoins when the innermost frames can capture again. `dirty_block`'s accounting is now shared
+(`leave_executors` / `rejoin_executors`). Guard:
+`blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame`, red after 20 s
+with the transition removed.
