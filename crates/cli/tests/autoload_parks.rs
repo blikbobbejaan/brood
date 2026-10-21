@@ -45,6 +45,16 @@ const PROGRAM: &str = r#"
 
 /// Run `program.blsp` (the first file) beside the other `files` at `tier`; stdout, stderr.
 fn run_at(name: &str, files: &[(&str, &str)], tier: &str) -> (String, String) {
+    run_with(name, files, tier, &[])
+}
+
+/// [`run_at`] with extra environment variables.
+fn run_with(
+    name: &str,
+    files: &[(&str, &str)],
+    tier: &str,
+    envs: &[(&str, &str)],
+) -> (String, String) {
     let dir = std::env::temp_dir().join(format!(
         "brood-autoload-{name}-{}-{tier}",
         std::process::id()
@@ -60,6 +70,7 @@ fn run_at(name: &str, files: &[(&str, &str)], tier: &str) -> (String, String) {
         .env("BROOD_NO_CRASH_REPORT", "1")
         .env("BROOD_SCHED_DBG", "1")
         .env("BROOD_TIER", tier)
+        .envs(envs.iter().copied())
         .arg(files[0].0)
         .output()
         .expect("run brood");
@@ -162,4 +173,102 @@ fn a_tier_up_does_not_wait_for_a_load_in_flight() {
         "the load never finished — {}",
         context()
     );
+}
+
+// The claim race. A miss first asks whether another process holds its module's load and, if
+// none does, loads it itself — and another process can take the claim BETWEEN the two. The
+// loser then meets the claim inside `require-one`, under the native lookup, and its wait there
+// could not park. `BROOD_FAULT_CLAIM_RACE=slowmod` holds the racer inside that window for
+// 500 ms while the loader takes the claim; the racer must still park, on a call head and on a
+// value, at every tier.
+const RACE: &str = r#"
+(defn head-call (i) (slowmod/f i))
+(defn value-call (i) (apply slowmod/f [i]))
+(proc/register :main (self))
+(file/spit "slowmod.blsp"
+  "(defmodule slowmod)\n(send :main [:loading])\n(receive ([:go] nil))\n(defn f (x) (+ x 1))\n")
+(%forget-absent-modules!)
+(def racer (spawn (send :main [:got (CALL 1)])))
+(sleep 100)
+(def loader (spawn (send :main [:got (head-call 0)])))
+(receive ([:loading] nil) (after 20000 (io/puts "loader never started")))
+(io/puts (str "waiter " racer))
+(defn wait-racer (k)
+  (cond (= (->string (get (proc/info racer) :status)) "waiting") :ok
+        (= k 0) :timeout
+        else (do (sleep 10) (wait-racer (- k 1)))))
+(io/puts (str "racer " (wait-racer 2000)))
+(send loader [:go])
+(defn collect (k acc)
+  (if (= k 0) acc (collect (- k 1) (+ acc (receive ([:got v] v) (after 20000 -1000))))))
+(io/puts (str "sum " (collect 2 0)))
+"#;
+
+fn racer_parks_at(tier: &str, call: &str) {
+    let program = RACE.replace("CALL", call);
+    let (stdout, stderr) = run_with(
+        "race",
+        &[("program.blsp", &program)],
+        tier,
+        &[("BROOD_FAULT_CLAIM_RACE", "slowmod"), ("BROOD_J", "4")],
+    );
+    let context = || {
+        format!(
+            "tier {tier}, {call}\nstdout:\n{stdout}\nstderr (tail):\n{}",
+            tail(&stderr)
+        )
+    };
+    assert!(
+        stdout.contains("racer :ok"),
+        "the racer never waited — {}",
+        context()
+    );
+    // The loader's f(0) = 1, plus the racer's f(1) = 2.
+    assert!(
+        stdout.contains("sum 3"),
+        "an answer went missing — {}",
+        context()
+    );
+    let pid = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("waiter #<pid nonode/"))
+        .and_then(|l| l.strip_suffix('>'))
+        .unwrap_or_else(|| panic!("no racer pid — {}", context()));
+    assert!(
+        stderr
+            .lines()
+            .any(|l| l.contains(&format!("park pid={pid} "))),
+        "the racer lost the claim race and waited with its worker blocked — {}",
+        context()
+    );
+}
+
+#[test]
+fn a_call_head_that_loses_the_claim_race_parks_on_the_tree_walker() {
+    racer_parks_at("0", "head-call");
+}
+
+#[test]
+fn a_value_read_that_loses_the_claim_race_parks_on_the_tree_walker() {
+    racer_parks_at("0", "value-call");
+}
+
+#[test]
+fn a_call_head_that_loses_the_claim_race_parks_on_the_vm() {
+    racer_parks_at("1", "head-call");
+}
+
+#[test]
+fn a_value_read_that_loses_the_claim_race_parks_on_the_vm() {
+    racer_parks_at("1", "value-call");
+}
+
+#[test]
+fn a_call_head_that_loses_the_claim_race_parks_with_the_jit() {
+    racer_parks_at("2", "head-call");
+}
+
+#[test]
+fn a_value_read_that_loses_the_claim_race_parks_with_the_jit() {
+    racer_parks_at("2", "value-call");
 }

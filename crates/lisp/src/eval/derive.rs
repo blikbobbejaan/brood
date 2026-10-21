@@ -73,12 +73,27 @@ thread_local! {
     /// load-time edge. One-shot, so the edges of the loaded module's OWN header clauses are
     /// recorded as usual.
     static SKIP_NEXT_EDGE: Cell<bool> = const { Cell::new(false) };
+    /// Set by [`parkable_miss`] for the load its miss is about to run, consumed beside
+    /// `SKIP_NEXT_EDGE` by that `require-one` (via [`take_load_hand_off`]): if it then LOSES
+    /// the claim to another process, it answers `:%hand-off` instead of waiting, since its
+    /// wait would be a `receive` under this native lookup. One-shot, so no load nested
+    /// inside a won claim can hand off.
+    static HAND_OFF_ARMED: Cell<bool> = const { Cell::new(false) };
+    /// Set by [`ensure_required`] when the load it ran answered `:%hand-off`; read and
+    /// cleared by [`parkable_miss`].
+    static HANDED_OFF: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Consume the one-shot "this load is inferred, record no edge" flag. Called by the
 /// `%load-edge-skipped?` primitive at the top of `require-one`.
 pub fn take_skip_next_edge() -> bool {
     SKIP_NEXT_EDGE.with(|skip| skip.replace(false))
+}
+
+/// Consume the one-shot "a lost claim may hand off" flag. Called by the
+/// `%load-may-hand-off?` primitive at the top of `require-one`.
+pub fn take_load_hand_off() -> bool {
+    HAND_OFF_ARMED.with(|armed| armed.replace(false))
 }
 
 // Modules a require has already failed to FIND, with nothing loaded since — see
@@ -418,6 +433,12 @@ fn ensure_required(heap: &mut Heap, env: EnvId, module: Symbol) -> LispResult {
     let loaded = crate::eval::compile::apply_engine(heap, loader, &[Value::symbol(module)], root);
     SKIP_NEXT_EDGE.with(|skip| skip.set(false)); // not consumed (no loader ran) — clear it
     match loaded {
+        // The claim went to another process and this load was armed to hand off
+        // (`parkable_miss`): nothing loaded, and the caller makes the wait a frame.
+        Ok(Value::Keyword(k)) if value::symbol_is(k, "%hand-off") => {
+            HANDED_OFF.with(|handed| handed.set(true));
+            Ok(Value::nil())
+        }
         Ok(value) => {
             // Something loaded, so the module set changed: a name that could not be found
             // before may be reachable now (the loaded module may add to the load path).
@@ -596,6 +617,66 @@ pub(crate) fn module_loading_elsewhere(heap: &Heap, sym: Symbol) -> Option<Symbo
         }
     });
     elsewhere.then_some(module)
+}
+
+/// What a miss in a frame that can park resolved to ([`parkable_miss`]).
+pub(crate) enum ParkableMiss {
+    /// The name's value, loaded by this miss if it had to be.
+    Bound(Value),
+    /// Another process holds the load of this module: the caller hands the wait to the
+    /// prelude's `%lazy-global`/`%lazy-call` as frames, where it parks.
+    Elsewhere(Symbol),
+}
+
+/// [`global_miss`] for a frame that can park, with the load's claim race closed. Checking
+/// [`module_loading_elsewhere`] first is not enough on its own: another process can take the
+/// claim between that check and `require-one`'s own, and the loser then waits in
+/// `%require-await`'s `receive` under this native lookup — blocking its worker, which is
+/// what the hand-off exists to avoid. So the load is armed: a `require-one` that loses the
+/// claim answers `:%hand-off` without waiting, and the miss reports `Elsewhere` as if the
+/// check had seen the claim. A load that wins runs here as before. `arm` is the compiled
+/// arm making the miss, marked stale when the miss loads (as [`global_miss_in_arm`]).
+pub(crate) fn parkable_miss(
+    heap: &mut Heap,
+    env: EnvId,
+    sym: Symbol,
+    arm: Option<&crate::eval::compile::CompiledArm>,
+) -> Result<ParkableMiss, LispError> {
+    if let Some(module) = module_loading_elsewhere(heap, sym) {
+        return Ok(ParkableMiss::Elsewhere(module));
+    }
+    claim_race_fault(sym);
+    HAND_OFF_ARMED.with(|armed| armed.set(true));
+    let looked_up = match arm {
+        Some(arm) => global_miss_in_arm(heap, env, sym, arm),
+        None => global_miss(heap, env, sym),
+    };
+    // Not consumed when no `require-one` ran (a bare name, an absent module) — clear it.
+    HAND_OFF_ARMED.with(|armed| armed.set(false));
+    if HANDED_OFF.with(|handed| handed.replace(false))
+        && let Some(module) = module_of_resolved(sym)
+    {
+        return Ok(ParkableMiss::Elsewhere(module));
+    }
+    looked_up.map(ParkableMiss::Bound)
+}
+
+/// Fault injection for the claim race [`parkable_miss`] closes
+/// (`BROOD_FAULT_CLAIM_RACE=<module>`): the runtime's FIRST parkable miss into `<module>`
+/// sleeps 500 ms here, after the loading-elsewhere check and before `require-one`'s claim, so
+/// a test can have another process take the claim inside the window. One-shot, so the process
+/// that takes it does not pause too.
+fn claim_race_fault(sym: Symbol) {
+    static TAKEN: AtomicBool = AtomicBool::new(false);
+    let Some(target) = std::env::var_os("BROOD_FAULT_CLAIM_RACE") else {
+        return;
+    };
+    let ours =
+        module_of_resolved(sym).is_some_and(|m| target.to_str() == Some(value::symbol_name_ref(m)));
+    if !ours || TAKEN.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
 }
 
 /// [`global_miss`] from inside a compiled arm's execution (ADR-366). If the miss actually

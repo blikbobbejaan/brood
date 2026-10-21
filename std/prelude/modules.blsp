@@ -1256,7 +1256,11 @@ is exactly what OTP 24 reply aliases exist for."
   "Load a single feature `mod` once (a no-op if already loaded); returns its name.
 Safe under concurrency: never returns while another process is mid-load of `mod` —
 it waits for that load to finish (a half-evaluated module is never observable)."
-  (let (key (->string mod))
+  (let (key (->string mod)
+        ;; A miss that can park armed this load (`derive::parkable_miss`): losing the claim
+        ;; answers `:%hand-off` and the caller makes the wait a frame of its own, where the
+        ;; `receive` parks. One-shot, taken first, so no load nested in ours inherits it.
+        hand-off (%load-may-hand-off?))
     ;; Before every early return below: the edge is a property of the requiring module,
     ;; not of who won the race to load the target.
     (%require-record-edge! key)
@@ -1266,7 +1270,7 @@ it waits for that load to finish (a half-evaluated module is never observable)."
       ;; the classic load-once contract for circular requires
       (= (get *features-loading* key) (self)) key
       ;; someone else is mid-load: wait for their provide (never see a partial module)
-      (contains? *features-loading* key) (%require-await key)
+      (contains? *features-loading* key) (if hand-off :%hand-off (%require-await key))
       ;; Claim the load atomically. `:assoc-new` sets the marker only if `key` is
       ;; still absent — the test-and-set runs INSIDE the registry lock — and returns
       ;; false if another process claimed it between the `contains?` read above and
@@ -1274,7 +1278,8 @@ it waits for that load to finish (a half-evaluated module is never observable)."
       ;; `contains? = false`, both `:assoc`, and both run `%require-force`: the module
       ;; body is evaluated twice and `provide`d twice (the double-load ADR-136 forbids).
       ;; Losing the race means someone else now owns the load — wait for their provide.
-      (not (%registry-update! '*features-loading* :assoc-new [key] (self))) (%require-await key)
+      (not (%registry-update! '*features-loading* :assoc-new [key] (self)))
+        (if hand-off :%hand-off (%require-await key))
       else
       ;; We won the claim (the marker is now set). Clear it on BOTH exits: a load that
       ;; throws (module not found, or an error inside its source) must not leave `key`

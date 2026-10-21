@@ -139,6 +139,11 @@ pub const FLAGS: &[DebugFlag] = &[
         SCHED,
         "FAULT INJECTION — over-count STEALABLE by one at pool start, so the pool believes a process is queued that no worker can find. Proves the stranded-work watchdog (KI-88's never-scheduled signature) actually fires; nothing an ordinary program does provokes one",
     ),
+    f(
+        "BROOD_FAULT_CLAIM_RACE",
+        SCHED,
+        "=<module>: FAULT INJECTION — the runtime's first first-use miss into <module> in a frame that can park pauses 500 ms between asking whether another process holds its module's load and taking the claim itself, so a test can take the claim inside that window. Proves a waiter that loses the claim race parks rather than blocking its worker; nothing an ordinary program does provokes one",
+    ),
     // ---- JIT ----
     f(
         "BROOD_JIT_DUMP_IR",

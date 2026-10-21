@@ -126,7 +126,7 @@ pub(crate) fn jit_arm_for_code(code: *const u8) -> Option<Arc<CompiledArm>> {
 /// dropped here too, for the same reason: tiering is not the place to raise it.
 ///
 /// Never WAITS, though: a module another process is mid-load of
-/// (`derive::module_loading_elsewhere`) would hold this worker in `require-one`'s `receive`
+/// (`derive::parkable_miss`) would hold this worker in `require-one`'s `receive`
 /// under a native frame. Such a name is skipped and the
 /// answer is `false` — the arm is not ready to go native — so the election stays on the VM,
 /// whose routed miss parks, and tries again later. Lowering it now would be wrong, not just
@@ -184,16 +184,17 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
             if heap.env_get(env, sym).is_some() {
                 continue;
             }
-            let in_flight = crate::eval::derive::module_loading_elsewhere(heap, sym).is_some();
-            if in_flight {
+            // `parkable_miss` declines a module another process holds — whether its claim
+            // was seen up front or taken while this load was on its way to it — instead of
+            // waiting for it. An error is discarded on purpose: this is a best-effort
+            // pre-load, and nothing here depends on the name resolving. A load error or a
+            // name that stays unbound just leaves the arm as it was — its own global read
+            // raises (or deopts to the VM, which raises) at the point the program reaches
+            // it, with the same error it would have had without the pre-load.
+            if let Ok(crate::eval::derive::ParkableMiss::Elsewhere(_)) =
+                crate::eval::derive::parkable_miss(heap, env, sym, None)
+            {
                 ready = false;
-            } else {
-                // The result is discarded on purpose: this is a best-effort pre-load, and
-                // nothing here depends on the name resolving. A load error or a name that
-                // stays unbound just leaves the arm as it was — its own global read raises
-                // (or deopts to the VM, which raises) at the point the program reaches it,
-                // with the same error it would have had without the pre-load.
-                let _ = crate::eval::derive::global_miss(heap, env, sym);
             }
         }
     }
