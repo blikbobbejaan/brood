@@ -413,7 +413,7 @@ impl Heap {
                     view = next;
                 }
             }
-            let view = self.promote(view);
+            let view = self.promote_global(view);
             self.cold_mut().load_stages[idx].bindings.insert(sym, view);
             base = Some(view);
         }
@@ -483,7 +483,7 @@ impl Heap {
                         .or_else(|| self.runtime.globals_read().get(&sym).copied())
                         .unwrap_or(Value::nil());
                     if let Some(next) = self.registry_next(cur, op, &path, val) {
-                        let next = self.promote(next);
+                        let next = self.promote_global(next);
                         staged_regs.insert(sym, next);
                         pending.push((sym, Some(next), LoadWrite::Registry { sym, op, path, val }));
                     }
@@ -893,9 +893,9 @@ impl Heap {
         // process registered meanwhile — and journals it for the KI-134 replay. The two
         // registries loads coordinate through stay live (`is_live_coordination_registry`).
         if journal && self.in_journalled_load() && !self.is_live_coordination_registry(sym) {
-            let path: Vec<Value> = path.iter().map(|v| self.promote(*v)).collect();
-            let val = self.promote(val);
-            let next = self.promote(next);
+            let path: Vec<Value> = path.iter().map(|v| self.promote_global(*v)).collect();
+            let val = self.promote_global(val);
+            let next = self.promote_global(next);
             // Into the frame that DEFINED the registry when one of this process's open loads
             // did (a module defining a registry, then requiring the submodules that register
             // into it): the owner publishes the whole binding, so the op must be its.
@@ -1010,7 +1010,7 @@ impl Heap {
             });
             if let Some(owner) = holder {
                 self.global_trace(sym, "swap->staged", Some(new));
-                let shared = self.promote(new);
+                let shared = self.promote_global(new);
                 let st = &mut self.cold_mut().load_stages[owner];
                 st.writes.push(LoadWrite::Define { sym, val: shared });
                 st.bindings.insert(sym, shared);
@@ -1218,7 +1218,7 @@ impl Heap {
             // bumps `version` so this process's inline cache re-reads, and `code_epoch` so
             // an arm that baked the old value in re-validates.
             if self.in_journalled_load() {
-                let shared = self.promote(val);
+                let shared = self.promote_global(val);
                 let was_live = self.runtime.globals_read().contains_key(&sym);
                 let was_staged = {
                     let st = self.cold_mut().load_stages.last_mut().expect("open load");

@@ -22,7 +22,7 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(0),
         Sig::nullary(table_ty),
         &[],
-        "Create a new empty in-memory table (Brood's ETS): a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (`table/put`/`table/delete`) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. Returns the handle.",
+        "Create a new empty in-memory table (Brood's ETS): a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (`table/put`/`table/delete`) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. The table dies with the process that created it, unless a global holds it (`def`). Returns the handle.",
         table_new);
     primitives.def(
         kw::TABLE_PUT,
@@ -97,8 +97,15 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         Arity::exact(1),
         Sig::new(vec![table_ty], bool_ty),
         &["t"],
-        "Remove table t from the registry, freeing its store. Idempotent; returns true if it existed. Other handles to t then error on use.",
+        "Remove table t from the registry, freeing its store. Idempotent; returns true if it existed. Other handles to t then error on use. A table is also dropped when the process that created it exits, unless it was stored in a global.",
         table_drop);
+    primitives.def(
+        kw::TABLE_FREE,
+        Arity::exact(2),
+        Sig::new(vec![table_ty, any], any),
+        &["t", "v"],
+        "Internal: drop the private table t the linear-map rewrite built, then return v. Not for user code — use table/drop.",
+        table_free);
 }
 
 // ---------- in-memory shared table (Brood's ETS, ADR-107) ----------
@@ -119,8 +126,15 @@ fn keyed_table(heap: &Heap, who: &str, args: &[Value]) -> Result<u64, LispError>
     Ok(id)
 }
 
-pub(super) fn table_new(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
-    Ok(Value::table(crate::core::table::create()))
+/// The calling process owns the new table and its exit drops it (`core::table`,
+/// "Lifetime"); outside any process the table has no owner.
+pub(super) fn table_new(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let owner = crate::process::current_pid().unwrap_or(0);
+    let id = crate::core::table::create_owned(owner);
+    if owner != 0 {
+        heap.note_owned_table(owner, id);
+    }
+    Ok(Value::table(id))
 }
 
 pub(super) fn table_put(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
@@ -179,4 +193,10 @@ pub(super) fn table_snapshot(args: &[Value], _: EnvId, heap: &mut Heap) -> LispR
 pub(super) fn table_drop(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let id = expect_table(heap, "table/drop", arg(args, 0))?;
     Ok(Value::boolean(crate::core::table::drop_table(id)))
+}
+
+pub(super) fn table_free(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let id = expect_table(heap, "%table-free", arg(args, 0))?;
+    crate::core::table::free_private(id);
+    Ok(arg(args, 1))
 }

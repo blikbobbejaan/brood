@@ -74,6 +74,9 @@ fn deregister_timed(pid: u64, reason: Message, heap: Option<&Heap>) {
     // stay consistent). A no-op when no drain is armed.
     if let Some(heap) = heap {
         heap.drain_note_exit(pid);
+        // The tables it created die with it, as an ETS table does with its owner — before
+        // the downs below make the death observable (KI-183's rule).
+        crate::core::table::release_owned(pid, heap.owned_tables());
     }
     retire_pid_tail(pid, reason);
 }

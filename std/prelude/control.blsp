@@ -71,7 +71,9 @@ processes `body` spawns is captured too; nested `with-out-str`s compose.
                              (%table-put ~sink :text (/str (%table-get ~sink :text "") s))
                              nil))
              ~@body)
-           (%table-get ~sink :text ""))
+           (let (text (%table-get ~sink :text ""))
+             (%table-drop ~sink)
+             text))
          (catch e (do (%table-drop ~sink) (throw e)))))))
 
 ;; ---- embedding a file's text in the source that ships ------------------------

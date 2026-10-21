@@ -42,6 +42,7 @@ pub(super) const EFFECTFUL_IN_GUARD: &[&str] = &[
     kw::TABLE_SUB,
     kw::TABLE_DELETE,
     kw::TABLE_DROP,
+    kw::TABLE_FREE,
     // I/O. These carried the pre-namespacing spellings (`println`, `print`, `os-cmd`,
     // `run-process`, `halt`) long after the names moved, so the checker had silently
     // stopped recognising them — a stale entry here is not an error anywhere, it just

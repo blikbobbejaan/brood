@@ -493,6 +493,12 @@ pub(crate) struct HeapExtras {
     /// spawns). Meaningful only when `trace_context` is `Some`.
     #[cfg(feature = "dev-tools")]
     pub(crate) trace_context_own: bool,
+    /// The tables this process created (`table/new`), which die with it unless a global
+    /// pinned them (`core::table`, "Lifetime"). Pruned of dropped and pinned ones when it
+    /// doubles, so a loop that creates and drops tables keeps it short.
+    pub(crate) owned_tables: Vec<u64>,
+    /// The `owned_tables` length that triggers the next prune.
+    pub(crate) owned_tables_prune_at: usize,
 }
 
 /// [`Heap::type_alias_cache`]'s contents: `(declared_sigs_version, name → alias key)`.
@@ -1534,6 +1540,23 @@ impl Heap {
     #[inline]
     pub(crate) fn extras(&self) -> Option<&HeapExtras> {
         self.extras.as_deref()
+    }
+
+    /// Record that process `pid` created table `id`, so its exit drops it.
+    pub(crate) fn note_owned_table(&mut self, pid: u64, id: u64) {
+        let extras = self.extras_mut();
+        extras.owned_tables.push(id);
+        if extras.owned_tables.len() > extras.owned_tables_prune_at {
+            extras
+                .owned_tables
+                .retain(|&t| crate::core::table::owned_by(t, pid));
+            extras.owned_tables_prune_at = (extras.owned_tables.len() * 2).max(64);
+        }
+    }
+
+    /// The tables this process created and may still own — for its exit to drop.
+    pub(crate) fn owned_tables(&self) -> &[u64] {
+        self.extras().map_or(&[], |e| &e.owned_tables)
     }
 
     /// The rarely-written fields, allocating them on first use.

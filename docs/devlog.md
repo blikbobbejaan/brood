@@ -2995,3 +2995,66 @@ separately; a child already gone makes the link a `:noproc` exit — the race P1
 the build before it, 0 in 40 after (the race is that rare locally). P16 uses `spawn-link` now;
 0 in 40 under the same load, and the suite passes. P17 and P22 link separately too, but accept
 any exit message, so the race cannot make them false.
+
+## 2026-10-21 (later) — a waiter that loses the claim race parks too
+
+The morning's hand-off decided by asking first: a miss checked whether another live process
+held the module's load (`module_loading_elsewhere`) and, if none did, loaded it itself through
+`global_miss`. Another process can take the claim between that check and `require-one`'s own
+CAS, and the loser then met the claim inside `require-one` — under the native lookup, where
+`%require-await`'s `receive` cannot park and blocks the worker. Narrow, but it is exactly the
+shape a burst of first callers produces: all of them check before any of them has claimed.
+
+The check is no longer the decision. `derive::parkable_miss` arms a one-shot flag for the load
+it runs; `require-one` takes it first thing (`%load-may-hand-off?`, beside the edge flag, so no
+load nested inside a won claim inherits it) and, if it then finds the claim held or loses the
+CAS, answers `:%hand-off` instead of waiting. `ensure_required` turns that into "handed off",
+and the miss reports `Elsewhere` exactly as if the up-front check had seen the claim, so the
+caller makes the same `%lazy-global`/`%lazy-call` hand-off it already made. A load the miss
+wins runs where it did. Every caller that could hand off goes through it: the VM's value read
+and call head (`exec_chunk`), the tree-walker's symbol and head misses and its thin-wrapper
+redirect (`machine::machine_miss`, which also roots the form and env across the load), and the
+JIT's tier-up pre-load, which declines rather than waits either way.
+
+Guard: `crates/cli/tests/autoload_parks.rs`, six cases (call head and value read, tiers 0/1/2).
+The race is held open by a new fault flag, `BROOD_FAULT_CLAIM_RACE=<module>`: the first
+parkable miss into that module sleeps 500 ms between the check and the claim while the test's
+loader takes the claim. With `take_load_hand_off` forced false all six go red ("the racer
+lost the claim race and waited with its worker blocked"); restored, the file is green five
+runs in a row and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
+
+**What still blocks, and why it is not this fix's to close.** A load inferred at COMPILE time
+(a qualified macro head expanding) and a miss inside a nested, non-capturing run both wait
+under a native frame. Neither is load-specific: they are the general dirty-block carve-out
+(ADR-100 §7.4) that every `receive` under a native frame takes — inside `%try`, a `map`
+callback, `reflect/eval`, a module body. The worker is marked dirty, its queue is re-routed,
+and an overflow drainer starts if it was the last live executor, so the program is correct and
+its other processes keep running; what it costs is one worker for the wait. Closing them means
+making those native frames capturable — the direction ADR-416 started at tier 0 — which is a
+design project, not a fix.
+
+## 2026-10-21 (later still) — a table dies with its creator, and a dropped one gives its slot back
+
+Decided with the user: ETS ownership (ADR-418). `table/new` records the calling process as the
+owner, and `deregister` drops what the dying process still owns before its downs fire. A table
+that reaches a global is pinned instead: every write to the shared table of globals now goes
+through `promote_global`, and promotion pins any table it meets — a module's
+`(def- cache (table/new))` would otherwise have belonged to whichever process happened to trigger
+the module's load. `spawn`'s promotion and `to_message` only mark the handle `escaped`.
+
+Reading the store for this turned up KI-283: the linear-map rewrite runs its loop on a private
+table and never dropped it, and a dropped table kept its registry slot and 512 KB chunk reservations
+for good anyway. A plain tally called ~25 000 times exhausted the 16 GB `ulimit -v`. Freeing
+memory therefore meant reusing slots, which needs two things the append-only registry did not
+have: a generation in the handle (a stale handle must error, not reach the next table) and a rule
+for when nobody else can hold the slot — the handle never escaped, and no JIT'd loop of the dropping
+process has the slot base hoisted (`jit_shared`), or the drop is the owner's exit. The rewrite
+frees its table with `%table-free`, which may skip the JIT condition because the loop has returned.
+A drop now `madvise`s the dense pages away in every case; the mapping stays, so a racing op on
+an escaped handle still touches valid memory.
+
+Guards: three `VmSize`-metered reuse cases in `table_address_space.rs` (2000 tables each; ~1 GB of
+growth without reuse) and four `table_test.blsp` cases (owner death, `def` pin, closure pin,
+stale handle). Each was sabotaged: wrapper free removed, owner release removed, recycling
+disabled, generation check removed, pinning disabled — every one went red, and green again
+restored.

@@ -179,7 +179,7 @@ a Rust-backed opaque handle (genuine mutable state, never a mutable `Value`):
 (table/count t)                   ; => 1
 (table/snapshot t)                ; => {:hits 11}  (an immutable map)
 (table/delete t :hits)
-(table/drop t)                    ; free it (else it lives till runtime exit)
+(table/drop t)                    ; free it now (else it goes when this process exits)
 ```
 
 How it behaves, and why it's safe:
@@ -201,8 +201,13 @@ How it behaves, and why it's safe:
   mutation — and your enumeration primitive: use ordinary map ops (`keys`, `vals`,
   `reduce`) on it.
 - **Local to the runtime.** A table can't cross a node link (send its
-  `table/snapshot` — a plain map — instead). It lives until `table/drop` or runtime
-  exit (no owner-death cleanup yet).
+  `table/snapshot` — a plain map — instead).
+- **It dies with the process that created it** (ETS ownership, ADR-418), or at
+  `table/drop`. Other processes holding the handle then get `no such table`. The
+  exception is a table reachable from a **global**: `(def cache (table/new))`, a table
+  a `def`'d closure captures, or one inside a `def`'d map lives as long as the runtime,
+  whichever process ran the `def` — so a module-level table survives the process that
+  loaded the module.
 
 ## Maps
 

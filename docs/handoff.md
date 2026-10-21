@@ -69,7 +69,8 @@ devlog entries of the same dates.
 - **Memory ceiling:** decided (ADR-407). Inside a memory-capped container `brood`/`nest run`
   default their limits from the cap (hard = 3/4 of it), re-read every few seconds so a
   resized container moves them; elsewhere they stay unlimited. A table holding the memory is
-  named in the `E0043`; collecting a table when its creator dies is still a language question.
+  named in the `E0043`. A table now dies with the process that created it unless a global
+  holds it (ADR-418), and a dropped table's slot is reused (KI-283).
 - **Probes worth keeping:** every value walker survives data nested a million deep; a
   program in `unshare -U` with `ulimit -u N` gets an exact thread budget
   (`crates/cli/tests/thread_exhaustion.rs`); `systemd-run --user --scope -p MemoryMax=…`
@@ -100,10 +101,13 @@ to the prelude's `%lazy-global`/`%lazy-call` as ordinary frames, so the wait par
 day this was carried to the rest: the tier-0 machine makes the same hand-off (and does not
 redirect a thin wrapper whose inner head is mid-load), and the JIT's tier-up pre-load declines
 rather than waits. Guards: `lazy_load_wait_parks.rs` (VM, stdlib image) and
-`autoload_parks.rs` (tiers 0/1/2, and the tier-up); devlog 2026-10-21. Still blocking by
-design: a load inferred at COMPILE time (a qualified macro head), a miss in a nested
-(non-capturing) run, and the narrow race where the claim is taken between the
-loading-elsewhere check and `require-one`'s own claim.
+`autoload_parks.rs` (tiers 0/1/2, and the tier-up); devlog 2026-10-21. **Later the same
+day the claim race closed too:** a waiter whose claim is taken between the loading-elsewhere
+check and `require-one`'s CAS hands off rather than waiting (`derive::parkable_miss`,
+`%load-may-hand-off?`; guard: the six `…loses_the_claim_race…` cases, held open by
+`BROOD_FAULT_CLAIM_RACE`). Still blocking, by the general dirty-block carve-out (ADR-100
+§7.4) rather than anything load-specific: a load inferred at COMPILE time (a qualified macro
+head) and a miss in a nested (non-capturing) run — devlog 2026-10-21 (later) says why.
 
 ### DONE (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
 

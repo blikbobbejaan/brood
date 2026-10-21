@@ -5,7 +5,7 @@
   "The shared, identity-mutable key-value store — Brood's one mutable value (ADR-107). The type predicate `table?` stays a bare core predicate.")
 
 (defn new ()
-  "Create a new empty in-memory table (Brood's ETS): a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (table/put/table/delete) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. Returns the handle.
+  "Create a new empty in-memory table (Brood's ETS): a shared, mutable key→value store behind an opaque handle. Unlike a map it is mutated in place (table/put/table/delete) and shared by identity — the handle can be sent to other processes, which all see the same store. Stores deep clones (keys/values are copied in and out), so no two processes alias a stored value. Local to this runtime; not node-portable. The table dies with the process that created it, unless a global holds it (`def`). Returns the handle.
 
     (let (t (table/new)) (do (table/put t :k 1) (table/get t :k)))   → 1"
   (%table))
@@ -61,6 +61,6 @@
 (sig snapshot (table -> (map any any)))
 
 (defn drop (t)
-  "Remove table t from the registry, freeing its store. Idempotent; returns true if it existed. Other handles to t then error on use."
+  "Remove table t from the registry, freeing its store. Idempotent; returns true if it existed. Other handles to t then error on use. A table is also dropped when the process that created it exits, unless a global holds it."
   (%table-drop t))
 (sig drop (table -> bool))
