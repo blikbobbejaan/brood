@@ -25,6 +25,138 @@ fn staged_head_pos(arm: &CompiledArm, site: u32) -> Option<Pos> {
         .map(|(_, p)| *p)
 }
 
+/// What a global read's miss resolved to when [`lazy_load_call`] took it.
+enum LazyMiss {
+    /// The driver pushes `%lazy-global`'s frame; its value lands where the read's would.
+    Call(ChunkExit),
+    /// `%lazy-global` ran to a value here (it was not a VM arm).
+    Value(Value),
+}
+
+/// A first-use miss on a module ANOTHER process is loading (`module_loading_elsewhere`):
+/// make the load an ordinary call to `%lazy-global` instead of waiting under this native
+/// lookup. Its wait (`%require-await`'s `receive`) is then a top-level frame that parks; from
+/// `global_miss` it could not, and blocked its OS worker — 27 workers when 200 processes made
+/// their first call into one module together. Only the top-level capture driver can park,
+/// so a nested run (`capture` false) keeps the synchronous path, as does every other miss.
+/// The arm is marked stale up front: the load changes what it was compiled against (ADR-366).
+#[cold]
+fn lazy_load_call(
+    heap: &mut Heap,
+    sym: Symbol,
+    arm: &CompiledArm,
+    capture: bool,
+    env: EnvId,
+) -> Result<Option<LazyMiss>, LispError> {
+    if !capture {
+        return Ok(None);
+    }
+    let Some(module) = crate::eval::derive::module_loading_elsewhere(heap, sym) else {
+        return Ok(None);
+    };
+    let Some(callee) = heap.env_get(heap.global(), value::intern("%lazy-global")) else {
+        return Ok(None);
+    };
+    heap.mark_arm_stale(arm);
+    let argv: SmallVec<[Value; 4]> =
+        SmallVec::from_slice(&[Value::symbol(module), Value::symbol(sym)]);
+    Ok(Some(match dispatch(heap, callee, argv, true, env)? {
+        Step::Tail {
+            compiled,
+            args,
+            genv,
+            bases,
+        } => LazyMiss::Call(ChunkExit::Call {
+            arm: compiled,
+            args,
+            genv,
+            bases,
+        }),
+        Step::Done(v) => LazyMiss::Value(v),
+    }))
+}
+
+/// What a call head's miss resolved to when [`lazy_call`] took it.
+enum LazyCall {
+    /// Leave `exec_chunk` with this: `%lazy-call`'s frame (a `Call`, or a `Tail` for a call
+    /// in tail position), or the finished value of a tail call (`Done`).
+    Exit(ChunkExit),
+    /// `%lazy-call` ran to a value here for a non-tail call: push it and carry on.
+    Value(Value),
+}
+
+/// [`lazy_load_call`] for a call HEAD whose lookup missed: the arguments already sit on the
+/// operand stack above `drop_base`, so the whole call goes to `%lazy-call`, which loads the
+/// module and applies the function — a tail call the VM unfolds, so the callee runs as an
+/// ordinary frame too. A non-tail call drops its arguments here, as `Inst::Call`'s own
+/// `Call` exit does; a tail call leaves them for the driver to drop.
+#[cold]
+fn lazy_call(
+    heap: &mut Heap,
+    sym: Symbol,
+    arm: &CompiledArm,
+    capture: bool,
+    env: EnvId,
+    drop_base: usize,
+    tail: bool,
+) -> Result<Option<LazyCall>, LispError> {
+    if !capture {
+        return Ok(None);
+    }
+    let Some(module) = crate::eval::derive::module_loading_elsewhere(heap, sym) else {
+        return Ok(None);
+    };
+    let Some(callee) = heap.env_get(heap.global(), value::intern("%lazy-call")) else {
+        return Ok(None);
+    };
+    heap.mark_arm_stale(arm);
+    let mut argv: SmallVec<[Value; 4]> = SmallVec::new();
+    argv.push(Value::symbol(module));
+    argv.push(Value::symbol(sym));
+    for k in drop_base..heap.roots_len() {
+        argv.push(heap.root_at(k));
+    }
+    let step = dispatch(heap, callee, argv, true, env)?;
+    Ok(Some(match (step, tail) {
+        (
+            Step::Tail {
+                compiled,
+                args,
+                genv,
+                bases,
+            },
+            true,
+        ) => LazyCall::Exit(ChunkExit::Tail {
+            arm: compiled,
+            args,
+            genv,
+            bases,
+        }),
+        (
+            Step::Tail {
+                compiled,
+                args,
+                genv,
+                bases,
+            },
+            false,
+        ) => {
+            heap.truncate_roots(drop_base);
+            LazyCall::Exit(ChunkExit::Call {
+                arm: compiled,
+                args,
+                genv,
+                bases,
+            })
+        }
+        (Step::Done(v), true) => LazyCall::Exit(ChunkExit::Done(v)),
+        (Step::Done(v), false) => {
+            heap.truncate_roots(drop_base);
+            LazyCall::Value(v)
+        }
+    }))
+}
+
 /// The module the contract shim templates live in (ADR-385) — the one module whose code
 /// positions the error-position rule in [`attach_vm_trace`] never reports (KI-184).
 pub(crate) const CONTRACT_MODULE: &str = "contract";
@@ -108,7 +240,11 @@ pub(crate) fn exec_chunk(
                 // the operand stack is on `roots`, so only `env` (re-read inside) is at stake.
                 let v = match heap.env_get(env, *s) {
                     Some(v) => v,
-                    None => crate::eval::derive::global_miss_in_arm(heap, env, *s, arm)?,
+                    None => match lazy_load_call(heap, *s, arm, capture, env)? {
+                        Some(LazyMiss::Call(exit)) => return Ok(exit),
+                        Some(LazyMiss::Value(v)) => v,
+                        None => crate::eval::derive::global_miss_in_arm(heap, env, *s, arm)?,
+                    },
                 };
                 heap.push_root(v);
             }
@@ -129,15 +265,25 @@ pub(crate) fn exec_chunk(
                                 v
                             }
                             // Autoload (ADR-335); not cached — the load bumped the epoch.
-                            None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
-                                .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?,
+                            None => match lazy_load_call(heap, *sym, arm, capture, env)? {
+                                Some(LazyMiss::Call(exit)) => return Ok(exit),
+                                Some(LazyMiss::Value(v)) => v,
+                                None => {
+                                    crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
+                                        .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?
+                                }
+                            },
                         }
                     }
                 } else {
                     match heap.env_get(env, *sym) {
                         Some(v) => v,
-                        None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
-                            .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?,
+                        None => match lazy_load_call(heap, *sym, arm, capture, env)? {
+                            Some(LazyMiss::Call(exit)) => return Ok(exit),
+                            Some(LazyMiss::Value(v)) => v,
+                            None => crate::eval::derive::global_miss_in_arm(heap, env, *sym, arm)
+                                .map_err(|e| tag_pos(e, staged_head_pos(arm, *site)))?,
+                        },
                     }
                 };
                 heap.push_root(v);
@@ -599,6 +745,20 @@ pub(crate) fn exec_chunk(
                             let v = match heap.env_get(cur_env, *sym) {
                                 Some(v) => v,
                                 None => {
+                                    // Another process is loading the module: the whole
+                                    // call goes to `%lazy-call`, where the wait parks.
+                                    match lazy_call(
+                                        heap, *sym, arm, capture, cur_env, drop_base, *tail,
+                                    )
+                                    .map_err(|e| tag_pos(e, pos))?
+                                    {
+                                        Some(LazyCall::Exit(exit)) => return Ok(exit),
+                                        Some(LazyCall::Value(v)) => {
+                                            heap.push_root(v);
+                                            continue;
+                                        }
+                                        None => {}
+                                    }
                                     // Autoload (ADR-335). The load collects: re-read the
                                     // env and the args, which sit on `roots` above `drop_base`.
                                     let v = crate::eval::derive::global_miss_in_arm(
@@ -624,6 +784,16 @@ pub(crate) fn exec_chunk(
                         let v = match heap.env_get(cur_env, *sym) {
                             Some(v) => v,
                             None => {
+                                match lazy_call(heap, *sym, arm, capture, cur_env, drop_base, *tail)
+                                    .map_err(|e| tag_pos(e, pos))?
+                                {
+                                    Some(LazyCall::Exit(exit)) => return Ok(exit),
+                                    Some(LazyCall::Value(v)) => {
+                                        heap.push_root(v);
+                                        continue;
+                                    }
+                                    None => {}
+                                }
                                 // Autoload (ADR-335); see the IC-miss arm above.
                                 let v = crate::eval::derive::global_miss_in_arm(
                                     heap, cur_env, *sym, arm,

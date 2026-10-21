@@ -1313,6 +1313,23 @@ it waits for that load to finish (a half-evaluated module is never observable)."
           (%require-release! key)
           key))))
 
+(defn %lazy-global (module sym)
+  "The value of the qualified global `sym` once `module` is loaded — the VM's first-use load
+when ANOTHER process is mid-load of `module`. The VM calls this as an ordinary frame instead
+of loading under its own native lookup, so the wait in `%require-await` is a top-level
+`receive` that parks rather than blocking an OS worker (`derive::module_loading_elsewhere`).
+An unbound `sym` raises the lookup's own unbound error."
+  (require-one module)
+  (reflect/eval sym))
+
+(defn %lazy-call (module sym & args)
+  "Call the qualified global `sym` with `args` once `module` is loaded — `%lazy-global` for a
+call head whose lookup missed: the VM hands the whole call here instead of loading under its
+native lookup. The `apply` is a tail call the VM unfolds, so `sym`'s body runs as an ordinary
+frame too, and a `receive` in it parks."
+  (require-one module)
+  (apply (reflect/eval sym) args))
+
 ;; ---- library names the PRELUDE itself references -----------------------------
 ;; The prelude's own helpers call a handful of names that live in `std/string.blsp`,
 ;; `std/seq.blsp` and `std/proc/crash-report.blsp` (`string/join`, `seq/find`,

@@ -561,6 +561,43 @@ pub(crate) fn global_miss(heap: &mut Heap, env: EnvId, sym: Symbol) -> LispResul
     Err(crate::eval::unbound_error(heap, sym))
 }
 
+/// The module of `sym` when ANOTHER live process is loading it right now — the one case in
+/// which [`global_miss`] has to wait. That wait is a `receive` (`%require-await`), and from
+/// here it would run under this native frame: a receive that cannot park, so it blocks its
+/// OS worker. 200 processes making their first call into one module together dirty-blocked
+/// 27 workers (2026-10-20). The VM sends such a miss through `%lazy-global` as an ordinary
+/// call instead (`exec_chunk`), where the same wait parks. `None` for every other miss: a
+/// loaded or absent module, this process's own load, a bare name.
+pub(crate) fn module_loading_elsewhere(heap: &Heap, sym: Symbol) -> Option<Symbol> {
+    let module = module_of_resolved(sym)?;
+    if heap.compile_ns() == Some(module) {
+        return None;
+    }
+    let name = value::symbol_name_ref(module);
+    let loading = heap.env_get(
+        heap.global(),
+        value::intern(crate::core::registries::FEATURES_LOADING),
+    )?;
+    let Value::Map(id) = loading else {
+        return None;
+    };
+    let me = crate::process::self_pid();
+    let live = crate::process::list_local_pids();
+    let elsewhere = heap.map_entries(id).into_iter().any(|(key, owner)| {
+        let ours = match key.unpack() {
+            ValueRef::Str(s) => heap.string(s) == name,
+            _ => false,
+        };
+        ours && match owner {
+            Value::Pid { node, id } if crate::dist::is_local(node) => {
+                id != me && live.contains(&id)
+            }
+            _ => false,
+        }
+    });
+    elsewhere.then_some(module)
+}
+
 /// [`global_miss`] from inside a compiled arm's execution (ADR-366). If the miss actually
 /// LOADED a module — the global epoch moved across it — the arm's body was compiled without
 /// that module's bindings, so its compile-time decisions are stale: mark it, and the cache

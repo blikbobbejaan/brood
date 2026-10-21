@@ -6,6 +6,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.**
+- A process whose first call into a module finds another process mid-load of it now parks
+  while it waits. The wait ran under the VM's native lookup, where a `receive` cannot park,
+  so it blocked its OS worker: 200 processes racing one load from the stdlib image blocked
+  596-804 times a run. The VM now hands that lookup (or the whole call, for a call head) to
+  `%lazy-global` / `%lazy-call` as ordinary frames; 0 now. A qualified macro head loading
+  inside the expander still waits synchronously — compile time cannot park.
+
 ## v0.42.1 — HTTP that parks, and a tree-walker that can
 
 A function containing a bytes literal compiles to the VM, so `http/request` no longer
