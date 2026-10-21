@@ -27,6 +27,17 @@ if [ $status -eq 0 ] && [ -n "$summary" ] && printf '%s\n' "$summary" | grep -q 
   exit 0
 fi
 echo "test-contracts: FAILED (exit $status) — ${summary:-no summary line: the runner died}"
-grep -E 'test failed|error:' "$log" | head -20 | sed 's/^/    /'
+# Each failure record whole — its `test failed: group › name` header and the indented
+# assert/actual/expect lines under it, up to the blank line that ends it. A plain grep for
+# `error:` also matched every `process N died: error: …` line the suite's crash tests print
+# on purpose, and twenty of those filled the window: CI's log of 2026-10-21 said
+# "1 failed" and never which test.
+records="$(sed 's/\x1b\[[0-9;]*m//g' "$log" | awk '/test failed: /{on=1} on{print} on&&/^[[:space:]]*$/{on=0}' | head -60)"
+if [ -n "$records" ]; then
+  printf '%s\n' "$records" | sed 's/^/    /'
+else
+  # No record to show (the runner died before reporting): the errors, minus that noise.
+  grep -E 'error:' "$log" | grep -v ' died: ' | head -20 | sed 's/^/    /'
+fi
 echo "    full log: $log"
 exit 1
