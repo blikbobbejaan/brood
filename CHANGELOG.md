@@ -6,6 +6,12 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.42.2 — TLS trust fixes, and first-use loads that park
+
+Two TLS advisories patched on the path every `https` fetch and `tls/listen` take, and a
+process that finds another mid-load of a module it is about to call now parks while it waits
+instead of holding an OS thread. The narrative is the devlog's 2026-10-20 entries.
+
 **Security.**
 - rustls-webpki 0.103.16 and webpki-roots 1.0.10: RUSTSEC-2026-0382 (certificate verification
   could accept distrusted intermediates) and RUSTSEC-2026-0381 (the bundled roots trusted
