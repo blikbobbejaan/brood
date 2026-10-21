@@ -20,11 +20,13 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   blocked 139 workers a run; 0 now. `%with-load-journal` is a Brood `try` around the new
   `%load-journal-open` / `%load-journal-close` natives; a module's header modules load from
   Brood before its source is read; and the VM hands every first-use load to `%lazy-global` /
-  `%lazy-call`, not only one another process holds (KI-285).
-- The JIT's tier-up no longer loads a module in the middle of another module's load. It loads
-  what a hot arm names, cold branches included, at whatever moment the arm gets hot — so a
-  module's load could pull in an unrelated one depending on timing, including from inside a
-  contract hook. It now waits for the load in progress to finish (KI-285).
+  `%lazy-call`, not only one another process holds. Loading std from source
+  (`BROOD_NO_STDIMAGE`) still waits inside the native compile — 121 blocks become ~70 there.
+- A module's load no longer loads other modules depending on when the JIT happened to tier
+  something up. Tiering pre-loads what a hot arm names; inside a module load that started an
+  unrelated load at an arbitrary point of it — the prelude's `get` tiering up mid-load pulled
+  in `string` — so what a module introduced, and the stdlib image's attribution of root
+  globals, depended on call counts (KI-285). The pre-load now waits until the load is over.
 - A process that finds another mid-load of a module it is about to use now parks at
   `BROOD_TIER=0` too: the tree-walker makes the same hand-off to `%lazy-global` as the VM,
   and a thin wrapper whose inner head is mid-load is not redirected, so its body makes it.

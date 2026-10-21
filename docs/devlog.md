@@ -3148,22 +3148,21 @@ dozen runs tested a binary still carrying the change. `nest check` and `brood --
 stale binary; a test run only warns on stderr, which the filtered output these runs were read
 through dropped. Rebuild `brood` and `nest` after every `.blsp` edit before believing a run.
 
-## 2026-10-21 — KI-285 fixed: the prefetch was the messenger
+## 2026-10-21 (later) — what broke the contracts job: a tier-up loading modules into a module's load (KI-285 closed)
 
-The header prefetch backed out above was not the bug; it moved when modules load, and two things
-that depended on load timing broke. A fresh probe file under `BROOD_CONTRACTS=1` reproduced it
-every time (a reused one passed: its cached check verdict replayed loads that had `string` and
-`seq` in place before the first window). A temporary backtrace on `BROOD_TRACE_GLOBAL`'s define
-named the loader of `string` inside lineedit's window: the JIT tier-up pre-load, run from the
-contract hook during lineedit's sweep. With that stopped, the window still introduced `seq` and
-`map` — loaded by the probe's own `seq/filter`, which ran inside the window. Each fix alone left
-the probe red; both together made lineedit's set a strict subset of repl's, armed and unarmed.
+The prefetch was the trigger, not the cause. `preload_arm_globals` loads what a hot arm names at
+its tiering election (ADR-335 item 4), and the election fires on a call count, so inside a module
+load it started an unrelated load at an arbitrary point — journalled as that module's. The
+prelude's `get` (its string branch names `string/char-at`) got hot under contracts during
+`project`'s load and its tier-up loaded `string` there; the prefetch only moved the counts.
+Narrowed by tracing each `require-one` and native miss across the probe's windows, then a
+temporary throw at the `string/char-at` miss, which vanished into the pre-load's
+best-effort discard. Only `BROOD_TIER=2` reproduced it.
 
-- `preload_arm_globals` defers while a module load is open (`in_journalled_load`), as it already
-  did for a module another process holds.
-- The stdimage builder's probe and the attribution test's run only `require-one` and the native
-  `reflect/global-names` inside the window, the set arithmetic after it.
+Fix: the pre-load declines while its process is inside a load and re-elects after. The prefetch
+from `80270034` is restored and `lazy_load_wait_parks`' loader case un-ignored. Prefetch plus fix:
+the contracts-armed suite 6847/6847 three times, `stdimage_test.blsp` 13/13 eight times under
+contracts; the decline removed, the probe is red 5/5. Guard: `tier_up_loads.rs`.
 
-The prefetch is back and its loader test re-enabled. Not run on the development desktop: the
-JIT tests beyond `autoload_parks` that touch the pre-load, and `make ab-vm` for the deferred
-tier-up — CI and the test machine are the check.
+One detour recorded in the KI: a worktree build "proved" one side innocent because it had no
+stdlib image — and without one this cannot fail.

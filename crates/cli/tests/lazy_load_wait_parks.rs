@@ -12,8 +12,7 @@
 //! of. That wait sat under two native frames — `%with-load-journal` calling the load, and the
 //! native load of the module's source — and blocked 139 workers for 40 loaders whose header
 //! `(:use http)` while `http` was held (2026-10-21). The journal is now a Brood `try` around a
-//! native open/close pair, and the header's modules load before the native load starts
-//! (backed out once and re-landed for KI-285).
+//! native open/close pair, and the header's modules load before the native load starts.
 //! Counted by the runtime's `dirty-receive-block` line under `BROOD_JIT_BAIL_TRACE`.
 
 use std::path::Path;
