@@ -2987,3 +2987,11 @@ starting the client 4 s late, on this tree and on an older binary (`accepted 32`
 change. The server now waits for the client's `connected.txt` before its windows start: green
 with the client 4 s late, still red (`accepted 31`) with the reactor's starved-listener retry
 forced off.
+
+**And one CI red after pushing it:** the breakage suite's `chaos2_process_links` P16 got
+`:noproc` instead of `:badness`. It spawned a child that exits at once and `link`ed it
+separately; a child already gone makes the link a `:noproc` exit — the race P15 had and lost to
+`spawn-link` on 2026-10-13. Not this change: 1 run in 40 of the whole file under CPU load on
+the build before it, 0 in 40 after (the race is that rare locally). P16 uses `spawn-link` now;
+0 in 40 under the same load, and the suite passes. P17 and P22 link separately too, but accept
+any exit message, so the race cannot make them false.
