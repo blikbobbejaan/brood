@@ -801,7 +801,11 @@ fn copy_value_inner<T: CopyTarget>(
         // A table is a global-registry id like a socket: the handle rides the message
         // so many processes share one store. Valid across this runtime; not
         // node-portable (the wire codec rejects it).
-        Value::Table(id) => target.leaf(|_| v, || Message::Table(id)),
+        // Another process may hold it from here, so its registry slot is never recycled.
+        Value::Table(id) => {
+            crate::core::table::note_shared(id, false);
+            target.leaf(|_| v, || Message::Table(id))
+        }
     })
 }
 

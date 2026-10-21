@@ -1326,12 +1326,15 @@ a loader waiting on a dependency another process was mid-load of blocked its OS 
   "Load a single feature `mod` once (a no-op if already loaded); returns its name.
 Safe under concurrency: never returns while another process is mid-load of `mod` —
 it waits for that load to finish (a half-evaluated module is never observable)."
-  (%require-one mod (%load-edge-skipped?)))
+  (%require-one mod (%load-edge-skipped?) (%load-may-hand-off?)))
 
-;; `require-one`'s body. `inferred?` says the load was INFERRED from a qualified reference
-;; (ADR-335), which records no require-edge: the kernel's miss path says so through the
-;; one-shot `%load-edge-skipped?`, `%lazy-require` by passing it.
-(defn- %require-one (mod inferred?)
+;; `require-one`'s body. Both flags are one-shot, taken at `require-one`'s entry so no load
+;; nested in this one inherits them. `inferred?` says the load was INFERRED from a qualified
+;; reference (ADR-335), which records no require-edge: the kernel's miss path says so through
+;; `%load-edge-skipped?`, `%lazy-require` by passing it. `hand-off?` says a miss that can park
+;; armed it (`derive::parkable_miss`, through `%load-may-hand-off?`): losing the claim answers
+;; `:%hand-off` and the caller makes the wait a frame of its own, where the `receive` parks.
+(defn- %require-one (mod inferred? hand-off)
   (let (key (->string mod))
     ;; Before every early return below: the edge is a property of the requiring module,
     ;; not of who won the race to load the target.
@@ -1342,7 +1345,7 @@ it waits for that load to finish (a half-evaluated module is never observable)."
       ;; the classic load-once contract for circular requires
       (= (get *features-loading* key) (self)) key
       ;; someone else is mid-load: wait for their provide (never see a partial module)
-      (contains? *features-loading* key) (%require-await key)
+      (contains? *features-loading* key) (if hand-off :%hand-off (%require-await key))
       ;; Claim the load atomically. `:assoc-new` sets the marker only if `key` is
       ;; still absent — the test-and-set runs INSIDE the registry lock — and returns
       ;; false if another process claimed it between the `contains?` read above and
@@ -1350,7 +1353,8 @@ it waits for that load to finish (a half-evaluated module is never observable)."
       ;; `contains? = false`, both `:assoc`, and both run `%require-force`: the module
       ;; body is evaluated twice and `provide`d twice (the double-load ADR-136 forbids).
       ;; Losing the race means someone else now owns the load — wait for their provide.
-      (not (%registry-update! '*features-loading* :assoc-new [key] (self))) (%require-await key)
+      (not (%registry-update! '*features-loading* :assoc-new [key] (self)))
+        (if hand-off :%hand-off (%require-await key))
       else
       ;; We won the claim (the marker is now set). Clear it on BOTH exits: a load that
       ;; throws (module not found, or an error inside its source) must not leave `key`
@@ -1403,7 +1407,7 @@ it waits for that load to finish (a half-evaluated module is never observable)."
   ;; check-allow :discarded-catch — an absent module is the unbound lookup's to report
   (check-allow :discarded-catch
     (try
-      (%require-one module true)
+      (%require-one module true false)
       (catch e
         (let (message (error-message e)
               name (->string module))

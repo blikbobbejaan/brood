@@ -86,6 +86,13 @@ with the background compiler delayed 50-500 ms before lowering and again before 
 `BROOD_GC_STRESS`/`BROOD_GC_VERIFY`, and with `BROOD_J=1`; and one full run of CI's tree-walker
 job, 1939/1939.
 
+2026-10-21: the whole `brood` lib test binary, not the case alone — `taskset -c 0,1`, `--profile
+tree-walker`, CI's three variables — five times: 5 × 1105/1105, the case 0.17 s each time. One
+mechanism that WOULD read as this permanent state, recorded so the dump can be checked against it:
+the JIT compiler thread refused at start (`EAGAIN` under a CI thread limit) drops its receivers,
+every enqueue then fails, and every arm stays on the VM — the dump would show every arm
+`uncompiled` with `calls` far past the tier threshold.
+
 Armed: the helper's failure now reports the run count, what was published, and every compiled
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.
@@ -96,7 +103,8 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
-| KI-283 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
+| KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
+| KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
 | KI-282 | **the read that arms `:cpu-us` accounting never timed its own quantum**, so a process timing its own work across the runtime's first read got 0 — `cpu_time_test`'s self-timing test failed whenever it made the suite's first read (the nightly's GC stress job on `e63b70c8`) | ✅ **FIXED 2026-10-18** — the arming read starts the running quantum's clock on a worker (`pool::arm_cpu_accounting`). Guard: `cpu_time_first_read::the_first_read_in_a_runtime_times_the_work_after_it` (red without the stamp: 0 µs) |
 | KI-281 | **a JIT fast-link test never published within its 90 s deadline**, once, in CI's tree-walker job | 👁 **WATCH** — not reproduced in 70 local runs; diagnostic armed (see the section above) |
 | KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |

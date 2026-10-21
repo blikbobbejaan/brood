@@ -637,8 +637,9 @@ structurally — so memoize over values (numbers, strings, keywords, maps), neve
 or a closure, which have no structural equality — and each hit hands back a fresh copy of
 the value, as a table read does.
 
-Bind the result with `def`. The table lives as long as the function does and has nothing
-to release it, so a `memoize` inside a loop or a `let` leaks a table per call. And the
+Bind the result with `def`, which keeps its table for the life of the runtime. Anywhere else
+the table belongs to the calling process and goes when that process exits, so a `memoize`
+inside a loop in a long-lived process still keeps a table per call until then. And the
 memoized function is an anonymous closure: a `(sig …)` beside the `def` is what gives its
 callers a type.
 

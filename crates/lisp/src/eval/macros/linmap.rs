@@ -127,6 +127,10 @@ pub(super) fn linmap_split_def(heap: &mut Heap, items: &[Value]) -> Option<Value
     let is_table = heap.list(vec![value::sym("="), value::kw("table"), type_of]);
     let snap_call = heap.list(vec![value::sym(kw::TABLE_SNAPSHOT), r_val]);
     let cond = heap.list(vec![value::sym(kw::IF), is_table, snap_call, r_val]);
+    // Then free the private table: its loop has returned, so nothing holds it, and
+    // without this every call kept a table's shell and its dense reservation for good —
+    // a tally called ~25 000 times exhausted a 16 GB address-space cap.
+    let cond = heap.list(vec![value::sym(kw::TABLE_FREE), t_val, cond]);
     let bind = heap.list(vec![r_val, inner_call]);
     let snap = heap.list(vec![value::sym(kw::LET), bind, cond]);
     // (let (t (%table-from-map ACC)) (if t <snap> (SLOW …)))
@@ -302,6 +306,8 @@ fn linmap_fold_call(heap: &mut Heap, form: Value, items: &[Value]) -> Option<Val
     let is_table = heap.list(vec![value::sym("="), value::kw("table"), type_of]);
     let snap_call = heap.list(vec![value::sym(kw::TABLE_SNAPSHOT), r_val]);
     let cond = heap.list(vec![value::sym(kw::IF), is_table, snap_call, r_val]);
+    // Free the private table once the fold has returned — see `linmap_split_def`.
+    let cond = heap.list(vec![value::sym(kw::TABLE_FREE), t_val, cond]);
     let bind = heap.list(vec![r_val, fast_call]);
     let snap = heap.list(vec![value::sym(kw::LET), bind, cond]);
     let slow_call = rebuild_list(heap, form, vec![items[0], c_val, i_val, items[3]]);

@@ -69,6 +69,7 @@ pub const TABLE_SUB: &str = "%table-sub";
 pub const TABLE_COUNT: &str = "%table-count";
 pub const TABLE_SNAPSHOT: &str = "%table-snapshot";
 pub const TABLE_DROP: &str = "%table-drop";
+pub const TABLE_FREE: &str = "%table-free";
 // The immutable-map ops the linmap rewrite recognizes on the SOURCE side (compile/inline.rs
 // + eval/macros/linmap.rs) and rewrites into the Table ops above. Shared so a map-op rename stays
 // in step with the rewrite that pattern-matches it.

@@ -11,7 +11,7 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   builtin) as there are workers no longer starve every other process. Such a run cannot yield
   its worker, which stayed counted as available, so nothing replaced it: on two cores the
   in-language suite hung for good. A nested run that outlasts its quantum while work waits now
-  takes its worker out of the pool until it returns, as a blocked one already did (KI-283).
+  takes its worker out of the pool until it returns, as a blocked one already did (KI-284).
 - A process LOADING a module now parks while it waits for a dependency another process is
   mid-load of. Three native frames sat under that wait, so it blocked an OS worker: the
   journal wrapper every `require-one` load runs in, the native load of the module's source,
@@ -22,6 +22,12 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   Brood before its source is read; and the VM hands every first-use load to `%lazy-global` /
   `%lazy-call`, not only one another process holds. Loading std from source
   (`BROOD_NO_STDIMAGE`) still waits inside the native compile — 121 blocks become ~70 there.
+- A process that finds another mid-load of a module it is about to use now parks at
+  `BROOD_TIER=0` too: the tree-walker makes the same hand-off to `%lazy-global` as the VM,
+  and a thin wrapper whose inner head is mid-load is not redirected, so its body makes it.
+  And the JIT's tier-up no longer waits for such a load: the pre-load that loads what a hot
+  arm names declines the tier-up while one of those modules is mid-load in another process,
+  and retries later.
 
 ## v0.42.2 — TLS trust fixes, and first-use loads that park
 

@@ -2935,6 +2935,129 @@ use, every process but the loader waiting for it inside the global-miss path (`g
 with `BROOD_NO_STDIMAGE=1`, 0 in 15 with the literal kept and `bytes/length` dropped.
 
 
+## 2026-10-21 — a wait for another process's module load parks at tier 0 and at tier-up too
+
+`bbd6194f` landed the VM half while this was in progress in parallel: a global miss on a
+module another live process is mid-load of goes to the prelude's `%lazy-global`/`%lazy-call`
+as an ordinary frame, so `%require-await`'s `receive` parks instead of blocking the worker
+(ADR-100 §7.4). A broader version here — routing EVERY miss that loads, with the edge flag,
+the ADR-366 stale mark and the unbound error's position settled by a finishing builtin — was
+dropped in its favour; what it covered beyond the VM was carried onto `bbd6194f`'s mechanism:
+
+- **Tier 0.** The VM's hand-off is in `exec_chunk`, so at `BROOD_TIER=0` the waiters still
+  blocked. The machine now makes the same hand-off (`machine::lazy_handoff`, same predicate,
+  same `capture` gate): a symbol miss applies `%lazy-global` as this frame's tail, a call-head
+  miss computes the head with it as a frame of its own (`KontKind::Head`, which now expands a
+  macro the answer turns out to be, as the direct lookup does). A thin wrapper whose inner head
+  is mid-load is not redirected, so its own body makes the miss and the hand-off — the
+  redirect looked the head up natively.
+- **The JIT's tier-up.** `preload_arm_globals` loads what a hot arm names before it goes
+  native (ADR-335: native code cannot load, and a native read of an unbound name raises), on
+  the VM, through `global_miss` — so it waited for an in-flight load with its worker blocked.
+  It now reports whether the arm is ready; with a module mid-load elsewhere it is not, and the
+  election backs the hotness counter off (not BAILED) and runs the VM, whose miss parks. A
+  first cut that just skipped the module would have let the arm go native with the name
+  unbound — caught reading `brood_rt_global` while writing it up.
+
+Measured by the scheduler log (`park pid=N` per park, nothing for a blocked worker) on a module
+held mid-load while six processes miss on it, three on a call head and three on a value. On
+`3a4de80b` (which carries `bbd6194f`): 6 of 6 parked at tiers 1 and 2, 0 of 6 at tier 0, and the
+tier-up program answered `:blocked` after its 20 s wait. With this: 6 of 6 at every tier, also
+under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, and the hot loop answers while the load is held. Guards, `crates/cli/tests/autoload_parks.rs`, each
+sabotaged red alone: the tier-0 case (red with the machine's hand-off off, and again with only
+the thin-wrapper redirect restored) and a tier-up case — `g` names `slowmod/f` in a branch it
+never takes and gets hot while `slowmod` is held; its answer must arrive before the load is let
+go (red, `:blocked` after 20 s, with the pre-load waiting again).
+
+**Cost, in instructions** (`perf stat -e instructions:u`, both arms through `make release-brood`
+on a live stdlib image, against `3a4de80b`): at the default ceiling the eleven usual rows plus
+`startup`, `strings` and `regex` sit inside their base-vs-base band (`bintree` and `regex`
+re-run at `-r 10` to settle a noisy first look). At tier 0 the first build was +0.3–0.6% on
+every tree-walking row — and the same with both arms built in one worktree, so code, not
+placement — although nothing on the hit path had changed: `lazy_handoff` was being inlined
+into the machine's `apply`/`step`. Marked `#[cold] #[inline(never)]` (and the two miss branches
+moved out of `step` as `symbol_miss`/`head_handoff`), the tier-0 rows are flat: −0.30% to
+−0.02%, `bintree` +0.42% inside its own ±0.44% run spread.
+
+**A flake found on the way:** `accept_starvation` (KI-227's guard) failed once in a full suite
+with `accepted 31`. Its server timed its first 3 s quiet window from its own start, so a client
+slower than that to boot (a loaded machine) left the first window empty: nothing was closed,
+and the second accepted 31 and starved with no descriptor ever freed. Reproduced on demand by
+starting the client 4 s late, on this tree and on an older binary (`accepted 32`), so not this
+change. The server now waits for the client's `connected.txt` before its windows start: green
+with the client 4 s late, still red (`accepted 31`) with the reactor's starved-listener retry
+forced off.
+
+**And one CI red after pushing it:** the breakage suite's `chaos2_process_links` P16 got
+`:noproc` instead of `:badness`. It spawned a child that exits at once and `link`ed it
+separately; a child already gone makes the link a `:noproc` exit — the race P15 had and lost to
+`spawn-link` on 2026-10-13. Not this change: 1 run in 40 of the whole file under CPU load on
+the build before it, 0 in 40 after (the race is that rare locally). P16 uses `spawn-link` now;
+0 in 40 under the same load, and the suite passes. P17 and P22 link separately too, but accept
+any exit message, so the race cannot make them false.
+
+## 2026-10-21 (later) — a waiter that loses the claim race parks too
+
+The morning's hand-off decided by asking first: a miss checked whether another live process
+held the module's load (`module_loading_elsewhere`) and, if none did, loaded it itself through
+`global_miss`. Another process can take the claim between that check and `require-one`'s own
+CAS, and the loser then met the claim inside `require-one` — under the native lookup, where
+`%require-await`'s `receive` cannot park and blocks the worker. Narrow, but it is exactly the
+shape a burst of first callers produces: all of them check before any of them has claimed.
+
+The check is no longer the decision. `derive::parkable_miss` arms a one-shot flag for the load
+it runs; `require-one` takes it first thing (`%load-may-hand-off?`, beside the edge flag, so no
+load nested inside a won claim inherits it) and, if it then finds the claim held or loses the
+CAS, answers `:%hand-off` instead of waiting. `ensure_required` turns that into "handed off",
+and the miss reports `Elsewhere` exactly as if the up-front check had seen the claim, so the
+caller makes the same `%lazy-global`/`%lazy-call` hand-off it already made. A load the miss
+wins runs where it did. Every caller that could hand off goes through it: the VM's value read
+and call head (`exec_chunk`), the tree-walker's symbol and head misses and its thin-wrapper
+redirect (`machine::machine_miss`, which also roots the form and env across the load), and the
+JIT's tier-up pre-load, which declines rather than waits either way.
+
+Guard: `crates/cli/tests/autoload_parks.rs`, six cases (call head and value read, tiers 0/1/2).
+The race is held open by a new fault flag, `BROOD_FAULT_CLAIM_RACE=<module>`: the first
+parkable miss into that module sleeps 500 ms between the check and the claim while the test's
+loader takes the claim. With `take_load_hand_off` forced false all six go red ("the racer
+lost the claim race and waited with its worker blocked"); restored, the file is green five
+runs in a row and under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`.
+
+**What still blocks, and why it is not this fix's to close.** A load inferred at COMPILE time
+(a qualified macro head expanding) and a miss inside a nested, non-capturing run both wait
+under a native frame. Neither is load-specific: they are the general dirty-block carve-out
+(ADR-100 §7.4) that every `receive` under a native frame takes — inside `%try`, a `map`
+callback, `reflect/eval`, a module body. The worker is marked dirty, its queue is re-routed,
+and an overflow drainer starts if it was the last live executor, so the program is correct and
+its other processes keep running; what it costs is one worker for the wait. Closing them means
+making those native frames capturable — the direction ADR-416 started at tier 0 — which is a
+design project, not a fix.
+
+## 2026-10-21 (later still) — a table dies with its creator, and a dropped one gives its slot back
+
+Decided with the user: ETS ownership (ADR-418). `table/new` records the calling process as the
+owner, and `deregister` drops what the dying process still owns before its downs fire. A table
+that reaches a global is pinned instead: every write to the shared table of globals now goes
+through `promote_global`, and promotion pins any table it meets — a module's
+`(def- cache (table/new))` would otherwise have belonged to whichever process happened to trigger
+the module's load. `spawn`'s promotion and `to_message` only mark the handle `escaped`.
+
+Reading the store for this turned up KI-283: the linear-map rewrite runs its loop on a private
+table and never dropped it, and a dropped table kept its registry slot and 512 KB chunk reservations
+for good anyway. A plain tally called ~25 000 times exhausted the 16 GB `ulimit -v`. Freeing
+memory therefore meant reusing slots, which needs two things the append-only registry did not
+have: a generation in the handle (a stale handle must error, not reach the next table) and a rule
+for when nobody else can hold the slot — the handle never escaped, and no JIT'd loop of the dropping
+process has the slot base hoisted (`jit_shared`), or the drop is the owner's exit. The rewrite
+frees its table with `%table-free`, which may skip the JIT condition because the loop has returned.
+A drop now `madvise`s the dense pages away in every case; the mapping stays, so a racing op on
+an escaped handle still touches valid memory.
+
+Guards: three `VmSize`-metered reuse cases in `table_address_space.rs` (2000 tables each; ~1 GB of
+growth without reuse) and four `table_test.blsp` cases (owner death, `def` pin, closure pin,
+stale handle). Each was sabotaged: wrapper free removed, owner release removed, recycling
+disabled, generation check removed, pinning disabled — every one went red, and green again
+restored.
 ## 2026-10-21 — a loader's waits park too
 
 v0.42.2 made a process that finds another mid-load of a module park while it waits. The
@@ -2985,7 +3108,7 @@ load could surface as an unbound name; it now passes over only the target module
 or cycle.
 
 
-## 2026-10-21 — a worker busy under a native frame leaves the pool (KI-283)
+## 2026-10-21 — a worker busy under a native frame leaves the pool (KI-284)
 
 Proving the loader change above green turned up an older bug. `make test` failed the in-language
 suite with 344 assertions — the same 344 twice — nearly all `unbound symbol` in modules loaded

@@ -107,7 +107,10 @@ spellings of one instant.")
 
 (defn ->epoch-ms (dt)
   "Convert a UTC datetime (or date — its time is taken as midnight) to Unix epoch
-milliseconds."
+milliseconds.
+
+    (datetime/->epoch-ms (datetime/parse-iso8601 \"1970-01-02T00:00:01.5Z\"))   → 86401500
+    (datetime/->epoch-ms (datetime/parse-date \"1970-01-02\"))                 → 86400000"
   (let (days (dt-ymd->days (get dt :year) (get dt :month) (get dt :day))
         ;; Through the declared accessors: a `date` has no time fields (midnight), and a
         ;; record NAME is an open shape (ADR-264), so `(get date :hour 0)` reads as unknown
@@ -129,11 +132,23 @@ milliseconds."
 
 ;; ---- accessors --------------------------------------------------------------
 
-(defn year (dt) "The :year field." (get dt :year))
+(defn year (dt)
+  "The :year field.
+
+    (datetime/year (datetime/parse-date \"2026-08-27\"))   → 2026"
+  (get dt :year))
 (sig year ((or datetime date) -> int))
-(defn month (dt) "The :month field (1–12)." (get dt :month))
+(defn month (dt)
+  "The :month field (1–12).
+
+    (datetime/month (datetime/parse-date \"2026-08-27\"))   → 8"
+  (get dt :month))
 (sig month ((or datetime date) -> int))
-(defn day (dt) "The :day field (1–31)." (get dt :day))
+(defn day (dt)
+  "The :day field (1–31).
+
+    (datetime/day (datetime/parse-date \"2026-08-27\"))   → 27"
+  (get dt :day))
 (sig day ((or datetime date) -> int))
 ;; The time accessors take a `date` too — its time is midnight, so each reads 0. Trusted,
 ;; not verified (strict): a record NAME is an open shape, so `:hour` on a `date` — a key it
@@ -151,15 +166,22 @@ milliseconds."
 ;; ---- decomposition ----------------------------------------------------------
 
 (defn ->date (dt)
-  "Extract the date portion of a datetime."
+  "Extract the date portion of a datetime.
+
+    (datetime/day (datetime/->date (datetime/parse-iso8601 \"2026-08-27T13:45:00Z\")))   → 27
+    (datetime/hour (datetime/->date (datetime/parse-iso8601 \"2026-08-27T13:45:00Z\")))  → 0"
   (date (get dt :year) (get dt :month) (get dt :day)))
 
 (defn ->time (dt)
-  "Extract the time-of-day portion of a datetime."
+  "Extract the time-of-day portion of a datetime.
+
+    (datetime/hour (datetime/->time (datetime/parse-iso8601 \"2026-08-27T13:45:00Z\")))   → 13"
   (time-of-day (get dt :hour 0) (get dt :minute 0) (get dt :second 0) (get dt :ms 0)))
 
 (defn date+time (d t)
-  "Combine a date and a time-of-day into a datetime."
+  "Combine a date and a time-of-day into a datetime.
+
+    (datetime/->epoch-ms (datetime/date+time (datetime/parse-date \"1970-01-02\") (datetime/parse-time \"00:00:01\")))   → 86401000"
   (datetime (get d :year)
     (get d :month)
     (get d :day)
@@ -454,13 +476,20 @@ produces is UTC.
 ;; ---- calendar ---------------------------------------------------------------
 
 (defn leap-year? (y)
-  "True if year `y` is a Gregorian leap year."
+  "True if year `y` is a Gregorian leap year.
+
+    (datetime/leap-year? 2024)   → true
+    (datetime/leap-year? 1900)   → false
+    (datetime/leap-year? 2000)   → true"
   (and (= (math/rem y 4) 0)
     (or (not (= (math/rem y 100) 0))
       (= (math/rem y 400) 0))))
 
 (defn days-in-month (y m)
-  "Number of days in month `m` (1–12) of year `y`."
+  "Number of days in month `m` (1–12) of year `y`.
+
+    (datetime/days-in-month 2024 2)   → 29
+    (datetime/days-in-month 2026 4)   → 30"
   (cond
     (or (= m 1) (= m 3) (= m 5) (= m 7) (= m 8) (= m 10) (= m 12)) 31
     (or (= m 4) (= m 6) (= m 9) (= m 11)) 30
@@ -468,12 +497,16 @@ produces is UTC.
     else (error (str "days-in-month: invalid month " m))))
 
 (defn day-of-week (dt)
-  "Day of week as a keyword: :monday … :sunday. Based on UTC date."
+  "Day of week as a keyword: :monday … :sunday. Based on UTC date.
+
+    (datetime/day-of-week (datetime/parse-date \"1970-01-01\"))   → :thursday"
   (let (w (math/mod (+ (dt-ymd->days (get dt :year) (get dt :month) (get dt :day)) 3) 7))
     (nth [:monday :tuesday :wednesday :thursday :friday :saturday :sunday] w)))
 
 (defn day-of-year (dt)
-  "Day within the year (1–366)."
+  "Day within the year (1–366).
+
+    (datetime/day-of-year (datetime/parse-date \"2024-12-31\"))   → 366"
   (+ (- (dt-ymd->days (get dt :year) (get dt :month) (get dt :day))
        (dt-ymd->days (get dt :year) 1 1))
     1))

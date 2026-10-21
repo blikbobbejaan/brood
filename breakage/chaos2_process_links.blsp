@@ -31,10 +31,12 @@
 (let (me (self))
   ;; We trap exits so we can observe the cascade without dying ourselves
   (proc/trap-exit true)
-  (let (child (spawn
-                ;; child exits with :badness
-                (exit (self) :badness)))
-    (link child)
+  ;; `spawn-link`, as in P15: a child spawned and then `link`ed separately can exit first,
+  ;; and linking a dead pid answers `:noproc` instead of the child's reason (CI on
+  ;; 2026-10-21; reproduced locally under CPU load on the build before that day's change).
+  (let (_child (spawn-link
+                 ;; child exits with :badness
+                 (exit (self) :badness)))
     (let (msg (receive
                 ([:EXIT _ reason] reason)
                 (after 3000 :timeout)))

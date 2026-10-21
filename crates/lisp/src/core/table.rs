@@ -31,12 +31,33 @@
 //!
 //! ## Lifetime
 //!
-//! A table lives until `table-drop` or runtime exit (no owner-death GC in v1 — an
-//! app-lifetime store created at startup is the model; owner/`heir` semantics are a
-//! deferred follow-on). Operating on a dropped/unknown handle is a clean error, never
-//! UB. Like the registry's store shells, a dropped table's dense slot region is
-//! retained (cleared to `EMPTY`, unusable) until process exit — the lock-free region
-//! has no exclusive owner to unmap it; only the hashed map's memory is released.
+//! A table belongs to the process that created it and is dropped when that process
+//! exits — Erlang's ETS ownership, minus `heir`/`give_away` (deferred). The exception is
+//! a table that becomes reachable from a **global**: `def` (and every other write to the
+//! shared table of globals) promotes its value, and a table that promotion meets is
+//! *pinned* — it now lives as long as the runtime, because any process may read that
+//! global. So `(def- cache (table/new))` in a module body is app-lifetime whichever
+//! process happened to load the module, and a table a short-lived worker built and sent
+//! away dies with the worker, as an ETS table does. `table-drop` still ends a table early.
+//! Operating on a dropped/unknown handle is a clean error, never UB.
+//!
+//! A table created on a thread with no process context (an embedder's `Interp`, the boot
+//! image restoring a module's tables) has no owner and lives until `table-drop`; so does
+//! a table whose owner died on the scheduler's panic-recovery path, which has no heap
+//! left to list what the process owned.
+//!
+//! **What a drop frees.** The hashed map always; the dense slots' committed pages always
+//! (`madvise(MADV_DONTNEED)` — the mapping stays, so a racing op on an escaped handle
+//! still touches valid memory, and reads back `EMPTY`). The **registry slot** — the store
+//! shell and its reserved chunks — is recycled for the next `table/new` only when no other
+//! process can hold the handle: the table never left its creator (`escaped`: sent, or
+//! captured by a `spawn`ed closure or a global), and no JIT'd loop of the dropping process
+//! can still hold its slot base (`jit_shared`), or the drop is the owner's death, which
+//! ends every such loop. A recycled slot's generation is bumped and is part of the
+//! handle, so a stale handle in the dropping process errors instead of reaching the next
+//! table. Without recycling, every short-lived table kept its shell and a 512 KB chunk
+//! reservation for good: a function the linear-map rewrite builds on a table exhausted a
+//! 16 GB address-space cap after ~25 000 calls.
 
 use crate::core::heap::Heap;
 use crate::core::sync::lock;
@@ -44,7 +65,7 @@ use crate::core::value::Value;
 use crate::error::{LispError, LispResult};
 use crate::process::{Message, from_message, to_message};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 /// One structural-hash bucket: the (key-clone, value-clone) pairs sharing a hash. Almost
@@ -242,6 +263,18 @@ impl DenseSlots {
         Ok(())
     }
 
+    /// Give every mapped chunk's committed pages back and leave all of its slots `EMPTY`.
+    /// The mappings stay (see "Lifetime"): an op racing the drop of an escaped table
+    /// touches valid memory, and the chunks are ready for the slot's next table.
+    fn release_pages(&self) {
+        for ptr in self.chunks.iter() {
+            let chunk = ptr.load(Ordering::Acquire);
+            if !chunk.is_null() {
+                release_chunk_pages(chunk);
+            }
+        }
+    }
+
     /// Every mapped slot below index `max`, in index order, with its index — a whole
     /// unmapped chunk is skipped without a read, so a scan (count / migrate / snapshot
     /// / drop) over a sparse table costs its touched chunks, never the region.
@@ -302,6 +335,28 @@ fn unmap_chunk_region(ptr: *mut AtomicU64) {
     // SAFETY: `ptr` is a mapping `map_chunk_region` made, never published (the CAS lost).
     unsafe {
         libc::munmap(ptr as *mut libc::c_void, bytes);
+    }
+}
+
+/// Discard a chunk's pages: the next touch reads zero (= `EMPTY`) and commits afresh.
+#[cfg(unix)]
+fn release_chunk_pages(ptr: *mut AtomicU64) {
+    let bytes = CHUNK_SLOTS * std::mem::size_of::<AtomicU64>();
+    // SAFETY: `ptr` is an installed chunk — a live private anonymous mapping of `bytes`.
+    // MADV_DONTNEED on such a mapping zero-fills on the next access; it never unmaps.
+    unsafe {
+        libc::madvise(ptr as *mut libc::c_void, bytes, libc::MADV_DONTNEED);
+    }
+}
+
+#[cfg(not(unix))]
+fn release_chunk_pages(ptr: *mut AtomicU64) {
+    // SAFETY: an installed chunk is a live `CHUNK_SLOTS`-word allocation.
+    let words = unsafe { std::slice::from_raw_parts(ptr as *const AtomicU64, CHUNK_SLOTS) };
+    for slot in words {
+        if slot.load(Ordering::Relaxed) != SLOT_EMPTY {
+            slot.store(SLOT_EMPTY, Ordering::Relaxed);
+        }
     }
 }
 
@@ -393,6 +448,17 @@ struct Store {
     /// dropped table is flagged in place rather than removed; `lookup` treats a
     /// tombstoned store as gone.
     dropped: AtomicBool,
+    /// This registry slot's generation, bumped each time [`recycle`] hands the slot to a
+    /// new table. It is the handle's high half, so a handle to the slot's previous table
+    /// fails `lookup` rather than reaching the new one.
+    generation: AtomicU32,
+    /// The pid of the process this table dies with, or 0: no owner (created outside a
+    /// process) or pinned by a global (see "Lifetime").
+    owner: AtomicU64,
+    /// Latched when the handle leaves its creating process — sent, or promoted with a
+    /// closure or a global. From then on another process may hold the handle, so the
+    /// registry slot is never recycled.
+    escaped: AtomicBool,
 }
 
 impl Store {
@@ -484,14 +550,38 @@ impl Store {
     }
 }
 
-/// The table registry is **lock-free**: an append-only `boxcar::Vec` indexed by
-/// `id - 1` (ids are handed out densely by `push` and never reused). A `table-put`/
-/// `get`/`has?` resolves its store with a single lock-free `get` + a borrow — no
-/// registry mutex and no `Arc` clone per op, which is what makes a hot `Table` loop
-/// (`sieve`, the regex DFA memo, a process's state map) cheap. Entries are never
-/// removed (drop tombstones in place), so a `&Store` is stable for the whole process
-/// lifetime and safe to hand out as `'static`.
+/// The table registry is **lock-free**: an append-only `boxcar::Vec` of stores. A
+/// `table-put`/`get`/`has?` resolves its store with a single lock-free `get` + a borrow —
+/// no registry mutex and no `Arc` clone per op, which is what makes a hot `Table` loop
+/// (`sieve`, the regex DFA memo, a process's state map) cheap. Entries are never removed
+/// (a drop tombstones in place, and [`recycle`] reuses the slot), so a `&Store` is stable
+/// for the whole process lifetime and safe to hand out as `'static`.
 static REGISTRY: LazyLock<boxcar::Vec<Store>> = LazyLock::new(boxcar::Vec::new);
+
+/// Registry slots whose table was dropped while no other process could hold its handle —
+/// reset and generation-bumped by [`recycle`], waiting for the next [`create_owned`].
+static FREE_SLOTS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// A table handle: the registry slot's generation in the high half, `index + 1` in the low
+/// half (0 is reserved as "no table"). A slot's first table has generation 0, so its
+/// handle is the plain `index + 1`.
+fn handle(index: usize, generation: u32) -> u64 {
+    ((generation as u64) << 32) | (index as u64 + 1)
+}
+
+/// The store `id` names and that handle's generation, if the slot exists — whether the
+/// generation is still current is the caller's question.
+fn slot_of(id: u64) -> Option<(&'static Store, u32)> {
+    let index = (id & 0xFFFF_FFFF).checked_sub(1)? as usize;
+    Some((REGISTRY.get(index)?, (id >> 32) as u32))
+}
+
+/// The store `id` names while that table is the slot's current one — dropped or not.
+fn current_store(id: u64) -> Option<&'static Store> {
+    slot_of(id).and_then(|(store, generation)| {
+        (store.generation.load(Ordering::Relaxed) == generation).then_some(store)
+    })
+}
 
 /// The live table holding the most memory — its id and an estimate of the bytes — for the
 /// soft memory limit's report when no process holds an attributable share
@@ -513,19 +603,19 @@ pub(crate) fn largest_table() -> Option<(u64, usize)> {
                     })
                     .sum()
             });
-            (index as u64 + 1, dense + hashed)
+            (
+                handle(index, store.generation.load(Ordering::Relaxed)),
+                dense + hashed,
+            )
         })
         .max_by_key(|&(_, bytes)| bytes)
 }
 
 /// Resolve a handle to its store, or a clean error if it was dropped / never existed.
-/// Lock-free: one `boxcar::Vec::get` (a stable ref) plus the tombstone check.
+/// Lock-free: one `boxcar::Vec::get` (a stable ref) plus the tombstone and generation
+/// checks.
 fn lookup(id: u64) -> Result<&'static Store, LispError> {
-    let idx = id
-        .checked_sub(1)
-        .ok_or_else(|| LispError::runtime(format!("table {}: no such table", id)))?
-        as usize;
-    match REGISTRY.get(idx) {
+    match current_store(id) {
         Some(store) if !store.dropped.load(Ordering::Relaxed) => Ok(store),
         _ => Err(LispError::runtime(format!(
             "table {}: no such table (dropped?)",
@@ -564,12 +654,24 @@ pub fn check_key(who: &str, key: Value) -> Result<(), LispError> {
     Err(LispError::type_err(format!("{}: {}", who, reason)))
 }
 
-/// `(%table)` — create a new empty table; returns its handle id. `push` hands out the
-/// next dense index atomically, so `id = idx + 1` (0 is reserved as "no table").
-/// The dense slot region is reserved lazily on the first dense write, so an
-/// unused (or immediately-hashed) table costs only this small shell.
+/// `(%table)` from outside any process — a table no process owns (see "Lifetime").
 pub fn create() -> u64 {
-    let idx = REGISTRY.push(Store {
+    create_owned(0)
+}
+
+/// `(%table)` — create a new empty table owned by process `owner` (0 = none), reusing a
+/// recycled registry slot when one is free. The dense slot region is reserved lazily on
+/// the first dense write, so an unused (or immediately-hashed) table costs only its shell.
+pub fn create_owned(owner: u64) -> u64 {
+    if let Some(index) = lock(&FREE_SLOTS).pop() {
+        let store = &REGISTRY[index];
+        store.owner.store(owner, Ordering::Relaxed);
+        store.escaped.store(false, Ordering::Relaxed);
+        // Last: the slot is live from here.
+        store.dropped.store(false, Ordering::SeqCst);
+        return handle(index, store.generation.load(Ordering::Relaxed));
+    }
+    let index = REGISTRY.push(Store {
         slots: DenseSlots::new(),
         dense_count: AtomicUsize::new(0),
         dense_max: AtomicUsize::new(0),
@@ -577,45 +679,115 @@ pub fn create() -> u64 {
         dense: AtomicBool::new(true),
         hashed: Mutex::new(None),
         dropped: AtomicBool::new(false),
+        generation: AtomicU32::new(0),
+        owner: AtomicU64::new(owner),
+        escaped: AtomicBool::new(false),
     });
-    idx as u64 + 1
+    handle(index, 0)
 }
 
-/// `(%table-drop t)` — tombstone a table (the lock-free registry can't remove entries).
-/// Idempotent; returns whether it was still live. Frees the hashed map and clears the
-/// touched dense slots to `EMPTY`; the slot region itself (like the store shell) is
-/// retained until process exit — the lock-free region has no exclusive owner to unmap.
+/// `(%table-drop t)` — end a table. Idempotent; returns whether it was still live. Frees
+/// the hashed map and the dense pages, and recycles the registry slot when no other
+/// process can hold the handle and no JIT'd loop of this one can hold its slot base (see
+/// "Lifetime"). A handle to an earlier table of a recycled slot drops nothing.
 pub fn drop_table(id: u64) -> bool {
-    let Some(idx) = id.checked_sub(1) else {
+    let Some(store) = current_store(id) else {
         return false;
     };
-    match REGISTRY.get(idx as usize) {
-        Some(store) => {
-            // The whole drop runs under the store lock — the lock that serializes
-            // migration — and `hashed_or_migrate` re-checks the tombstone under it,
-            // so no op that raced past `lookup` can migrate the emptied store back
-            // into a live hashed map afterwards.
-            let mut guard = lock(&store.hashed);
-            let was_live = !store.dropped.swap(true, Ordering::SeqCst);
-            if was_live {
-                *guard = None;
-                // Retire the dense fast paths too: any JIT'd inline op re-checks
-                // this flag and re-routes to the FFI, whose `lookup` then reports
-                // the drop — so a dropped table errors instead of silently writing
-                // into the retained region.
-                store.dense.store(false, Ordering::SeqCst);
-                for (_, slot) in store.slots.slots_below(store.scan_max()) {
-                    // Clear only non-EMPTY slots: a blind store would commit
-                    // every untouched page of the full-region scan.
-                    if slot.load(Ordering::Relaxed) != SLOT_EMPTY {
-                        slot.store(SLOT_EMPTY, Ordering::Relaxed);
-                    }
-                }
-                store.dense_count.store(0, Ordering::Relaxed);
-            }
-            was_live
+    let was_live = tombstone(store);
+    if was_live && !store.jit_shared.load(Ordering::SeqCst) {
+        recycle_if_private(id, store);
+    }
+    was_live
+}
+
+/// `(%table-free t)` — drop a table the compiler built privately (the linear-map
+/// rewrite's accumulator) and recycle its slot even though JIT'd code used it: the rewrite
+/// frees the table after the loop that hoisted its slot base has returned, so no frame
+/// holds it. Unlike `table-drop` this is not for user code — a user's loop may hold the
+/// base across a `table-drop` it calls.
+pub fn free_private(id: u64) {
+    if let Some(store) = current_store(id)
+        && tombstone(store)
+    {
+        recycle_if_private(id, store);
+    }
+}
+
+/// Tombstone `store` and release its memory, returning whether it was still live. The whole
+/// drop runs under the store lock — the lock that serializes migration — and
+/// `hashed_or_migrate` re-checks the tombstone under it, so no op that raced past `lookup`
+/// can migrate the emptied store back into a live hashed map afterwards.
+fn tombstone(store: &Store) -> bool {
+    let mut guard = lock(&store.hashed);
+    let was_live = !store.dropped.swap(true, Ordering::SeqCst);
+    if was_live {
+        *guard = None;
+        // Retire the dense fast paths too: any JIT'd inline op re-checks this flag and
+        // re-routes to the FFI, whose `lookup` then reports the drop — so a dropped table
+        // errors instead of silently writing into the retained region.
+        store.dense.store(false, Ordering::SeqCst);
+        store.slots.release_pages();
+        store.dense_count.store(0, Ordering::Relaxed);
+    }
+    was_live
+}
+
+/// Hand a just-tombstoned table's slot to the next `create_owned`, unless its handle
+/// escaped this process. The caller vouches that no JIT'd loop still holds the slot base.
+fn recycle_if_private(id: u64, store: &Store) {
+    if store.escaped.load(Ordering::SeqCst) {
+        return;
+    }
+    let Some(index) = (id & 0xFFFF_FFFF).checked_sub(1) else {
+        return;
+    };
+    // The pages were released by the tombstone, so every slot reads EMPTY again and the
+    // watermark can start over. `dropped` stays set until `create_owned` hands it out.
+    store.dense_max.store(0, Ordering::Relaxed);
+    store.jit_shared.store(false, Ordering::Relaxed);
+    store.dense.store(true, Ordering::SeqCst);
+    store.owner.store(0, Ordering::Relaxed);
+    store.generation.fetch_add(1, Ordering::SeqCst);
+    lock(&FREE_SLOTS).push(index as usize);
+}
+
+/// A table handle is leaving its creating process — sent in a message, or promoted into
+/// the shared region with a `spawn`ed closure or a global. Latches `escaped`; `pin` (a
+/// global's value) also clears the owner, so the table outlives its creator.
+pub(crate) fn note_shared(id: u64, pin: bool) {
+    if let Some(store) = current_store(id) {
+        store.escaped.store(true, Ordering::SeqCst);
+        if pin {
+            store.owner.store(0, Ordering::SeqCst);
         }
-        None => false,
+    }
+}
+
+/// Whether `pid` still owns table `id` — live, not pinned, not handed on.
+pub(crate) fn owned_by(id: u64, pid: u64) -> bool {
+    current_store(id).is_some_and(|store| {
+        !store.dropped.load(Ordering::Relaxed) && store.owner.load(Ordering::SeqCst) == pid
+    })
+}
+
+/// Process `pid` has exited: drop every table in `ids` it still owns. Its loops have all
+/// ended, so a table that never escaped is recycled whether or not JIT'd code used it.
+/// The owner is claimed with a CAS, so a `def` pinning the table concurrently either wins
+/// (the table lives) or finds it already dropped.
+pub(crate) fn release_owned(pid: u64, ids: &[u64]) {
+    for &id in ids {
+        let Some(store) = current_store(id) else {
+            continue;
+        };
+        if store
+            .owner
+            .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            && tombstone(store)
+        {
+            recycle_if_private(id, store);
+        }
     }
 }
 
@@ -1062,6 +1234,9 @@ mod tests {
         let hashed_id = create();
         put(&mut heap, hashed_id, Value::int(-1), Value::int(4)).expect("hashed put");
         for id in [dense_id, hashed_id] {
+            // Another process can only be mid-op if the handle reached it — and a table
+            // whose handle never escaped has its slot recycled by the drop instead.
+            note_shared(id, false);
             let store = lookup(id).expect("live table");
             assert!(drop_table(id));
             let mut guard = lock(&store.hashed);

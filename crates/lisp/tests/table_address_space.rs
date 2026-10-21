@@ -72,3 +72,79 @@ fn a_far_key_maps_its_own_chunk_only() {
         .expect("get");
     assert_eq!(interp.print(got), "[1 2 :none 2]");
 }
+
+/// A table that is gone gives its registry slot — shell and reserved chunks — to the next
+/// `table/new`. Before, a dropped table kept both for good, so every short-lived dense
+/// table cost one 512 KB chunk of address space for the life of the runtime. Each case
+/// below makes 2000 such tables, one at a time: without reuse that is ~1000 MB of growth,
+/// with it one chunk.
+#[cfg(target_os = "linux")]
+fn growth_mb_over(interp: &mut Interp, src: &str) -> u64 {
+    let before = vm_size_kb();
+    let out = interp.eval_str(src).expect("run");
+    assert_eq!(interp.print(out), ":ok", "{src}");
+    vm_size_kb().saturating_sub(before) / 1024
+}
+
+/// The linear-map rewrite builds its loop on a private table; the wrapper now frees it.
+/// Without that a plain tally exhausted a 16 GB `ulimit -v` after ~25 000 calls.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rewritten_map_loop_reuses_its_table_across_calls() {
+    let mut interp = Interp::new();
+    interp
+        .eval_str(
+            "(defn tally (xs m) (if (empty? xs) m (tally (rest xs) (%map-int-add m (first xs) 1))))
+             (def xs (range 50))
+             (defn spin (n) (if (= n 0) :ok (do (tally xs {}) (spin (dec n)))))
+             (spin 10)",
+        )
+        .expect("warm");
+    let counted = interp.eval_str("(count (tally xs {}))").expect("tally");
+    assert_eq!(interp.print(counted), "50");
+    let grew = growth_mb_over(&mut interp, "(spin 2000)");
+    assert!(
+        grew < 100,
+        "2000 rewritten tallies grew the address space by {grew} MB"
+    );
+}
+
+/// `table/drop` of a table that never left its process reuses the slot.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_dropped_table_s_slot_is_reused() {
+    let mut interp = Interp::new();
+    let grew = growth_mb_over(
+        &mut interp,
+        "(do (defn churn (n) (if (= n 0) :ok (let (t (table/new)) (table/put t 5 true) (table/drop t) (churn (dec n)))))
+             (churn 2000))",
+    );
+    assert!(
+        grew < 100,
+        "2000 created-and-dropped tables grew the address space by {grew} MB"
+    );
+}
+
+/// A process's tables die with it, and their slots are reused.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_process_s_tables_are_reclaimed_when_it_exits() {
+    let mut interp = Interp::new();
+    // Warm first: the first `spawn` starts the worker pool, whose stacks and allocator
+    // arenas are about a gigabyte of address space on their own.
+    interp
+        .eval_str(
+            "(defn one-child ()
+               (let (pid (spawn (let (t (table/new)) (table/put t 5 true)))
+                     ref (monitor pid))
+                 (receive ([:down ^ref _ _] :ok))))
+             (defn children (n) (if (= n 0) :ok (do (one-child) (children (dec n)))))
+             (children 10)",
+        )
+        .expect("warm");
+    let grew = growth_mb_over(&mut interp, "(children 2000)");
+    assert!(
+        grew < 100,
+        "2000 exited table owners grew the address space by {grew} MB"
+    );
+}

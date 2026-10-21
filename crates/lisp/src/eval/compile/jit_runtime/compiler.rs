@@ -124,8 +124,15 @@ pub(crate) fn jit_arm_for_code(code: *const u8) -> Option<Arc<CompiledArm>> {
 /// A name whose module cannot be found stays unbound (`global_miss`'s error is dropped —
 /// the VM raises the real error if that branch ever runs); a broken module's error is
 /// dropped here too, for the same reason: tiering is not the place to raise it.
+///
+/// Never WAITS, though: a module another process is mid-load of
+/// (`derive::parkable_miss`) would hold this worker in `require-one`'s `receive`
+/// under a native frame. Such a name is skipped and the
+/// answer is `false` — the arm is not ready to go native — so the election stays on the VM,
+/// whose routed miss parks, and tries again later. Lowering it now would be wrong, not just
+/// slow: a native read of a name that is still unbound raises.
 #[cfg(feature = "jit")]
-pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId) {
+pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId) -> bool {
     use crate::core::value::Symbol;
     fn globals_of(chunk: &Chunk, out: &mut Vec<Symbol>) {
         for inst in &chunk.code {
@@ -140,7 +147,7 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
         }
     }
     let Some(chunk) = arm.chunk.as_ref() else {
-        return;
+        return true;
     };
     let mut syms: Vec<Symbol> = Vec::new();
     globals_of(chunk, &mut syms);
@@ -170,20 +177,29 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
     // callee; nothing else here is a heap handle.
     let env_base = heap.env_roots_len();
     let env_root = heap.root_env(env);
+    let mut ready = true;
     for sym in syms {
         if crate::core::value::symbol_name_ref(sym).contains('/') {
             let env = heap.read_root_env(env_root);
-            if heap.env_get(env, sym).is_none() {
-                // The result is discarded on purpose: this is a best-effort pre-load, and
-                // nothing here depends on the name resolving. A load error or a name that
-                // stays unbound just leaves the arm as it was — its own global read raises
-                // (or deopts to the VM, which raises) at the point the program reaches it,
-                // with the same error it would have had without the pre-load.
-                let _ = crate::eval::derive::global_miss(heap, env, sym);
+            if heap.env_get(env, sym).is_some() {
+                continue;
+            }
+            // `parkable_miss` declines a module another process holds — whether its claim
+            // was seen up front or taken while this load was on its way to it — instead of
+            // waiting for it. An error is discarded on purpose: this is a best-effort
+            // pre-load, and nothing here depends on the name resolving. A load error or a
+            // name that stays unbound just leaves the arm as it was — its own global read
+            // raises (or deopts to the VM, which raises) at the point the program reaches
+            // it, with the same error it would have had without the pre-load.
+            if let Ok(crate::eval::derive::ParkableMiss::Elsewhere(_)) =
+                crate::eval::derive::parkable_miss(heap, env, sym, None)
+            {
+                ready = false;
             }
         }
     }
     heap.truncate_env_roots(env_base);
+    ready
 }
 
 /// Snapshot which free globals this arm reads currently hold a `Value::Float` into

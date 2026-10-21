@@ -40,6 +40,28 @@ impl Heap {
         self.promote_in(v, &mut fwd)
     }
 
+    /// [`promote`](Self::promote) for a value about to become reachable from a global — a
+    /// `def`, a registry write, a staged module binding. A table it meets is **pinned**:
+    /// any process may read the global, so the table no longer dies with the process that
+    /// created it (`core::table`, "Lifetime"). A plain `promote` (a `spawn`ed closure)
+    /// only marks the table shared.
+    ///
+    /// Values already in a shared region are not walked, so a table inside a container a
+    /// `spawn` promoted earlier is not pinned by a later `def` of that same container;
+    /// a table bound directly, or inside anything built since, is.
+    pub fn promote_global(&self, v: Value) -> Value {
+        let _promote_guard = self
+            .runtime
+            .promote_lock
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut fwd = PromoteForward {
+            pin_tables: true,
+            ..PromoteForward::default()
+        };
+        self.promote_in(v, &mut fwd)
+    }
+
     /// [`promote`](Self::promote) + [`rehome_to_current_locked`] + a caller-supplied
     /// **publish** step, all under ONE `promote_lock` read guard — the atomic
     /// "share this value and bind it" used by every shared root (`globals`,
@@ -81,7 +103,12 @@ impl Heap {
             .promote_lock
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        let mut fwd = PromoteForward::default();
+        // Every caller publishes to a global root, so tables are pinned — see
+        // `promote_global`.
+        let mut fwd = PromoteForward {
+            pin_tables: true,
+            ..PromoteForward::default()
+        };
         let promoted = self.promote_in(v, &mut fwd);
         let shared = self.rehome_to_current_locked(promoted);
         publish(self, shared)
@@ -169,6 +196,12 @@ impl Heap {
             ValueRef::Fn(id) if id.region() == LOCAL => Value::func(self.promote_closure(id, fwd)),
             ValueRef::Macro(id) if id.region() == LOCAL => {
                 Value::macro_(self.promote_closure(id, fwd))
+            }
+            // A table is a scalar handle — nothing to copy — but it is leaving its
+            // creating process, and under a global it outlives it.
+            ValueRef::Table(id) => {
+                crate::core::table::note_shared(id, fwd.pin_tables);
+                v
             }
             // Atoms, and values already in PRELUDE/RUNTIME, need no copy.
             _ => v,
@@ -470,6 +503,8 @@ struct PromoteForward {
     vectors: HandleMap<VecId, VecId>,
     maps: HandleMap<MapId, MapId>,
     strings: HandleMap<StrId, StrId>,
+    /// The promoted value is bound to a global: pin the tables it reaches.
+    pin_tables: bool,
 }
 
 /// Multiplicative hasher for [`PromoteForward`]'s handle keys. Promote registers

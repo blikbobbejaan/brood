@@ -238,7 +238,55 @@
       (assert-error (table/delete t :a))
       (assert-error (table/incr t :a))
       (assert-error (table/count t))
-      (assert-error (table/snapshot t)))))
+      (assert-error (table/snapshot t))))
+
+  (test "a stale handle never reaches the table that reuses its slot"
+    ;; The drop recycles the slot (the table never left this process), so `u` may land in
+    ;; it; the handle's generation is what keeps `t` from reading `u`.
+    (let (t (table/new))
+      (table/put t :a 1)
+      (table/drop t)
+      (let (u (table/new))
+        (table/put u :a 2)
+        (assert-error (table/get t :a))
+        (assert-error (table/put t :a 3))
+        (is (not (table/drop t)))
+        (assert= (table/get u :a) 2)))))
+
+;; ---- lifetime: a table dies with the process that created it (ETS ownership) ----
+;; …unless a global holds it: `def` pins what it promotes, so a module's
+;; `(def- cache (table/new))` outlives whichever process happened to load the module.
+(def table-test-pinned nil)
+(def table-test-pinned-reader nil)
+
+(defn- tt-await-exit (pid)
+  (let (ref (monitor pid))
+    (receive ([:down ^ref _ _] :ok))))
+
+(describe "table: lifetime follows the creating process"
+  (test "a table dies with the process that created it"
+    (let (me (self)
+          child (spawn (let (t (table/new)) (table/put t :k 1) (send me [:tbl t]))))
+      (let (t (receive ([:tbl h] h)))
+        (tt-await-exit child)
+        (assert-error (table/get t :k))
+        (is (not (table/drop t))))))
+
+  (test "a table its creator stored in a global outlives the creator"
+    (tt-await-exit (spawn (def table-test-pinned (let (t (table/new)) (table/put t :k 1) t))))
+    (assert= (table/get table-test-pinned :k) 1))
+
+  (test "a table a global closure captures outlives its creator"
+    (tt-await-exit (spawn (def table-test-pinned-reader
+                            (let (t (table/new))
+                              (table/put t :k 2)
+                              (fn () (table/get t :k))))))
+    (assert= (table-test-pinned-reader) 2))
+
+  (test "a table shared with a spawned worker lives while its creator does"
+    (let (t (table/new))
+      (tt-await-exit (spawn (table/put t :k 3)))
+      (assert= (table/get t :k) 3))))
 
 ;; ---- independence + values --------------------------------------------------
 (describe "table: independence and value round-trip"

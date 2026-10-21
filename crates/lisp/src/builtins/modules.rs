@@ -153,6 +153,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         load_edge_skipped,
     );
     primitives.def(
+        "%load-may-hand-off?",
+        Arity::exact(0),
+        Sig::new(vec![], bool_ty),
+        &[],
+        "Consume the one-shot flag the kernel sets for a load whose miss can park (a frame that can hand its wait to `%lazy-global`): true exactly once, for the `require-one` that load invokes, which then answers `:%hand-off` instead of waiting if another process takes the claim first — its wait would otherwise be a `receive` under a native lookup, blocking the worker. False for every other call.",
+        load_may_hand_off,
+    );
+    primitives.def(
         "%forget-absent-modules!",
         Arity::exact(0),
         Sig::new(vec![], Ty::of(Tag::Nil)),
@@ -1117,6 +1125,11 @@ pub(super) fn root_module_name(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
 /// `(%load-edge-skipped?)` — see the registration.
 pub(super) fn load_edge_skipped(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     Ok(Value::Bool(crate::eval::derive::take_skip_next_edge()))
+}
+
+/// `(%load-may-hand-off?)` — see the registration.
+pub(super) fn load_may_hand_off(_: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
+    Ok(Value::Bool(crate::eval::derive::take_load_hand_off()))
 }
 
 /// `(%forget-absent-modules!)` — see the registration.

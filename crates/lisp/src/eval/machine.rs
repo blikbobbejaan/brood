@@ -532,6 +532,60 @@ fn lookup(heap: &mut Heap, env: EnvId, s: Symbol) -> LispResult {
     }
 }
 
+/// What a symbol miss resolved to in a machine ([`machine_miss`]).
+enum MachineMiss {
+    /// The name's value, loaded by the miss if it had to be.
+    Bound(Value),
+    /// Another process holds the load of the name's module: the prelude's `%lazy-global` and
+    /// the module, to run as frames of this machine so the wait in `%require-await` parks.
+    HandOff(Value, Symbol),
+}
+
+/// The miss on `s` in `env`, as the VM's `exec_chunk` makes it. A machine that can park
+/// (`capture`) takes the parkable miss (`derive::parkable_miss`), which hands the wait off
+/// when another process holds the module's load — including one that takes the claim while
+/// this miss is on its way to it; under `global_miss` that wait would block the worker. Any
+/// other machine makes the plain miss. A load runs code and can collect, so `form` and `env`
+/// are rooted across it and returned re-read, beside the outcome.
+#[cold]
+#[inline(never)]
+fn machine_miss(
+    heap: &mut Heap,
+    capture: bool,
+    env: EnvId,
+    s: Symbol,
+    form: Value,
+) -> (Result<MachineMiss, LispError>, Value, EnvId) {
+    use crate::eval::derive::{ParkableMiss, global_miss, parkable_miss};
+    let (vb, eb) = (heap.roots_len(), heap.env_roots_len());
+    let form_r = heap.root(form);
+    let env_r = heap.root_env(env);
+    let missed = match capture {
+        true => parkable_miss(heap, env, s, None),
+        false => global_miss(heap, env, s).map(ParkableMiss::Bound),
+    };
+    let missed = match missed {
+        Ok(ParkableMiss::Bound(v)) => Ok(MachineMiss::Bound(v)),
+        Ok(ParkableMiss::Elsewhere(module)) => {
+            match heap.env_get(heap.global(), crate::core::value::intern("%lazy-global")) {
+                Some(helper) => Ok(MachineMiss::HandOff(helper, module)),
+                // No `%lazy-global` (a bare boot without the prelude): the plain miss, which
+                // waits where it is.
+                None => {
+                    let env = heap.read_root_env(env_r);
+                    global_miss(heap, env, s).map(MachineMiss::Bound)
+                }
+            }
+        }
+        Err(e) => Err(e),
+    };
+    let form = heap.read_root(form_r);
+    let env = heap.read_root_env(env_r);
+    heap.truncate_roots(vb);
+    heap.truncate_env_roots(eb);
+    (missed, form, env)
+}
+
 /// The cdr of a cons cell, `nil` for anything else.
 fn cdr(heap: &Heap, cell: Value) -> Value {
     match cell.unpack() {
@@ -809,6 +863,16 @@ impl<'e> Machine<'e> {
                 let env = heap.read_root_env(env_r);
                 marks.restore(heap);
                 let spine = cdr(heap, call_form);
+                // A symbol head got here through `%lazy-global` (another process was loading
+                // its module), whose answer may be a macro — which the direct lookup expands,
+                // so this does too. A computed head's value is called as it is.
+                if let ValueRef::Macro(mid) = v.unpack()
+                    && let ValueRef::Pair(p) = call_form.unpack()
+                    && matches!(heap.pair(p).0.unpack(), ValueRef::Sym(_))
+                {
+                    self.env = env;
+                    return self.expand_macro(heap, mid, call_form, spine);
+                }
                 self.call(heap, v, call_form, spine, env)
             }
             KontKind::Args(mut st) => {
@@ -852,7 +916,14 @@ impl<'e> Machine<'e> {
     /// answers, hands a tail position back to the loop, or pushes a sub-form.
     fn step(&mut self, heap: &mut Heap) -> Result<Step, LispError> {
         match self.expr.unpack() {
-            ValueRef::Sym(s) => return lookup(heap, self.env, s).map(Step::Value),
+            ValueRef::Sym(s) => {
+                return match heap.env_get(self.env, s) {
+                    Some(v) => Ok(Step::Value(crate::builtins::contracts::boundary_resolve(
+                        heap, self.env, v,
+                    ))),
+                    None => self.symbol_miss(heap, s),
+                };
+            }
             ValueRef::Vector(id) => {
                 let items = heap.vector(id).to_vec();
                 return self.literal(heap, LiteralKind::Vector, &items);
@@ -1117,19 +1188,18 @@ impl<'e> Machine<'e> {
                 let v = match heap.env_get(self.env, s) {
                     Some(v) => crate::builtins::contracts::boundary_resolve(heap, self.env, v),
                     None => {
-                        let env = self.env;
-                        let (v, new_call_form, new_env) = heap.root_scope(|heap| {
-                            let call_form_r = heap.root(call_form);
-                            let env_r = heap.root_env(env);
-                            let looked_up = crate::eval::derive::global_miss(heap, env, s);
-                            let call_form = heap.read_root(call_form_r);
-                            let v = looked_up.map_err(|e| e.or_form_pos(heap, call_form))?;
-                            Ok((v, call_form, heap.read_root_env(env_r)))
-                        })?;
+                        let (missed, new_call_form, new_env) =
+                            machine_miss(heap, self.capture, self.env, s, call_form);
                         call_form = new_call_form;
                         self.env = new_env;
                         spine = cdr(heap, call_form);
-                        v
+                        match missed.map_err(|e| e.or_form_pos(heap, call_form))? {
+                            MachineMiss::Bound(v) => v,
+                            // Another process holds the head's module (`head_handoff`).
+                            MachineMiss::HandOff(helper, module) => {
+                                return self.head_handoff(heap, s, call_form, helper, module);
+                            }
+                        }
                     }
                 };
                 if let ValueRef::Macro(mid) = v.unpack() {
@@ -1151,6 +1221,47 @@ impl<'e> Machine<'e> {
             },
         };
         self.call(heap, callee, call_form, spine, self.env)
+    }
+
+    /// A symbol `s` unbound in this frame's environment. When another process holds its
+    /// module's load, `%lazy-global` waits for that load as frames of this machine, so the
+    /// wait parks and its value answers this frame; otherwise the plain miss ([`machine_miss`]).
+    /// Out of line: `step` is the loop's hot path, and this is its rare branch.
+    #[cold]
+    #[inline(never)]
+    fn symbol_miss(&mut self, heap: &mut Heap, s: Symbol) -> Result<Step, LispError> {
+        let (missed, expr, env) = machine_miss(heap, self.capture, self.env, s, self.expr);
+        self.expr = expr;
+        self.env = env;
+        match missed? {
+            MachineMiss::Bound(v) => Ok(Step::Value(v)),
+            MachineMiss::HandOff(helper, module) => {
+                let argv = SmallVec::from_slice(&[Value::symbol(module), Value::symbol(s)]);
+                self.apply(heap, helper, argv, self.expr, self.env)
+            }
+        }
+    }
+
+    /// A call head `s` unbound in this frame's environment whose module another process holds
+    /// the load of: the head is `helper`'s (`%lazy-global`'s) value, computed as a frame of
+    /// its own like a computed head (`KontKind::Head`), so the wait parks.
+    fn head_handoff(
+        &mut self,
+        heap: &mut Heap,
+        s: Symbol,
+        call_form: Value,
+        helper: Value,
+        module: Symbol,
+    ) -> Result<Step, LispError> {
+        let marks = Marks::take(heap);
+        let call_form_r = heap.root(call_form);
+        let env_r = heap.root_env(self.env);
+        let kind = KontKind::Head { call_form_r, env_r };
+        if !self.save(heap, marks, kind, Some(call_form)) {
+            return Err(tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form));
+        }
+        let argv = SmallVec::from_slice(&[Value::symbol(module), Value::symbol(s)]);
+        self.apply(heap, helper, argv, call_form, self.env)
     }
 
     /// A macro call: run the expander as a frame of its own (`KontKind::Expand`), whose
@@ -1679,6 +1790,7 @@ impl<'e> Machine<'e> {
                         } else {
                             heap.env_get(cl_env, head)
                         };
+                        let capture = self.capture;
                         let inner = match fast {
                             Some(v) => v,
                             None => heap
@@ -1687,7 +1799,24 @@ impl<'e> Machine<'e> {
                                         cur_argv.iter().map(|&v| heap.root(v)).collect();
                                     let form_r = heap.root(call_form);
                                     let env_r = heap.root_env(env);
-                                    let inner = lookup(heap, cl_env, head)?;
+                                    // Another process holds the inner head's module: no
+                                    // redirect — the wrapper's own body runs, and its
+                                    // call-head miss hands the wait to `%lazy-global`, where
+                                    // it parks. Nil is not callable, so the redirect below
+                                    // declines.
+                                    let inner = match heap.env_get(cl_env, head) {
+                                        None if capture => {
+                                            match crate::eval::derive::parkable_miss(
+                                                heap, cl_env, head, None,
+                                            )? {
+                                                crate::eval::derive::ParkableMiss::Bound(v) => v,
+                                                crate::eval::derive::ParkableMiss::Elsewhere(_) => {
+                                                    Value::nil()
+                                                }
+                                            }
+                                        }
+                                        _ => lookup(heap, cl_env, head)?,
+                                    };
                                     for (slot, &r) in cur_argv.iter_mut().zip(arg_roots.iter()) {
                                         *slot = heap.read_root(r);
                                     }

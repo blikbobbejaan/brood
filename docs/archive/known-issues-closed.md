@@ -14341,7 +14341,44 @@ only an executor stamps. The first sample now reads ~216 ms where the cold first
 ~212 ms of wall time. Guard: `crates/cli/tests/cpu_time_first_read.rs` — a fresh runtime whose
 first read is the `before`; red without the stamp (0 µs).
 
-## KI-283 — a worker busy under a native frame still counted as live ✅ FIXED 2026-10-21
+## KI-283 — a function the linear-map rewrite built on a table leaked that table on every call ✅ FIXED 2026-10-21
+
+**Symptom.** A five-line tally — `(defn tally (xs m) (if (empty? xs) m (tally (rest xs)
+(%map-int-add m (first xs) 1))))` over a 200-element range — called in a loop under the
+documented `ulimit -v 16000000` died after about 25 000 calls with `table: cannot reserve a 512 KB
+dense slot chunk: Cannot allocate memory (os error 12)`. Uncapped it did not fail; it grew. The
+same program with `BROOD_LINMAP=0` ran to completion. Printing a fresh `(%table)` before and after
+1000 calls read `#<table 1>` and `#<table 1002>`.
+
+**Cause.** The linear-map rewrite (ADR-112/360) runs a provably-linear map accumulator on a
+private table: the wrapper seeds it with `%table-from-map`, runs the loop, and snapshots the table
+back to a map. Nothing ever dropped the table. And even a dropped table kept its registry slot
+for good — the registry is append-only — with its shell and every 512 KB chunk reservation its
+dense writes had mapped (`table-drop` cleared the slots but kept the mappings, so JIT'd code
+holding a slot base could never touch freed memory). So each call of such a function cost a
+chunk of address space and at least one committed page, for the life of the runtime. `with-err-str`
+leaked its sink table the same way on the success path.
+
+**Why it survived.** Every test of the rewrite asserts values (`linmap_soundness_test`) or the
+expansion (`linmap_idiom.rs`); none calls a rewritten function more than a few hundred times in
+one runtime. KI-142's guard measures one table's reservation, not what a dropped one keeps. The
+benchmarks that exercise the rewrite (`wordcount`) call the function once.
+
+**Fix.** Tables now die with the process that created them (ADR-418), and a dropped table's
+registry slot is reused when no other process can hold its handle: the slot's generation is part
+of the handle, so a stale handle errors rather than reaching the next table. The rewrite's wrapper
+frees its table once the loop has returned (`%table-free`, which recycles even a slot JIT'd code
+used — that loop has returned), and `with-err-str` drops its sink. A drop also returns the dense
+pages to the OS (`MADV_DONTNEED`; the mapping stays). The tally now runs 320 000 calls at a flat
+~150 MB RSS.
+
+**Guard.** `crates/lisp/tests/table_address_space.rs`: `a_rewritten_map_loop_reuses_its_table_across_calls`,
+`a_dropped_table_s_slot_is_reused` and `a_process_s_tables_are_reclaimed_when_it_exits` each make
+2000 short-lived tables and read the process's own `VmSize`. Red with the wrapper's free removed
+("2000 rewritten tallies grew the address space by 1066 MB"), with owner release removed (1066 MB),
+and with recycling disabled (all three). `tests/table_test.blsp` "a stale handle never reaches the
+table that reuses its slot" is red with the generation check removed.
+## KI-284 — a worker busy under a native frame still counted as live ✅ FIXED 2026-10-21
 
 **Symptom.** `make test` failed `brood_suite_passes` with the same 344 assertions twice running:
 `unbound symbol: multimap/empty`, `mcp/handle`, `nest/parse`, `markdown/->html`… across 23 test
