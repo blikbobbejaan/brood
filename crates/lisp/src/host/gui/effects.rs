@@ -55,6 +55,8 @@ pub(crate) struct EmitterStep {
     pub spawn_count: u32,
     pub seed: u32,
     /// The frame carries this emitter (else its particles are only living out their lives).
+    /// Read by the GPU renderer only; a `gui` build without `gui-gpu` never reads it.
+    #[cfg_attr(not(feature = "gui-gpu"), allow(dead_code))]
     pub present: bool,
 }
 
