@@ -92,6 +92,19 @@ devlog entries of the same dates.
 
 ## Open threads, in value order
 
+### DONE (2026-10-21): a wait for another process's module load parks, at every tier
+
+The last weakness the `bytes_literal_compiles` diagnosis turned up. `bbd6194f` hands a VM
+global miss on a module another live process is loading (`derive::module_loading_elsewhere`)
+to the prelude's `%lazy-global`/`%lazy-call` as ordinary frames, so the wait parks. The same
+day this was carried to the rest: the tier-0 machine makes the same hand-off (and does not
+redirect a thin wrapper whose inner head is mid-load), and the JIT's tier-up pre-load declines
+rather than waits. Guards: `lazy_load_wait_parks.rs` (VM, stdlib image) and
+`autoload_parks.rs` (tiers 0/1/2, and the tier-up); devlog 2026-10-21. Still blocking by
+design: a load inferred at COMPILE time (a qualified macro head), a miss in a nested
+(non-capturing) run, and the narrow race where the claim is taken between the
+loading-elsewhere check and `require-one`'s own claim.
+
 ### DONE (2026-10-19): the stepping tree-walker, ADR-416 (the user chose option B)
 
 All five stages are in (devlog 2026-10-19, stage 1 through "late night"). At `BROOD_TIER=0`

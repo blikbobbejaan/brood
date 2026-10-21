@@ -2934,3 +2934,56 @@ use, every process but the loader waiting for it inside the global-miss path (`g
 `ensure_required` → `require-one`), a native frame where a `receive` blocks by design — 0 in 15
 with `BROOD_NO_STDIMAGE=1`, 0 in 15 with the literal kept and `bytes/length` dropped.
 
+
+## 2026-10-21 — a wait for another process's module load parks at tier 0 and at tier-up too
+
+`bbd6194f` landed the VM half while this was in progress in parallel: a global miss on a
+module another live process is mid-load of goes to the prelude's `%lazy-global`/`%lazy-call`
+as an ordinary frame, so `%require-await`'s `receive` parks instead of blocking the worker
+(ADR-100 §7.4). A broader version here — routing EVERY miss that loads, with the edge flag,
+the ADR-366 stale mark and the unbound error's position settled by a finishing builtin — was
+dropped in its favour; what it covered beyond the VM was carried onto `bbd6194f`'s mechanism:
+
+- **Tier 0.** The VM's hand-off is in `exec_chunk`, so at `BROOD_TIER=0` the waiters still
+  blocked. The machine now makes the same hand-off (`machine::lazy_handoff`, same predicate,
+  same `capture` gate): a symbol miss applies `%lazy-global` as this frame's tail, a call-head
+  miss computes the head with it as a frame of its own (`KontKind::Head`, which now expands a
+  macro the answer turns out to be, as the direct lookup does). A thin wrapper whose inner head
+  is mid-load is not redirected, so its own body makes the miss and the hand-off — the
+  redirect looked the head up natively.
+- **The JIT's tier-up.** `preload_arm_globals` loads what a hot arm names before it goes
+  native (ADR-335: native code cannot load, and a native read of an unbound name raises), on
+  the VM, through `global_miss` — so it waited for an in-flight load with its worker blocked.
+  It now reports whether the arm is ready; with a module mid-load elsewhere it is not, and the
+  election backs the hotness counter off (not BAILED) and runs the VM, whose miss parks. A
+  first cut that just skipped the module would have let the arm go native with the name
+  unbound — caught reading `brood_rt_global` while writing it up.
+
+Measured by the scheduler log (`park pid=N` per park, nothing for a blocked worker) on a module
+held mid-load while six processes miss on it, three on a call head and three on a value. On
+`3a4de80b` (which carries `bbd6194f`): 6 of 6 parked at tiers 1 and 2, 0 of 6 at tier 0, and the
+tier-up program answered `:blocked` after its 20 s wait. With this: 6 of 6 at every tier, also
+under `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1`, and the hot loop answers while the load is held. Guards, `crates/cli/tests/autoload_parks.rs`, each
+sabotaged red alone: the tier-0 case (red with the machine's hand-off off, and again with only
+the thin-wrapper redirect restored) and a tier-up case — `g` names `slowmod/f` in a branch it
+never takes and gets hot while `slowmod` is held; its answer must arrive before the load is let
+go (red, `:blocked` after 20 s, with the pre-load waiting again).
+
+**Cost, in instructions** (`perf stat -e instructions:u`, both arms through `make release-brood`
+on a live stdlib image, against `3a4de80b`): at the default ceiling the eleven usual rows plus
+`startup`, `strings` and `regex` sit inside their base-vs-base band (`bintree` and `regex`
+re-run at `-r 10` to settle a noisy first look). At tier 0 the first build was +0.3–0.6% on
+every tree-walking row — and the same with both arms built in one worktree, so code, not
+placement — although nothing on the hit path had changed: `lazy_handoff` was being inlined
+into the machine's `apply`/`step`. Marked `#[cold] #[inline(never)]` (and the two miss branches
+moved out of `step` as `symbol_miss`/`head_handoff`), the tier-0 rows are flat: −0.30% to
+−0.02%, `bintree` +0.42% inside its own ±0.44% run spread.
+
+**A flake found on the way:** `accept_starvation` (KI-227's guard) failed once in a full suite
+with `accepted 31`. Its server timed its first 3 s quiet window from its own start, so a client
+slower than that to boot (a loaded machine) left the first window empty: nothing was closed,
+and the second accepted 31 and starved with no descriptor ever freed. Reproduced on demand by
+starting the client 4 s late, on this tree and on an older binary (`accepted 32`), so not this
+change. The server now waits for the client's `connected.txt` before its windows start: green
+with the client 4 s late, still red (`accepted 31`) with the reactor's starved-listener retry
+forced off.

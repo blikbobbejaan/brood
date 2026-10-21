@@ -17,8 +17,14 @@ use std::time::{Duration, Instant};
 const SERVER: &str = r#"
 (def listener (tcp/listen "127.0.0.1" 0))
 (file/spit "port.txt" (str (tcp/local-port listener)))
+;; The quiet windows start once the client has made all 50 connections, not when this server
+;; starts: a client slow to boot (a loaded machine) otherwise left the first window empty, so
+;; nothing was closed and the second accepted 31 and starved for good.
+(defn wait-connected ()
+  (if (file/exists? "connected.txt") nil (do (sleep 20) (wait-connected))))
 (defn drain-accepts (acc quiet-ms)
   (receive ([:tcp-accept _ client] (drain-accepts (cons client acc) quiet-ms)) (after quiet-ms acc)))
+(wait-connected)
 (def first-wave (drain-accepts (list) 3000))
 (map first-wave tcp/close)
 (def second-wave (drain-accepts (list) 5000))

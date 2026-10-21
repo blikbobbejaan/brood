@@ -3380,7 +3380,9 @@ demand (its other names stay qualified, `test/describe`); to refer them **bare**
 put a `(:use name)` clause in your `defmodule` header (see Namespaces), which loads
 the module and refers its names. (The kernel's internal loader is `require-one`,
 used by the `:use` machinery, the runtime bootstrap, and a few dynamic/cycle
-cases — not something you call directly.)
+cases — not something you call directly.) A module loads once per runtime: a process whose
+reference finds it mid-load in another process waits for that load to finish, parked like
+any `receive`, and never sees a half-loaded module.
 
 ```clojure
 (reflect/eval (reflect/read-string "(+ 40 2)"))  ;=> 42

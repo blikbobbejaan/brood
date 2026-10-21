@@ -408,7 +408,17 @@ fn jit_tier_in_frame_slow(
         // run the VM; the next activation recompiles and re-tiers from the better chunk.
         {
             let epoch = heap.global_epoch();
-            preload_arm_globals(arm, heap, heap.read_root_env(env));
+            let ready = preload_arm_globals(arm, heap, heap.read_root_env(env));
+            // A module it names is mid-load in another process: stay on the VM, whose miss
+            // parks, and re-elect later — not BAILED, the load will finish.
+            if !ready {
+                if crate::diagnostics::debug_flags::jit_bail_trace() {
+                    let name = arm.dbg_label();
+                    eprintln!("[jit-bail] arm={name} reason=module-load-in-flight (retries)");
+                }
+                arm.jit_calls.store(0, Relaxed);
+                return None;
+            }
             if heap.global_epoch() != epoch {
                 heap.mark_arm_stale(arm);
                 if crate::diagnostics::debug_flags::trace_compile() {

@@ -532,6 +532,21 @@ fn lookup(heap: &mut Heap, env: EnvId, s: Symbol) -> LispResult {
     }
 }
 
+/// The first-use hand-off for a miss on `s`, as the VM's `exec_chunk` makes it: when ANOTHER
+/// process is mid-load of `s`'s module (`derive::module_loading_elsewhere`) and this machine
+/// can park (`capture`), the prelude's `%lazy-global` and the module. Run as frames of this
+/// machine, its wait in `%require-await` parks; under `global_miss` it would block the worker.
+#[cold]
+#[inline(never)]
+fn lazy_handoff(heap: &Heap, capture: bool, s: Symbol) -> Option<(Value, Symbol)> {
+    if !capture {
+        return None;
+    }
+    let module = crate::eval::derive::module_loading_elsewhere(heap, s)?;
+    let helper = heap.env_get(heap.global(), crate::core::value::intern("%lazy-global"))?;
+    Some((helper, module))
+}
+
 /// The cdr of a cons cell, `nil` for anything else.
 fn cdr(heap: &Heap, cell: Value) -> Value {
     match cell.unpack() {
@@ -809,6 +824,16 @@ impl<'e> Machine<'e> {
                 let env = heap.read_root_env(env_r);
                 marks.restore(heap);
                 let spine = cdr(heap, call_form);
+                // A symbol head got here through `%lazy-global` (another process was loading
+                // its module), whose answer may be a macro — which the direct lookup expands,
+                // so this does too. A computed head's value is called as it is.
+                if let ValueRef::Macro(mid) = v.unpack()
+                    && let ValueRef::Pair(p) = call_form.unpack()
+                    && matches!(heap.pair(p).0.unpack(), ValueRef::Sym(_))
+                {
+                    self.env = env;
+                    return self.expand_macro(heap, mid, call_form, spine);
+                }
                 self.call(heap, v, call_form, spine, env)
             }
             KontKind::Args(mut st) => {
@@ -852,7 +877,14 @@ impl<'e> Machine<'e> {
     /// answers, hands a tail position back to the loop, or pushes a sub-form.
     fn step(&mut self, heap: &mut Heap) -> Result<Step, LispError> {
         match self.expr.unpack() {
-            ValueRef::Sym(s) => return lookup(heap, self.env, s).map(Step::Value),
+            ValueRef::Sym(s) => {
+                return match heap.env_get(self.env, s) {
+                    Some(v) => Ok(Step::Value(crate::builtins::contracts::boundary_resolve(
+                        heap, self.env, v,
+                    ))),
+                    None => self.symbol_miss(heap, s),
+                };
+            }
             ValueRef::Vector(id) => {
                 let items = heap.vector(id).to_vec();
                 return self.literal(heap, LiteralKind::Vector, &items);
@@ -1117,6 +1149,10 @@ impl<'e> Machine<'e> {
                 let v = match heap.env_get(self.env, s) {
                     Some(v) => crate::builtins::contracts::boundary_resolve(heap, self.env, v),
                     None => {
+                        // Another process is loading the head's module (`head_handoff`).
+                        if let Some(step) = self.head_handoff(heap, s, call_form) {
+                            return step;
+                        }
                         let env = self.env;
                         let (v, new_call_form, new_env) = heap.root_scope(|heap| {
                             let call_form_r = heap.root(call_form);
@@ -1151,6 +1187,45 @@ impl<'e> Machine<'e> {
             },
         };
         self.call(heap, callee, call_form, spine, self.env)
+    }
+
+    /// A symbol `s` unbound in this frame's environment. When another process is loading its
+    /// module, `%lazy-global` waits for that load as frames of this machine, so the wait parks
+    /// and its value answers this frame; otherwise the plain miss (`global_miss`). Out of line:
+    /// `step` is the loop's hot path, and this is its rare branch.
+    #[cold]
+    #[inline(never)]
+    fn symbol_miss(&mut self, heap: &mut Heap, s: Symbol) -> Result<Step, LispError> {
+        if let Some((helper, module)) = lazy_handoff(heap, self.capture, s) {
+            let argv = SmallVec::from_slice(&[Value::symbol(module), Value::symbol(s)]);
+            return self.apply(heap, helper, argv, self.expr, self.env);
+        }
+        crate::eval::derive::global_miss(heap, self.env, s).map(Step::Value)
+    }
+
+    /// A call head `s` unbound in this frame's environment whose module another process is
+    /// loading: the head is `%lazy-global`'s value, computed as a frame of its own like a
+    /// computed head (`KontKind::Head`), so the wait parks. `None` when there is no such load.
+    #[cold]
+    #[inline(never)]
+    fn head_handoff(
+        &mut self,
+        heap: &mut Heap,
+        s: Symbol,
+        call_form: Value,
+    ) -> Option<Result<Step, LispError>> {
+        let (helper, module) = lazy_handoff(heap, self.capture, s)?;
+        let marks = Marks::take(heap);
+        let call_form_r = heap.root(call_form);
+        let env_r = heap.root_env(self.env);
+        let kind = KontKind::Head { call_form_r, env_r };
+        if !self.save(heap, marks, kind, Some(call_form)) {
+            return Some(Err(
+                tw_frame_depth_error(MAX_TW_FRAMES).or_form_pos(heap, call_form)
+            ));
+        }
+        let argv = SmallVec::from_slice(&[Value::symbol(module), Value::symbol(s)]);
+        Some(self.apply(heap, helper, argv, call_form, self.env))
     }
 
     /// A macro call: run the expander as a frame of its own (`KontKind::Expand`), whose
@@ -1681,6 +1756,13 @@ impl<'e> Machine<'e> {
                         };
                         let inner = match fast {
                             Some(v) => v,
+                            // Another process is loading the inner head's module: no
+                            // redirect — the wrapper's own body runs, and its call-head miss
+                            // hands the wait to `%lazy-global`, where it parks. Nil is not
+                            // callable, so the redirect below declines.
+                            None if lazy_handoff(heap, self.capture, head).is_some() => {
+                                Value::nil()
+                            }
                             None => heap
                                 .root_scope(|heap| {
                                     let arg_roots: SmallVec<[Root; 8]> =

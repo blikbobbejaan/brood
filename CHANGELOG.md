@@ -6,6 +6,14 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.**
+- A process that finds another mid-load of a module it is about to use now parks at
+  `BROOD_TIER=0` too: the tree-walker makes the same hand-off to `%lazy-global` as the VM,
+  and a thin wrapper whose inner head is mid-load is not redirected, so its body makes it.
+  And the JIT's tier-up no longer waits for such a load: the pre-load that loads what a hot
+  arm names declines the tier-up while one of those modules is mid-load in another process,
+  and retries later.
+
 ## v0.42.2 — TLS trust fixes, and first-use loads that park
 
 Two TLS advisories patched on the path every `https` fetch and `tls/listen` take, and a
