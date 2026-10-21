@@ -184,6 +184,17 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
             if heap.env_get(env, sym).is_some() {
                 continue;
             }
+            // Not inside another module's load (KI-285): this pre-load runs whenever an arm
+            // happens to get hot, and loads every module the arm NAMES, cold branches
+            // included — so a load it ran there would make what that module's load
+            // introduces depend on JIT timing. A load is open for a module's sweep and
+            // contract hook too, where loading is forbidden outright (`%contract-machinery`).
+            // The election waits, as for a module another process holds, and tries again
+            // once the load is done.
+            if heap.in_journalled_load() {
+                ready = false;
+                continue;
+            }
             // `parkable_miss` declines a module another process holds — whether its claim
             // was seen up front or taken while this load was on its way to it — instead of
             // waiting for it. An error is discarded on purpose: this is a best-effort

@@ -3147,3 +3147,23 @@ A trap on the way, worth knowing: after the bisect the prelude was restored but 
 dozen runs tested a binary still carrying the change. `nest check` and `brood --check` refuse a
 stale binary; a test run only warns on stderr, which the filtered output these runs were read
 through dropped. Rebuild `brood` and `nest` after every `.blsp` edit before believing a run.
+
+## 2026-10-21 — KI-285 fixed: the prefetch was the messenger
+
+The header prefetch backed out above was not the bug; it moved when modules load, and two things
+that depended on load timing broke. A fresh probe file under `BROOD_CONTRACTS=1` reproduced it
+every time (a reused one passed: its cached check verdict replayed loads that had `string` and
+`seq` in place before the first window). A temporary backtrace on `BROOD_TRACE_GLOBAL`'s define
+named the loader of `string` inside lineedit's window: the JIT tier-up pre-load, run from the
+contract hook during lineedit's sweep. With that stopped, the window still introduced `seq` and
+`map` — loaded by the probe's own `seq/filter`, which ran inside the window. Each fix alone left
+the probe red; both together made lineedit's set a strict subset of repl's, armed and unarmed.
+
+- `preload_arm_globals` defers while a module load is open (`in_journalled_load`), as it already
+  did for a module another process holds.
+- The stdimage builder's probe and the attribution test's run only `require-one` and the native
+  `reflect/global-names` inside the window, the set arithmetic after it.
+
+The prefetch is back and its loader test re-enabled. Not run on the development desktop: the
+JIT tests beyond `autoload_parks` that touch the pre-load, and `make ab-vm` for the deferred
+tier-up — CI and the test machine are the check.

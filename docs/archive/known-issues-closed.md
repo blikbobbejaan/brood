@@ -14419,3 +14419,47 @@ that then blocks in a nested `receive` is not counted twice.
 seven-line program at tiers 0, 1 and 2 under `BROOD_J=2`, killed at 20 s if starved.
 Sabotage-verified: with the `cpu_dirty_enter()` call removed it fails after 20 s at tier 0;
 restored, green at every tier.
+
+## KI-285 — a loader waiting on its header's dependency blocked its worker; the header prefetch that fixed it broke stdimage attribution ✅ FIXED 2026-10-21
+
+**Symptom.** A process LOADING a module whose header `(:use m)` named a module another process
+was mid-load of waited for it under the native source load, blocking its OS worker: 40 loaders of
+modules whose header `(:use http)` while `http` was held blocked 118-123 workers a run
+(`dirty-receive-block` under `BROOD_JIT_BAIL_TRACE`). `80270034` fixed that with a prefetch
+(`%require-header-deps`: read the source's first form, require each header target from Brood
+first), and the prefetch broke CI's "suite with contracts armed" job three times —
+`tests/stdimage_test.blsp:89`, *a root global is attributed to the module that defines it, not to
+a dependent*: `editor/lineedit` read as introducing more globals than `repl` (`smaller=false`).
+Backed out in `dcf4f399`.
+
+**Cause.** Not the prefetch, which only moved when modules load. Two defects under it:
+- **The JIT's tier-up pre-load loaded modules inside another module's load.** `preload_arm_globals`
+  loads every module a hot arm NAMES, cold branches included, at whatever moment the arm crosses
+  the threshold. Under contracts that moment fell inside `editor/lineedit`'s contract sweep
+  (`%contracts-sweep!` → `contract_apply` → the hook → `jit_tier_in_frame` →
+  `preload_arm_globals` → `parkable_miss`), so `string` loaded inside lineedit's probe window and
+  in no later one — what a module's load introduced depended on JIT timing. It also loaded where
+  `%contract-machinery` says nothing may load.
+- **The attribution probe measured its own code.** Its `seq/filter` ran inside the
+  `%isolate-discard-loads` window, so its first use loaded `seq` (and `map`) into the first
+  probe's set; by the second window the call site was compiled against them and did not miss.
+  The real builder (`std/tool/stdimage.blsp`) has the same shape and was safe only because the
+  `stdimage` module's own header had loaded `seq` before any window opened.
+
+**Why it survived.** Every run where `string` and `seq` happened to be loaded before the first
+window passed: a cached check verdict replaying its loads, the debug build's slower tiering, a
+script without the prefetch. A fresh file under `BROOD_CONTRACTS=1` reproduced it every time.
+
+**Fix.** The tier-up pre-load defers while a module load is open (`heap.in_journalled_load()`):
+the arm is "not ready", as for a module another process holds, and its election tries again
+once the load is done. The builder's probe and the test's run only `require-one` and the native
+`(reflect/global-names)` inside the window, the set arithmetic after it. The prefetch is
+restored, and `lazy_load_wait_parks::a_loader_waiting_on_its_headers_dependency_parks` runs again.
+
+**Guard.** `tests/stdimage_test.blsp`'s attribution test under `BROOD_CONTRACTS=1`. Each half
+shown necessary on the probe program, contracts armed: with the pre-load guard removed, `string`
+appears only in lineedit's set; with the old probe shape, `seq`/`map` do; with both, lineedit's
+set is a strict subset of repl's (3/3 armed, 3/3 unarmed). The file passed 13/13 three times
+armed and twice unarmed, and the 19 load-path tests passed, before tests stopped being run on the
+development desktop; the wider JIT tests touching the pre-load were NOT run there — CI's run of
+the commit is the check.

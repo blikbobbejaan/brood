@@ -217,16 +217,18 @@ since the prelude is always present."
                      ;; and then UNDO the load, so the next probe starts clean. A plain
                      ;; `%isolate` keeps a module load (KI-134, ADR-339) — which is right
                      ;; for a test and would credit every later probe with this one's
-                     ;; globals here.
-                     (%isolate-discard-loads
-                       (fn ()
-                         (let (before (into #{} (reflect/global-names))
-                               ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
-                               _ (check-allow :discarded-catch
-                                   (try (require-one m) (catch _ nil))))
-                           (into #{}
-                             (seq/filter (reflect/global-names)
-                               (fn (s) (not (contains? before s)))))))))))
+                     ;; globals here. Only the load and a native snapshot run inside the
+                     ;; window, the arithmetic after it: Brood run in there is measured too,
+                     ;; and its own first use of a module would load that module into `m`'s
+                     ;; set (KI-285).
+                     (let (before (into #{} (reflect/global-names))
+                           after (%isolate-discard-loads
+                                   (fn ()
+                                     ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
+                                     (check-allow :discarded-catch
+                                       (try (require-one m) (catch _ nil)))
+                                     (reflect/global-names))))
+                       (into #{} (seq/filter after (fn (s) (not (contains? before s)))))))))
         ;; now load them for real, so the globals being imaged are live in THIS heap
         ;; check-allow :discarded-catch — image-cache housekeeping; a module that will not load stays out of the image (the ADR-280 differential catches it)
         _ (doseq (m names) (check-allow :discarded-catch (try (require-one m) (catch _ nil))))
