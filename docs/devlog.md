@@ -3166,3 +3166,14 @@ contracts; the decline removed, the probe is red 5/5. Guard: `tier_up_loads.rs`.
 
 One detour recorded in the KI: a worktree build "proved" one side innocent because it had no
 stdlib image — and without one this cannot fail.
+
+## 2026-10-21 (evening) — `tier_up_loads` red in the tree-walker job: the test depended on the boot path
+
+`9d75473d`'s CI failed both `tier_up_loads.rs` cases, at tier 1 and tier 2 alike, in the
+`differential (tree-walker)` job only — the job that sets `BROOD_NO_STDIMAGE=1`, which the
+test's child inherited. With no stdlib image a qualified call HEAD loads its module at
+expansion (`derive.rs`: only a head the image vouches is a function waits for its call), so
+`hotmod`'s cold `(zlib/gzip "a")` loaded `zlib` before anything tiered up. The KI-285 fix was
+not at fault. The cold branch now names `zlib/gzip` as an operand, lazy on both boot paths and
+still an `Inst::Global` the tier-up pre-load reads, so the case asks the same question in every
+job.

@@ -12,11 +12,18 @@
 //! Asserted on what a program reaches: `require-one` of a module whose own load makes a
 //! function hot, where that function's cold branch names a module nobody has loaded. The
 //! cold module must still be unloaded afterwards — and calling the branch must load it.
+//!
+//! The cold branch names `zlib/gzip` as an OPERAND, not a call head. With no stdlib image
+//! (`BROOD_NO_STDIMAGE=1`, which CI's tree-walker job sets and this child inherits) a
+//! qualified call head loads its module at EXPANSION, by design (`derive.rs`, ADR-335: only
+//! a head the image vouches is a function may wait for its call) — so a head would load
+//! `zlib` before any tier-up and the question would depend on the boot path. An operand is
+//! lazy on both paths, and the tier-up pre-load still sees it (`Inst::Global`).
 
 use std::process::Command;
 
 const HOTMOD: &str = r#"(defmodule hotmod)
-(defn pick (x) (if (= x -1) (zlib/gzip "a") x))
+(defn pick (x) (if (= x -1) (let (gzip zlib/gzip) (gzip "a")) x))
 (defn spin (n acc) (if (= n 0) acc (spin (dec n) (+ acc (pick n)))))
 (def total (spin 50000 0))
 "#;
