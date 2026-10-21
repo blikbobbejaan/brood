@@ -58,7 +58,10 @@ answers `((render [x]))`."
   (get *protocols* bname))
 
 (defn check (form)
-  "Advisory type-check a quoted form: a list of warning strings, or nil. Never raises."
+  "Advisory type-check a quoted form: a list of warning strings, or nil. Never raises.
+
+    (reflect/check '(+ 1 2))             → nil
+    (count (reflect/check '(+ 1 \"a\")))   → 1"
   (%check form))
 
 (defn check-deps-fp (dep-keys)
@@ -98,11 +101,16 @@ doesn't parse, so a live editor buffer never errors mid-edit.
 The question [[expr-type]] cannot answer. A `(defn …)` form evaluates to its own NAME, so
 the type of its value says nothing about the function — which is why a live evaluator
 showing `=> foo` for a definition has nothing to put beside it. Shares one checker pass
-with [[file-signatures]], so a buffer and the file it will be saved as cannot disagree."
+with [[file-signatures]], so a buffer and the file it will be saved as cannot disagree.
+
+    (get (first (reflect/source-signatures \"(defn twice (x) (* 2 x))\")) :name)   → \"twice\""
   (%source-signatures src))
 
 (defn check-string-structured (src)
-  "Advisory type-check the source string `src`, returning a list of `{:line :col :message}` maps (1-based positions), or `()` when `src` doesn't parse (e.g. incomplete input) — the string-source counterpart of check-file-structured, for live editor-buffer diagnostics."
+  "Advisory type-check the source string `src`, returning a list of `{:line :col :message}` maps (1-based positions), or `()` when `src` doesn't parse (e.g. incomplete input) — the string-source counterpart of check-file-structured, for live editor-buffer diagnostics.
+
+    (reflect/check-string-structured \"(+ 1 2)\")   → nil
+    (get (first (reflect/check-string-structured \"(+ 1 \\\"a\\\")\")) :line)   → 1"
   (%check-string-structured src))
 
 (defn check-string-here (src)
@@ -150,29 +158,41 @@ anything."
   (%source-deps src))
 
 (defn references-in-source (name source)
-  "Occurrences of the global `name` in `source`, as a list of [line col] (1-based); locals that shadow it are excluded."
+  "Occurrences of the global `name` in `source`, as a list of [line col] (1-based); locals that shadow it are excluded.
+
+    (reflect/references-in-source 'inc \"(inc 1)\\n(let (inc 2) inc)\\n(inc 3)\")   → ([1 2] [3 2])"
   (%references-in-source name source))
 
 (defn parse-source (s)
-  "Parse s into a lossless CST tree as nested vectors (mechanism for std/format.blsp)."
+  "Parse s into a lossless CST tree as nested vectors (mechanism for std/format.blsp).
+
+    (reflect/parse-source \"(a)\")   → [:root [[:list [[:symbol \"a\"]]]]]"
   (%parse-source s))
 (sig parse-source (string -> (vector any)))
 
 (defn parse-source-positioned (s)
-  "Parse s into a CST of maps, each `{:kind :start :end}` (leaves add :text, containers/wrappers add :kids) with half-open character offsets — for structural navigation (std/sexp)."
+  "Parse s into a CST of maps, each `{:kind :start :end}` (leaves add :text, containers/wrappers add :kids) with half-open character offsets — for structural navigation (std/sexp).
+
+    (get (reflect/parse-source-positioned \"(a b)\") :kind)   → :root"
   (%parse-source-positioned s))
 (sig parse-source-positioned (string -> (map keyword any)))
 
 (defn scan-form-start (s pos)
-  "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer."
+  "The greatest char offset <= pos of a top-level (bracket depth 0) open bracket in s lying OUTSIDE any string or ; comment, else 0 — depth-tracked, not the Emacs column-0 heuristic, so a mis-indented open bracket at column 0 inside an unclosed form is not a form start — the string/comment-aware beginning-of-defun behind highlight/safe-restart and tool/sexp narrowing. The required forward lexical pass (a backward scan cannot know string state) runs natively: O(pos) at native speed instead of interpreted per-char cost on every eldoc/fontify-restart in a large buffer.
+
+    (reflect/scan-form-start \"(a)\\n(b \\\"(\\\" c)\" 12)   → 4"
   (%scan-form-start s pos))
 
 (defn scan-form-start-2 (s pos)
-  "[prev start] — the greatest top-level (depth-0) form-start offset <= pos AND the one before it, from a SINGLE forward pass. What tool/sexp narrowing actually wants: computing the pair as two scan-form-start calls runs the O(pos) lexical pass twice over the same prefix. prev is 0 when there is no earlier form start, matching what the second call returned there."
+  "[prev start] — the greatest top-level (depth-0) form-start offset <= pos AND the one before it, from a SINGLE forward pass. What tool/sexp narrowing actually wants: computing the pair as two scan-form-start calls runs the O(pos) lexical pass twice over the same prefix. prev is 0 when there is no earlier form start, matching what the second call returned there.
+
+    (reflect/scan-form-start-2 \"(a)\\n(b)\\n(c)\" 9)   → [4 8]"
   (%scan-form-start-2 s pos))
 
 (defn scan-form-end (s from n-forms)
-  "The char offset just after n-forms top-level forms starting at char offset from, skipping strings/comments and tracking bracket depth, or (string/length s) if the text ends first. The forward window-end companion to scan-form-start: tool/sexp narrowing uses the pair to bound structural motion to the neighbourhood of point in ONE native pass, replacing an interpreted char-at loop that was the dominant cost of every keystroke-driven motion."
+  "The char offset just after n-forms top-level forms starting at char offset from, skipping strings/comments and tracking bracket depth, or (string/length s) if the text ends first. The forward window-end companion to scan-form-start: tool/sexp narrowing uses the pair to bound structural motion to the neighbourhood of point in ONE native pass, replacing an interpreted char-at loop that was the dominant cost of every keystroke-driven motion.
+
+    (reflect/scan-form-end \"(a) (b c) d\" 0 2)   → 9"
   (%scan-form-end s from n-forms))
 
 (defn scan-source-extract (src)
@@ -180,7 +200,9 @@ anything."
   (%scan-source-extract src))
 
 (defn scan-tokens (s)
-  "Lexically tokenize Brood source s into a vector of [start end kind text] tokens (char offsets, end-exclusive; whitespace skipped). kind is :comment, :string, :number, :keyword, :symbol, :open, or :close. The lossless token stream a fontifier / structural tool walks — the per-char scan runs natively, leaving policy (faces, head-position) to the consumer over O(tokens)."
+  "Lexically tokenize Brood source s into a vector of [start end kind text] tokens (char offsets, end-exclusive; whitespace skipped). kind is :comment, :string, :number, :keyword, :symbol, :open, or :close. The lossless token stream a fontifier / structural tool walks — the per-char scan runs natively, leaving policy (faces, head-position) to the consumer over O(tokens).
+
+    (reflect/scan-tokens \"(f 1)\")   → [[0 1 :open \"(\"] [1 2 :symbol \"f\"] [3 4 :number \"1\"] [4 5 :close \")\"]]"
   (%scan-tokens s))
 
 (defn resolves? (name)
@@ -225,7 +247,9 @@ hook in a module nobody has opened is not a hook yet (that is `resolves?`'s job)
   (if (bound? name) (apply (reflect/eval name) args) fallback))
 
 (defn source-location (name)
-  "Where global name was defined, as [file line col], or nil. Quote it: (source-location 'foo)."
+  "Where global name was defined, as [file line col], or nil. Quote it: (source-location 'foo).
+
+    (reflect/source-location 'no-such-global-xyz)   → nil"
   (%source-location name))
 
 (defn declared-signature (name)
@@ -233,7 +257,10 @@ hook in a module nobody has opened is not a hook yet (that is `resolves?`'s job)
 `\"(model any -> model)\"` — or nil when none was declared. [[type-signature]] answers
 the checker's view (declared, curated or inferred, aliases expanded); this answers the
 CONTRACT as stated, which is what an editor shows beside a command's name. Symbol or
-string arg; a `deftype` alias is a type, not a signature, and answers nil."
+string arg; a `deftype` alias is a type, not a signature, and answers nil.
+
+    (do (require-one 'hash) (reflect/declared-signature 'hash/md5))   → \"(string -> string)\"
+    (reflect/declared-signature 'inc)   → nil"
   (let (form (%declared-sig name)) (if (nil? form) nil (pr-str form))))
 
 (defn type-aliases (&optional module)
@@ -250,7 +277,9 @@ a module's under a Types heading."
 (sig type-aliases (&optional (or nil string symbol) -> (or nil (list map))))
 
 (defn type-signature (name)
-  "The checker's type signature for global `name` (declared/curated/inferred) as an arrow string like \"(int -> int)\", or nil if it can't be pinned. Symbol or string arg: (type-signature 'map)."
+  "The checker's type signature for global `name` (declared/curated/inferred) as an arrow string like \"(int -> int)\", or nil if it can't be pinned. Symbol or string arg: (type-signature 'map).
+
+    (reflect/type-signature 'inc)   → \"(number) -> number\""
   (%type-signature name))
 
 (defn expr-type (src)
@@ -263,7 +292,10 @@ doesn't parse or the checker has no opinion.
 [[type-signature]] answers this for a NAMED global; this answers it for an anonymous
 expression you just typed, which is what a REPL or a scratch buffer has to work with. Nil
 rather than an error on unparsable input, like [[check-string-structured]]: both get read
-live, from a buffer that is mid-edit half the time."
+live, from a buffer that is mid-edit half the time.
+
+    (reflect/expr-type \"(+ 1 2)\")   → \"3\"
+    (reflect/expr-type \"(str 1)\")   → \"string\""
   (%expr-type src))
 
 (defn form-pos (form)

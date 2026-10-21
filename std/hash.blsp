@@ -48,11 +48,15 @@ use sha256 for security-sensitive work. Useful for checksums, ETags, UUID v3.
 (sig md5 (string -> string))
 
 (defn md5-bytes (bytes)
-  "Lowercase hex MD5 of a byte sequence (bytes value, vector, or list of byte ints 0–255)."
+  "Lowercase hex MD5 of a byte sequence (bytes value, vector, or list of byte ints 0–255).
+
+    (hash/md5-bytes [97 98 99])   → \"900150983cd24fb0d6963f7d28e17f72\""
   (bytes->hex (%digest :md5 bytes)))
 
 (defn md5-raw (bytes)
-  "MD5 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex)."
+  "MD5 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex).
+
+    (count (hash/md5-raw [97 98 99]))   → 16"
   (%digest :md5 bytes))
 
 ;; ---- SHA-1 ------------------------------------------------------------------
@@ -66,11 +70,15 @@ use sha256 for security-sensitive work. Useful for UUID v5, Git hashes.
 (sig sha1 (string -> string))
 
 (defn sha1-bytes (bytes)
-  "Lowercase hex SHA-1 of a byte sequence (bytes value, vector, or list of byte ints 0–255)."
+  "Lowercase hex SHA-1 of a byte sequence (bytes value, vector, or list of byte ints 0–255).
+
+    (hash/sha1-bytes [97 98 99])   → \"a9993e364706816aba3e25717850c26c9cd0d89d\""
   (bytes->hex (%digest :sha1 bytes)))
 
 (defn sha1-raw (bytes)
-  "SHA-1 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex)."
+  "SHA-1 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex).
+
+    (count (hash/sha1-raw [97 98 99]))   → 20"
   (%digest :sha1 bytes))
 
 ;; ---- SHA-256 ----------------------------------------------------------------
@@ -83,13 +91,17 @@ use sha256 for security-sensitive work. Useful for UUID v5, Git hashes.
 (sig sha256 (string -> string))
 
 (defn sha256-bytes (bytes)
-  "Lowercase hex SHA-256 of a byte sequence (bytes value, vector, or list of byte ints 0–255)."
+  "Lowercase hex SHA-256 of a byte sequence (bytes value, vector, or list of byte ints 0–255).
+
+    (hash/sha256-bytes [97 98 99])   → \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
   (bytes->hex (%digest :sha256 bytes)))
 
 (defn sha256-raw (bytes)
   "SHA-256 of a byte sequence (bytes value, vector, or list), returned as a bytes
 value (raw digest, not hex). Use when chaining digests over raw bytes — e.g. SCRAM
-`StoredKey = SHA256(ClientKey)` — so there's no hex decode between steps."
+`StoredKey = SHA256(ClientKey)` — so there's no hex decode between steps.
+
+    (= (encoding/hex-encode-bytes (hash/sha256-raw [97 98 99])) (hash/sha256-bytes [97 98 99]))   → true"
   (%digest :sha256 bytes))
 
 ;; ---- SHA-384 ----------------------------------------------------------------
@@ -101,11 +113,15 @@ value (raw digest, not hex). Use when chaining digests over raw bytes — e.g. S
   (bytes->hex (%digest :sha384 (string/->bytes s))))
 
 (defn sha384-bytes (bytes)
-  "Lowercase hex SHA-384 of a byte sequence (bytes value, vector, or list of byte ints 0–255)."
+  "Lowercase hex SHA-384 of a byte sequence (bytes value, vector, or list of byte ints 0–255).
+
+    (= (hash/sha384-bytes [97 98 99]) (hash/sha384 \"abc\"))   → true"
   (bytes->hex (%digest :sha384 bytes)))
 
 (defn sha384-raw (bytes)
-  "SHA-384 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex)."
+  "SHA-384 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex).
+
+    (count (hash/sha384-raw [97 98 99]))   → 48"
   (%digest :sha384 bytes))
 
 ;; ---- SHA-512 ----------------------------------------------------------------
@@ -118,11 +134,15 @@ value (raw digest, not hex). Use when chaining digests over raw bytes — e.g. S
 (sig sha512 (string -> string))
 
 (defn sha512-bytes (bytes)
-  "Lowercase hex SHA-512 of a byte sequence (bytes value, vector, or list of byte ints 0–255)."
+  "Lowercase hex SHA-512 of a byte sequence (bytes value, vector, or list of byte ints 0–255).
+
+    (= (hash/sha512-bytes [97]) (hash/sha512 \"a\"))   → true"
   (bytes->hex (%digest :sha512 bytes)))
 
 (defn sha512-raw (bytes)
-  "SHA-512 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex)."
+  "SHA-512 of a byte sequence (bytes value, vector, or list), returned as a bytes value (raw digest, not hex).
+
+    (count (hash/sha512-raw [97]))   → 64"
   (%digest :sha512 bytes))
 
 ;; ---- HMAC (RFC 2104) --------------------------------------------------------
@@ -140,7 +160,9 @@ value (raw digest, not hex). Use when chaining digests over raw bytes — e.g. S
 
 (defn hmac-sha1 (key message)
   "HMAC-SHA1 of `message` using `key`. Both are strings; result is lowercase hex.
-SHA-1 is not collision-resistant; prefer hmac-sha256 for new protocols."
+SHA-1 is not collision-resistant; prefer hmac-sha256 for new protocols.
+
+    (hash/hmac-sha1 \"key\" \"The quick brown fox jumps over the lazy dog\")   → \"de7c9b85b8b78aa6bc8a7a36f70a90701c9db4d9\""
   (bytes->hex (%hmac :sha1 (string/->bytes key) (string/->bytes message))))
 (sig hmac-sha1 (string string -> string))
 
@@ -161,17 +183,23 @@ SHA-1 is not collision-resistant; prefer hmac-sha256 for new protocols."
 
 (defn hmac-sha256-raw (key-bytes msg-bytes)
   "HMAC-SHA256 over byte-sequence `key-bytes` and `msg-bytes`. Returns a 32-byte
-bytes value (raw MAC, not hex)."
+bytes value (raw MAC, not hex).
+
+    (encoding/hex-encode-bytes (hash/hmac-sha256-raw (string/->bytes \"k\") (string/->bytes \"m\")))   → \"b60090e3052297aeb5a080889ce2fc4bca957e756faeb4df7d31800ca1e771ec\""
   (%hmac :sha256 key-bytes msg-bytes))
 
 (defn hmac-sha1-raw (key-bytes msg-bytes)
   "HMAC-SHA1 over byte-sequence `key-bytes` and `msg-bytes`. Returns a 20-byte
-bytes value (raw MAC, not hex). SHA-1 is not collision-resistant; prefer hmac-sha256-raw."
+bytes value (raw MAC, not hex). SHA-1 is not collision-resistant; prefer hmac-sha256-raw.
+
+    (count (hash/hmac-sha1-raw (string/->bytes \"k\") (string/->bytes \"m\")))   → 20"
   (%hmac :sha1 key-bytes msg-bytes))
 
 (defn hmac-sha512-raw (key-bytes msg-bytes)
   "HMAC-SHA512 over byte-sequence `key-bytes` and `msg-bytes`. Returns a 64-byte
-bytes value (raw MAC, not hex)."
+bytes value (raw MAC, not hex).
+
+    (count (hash/hmac-sha512-raw (string/->bytes \"k\") (string/->bytes \"m\")))   → 64"
   (%hmac :sha512 key-bytes msg-bytes))
 
 ;; ---- non-cryptographic ------------------------------------------------------

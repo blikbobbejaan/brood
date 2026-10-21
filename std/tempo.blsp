@@ -84,7 +84,10 @@ time unit — nil means \"nothing finer\", never \"no such unit\".
 
 (defn coarser (u)
   "The unit one step coarser than `u`, or nil when `u` is `:year`. Throws when `u` is not a
-time unit — nil means \"nothing coarser\", never \"no such unit\"."
+time unit — nil means \"nothing coarser\", never \"no such unit\".
+
+    (tempo/coarser :day)    → :month
+    (tempo/coarser :year)   → nil"
   (let (r (tp-rank u))
     (when (< r 0) (error (str "tempo/coarser: not a time unit: " (str u))))
     (if (> r 0) (nth unit-order (- r 1)) nil)))
@@ -116,9 +119,22 @@ time unit — nil means \"nothing coarser\", never \"no such unit\"."
 (defrecord span ((from int) (to int)))
 (defrecord iset (spans))
 
-(defn tempo? (x) "True when `x` is a tempo value." (and (record? x) (= (record-id x) :tempo/tempo)))
-(defn span? (x) "True when `x` is a span." (and (record? x) (= (record-id x) :tempo/span)))
-(defn iset? (x) "True when `x` is an interval set." (and (record? x) (= (record-id x) :tempo/iset)))
+(defn tempo? (x)
+  "True when `x` is a tempo value.
+
+    (tempo/tempo? (tempo/parse! \"2026\"))   → true
+    (tempo/tempo? \"2026\")                  → false"
+  (and (record? x) (= (record-id x) :tempo/tempo)))
+(defn span? (x)
+  "True when `x` is a span.
+
+    (tempo/span? (tempo/between (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\")))   → true"
+  (and (record? x) (= (record-id x) :tempo/span)))
+(defn iset? (x)
+  "True when `x` is an interval set.
+
+    (tempo/iset? (tempo/union (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\")))   → true"
+  (and (record? x) (= (record-id x) :tempo/iset)))
 
 ;; ---- the Spanning ability ---------------------------------------------------
 ;;
@@ -195,7 +211,10 @@ negative year emits a leading `-` and is not interchange-safe.
       [:ok (tempo m (or (last (tp-present m)) :year))])))
 
 (defn new! (m)
-  "As `new`, but throws on invalid components instead of returning `[:error …]`."
+  "As `new`, but throws on invalid components instead of returning `[:error …]`.
+
+    (tempo/->iso (tempo/new! {:year 2026 :month 6}))               → \"2026-06\"
+    (try (tempo/new! {:year 2026 :month 13}) (catch e :invalid))   → :invalid"
   (let (r (new m))
     (if (= (nth r 0) :ok) (nth r 1) (error (nth r 1)))))
 
@@ -330,7 +349,10 @@ worse.
             (if (= (nth r 0) :ok) r [:error (str "tempo/parse: " s " — " (nth r 1))])))))))
 
 (defn parse! (s)
-  "As `parse`, but throws on a malformed string instead of returning `[:error …]`."
+  "As `parse`, but throws on a malformed string instead of returning `[:error …]`.
+
+    (tempo/resolution (tempo/parse! \"2026-06-15\"))     → :day
+    (try (tempo/parse! \"June\") (catch e :malformed))   → :malformed"
   (let (r (parse s))
     (if (= (nth r 0) :ok) (nth r 1) (error (nth r 1)))))
 
@@ -364,11 +386,15 @@ worse.
 (sig tp-floor-dt (map -> datetime))
 
 (defn from-ms (t)
-  "The instant `t` opens, in Unix epoch milliseconds (inclusive)."
+  "The instant `t` opens, in Unix epoch milliseconds (inclusive).
+
+    (tempo/from-ms (tempo/parse! \"1970-01-02\"))   → 86400000"
   (datetime/->epoch-ms (tp-floor-dt t)))
 
 (defn to-ms (t)
-  "The instant `t` closes, in Unix epoch milliseconds (**exclusive**)."
+  "The instant `t` closes, in Unix epoch milliseconds (**exclusive**).
+
+    (tempo/to-ms (tempo/parse! \"1970-01-02\"))   → 172800000"
   (let (u (tempo-res t)
         m (tempo-by-unit t)
         y (tp-field m :year 0)
@@ -399,11 +425,15 @@ worse.
   (->span [dt] (let (ms (datetime/->epoch-ms dt)) (span ms (+ ms 1)))))
 
 (defn from (x)
-  "The opening instant of `x`, as a `datetime`."
+  "The opening instant of `x`, as a `datetime`.
+
+    (datetime/->iso (tempo/from (tempo/parse! \"2026-06\")))   → \"2026-06-01T00:00:00.000Z\""
   (datetime/epoch-ms-> (span-from (->span x))))
 
 (defn to (x)
-  "The closing (exclusive) instant of `x`, as a `datetime`."
+  "The closing (exclusive) instant of `x`, as a `datetime`.
+
+    (datetime/->iso (tempo/to (tempo/parse! \"2026-06\")))   → \"2026-07-01T00:00:00.000Z\""
   (datetime/epoch-ms-> (span-to (->span x))))
 
 (defn width (x)
@@ -418,7 +448,9 @@ worse.
 hull. `union` is the set operation that keeps a gap a gap.
 
     (tempo/width (tempo/between (tempo/parse! \"2026-01\") (tempo/parse! \"2026-12\")))
-      ;; the whole of 2026, January through December"
+      ;; the whole of 2026, January through December
+
+    (tempo/->iso-span (tempo/between (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\")))   → \"2026-01-01T00:00:00.000Z/2026-04-01T00:00:00.000Z\""
   (let (sa (->span a)
         sb (->span b))
     (span (math/min (span-from sa) (span-from sb)) (math/max (span-to sa) (span-to sb)))))
@@ -450,7 +482,9 @@ For the inclusive reading — \"June through August\" — use `between`.
                 [:error (str "tempo/parse-span: end is not after start: " s)])))))))
 
 (defn parse-span! (s)
-  "As `parse-span`, but throws instead of returning `[:error …]`."
+  "As `parse-span`, but throws instead of returning `[:error …]`.
+
+    (tempo/->iso-span (tempo/parse-span! \"2026-06-15T07/2026-06-15T09\"))   → \"2026-06-15T07:00:00.000Z/2026-06-15T09:00:00.000Z\""
   (let (r (parse-span s))
     (if (= (nth r 0) :ok) (nth r 1) (error (nth r 1)))))
 
@@ -499,10 +533,27 @@ Either argument may be anything implementing `Spanning`.
 (defn- tp-rel? (a b wanted)
   (= (relation a b) wanted))
 
-(defn before? (a b) "True when `a` ends strictly before `b` begins." (tp-rel? a b :before))
-(defn after? (a b) "True when `a` begins strictly after `b` ends." (tp-rel? a b :after))
-(defn meets? (a b) "True when `a` ends exactly where `b` begins." (tp-rel? a b :meets))
-(defn equals? (a b) "True when `a` and `b` are the same span." (tp-rel? a b :equals))
+(defn before? (a b)
+  "True when `a` ends strictly before `b` begins.
+
+    (tempo/before? (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\"))   → true
+    (tempo/before? (tempo/parse! \"2026-01\") (tempo/parse! \"2026-02\"))   → false"
+  (tp-rel? a b :before))
+(defn after? (a b)
+  "True when `a` begins strictly after `b` ends.
+
+    (tempo/after? (tempo/parse! \"2027\") (tempo/parse! \"2026-06\"))   → true"
+  (tp-rel? a b :after))
+(defn meets? (a b)
+  "True when `a` ends exactly where `b` begins.
+
+    (tempo/meets? (tempo/parse! \"2026-01\") (tempo/parse! \"2026-02\"))   → true"
+  (tp-rel? a b :meets))
+(defn equals? (a b)
+  "True when `a` and `b` are the same span.
+
+    (tempo/equals? (tempo/parse! \"2026\") (tempo/between (tempo/parse! \"2026-01\") (tempo/parse! \"2026-12\")))   → true"
+  (tp-rel? a b :equals))
 
 (defn during? (a b)
   "True when `a` falls strictly inside `b`, sharing neither endpoint.
@@ -566,14 +617,23 @@ Either argument may be anything implementing `Spanning`.
 
 (defn spans (x)
   "The spans of `x` as a vector — sorted, disjoint and non-touching. A single
-value yields a one-element vector."
+value yields a one-element vector.
+
+    (count (tempo/spans (tempo/union (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\"))))   → 2"
   (iset-spans (tp-as-set x)))
 
-(defn empty-set? (x) "True when `x` covers no time at all." (empty? (spans x)))
+(defn empty-set? (x)
+  "True when `x` covers no time at all.
+
+    (tempo/empty-set? (tempo/difference (tempo/parse! \"2026-06-15\") (tempo/parse! \"2026-06\")))   → true
+    (tempo/empty-set? (tempo/parse! \"2026\"))   → false"
+  (empty? (spans x)))
 
 (defn bounds (x)
   "The single span from the earliest opening to the latest closing instant of
-`x`, gaps included — or nil when `x` is empty."
+`x`, gaps included — or nil when `x` is empty.
+
+    (tempo/->iso-span (tempo/bounds (tempo/union (tempo/parse! \"2026-01\") (tempo/parse! \"2026-03\"))))   → \"2026-01-01T00:00:00.000Z/2026-04-01T00:00:00.000Z\""
   (let (ss (spans x))
     (if (empty? ss) nil (span (span-from (nth ss 0)) (span-to (last ss))))))
 
@@ -590,7 +650,9 @@ value yields a one-element vector."
   "The total time `x` covers in milliseconds, **excluding** gaps. The free/busy
 answer: how much time is actually taken.
 
-    (tempo/total-width (tempo/gaps workday meetings))   ;; ms genuinely free"
+    (tempo/total-width (tempo/gaps workday meetings))   ;; ms genuinely free
+
+    (tempo/total-width (tempo/union (tempo/parse! \"2026-06-15T07\") (tempo/parse! \"2026-06-15T09\")))   → 7200000"
   (tp-width-acc 0 (spans x)))
 (sig total-width (map -> int))
 
@@ -656,7 +718,9 @@ primitive: a workday minus its meetings.
 `window`. The same operation as `difference`, named for the scheduling call
 site where it reads better.
 
-    (tempo/gaps workday meetings)   ;; when am I free?"
+    (tempo/gaps workday meetings)   ;; when am I free?
+
+    (tempo/->iso-set (tempo/gaps (tempo/parse-span! \"2026-06-15T07/2026-06-15T10\") (tempo/parse! \"2026-06-15T08\")))   → \"2026-06-15T07:00:00.000Z/2026-06-15T08:00:00.000Z,2026-06-15T09:00:00.000Z/2026-06-15T10:00:00.000Z\""
   (difference window x))
 
 (defn intersects? (a b)
@@ -753,8 +817,16 @@ arithmetic for years and months, exact millisecond arithmetic below that.
       else (tp-of-datetime (datetime/epoch-ms-> (+ (from-ms t) (* n (tp-unit-ms u)))) u))))
 (sig shift (map int -> map))
 
-(defn next (t) "`t` advanced one step of its own resolution." (shift t 1))
-(defn prev (t) "`t` moved back one step of its own resolution." (shift t -1))
+(defn next (t)
+  "`t` advanced one step of its own resolution.
+
+    (tempo/->iso (tempo/next (tempo/parse! \"2026-12\")))   → \"2027-01\""
+  (shift t 1))
+(defn prev (t)
+  "`t` moved back one step of its own resolution.
+
+    (tempo/->iso (tempo/prev (tempo/parse! \"2026-03-01\")))   → \"2026-02-28\""
+  (shift t -1))
 
 (defn now (u)
   "The current UTC moment at resolution `u`. Throws when `u` is not a time unit.
@@ -767,7 +839,11 @@ arithmetic for years and months, exact millisecond arithmetic below that.
   (when (not (tp-unit? u)) (error (str "tempo/now: not a time unit: " (str u))))
   (tp-of-datetime (datetime/utc-now) u))
 
-(defn today () "The current UTC day, at `:day` resolution." (now :day))
+(defn today ()
+  "The current UTC day, at `:day` resolution.
+
+    (tempo/resolution (tempo/today))   → :day"
+  (now :day))
 
 ;; ---- formatting -------------------------------------------------------------
 
@@ -820,7 +896,9 @@ prints as a month; nothing is padded out to a full timestamp.
 
 (defn ->iso-span (s)
   "A span as an ISO 8601 interval, `start/end`, at millisecond precision. The
-end is the exclusive endpoint, so `parse-span` reads back what this writes."
+end is the exclusive endpoint, so `parse-span` reads back what this writes.
+
+    (tempo/->iso-span (tempo/parse-span! \"2026-06-15T07/2026-06-15T09\"))   → \"2026-06-15T07:00:00.000Z/2026-06-15T09:00:00.000Z\""
   (str (datetime/->iso (datetime/epoch-ms-> (span-from s)))
     "/"
     (datetime/->iso (datetime/epoch-ms-> (span-to s)))))
@@ -828,7 +906,9 @@ end is the exclusive endpoint, so `parse-span` reads back what this writes."
 
 (defn ->iso-set (x)
   "An interval set as its spans in ISO 8601 interval form, comma-separated. An
-empty set renders as the empty string."
+empty set renders as the empty string.
+
+    (tempo/->iso-set (tempo/union (tempo/parse! \"2026-06-15T07\") (tempo/parse! \"2026-06-15T09\")))   → \"2026-06-15T07:00:00.000Z/2026-06-15T08:00:00.000Z,2026-06-15T09:00:00.000Z/2026-06-15T10:00:00.000Z\""
   (string/join (map (spans x) ->iso-span) ","))
 (sig ->iso-set (map -> string))
 

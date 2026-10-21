@@ -34,11 +34,15 @@ cryptographically secure random bytes.
   (%random-bytes n))
 
 (defn random-key ()
-  "Generate a random 32-byte key suitable for ChaCha20-Poly1305."
+  "Generate a random 32-byte key suitable for ChaCha20-Poly1305.
+
+    (count (crypto/random-key))   → 32"
   (%random-bytes 32))
 
 (defn random-nonce ()
-  "Generate a random 12-byte nonce suitable for ChaCha20-Poly1305."
+  "Generate a random 12-byte nonce suitable for ChaCha20-Poly1305.
+
+    (count (crypto/random-nonce))   → 12"
   (%random-bytes 12))
 
 ;; ---- byte/string conversion -------------------------------------------------
@@ -60,21 +64,30 @@ cryptographically secure random bytes.
   "Encrypt `plaintext-bytes` with ChaCha20-Poly1305. `key` must be 32 bytes;
 `nonce` must be 12 bytes. Returns ciphertext as a byte vector (plaintext +
 16-byte auth tag). Inputs may be bytes values or vectors/lists of ints.
-Never reuse a (key, nonce) pair."
+Never reuse a (key, nonce) pair.
+
+    (count (crypto/encrypt (crypto/random-key) (crypto/random-nonce) [1 2 3]))   → 19"
   (%chacha20-encrypt key nonce plaintext-bytes))
 
 (defn decrypt (key nonce ciphertext-bytes)
   "Decrypt `ciphertext-bytes` with ChaCha20-Poly1305. Returns the plaintext
 byte vector on success, or `:error` if authentication fails (wrong key/nonce
-or tampered ciphertext). Inputs may be bytes values or vectors/lists of ints."
+or tampered ciphertext). Inputs may be bytes values or vectors/lists of ints.
+
+    (let (k (crypto/random-key) n (crypto/random-nonce)) (vec (crypto/decrypt k n (crypto/encrypt k n [1 2 3]))))           → [1 2 3]
+    (let (n (crypto/random-nonce)) (crypto/decrypt (crypto/random-key) n (crypto/encrypt (crypto/random-key) n [1 2 3])))   → :error"
   (%chacha20-decrypt key nonce ciphertext-bytes))
 
 (defn encrypt-string (key nonce s)
-  "Encrypt the UTF-8 bytes of string `s`. Returns a ciphertext bytes value."
+  "Encrypt the UTF-8 bytes of string `s`. Returns a ciphertext bytes value.
+
+    (count (crypto/encrypt-string (crypto/random-key) (crypto/random-nonce) \"hi\"))   → 18"
   (encrypt key nonce (string/->bytes s)))
 
 (defn decrypt-string (key nonce ciphertext-bytes)
-  "Decrypt to a string. Returns the decoded string, or `:error` on failure."
+  "Decrypt to a string. Returns the decoded string, or `:error` on failure.
+
+    (let (k (crypto/random-key) n (crypto/random-nonce)) (crypto/decrypt-string k n (crypto/encrypt-string k n \"hi\")))   → \"hi\""
   (let (pt (decrypt key nonce ciphertext-bytes))
     (if (= pt :error) :error (string/bytes-> pt))))
 
@@ -94,7 +107,9 @@ vector/list → itself. Lets the raw-byte crypto primitives accept either shape.
 byte sequence) using PBKDF2-HMAC-SHA256, returned as a bytes value. A byte salt
 is used as raw bytes — so a base64-decoded binary salt (e.g. Postgres SCRAM)
 round-trips faithfully rather than being UTF-8-decoded. Higher `iterations` =
-slower brute force; use ≥ 600,000 for password storage."
+slower brute force; use ≥ 600,000 for password storage.
+
+    (encoding/hex-encode-bytes (crypto/pbkdf2 \"password\" \"salt\" 1 32))   → \"120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b\""
   (%pbkdf2-sha256-bytes (crypto-as-bytes password)
     (crypto-as-bytes salt)
     iterations
@@ -112,7 +127,10 @@ Anything not `bytes` — a vector of ints, say — takes a zipped path.
 
 Constant time either way: the loop visits every byte with no early exit, accumulating with
 `bit/or`; the `bytes?` test is on the TYPE and the length check on the length, neither of
-which is secret."
+which is secret.
+
+    (crypto/constant-time-equal? [1 2 3] [1 2 3])   → true
+    (crypto/constant-time-equal? [1 2 3] [1 2 4])   → false"
   (let (n (count a))
     (and (= n (count b))
       (if (and (bytes? a) (bytes? b))
@@ -136,15 +154,22 @@ which is secret."
 
 (defn keypair ()
   "A fresh ed25519 keypair as `{:public <bytes> :private <bytes>}` — `:public` the 32-byte
-verifying key (safe to publish), `:private` the 32-byte signing seed (keep secret)."
+verifying key (safe to publish), `:private` the 32-byte signing seed (keep secret).
+
+    (count (get (crypto/keypair) :public))   → 32"
   (let ([public private] (%ed25519-keygen)) {:public public :private private}))
 
 (defn sign (private message)
-  "The 64-byte ed25519 signature of `message` (bytes) under the 32-byte `private` seed."
+  "The 64-byte ed25519 signature of `message` (bytes) under the 32-byte `private` seed.
+
+    (count (crypto/sign (get (crypto/keypair) :private) (string/->bytes \"m\")))   → 64"
   (%ed25519-sign private message))
 
 (defn verify (public message signature)
   "True when `signature` (64 bytes) is a valid ed25519 signature of `message` under the
 32-byte `public` key. Never errors — a malformed or wrong signature is simply false, so it
-reads as a plain predicate."
+reads as a plain predicate.
+
+    (let (kp (crypto/keypair) m (string/->bytes \"m\")) (crypto/verify (get kp :public) m (crypto/sign (get kp :private) m)))                  → true
+    (let (kp (crypto/keypair)) (crypto/verify (get kp :public) (string/->bytes \"m\") (crypto/sign (get kp :private) (string/->bytes \"n\"))))   → false"
   (%ed25519-verify public message signature))
