@@ -6,6 +6,11 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Security.**
+- rustls-webpki 0.103.16 and webpki-roots 1.0.10: RUSTSEC-2026-0382 (certificate verification
+  could accept distrusted intermediates) and RUSTSEC-2026-0381 (the bundled roots trusted
+  distrusted emSign intermediates) — both on the path every `https` fetch and `tls/listen` take.
+
 **Fixed.**
 - A process whose first call into a module finds another process mid-load of it now parks
   while it waits. The wait ran under the VM's native lookup, where a `receive` cannot park,
