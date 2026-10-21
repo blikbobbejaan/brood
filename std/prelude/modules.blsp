@@ -905,52 +905,6 @@ writing process's count while `require` reads source."
     (require-one (first modules))
     (%require-each (rest modules))))
 
-(defn- %header-requires (src)
-  "The modules `src`'s `(defmodule …)` header requires when it loads — each `(:use m …)`,
-`(:use-internals m …)` and `(:alias m …)` target and every `(:load m …)` module, rooted to
-the active package as the header's own expansion roots them. Empty when the first form is
-not a header, or does not read: the load itself reports a malformed one."
-  ;; check-allow :discarded-catch — a best-effort peek: the load that follows reads the same source and raises
-  (let (form (check-allow :discarded-catch (try (%read-first src) (catch _ nil))))
-    (if (and (pair? form) (= (first form) 'defmodule) (not (empty? (rest form))))
-      (let (more (rest (rest form))
-            clauses (if (string? (first more)) (rest more) more))
-        (fold clauses
-          nil
-          (fn (acc clause)
-            (if (pair? clause)
-              (let (head (first clause)
-                    targets (cond
-                              (= head :load) (rest clause)
-                              (includes? [:use :use-internals :alias] head) (list (second clause))
-                              :else nil))
-                (fold targets
-                  acc
-                  (fn (a m) (if (symbol? m) (cons (%root-module-name m) a) a))))
-              acc))))
-      nil)))
-
-;; Load what a module's header will require BEFORE the native load of its source, from
-;; here. Every header clause requires its module unconditionally, so this moves those loads
-;; earlier without adding one — but a wait for one that another process is mid-load of now
-;; happens in a Brood frame, where it parks. Inside `%load-module-source` / `reflect/load` the
-;; same wait is under a native frame and blocks its OS worker for the other load's duration.
-;; Best-effort: a dependency that fails to load is left for the header to require again,
-;; so its error is reported where the module asked for it.
-(defn- %require-header-deps (src)
-  (%require-each-quietly (reverse (%header-requires src))))
-
-(defn- %require-header-deps-of (path)
-  ;; check-allow :discarded-catch — an unreadable file is `reflect/load`'s error to report
-  (let (src (check-allow :discarded-catch (try (file/slurp path) (catch _ nil))))
-    (when (string? src) (%require-header-deps src))))
-
-(defn- %require-each-quietly (modules)
-  (when (not (empty? modules))
-    ;; check-allow :discarded-catch — the header's own require raises this again, in context
-    (check-allow :discarded-catch (try (require-one (first modules)) (catch _ nil)))
-    (%require-each-quietly (rest modules))))
-
 ;; `%require-force`'s body, split out only so the dynamic binding above wraps every branch.
 (defn- %require-force-in (key)
   ;; `key`'s embedded source. If a bare key isn't embedded directly, resolve it to the
@@ -1056,7 +1010,6 @@ not a header, or does not read: the load itself reports a malformed one."
                 prev (if prefix
                        (%set-package-context prefix (get *package-modules-of* (->string prefix)))
                        (%set-package-context nil nil)))
-            (%require-header-deps src)
             (%load-module-source src (%builtin-module-file load-key))
             (%set-package-context (first prev) (second prev)))
           (provide key)
@@ -1089,7 +1042,7 @@ not a header, or does not read: the load itself reports a malformed one."
         (let (path (or (%require-find (str key ".blsp") *load-path*)
                      (%require-find-colocated key)))
           (if path
-            (do (%require-header-deps-of path) (reflect/load path) (provide key))
+            (do (reflect/load path) (provide key))
             (error "require: cannot find module '" key "'"))))
     key))
 
@@ -1141,7 +1094,7 @@ load-time (`require`) guards.
     (let (modules (get *package-modules-of* (->string prefix))
           prev (%set-package-context prefix modules))
       (try
-        (do (%require-header-deps-of path) (reflect/load path) (provide key))
+        (do (reflect/load path) (provide key))
         (catch e
           (do (%set-package-context (first prev) (second prev)) (throw e))))
       (%set-package-context (first prev) (second prev))

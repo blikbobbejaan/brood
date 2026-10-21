@@ -12,16 +12,15 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
   its worker, which stayed counted as available, so nothing replaced it: on two cores the
   in-language suite hung for good. A nested run that outlasts its quantum while work waits now
   takes its worker out of the pool until it returns, as a blocked one already did (KI-284).
-- A process LOADING a module now parks while it waits for a dependency another process is
-  mid-load of. Three native frames sat under that wait, so it blocked an OS worker: the
-  journal wrapper every `require-one` load runs in, the native load of the module's source,
-  and the VM's lookup when the load was a first use rather than a wait on someone else's.
-  40 processes each loading a module whose header `(:use http)` while `http` loaded elsewhere
-  blocked 139 workers a run; 0 now. `%with-load-journal` is a Brood `try` around the new
-  `%load-journal-open` / `%load-journal-close` natives; a module's header modules load from
-  Brood before its source is read; and the VM hands every first-use load to `%lazy-global` /
-  `%lazy-call`, not only one another process holds. Loading std from source
-  (`BROOD_NO_STDIMAGE`) still waits inside the native compile — 121 blocks become ~70 there.
+- Two of the three native frames under a module LOADER's wait for a dependency another
+  process is mid-load of are gone, so fewer of those waits block an OS worker: the journal
+  wrapper every `require-one` load runs in is a Brood `try` around the new
+  `%load-journal-open` / `%load-journal-close` natives, and the VM hands every first-use load
+  to `%lazy-global` / `%lazy-call`, not only one another process holds. The third, the native
+  load of the module's source (where its header's requires run), still blocks: 40 loaders of
+  modules whose header `(:use http)` while `http` was held block 118-123 workers a run
+  (KI-285). Loading the header's modules from Brood first cleared it, but broke the
+  stdlib image's attribution test under contracts and was backed out.
 - A process that finds another mid-load of a module it is about to use now parks at
   `BROOD_TIER=0` too: the tree-walker makes the same hand-off to `%lazy-global` as the VM,
   and a thin wrapper whose inner head is mid-load is not redirected, so its body makes it.

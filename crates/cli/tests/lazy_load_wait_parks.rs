@@ -12,7 +12,10 @@
 //! of. That wait sat under two native frames — `%with-load-journal` calling the load, and the
 //! native load of the module's source — and blocked 139 workers for 40 loaders whose header
 //! `(:use http)` while `http` was held (2026-10-21). The journal is now a Brood `try` around a
-//! native open/close pair, and the header's modules load before the native load starts.
+//! native open/close pair, so only the second frame remains: the header's requires still run
+//! inside the native source load. Loading them first, from Brood, cleared it (0 blocks) but
+//! broke `stdimage_test`'s attribution test under contracts and was backed out (KI-285); the
+//! loader's case is ignored here until that lands again.
 //! Counted by the runtime's `dirty-receive-block` line under `BROOD_JIT_BAIL_TRACE`.
 
 use std::path::Path;
@@ -119,6 +122,7 @@ fn processes_racing_a_first_use_load_park_while_it_finishes() {
 }
 
 #[test]
+#[ignore = "KI-285: the header prefetch that made a loader's dependency wait park is backed out"]
 fn a_loader_waiting_on_its_headers_dependency_parks() {
     let dir = scratch("loaders");
     for i in 0..40 {

@@ -3127,3 +3127,23 @@ rejoins when the innermost frames can capture again. `dirty_block`'s accounting 
 (`leave_executors` / `rejoin_executors`). Guard:
 `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame`, red after 20 s
 with the transition removed.
+
+## 2026-10-21 — the header prefetch backed out (KI-285)
+
+CI's "suite with contracts armed" job went red on `e6b4f47c` with one failure it could not name:
+`scripts/test-contracts.sh` printed the first twenty `error:` lines, and twenty of the suite's
+deliberate `process N died: error: …` lines filled them. With the script printing each failure
+record whole (`c3a3654a`), the next run said `tests/stdimage_test.blsp:89` — *a root global is
+attributed to the module that defines it, not to a dependent*: under contracts the probe's second
+`%isolate-discard-loads` window never loaded `string`, so `editor/lineedit` read as introducing
+more globals (505) than `repl` (495). Bisected to the header prefetch from `80270034`
+(`%require-header-deps`): disabled, the file passed 13/13; enabled, 3/3 red. The mechanism is not
+found — whether `string` loads inside the first window depends on whether the pre-flight check, or
+its cached verdict, loaded it already — so the prefetch is backed out rather than CI left red, and
+KI-285 is open with what was learned. The journal pair, the image branch's tail loop and the VM's
+lazy route stay; `lazy_load_wait_parks`' loader case is `#[ignore]`d against KI-285.
+
+A trap on the way, worth knowing: after the bisect the prelude was restored but not rebuilt, and a
+dozen runs tested a binary still carrying the change. `nest check` and `brood --check` refuse a
+stale binary; a test run only warns on stderr, which the filtered output these runs were read
+through dropped. Rebuild `brood` and `nest` after every `.blsp` edit before believing a run.

@@ -68,6 +68,41 @@ the scheduler, dist, GC or the JIT — run it repeatedly.
 
 (An open entry's `## KI-N` section goes here until it is resolved.)
 
+## KI-285 — a loader waiting on its header's dependency still blocks its worker ⚠️ OPEN 2026-10-21
+
+**Symptom.** A process LOADING a module whose header `(:use m)` names a module another process is
+mid-load of waits for that load in `%require-await`'s `receive` under the native source load
+(`%load-module-source` / `reflect/load`, where the `defmodule` expansion's `(require-one …)`
+runs), so the wait cannot park and blocks its OS worker: 40 such loaders of modules whose header
+`(:use http)` while `http` was held blocked 118-123 workers a run (`dirty-receive-block` under
+`BROOD_JIT_BAIL_TRACE`). The guard, `lazy_load_wait_parks::a_loader_waiting_on_its_headers_dependency_parks`,
+is `#[ignore]`d against this entry.
+
+**Cause.** The header's requires run inside a native frame. `80270034` closed the other two frames
+over the same wait (the journal wrapper, now a Brood `try` around `%load-journal-open` /
+`%load-journal-close`, and the VM's first-use lookup, now routed to `%lazy-global` /
+`%lazy-call`), and this one with a prefetch: `%require-header-deps` read the source's first form
+(`%read-first`) and required each `:use` / `:use-internals` / `:alias` / `:load` target from Brood
+before the native load began. That took the count to 0.
+
+**Why it is open.** The prefetch broke CI's "suite with contracts armed" job, twice on `e6b4f47c` and
+again on `c3a3654a`: `tests/stdimage_test.blsp:89` (*a root global is attributed to the module
+that defines it, not to a dependent*). Its child loads `editor/lineedit` and then `repl`, each in
+`%isolate-discard-loads`, and compares the globals each introduced: with contracts armed the
+second window never loaded `string`, so `own` (505) came out larger than `via` (495) and
+`smaller=false`. Bisected: the prefetch disabled, the file passed 13/13; enabled, 3/3 red under
+`BROOD_CONTRACTS=1 nest test tests/stdimage_test.blsp`. Not understood: whether `string` loads
+inside the first window at all depends on whether the run's pre-flight check (or its cached
+verdict) loaded it first, and the same file's
+`a module materialised under concurrency is never seen before its deps are` (line 272) also went
+red in some runs under `nest test` only. Backed out 2026-10-21 rather than leave CI red.
+
+**Next.** Reproduce the attribution failure with the prefetch restored (`BROOD_CONTRACTS=1 nest test
+tests/stdimage_test.blsp`, rebuilding `brood` AND `nest` after the prelude edit), then find how a
+load that the prefetch moves earlier escapes `%isolate-discard-loads`, or is skipped in the next
+window: `BROOD_TRACE_GLOBAL='string/blank?'` and `BROOD_SCOPE_DBG=1` on the child show each
+window's defines and restores.
+
 ## KI-281 — a JIT fast-link test never published in 90 s, once (watch)
 
 **Watching, 2026-10-18 — not reproducible on demand; diagnostic armed.** CI's tree-walker job on
@@ -103,6 +138,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 
 | # | What | Status |
 |---|---|---|
+| KI-285 | **a loader waiting on its header's dependency still blocks its worker** — 40 loaders of modules whose header `(:use http)` while `http` was held: 118-123 `dirty-receive-block`s a run; the header's requires run inside the native source load | ⚠️ **OPEN 2026-10-21** — the prefetch that cleared it (`%require-header-deps`, `80270034`) broke CI's contracts-armed job (`stdimage_test.blsp:89`, attribution) and was backed out; guard `lazy_load_wait_parks::a_loader_waiting_on_its_headers_dependency_parks` is `#[ignore]`d against this entry |
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
 | KI-282 | **the read that arms `:cpu-us` accounting never timed its own quantum**, so a process timing its own work across the runtime's first read got 0 — `cpu_time_test`'s self-timing test failed whenever it made the suite's first read (the nightly's GC stress job on `e63b70c8`) | ✅ **FIXED 2026-10-18** — the arming read starts the running quantum's clock on a worker (`pool::arm_cpu_accounting`). Guard: `cpu_time_first_read::the_first_read_in_a_runtime_times_the_work_after_it` (red without the stamp: 0 µs) |
