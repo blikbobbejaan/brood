@@ -20,7 +20,10 @@ started an operating-system process while the bare `spawn` special form started 
   (%hostname))
 
 (defn run-process (prog args)
-  "Run external program prog with an args list, inheriting stdio; returns its exit code."
+  "Run external program prog with an args list, inheriting stdio; returns its exit code.
+
+    (os/run-process \"true\" [])    → 0
+    (os/run-process \"false\" [])   → 1"
   (%run-process prog args))
 (sig run-process (string (or list vector) -> int))
 
@@ -29,7 +32,9 @@ started an operating-system process while the bare `spawn` special form started 
   (%exe-path))
 
 (defn canonicalize (path)
-  "The real absolute path of `path` with symlinks and ./.. resolved. Works for a not-yet-existing target (the longest existing ancestor is resolved, then the remaining components appended). Relative paths are taken against the cwd. nil only if the cwd itself can't be read. Use it to make path sandboxing symlink-escape-proof."
+  "The real absolute path of `path` with symlinks and ./.. resolved. Works for a not-yet-existing target (the longest existing ancestor is resolved, then the remaining components appended). Relative paths are taken against the cwd. nil only if the cwd itself can't be read. Use it to make path sandboxing symlink-escape-proof.
+
+    (os/canonicalize \"/usr/../usr\")   → \"/usr\""
   (%canonicalize path))
 
 (defn stdin-tty? ()
@@ -42,12 +47,16 @@ started an operating-system process while the bare `spawn` special form started 
 (sig stdout-tty? (-> bool))
 
 (defn now ()
-  "Wall-clock milliseconds since the Unix epoch."
+  "Wall-clock milliseconds since the Unix epoch.
+
+    (< 1700000000000 (os/now))   → true"
   (%now))
 (sig now (-> int))
 
 (defn now-ns ()
-  "Wall-clock nanoseconds since the Unix epoch (finer-grained than os/now)."
+  "Wall-clock nanoseconds since the Unix epoch (finer-grained than os/now).
+
+    (< (* 1000000 1700000000000) (os/now-ns))   → true"
   (%now-ns))
 (sig now-ns (-> int))
 
@@ -94,16 +103,22 @@ clipboard feature is off, like os/clipboard-set. Replaces whatever the clipboard
   "The value of environment variable `name` as a string, or nil if unset.
 
     (os/env \"PATH\")        ;; => \"/usr/bin:/bin\"
-    (os/env \"NO_SUCH_VAR\")  ;; => nil"
+    (os/env \"NO_SUCH_VAR\")  ;; => nil
+
+    (os/env \"BROOD_SURELY_UNSET_VARIABLE\")   → nil"
   (%getenv name))
 (sig env (string -> (or string nil)))
 
 (defn env-all ()
-  "All environment variables as a `{string → string}` map."
+  "All environment variables as a `{string → string}` map.
+
+    (map? (os/env-all))   → true"
   (%env-all))
 
 (defn type ()
-  "The current OS as a keyword: `:linux`, `:macos`, or `:windows`."
+  "The current OS as a keyword: `:linux`, `:macos`, or `:windows`.
+
+    (contains? #{:linux :macos :windows} (os/type))   → true"
   (%os-type))
 
 (defn- runnable? (p)
@@ -148,7 +163,9 @@ is not applied — name the extension you mean (`\"cargo.exe\"`), as a spawn wou
 
     (os/which \"ls\")           ;; => \"/usr/bin/ls\"
     (os/which \"no-such-cmd\")  ;; => nil
-    (os/which \"./build.sh\")   ;; => \"./build.sh\" if it is executable, else nil"
+    (os/which \"./build.sh\")   ;; => \"./build.sh\" if it is executable, else nil
+
+    (os/which \"surely-no-such-program\")   → nil"
   (if (or (includes? program "/") (and (= (type) :windows) (includes? program "\\")))
     (when (runnable? program) program)
     (which-in (string/split (or (env "PATH") "") (path-separator)) program)))
@@ -178,7 +195,10 @@ a `$` in it is one argument. `opts`:
   (string &optional (or list vector) map -> (record &open :stdout string :stderr string :exit int)))
 
 (defn cmd-ok? (result)
-  "True if the command result has exit code 0."
+  "True if the command result has exit code 0.
+
+    (os/cmd-ok? (os/cmd \"true\"))    → true
+    (os/cmd-ok? (os/cmd \"false\"))   → false"
   (= (get result :exit) 0))
 (sig cmd-ok? (map -> bool))
 
@@ -205,7 +225,9 @@ argument vector to `os/cmd` / `os/spawn` and there is nothing to quote.
 (sig shell-quote (string -> string))
 
 (defn cmd-out (result)
-  "The stdout string from a `cmd` result, trimmed."
+  "The stdout string from a `cmd` result, trimmed.
+
+    (os/cmd-out (os/cmd \"echo\" [\"  hi  \"]))   → \"hi\""
   (string/trim (get result :stdout "")))
 
 ;; ---- child processes ---------------------------------------------------------
