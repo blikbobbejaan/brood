@@ -38,13 +38,20 @@ A known open bug, a flaky test, or an unexplained failure — *even one seen "on
 once"* — **is** the work: fix it, or prove it a non-issue, before building on top. A
 flake left running erodes trust in every green run after it.
 
+> **Where tests run: never on the development desktop.** Every test, suite, stress, fuzz and
+> benchmark run below happens on the test machine or in CI — not "light", not "targeted",
+> not niced. On the desktop: build, format, push when asked, and read CI (`make green`,
+> `gh run`); say plainly which tests were not run. The run rules that follow (what counts as
+> green, the address-space cap) are for whoever runs them on the test machine.
+
 - **Confirm no open issue.** `docs/known-issues.md` should show no open bug. A *watch*
   item is acceptable only if it genuinely cannot be reproduced on demand — say so, with
   the diagnostic armed.
 - **Prove green, not "passed once."** For anything touching concurrency, the scheduler,
-  dist/nodes, GC, or the JIT, run the relevant tests *repeatedly* — `make test-both`, the
-  distribution tests looped, `BROOD_GC_STRESS=1 BROOD_GC_VERIFY=1` (`make gcstress`), and a
-  fuzz-differential pass (`scripts/fuzz/run.sh`). See `docs/handoff.md` § Flake hunting.
+  dist/nodes, GC, or the JIT, the relevant tests must pass *repeatedly* on the test machine
+  or in CI — `make test-both`, the distribution tests looped, `BROOD_GC_STRESS=1
+  BROOD_GC_VERIFY=1` (`make gcstress`), and a fuzz-differential pass (`scripts/fuzz/run.sh`).
+  See `docs/handoff.md` § Flake hunting.
 - **Gate performance at the tier your change runs on** — `make ab-vm` as well as `make ab`
   for anything on the VM's call path (`docs/benchmarking.md` §6).
 - **A regression is stop-the-world.** If new work turns a green row red or a green test
