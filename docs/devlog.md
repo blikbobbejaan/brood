@@ -3147,3 +3147,22 @@ A trap on the way, worth knowing: after the bisect the prelude was restored but 
 dozen runs tested a binary still carrying the change. `nest check` and `brood --check` refuse a
 stale binary; a test run only warns on stderr, which the filtered output these runs were read
 through dropped. Rebuild `brood` and `nest` after every `.blsp` edit before believing a run.
+
+## 2026-10-21 (later) — what broke the contracts job: a tier-up loading modules into a module's load (KI-285 closed)
+
+The prefetch was the trigger, not the cause. `preload_arm_globals` loads what a hot arm names at
+its tiering election (ADR-335 item 4), and the election fires on a call count, so inside a module
+load it started an unrelated load at an arbitrary point — journalled as that module's. The
+prelude's `get` (its string branch names `string/char-at`) got hot under contracts during
+`project`'s load and its tier-up loaded `string` there; the prefetch only moved the counts.
+Narrowed by tracing each `require-one` and native miss across the probe's windows, then a
+temporary throw at the `string/char-at` miss, which vanished into the pre-load's
+best-effort discard. Only `BROOD_TIER=2` reproduced it.
+
+Fix: the pre-load declines while its process is inside a load and re-elects after. The prefetch
+from `80270034` is restored and `lazy_load_wait_parks`' loader case un-ignored. Prefetch plus fix:
+the contracts-armed suite 6847/6847 three times, `stdimage_test.blsp` 13/13 eight times under
+contracts; the decline removed, the probe is red 5/5. Guard: `tier_up_loads.rs`.
+
+One detour recorded in the KI: a worktree build "proved" one side innocent because it had no
+stdlib image — and without one this cannot fail.

@@ -14419,3 +14419,55 @@ that then blocks in a nested `receive` is not counted twice.
 seven-line program at tiers 0, 1 and 2 under `BROOD_J=2`, killed at 20 s if starved.
 Sabotage-verified: with the `cpu_dirty_enter()` call removed it fails after 20 s at tier 0;
 restored, green at every tier.
+
+## KI-285 — a loader waiting on its header's dependency still blocks its worker ✅ FIXED 2026-10-21
+
+**Symptom.** A process LOADING a module whose header `(:use m)` names a module another process is
+mid-load of waits for that load in `%require-await`'s `receive` under the native source load
+(`%load-module-source` / `reflect/load`, where the `defmodule` expansion's `(require-one …)`
+runs), so the wait cannot park and blocks its OS worker: 40 such loaders of modules whose header
+`(:use http)` while `http` was held blocked 118-123 workers a run (`dirty-receive-block` under
+`BROOD_JIT_BAIL_TRACE`). The guard, `lazy_load_wait_parks::a_loader_waiting_on_its_headers_dependency_parks`,
+is `#[ignore]`d against this entry.
+
+**Cause.** The header's requires run inside a native frame. `80270034` closed the other two frames
+over the same wait (the journal wrapper, now a Brood `try` around `%load-journal-open` /
+`%load-journal-close`, and the VM's first-use lookup, now routed to `%lazy-global` /
+`%lazy-call`), and this one with a prefetch: `%require-header-deps` read the source's first form
+(`%read-first`) and required each `:use` / `:use-internals` / `:alias` / `:load` target from Brood
+before the native load began. That took the count to 0.
+
+**Why it was open.** The prefetch broke CI's "suite with contracts armed" job, twice on `e6b4f47c` and
+again on `c3a3654a`: `tests/stdimage_test.blsp:89` (*a root global is attributed to the module
+that defines it, not to a dependent*). Its child loads `editor/lineedit` and then `repl`, each in
+`%isolate-discard-loads`, and compares the globals each introduced: with contracts armed the
+second window never loaded `string`, so `own` (505) came out larger than `via` (495) and
+`smaller=false`. Bisected: the prefetch disabled, the file passed 13/13; enabled, 3/3 red under
+`BROOD_CONTRACTS=1 nest test tests/stdimage_test.blsp`. Not understood: whether `string` loads
+inside the first window at all depends on whether the run's pre-flight check (or its cached
+verdict) loaded it first, and the same file's
+`a module materialised under concurrency is never seen before its deps are` (line 272) also went
+red in some runs under `nest test` only. Backed out 2026-10-21 rather than leave CI red.
+
+**What broke CI, found.** Not the prefetch's doing: it only moved call counts. Tiering pre-loads
+every module a hot arm names before lowering it (`preload_arm_globals`, ADR-335 item 4), and the
+election fires when a call count crosses a threshold — so a pre-load inside a module load started
+an unrelated load at an arbitrary point of it, journalled as that module's. The prelude's `get`,
+whose string branch names `string/char-at`, got hot under contracts' extra calls during
+`project`'s load and its tier-up loaded `string` there; a run where the tier-up landed elsewhere
+had no `string` in the window. Only `BROOD_TIER=2` showed it (0 and 1 read 425 < 495), and the
+attribution probe changed with JIT timing even without contracts (412/482 names before the fix,
+360/430 after). A detour worth recording: a worktree build of one side passed, but only because it
+had no stdlib image (`BROOD_IMAGE_TRACE=1` says whether one was installed) — compare like with like.
+
+**Fix.** A tier-up pre-load never starts a load while its process is inside one
+(`heap.in_journalled_load()`): the election declines, as it already did for a load another process
+holds, and re-elects after the load. With that, the prefetch is restored and its guard un-ignored.
+Prefetch plus fix: the contracts-armed suite 6847/6847 three times running, `stdimage_test.blsp`
+13/13 eight times under `BROOD_CONTRACTS=1` (the line-272 test included), the probe correct 10/10;
+the decline removed with the prefetch in, the probe reads `smaller=false` 5/5.
+
+**Guard.** `crates/cli/tests/tier_up_loads.rs` — a module whose own load makes a function hot, whose
+cold branch names `zlib`: after `require-one`, `zlib` is still unloaded, and calling the branch loads
+it. Red with the decline removed (`after-require zlib=true`). The loader half keeps
+`lazy_load_wait_parks::a_loader_waiting_on_its_headers_dependency_parks`, no longer ignored.

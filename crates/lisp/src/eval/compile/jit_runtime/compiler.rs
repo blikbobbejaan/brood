@@ -184,6 +184,22 @@ pub(super) fn preload_arm_globals(arm: &CompiledArm, heap: &mut Heap, env: EnvId
             if heap.env_get(env, sym).is_some() {
                 continue;
             }
+            // Never START a load from inside one this process is running. The election
+            // fires when a call count crosses a threshold, so a load begun here lands at an
+            // arbitrary point of the enclosing module's load: its defines are journalled as
+            // that module's, and what the module "introduces" depends on when some hot arm —
+            // the prelude's `get`, whose string branch names `string/char-at` — happened to
+            // tier up. Under contracts' extra calls that moved `string` into `project`'s load,
+            // and the stdimage attribution, which probes each module's introduced names,
+            // charged it there (`stdimage_test` "a root global is attributed…"). Decline
+            // instead, as for a load another process holds: the arm stays on the VM and
+            // re-elects once the load is over.
+            if heap.in_journalled_load()
+                && crate::eval::derive::module_to_load_off_native(heap, sym).is_some()
+            {
+                ready = false;
+                continue;
+            }
             // `parkable_miss` declines a module another process holds — whether its claim
             // was seen up front or taken while this load was on its way to it — instead of
             // waiting for it. An error is discarded on purpose: this is a best-effort
