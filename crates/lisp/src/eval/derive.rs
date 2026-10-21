@@ -561,41 +561,24 @@ pub(crate) fn global_miss(heap: &mut Heap, env: EnvId, sym: Symbol) -> LispResul
     Err(crate::eval::unbound_error(heap, sym))
 }
 
-/// The module of `sym` when ANOTHER live process is loading it right now — the one case in
-/// which [`global_miss`] has to wait. That wait is a `receive` (`%require-await`), and from
-/// here it would run under this native frame: a receive that cannot park, so it blocks its
-/// OS worker. 200 processes making their first call into one module together dirty-blocked
-/// 27 workers (2026-10-20). The VM sends such a miss through `%lazy-global` as an ordinary
-/// call instead (`exec_chunk`), where the same wait parks. `None` for every other miss: a
-/// loaded or absent module, this process's own load, a bare name.
-pub(crate) fn module_loading_elsewhere(heap: &Heap, sym: Symbol) -> Option<Symbol> {
+/// The module of `sym` when [`global_miss`] would LOAD it — a module not yet provided, nor
+/// known absent, nor the one being compiled. That load is arbitrary Brood under this native
+/// frame, and every wait in it is a `receive` that cannot park, so it blocks its OS worker:
+/// the processes that lose the race to claim the load wait for the winner (200 making their
+/// first call into one module together dirty-blocked up to 27 workers, 2026-10-20), and the
+/// winner waits on any dependency another process is mid-load of (139 blocks for 40 loaders
+/// of modules whose header `(:use http)` while `http` loaded elsewhere). The VM sends such a
+/// miss through `%lazy-global` / `%lazy-call` as an ordinary call instead (`exec_chunk`),
+/// where the same waits park. `None` for every other miss — a loaded module's unbound name, a
+/// bare name — which the native path answers with the unbound error at no extra cost.
+pub(crate) fn module_to_load_off_native(heap: &mut Heap, sym: Symbol) -> Option<Symbol> {
     let module = module_of_resolved(sym)?;
-    if heap.compile_ns() == Some(module) {
+    if heap.compile_ns() == Some(module) || module_known_absent(heap, module) {
         return None;
     }
-    let name = value::symbol_name_ref(module);
-    let loading = heap.env_get(
-        heap.global(),
-        value::intern(crate::core::registries::FEATURES_LOADING),
-    )?;
-    let Value::Map(id) = loading else {
-        return None;
-    };
-    let me = crate::process::self_pid();
-    let live = crate::process::list_local_pids();
-    let elsewhere = heap.map_entries(id).into_iter().any(|(key, owner)| {
-        let ours = match key.unpack() {
-            ValueRef::Str(s) => heap.string(s) == name,
-            _ => false,
-        };
-        ours && match owner {
-            Value::Pid { node, id } if crate::dist::is_local(node) => {
-                id != me && live.contains(&id)
-            }
-            _ => false,
-        }
-    });
-    elsewhere.then_some(module)
+    let name = heap.alloc_string(value::symbol_name_ref(module));
+    let provided = heap.registry_member(value::intern(crate::core::registries::FEATURES), name);
+    (!provided).then_some(module)
 }
 
 /// [`global_miss`] from inside a compiled arm's execution (ADR-366). If the miss actually
@@ -612,16 +595,27 @@ pub(crate) fn global_miss_in_arm(
     let epoch = heap.global_epoch();
     let v = global_miss(heap, env, sym)?;
     if heap.global_epoch() != epoch {
-        heap.mark_arm_stale(arm);
-        if crate::diagnostics::debug_flags::trace_compile() {
-            let name = arm.dbg_label();
-            eprintln!(
-                "[compile] stale-bindings arm={name}: a miss on {} loaded its module; recompiles at its next activation",
-                value::symbol_name_ref(sym)
-            );
-        }
+        mark_arm_stale_for_miss(heap, arm, sym);
     }
     Ok(v)
+}
+
+/// Mark `arm` stale because a miss on `sym` loads its module, and say so under
+/// `BROOD_TRACE_COMPILE` — the native path above and the VM's `%lazy-global` / `%lazy-call`
+/// route (`exec_chunk`) alike, so the trace shows every first-use load whichever ran it.
+pub(crate) fn mark_arm_stale_for_miss(
+    heap: &mut Heap,
+    arm: &crate::eval::compile::CompiledArm,
+    sym: Symbol,
+) {
+    heap.mark_arm_stale(arm);
+    if crate::diagnostics::debug_flags::trace_compile() {
+        let name = arm.dbg_label();
+        eprintln!(
+            "[compile] stale-bindings arm={name}: a miss on {} loaded its module; recompiles at its next activation",
+            value::symbol_name_ref(sym)
+        );
+    }
 }
 
 // ===== The image's kind index: which qualified HEADS may defer (ADR-335 item 2) ===========

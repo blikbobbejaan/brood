@@ -114,15 +114,27 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         isolate_discard_loads,
     );
-    // KI-134 / ADR-339: `require-one` runs every load inside this, so the load's writes
-    // survive an `%isolate` restore — the loader's counterpart to `%isolate` itself.
+    // KI-134 / ADR-339: `require-one` runs every load between these two, so the load's
+    // writes survive an `%isolate` restore — the loader's counterpart to `%isolate` itself.
+    // A PAIR rather than one native taking the load as a thunk: a native that calls back into
+    // Brood leaves its frame under the whole load, and a `receive` under a native frame cannot
+    // park — every wait a loader made for a dependency another process was mid-load of blocked
+    // its OS worker. `%with-load-journal` is the prelude's `try` around the pair.
     primitives.def(
-        "%with-load-journal",
-        Arity::exact(1),
-        Sig::new(vec![callable], any),
+        "%load-journal-open",
+        Arity::exact(0),
+        Sig::new(vec![], any),
         &[],
         "",
-        with_load_journal,
+        load_journal_open,
+    );
+    primitives.def(
+        "%load-journal-close",
+        Arity::exact(1),
+        Sig::new(vec![any], any),
+        &["published?"],
+        "",
+        load_journal_close,
     );
     // The debugger's eval-in-paused-context primitives (ADR-174) — capture a
     // breakpoint's locals and evaluate expressions in that scope. `dev-tools` only.
@@ -835,23 +847,27 @@ fn wait_for_inflight_loads(heap: &Heap) {
     }
 }
 
-/// `(%with-load-journal thunk)` — run `thunk` (a module load) with this process marked as
-/// loading, so every global define and registry update it performs is journalled and
-/// replayed by any `%isolate` restore that would otherwise discard it (KI-134, ADR-339).
-/// The mark is released even when the load throws: a leaked one would journal a test's own
-/// defs as if they were a module's, and they would then survive their isolate.
-pub(super) fn with_load_journal(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
-    let thunk = arg(args, 0);
+/// `(%load-journal-open)` — mark this process as loading a module, so every global define and
+/// registry update until the matching [`load_journal_close`] is journalled and replayed by any
+/// `%isolate` restore that would otherwise discard it (KI-134, ADR-339). The prelude's
+/// `%with-load-journal` pairs the two around a load, closing on a throw too: a leaked mark
+/// would journal a test's own defs as if they were a module's, and they would then survive
+/// their isolate.
+pub(super) fn load_journal_open(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     heap.enter_journalled_load(false);
-    let result = apply_engine(heap, thunk, &[], env);
-    // ADR-344: a completed load is published whole; a throwing one is discarded, so a broken
-    // module leaves no half-module behind and never leaks the mark (a leaked one would stage
-    // a test's own defs as a module's).
-    match &result {
-        Ok(_) => heap.publish_module_load(),
-        Err(_) => heap.discard_module_load(),
+    Ok(Value::nil())
+}
+
+/// `(%load-journal-close published?)` — end the load [`load_journal_open`] began. ADR-344: a
+/// completed load (`published?` true) is published whole; a throwing one is discarded, so a
+/// broken module leaves no half-module behind.
+pub(super) fn load_journal_close(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    if crate::eval::truthy(arg(args, 0)) {
+        heap.publish_module_load();
+    } else {
+        heap.discard_module_load();
     }
-    result
+    Ok(Value::nil())
 }
 
 /// `(%isolate thunk)` — call `thunk` (no args) with a *private copy* of the runtime's global

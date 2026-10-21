@@ -2934,3 +2934,53 @@ use, every process but the loader waiting for it inside the global-miss path (`g
 `ensure_required` → `require-one`), a native frame where a `receive` blocks by design — 0 in 15
 with `BROOD_NO_STDIMAGE=1`, 0 in 15 with the literal kept and `bytes/length` dropped.
 
+
+## 2026-10-21 — a loader's waits park too
+
+v0.42.2 made a process that finds another mid-load of a module park while it waits. The
+LOADER still could not: a module whose header `(:use http)` while another process held
+`http`'s load waited for it under native frames. 40 such loaders blocked 139 OS workers a run
+(stdlib image live); the installed 0.42.2 reads the same. Three frames, each found by a
+backtrace at the `dirty-receive-block` site, each removed:
+
+- **The journal.** `require-one` ran every load as `(%with-load-journal (fn () …))`, a native
+  that called the thunk through `apply_engine` — under the WHOLE load, so no wait in any load
+  could park. It is now a prelude `try` around two natives, `%load-journal-open` and
+  `%load-journal-close published?`; `try` is a VM handler frame (`TryEnter`), not a callback.
+- **The source load.** `%load-module-source` / `reflect/load` compile and evaluate natively,
+  and the `defmodule` expansion's `(require-one …)` per clause runs inside them.
+  `%require-header-deps` reads the source's first form (`%read-first`), roots each
+  `:use`/`:use-internals`/`:alias`/`:load` target as the expansion would, and requires them
+  first, from Brood. Every header clause requires its module unconditionally, so this moves
+  loads earlier without adding any. Best-effort: a dependency that fails is left for the
+  header, which reports it in context. The image branch's edge replay was a `fold`, whose span
+  walks a vector natively; it is a tail loop (`%require-each`).
+- **The first-use miss.** The VM rerouted a miss through `%lazy-global` / `%lazy-call` only
+  when another live process held the module's claim. A process that found it unclaimed went
+  native (`global_miss` → `ensure_required`) and either won — its own load then under that
+  frame — or lost the claim race a moment later and waited under it. The route is now every
+  module not yet provided and not known absent (`module_to_load_off_native`). `%lazy-require`
+  keeps `ensure_required`'s rules: no require-edge for an inferred load (`require-one` now
+  passes `%load-edge-skipped?` down as an argument to `%require-one`, so `%lazy-require` can say
+  it directly instead of through a thread-local a preempted process could lose), and an absent
+  module or a `still loading` cycle falls through to the lookup's own unbound error.
+
+**Sabotage**, each against `a_loader_waiting_on_its_headers_dependency_parks` (new, beside the
+waiters' test in `crates/cli/tests/lazy_load_wait_parks.rs`), 0 dirty with all three: header
+prefetch off → 118-123; the old narrow route → 4-8; a native `fold` put back under the journal
+thunk → 133.
+
+**What is left.** Loading std from source (`BROOD_NO_STDIMAGE`, or no image for the binary)
+still waits inside the native compile: the `defmodule` expansion itself calls `string/join`,
+and forty first expansions race to load `string` under `macroexpand` — 121 blocks become ~70.
+A Brood-side change cannot reach a wait the compiler makes; the image path, which `nest`
+builds when missing, is the default.
+
+**Two fixes from proving it green.** The VM's lazy route marked an
+arm stale without the `BROOD_TRACE_COMPILE` line the native path prints, which
+`run_check_cache` and `stale_loop_handoff` key on; both paths now call
+`derive::mark_arm_stale_for_miss`. And `%lazy-require` swallowed any error containing "cannot
+find module" or "still loading" — a dependency's error deep in the load included — so a broken
+load could surface as an unbound name; it now passes over only the target module's own absence
+or cycle.
+

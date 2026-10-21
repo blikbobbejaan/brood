@@ -33,11 +33,11 @@ enum LazyMiss {
     Value(Value),
 }
 
-/// A first-use miss on a module ANOTHER process is loading (`module_loading_elsewhere`):
-/// make the load an ordinary call to `%lazy-global` instead of waiting under this native
-/// lookup. Its wait (`%require-await`'s `receive`) is then a top-level frame that parks; from
-/// `global_miss` it could not, and blocked its OS worker — 27 workers when 200 processes made
-/// their first call into one module together. Only the top-level capture driver can park,
+/// A first-use miss on a module not yet loaded (`module_to_load_off_native`): make the load an
+/// ordinary call to `%lazy-global` instead of running it under this native lookup. Its waits
+/// (`%require-await`'s `receive`) are then ordinary frames that park; from `global_miss` they
+/// could not, and blocked their OS workers — 27 when 200 processes made their first call into
+/// one module together. Only the top-level capture driver can park,
 /// so a nested run (`capture` false) keeps the synchronous path, as does every other miss.
 /// The arm is marked stale up front: the load changes what it was compiled against (ADR-366).
 #[cold]
@@ -51,13 +51,13 @@ fn lazy_load_call(
     if !capture {
         return Ok(None);
     }
-    let Some(module) = crate::eval::derive::module_loading_elsewhere(heap, sym) else {
+    let Some(module) = crate::eval::derive::module_to_load_off_native(heap, sym) else {
         return Ok(None);
     };
     let Some(callee) = heap.env_get(heap.global(), value::intern("%lazy-global")) else {
         return Ok(None);
     };
-    heap.mark_arm_stale(arm);
+    crate::eval::derive::mark_arm_stale_for_miss(heap, arm, sym);
     let argv: SmallVec<[Value; 4]> =
         SmallVec::from_slice(&[Value::symbol(module), Value::symbol(sym)]);
     Ok(Some(match dispatch(heap, callee, argv, true, env)? {
@@ -103,13 +103,13 @@ fn lazy_call(
     if !capture {
         return Ok(None);
     }
-    let Some(module) = crate::eval::derive::module_loading_elsewhere(heap, sym) else {
+    let Some(module) = crate::eval::derive::module_to_load_off_native(heap, sym) else {
         return Ok(None);
     };
     let Some(callee) = heap.env_get(heap.global(), value::intern("%lazy-call")) else {
         return Ok(None);
     };
-    heap.mark_arm_stale(arm);
+    crate::eval::derive::mark_arm_stale_for_miss(heap, arm, sym);
     let mut argv: SmallVec<[Value; 4]> = SmallVec::new();
     argv.push(Value::symbol(module));
     argv.push(Value::symbol(sym));

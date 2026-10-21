@@ -819,7 +819,7 @@ writing process's count while `require` reads source."
   (def- *std-image-installed* nil)
   (when (%std-image-wanted?) (%std-image-install)))
 
-(defn- %require-record-edge! (key)
+(defn- %require-record-edge! (key skipped)
   ;; `reflect/current-ns` first: it is the module whose FILE is being loaded, which is the accurate
   ;; parent for every require in that file — the `(:use …)` clauses `defmodule` expands and
   ;; any bare top-level `(require …)` alike. It is also the only one that works for the
@@ -830,11 +830,9 @@ writing process's count while `require` reads source."
   ;; establishes no namespace but is still `require`able by its filename.
   ;; A load the kernel INFERRED from a qualified reference is not an edge either (ADR-335):
   ;; the miss path satisfies a body reference on first use, imaged or not, so only a header
-  ;; clause is something an image has to replay. `%load-edge-skipped?` is one-shot — true for
-  ;; exactly this `require-one`, consumed here BEFORE the parent test so it cannot leak to a
-  ;; later call when `parent` is nil.
-  (let (skipped (%load-edge-skipped?)
-        ns (reflect/current-ns)
+  ;; clause is something an image has to replay — `skipped`, which `require-one` reads from the
+  ;; one-shot `%load-edge-skipped?` at its entry, so the flag cannot leak to a later call.
+  (let (ns (reflect/current-ns)
         parent (if ns (->string ns) *require-parent*))
     (when (and parent
             (not skipped)
@@ -898,6 +896,61 @@ writing process's count while `require` reads source."
   (binding (*require-parent* key)
     (%require-force-in key)))
 
+;; `require-one` each of `modules`, in order — a Brood tail loop on purpose. A require can
+;; WAIT (another process holds the load: `%require-await`'s `receive`), and a wait under a
+;; native frame cannot park, so it blocks its OS worker. `fold`'s span walks a vector in a
+;; native loop; this walk leaves no native frame under the callback.
+(defn- %require-each (modules)
+  (when (not (empty? modules))
+    (require-one (first modules))
+    (%require-each (rest modules))))
+
+(defn- %header-requires (src)
+  "The modules `src`'s `(defmodule …)` header requires when it loads — each `(:use m …)`,
+`(:use-internals m …)` and `(:alias m …)` target and every `(:load m …)` module, rooted to
+the active package as the header's own expansion roots them. Empty when the first form is
+not a header, or does not read: the load itself reports a malformed one."
+  ;; check-allow :discarded-catch — a best-effort peek: the load that follows reads the same source and raises
+  (let (form (check-allow :discarded-catch (try (%read-first src) (catch _ nil))))
+    (if (and (pair? form) (= (first form) 'defmodule) (not (empty? (rest form))))
+      (let (more (rest (rest form))
+            clauses (if (string? (first more)) (rest more) more))
+        (fold clauses
+          nil
+          (fn (acc clause)
+            (if (pair? clause)
+              (let (head (first clause)
+                    targets (cond
+                              (= head :load) (rest clause)
+                              (includes? [:use :use-internals :alias] head) (list (second clause))
+                              :else nil))
+                (fold targets
+                  acc
+                  (fn (a m) (if (symbol? m) (cons (%root-module-name m) a) a))))
+              acc))))
+      nil)))
+
+;; Load what a module's header will require BEFORE the native load of its source, from
+;; here. Every header clause requires its module unconditionally, so this moves those loads
+;; earlier without adding one — but a wait for one that another process is mid-load of now
+;; happens in a Brood frame, where it parks. Inside `%load-module-source` / `reflect/load` the
+;; same wait is under a native frame and blocks its OS worker for the other load's duration.
+;; Best-effort: a dependency that fails to load is left for the header to require again,
+;; so its error is reported where the module asked for it.
+(defn- %require-header-deps (src)
+  (%require-each-quietly (reverse (%header-requires src))))
+
+(defn- %require-header-deps-of (path)
+  ;; check-allow :discarded-catch — an unreadable file is `reflect/load`'s error to report
+  (let (src (check-allow :discarded-catch (try (file/slurp path) (catch _ nil))))
+    (when (string? src) (%require-header-deps src))))
+
+(defn- %require-each-quietly (modules)
+  (when (not (empty? modules))
+    ;; check-allow :discarded-catch — the header's own require raises this again, in context
+    (check-allow :discarded-catch (try (require-one (first modules)) (catch _ nil)))
+    (%require-each-quietly (rest modules))))
+
 ;; `%require-force`'s body, split out only so the dynamic binding above wraps every branch.
 (defn- %require-force-in (key)
   ;; `key`'s embedded source. If a bare key isn't embedded directly, resolve it to the
@@ -948,7 +1001,7 @@ writing process's count while `require` reads source."
           ;; still terminates: `require-one` returns immediately for this process's own
           ;; in-flight load (the `*features-loading*` marker is already set by the caller).
           (%std-image-tables!)
-          (fold (or (%std-edges-for key) nil) nil (fn (_ d) (require-one d)))
+          (%require-each (or (%std-edges-for key) nil))
           ;; Registrations next. Declarations before impls: `%impl-rank` reads
           ;; `*ability-owner*` to decide an impl's precedence tier, so replaying impls against
           ;; an undeclared ability would tier every one of them as "other". Neither needs the
@@ -1003,6 +1056,7 @@ writing process's count while `require` reads source."
                 prev (if prefix
                        (%set-package-context prefix (get *package-modules-of* (->string prefix)))
                        (%set-package-context nil nil)))
+            (%require-header-deps src)
             (%load-module-source src (%builtin-module-file load-key))
             (%set-package-context (first prev) (second prev)))
           (provide key)
@@ -1035,7 +1089,7 @@ writing process's count while `require` reads source."
         (let (path (or (%require-find (str key ".blsp") *load-path*)
                      (%require-find-colocated key)))
           (if path
-            (do (reflect/load path) (provide key))
+            (do (%require-header-deps-of path) (reflect/load path) (provide key))
             (error "require: cannot find module '" key "'"))))
     key))
 
@@ -1087,7 +1141,7 @@ load-time (`require`) guards.
     (let (modules (get *package-modules-of* (->string prefix))
           prev (%set-package-context prefix modules))
       (try
-        (do (reflect/load path) (provide key))
+        (do (%require-header-deps-of path) (reflect/load path) (provide key))
         (catch e
           (do (%set-package-context (first prev) (second prev)) (throw e))))
       (%set-package-context (first prev) (second prev))
@@ -1241,6 +1295,22 @@ is exactly what OTP 24 reply aliases exist for."
             left (%filter ws (fn (w) (not (= (first w) me)))))
         (if (empty? left) (dissoc m key) (assoc m key left))))))
 
+(defn %with-load-journal (thunk)
+  "Call `thunk` — a module load — journalled (KI-134, ADR-339): its defines and registrations
+publish together when it returns and are discarded if it throws (ADR-344), and an `%isolate`
+restore replays them rather than rolling back a module other processes may be using.
+
+Brood, around a native open/close pair, because the load runs under it: a native calling
+`thunk` would sit under the whole load, and a `receive` under a native frame cannot park, so
+a loader waiting on a dependency another process was mid-load of blocked its OS worker."
+  (%load-journal-open)
+  (let (result (try
+                 (thunk)
+                 (catch e
+                   (do (%load-journal-close false) (throw e)))))
+    (%load-journal-close true)
+    result))
+
 ;; Load one feature once. CONCURRENT-SAFE: `require` returning means the module's
 ;; defs exist — a require that races another process's load of the same feature
 ;; waits for that load to complete rather than trusting a top-of-file provide.
@@ -1256,10 +1326,16 @@ is exactly what OTP 24 reply aliases exist for."
   "Load a single feature `mod` once (a no-op if already loaded); returns its name.
 Safe under concurrency: never returns while another process is mid-load of `mod` —
 it waits for that load to finish (a half-evaluated module is never observable)."
+  (%require-one mod (%load-edge-skipped?)))
+
+;; `require-one`'s body. `inferred?` says the load was INFERRED from a qualified reference
+;; (ADR-335), which records no require-edge: the kernel's miss path says so through the
+;; one-shot `%load-edge-skipped?`, `%lazy-require` by passing it.
+(defn- %require-one (mod inferred?)
   (let (key (->string mod))
     ;; Before every early return below: the edge is a property of the requiring module,
     ;; not of who won the race to load the target.
-    (%require-record-edge! key)
+    (%require-record-edge! key inferred?)
     (cond
       (contains? *features* key) key
       ;; OUR OWN in-flight load of `key` requiring it back (a :use cycle): proceed —
@@ -1313,21 +1389,40 @@ it waits for that load to finish (a half-evaluated module is never observable)."
           (%require-release! key)
           key))))
 
+;; The VM's first-use load of a module not yet provided (`derive::module_to_load_off_native`),
+;; run as ordinary frames rather than under the native lookup that missed: every wait in it —
+;; on the process that won the claim, or the winner's own wait on a dependency another
+;; process is loading — is a `receive` that parks instead of blocking an OS worker. The rules
+;; are `ensure_required`'s, the native path's: an inferred load records no require-edge, and
+;; a module that cannot be found or is still loading in a cycle is not an error here — the
+;; lookup that follows reports `sym` unbound, as it would have.
+;; Only `module`'s OWN absence or cycle falls through: an error from inside its load — a
+;; dependency's, which may say the same words about another module — propagates, so a
+;; broken load is never reported as an unbound name.
+(defn- %lazy-require (module)
+  ;; check-allow :discarded-catch — an absent module is the unbound lookup's to report
+  (check-allow :discarded-catch
+    (try
+      (%require-one module true)
+      (catch e
+        (let (message (error-message e)
+              name (->string module))
+          (unless (or (= message (str "require: cannot find module '" name "'"))
+                    (includes? message (str "circular `(:use " name ")`")))
+            (throw e)))))))
+
 (defn %lazy-global (module sym)
-  "The value of the qualified global `sym` once `module` is loaded — the VM's first-use load
-when ANOTHER process is mid-load of `module`. The VM calls this as an ordinary frame instead
-of loading under its own native lookup, so the wait in `%require-await` is a top-level
-`receive` that parks rather than blocking an OS worker (`derive::module_loading_elsewhere`).
-An unbound `sym` raises the lookup's own unbound error."
-  (require-one module)
+  "The value of the qualified global `sym`, loading `module` first — the VM's first-use load,
+called as an ordinary frame instead of under its native lookup (`%lazy-require`). An unbound
+`sym` raises the lookup's own unbound error."
+  (%lazy-require module)
   (reflect/eval sym))
 
 (defn %lazy-call (module sym & args)
-  "Call the qualified global `sym` with `args` once `module` is loaded — `%lazy-global` for a
-call head whose lookup missed: the VM hands the whole call here instead of loading under its
-native lookup. The `apply` is a tail call the VM unfolds, so `sym`'s body runs as an ordinary
-frame too, and a `receive` in it parks."
-  (require-one module)
+  "Call the qualified global `sym` with `args`, loading `module` first — `%lazy-global` for a
+call head whose lookup missed. The `apply` is a tail call the VM unfolds, so `sym`'s body runs
+as an ordinary frame too, and a `receive` in it parks."
+  (%lazy-require module)
   (apply (reflect/eval sym) args))
 
 ;; ---- library names the PRELUDE itself references -----------------------------

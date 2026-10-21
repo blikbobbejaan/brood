@@ -6,6 +6,18 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Fixed.**
+- A process LOADING a module now parks while it waits for a dependency another process is
+  mid-load of. Three native frames sat under that wait, so it blocked an OS worker: the
+  journal wrapper every `require-one` load runs in, the native load of the module's source,
+  and the VM's lookup when the load was a first use rather than a wait on someone else's.
+  40 processes each loading a module whose header `(:use http)` while `http` loaded elsewhere
+  blocked 139 workers a run; 0 now. `%with-load-journal` is a Brood `try` around the new
+  `%load-journal-open` / `%load-journal-close` natives; a module's header modules load from
+  Brood before its source is read; and the VM hands every first-use load to `%lazy-global` /
+  `%lazy-call`, not only one another process holds. Loading std from source
+  (`BROOD_NO_STDIMAGE`) still waits inside the native compile — 121 blocks become ~70 there.
+
 ## v0.42.2 — TLS trust fixes, and first-use loads that park
 
 Two TLS advisories patched on the path every `https` fetch and `tls/listen` take, and a
