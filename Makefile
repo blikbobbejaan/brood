@@ -572,6 +572,9 @@ clippy: ## Lint with clippy (all targets + all features; warnings are FATAL via 
 	# The deliberate style exceptions are documented `#![allow(...)]`s in
 	# crates/lisp/src/lib.rs and crates/lsp/src/main.rs.
 	cargo clippy --all-targets --all-features -- -D warnings
+	# A superset hides a field only a narrower feature leaves unread: lint the configured
+	# release's `gui` without `gui-gpu` too (CI's lint job runs the same).
+	cargo clippy -p brood --lib --features gui -- -D warnings
 
 check: clippy test ## Lint + test (the pre-commit gate). Run `make fmt` separately — it rewrites files.
 
