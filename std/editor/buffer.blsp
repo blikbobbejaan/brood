@@ -2054,13 +2054,19 @@ the caller's monitor will deal with it)."
     (receive ([:reply ^r v] v) (after timeout :no-reply))))
 
 (defn stop-buffer (bp: (or map pid) -> any)
-  "Stop buffer process `bp` (it leaves its loop). Synchronous; returns :stopped —
-or :no-reply after 2s (an already-dead process: sending [:stop] to a corpse would
-otherwise park the caller forever, e.g. killing a buffer whose process just
-crashed, before the [:down] has been folded)."
-  (let (r (ref))
+  "Stop buffer process `bp` (it leaves its loop). Synchronous — when it returns :stopped
+the process is GONE, not merely past its reply. :no-reply for an already-dead process
+(its [:down] answers at once, so killing a buffer whose process just crashed does not
+park) or one that does not answer within 2s."
+  ;; the process replies and THEN leaves its loop, so the reply alone left a window in
+  ;; which `proc/info` still saw it alive; its [:down] is the real end
+  (let (r (ref)
+        m (monitor bp))
     (send bp [:stop (self) r])
-    (receive ([:reply ^r v] v) (after 2000 :no-reply))))
+    (receive
+      ([:reply ^r v] (do (receive ([:down ^m _ _] nil) (after 2000 (demonitor m))) v))
+      ([:down ^m _ _] :no-reply)
+      (after 2000 (do (demonitor m) :no-reply)))))
 
 ;; ---- create / delete (the buffer-process lifecycle) -------------------------
 
