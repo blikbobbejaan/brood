@@ -5,7 +5,7 @@
 (defmodule transduce-stateful-test (:use test))
 
 ;; A stage that records the run's table, so a test can ask whether it was dropped.
-(defn- spy (seen)
+(defn- run-spy (seen)
   (fn (rf)
     (table/put seen :run *transduce-run*)
     rf))
@@ -34,11 +34,11 @@
 (describe "the run's table is dropped on every exit"
   (test "the input running out"
     (let (seen (table/new))
-      (seq/transduce [1 2] (comp (spy seen) (seq/xtake 5)) conj [])
+      (seq/transduce [1 2] (comp (run-spy seen) (seq/xtake 5)) conj [])
       (is (dropped? seen))))
   (test "a reduced exit"
     (let (seen (table/new))
-      (seq/transduce (range 100) (comp (spy seen) (seq/xtake 1)) conj [])
+      (seq/transduce (range 100) (comp (run-spy seen) (seq/xtake 1)) conj [])
       (is (dropped? seen))))
   (test "a throw out of the run"
     (let (seen (table/new))
@@ -46,7 +46,7 @@
       (check-allow :discarded-catch
         (try
           (seq/transduce [1 2]
-            (comp (spy seen) (seq/xmap (fn (x) (error "boom"))))
+            (comp (run-spy seen) (seq/xmap (fn (x) (error "boom"))))
             conj
             [])
           (catch _ nil)))
