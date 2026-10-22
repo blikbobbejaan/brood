@@ -2092,9 +2092,22 @@ otherwise park the caller forever, e.g. killing a buffer whose process just
 crashed, before the [:down] has been folded).
 
     (editor/buffer/stop-buffer pid)   ;=> :stopped — or :no-reply when `pid` is already dead"
-  (let (r (ref))
-    (send bp [:stop (self) r])
-    (receive ([:reply ^r v] v) (after 2000 :no-reply))))
+  ;; The process replies to [:stop] and THEN leaves its loop, so the reply alone arrives a
+  ;; moment before the process is gone — `registry-stop`'s callers read the pid as still alive
+  ;; (a flaky `buffer_registry_test`). Monitoring makes "stopped" mean ended: wait for the
+  ;; reply and then the [:down]; a [:down] first is a process that was already dead, answered
+  ;; at once instead of after the 2 s timeout.
+  (if (pid? bp)
+    (let (r (ref)
+          m (monitor bp))
+      (send bp [:stop (self) r])
+      (receive
+        ([:reply ^r v] (receive ([:down ^m _ _] v) (after 2000 (do (demonitor m) v))))
+        ([:down ^m _ _] :no-reply)
+        (after 2000 (do (demonitor m) :no-reply))))
+    (let (r (ref))
+      (send bp [:stop (self) r])
+      (receive ([:reply ^r v] v) (after 2000 :no-reply)))))
 
 ;; ---- create / delete (the buffer-process lifecycle) -------------------------
 

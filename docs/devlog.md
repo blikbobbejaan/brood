@@ -3279,3 +3279,9 @@ deterministic one existed. Gated here: whole-image doctest 0 failures (repo root
 local gate green; two executed examples that depended on the doctest process's own state
 (`eval-server/baseline-globals`, `release-holds-of`) became illustrations. `audit/exampleless`
 674 → 120, the rest being Rust builtins and generated record accessors.
+
+2026-10-22 (night, flake): CI on `f0da246d` caught `buffer_registry_test`'s "registry-stop ends
+every process" failing once (`(proc/info a)` not nil) and passing on retry. `stop-buffer` returned
+on the buffer's REPLY, which the process sends before leaving its loop, so "stopped" could read a
+process still alive. It now monitors the process and returns on its `[:down]` — and answers a
+process that was already dead at once instead of after its 2 s timeout.
