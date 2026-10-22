@@ -6,6 +6,12 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+**Added.**
+- `~name` and `~name/…` in `path/absolute` resolve to that user's home, as a shell reads them
+  (a `~name` that is no user stays a relative file name), over the new `%user-home` /
+  `os/user-home` — the password database (`getpwnam`), so NSS users resolve too. An editor's
+  file prompt (bedit's `~/` reading) was the first to want it.
+
 ## v0.43.0 — BLAKE3, workers that cannot be starved, and module loads that park
 
 `hash/blake3` joins the digests, and a wasm component reloaded from the same bytes skips its

@@ -132,3 +132,24 @@
   (test "round-trips with absolute"
     (let (home (%getenv "HOME"))
       (assert= (path/absolute (path/abbreviate (str home "/a"))) (str home "/a")))))
+
+(describe "path/absolute and ~"
+  (test "~ and ~/ are the home"
+    (let (home (%getenv "HOME"))
+      (when home
+        (assert= (path/absolute "~") home)
+        (assert= (path/absolute "~/a/b") (str home "/a/b")))))
+  (test "~name and ~name/ are that user's home"
+    (let (root-home (%user-home "root"))
+      (when root-home
+        (assert= (path/absolute "~root") root-home)
+        (assert= (path/absolute "~root/x/") (str root-home "/x/")))))
+  (test "a ~name that is no user is a relative file name"
+    (assert= (path/absolute "~brood-surely-no-such-user/x" "/base")
+      "/base/~brood-surely-no-such-user/x")))
+
+(describe "%user-home"
+  (test "an unknown user has no home"
+    (assert= (%user-home "brood-surely-no-such-user") nil))
+  (test "the empty name is no user"
+    (assert= (%user-home "") nil)))

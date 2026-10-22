@@ -109,6 +109,15 @@ clipboard feature is off, like os/clipboard-set. Replaces whatever the clipboard
   (%getenv name))
 (sig env (string -> (or string nil)))
 
+(defn user-home (name)
+  "The home directory of the user called `name`, from the password database (so a user
+from LDAP or another NSS source too), or nil when there is no such user — what a
+`~name/` path names ([[path/absolute]]). The current user's is `(os/env \"HOME\")`.
+
+    (os/user-home \"brood-surely-no-such-user\")   → nil"
+  (%user-home name))
+(sig user-home (string -> (or string nil)))
+
 (defn env-all ()
   "All environment variables as a `{string → string}` map.
 

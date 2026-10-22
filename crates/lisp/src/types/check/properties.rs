@@ -236,6 +236,7 @@ const EFFECTFUL_EXACT: &[&str] = &[
     "%write-out",
     "%write-err",
     "%getenv",
+    "%user-home",
     "%env-all",
     "%now",
     "%random-bytes",
