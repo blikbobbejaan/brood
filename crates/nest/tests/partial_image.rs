@@ -84,8 +84,13 @@ fn set(names: &[&str]) -> BTreeSet<String> {
     names.iter().map(|s| s.to_string()).collect()
 }
 
+/// A module that prints its marker when it loads from source. Each defines a global (`here`):
+/// a module with NO globals — only an `impl` or a registry row — has no image section, so it
+/// loads from source on every run, warm or not, and its marker would say nothing about reuse.
 fn module(name: &str, header: &str, body: &str) -> String {
-    format!("(defmodule {name}{header})\n(io/puts \"SOURCE-LOAD: {name}\")\n{body}\n")
+    format!(
+        "(defmodule {name}{header})\n(io/puts \"SOURCE-LOAD: {name}\")\n(def here true)\n{body}\n"
+    )
 }
 
 fn fixture(dir: &Path) {
