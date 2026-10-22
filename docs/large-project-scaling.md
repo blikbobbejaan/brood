@@ -305,9 +305,9 @@ three — it is paid once — but at 300M lines an hour becomes five minutes on 
 4. **Check memory** (Finding 2, option 3). Gate RESTATED 2026-10-22 (below the load floor as written): peak ≤ load floor + the walk's state. Measured: nothing accumulates; the gap is two driver-side parse spikes (§ Item 4, re-measured).
 5. ~~**The cold load after an edit**~~ — **DONE 2026-10-22, ADR-419** (the module-level half): an
    edit reloads the edited modules and their dependents and materialises the rest; one edited
-   module on the 302 × 3k rig 13.2 s → 2.7 s. What it still pays is O(project): ~1 s
-   materialising the unchanged modules and 1.4 s rewriting the whole image. Parallel loading of
-   a COLD build is still open. The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
+   module on the 302 × 3k rig 13.2 s → 2.7 s, and with unchanged sections COPIED rather than
+   re-encoded (same day) `nest run` after an edit is **0.30 s**; check/test, which need every
+   module, ~2.2 s. Parallel loading of a COLD build is still open. The original note: (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
    costs, because the edit invalidates the whole image and the next check loads everything
    from source before re-deriving two files. Parallel loading divides it by cores; module-level
    image staleness (materialise the unchanged modules, load the changed ones) makes it

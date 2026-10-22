@@ -297,7 +297,18 @@ permanent rather than transient.
                           (+ n2 1)))))))
     (+ n-regs n-impls)))
 
-(defn write-image (root:string before:any before-regs:map &optional reloaded:any -> any)
+;; The sections to write: everything this load produced, except that a section the partial
+;; rebuild KEPT is copied from the image on disk instead — even when it was materialised along
+;; the way, since its bytes are already right.
+(defn- project-partial-sections (before kept)
+  (let (fresh (project-image-sections before))
+    (if (or (nil? kept) (empty? kept))
+      fresh
+      (append (seq/reject fresh (fn (sec) (contains? kept (first sec))))
+        (map (sort (keys kept))
+          (fn (k) (let ([off len] (get kept k)) [k [:copy off len]])))))))
+
+(defn write-image (root:string before:any before-regs:map &optional reloaded:any kept:any -> any)
   "Snapshot the bindings this project load produced into `root`'s image, grouped into
 per-module sections. `before` is the `(reflect/global-names)` list captured *before* the sources
 were loaded. Returns the entry count. Written from a scope in which registrations owned by
@@ -305,7 +316,10 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
 `%isolate` puts them back once the file is on disk.
 
 `reloaded` is the set of modules a partial rebuild loaded from source (ADR-419); nil means
-every module was. Beside the image goes the record the next partial rebuild reads.
+every module was. `kept` maps each section the partial rebuild kept to its `[offset length]`
+in the image now on disk: those are copied byte for byte rather than re-encoded, so a module
+the rebuild did not touch need not be materialised to be written again. Beside the image goes
+the record the next partial rebuild reads.
 
     (project-image/write-image \"/path/to/proj\" before (stdimage/registrations-by-module))   ;=> 5310 — entries written to /path/to/proj/.brood/image.bin"
   (let (dir (path/dirname (image-path root)))
@@ -317,7 +331,7 @@ every module was. Beside the image goes the record the next partial rebuild read
           previous (if reloaded (read-modules-record root) nil)
           n (%isolate (fn ()
                         (image-prune-foreign-registrations before-regs)
-                        (%image-write (image-path root) (project-image-sections before) fp))))
+                        (%image-write (image-path root) (project-partial-sections before kept) fp))))
       (write-modules-record! root fp reloaded previous)
       n)))
 
@@ -552,7 +566,7 @@ every module was. Beside the image goes the record the next partial rebuild read
 
 ;; The partial rebuild, or nil when this change needs a whole one. Returns the set of modules
 ;; it loaded from source, with the image rewritten; the caller reports.
-(defn- project-partial-load (root files)
+(defn- project-partial-load (root files lazy?)
   (let (rec (read-modules-record root)
         own (project-own-module-files)
         file-modules (fold (%map-pairs own)
@@ -585,14 +599,19 @@ every module was. Beside the image goes the record the next partial rebuild read
                       (project-redeclare-registries! (get rec :registries))
                       (doseq (m invalid)
                         (project-forget-module! m (or (get rec :owners) {}) impls))
-                      (table/put chosen :invalid invalid)
-                      (fold invalid sections (fn (secs m) (dissoc secs m)))))))
+                      (let (kept (fold invalid sections (fn (secs m) (dissoc secs m))))
+                        (table/put chosen :invalid invalid)
+                        (table/put chosen :kept kept)
+                        kept)))))
           (when n
             (let (invalid (table/get chosen :invalid))
-              (materialize-all)
+              ;; A tool that needs the whole project (check, test) gets it; a lazy caller (`nest
+              ;; run`) materialises only what the reloaded modules require. Either way the
+              ;; image is written with the unchanged sections COPIED, not re-encoded.
+              (when (not lazy?) (materialize-all))
               (doseq (m (sort (seq invalid)))
                 (require-one (symbol m)))
-              invalid))))))
+              {:reloaded invalid :kept (table/get chosen :kept)}))))))
 
 (defn materialize-all ()
   "Materialise every module the installed image holds — for tools that genuinely need the
@@ -690,17 +709,22 @@ program's and the LSP's protocol channel stays clean.
               ;; taken before a single source file is read (KI-106).
               before-regs (stdimage/registrations-by-module)
               ;; An edit to some modules reloads those and their dependents (ADR-419).
-              partial (if (image-usable?) (project-partial-load root files) nil))
+              partial (if (image-usable?)
+                        (project-partial-load root files (includes? opts :lazy))
+                        nil))
           (if partial
             (project-report-partial root name partial before before-regs started)
             (project-build-whole root opts files name started before before-regs))))))
 
 ;; The partial rebuild's tail: write the image again and say what was reloaded.
-(defn- project-report-partial (root name reloaded before before-regs started)
-  (let (t-load (math/quot (- (os/now-ns) started) 1000000)
+(defn- project-report-partial (root name partial before before-regs started)
+  (let (reloaded (get partial :reloaded)
+        t-load (math/quot (- (os/now-ns) started) 1000000)
         ;; check-allow :discarded-catch — best-effort, as on a whole build: the next edit rebuilds whole
         wrote (check-allow :discarded-catch
-                (try (write-image root before before-regs reloaded) (catch _ nil)))
+                (try
+                  (write-image root before before-regs reloaded (get partial :kept))
+                  (catch _ nil)))
         t-all (math/quot (- (os/now-ns) started) 1000000)
         n (count reloaded))
     (io/puts (str "Rebuilt "

@@ -61,7 +61,7 @@ pub(crate) fn register(primitives: &mut crate::builtins::Primitives) {
         Arity::exact(3),
         Sig::new(vec![any, any, any], any),
         &["path", "sections", "fingerprint"],
-        "Write a sectioned startup image to `path`, stamped with the opaque `fingerprint` string; returns the number of entries written. `sections` is a sequence of [name syms] pairs — `name` is the section key (a module's feature name, or `\"\"` for the always-materialised root), `syms` the global names it holds; declared sigs are added to the root section automatically. An unbound name is skipped; a value with no portable form (a pid, a socket) raises rather than silently dropping a binding. Two kinds are carried specially at a *top-level binding* (never nested inside a structure): a **builtin** rides by name, and a **table** rides as its contents — the snapshot is imaged and a fresh table rebuilt from it on restore, since a handle is per-runtime. Two globals aliasing ONE table raise, because restoring them would split it. Mechanism only (ADR-218) — the grouping and the staleness policy are Brood in std/tool/project.blsp.",
+        "Write a sectioned startup image to `path`, stamped with the opaque `fingerprint` string; returns the number of entries written. `sections` is a sequence of [name syms] pairs — `name` is the section key (a module's feature name, or `\"\"` for the always-materialised root), `syms` the global names it holds; declared sigs are added to the root section automatically. In place of `syms`, `[:copy offset length]` copies that section's bytes verbatim from the image now at `path` (a partial rebuild keeps an unchanged module's section without materialising it, ADR-419). An unbound name is skipped; a value with no portable form (a pid, a socket) raises rather than silently dropping a binding. Two kinds are carried specially at a *top-level binding* (never nested inside a structure): a **builtin** rides by name, and a **table** rides as its contents — the snapshot is imaged and a fresh table rebuilt from it on restore, since a handle is per-runtime. Two globals aliasing ONE table raise, because restoring them would split it. Mechanism only (ADR-218) — the grouping and the staleness policy are Brood in std/tool/project.blsp.",
         image_write);
     primitives.def(
         "%boot-source",
@@ -405,6 +405,8 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
     // Table handles seen anywhere in this write, so an aliased pair is caught across
     // sections and not just within one (see `encode_section`).
     let mut tables_seen: std::collections::HashMap<u64, String> = std::collections::HashMap::new();
+    // The macro names the image now at `path` indexes, read once if a section is copied.
+    let mut old_footer_macros: Option<Vec<String>> = None;
     for sv in sections {
         let pair = seq_items(heap, sv)?;
         if pair.len() != 2 {
@@ -413,6 +415,36 @@ pub(crate) fn image_write(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResu
             ));
         }
         let name = expect_string(heap, "%image-write", pair[0])?;
+        // `[name [:copy offset length]]` — the section's bytes as the image now at `path` holds
+        // them, copied verbatim (ADR-419's partial rebuild): a module whose section is still
+        // right is not materialised and re-encoded to be written again. A section is
+        // self-contained (its entry count, then its entries), so its bytes move unchanged; its
+        // macro names, which the footer indexes, come from the old footer.
+        if let Some((offset, length)) = copy_spec(heap, pair[1]) {
+            let file = image_file(heap, &path).ok_or_else(|| {
+                LispError::runtime(format!(
+                    "%image-write: cannot open {path} to copy section {name}"
+                ))
+            })?;
+            let bytes = read_at(&file, offset, length as usize).ok_or_else(|| {
+                LispError::runtime(format!(
+                    "%image-write: cannot read section {name} from {path}"
+                ))
+            })?;
+            let old_macros = old_footer_macros.get_or_insert_with(|| footer_macro_names(&file));
+            macro_names.extend(
+                old_macros
+                    .iter()
+                    .filter(|m| m.rsplit_once('/').is_some_and(|(module, _)| module == name))
+                    .cloned(),
+            );
+            total += bytes
+                .get(..4)
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+            dir.push((name, body.len() as u64, bytes.len() as u32));
+            body.extend_from_slice(&bytes);
+            continue;
+        }
         let syms = seq_items(heap, pair[1])?;
         for nv in &syms {
             if let value::ValueRef::Sym(s) = nv.unpack()
@@ -617,6 +649,48 @@ fn image_file(heap: &Heap, path: &str) -> Option<std::sync::Arc<ImageFile>> {
         Some(file) => Some(file),
         None => open_image(heap, path),
     }
+}
+
+/// `[:copy offset length]` → `(offset, length)`, or `None` for anything else (a section's
+/// name list).
+fn copy_spec(heap: &Heap, v: Value) -> Option<(u64, u32)> {
+    let items = heap.list_or_vector_items(v)?;
+    match items.as_slice() {
+        [Value::Keyword(k), off, len] if value::symbol_is(*k, "copy") => {
+            Some((off.as_int()? as u64, len.as_int()? as u32))
+        }
+        _ => None,
+    }
+}
+
+/// The macro names an image's footer indexes (v6) — the list after the directory and the
+/// `defdyn` marks. Empty when the footer cannot be read: a copied section then simply goes
+/// unindexed as a macro holder, which costs its callers an eager load, never a wrong answer.
+fn footer_macro_names(file: &ImageFile) -> Vec<String> {
+    let read = || -> Option<Vec<String>> {
+        let size = file.size()?;
+        let foot = read_at(file, size.checked_sub(8)?, 8)?;
+        let directory_offset = u64::from_le_bytes(foot.try_into().ok()?);
+        let bytes = read_at(
+            file,
+            directory_offset,
+            (size - 8 - directory_offset) as usize,
+        )?;
+        let mut r = Cursor::new(bytes);
+        let sections = get_u32(&mut r)?;
+        for _ in 0..sections {
+            get_str(&mut r)?;
+            get_u64(&mut r)?;
+            get_u32(&mut r)?;
+        }
+        let dynamics = get_u32(&mut r)?;
+        for _ in 0..dynamics {
+            get_str(&mut r)?;
+        }
+        let macros = get_u32(&mut r)?;
+        (0..macros).map(|_| get_str(&mut r)).collect()
+    };
+    read().unwrap_or_default()
 }
 
 /// Read `len` bytes at `off` from an open image handle without reading the rest of the file.

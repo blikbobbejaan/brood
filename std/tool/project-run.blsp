@@ -399,8 +399,10 @@ source paths, no such module under them, or no `:main` naming it.
       ;; Image-backed and LAZY (ADR-218): install the image's section directory but
       ;; materialise nothing, so `require` pulls in only the modules the program reaches.
       ;; With no current image, the ordinary source load builds one for the next run.
+      ;; `:lazy`: after an edit the partial rebuild (ADR-419) materialises only what the
+      ;; reloaded modules require — `run` reaches the rest on first use.
       (when (nil? (project-image/setup-lazy-image root))
-        (project-image/load-sources-cached root))
+        (project-image/load-sources-cached root :lazy))
       (project-require-entry "run" modname entry)
       ;; Advisory pre-flight over the entry point's REQUIRE-CLOSURE, not the whole tree:
       ;; warnings for the code about to execute, to stderr. The closure comes from the
