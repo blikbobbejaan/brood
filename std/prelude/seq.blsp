@@ -667,6 +667,11 @@ callers a type.
 ;; prelude is the boot image and relocating a definition changes boot order for no
 ;; established gain. If you reopen it, reopen the
 ;; ADR: the premise to re-test is "no gain", which predates the prelude image (ADR-314).
+;; The run's state table while `seq/transduce` builds a transducer stack (ADR-421) — read by
+;; `seq/stage-slot`. Declared here, not in `std/seq`, because a `defdyn` is an ambient root name
+;; and the stdlib image attributes root globals to modules: the prelude is the root's home.
+(defdyn *transduce-run* nil)
+
 (defn %xmap (f)
   "The `map` stage as a transducer — internal; published as `seq/xmap`."
   (fn (rf) (fn (acc x) (rf acc (f x)))))
