@@ -3208,3 +3208,12 @@ impl record destructured as three fields when it carries five. On the 302 × 3k 
 went 13.2 → 2.7 s. `crates/nest/tests/partial_image.rs` asserts which modules reloaded and
 compares every answer with a from-scratch build; dropping the mentions serves a stale value
 and fails it.
+
+2026-10-22 (later still): CI found what the hand-run fixture could not — its hooks module had no
+globals, so it loaded from source every run. With a section of its own, an unchanged module's
+registry rows were lost on the run AFTER a partial rebuild: a registry enters `(%registry-names)`
+only when this process writes it, and nothing writes `registry/*registries*` when its filler is
+materialised, so the image writer left it out of the root section. The record now keeps the root
+section's registry names and the partial rebuild re-declares them (the prelude's
+`*require-edges*` trick). A second defect beside it: a materialised module's ownership record was
+replaced by its live attribution, which is only its doc entry.

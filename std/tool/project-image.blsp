@@ -337,7 +337,10 @@ every module was. Beside the image goes the record the next partial rebuild read
         live
         (fn (m entry)
           (let ([mod regs] entry)
-            (if (or (contains? reloaded mod) (contains? m mod) (not (contains? *module-files* mod)))
+            ;; A materialised module's live attribution is only its key-attributed doc: its
+            ;; registrations were restored, not written by it here, so the previous record
+            ;; is the whole truth for it.
+            (if (or (contains? reloaded mod) (not (contains? *module-files* mod)))
               m
               (%map-assoc m mod regs))))))))
 
@@ -367,6 +370,9 @@ every module was. Beside the image goes the record the next partial rebuild read
                           {}
                           (fn (m f) (%map-assoc m f (stamp-of f))))
                  :owners (project-module-owners reloaded previous)
+                 ;; the registries the root section carries — see `project-redeclare-registries!`
+                 :registries (seq/filter (%registry-names)
+                               (fn (n) (not (includes? *project-image-registry-exclusions* n))))
                  :pinned (project-pinned-modules reloaded previous)}))
       (catch _ nil))))
 
@@ -512,6 +518,19 @@ every module was. Beside the image goes the record the next partial rebuild read
                      (step (conj seen m) (append (rest frontier) (or (get dependents m) nil))))))))
     (step #{} seeds)))
 
+;; A registry enters `(%registry-names)` — the set the image writer carries in the root
+;; section — only when this process WRITES it. A partial rebuild restores the registries from the
+;; root section and materialises the modules that fill them, so a registry only an unchanged
+;; module writes (`registry/*registries*` filled by a module's `registry/put!` at load) is never
+;; written here and would be left out of the image this rebuild writes: the run after lost every
+;; row in it. Declare each one the record names, the way the prelude declares `*require-edges*`
+;; — a write that marks the name and leaves the value as it was.
+(defn- project-redeclare-registries! (names)
+  (doseq (r (or names nil))
+    (when (and (bound? r) (map? (reflect/eval r)))
+      (%registry-update! r :assoc ["%declare"] nil)
+      (%registry-update! r :dissoc ["%declare"] nil))))
+
 ;; Take module `m`'s registrations out of the live registries before it loads again: the
 ;; non-impl ones its previous load recorded (`owners`), its ability impls (`*impl-from*` names
 ;; their declaring module, and the image carries it), its require edges and its doc.
@@ -559,6 +578,7 @@ every module was. Beside the image goes the record the next partial rebuild read
                     (let (invalid (project-reverse-closure (append edited pinned)
                                     (project-dependents root own))
                           impls (stdimage/%std-impls-by-module))
+                      (project-redeclare-registries! (get rec :registries))
                       (doseq (m invalid)
                         (project-forget-module! m (or (get rec :owners) {}) impls))
                       (table/put chosen :invalid invalid)
