@@ -1,0 +1,145 @@
+;; std/vcs.blsp — which version control a directory lives in, and the questions every tool
+;; asks of it. git is asked for real (CI has it); mur is not installed there, so its row is
+;; checked for where its working copy is found and that an absent client answers nil, and a
+;; backend registered by a test stands in for "a package adds a VCS".
+
+(defmodule vcs-test (:use vcs) (:use registry) (:use test))
+
+(defn- git (dir & args)
+  (os/cmd "git"
+    (append ["-C"
+              dir "-c" "user.name=Test" "-c" "user.email=test@example.test" "-c"
+              "commit.gpgsign=false"]
+      args)))
+
+(defn- git-repository (prefix)
+  "A fresh git repository with one commit of `a.txt` and `sub/b.txt`, or nil without git."
+  (let (dir (temp-dir prefix))
+    (file/mkdir dir)
+    (when (os/cmd-ok? (git dir "init" "-q" "-b" "main"))
+      (file/mkdir (path/join dir "sub"))
+      (file/spit (path/join dir "a.txt") "one\n")
+      (file/spit (path/join dir "sub/b.txt") "two\n")
+      (git dir "add" "-A")
+      (git dir "commit" "-q" "-m" "first")
+      dir)))
+
+(describe "vcs/locate"
+  (test "a directory in no checkout is in none"
+    (let (dir (temp-dir "brood-vcs-none-"))
+      (file/mkdir dir)
+      (when (nil? (locate (path/dirname dir)))
+        (assert= (locate dir) nil)
+        (assert= (files dir) nil)
+        (assert= (id dir) nil))))
+  (test "the nearest marker wins, from the directory itself up"
+    (let (dir (temp-dir "brood-vcs-nest-"))
+      (file/mkdir dir)
+      (file/mkdir (path/join dir ".git"))
+      (file/mkdir (path/join dir "inner"))
+      (file/mkdir (path/join dir "inner/.mur"))
+      (file/mkdir (path/join dir "inner/deep"))
+      (assert= (locate (path/join dir "inner/deep")) {:kind :mur :root (path/join dir "inner")})
+      (assert= (kind dir) :git)
+      (assert= (root (path/join dir "inner")) (path/join dir "inner"))))
+  (test "a .git FILE (a worktree, a submodule) marks a checkout too"
+    (let (dir (temp-dir "brood-vcs-worktree-"))
+      (file/mkdir dir)
+      (file/spit (path/join dir ".git") "gitdir: /elsewhere\n")
+      (assert= (kind dir) :git)))
+  (test "two markers in one directory: the backend ranked first"
+    (let (dir (temp-dir "brood-vcs-both-"))
+      (file/mkdir dir)
+      (file/mkdir (path/join dir ".git"))
+      (file/mkdir (path/join dir ".mur"))
+      (assert= (kind dir) (first (first (backends)))))))
+
+(describe "vcs over git"
+  (test "files: tracked and new, not ignored, not deleted"
+    (let (dir (git-repository "brood-vcs-git-files-"))
+      (when dir
+        (file/spit (path/join dir ".gitignore") "*.log\n")
+        (file/spit (path/join dir "new.txt") "n\n")
+        (file/spit (path/join dir "noise.log") "x\n")
+        (file/rm (path/join dir "a.txt"))
+        (assert= (files dir) (list ".gitignore" "new.txt" "sub/b.txt"))
+        (assert= (files (path/join dir "sub")) (list ".gitignore" "new.txt" "sub/b.txt")))))
+  (test "base-text: the file at HEAD, from any directory, nil for a new file"
+    (let (dir (git-repository "brood-vcs-git-base-"))
+      (when dir
+        (file/spit (path/join dir "sub/b.txt") "edited\n")
+        (file/spit (path/join dir "fresh.txt") "f\n")
+        (assert= (base-text (path/join dir "sub/b.txt")) "two\n")
+        (assert= (base-text (path/join dir "fresh.txt")) nil))))
+  (test "changed: the edits and the new files"
+    (let (dir (git-repository "brood-vcs-git-changed-"))
+      (when dir
+        (file/spit (path/join dir "a.txt") "edited\n")
+        (file/spit (path/join dir "fresh.txt") "f\n")
+        (assert= (changed dir) (list "a.txt" "fresh.txt")))))
+  (test "id: HEAD's short sha, and whether the tree moved since"
+    (let (dir (git-repository "brood-vcs-git-id-"))
+      (when dir
+        (let (clean (id dir))
+          (assert= (string/length (:id clean)) 12)
+          (refute (:dirty? clean))
+          (file/spit (path/join dir "a.txt") "edited\n")
+          (is (:dirty? (id dir))))))))
+
+(describe "vcs over mur"
+  (test "a mur working copy is found by its .mur directory"
+    (let (dir (temp-dir "brood-vcs-mur-"))
+      (file/mkdir dir)
+      (file/mkdir (path/join dir ".mur"))
+      (file/mkdir (path/join dir "src"))
+      (assert= (locate (path/join dir "src")) {:kind :mur :root dir})
+      ;; with no client installed, every answer is nil rather than an error
+      (when (nil? (mur-program))
+        (assert= (files dir) nil)
+        (assert= (base-text (path/join dir "src/a.txt")) nil)
+        (assert= (id dir) nil)))))
+
+(defn fake-files (root) (list (str "listed-under-" (path/basename root))))
+(defn fake-base-text (root path) (str "before:" (path/basename path)))
+
+(describe "a registered backend"
+  (test "a package adds a VCS as a row, and every question reaches its hooks"
+    (let (dir (temp-dir "brood-vcs-fake-"))
+      (file/mkdir dir)
+      (file/mkdir (path/join dir ".fakevcs"))
+      (registry/put! :vcs/backends
+        :fake {:rank 30
+         :marker ".fakevcs"
+         :files 'vcs-test/fake-files
+         :base-text 'vcs-test/fake-base-text})
+      (assert= (kind dir) :fake)
+      (assert= (files dir) (list (str "listed-under-" (path/basename dir))))
+      (assert= (base-text (path/join dir "x.txt")) "before:x.txt")
+      ;; a question the row does not answer is nil, not an error
+      (assert= (changed dir) nil)
+      (registry/remove! :vcs/backends :fake)
+      (assert= (kind dir) nil))))
+
+(describe "vcs: which seat mur speaks as"
+  (test "named once, every mur command carries it; cleared, mur chooses"
+    (use-mur-seat "an-editor")
+    (assert= (mur-env) {"MUR_RUNNER" "an-editor"})
+    (use-mur-seat nil)
+    (assert= (mur-env) {})))
+
+(describe "vcs/changed over git: this branch's work, not the upstream's"
+  (test "commits that landed upstream after the branch left it are not counted"
+    (let (dir (git-repository "brood-vcs-git-upstream-"))
+      (when dir
+        ;; `main` is the upstream; `work` leaves it, then main moves on without it
+        (git dir "checkout" "-q" "-b" "work")
+        (file/spit (path/join dir "mine.txt") "m\n")
+        (git dir "add" "mine.txt")
+        (git dir "commit" "-q" "-m" "mine")
+        (git dir "branch" "-q" "--set-upstream-to=main")
+        (git dir "checkout" "-q" "main")
+        (file/spit (path/join dir "theirs.txt") "t\n")
+        (git dir "add" "theirs.txt")
+        (git dir "commit" "-q" "-m" "theirs")
+        (git dir "checkout" "-q" "work")
+        (assert= (changed dir) (list "mine.txt"))))))

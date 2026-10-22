@@ -1211,29 +1211,33 @@ that does not parse is reported and skipped, never rewritten.
 (defn- format-set-of (coll)
   (fold coll {} (fn (m x) (assoc m x true))))
 
-;; The .blsp files under the project that git reports as not-committed-clean
-;; (modified/staged/untracked), intersected with the project's own file set so
-;; a stray .blsp elsewhere in the repo is ignored. Returns `:not-a-repo` (from
-;; the primitive) when there is no git work tree; otherwise a list (possibly
-;; empty — a clean tree) of the changed .blsp paths.
+;; The .blsp files under the project that the work in progress touches — git's
+;; uncommitted and unpushed edits, or a mur change's files (`vcs/changed`, whichever
+;; checkout the project is in) — intersected with the project's own file set so a
+;; stray .blsp elsewhere in the checkout (or one the work deleted) is ignored.
+;; Returns `:not-a-repo` when the project is in no checkout; otherwise a list
+;; (possibly empty — nothing changed) of the changed .blsp paths, absolute.
 (defn- format-changed-blsp (root)
-  (let (changed (%git-changed-files root))
+  (let (where (vcs/locate root)
+        top (if (nil? where) root (:root where))
+        relative (if (nil? where) nil (vcs/changed root))
+        changed (if (nil? relative) :not-a-repo (map relative (fn (p) (path/join top p)))))
     (if (keyword? changed)
       :not-a-repo (let (project (format-set-of (format-every-blsp root)))
         (seq/filter (seq/filter changed (fn (p) (string/ends-with? p ".blsp")))
           (fn (p) (contains? project p)))))))
 
 (defn project-changed ()
-  "Format only the .blsp files git reports as changed (modified/staged/untracked)
-under the current project — the git-aware narrower scope of `nest format`
-(`--changed`). Falls back to the whole project if not in a git repo. Returns the
-number of files rewritten.
+  "Format only the .blsp files the work in progress changed under the current project —
+git's uncommitted and unpushed edits, or a mur change's files (`vcs/changed`): the
+narrower scope of `nest format` (`--changed`). Falls back to the whole project outside a
+checkout. Returns the number of files rewritten.
 
     (format/project-changed)   ;=> 0 — the changed files that needed rewriting, after a summary line"
   (let (root (format-require-root) changed (format-changed-blsp root))
     (if (keyword? changed)
       (do
-        (io/puts "format: not a git repository — formatting the whole project.")
+        (io/puts "format: not in a git or mur checkout — formatting the whole project.")
         (project))
       (let (counts (format-apply changed 0 0)
             rewrote (first counts)

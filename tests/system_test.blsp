@@ -143,3 +143,17 @@
     (assert= (os/shell-quote "a b") "'a b'")
     (assert= (os/shell-quote "*.txt") "'*.txt'")
     (assert= (os/shell-quote "~") "'~'")))
+
+(describe "os/shell-split"
+  (test "it splits as sh does: the same words sh -c hands a program"
+    (doseq (line ["commit -m 'two words'"
+                   "a \"b c\" d\\ e" "x \"q\\\"uote\" 'single\"inside'" "  spaced   out  " "''"])
+      (assert= (os/shell-split line)
+        (seq/reject (string/split (os/cmd-out (os/cmd "sh" ["-c" (str "printf '%s\\n' " line)]))
+                      "\n")
+          (fn (w) false)))))
+  (test "nothing is expanded"
+    (assert= (os/shell-split "$HOME ~ *.txt") (list "$HOME" "~" "*.txt")))
+  (test "it is the inverse of shell-quote"
+    (doseq (s ["My Project/a.py" "it's" "$(touch /tmp/pwned)" "a\"b" "" "-rf"])
+      (assert= (os/shell-split (os/shell-quote s)) (list s)))))
