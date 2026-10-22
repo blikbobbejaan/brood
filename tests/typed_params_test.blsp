@@ -42,11 +42,13 @@
   (test "an untyped position and a missing result are the open placeholder `_`"
     (assert= "(int _ -> _)" (reflect/declared-signature 'typed-params-test/tp-pair)))
   (test "an armed contract rejects a typed parameter's wrong argument; unarmed, it runs"
-    ;; check-allow :type-mismatch — the wrong argument is the point
-    (check-allow :type-mismatch
+    ;; Through the public binding, as a caller in another module reaches it: a module's
+    ;; calls to its OWN contracted functions are unchecked (the contract guards the
+    ;; module boundary, ADR-383).
+    (let (outside (reflect/eval 'typed-params-test/tp-id))
       (if (%contracts-armed?)
-        (assert-error (tp-id "s"))
-        (assert= "s" (tp-id "s"))))))
+        (assert-error (outside "s"))
+        (assert= "s" (outside "s"))))))
 
 (describe "what typed parameters refuse, loudly"
   (test "a typed let binding"
