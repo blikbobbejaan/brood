@@ -214,6 +214,54 @@ Three things follow, and two of them contradict the option above.
 against the load floor, (b) find the per-chunk driver accumulation in 3, and (c) decide
 whether `nest check` should set the allocator's purge delay for itself — a global policy
 question, since the default is a deliberate "spend memory for speed" choice.
+
+### Item 4, re-measured 2026-10-22 — nothing accumulates; the peak is two transient spikes
+
+Release `nest` at `9b82d9be`, 302 × 3 068 rig (`gen-project.blsp -- 300 DIR 340`), verdict
+cache off, RSS sampled every 50 ms against the `[check]` phase markers:
+
+| phase | sequential | parallel |
+|---|---|---|
+| load (`ensure-loaded`, 0–1.4 s) | climbs to ~0.6 GB — the load floor | same |
+| whole-project lints (1.4–2.6 s) | ~0.96 GB | ~1.46 GB |
+| `project-preload!` (2.6–3.0 s) | **1.17 GB — the peak** | **~1.75 GB** |
+| the per-file walk (the other ~45 s / ~12 s) | **~0.70 GB, flat** | ~1.35 GB, flat |
+
+So (b) has an answer, and it is not what the queue assumed: **there is no per-chunk
+accumulation.** The walk holds 0.1 GB over the load floor for its whole run; the peak is two
+short phases that each parse every file in the DRIVER — `project-preload!`'s
+`reflect/source-deps` over all source (only to collect qualified-name prefixes) and the lints'
+scan — and leave garbage behind. Their retained data is small: the lints' per-file counts are
+109 217 entries for the whole rig, a few MB.
+
+Two policies decide how much of that garbage is resident at once, and each was measured:
+
+- **The nursery.** A minor collection fires at `BROOD_GC_GROWTH × live`, capped at
+  `NURSERY_MAX` (8M objects, "a few hundred MB"). The driver's live set is large, so its
+  nursery runs near the cap. `BROOD_GC_GROWTH=1.5`: sequential peak 1.19 → 0.95 GB, same wall;
+  parallel unchanged (~1.7 GB, its spike is the pool's). **Not a default change:** `make ab`
+  on twelve rows reads noise on time, but peak RSS moves both ways — `base64` +10% (97 → 106 MB,
+  five runs each), `sort` bimodal with runs at +10%, `bintree` −5–10%. Collecting sooner tenures
+  sooner, so the garbage moves to the old generation instead of going away.
+- **The allocator's purge delay.** The pool's steady +0.6 GB scales with OS THREADS, not with
+  live worker heaps (`BROOD_J`=1/2/4/12: 1.19/1.19/1.69/1.84 GB, while every arm keeps ~150
+  files of worker state live at once): it is mimalloc's per-thread pages, freed by green
+  processes that migrated. `MIMALLOC_PURGE_DELAY=0` returns them for +4–6% wall.
+
+Both together: sequential **1.15 → 0.79 GB**, parallel **~1.7 → 1.25 GB**.
+
+**(a), the gate restated.** "Peak RSS at 1 000 × 3k under 1 GB" is below that rig's load floor
+(~1.8 GB). The measurable gate is **peak ≤ load floor + the walk's own state** — here
+0.6 + 0.1 ≈ 0.7 GB sequential. Today it is 1.15; the two spikes are the whole gap.
+
+**What closes it without a global trade:** do not parse every file in the driver twice. The
+module index already re-parses a file only when its size or mtime moves (ADR-380); if its
+entry carried the file's qualified-reference prefixes, `project-preload!` would read them
+instead of re-parsing 18 MB — the same data an O(changed) image rebuild needs (item 5). The
+lints' scan can stay in workers, whose heaps die with them. **(c)** stays a policy question:
+setting the purge delay for `nest check` alone is possible (`mi_option_set` through
+`libmimalloc-sys`'s `extended` feature, before the pool starts) and is worth 0.4 GB parallel
+for ~5% wall.
 ## Finding 3 — cold load is one thread
 
 39 s for 3M lines, single-threaded (`Building bigproj … Built in …`). Files in different
@@ -230,7 +278,7 @@ three — it is paid once — but at 300M lines an hour becomes five minutes on 
    parse); a leaf edit re-checks 1 file, a dependency edit 2 (`[check] reuse-test (N to
    re-check)` under `BROOD_DERIVE_DBG=1`).
 3. **`nest check` parallel walk** (Finding 2, option 2). Gate: user/wall ≥ 6 on 12 cores.
-4. **Check memory** (Finding 2, option 3). Gate: peak RSS at 1 000 × 3k under 1 GB.
+4. **Check memory** (Finding 2, option 3). Gate RESTATED 2026-10-22 (below the load floor as written): peak ≤ load floor + the walk's state. Measured: nothing accumulates; the gap is two driver-side parse spikes (§ Item 4, re-measured).
 5. **The cold load** (Finding 3) — no longer "paid once": since ADR-382 it is what an EDIT
    costs, because the edit invalidates the whole image and the next check loads everything
    from source before re-deriving two files. Parallel loading divides it by cores; module-level
