@@ -6,6 +6,19 @@ engineering narrative lives in [`docs/devlog.md`](docs/devlog.md).
 
 ## Unreleased
 
+## v0.43.0 — BLAKE3, workers that cannot be starved, and module loads that park
+
+`hash/blake3` joins the digests, and a wasm component reloaded from the same bytes skips its
+compile. A run nested under a builtin no longer holds its worker hostage when it outlasts its
+quantum, a process loading a module parks while it waits on a dependency another process is
+loading, and the JIT no longer starts a module load in the middle of another. The narrative is
+the devlog's 2026-10-21 entries.
+
+**Added.**
+- `hash/blake3` and `(%digest :blake3 bytes)`: BLAKE3 digests beside the existing ones.
+- Reloading a wasm component from the same bytes reuses its compiled module instead of
+  compiling it again.
+
 **Fixed.**
 - As many processes looping inside `reflect/eval-string` (or any Brood run nested under a
   builtin) as there are workers no longer starve every other process. Such a run cannot yield
