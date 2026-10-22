@@ -93,6 +93,19 @@ the JIT compiler thread refused at start (`EAGAIN` under a CI thread limit) drop
 every enqueue then fails, and every arm stays on the VM — the dump would show every arm
 `uncompiled` with `calls` far past the tier threshold.
 
+2026-10-22, from the failing run's own artifact (`gh run download 39111522756`, the tree-walker
+nextest log): the case's stderr holds the test's panic and nothing else. A refused compiler
+thread prints `brood: cannot start the JIT compiler thread` unconditionally
+(`jit_runtime/compiler.rs`), and a codegen panic prints `reason=CODEGEN-PANICKED`
+unconditionally — neither is there, so **the `EAGAIN` mechanism above is ruled out**, and so is a
+poisoned compiler. Two more read off the code and ruled out: the caller's IC caches the wrapper
+CLOSURE, never the builtin the dispatcher redirects it to (`exec_chunk.rs`'s miss arm installs
+the resolved value), so no builtin cell can stand in for the link; and an arm marked
+`stale_bindings` is marked only after the global epoch moved, so the IC entry holding it misses at
+the next probe and re-resolves — it cannot pin a stale arm. What remains is the link's own
+gating (`fast_link_from_entry`: the IC arm native and at the current epoch), so the dump now also
+prints the caller's IC entries for the callee and the cell beside each.
+
 Armed: the helper's failure now reports the run count, what was published, and every compiled
 arm's JIT state (uncompiled / `BAILED` / native, calls, deopts, entry deopts), so the next
 occurrence says whether an arm never compiled, latched, or kept deopting.
@@ -107,7 +120,7 @@ Each closed row's full section is `## KI-N` in [archive/known-issues-closed.md](
 | KI-284 | **a worker BUSY under a native frame still counted as live, so as many processes looping under `reflect/eval-string` as there were workers starved every other process** — the in-language suite sat 30 minutes on two cores (v0.42.2 too), and on an oversubscribed `make test` one `fuzzy` test hit its 600 s timeout and the clean-up failed 343 more as `unbound symbol` | ✅ **FIXED 2026-10-21** — a nested run that spends its quantum with work waiting takes its worker out of the pool until it returns (`cpu_dirty_enter`, the CPU twin of `dirty_block`). Guard: `blocking_native::a_process_runs_while_every_worker_loops_under_a_native_frame` (`BROOD_J=2`, two spinners, every tier; red without the guard) |
 | KI-283 | **a function the linear-map rewrite built on a table leaked that table on every call** — a plain tally called ~25 000 times exhausted a 16 GB `ulimit -v` (`table: cannot reserve a 512 KB dense slot chunk`); a dropped table also kept its registry slot and chunk reservations for good | ✅ **FIXED 2026-10-21** — the rewrite frees its table, tables die with their creating process (ADR-418), and a dropped table's slot is reused under a generation-checked handle. Guard: `table_address_space.rs` (three reuse cases, `VmSize`-metered, each red under its sabotage) |
 | KI-282 | **the read that arms `:cpu-us` accounting never timed its own quantum**, so a process timing its own work across the runtime's first read got 0 — `cpu_time_test`'s self-timing test failed whenever it made the suite's first read (the nightly's GC stress job on `e63b70c8`) | ✅ **FIXED 2026-10-18** — the arming read starts the running quantum's clock on a worker (`pool::arm_cpu_accounting`). Guard: `cpu_time_first_read::the_first_read_in_a_runtime_times_the_work_after_it` (red without the stamp: 0 µs) |
-| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, once, in CI's tree-walker job | 👁 **WATCH** — not reproduced in 70 local runs; diagnostic armed (see the section above) |
+| KI-281 | **a JIT fast-link test never published within its 90 s deadline**, once, in CI's tree-walker job | 👁 **WATCH** — not reproduced in 70 local runs; the thread-refusal mechanism ruled out from the failing run's log (2026-10-22); diagnostic armed (see the section above) |
 | KI-280 | **a worker waiting in `os/cmd` still counted as live, so a process woken meanwhile was routed to it and waited for the command** — on a two-worker pool, `os/cmd` beside a tree-walked `receive` (which does mark its worker) left nobody to run anything: the stuck-victim memory test starved its leak for the hoarder's whole 20 s `sleep` under `BROOD_TIER=0` on two cores, and the leak then raised in itself | ✅ **FIXED 2026-10-18** — `os/cmd` marks its worker dirty-blocked (`dirty_block`, ADR-100 §7.4) for the wait. Guard: `blocking_native::a_process_runs_while_every_worker_waits_in_os_cmd` (`BROOD_J=2`, two blockers, every tier; red without the guard) |
 | KI-279 | **the stuck-victim memory test raced who reached a safepoint first** — after the hoarder's grace the leak had grown ~40-50 MB, under the eighth of the count a process must hold to be stopped, so nobody was attributable and the error was raised in whichever process got there first; on CI's tree-walker job that was the waiting root, which died instead of the leak (both tries, `8f345ed9`) | ✅ **FIXED 2026-10-18** — the leak is primed to 64 MB before the hoarder fills up, so it holds an attributable share whoever reaches the safepoint |
 | KI-278 | **a child spawned by a backgrounded runtime could not be interrupted** — an ignored SIGINT/SIGQUIT survives fork+exec, so a runtime started with `&` or `nohup` passed it to every `os/spawn`/`os/spawn-pty`/`os/cmd` child, and bedit's `C-c C-c` did nothing to a running shell command | ✅ **FIXED 2026-10-18** — `subprocess::reset_inherited_signals` (pre_exec, SIG_DFL). Guard: `a_spawned_child_does_not_inherit_ignored_interrupts` |
