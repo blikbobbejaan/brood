@@ -261,7 +261,31 @@ instead of re-parsing 18 MB — the same data an O(changed) image rebuild needs 
 lints' scan can stay in workers, whose heaps die with them. **(c)** stays a policy question:
 setting the purge delay for `nest check` alone is possible (`mi_option_set` through
 `libmimalloc-sys`'s `extended` feature, before the pool starts) and is worth 0.4 GB parallel
-for ~5% wall.
+for ~5% wall. Decided against on 2026-10-22: fix the sources, keep the allocator's
+memory-for-speed default.
+
+**Done the same day — and the re-parse was NOT the spike.** With `%mem-bytes`/`%mem-peak`
+added to the `[check]` trace and markers inside the lints and the preload, the allocator's own
+count put the garbage elsewhere: the lints' *aggregation*, not their parse. `lints-unused`
+merged 302 per-file count maps into one with `%map-assoc` per entry (+277 MB in 152 ms) and
+`lints-duplicates` built `name -> paths` for all 102 302 definitions (+100 MB) — persistent-map
+path-copying, which the linear-map rewrite (ADR-360 §6) removes only for the tally idiom
+spelled with the prelude's `get`/`assoc`. Both are tallies now: one fold over every file's
+`[name count]` pairs, and a per-name definition tally that gathers paths only for names
+defined more than once. The module index carries each file's qualified-reference prefixes
+(`:refs`, index v3) and `project-preload!` reads them instead of re-parsing — worth no
+measurable memory, but it takes 18 MB of parsing out of every warm check.
+
+| | before | after |
+|---|---|---|
+| sequential peak / wall | 1.15 GB / 50.7 s | **0.80–0.82 GB / 45 s** |
+| parallel peak / wall | 1.7–1.8 GB / 15 s | **1.49–1.51 GB / 12 s** |
+| whole-project lints | 1.31 s, +367 MB live | 0.86 s, +54 MB |
+
+Sequential is now 0.2 GB over the load floor. The parallel arm's remaining +0.7 GB is the
+pool: worker results arriving as messages the driver has not collected yet, and the
+allocator's per-thread pages.
+
 ## Finding 3 — cold load is one thread
 
 39 s for 3M lines, single-threaded (`Building bigproj … Built in …`). Files in different

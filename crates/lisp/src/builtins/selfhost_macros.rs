@@ -431,7 +431,11 @@ fn required_mods_arg(heap: &Heap, v: Value) -> Vec<String> {
 }
 
 /// `(%module-direct-requires path)` — the file's own module name and the modules it
-/// directly `:use`s / `(require 'M)`s, as `{:module <name-or-nil> :requires [<name> …]}`.
+/// directly `:use`s / `(require 'M)`s, as `{:module <name-or-nil> :requires [<name> …]
+/// :modules (…) :refs [<prefix> …]}`. `:refs` is every module prefix a free qualified
+/// reference in the file names (`json/parse` → `"json"`), sorted, as written — the set
+/// `project-preload!` loads before a check, kept in the module index so a warm check reads
+/// it instead of re-parsing every file.
 /// `std/tool/project.blsp` builds the require graph from these and closes it transitively
 /// into each file's `check-file` reachability set (KI-17). Reads, never evaluates.
 pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
@@ -450,6 +454,19 @@ pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Hea
     // (ADR-380) records these beside the requires, so one parse of a changed file answers
     // both the loader's and the checker's questions about it.
     let modules = crate::eval::macros::file_modules(heap, &just_forms);
+    // The qualified references, from the same scope analysis `reflect/source-deps` runs:
+    // a free global named `mod/name`, with locals and syntax already excluded.
+    let refs: std::collections::BTreeSet<String> = {
+        let root = crate::syntax::cst::parse(&src);
+        let tree = crate::syntax::scope::analyze(&root, &src);
+        root.forms()
+            .flat_map(|form| crate::syntax::scope::global_refs_in(&tree, form, &src))
+            .filter_map(|n| match n.rfind('/') {
+                Some(i) if i > 0 => Some(n[..i].to_string()),
+                _ => None,
+            })
+            .collect()
+    };
     // No GC safepoint fires inside a single builtin, so these handles stay live without
     // rooting (same discipline as `check_file_structured`).
     let dep_vals: Vec<Value> = deps.iter().map(|d| heap.alloc_string(d)).collect();
@@ -459,13 +476,17 @@ pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Hea
         None => Value::Nil,
     };
     let modules_val = heap.list(modules.into_iter().map(Value::symbol).collect());
+    let ref_vals: Vec<Value> = refs.iter().map(|r| heap.alloc_string(r)).collect();
+    let refs_val = heap.alloc_vector(ref_vals);
     let module_kw = Value::keyword(value::intern("module"));
     let requires_kw = Value::keyword(value::intern("requires"));
     let modules_kw = Value::keyword(value::intern("modules"));
+    let refs_kw = Value::keyword(value::intern("refs"));
     Ok(heap.map_from_pairs(vec![
         (module_kw, module_val),
         (requires_kw, requires_val),
         (modules_kw, modules_val),
+        (refs_kw, refs_val),
     ]))
 }
 

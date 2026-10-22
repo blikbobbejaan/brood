@@ -12,7 +12,18 @@ module-private defns) and the two migration aids, `--fix-renames` (ADR-304) and
 (defn- project-check-trace? () (not (nil? (os/env "BROOD_DERIVE_DBG"))))
 (defn- project-check-trace (phase started)
   (when (project-check-trace?)
-    (io/puts (str "[check] " phase " " (math/quot (- (os/now-ns) started) 1000000) " ms") :to *err*)))
+    ;; With the allocator's live and peak bytes: the check's memory is a property of its
+    ;; phases (large-project-scaling.md, item 4), so the trace says which one held it.
+    (io/puts (str "[check] "
+               phase
+               " "
+               (math/quot (- (os/now-ns) started) 1000000)
+               " ms, live "
+               (math/quot (%mem-bytes) 1048576)
+               " MB, peak "
+               (math/quot (%mem-peak) 1048576)
+               " MB")
+      :to *err*)))
 
 (defn all-files (root)
   "Every `.blsp` file the project at `root` owns — its source files plus its test files.
@@ -558,27 +569,27 @@ against the fully-loaded state is also what a live image would see. Returns nil.
               (fn (acc key-value)
                 (let (m (%map-get (second key-value) :module nil)) (if m (conj acc m) acc))))
         listed (project-require-closures files)
+        ;; From the module index's `:refs` (the prefixes of a file's qualified references),
+        ;; not a re-parse: parsing every file here was the check's peak memory — the garbage
+        ;; of 18 MB of source parsed in the driver at once (large-project-scaling.md, item 4).
         named (fold files
                 #{}
                 (fn (acc f)
-                  (fold (or (reflect/source-deps (or (file/slurp f) "")) nil)
-                    acc
-                    (fn (a form)
-                      (fold (or (get form :references) nil)
-                        a
-                        (fn (a2 r)
-                          (let (i (string/last-index-of r "/"))
-                            (if (and i (> i 0)) (conj a2 (string/substring r 0 i)) a2))))))))
+                  (fold (%map-get (%map-get infos f nil) :refs nil) acc (fn (a r) (conj a r)))))
         mods (fold files
                named
                (fn (acc f)
                  (fold (append (%map-get closures f nil) (%map-get listed f nil))
                    acc
                    (fn (a m) (if (contains? own m) a (conj a m)))))))
-    (doseq (m (sort mods))
-      ;; a module that will not load is reported by its own file's check, not here
-      (check-allow :discarded-catch (try (require-one (symbol (->string m))) (catch _ nil))))
-    (%check-materialise-referenced!)
+    (let (t1 (os/now-ns))
+      (doseq (m (sort mods))
+        ;; a module that will not load is reported by its own file's check, not here
+        (check-allow :discarded-catch (try (require-one (symbol (->string m))) (catch _ nil))))
+      (project-check-trace "preload-requires" t1))
+    (let (t2 (os/now-ns))
+      (%check-materialise-referenced!)
+      (project-check-trace "preload-materialise" t2))
     nil))
 (sig project-preload! (any map -> nil))
 
@@ -739,15 +750,27 @@ against the fully-loaded state is also what a live image would see. Returns nil.
 ;; file's defs don't clash). Aggregates each source file's `def-names` (extract
 ;; slot 3) and warns on any qualified name bound in more than one source file.
 (defn- project-duplicate-def-warnings (extracts source-set)
-  (let (by-name (fold extracts
+  ;; Tally first, then gather: how many source files define each name is a tally the
+  ;; compiler builds in place (ADR-360 §6); the paths are collected only for the names
+  ;; defined in more than one file. Building `name -> paths` for every name path-copied a
+  ;; 100 000-entry map per definition — ~100 MB of garbage on a 300 × 3k project, held into
+  ;; the check's peak (large-project-scaling.md, item 4). The tally counts definitions, not
+  ;; files, so a name one file defines twice is gathered too — and dropped below, where the
+  ;; warning counts the DISTINCT files.
+  (let (sources (seq/filter (%map-pairs extracts) (fn (kv) (%map-get source-set (first kv) false)))
+        defs-per-name (fold (apply append (map sources (fn (kv) (seq (nth (second kv) 3)))))
+                        {}
+                        (fn (m nm) (assoc m nm (inc (get m nm 0)))))
+        by-name (fold sources
                   {}
                   (fn (acc key-value)
                     (let ([path entry] key-value)
-                      (if (%map-get source-set path false)
-                        (fold (nth entry 3)
-                          acc
-                          (fn (m nm) (%map-assoc m nm (cons path (%map-get m nm nil)))))
-                        acc)))))
+                      (fold (nth entry 3)
+                        acc
+                        (fn (m nm)
+                          (if (> (%map-get defs-per-name nm 0) 1)
+                            (%map-assoc m nm (cons path (%map-get m nm nil)))
+                            m)))))))
     (seq/keep by-name
       (fn (entry)
         (let ([nm paths] entry
@@ -843,12 +866,6 @@ Returns nil when there is nothing to report."
     (let (nm (str (project-node-val node)))
       (%map-assoc acc nm (inc (%map-get acc nm 0))))
     (project-walk-val (project-node-val node) acc)))
-
-;; Merge symbol-count map `b` into `a` (name→count), summing counts. The reduce
-;; step for the parallel scan workers' per-chunk partial counts. Folding a map
-;; yields its `[k v]` entries.
-(defn- project-merge-counts (a b)
-  (fold b a (fn (m entry) (let ([k v] entry) (%map-assoc m k (+ (%map-get m k 0) v))))))
 
 ;; Parse `path` ONCE and return its extract `[counts privs def-names]`:
 ;;   - `counts`   : name→count of every `:symbol` reference (the unused-private
@@ -1067,7 +1084,7 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; module qualifies it — the qualified `mod/name` appears at all (a cross-module /
 ;; test reference). The parse + per-file scan is fanned across the worker pool
 ;; upstream (`project-gather-extracts`, `:scan-entries`), producing the `extracts`
-;; map this consumes; here the driver `project-merge-counts`s the per-file counts
+;; map this consumes; here the driver tallies the per-file counts
 ;; into a GLOBAL merged count that decides each private def's fate (so cross-module
 ;; references are seen). A scan
 ;; worker that dies leaves the counts under-complete for its slice — which could
@@ -1077,9 +1094,14 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
 ;; `project-gather-extracts`). The GLOBAL merged counts decide each private def's
 ;; fate (so cross-module references are seen), then each file's `privs` are judged.
 (defn- project-unused-private-warnings (extracts)
-  (let (counts (fold extracts
+  ;; One tally over every file's `[name count]` pairs, which the compiler builds in place
+  ;; (ADR-360 §6). Merging each file's map into an accumulator with `%map-assoc` path-copied
+  ;; it per entry: ~280 MB of garbage on a 300 × 3k project, the largest part of the check's
+  ;; peak (large-project-scaling.md, item 4).
+  (let (counts (fold (apply append
+                       (map (%map-pairs extracts) (fn (kv) (%map-pairs (nth (second kv) 1)))))
                  {}
-                 (fn (m key-value) (project-merge-counts m (nth (second key-value) 1)))))
+                 (fn (m e) (let (k (first e)) (assoc m k (+ (get m k 0) (second e)))))))
     ;; Per-file warning lists are consed on and flattened once, keeping it linear.
     (apply append
       (fold extracts
@@ -1111,11 +1133,17 @@ check-result cache and the `--failed`/`--stale` records live in; created on dema
           keep? (fn (w) (any? listed (fn (p) (includes? w p))))
           ;; native parallel scan every run — cheaper than any disk cache (see
           ;; `project-gather-extracts`)
+          t0 (os/now-ns)
           extracts (project-gather-extracts files)
-          source-set (fold (project/source-files root) {} (fn (m p) (%map-assoc m p true))))
-      (fold (seq/filter (append (project-duplicate-def-warnings extracts source-set)
-                          (project-unused-private-warnings extracts))
-              keep?)
+          _ (project-check-trace "lints-extract" t0)
+          source-set (fold (project/source-files root) {} (fn (m p) (%map-assoc m p true)))
+          t1 (os/now-ns)
+          dups (project-duplicate-def-warnings extracts source-set)
+          _ (project-check-trace "lints-duplicates" t1)
+          t2 (os/now-ns)
+          unused (project-unused-private-warnings extracts)
+          _ (project-check-trace "lints-unused" t2))
+      (fold (seq/filter (append dups unused) keep?)
         [0 nil]
         (fn (acc w)
           (io/puts w :to *err*)

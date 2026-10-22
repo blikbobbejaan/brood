@@ -3177,3 +3177,19 @@ expansion (`derive.rs`: only a head the image vouches is a function waits for it
 not at fault. The cold branch now names `zlib/gzip` as an operand, lazy on both boot paths and
 still an `Inst::Global` the tier-up pre-load reads, so the case asks the same question in every
 job.
+
+## 2026-10-22 — `nest check`'s peak memory was persistent-map garbage in the lints (large-project scaling item 4)
+
+Re-measured item 4 on a 302 × 3k rig with RSS sampled against the `[check]` phases: nothing
+accumulates — the walk sits 0.1 GB over the 0.6 GB load floor — and the peak was two short
+spikes in the driver. The queue's "per-chunk driver accumulation" does not exist. Lowering
+`BROOD_GC_GROWTH` hides the spikes but `make ab` shows it moving peak RSS both ways on the rows
+(`base64` +10%), and the user chose not to set the allocator's purge delay for `nest check`, so
+the fix went to the sources. The `[check]` trace now prints the allocator's live and peak bytes
+per phase, which is what found them: the lints merged per-file count maps with `%map-assoc`
+(+277 MB) and built `name -> paths` for every definition (+100 MB) — both now tallies the
+linear-map rewrite builds in place. The module index (v3) carries each file's
+qualified-reference prefixes, so `project-preload!` no longer re-parses every file. Sequential
+peak 1.15 → 0.81 GB and 50.7 → 45 s; parallel 1.75 → 1.5 GB and 15 → 12 s; identical warnings on
+a fixture with duplicate, same-file-duplicate and unused-private definitions against the
+previous binary.
