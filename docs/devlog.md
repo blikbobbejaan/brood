@@ -3245,3 +3245,8 @@ What remained was `Counted`: an ability with no default whose `->count` `count` 
 consult for a record before walking its view. `queue` answers from its size field (O(1));
 `multimap` sums its value lists without building the `[k v]` view. The test record's `->seq`
 raises, so a `count` that walked the view would fail it.
+
+2026-10-22 (night, later): stateful transducer stages (ADR-421) — `seq/xtake`, built on a
+per-run table that `transduce` owns and drops on every exit, with `seq/stage-slot` for a stage
+of your own. The completing arity ADR-376 sketched was rejected: it reaches the caller's own
+reducing function, and `(- acc)` negates. +0.45 µs per `transduce` call.

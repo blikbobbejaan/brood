@@ -2928,7 +2928,7 @@ In the `math` module: `math/mod`  `math/rem`  `math/quot`  `math/floor`  `math/m
   live view.
 
 ### Transducers
-`seq/transduce`  `seq/xmap`  `seq/xfilter`  `seq/xreject`  `seq/xkeep`  `seq/xtake-while`  `seq/reduced`  `seq/reduced?`
+`seq/transduce`  `seq/xmap`  `seq/xfilter`  `seq/xreject`  `seq/xkeep`  `seq/xtake`  `seq/xtake-while`  `seq/reduced`  `seq/reduced?`  `seq/stage-slot`
 
 The `l*` combinators above are the ergonomic front end; `transduce` is the same
 machinery with the stages exposed, for when the pipeline is **computed, reused, or
@@ -2969,9 +2969,27 @@ that `transduce` catches and unwraps (`seq/reduced?` recognises the payload). Th
 `fold`'s native loops free of a per-element test — a `try` costs ~100 ns per `transduce`
 call and the throw ~1 µs once, where a box test would cost every element of every fold —
 and it means `reduced` is a *transducer* protocol: outside a `transduce` it is an
-unhandled throw with a clear payload. A stage that needs state across inputs (`xtake`'s
-counter) has no place to release it yet — the `(rf) -> rf'` contract has no completion
-arity — and is deliberately not provided.
+unhandled throw with a clear payload.
+
+**Stateful stages (ADR-421).** A stage that counts, windows or remembers keeps its state in
+the run's own table: each `transduce` run creates one, binds it while the stack is built,
+and drops it on every exit — the input ending, a `reduced`, a throw. A stage takes a slot
+with `(seq/stage-slot initial)` when it is applied to its reducing function and reads and
+writes it with `table/get`/`table/put`; it never releases anything. `seq/xtake` is the
+built-in one:
+
+```clojure
+(seq/transduce (range 1000000) (seq/xtake 3) conj [])   ;=> [0 1 2]
+(defn xdedupe ()                                           ; a stage of your own
+  (fn (rf)
+    (let ([run slot] (seq/stage-slot :none))
+      (fn (acc x)
+        (if (= x (table/get run slot)) acc (do (table/put run slot x) (rf acc x)))))))
+```
+
+There is no completion arity: Clojure's `(rf acc)` at the end would reach the caller's own
+reducing function, where `(- acc)` negates. A stateful stage outside a `transduce` raises.
+The run's table costs ~0.45 µs per `transduce` call.
 
 ### Maps
 `hash-map`  `get`  `assoc`  `dissoc`  `contains?`  `keys`  `vals`  `reduce-kv`

@@ -257,6 +257,29 @@ it throws a `%reduced` record that `transduce` catches and unwraps.
     (seq/reduced? [:reduced 1])                         → false"
   (and (record? x) (= (record-id x) :seq/%reduced)))
 
+;; ---- stateful stages (ADR-421) -----------------------------------------------------
+;; A stage that counts, windows or remembers needs state across inputs, and Brood's one
+;; mutable structure is a table. Each `transduce` run OWNS one table: it is bound here while
+;; the stack is built, a stateful stage takes a slot in it, and the run drops it on every exit
+;; — the input ending, a `reduced`, a throw. No stage has to release anything, so no completion
+;; arity is needed (Clojure's `(rf acc)` would reach the caller's own reducing function, and
+;; `(- acc)` negates). Stateless stages never see the table.
+(defdyn *transduce-run* nil)
+
+(defn stage-slot (initial)
+  "A slot of state for a stateful transducer stage, holding `initial` — call it when the
+stage is applied to its reducing function, inside a [[transduce]]; read and write it with
+`table/get`/`table/put` on `(first slot)` under `(second slot)`. The state lives in the
+run's own table, which the run drops when it ends however it ends. Errors outside a
+`transduce`.
+
+    (seq/transduce [1 2 3] (seq/xtake 2) conj [])   → [1 2]"
+  (if (nil? *transduce-run*)
+    (error "seq/stage-slot: a stateful transducer stage runs under seq/transduce")
+    (let (slot (table/incr *transduce-run* :%slots))
+      (table/put *transduce-run* slot initial)
+      [*transduce-run* slot])))
+
 (defn transduce (coll xform rf init)
   "Reduce `coll` with `rf`/`init` through the transducer `xform` — one pass, no
 intermediate collections. `(transduce (range 10) (comp (seq/xfilter odd?) (seq/xmap sq)) + 0)`
@@ -275,10 +298,34 @@ one's reducer. `seq/lmap`/`seq/lfilter`/… are the ergonomic front end over the
 machinery; use `transduce` when the stage stack is computed, reused, or your own.
 
     (seq/transduce (range 10) (comp (seq/xfilter math/odd?) (seq/xmap inc)) + 0)   → 30"
-  (try
-    (fold coll init (xform rf))
-    (catch e
-      (if (reduced? e) (%reduced-value e) (throw e)))))
+  ;; The run's table (ADR-421) is dropped before the outcome is delivered, on every path.
+  (let (run (table/new))
+    (try
+      (let (v (fold coll init (binding (*transduce-run* run) (xform rf))))
+        (table/drop run)
+        v)
+      (catch e
+        (do
+          (table/drop run)
+          (if (reduced? e) (%reduced-value e) (throw e)))))))
+
+(defn xtake (n)
+  "The [[take]] stage as a transducer: pass the first `n` inputs and end the run there —
+through [[reduced]], so a long input is not walked past them. A stateful stage: its count
+lives in the run's table ([[stage-slot]]).
+
+    (seq/transduce (range 1000000) (seq/xtake 3) conj [])   → [0 1 2]
+    (seq/transduce [1 2] (seq/xtake 5) conj [])               → [1 2]"
+  (fn (rf)
+    (let ([run slot] (stage-slot n))
+      (fn (acc x)
+        (let (left (table/get run slot))
+          (if (<= left 0)
+            (reduced acc)
+            (let (acc2 (rf acc x))
+              (if (= left 1)
+                (reduced acc2)
+                (do (table/put run slot (- left 1)) acc2)))))))))
 
 (defn xtake-while (pred)
   "The `take-while` stage as a transducer: pass inputs while `(pred x)` holds, and end the

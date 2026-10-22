@@ -230,8 +230,8 @@ needs a Brood-specific form to respect an ADR.
   Clojure's box: a NON-LOCAL EXIT — the stage throws a `%reduced` record and `transduce`
   catches it — because the alternative was a per-element test in every native fold loop
   (measured: a `try` is ~100 ns per `transduce` call, the throw ~1 µs once). `xtake-while`
-  shipped with it; `xtake` did not — a stateful stage needs a completion arity to release
-  its state, a protocol change deferred until a stage needs it (the ADR has the design).
+  shipped with it; `xtake` followed with ADR-421 (2026-10-22): state lives in the run's own
+  table, which the run drops on every exit — no completion arity.
 - ⬜ **6. Declarative macro argument grammars** *(shape)*. Racket's `syntax-parse` is the
   best macro-error story in any Lisp; Brood has the philosophy (ADR-152) and the match
   compiler but each prelude macro hand-rolls its checks (`%for-check-binds`). Multi-pattern
@@ -504,8 +504,9 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       routed a record through `Seqable` since 2026-07-29 (`e29ffa39`, never ticked here), and
       `Counted` (op `->count`) shipped 2026-10-22: `count` and `empty?` consult it, so a queue
       answers both in O(1).
-- [ ] **Stateful transducer stages** — `xtake` needs a completion arity; `reduced` itself shipped
-      (ADR-376).
+- [x] **Stateful transducer stages** — DONE 2026-10-22 (ADR-421): each `transduce` run owns
+      one table, a stateful stage takes a slot in it (`seq/stage-slot`), and the run drops it
+      on every exit; `seq/xtake` is built on it. No completion arity.
 - [ ] **Rope-level grapheme cursor** — cache segmentation for large buffers; size it against a
       real editor workload.
 - [x] **A plain `assert`** — DONE 2026-10-16: a prelude macro, `(assert test message…)`, raises
@@ -931,8 +932,8 @@ What that review consciously left OPEN, with the reasoning:
   in at definition, so two record shapes dispatch apart. The rejected `:type`-field
   axis stays rejected: it would silently reroute any map carrying a `:type` key, where
   a `defrecord` identity is explicit and construction-time.
-- ✅ **Transducer early termination** (`reduced`) — shipped as ADR-376. The stateful-stage
-  lifecycle (`xtake`'s completion arity) is still open, in the "Still open" list.
+- ✅ **Transducer early termination** (`reduced`) — shipped as ADR-376. Stateful stages
+  (`xtake`) followed with ADR-421: the run owns a table and drops it on every exit.
   **[Brood]**
 - ⬜ **A rope-level grapheme cursor.** ADR-159's three accessors unblock correctness
   everywhere; a large buffer still wants a cursor that caches the segmentation.
