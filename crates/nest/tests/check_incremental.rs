@@ -119,8 +119,12 @@ fn to_recheck(output: &str) -> usize {
         .unwrap()
 }
 
+/// The image was (re)built this run: whole (`Building …`) or, after an edit, partially —
+/// the edited modules and their dependents from source (`Rebuilt …`, ADR-419).
 fn built_from_source(output: &str) -> bool {
-    output.lines().any(|l| l.starts_with("Building "))
+    output
+        .lines()
+        .any(|l| l.starts_with("Building ") || l.starts_with("Rebuilt "))
 }
 
 #[test]

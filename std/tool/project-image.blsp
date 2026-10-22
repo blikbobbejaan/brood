@@ -14,6 +14,13 @@ takes; everything else is the mechanism behind it.")
 ;; Read before anything loads — which is why it is a file, not something the image carries.
 (def- *project-image-includes-file* ".brood/image.includes")
 
+;; What the partial rebuild needs to know about the image beside it (ADR-419), one readable
+;; map: the fingerprint the image was stamped with (to open it after the tree moved on), its
+;; global key (the build, the contract mode, the dependency and included files), each source
+;; file's stamp, the registrations each project module's load wrote, and the modules whose
+;; load evaluated source text. Read only when the full fingerprint misses.
+(def- *project-image-modules-file* ".brood/image.modules")
+
 ;; A registry global is one that LOADING mutates rather than creates — `*impls*`,
 ;; `*methods*`, `*module-docs*`, … They already exist after the prelude, so the "names that
 ;; appeared" diff below cannot see them, and an image without them is silently wrong.
@@ -91,12 +98,22 @@ come from `*module-files*`).
   (str (system/build-id)
     (if (%contracts-armed?) " contracts" "")
     "\n"
-    (string/join (map (append files (project-dep-module-files) (project-included-files))
-                   (fn (f)
-                     (if (file/exists? f)
-                       (str f ":" (file/size f) ":" (file/mtime f))
-                       (str f ":missing"))))
+    (string/join (map (append files (project-dep-module-files) (project-included-files)) stamp-of)
       "\n")))
+
+;; One file's part of the staleness key.
+(defn- stamp-of (f)
+  (if (file/exists? f) (str f ":" (file/size f) ":" (file/mtime f)) (str f ":missing")))
+
+;; The part of the staleness key a partial rebuild cannot work around (ADR-419): the build, the
+;; contract mode, and the dependency and included files. When it moved, every section may be
+;; wrong — a new binary, or a dependency every module could have read — and the image is
+;; rebuilt whole. Only the project's own source files are allowed to differ.
+(defn- image-global-key ()
+  (str (system/build-id)
+    (if (%contracts-armed?) " contracts" "")
+    "\n"
+    (string/join (map (append (project-dep-module-files) (project-included-files)) stamp-of) "\n")))
 
 ;; The included files the last image write recorded for this project, or none.
 (defn- project-included-files ()
@@ -278,23 +295,88 @@ permanent rather than transient."
     (+ n-regs n-impls)))
 (sig image-prune-foreign-registrations (map -> int))
 
-(defn write-image (root before before-regs)
+(defn write-image (root before before-regs &optional reloaded)
   "Snapshot the bindings this project load produced into `root`'s image, grouped into
 per-module sections. `before` is the `(reflect/global-names)` list captured *before* the sources
 were loaded. Returns the entry count. Written from a scope in which registrations owned by
 modules the image does not carry are pruned (`image-prune-foreign-registrations`); the
-`%isolate` puts them back once the file is on disk."
+`%isolate` puts them back once the file is on disk.
+
+`reloaded` is the set of modules a partial rebuild loaded from source (ADR-419); nil means
+every module was. Beside the image goes the record the next partial rebuild reads."
   (let (dir (path/dirname (image-path root)))
     (when (not (file/dir? dir)) (file/mkdir dir))
     ;; Before the fingerprint below, which reads this list back.
     (file/spit (path/join root *project-image-includes-file*)
       (string/join (%included-files) "\n"))
-    (%isolate (fn ()
-                (image-prune-foreign-registrations before-regs)
-                (%image-write (image-path root)
-                  (project-image-sections before)
-                  (project-image-fingerprint root))))))
-(sig write-image (string any map -> any))
+    (let (fp (project-image-fingerprint root)
+          previous (if reloaded (read-modules-record root) nil)
+          n (%isolate (fn ()
+                        (image-prune-foreign-registrations before-regs)
+                        (%image-write (image-path root) (project-image-sections before) fp))))
+      (write-modules-record! root fp reloaded previous)
+      n)))
+(sig write-image (string any map &optional any -> any))
+
+;; The registrations each project or dependency module's load wrote, as `module -> [[registry
+;; key-path] …]` — what a partial rebuild removes before that module loads again, so an entry
+;; the edited module no longer makes does not survive in the image's registry values. The
+;; kernel journals the writer of every entry (KI-136), but only for loads in THIS process: a
+;; module the partial rebuild materialised wrote nothing here, so its previous record is kept.
+(defn- project-module-owners (reloaded previous)
+  (let (live (fold (%map-pairs (stdimage/registrations-by-module))
+               {}
+               (fn (m entry)
+                 (let ([mod triples] entry)
+                   (if (contains? *module-files* mod)
+                     (%map-assoc m mod (vec (map triples (fn (t) [(get t 0) (get t 1)]))))
+                     m)))))
+    (if (nil? reloaded)
+      live
+      (fold (%map-pairs (or (get previous :owners) {}))
+        live
+        (fn (m entry)
+          (let ([mod regs] entry)
+            (if (or (contains? reloaded mod) (contains? m mod) (not (contains? *module-files* mod)))
+              m
+              (%map-assoc m mod regs))))))))
+
+;; The modules whose load evaluated source text (`%dynamic-loaders`), kept across partial
+;; rebuilds for the ones that were materialised rather than loaded.
+(defn- project-pinned-modules (reloaded previous)
+  (let (live (seq/filter (%dynamic-loaders) (fn (m) (contains? *module-files* m))))
+    (sort (seq/distinct (if (nil? reloaded)
+                          live
+                          (append live
+                            (seq/filter (or (get previous :pinned) nil)
+                              (fn (m)
+                                (and (not (contains? reloaded m)) (contains? *module-files* m))))))))))
+
+(defn- modules-record-path (root) (path/join root *project-image-modules-file*))
+
+;; Best-effort, like the image: a record that cannot be written costs the next edit a full
+;; rebuild, never a wrong answer.
+(defn- write-modules-record! (root fp reloaded previous)
+  ;; check-allow :discarded-catch — a best-effort cache write: the next edit rebuilds whole
+  (check-allow :discarded-catch
+    (try
+      (file/spit (modules-record-path root)
+        (pr-str {:fingerprint fp
+                 :global (image-global-key)
+                 :files (fold (sorted-source-files root)
+                          {}
+                          (fn (m f) (%map-assoc m f (stamp-of f))))
+                 :owners (project-module-owners reloaded previous)
+                 :pinned (project-pinned-modules reloaded previous)}))
+      (catch _ nil))))
+
+(defn- read-modules-record (root)
+  ;; check-allow :discarded-catch — an absent or unreadable record is "rebuild whole"
+  (check-allow :discarded-catch
+    (try
+      (let (p (modules-record-path root))
+        (if (file/exists? p) (reflect/read-string (file/slurp p)) nil))
+      (catch _ nil))))
 
 ;; Install `root`'s image as a source of features, if it is current. Materialises the root
 ;; section (registries + declared sigs — small, and needed before anything else) and hands
@@ -334,7 +416,7 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
       (when (not (= after before))
         (%registry-cas! r after (project-registry-merge-values after before))))))
 
-(defn- project-install-image (root fp)
+(defn- project-install-image (root fp &optional choose)
   (let (path (image-path root)
         idx (%image-index path fp))
     (cond
@@ -359,6 +441,10 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
               (let (live (project-registry-snapshot))
                 (%image-load-section path (first root-sec) (second root-sec))
                 (project-registry-merge-live! live))
+              ;; A partial rebuild (ADR-419) decides which sections to keep HERE: it needs the
+              ;; recorded edges the root section just brought, and the replay below must not
+              ;; materialise a section it is about to drop.
+              (when choose (%set-image-source! path (choose (dissoc idx ""))))
               ;; The root section carries the registries, so `*require-edges*` only exists
               ;; after that load — and it is also where a headerless file's defs live, so its
               ;; own load-time requires are recorded under `""` and have to be replayed here
@@ -366,6 +452,123 @@ modules the image does not carry are pruned (`image-prune-foreign-registrations`
               ;; materialises; the root section has no `require` to hang them on.
               (fold (or (get *require-edges* "") nil) nil (fn (_ d) (require-one d)))))
           (count idx)))))
+
+;; ── The partial rebuild (ADR-419) ─────────────────────────────────────────────
+;; An edit used to throw the whole image away: the next start loaded every module from source
+;; — 33 s of a 40 s edit loop at 1 000 × 3k lines — to re-derive one file. A module's section is
+;; still right after an edit when nothing it was built from moved: its own file, and every
+;; module its load could have read. So the partial rebuild reloads the edited modules and
+;; everything that depends on them, materialises the rest, and writes the image again.
+;;
+;; "Depends on" is read wide, because a miss here is a stale value no error ever reports:
+;; the modules a file requires, every module prefix that appears ANYWHERE in its text
+;; (`module-index/mentions-of` — code, quoted data, keywords, the insides of strings), and the
+;; requires its load actually performed (`*require-edges*`). A module whose load evaluated
+;; source text (`%dynamic-loaders`) depends on what no scan sees, so it always reloads. Any
+;; other change — a new binary, the contract mode, a dependency or included file, a source
+;; file with no `defmodule`, a deleted file — rebuilds the image whole.
+
+;; The project's own module keys (rooted under its name, ADR-070) and the file behind each.
+(defn- project-own-module-files ()
+  (fold (%map-pairs *module-files*)
+    {}
+    (fn (m entry)
+      (if (project-image-dep-module? (first entry)) m (%map-assoc m (first entry) (second entry))))))
+
+;; A name as a source file spells it — `shapes`, `demo/shapes` — as the project module key it
+;; denotes, or nil for any other module.
+(defn- project-module-key (own s)
+  (let (rooted (if *project-name* (str (->string *project-name*) "/" s) nil))
+    (cond
+      (contains? own s) s
+      (and rooted (contains? own rooted)) rooted
+      else nil)))
+
+;; `module -> (modules whose load may have read it)`, over the project's own modules.
+(defn- project-dependents (root own)
+  (let (paths (seq/distinct (vals own))
+        mentions (module-index/mentions-of root paths)
+        infos (module-index/infos-of root paths))
+    (fold (%map-pairs own)
+      {}
+      (fn (acc entry)
+        (let ([m f] entry
+              named (append (or (get mentions f) nil)
+                      (or (get (get infos f) :requires) nil)
+                      (or (get *require-edges* m) nil))
+              deps (seq/distinct (seq/keep named (fn (s) (project-module-key own (->string s))))))
+          (fold deps
+            acc
+            (fn (a d) (if (= d m) a (%map-assoc a d (cons m (%map-get a d nil)))))))))))
+
+;; Everything reachable from `seeds` over `dependents`.
+(defn- project-reverse-closure (seeds dependents)
+  (let (step (fn (seen frontier)
+               (if (empty? frontier)
+                 seen
+                 (let (m (first frontier))
+                   (if (contains? seen m)
+                     (step seen (rest frontier))
+                     (step (conj seen m) (append (rest frontier) (or (get dependents m) nil))))))))
+    (step #{} seeds)))
+
+;; Take module `m`'s registrations out of the live registries before it loads again: the
+;; non-impl ones its previous load recorded (`owners`), its ability impls (`*impl-from*` names
+;; their declaring module, and the image carries it), its require edges and its doc.
+(defn- project-forget-module! (m owners impls)
+  (doseq (r (or (get owners m) nil))
+    (%registry-update! (get r 0) :dissoc (get r 1) nil))
+  (doseq (r (or (get impls m) nil))
+    ;; `[ability op key f from]`, `%register-impl`'s argument list
+    (let (aname (get r 0)
+          op (get r 1)
+          key (get r 2))
+      (%registry-update! '*impls* :dissoc [[aname op] key] nil)
+      (%registry-update! '*impl-from* :dissoc [[aname op key]] nil)))
+  (%registry-update! '*require-edges* :dissoc [m] nil))
+
+;; The partial rebuild, or nil when this change needs a whole one. Returns the set of modules
+;; it loaded from source, with the image rewritten; the caller reports.
+(defn- project-partial-load (root files)
+  (let (rec (read-modules-record root)
+        own (project-own-module-files)
+        file-modules (fold (%map-pairs own)
+                       {}
+                       (fn (m entry)
+                         (%map-assoc m
+                           (second entry)
+                           (cons (first entry) (%map-get m (second entry) nil)))))
+        old-files (or (get rec :files) {})
+        now (fold files {} (fn (m f) (%map-assoc m f (stamp-of f))))
+        changed (seq/filter (seq/distinct (append (keys now) (keys old-files)))
+                  (fn (f) (not (= (get now f) (get old-files f))))))
+    (cond
+      (nil? rec) nil
+      (not (= (get rec :global) (image-global-key))) nil
+      (empty? changed) nil
+      ;; a deleted file, or one with no `defmodule`: its globals are root-level or gone
+      (any? changed (fn (f) (or (nil? (get now f)) (empty? (or (get file-modules f) nil))))) nil
+      else
+        (let (edited (fold changed nil (fn (acc f) (append (get file-modules f) acc)))
+              pinned (seq/filter (or (get rec :pinned) nil) (fn (m) (contains? own m)))
+              ;; set by `choose`, which runs once the root section's registries are live
+              chosen (table/new)
+              n (project-install-image root
+                  (get rec :fingerprint)
+                  (fn (sections)
+                    (let (invalid (project-reverse-closure (append edited pinned)
+                                    (project-dependents root own))
+                          impls (stdimage/%std-impls-by-module))
+                      (doseq (m invalid)
+                        (project-forget-module! m (or (get rec :owners) {}) impls))
+                      (table/put chosen :invalid invalid)
+                      (fold invalid sections (fn (secs m) (dissoc secs m)))))))
+          (when n
+            (let (invalid (table/get chosen :invalid))
+              (materialize-all)
+              (doseq (m (sort (seq invalid)))
+                (require-one (symbol m)))
+              invalid))))))
 
 (defn materialize-all ()
   "Materialise every module the installed image holds — for tools that genuinely need the
@@ -448,48 +651,74 @@ program's and the LSP's protocol channel stays clean."
       hit hit
       else
         (let (name (or *project-name* (path/basename root))
-              n (count files)
-              _ (io/puts (str "Building " name " (" n " file" (if (= n 1) "" "s") ")")
-                  :to *err*)
               started (os/now-ns)
               before (reflect/global-names)
               ;; Captured HERE, beside `before`, and for the same reason: what the prune may
               ;; remove is decided by what this load introduced, so both baselines have to be
               ;; taken before a single source file is read (KI-106).
               before-regs (stdimage/registrations-by-module)
-              _ (/apply project/load-sources (cons root opts))
-              t-load (math/quot (- (os/now-ns) started) 1000000)
-              ;; A project whose globals are not all portable — a `table` global is the
-              ;; documented mutable-state idiom, and a table is deliberately local to its
-              ;; runtime — simply cannot be imaged. That is correct (loading from source is
-              ;; always right), but swallowing it meant such a project silently loaded cold
-              ;; forever with no way to find out why. Say so, once, and carry on.
-              wrote (cond
-                      (image-usable?)
-                        (try
-                          (write-image root before before-regs)
-                          (catch e
-                            ;; No once-per-key guard needed: this is the cold path, which
-                            ;; already prints Building/Built exactly once per build.
-                            (do
-                              (io/puts (str "note: "
-                                         name
-                                         " cannot use a startup image, so it loads from"
-                                         " source every time — "
-                                         (get e :message))
-                                :to *err*)
-                              nil)))
-                      else nil)
-              t-all (math/quot (- (os/now-ns) started) 1000000))
-          (io/puts (str "Built "
-                     name
-                     " in "
-                     (project-ms-str t-load)
-                     (cond
-                       wrote (str " (+" (project-ms-str (- t-all t-load)) " image)")
-                       else ""))
-            :to *err*)
-          nil))))
+              ;; An edit to some modules reloads those and their dependents (ADR-419).
+              partial (if (image-usable?) (project-partial-load root files) nil))
+          (if partial
+            (project-report-partial root name partial before before-regs started)
+            (project-build-whole root opts files name started before before-regs))))))
+
+;; The partial rebuild's tail: write the image again and say what was reloaded.
+(defn- project-report-partial (root name reloaded before before-regs started)
+  (let (t-load (math/quot (- (os/now-ns) started) 1000000)
+        ;; check-allow :discarded-catch — best-effort, as on a whole build: the next edit rebuilds whole
+        wrote (check-allow :discarded-catch
+                (try (write-image root before before-regs reloaded) (catch _ nil)))
+        t-all (math/quot (- (os/now-ns) started) 1000000)
+        n (count reloaded))
+    (io/puts (str "Rebuilt "
+               name
+               ": "
+               n
+               " module"
+               (if (= n 1) "" "s")
+               " from source in "
+               (project-ms-str t-load)
+               (if wrote (str " (+" (project-ms-str (- t-all t-load)) " image)") ""))
+      :to *err*)
+    nil))
+
+(defn- project-build-whole (root opts files name started before before-regs)
+  (let (n (count files)
+        _ (io/puts (str "Building " name " (" n " file" (if (= n 1) "" "s") ")") :to *err*)
+        _ (/apply project/load-sources (cons root opts))
+        t-load (math/quot (- (os/now-ns) started) 1000000)
+        ;; A project whose globals are not all portable — a `table` global is the
+        ;; documented mutable-state idiom, and a table is deliberately local to its
+        ;; runtime — simply cannot be imaged. That is correct (loading from source is
+        ;; always right), but swallowing it meant such a project silently loaded cold
+        ;; forever with no way to find out why. Say so, once, and carry on.
+        wrote (cond
+                (image-usable?)
+                  (try
+                    (write-image root before before-regs)
+                    (catch e
+                      ;; No once-per-key guard needed: this is the cold path, which
+                      ;; already prints Building/Built exactly once per build.
+                      (do
+                        (io/puts (str "note: "
+                                   name
+                                   " cannot use a startup image, so it loads from"
+                                   " source every time — "
+                                   (get e :message))
+                          :to *err*)
+                        nil)))
+                else nil)
+        t-all (math/quot (- (os/now-ns) started) 1000000))
+    (io/puts (str "Built "
+               name
+               " in "
+               (project-ms-str t-load)
+               (cond
+                 wrote (str " (+" (project-ms-str (- t-all t-load)) " image)")
+                 else ""))
+      :to *err*)
+    nil))
 
 ;; Load the manifest (if present) and put the project's source dirs on *load-path*
 ;; so its modules are require-able by name.

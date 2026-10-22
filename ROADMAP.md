@@ -491,8 +491,11 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       items 1 and 2 DONE the same day (ADR-380: the module index is a per-file cache, a warm
       `nest run` opens no source file, 3.0 s → 0.15 s; ADR-382 / KI-179: the check cache had
       hit only image → image, the image carries def sites now and an unchanged project
-      replays its verdict); whole-project `nest check` is still single-threaded and
-      O(project) in memory, and an edit still rebuilds the whole image. Three items left.
+      replays its verdict); the parallel walk (ADR-386); check memory (2026-10-22: the peak was
+      persistent-map garbage in the lints, sequential 1.15 → 0.81 GB, parallel 1.75 → 1.5 GB);
+      an edit reloads only the edited modules and their dependents (ADR-419: 13.2 → 2.7 s on
+      the 302 × 3k rig). Left: a COLD build still loads on one thread, and a partial rebuild
+      still materialises every unchanged module and rewrites the whole image (O(project)).
 - [ ] **Inline `sig` signatures** — `(defn f ((x int) -> int) …)`; an ADR-082 revision (defn,
       `sig_of`, defrecord's sigs, `sig!`). Detail under "Syntax review" below
       (from the archived `docs/archive/roadmap-for-v1.md`).

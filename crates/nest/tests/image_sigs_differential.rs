@@ -45,7 +45,11 @@ fn check(root: &Path, files: &[PathBuf], image_sigs: bool) -> String {
     // The first `nest` in a fresh checkout builds the project image and says so — a one-time
     // line that is about the build, not the check.
     text.lines()
-        .filter(|l| !l.starts_with("Building brood") && !l.starts_with("Built brood"))
+        .filter(|l| {
+            !l.starts_with("Building brood")
+                && !l.starts_with("Built brood")
+                && !l.starts_with("Rebuilt brood")
+        })
         .map(|l| format!("{l}\n"))
         .collect()
 }

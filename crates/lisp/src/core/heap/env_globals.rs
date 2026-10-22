@@ -1091,6 +1091,37 @@ impl Heap {
             .copied()
     }
 
+    /// Record that the module whose load is open evaluated source text (ADR-419): called by
+    /// `reflect/eval-string`, `%load-string` and `%eval-in`. A no-op outside a module load,
+    /// or inside one with no namespace (a headerless file, which the image never reuses
+    /// across an edit anyway).
+    pub fn note_dynamic_load_eval(&self) {
+        if !self.in_journalled_load() {
+            return;
+        }
+        if let Some(ns) = self.compile_ns() {
+            self.runtime
+                .dynamic_loaders
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(ns);
+        }
+    }
+
+    /// The modules [`Self::note_dynamic_load_eval`] recorded, sorted by name.
+    pub fn dynamic_loaders(&self) -> Vec<Symbol> {
+        let mut out: Vec<Symbol> = self
+            .runtime
+            .dynamic_loaders
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .copied()
+            .collect();
+        out.sort_by_key(|s| crate::core::value::symbol_name(*s));
+        out
+    }
+
     pub fn registry_names(&self) -> Vec<Symbol> {
         let mut names: Vec<Symbol> = self
             .runtime

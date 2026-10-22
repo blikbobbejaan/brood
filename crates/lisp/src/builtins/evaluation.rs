@@ -43,6 +43,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         "",
         load_string,
     );
+    primitives.def(
+        "%dynamic-loaders",
+        Arity::exact(0),
+        Sig::nullary(Ty::of(Tag::Pair).union(Ty::of(Tag::Nil))),
+        &[],
+        "The modules whose load evaluated source text (`reflect/eval-string`, `%load-string`, `%eval-in` with the module's namespace open), sorted — what the project image never reuses across an edit (ADR-419).",
+        dynamic_loaders,
+    );
     // The embedded-std-module loader: `%load-string` plus the reserved-name
     // exemption, held across the load and released even on a throw (ADR-166).
     primitives.def(
@@ -485,8 +493,19 @@ pub(super) fn run_program_file(args: &[Value], _: EnvId, heap: &mut Heap) -> Lis
 /// global environment. Inherits the current namespace (ADR-065): the REPL evaluates
 /// each entry through here, so a `(ns foo)` typed at the REPL sticks to later
 /// entries. To load a *module* source at the root namespace, use `%load-string`.
+/// `(%dynamic-loaders)` — see [`Heap::note_dynamic_load_eval`] (ADR-419).
+pub(super) fn dynamic_loaders(_: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let names: Vec<Value> = heap
+        .dynamic_loaders()
+        .into_iter()
+        .map(|s| heap.alloc_string(&value::symbol_name(s)))
+        .collect();
+    Ok(heap.list(names))
+}
+
 pub(super) fn eval_string(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "reflect/eval-string", arg(args, 0))?;
+    heap.note_dynamic_load_eval();
     eval_string_inner(heap, env, &src, false)
 }
 
@@ -506,6 +525,7 @@ pub(super) fn eval_string(args: &[Value], env: EnvId, heap: &mut Heap) -> LispRe
 /// the `include_str!` it was baked in from.
 pub(super) fn load_string(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "%load-string", arg(args, 0))?;
+    heap.note_dynamic_load_eval();
     let name = match arg(args, 1) {
         Value::Nil => None,
         v => Some(expect_string(heap, "%load-string", v)?),
@@ -684,6 +704,7 @@ pub(super) fn locals(_: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
 #[cfg(feature = "dev-tools")]
 pub(super) fn eval_in(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
     let src = expect_string(heap, "%eval-in", arg(args, 0))?;
+    heap.note_dynamic_load_eval();
     let entries: Vec<(value::Symbol, Value)> = match arg(args, 1) {
         Value::Map(mid) => heap
             .map_entries(mid)

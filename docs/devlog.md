@@ -3193,3 +3193,18 @@ qualified-reference prefixes, so `project-preload!` no longer re-parses every fi
 peak 1.15 → 0.81 GB and 50.7 → 45 s; parallel 1.75 → 1.5 GB and 15 → 12 s; identical warnings on
 a fixture with duplicate, same-file-duplicate and unused-private definitions against the
 previous binary.
+
+## 2026-10-22 (later) — an edit reloads the edited modules and their dependents (ADR-419, scaling item 5)
+
+The project image was one snapshot, so any edit loaded every module from source. Now the
+loader keeps a record beside the image (`.brood/image.modules`: the fingerprint, the key's
+global part, per-file stamps, each module's registrations, the pinned modules) and, when only
+module files changed, reloads the edited modules and everything that may have read them,
+materialising the rest. Dependents are read wide — every qualified token in a file's text,
+strings included (`:mentions`, module index v4), plus header requires and recorded edges — and
+a module whose load evaluated a string is pinned (`%dynamic-loaders`). The edited modules'
+registrations are taken out of the restored registries first; the first fixture run caught an
+impl record destructured as three fields when it carries five. On the 302 × 3k rig one edit
+went 13.2 → 2.7 s. `crates/nest/tests/partial_image.rs` asserts which modules reloaded and
+compares every answer with a from-scratch build; dropping the mentions serves a stale value
+and fails it.

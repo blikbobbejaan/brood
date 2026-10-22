@@ -435,7 +435,10 @@ fn required_mods_arg(heap: &Heap, v: Value) -> Vec<String> {
 /// :modules (…) :refs [<prefix> …]}`. `:refs` is every module prefix a free qualified
 /// reference in the file names (`json/parse` → `"json"`), sorted, as written — the set
 /// `project-preload!` loads before a check, kept in the module index so a warm check reads
-/// it instead of re-parsing every file.
+/// it instead of re-parsing every file. `:mentions` is the wider, LEXICAL set: the prefix of
+/// every qualified token anywhere in the text — code, quoted data, keywords, comments and the
+/// insides of strings — which the project image's partial rebuild reads as "this file may
+/// depend on that module" (ADR-419). Over-approximating costs a reload, never a stale value.
 /// `std/tool/project.blsp` builds the require graph from these and closes it transitively
 /// into each file's `check-file` reachability set (KI-17). Reads, never evaluates.
 pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Heap) -> LispResult {
@@ -478,16 +481,41 @@ pub(super) fn module_direct_requires(args: &[Value], _env: EnvId, heap: &mut Hea
     let modules_val = heap.list(modules.into_iter().map(Value::symbol).collect());
     let ref_vals: Vec<Value> = refs.iter().map(|r| heap.alloc_string(r)).collect();
     let refs_val = heap.alloc_vector(ref_vals);
+    let mention_vals: Vec<Value> = qualified_mentions(&src)
+        .iter()
+        .map(|m| heap.alloc_string(m))
+        .collect();
+    let mentions_val = heap.alloc_vector(mention_vals);
     let module_kw = Value::keyword(value::intern("module"));
     let requires_kw = Value::keyword(value::intern("requires"));
     let modules_kw = Value::keyword(value::intern("modules"));
     let refs_kw = Value::keyword(value::intern("refs"));
+    let mentions_kw = Value::keyword(value::intern("mentions"));
     Ok(heap.map_from_pairs(vec![
         (module_kw, module_val),
         (requires_kw, requires_val),
         (modules_kw, modules_val),
         (refs_kw, refs_val),
+        (mentions_kw, mentions_val),
     ]))
+}
+
+/// The module prefix of every qualified token in `src`, read lexically: the text is split on
+/// whitespace and delimiters only, so a token inside a string, a quoted list, a keyword
+/// (`:mod/id`, a record id) or a comment counts the same as one in code. `a/b/c` mentions
+/// `a/b`. Deliberately wider than any parse: it is the dependency evidence the project
+/// image's partial rebuild may not miss (ADR-419), and an extra prefix only costs a reload.
+fn qualified_mentions(src: &str) -> std::collections::BTreeSet<String> {
+    let delimiter = |c: char| c.is_whitespace() || "()[]{}\"';`,@~^\\".contains(c);
+    src.split(delimiter)
+        .filter_map(|token| {
+            let token = token.trim_start_matches([':', '#']);
+            match token.rfind('/') {
+                Some(i) if i > 0 && !token[..i].ends_with('/') => Some(token[..i].to_string()),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// `(check-file-deps path)` — the incremental-cache counterpart of `check-file`

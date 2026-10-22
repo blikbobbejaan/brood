@@ -123,8 +123,19 @@
       (assert= ["alpha" "string"] (get (get (infos-of root (list a b)) b) :requires))
       (assert= {:files 2 :hits 2 :parsed 0} (last-scan))
       (let (text (file/slurp (idx-file root)))
-        (is (includes? text "(brood-module-index 3)"))
+        (is (includes? text "(brood-module-index 4)"))
         (is (includes? text "\"beta\" [\"alpha\" \"string\"]")))))
+
+  :isolated (test "mentions are lexical: a call, a keyword, a string and quoted data all count"
+    (let (root (fixture-root!)
+          b (path/join root "src" "b.blsp"))
+      (file/spit b
+        (str "(defmodule beta)\n"
+          "(defn g () (alpha/f))\n" "(def id :delta/thing)\n" "(def code \"(gamma/run 1)\")\n"
+          "(def data '(eps/x))\n"))
+      ;; `:refs` is the checker's set — a reference in code; `mentions` is the image's
+      (assert= ["alpha"] (get (get (infos-of root (list b)) b) :refs))
+      (assert= ["alpha" "delta" "eps" "gamma"] (get (mentions-of root (list b)) b))))
 
   (test "a nil root remembers within the process and writes nothing"
     (let (root (fixture-root!)

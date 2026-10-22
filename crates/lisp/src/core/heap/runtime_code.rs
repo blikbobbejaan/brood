@@ -304,6 +304,12 @@ pub struct RuntimeCode {
     /// clears the entry: nothing owns it, so the image keeps it in the registry's own
     /// value rather than replaying it.
     pub(super) registry_writers: Mutex<HashMap<(Symbol, String), Symbol>>,
+    /// ADR-419: the modules whose LOAD evaluated source text — `reflect/eval-string`,
+    /// `%load-string`, `%eval-in` with a namespace open. What such a load defines depends on
+    /// a string the module computed, which no scan of its file can see, so the project image
+    /// never reuses its section across an edit: it always reloads. Grows only; read when the
+    /// image is written.
+    pub(super) dynamic_loaders: Mutex<HashSet<Symbol>>,
     /// KI-134: the module-load writes to replay after an `%isolate` restore. See
     /// [`LoadJournal`]. Lock order where both are taken: `registry_lock` → this.
     pub(super) load_journal: Mutex<LoadJournal>,
@@ -750,6 +756,7 @@ impl Default for RuntimeCode {
             meta: RwLock::new(SymbolMap::default()),
             registry_lock: Mutex::new(HashSet::new()),
             registry_writers: Mutex::new(HashMap::new()),
+            dynamic_loaders: Mutex::new(HashSet::new()),
             load_journal: Mutex::new(LoadJournal::default()),
             // A default (un-seeded) runtime reserves nothing — the prelude hasn't run.
             sealed: RwLock::new(std::collections::HashSet::new()),
@@ -905,6 +912,7 @@ impl RuntimeCode {
             global_generations: RwLock::new(SymbolMap::default()),
             registry_lock: Mutex::new(HashSet::new()),
             registry_writers: Mutex::new(HashMap::new()),
+            dynamic_loaders: Mutex::new(HashSet::new()),
             load_journal: Mutex::new(LoadJournal::default()),
             version: AtomicU64::new(0),
             code_epoch: AtomicU64::new(0),
