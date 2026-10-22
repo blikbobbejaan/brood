@@ -581,7 +581,10 @@ but the record's **collection view is the fields, id-free**: `seq`/`count`/`keys
 — and `map`/`seq/filter`/`fold`/`for`/`into`, which coerce through `seq` — see only the
 fields, so `(count (circle 2))` is `1`. This is the `Seqable` ability (op `->seq`,
 default = the fields); a custom-collection record overrides it to define its own
-iteration. `(fields r)` gives the id-free map explicitly; nothing else should read
+iteration — and `first`/`rest`/`empty?`/`nth` read that view too. A record that knows its
+size without walking its view implements `Counted` (op `->count`), which `count` and
+`empty?` consult first: a queue answers both in O(1). `(fields r)` gives the id-free map
+explicitly; nothing else should read
 `:__id__` directly (the stable seam a future hidden slot would swap behind).
 A record being `≠` a bare map with the same fields, and printing with its id, are
 *intended* (Elixir-struct semantics), not leaks; `json-encode` omits the id, so it

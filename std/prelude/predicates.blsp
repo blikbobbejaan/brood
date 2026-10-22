@@ -269,6 +269,17 @@ front of an accumulated remainder wants; a vector last is converted."
       (fold (rest rl) tail (fn (acc l) (%reverse-onto (reverse l) acc))))))
 
 (defn- %count-acc (coll n) (if (empty? coll) n (%count-acc (rest coll) (%add n 1))))
+
+;; A record's count: its own `->count` when it implements `Counted` (a queue knows its size),
+;; else the length of its `Seqable` view. Raw prims and a `bound?` guard, as `seq` has: this
+;; file loads before `*impls*`.
+(defn- %count-record (r)
+  (let (methods (if (bound? (quote *impls*))
+                  (%map-get *impls* (quote [Counted ->count]) nil)
+                  nil))
+    (if (if methods (%map-get methods (%map-get r :__id__ nil) nil) false)
+      (->count r)
+      (count (->seq r)))))
 (defn count (coll)
   "The number of items in `coll` (a list, vector, string, or map).
 
@@ -289,7 +300,7 @@ front of an accumulated remainder wants; a vector last is converted."
     (bytes? coll) (%byte-length coll)
     ;; a record counts as its `Seqable` view (its fields, id-free, by default) — not the
     ;; raw map, which would include the internal `:__id__`. `%map-get` distinguishes it.
-    (map? coll) (if (%map-get coll :__id__ nil) (count (->seq coll)) (%map-count coll))
+    (map? coll) (if (%map-get coll :__id__ nil) (%count-record coll) (%map-count coll))
     (set? coll) (%set-count coll)
     ;; A rope and a table have an O(1) size (ADR-253). Sized
     ;; directly rather than through `Seqable`, whose `->seq` is a LIST view: a rope

@@ -673,8 +673,46 @@ pub(super) fn is_pair(args: &[Value], _: EnvId, _: &mut Heap) -> LispResult {
     )))
 }
 
+/// A RECORD's own count through its `Counted` impl, or `None` when `v` is not a record or its
+/// type does not implement `Counted` (then the caller walks the `Seqable` view, as before).
+/// Lets `empty?` answer a queue in O(1) instead of building its sequence. Cold path only, as
+/// [`record_seq`] is.
+fn record_counted(heap: &mut Heap, v: Value) -> Result<Option<Value>, LispError> {
+    use crate::core::value::intern;
+    let Value::Map(m) = v else {
+        return Ok(None);
+    };
+    let Some(id) = heap.map_get(m, Value::Keyword(intern("__id__"))) else {
+        return Ok(None);
+    };
+    let genv = heap.global();
+    let Some(Value::Map(impls)) = heap.env_get(genv, intern("*impls*")) else {
+        return Ok(None);
+    };
+    let key = heap.alloc_vector(vec![
+        Value::Sym(intern("Counted")),
+        Value::Sym(intern("->count")),
+    ]);
+    let Some(Value::Map(methods)) = heap.map_get(impls, key) else {
+        return Ok(None);
+    };
+    let Some(method) = heap.map_get(methods, id) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::eval::compile::apply_engine(
+        heap,
+        method,
+        &[v],
+        genv,
+    )?))
+}
+
 pub(super) fn is_empty(args: &[Value], env: EnvId, heap: &mut Heap) -> LispResult {
     let x0 = arg(args, 0);
+    // A record that knows its size (`Counted`) is empty iff that size is zero.
+    if let Some(n) = record_counted(heap, x0)? {
+        return Ok(Value::boolean(matches!(n, Value::Int(0))));
+    }
     // a record is empty iff its `Seqable` view is (a custom empty queue, a field-less
     // record) — not iff the raw map is (which always carries `:__id__`).
     let x = match record_seq(heap, x0)? {

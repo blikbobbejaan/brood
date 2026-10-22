@@ -500,8 +500,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
       `(defn area (w:number h:number -> number) …)`: the planned `((x int) -> int)` collided
       with list patterns and `&optional` defaults. `_` marks an open position, and a missing
       `-> R` keeps the inferred return.
-- [ ] **Seq protocol on abilities — the Prim1 half** — `first`/`rest`/`empty?`/`nth` don't route
-      through `Seqable`; plus an optional `Counted`. The read/build halves shipped.
+- [x] **Seq protocol on abilities — the Prim1 half** — DONE: `first`/`rest`/`empty?`/`nth` have
+      routed a record through `Seqable` since 2026-07-29 (`e29ffa39`, never ticked here), and
+      `Counted` (op `->count`) shipped 2026-10-22: `count` and `empty?` consult it, so a queue
+      answers both in O(1).
 - [ ] **Stateful transducer stages** — `xtake` needs a completion arity; `reduced` itself shipped
       (ADR-376).
 - [ ] **Rope-level grapheme cursor** — cache segmentation for large buffers; size it against a
@@ -895,7 +897,7 @@ What that review consciously left OPEN, with the reasoning:
   fix — `(defn f ((x int) -> int) …)` — is an ADR-082 revision touching `defn`, the
   checker's `sig_of`, `defrecord`'s emitted sigs, `sig!`'s wrapping, and every `sig`
   in `std/`. Deferred with the reasoning in ADR-163, not dismissed. **[Brood]**
-- 🟡 **Re-host the seq protocol on abilities** (2026-07-29). The **read/iteration half
+- ✅ **Re-host the seq protocol on abilities** (2026-07-29, completed 2026-10-22). The **read/iteration half
   shipped**: a `Seqable` ability (op `->seq`, default = a record's fields id-free) that
   `seq` — and so `map`/`filter`/`fold`/`for`/`into`, plus `count`/`keys`/`vals` — consults
   for a RECORD, so a custom-collection record defines its own iteration and joins the
@@ -909,10 +911,7 @@ What that review consciously left OPEN, with the reasoning:
   onto std**: `std/queue` and `std/multimap` now impl the protocol, so a queue/multimap is
   a first-class collection (`count`/`seq`/`map`/`fold`/`for`/`conj`/`into` all work) and
   their bespoke `queue-to-list`/`queue-from-list`/`multimap-size` collapsed into one-liners
-  over it. Still ⬜: the Prim1 accessors (`first`/`rest`/`empty?`/`nth`) don't route
-  through `Seqable` — they're JIT-inlined ops the hot `fold--loop` uses, so routing them
-  needs kernel work (or raw `%first`/`%rest`); use `(first (seq c))` meanwhile — plus an
-  optional `Counted` for O(1) `count`. **[Brood]**
+  over it. The Prim1 accessors (`first`/`rest`/`empty?`/`nth`) route through `Seqable` too (`e29ffa39`, 2026-07-29), and `Counted` (op `->count`) gives `count`/`empty?` an O(1) answer for a record that knows its size (2026-10-22). **[Brood]**
 - ✅ **Numeric protocol — arithmetic for records (`Num`)** (2026-07-29). A money value,
   complex number, 2-D vector, or bignum uses `+`/`-`/`*`/`/` via a `Num` ability
   (`num-add`/`num-sub`/`num-mul`/`num-div`). A Brood-side attempt (a `(record? a)` branch in

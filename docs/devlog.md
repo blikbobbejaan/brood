@@ -3236,3 +3236,12 @@ that does not line up position for position (18 kept their `sig`: overloads, a c
 an `&optional` slot, arity mismatches). Every std module was loaded under the pre- and
 post-migration binaries and every declared signature dumped: none of the 705 differs or is
 missing.
+
+## 2026-10-22 (night) — `Counted`, and the seq protocol is complete
+
+The ROADMAP's "Prim1 half" item had been done since 2026-07-29 (`e29ffa39`: `first`/`rest`/
+`empty?`/`nth` read a record's `Seqable` view on the cold builtin fallback) and was never ticked.
+What remained was `Counted`: an ability with no default whose `->count` `count` and `empty?`
+consult for a record before walking its view. `queue` answers from its size field (O(1));
+`multimap` sums its value lists without building the `[k v]` view. The test record's `->seq`
+raises, so a `count` that walked the view would fail it.

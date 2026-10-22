@@ -135,6 +135,10 @@ If no values remain under `k`, the key is dropped.
       else
         (error "conj: adding to a multimap takes a [key value] pair or a map, got "
           (pr-str x)))))
+;; One per stored value, summed per key — without building the `[key value]` view.
+(impl Counted
+  multimap/multimap
+  (->count [mm] (fold (%map-pairs (/get mm :entries)) 0 (fn (n pair) (+ n (count (second pair)))))))
 (impl Seqable
   multimap/multimap
   (->seq [mm]

@@ -964,6 +964,15 @@ An optional leading docstring is carried onto the generated function.
   (->seq [self] :-> any))
 (impl Seqable :default (->seq [x] (%map-pairs (fields x))))
 
+;; Counted — a collection record's size, when it knows it without walking its `Seqable`
+;; view: `count` and `empty?` consult it for a record, so a queue answers both in O(1). No
+;; `:default` — a record with no impl counts its sequence view, as it always has.
+(defability Counted
+  "The number of elements a collection record holds — what `count` answers for it and
+what `empty?` compares with zero, instead of walking its `Seqable` view. An ordinary
+record has no impl and counts its fields; see `std/queue.blsp`."
+  (->count [self] :-> int))
+
 ;; Lookup — keyed access: the seam `get` consults for a RECORD that stores its contents
 ;; somewhere other than its own fields. Without it a record answers `get` from its FIELDS,
 ;; which for such a type is a wrong VALUE and not an error: `(get multimap k)` answered nil

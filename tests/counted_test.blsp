@@ -1,0 +1,43 @@
+;; `Counted` — a collection record's own size (the optional half of the seq protocol on
+;; abilities): `count` and `empty?` consult it for a record before walking its `Seqable` view.
+
+(defmodule counted-test (:use test) (:use queue))
+
+;; A collection whose sequence view cannot be built at all: only `Counted` can answer for it,
+;; so `count`/`empty?` succeeding proves they asked it rather than walking `->seq`.
+(defrecord tally (n))
+(impl Seqable counted-test/tally (->seq [t] (error "the view must not be walked")))
+(impl Counted counted-test/tally (->count [t] (get t :n)))
+
+(defrecord point (x y))
+
+(describe "Counted answers count and empty? for a record"
+  (test "a record with an impl is counted by it, never through its view"
+    (assert= 3 (count (tally 3)))
+    (assert= false (empty? (tally 3)))
+    (assert= true (empty? (tally 0))))
+  (test "a record without an impl still counts its fields"
+    (assert= 2 (count (point 1 2)))
+    (assert= false (empty? (point 1 2))))
+  (test "a queue counts in O(1) through its size"
+    (let (q (list-> [1 2 3]))
+      (assert= 3 (count q))
+      (assert= false (empty? q))
+      (assert= true (empty? (empty)))
+      (assert= 4 (count (push q 4)))))
+  (test "a multimap counts one per stored value"
+    (let (mm (multimap/assoc-all (multimap/empty) :a [1 2]))
+      (assert= 2 (count mm))
+      (assert= 3 (count (multimap/assoc mm :b 3))))))
+
+(describe "Counted across processes"
+  :isolated (test "workers count records sent to them and reply"
+    (let (me (self)
+          n 6)
+      (doseq (i (range n))
+        (let (worker (spawn (fn ()
+                              (receive ([from q t] (send from [i (count q) (count t) (empty? t)]))))))
+          (send worker [me (list-> (range i)) (tally i)])))
+      (let (got (fold (range n) {} (fn (acc _) (receive ([i c t e] (assoc acc i [c t e]))))))
+        (doseq (i (range n))
+          (assert= [i i (= i 0)] (get got i)))))))
