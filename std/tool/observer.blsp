@@ -279,7 +279,9 @@ selected/highlighted, a detail line, and a footer. `ui` (a map, or nil) carries 
 command-line overlay: when `(:mode ui)` is `:command` the footer becomes the
 minibuffer (the `:edit` line-editor state's prompt+text, with the cursor placed),
 and `(:msg ui)` — the last command's result — replaces the detail line. No IO —
-the observer's testable core; `observe-loop` feeds it live data."
+the observer's testable core; `observe-loop` feeds it live data.
+
+    (observer/observe-frame node procs 0 80 24 false :id :ok nil)   ;=> a vector of display ops for an 80×24 screen"
   (let (nprocs (count procs)
         lines (observe-node-lines node nprocs link)
         cap (math/max 1 (- rows 5))
@@ -484,25 +486,43 @@ Clamped to a valid row."
 ;; like the line editor). Quit sets `:done`; `:`/`e` enter the eval minibuffer.
 
 (defn observe-cmd-up (state _)
-  "Select the previous row."
+  "Select the previous row.
+
+    (get (observer/observe-cmd-up {:procs [{:id 7} {:id 9}] :sel 1} nil) :sel-id)   → 7"
   (observe-select state (get state :procs) (math/max 0 (dec (get state :sel)))))
 (defn observe-cmd-down (state _)
-  "Select the next row."
+  "Select the next row.
+
+    (get (observer/observe-cmd-down {:procs [{:id 7} {:id 9}] :sel 0 :n 2} nil) :sel-id)   → 9"
   (observe-select state
     (get state :procs)
     (math/min (math/max 0 (dec (get state :n))) (inc (get state :sel)))))
 (defn observe-cmd-sort (state _)
-  "Cycle the view (id/mailbox/memory/tree)."
+  "Cycle the view (id/mailbox/memory/tree).
+
+    (observer/observe-cmd-sort {:sort :id} nil)   → {:sort :mailbox}"
   (assoc state :sort (observe-next-sort (get state :sort))))
 (defn observe-cmd-pause (state _)
-  "Pause / resume the live refresh."
+  "Pause / resume the live refresh.
+
+    (observer/observe-cmd-pause {:paused false} nil)   → {:paused true}"
   (assoc state :paused (not (get state :paused))))
-(defn observe-cmd-refresh (state _) "Resume live (un-pause)." (assoc state :paused false))
-(defn observe-cmd-quit (state _) "Quit the observer." (assoc state :done true))
+(defn observe-cmd-refresh (state _)
+  "Resume live (un-pause).
+
+    (observer/observe-cmd-refresh {:paused true} nil)   → {:paused false}"
+  (assoc state :paused false))
+(defn observe-cmd-quit (state _)
+  "Quit the observer.
+
+    (observer/observe-cmd-quit {} nil)   → {:done true}"
+  (assoc state :done true))
 (defn observe-cmd-command (state _)
   "Open the eval minibuffer (a Brood prompt). Enter evaluates in the observed
 runtime (locally inline, or on the peer when remote-attached); Ctrl-C cancels.
-Seeds the line editor with the session's command history (↑/↓ recall, C-r search)."
+Seeds the line editor with the session's command history (↑/↓ recall, C-r search).
+
+    (observer/observe-cmd-command state nil)   ;=> `state` with `:mode :command` and a fresh line editor"
   (assoc state
     :mode :command
     :edit (editor/lineedit/lineedit-init "λ " (get state :history))
@@ -517,7 +537,9 @@ their spawner) — on and off (back to id order). The view is also one stop of t
 (defn observe-cmd-kill (state _)
   "Ask to kill the selected process: stash a pending confirmation (`:confirm`); the
 actual `(exit … :kill)` waits for `y` (see `observe-confirm-key`). No-op when no
-process is selected."
+process is selected.
+
+    (observer/observe-cmd-kill {:procs [] :sel 0} nil)   → {:procs [] :sel 0}"
   (let (procs (get state :procs) sel (get state :sel))
     (if (empty? procs)
       state
@@ -771,8 +793,8 @@ inspect itself: it spawns no demo processes, takes over the terminal, and return
 to the caller when the user quits (`q`/Esc/Ctrl-C). Same-runtime, so it sees every
 process in the shared registry.
 
-    (observe-attach)                  ; modal terminal observer; returns on quit
-    (observe-attach (gui-display))    ; or in a native window (what `(observe)` uses)
+    (observer/observe-attach)                  ;=> nil on quit — a modal terminal observer
+    (observer/observe-attach (gui-display))    ;=> nil on quit — in a native window (what `(observe)` uses)
 
 Caveat: it tears the display down on quit, so a caller that is itself a
 full-screen TUI must redraw afterward. Remote attach (a peer runtime) is the same
@@ -819,9 +841,9 @@ pass a **distinct `key`** for a SEPARATE window when you genuinely want a differ
 keys coexist, each unique. Needs a `--features gui` runtime (`./configure --with-gui
 && make install`); without it the spawned process dies when `gui/open` errors.
 
-    (observe)         ; => pid; opens the self window
-    (observe)         ; => the SAME pid; no second window
-    (observe :audit)  ; => a different pid; an independent second window
+    (observer/observe)          ;=> pid; opens the self window
+    (observer/observe)          ;=> the SAME pid; no second window
+    (observer/observe :audit)   ;=> a different pid; an independent second window
 
 For a modal terminal observer instead, call `(observe-attach *term-display*)`."
   ;; The window process registers under the per-key name. If one is already alive,
@@ -867,7 +889,9 @@ requester's pid (which routes over the link). Ignores anything else."
 `:observe`, so a remote `observe-connect` can request process snapshots. The
 program must already be a node — call `(node/start name addr cookie)` first.
 Returns the agent's pid. Opt-in, like Erlang's `-name`: a program isn't observable
-unless it opens itself up."
+unless it opens itself up.
+
+    (observer/observe-serve)   ;=> the `:observe` agent's pid"
   (if (= (node/name) :nonode)
     (error "observe-serve: call (node/start name addr cookie) first")
     (let (agent (spawn (observe-agent-loop)))
@@ -924,7 +948,9 @@ local setup needs no explicit secret. The target must have called `(node/start �
 + `(observe-serve)`. Connects *before* taking the terminal, so a refused /
 wrong-cookie / bad-spec error surfaces cleanly and exits without a wrecked screen.
 Then runs the standard observer loop against a remote source; a dropped link
-freezes on the last snapshot with a DISCONNECTED banner until you quit."
+freezes on the last snapshot with a DISCONNECTED banner until you quit.
+
+    (observer/observe-connect \"app@host:9001\")   ;=> nil, once the user quits"
   (do
     (node/start (observe-gen-node-name) "127.0.0.1:0" (or cookie (node/cookie)))
     (let (peer (node/connect spec))
@@ -955,7 +981,9 @@ parent), `space` pauses/resumes the live refresh, `r`
 refreshes, and `q`/Esc/Ctrl-C quits. With `demo` true (the default), seeds a few
 demo processes first so a fresh runtime has something to watch, then delegates to
 `observe-attach`. Pairs with `nest observe`. To observe a *running* program's own
-processes, call `observe-attach` from inside it instead."
+processes, call `observe-attach` from inside it instead.
+
+    (observer/observe-run false)   ;=> nil, once the user quits"
   (do
     (when demo (observe-spawn-demo 5))
     (observe-attach)))

@@ -168,7 +168,9 @@ root project's own modules are keyed by their require-name — the path relative
 source dir, sans `.blsp`, so a namespaced module (`sse`) keeps its namespace and
 resolves like the baked-in std. A DEPENDENCY's modules are keyed by their PACKAGE-ROOTED
 name (`foo/parser`), so two deps each providing a `parser` coexist in one flat bundle —
-dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not in a project)."
+dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not in a project).
+
+    (project-release/bundle-collect \"/path/to/proj\")   ;=> (\"(project :name …)\" \"app\" \"(defmodule app …)\" \"foo/parser\" \"…\" …)"
   (when (nil? root)
     (error "bundle-collect: not in a Brood project (no project.blsp found)"))
   ;; Load `package` explicitly (project↔package cycle, as in project-ensure-deps-on-path):
@@ -389,7 +391,9 @@ dev/release parity for package-rooting (ADR-070). Errors if `root` is nil (not i
   "Run an embedded release bundle's entry point, passing `args` (a list of CLI
 string arguments). The `brood` binary calls this when it detects it is a `nest
 release` bundle. Loads the embedded manifest + modules and invokes `:main`
-(default module `main`, fn `main`). Errors if the entry fn is missing/uncallable."
+(default module `main`, fn `main`). Errors if the entry fn is missing/uncallable.
+
+    (project-release/run-bundle [\"serve\" \"--port\" \"8080\"])   ;=> whatever the bundle's :main fn returns"
   (let ([modname fname] (bundle-boot-load))
     (require-one modname)
     (%crash-report-arm-default)
@@ -408,7 +412,9 @@ release` bundle. Loads the embedded manifest + modules and invokes `:main`
   "Load this release bundle's embedded modules and resolve its entry point, running
 nothing. Returns 0; raises if a module fails to load or the entry fn is missing or not
 callable. Reached by running a bundle with the reserved `--brood-boot-check` argument,
-which is what `nest release --smoke` does to the binary it just wrote."
+which is what `nest release --smoke` does to the binary it just wrote.
+
+    (project-release/check-bundle-boot)   ;=> 0 — every embedded module loaded and :main resolved; raises otherwise"
   (unless (%bundled?)
     (error "check-bundle-boot: this executable is not a `nest release` bundle"))
   (let ([modname fname] (bundle-boot-load))
@@ -577,7 +583,9 @@ version and vintage in development as well as once shipped — [[build-stamp-tex
 the two cases.
 
 Loads no project module, so it answers on a bundle whose modules are broken — which is when
-it is asked. See [[build-info-report]] for the printed form."
+it is asked. See [[build-info-report]] for the printed form.
+
+    (project-release/build-info)   ;=> {:brood-version \"0.40.0\" :build-id \"…\" :app \"myapp\" :app-version \"0.1.0\" :bundled? false …}"
   (let (base {:brood-version (system/brood-version)
               :build-id (system/build-id)
               :brood-built-at (system/build-time)
@@ -656,7 +664,9 @@ rather than passing itself off as a build.
 
 (defn build-info-report ()
   "Print [[build-info]] as aligned `key: value` lines and return 0. What a bundle run with
-the reserved `--brood-build-info` argument prints."
+the reserved `--brood-build-info` argument prints.
+
+    (project-release/build-info-report)   ;=> 0 — the build-info map printed as aligned key: value lines"
   (let (info (build-info))
     (when (get info :app)
       (io/puts (str "app:      "

@@ -1166,7 +1166,9 @@ if you are reintroducing hoisting, they are what you have to write back.
   (check-allow :discarded-catch (try (do (reflect/read-all src) true) (catch _ false))))
 
 (defn file (path)
-  "Format the file at `path` in place. Returns `:unchanged`, `:rewrote`, or `:unparseable` — a file that does not parse is left untouched, since there is no program to re-lay-out and the tolerant CST would restructure it."
+  "Format the file at `path` in place. Returns `:unchanged`, `:rewrote`, or `:unparseable` — a file that does not parse is left untouched, since there is no program to re-lay-out and the tolerant CST would restructure it.
+
+    (format/file \"src/app.blsp\")   ;=> :rewrote — or :unchanged / :unparseable, depending on the file"
   (let (src (file/slurp path))
     (if (not (format-parses? src))
       :unparseable (let (out (source src))
@@ -1175,7 +1177,9 @@ if you are reintroducing hoisting, they are what you have to write back.
 (defn project ()
   "Format every .blsp under the current project (sources + tests). Prints one line
 per rewritten file and a summary; returns the number of files rewritten. A file
-that does not parse is reported and skipped, never rewritten."
+that does not parse is reported and skipped, never rewritten.
+
+    (format/project)   ;=> 2 — after printing each rewritten file and a summary line"
   (let (root (format-require-root) files (format-every-blsp root))
     (let ([rewrote skipped] (format-apply files 0 0))
       (io/puts (str "format: "
@@ -1223,7 +1227,9 @@ that does not parse is reported and skipped, never rewritten."
   "Format only the .blsp files git reports as changed (modified/staged/untracked)
 under the current project — the git-aware narrower scope of `nest format`
 (`--changed`). Falls back to the whole project if not in a git repo. Returns the
-number of files rewritten."
+number of files rewritten.
+
+    (format/project-changed)   ;=> 0 — the changed files that needed rewriting, after a summary line"
   (let (root (format-require-root) changed (format-changed-blsp root))
     (if (keyword? changed)
       (do
@@ -1245,7 +1251,9 @@ number of files rewritten."
 
 (defn project-check ()
   "Check (don't write): print each file whose contents differ from
-`(source …)` and raise if any do. Used by `nest format --check`."
+`(source …)` and raise if any do. Used by `nest format --check`.
+
+    (format/project-check)   ;=> 0 — after printing \"format: N files checked, all clean.\""
   (let (root (format-require-root) files (format-every-blsp root))
     (let (changed (format-check files nil))
       (cond

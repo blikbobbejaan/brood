@@ -114,7 +114,9 @@ result depends on the world, which `doctest` reads and checks the callee of.
     (or (includes? d "→") (includes? d " ;=> "))))
 
 (defn undocumented (-> seqable)
-  "The public names carrying no docstring at all."
+  "The public names carrying no docstring at all.
+
+    (audit/undocumented)   ;=> (…public names with no docstring…)"
   (seq/filterv (public-names) (fn (name) (not (documented? name)))))
 
 (defn exampleless (-> seqable)
@@ -269,12 +271,16 @@ exempt too: their arity is a range no fixed list can contradict.
 
 (defn sig-arity-mismatches (-> seqable)
   "Public names whose declared signature and actual parameter list disagree on COUNT —
-a signature that cannot be right, whatever the types say."
+a signature that cannot be right, whatever the types say.
+
+    (audit/sig-arity-mismatches)   ;=> (…names whose sig and parameter list disagree on count…) — ideally empty"
   (seq/filterv (public-names) (fn (name) (not (sig-arity-ok? name)))))
 
 (defn reversed-args (-> seqable)
   "The public names whose parameters put a callback or index ahead of the
-collection — ADR-308 suspects, by parameter name."
+collection — ADR-308 suspects, by parameter name.
+
+    (audit/reversed-args)   ;=> (…public names whose callback or index precedes the collection…)"
   (seq/filterv (public-names) (fn (name) (not (data-first? name)))))
 
 ;; ---- the report -------------------------------------------------------------

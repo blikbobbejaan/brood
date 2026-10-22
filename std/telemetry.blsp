@@ -97,25 +97,33 @@ handler fault kills only this process."
 once at startup. Supervise the returned pid (e.g. as a `:permanent` child) so it
 restarts on an uncatchable handler fault — the handler table is a separate global, so
 handlers survive the restart. A second call replaces the registration with a fresh
-listener."
+listener.
+
+    (telemetry/start)   ;=> the listener's pid"
   (let (pid (spawn (telemetry-listen)))
     (proc/register :telemetry pid)
     pid))
 
 (defn pid ()
-  "The listener pid, or nil if telemetry isn't started."
+  "The listener pid, or nil if telemetry isn't started.
+
+    (telemetry/pid)   ;=> the listener's pid, or nil"
   (proc/whereis :telemetry))
 
 (defn stop ()
   "Stop the listener if running. Returns nil. (Handlers stay registered in the global;
-a later `start` reuses them.)"
+a later `start` reuses them.)
+
+    (telemetry/stop)   ;=> nil"
   (let (pid (pid)) (when pid (send pid :stop)) nil))
 
 (defn sync ()
   "Block until the listener has processed every emit queued before this call (a FIFO
 round-trip), or 2s. For ordering in tests and for flushing before shutdown. Safe: it
 times out rather than hanging if the listener is down, and never runs handler code in
-the caller."
+the caller.
+
+    (telemetry/sync)   ;=> once every earlier emit has been handled"
   (let (pid (pid))
     (if pid
       (let (r (ref))
@@ -129,7 +137,9 @@ the caller."
   "Emit `event` with a measurements map and a metadata map (both default `{}`). The
 event is `send`-ed to the listener and handlers run THERE — so this never blocks the
 caller and no handler can crash or hang it. Returns nil; a cheap no-op if telemetry
-isn't started."
+isn't started.
+
+    (telemetry/emit [:http :request] {:us 420} {:path \"/\"})   ;=> nil"
   (let (pid (pid))
     (when pid (send pid [:emit event (or measurements {}) (or metadata {})]))
     nil))
@@ -141,7 +151,9 @@ isn't started."
 globally-unique `id` (any value; re-attaching the same id replaces it). Returns `id`.
 Configuration-time: call at startup, not concurrently from many processes (the table
 is a `def`-rebound global). The handler runs in the listener process, so keep it
-fast — `forward` heavy work to a process you own."
+fast — `forward` heavy work to a process you own.
+
+    (telemetry/attach :log-req [:http :request] (fn (e m md) (log/info \"req\" m)))   ;=> :log-req"
   ;; Strip any earlier handler with this id from EVERY bucket, then cons onto this
   ;; event's — one transform, so a concurrent attach cannot land between the two halves.
   (%swap-registry! telemetry/*telemetry-handlers*
@@ -151,19 +163,25 @@ fast — `forward` heavy work to a process you own."
   id)
 
 (defn detach (id)
-  "Remove the handler attached under `id`. Returns nil; no-op if no such id."
+  "Remove the handler attached under `id`. Returns nil; no-op if no such id.
+
+    (telemetry/detach :log-req)   ;=> nil"
   (%swap-registry! telemetry/*telemetry-handlers* (fn (m) (telemetry-without-id m id)))
   nil)
 
 (defn detach-all ()
-  "Remove every handler (resets the table). Returns nil."
+  "Remove every handler (resets the table). Returns nil.
+
+    (telemetry/detach-all)   ;=> nil"
   (def *telemetry-handlers* {})
   nil)
 
 (defn forward (id event pid)
   "Attach a handler under `id` that forwards each emit of `event` to `pid` as
 `[:telemetry event measurements metadata]`. The opt-in way to run heavy/blocking
-handler logic in a process you own, off even the listener. Returns `id`."
+handler logic in a process you own, off even the listener. Returns `id`.
+
+    (telemetry/forward :fwd [:http :request] (self))   ;=> :fwd — emits arrive as `[:telemetry e m md]`"
   (attach id event (fn (e m md) (send pid [:telemetry e m md]))))
 
 (defn handlers ()
@@ -198,7 +216,9 @@ handler logic in a process you own, off even the listener. Returns `id`."
 
 (defn register-event (event schema)
   "Register `schema` (`{:name :measurements :metadata :doc}`) for telemetry `event` — the
-introspection + runtime-validation registry `defevent` populates. Returns `event`."
+introspection + runtime-validation registry `defevent` populates. Returns `event`.
+
+    (telemetry/register-event [:http :request] {:name 'request :measurements {:us 'int} :metadata {:path 'string} :doc \"one request\"})   ;=> [:http :request]"
   (%swap-registry! telemetry/*events* (fn (m) (assoc m event schema)))
   event)
 
@@ -268,7 +288,9 @@ runtime presence-check of a declared event.
 (defn validate (on)
   "Enable (`true`) or disable runtime schema presence-checking of declared events. Off by
 default. Must be a function (not a bare `def` from your module) so the rebind lands on
-telemetry's own global, which the listener process reads. Returns `on`."
+telemetry's own global, which the listener process reads. Returns `on`.
+
+    (telemetry/validate true)   ;=> true"
   (def *telemetry-validate* on)
   on)
 
@@ -322,13 +344,17 @@ event, `:long-schedule` past 10 ms; e.g. `{:gc true :gc-min-pause-us 1000}` = on
 `{:long-schedule-us 2000}` = only quanta past 2 ms). Returns the
 watcher pid; `stop-watch-runtime` (or killing the watcher) drops its subscription.
 Each watcher is its own kernel subscription (ADR-305), so several can coexist —
-with the default crash reporter, an MCP snapshot, or a second `watch-runtime`."
+with the default crash reporter, an MCP snapshot, or a second `watch-runtime`.
+
+    (telemetry/watch-runtime {:gc true :gc-min-pause-us 1000})   ;=> the watcher's pid"
   (let (watcher (spawn (telemetry-runtime-loop)))
     (if opts (proc/system-monitor watcher opts) (proc/system-monitor watcher))
     watcher))
 
 (defn stop-watch-runtime (watcher: (or map pid) -> nil)
-  "Stop a `watch-runtime` watcher and disarm the kernel stream. Returns nil."
+  "Stop a `watch-runtime` watcher and disarm the kernel stream. Returns nil.
+
+    (telemetry/stop-watch-runtime watcher)   ;=> nil"
   (send watcher :stop)
   nil)
 
@@ -365,12 +391,16 @@ with the default crash reporter, an MCP snapshot, or a second `watch-runtime`."
 `[:runtime :nodedown]` — folding distribution liveness into the same attach stream
 as `watch-runtime`. `interval-ms` is the poll period (default 1000). Returns the
 watcher pid; `stop-watch-nodes` (or killing it) ends it. The peers already connected
-at start are the baseline (no spurious `:nodeup` for them)."
+at start are the baseline (no spurious `:nodeup` for them).
+
+    (telemetry/watch-nodes 500)   ;=> the watcher's pid"
   (let (interval (or interval-ms 1000))
     (spawn (telemetry-nodes-loop (or (node/list) (list)) interval))))
 
 (defn stop-watch-nodes (watcher: (or map pid) -> nil)
-  "Stop a `watch-nodes` watcher. Returns nil."
+  "Stop a `watch-nodes` watcher. Returns nil.
+
+    (telemetry/stop-watch-nodes watcher)   ;=> nil"
   (send watcher :stop)
   nil)
 
@@ -393,7 +423,9 @@ without the dev-tools stat builtins doesn't error."
   "A single point-in-time map of the runtime's vitals, pulled from the kernel snapshot
 builtins behind one call: `{:gc :sched :vm :processes :metrics}` (the dev-tools-only
 `:gc`/`:vm` are nil on a lean runtime). The one-call, stream-folded replacement for
-scraping the individual stat builtins — what `nest observe` / `nest mcp` can read."
+scraping the individual stat builtins — what `nest observe` / `nest mcp` can read.
+
+    (telemetry/runtime-snapshot)   ;=> {:gc {…} :sched {…} :vm {…} :processes 12 :metrics {…}}"
   {:gc (telemetry-stat 'gc-stats (fn () (dev/gc-stats)))
    :sched (telemetry-stat 'sched-stats (fn () (dev/sched-stats)))
    :vm (telemetry-stat 'vm-stats (fn () (dev/vm-stats)))
@@ -428,12 +460,16 @@ telemetry stream as `[:runtime :vitals]` events (measurements = the numeric gaug
 folding the kernel snapshot builtins behind the same attach seam as `watch-runtime` —
 `(last-value :procs [:runtime :vitals] :processes)` turns a vital into a gauge, or
 `forward` the stream to your own process. `interval-ms` is the sample period (default
-1000). Returns the watcher pid; `stop-watch-vitals` (or killing it) ends it."
+1000). Returns the watcher pid; `stop-watch-vitals` (or killing it) ends it.
+
+    (telemetry/watch-vitals 5000)   ;=> the watcher's pid"
   (let (interval (or interval-ms 1000))
     (spawn (telemetry-vitals-loop interval))))
 
 (defn stop-watch-vitals (watcher: (or map pid) -> nil)
-  "Stop a `watch-vitals` watcher. Returns nil."
+  "Stop a `watch-vitals` watcher. Returns nil.
+
+    (telemetry/stop-watch-vitals watcher)   ;=> nil"
   (send watcher :stop)
   nil)
 
@@ -468,7 +504,9 @@ detach it. `subs` tracks the attached ids so a `:stop` cleans them all up."
 register it `:telemetry-remote`, so a remote `subscribe-remote` can stream a chosen event's
 emits over the node link. Requires `(node/start name addr cookie)` first — opt-in, like
 `observe-serve` (a program isn't observable unless it opens itself up). Returns the agent
-pid; `stop-serve` (or killing it) tears down every remote subscription."
+pid; `stop-serve` (or killing it) tears down every remote subscription.
+
+    (telemetry/serve)   ;=> the `:telemetry-remote` agent's pid"
   (if (= (node/name) :nonode)
     (error "serve: call (node/start name addr cookie) first")
     (let (agent (spawn (telemetry-serve-loop nil)))
@@ -476,7 +514,9 @@ pid; `stop-serve` (or killing it) tears down every remote subscription."
       agent)))
 
 (defn stop-serve (agent: (or map pid) -> nil)
-  "Stop a `serve` agent and detach every remote-subscription forwarder. Returns nil."
+  "Stop a `serve` agent and detach every remote-subscription forwarder. Returns nil.
+
+    (telemetry/stop-serve agent)   ;=> nil"
   (send agent :stop)
   nil)
 
@@ -506,13 +546,17 @@ into THIS runtime's telemetry stream as `local-event` (default `[:remote event]`
 `{:remote-event event}` in the metadata — so local handlers/aggregators consume a peer's
 events through the same attach seam (location-transparent). The peer must have called
 `(serve)`. Returns the watcher pid; `stop-subscribe-remote` (or killing it)
-unsubscribes and exits."
+unsubscribes and exits.
+
+    (telemetry/subscribe-remote :app@host [:http :request])   ;=> the watcher's pid"
   (telemetry-subscribe-to {:name :telemetry-remote :node peer}
     event
     (or local-event [:remote event])))
 
 (defn stop-subscribe-remote (watcher: (or map pid) -> nil)
-  "Stop a `subscribe-remote` watcher: unsubscribe from the peer and exit. Returns nil."
+  "Stop a `subscribe-remote` watcher: unsubscribe from the peer and exit. Returns nil.
+
+    (telemetry/stop-subscribe-remote watcher)   ;=> nil"
   (send watcher :stop)
   nil)
 
@@ -568,7 +612,9 @@ init is single-threaded)."
 
 (defn reset-metrics ()
   "Drop every aggregated metric (fresh table). Does NOT detach the handlers — call
-`detach`/`detach-all` for that. Returns nil."
+`detach`/`detach-all` for that. Returns nil.
+
+    (telemetry/reset-metrics)   ;=> nil"
   (def *telemetry-metrics* (table/new))
   nil)
 
@@ -718,7 +764,9 @@ others pass through."
 
 (defn metric (id)
   "The current value of metric `id` as a map (with `:summary`'s `:mean`/`:stddev`
-derived), or nil if no such metric has recorded anything yet."
+derived), or nil if no such metric has recorded anything yet.
+
+    (telemetry/metric :no-such-metric)   → nil"
   (let (state (table/get (telemetry-metrics) id nil))
     (when state (telemetry-present state))))
 
@@ -748,7 +796,9 @@ in, then linearly interpolate within `[prev-bound, upper]`. The overflow bucket
   "Estimate the `p`-th percentile (`p` in 0..1) of `distribution` metric `id` from its
 bucketed counts — linear interpolation within the containing bucket, the standard
 `histogram_quantile` estimate (approximate; precision is the bucket granularity).
-Returns nil unless `id` is a `distribution` with at least one observation."
+Returns nil unless `id` is a `distribution` with at least one observation.
+
+    (telemetry/metric-percentile :no-such-metric 0.5)   → nil"
   (let (state (table/get (telemetry-metrics) id nil))
     (when (and state (= (get state :kind) :distribution) (> (get state :count) 0))
       (let (bounds (get state :bounds)
@@ -766,6 +816,8 @@ Returns nil unless `id` is a `distribution` with at least one observation."
   "Wrap `handler` so it runs on every `n`th matching event (1-in-`n` sampling) —
 folds only a fraction of a hot event. Deterministic (an atomic counter under `id`,
 not a PRNG), so it never loses count. Compose with an aggregator's handler, or any
-attach handler. Returns the wrapped handler."
+attach handler. Returns the wrapped handler.
+
+    (telemetry/sample-every :req-sample 100 handler)   ;=> a handler that runs on every 100th event"
   (let (t (telemetry-metrics) k [id :sample-seen])
     (fn (e m md) (when (= 0 (math/rem (table/incr t k 1) n)) (handler e m md)))))

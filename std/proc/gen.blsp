@@ -55,7 +55,9 @@ a module like any other — `(def call …)` in your own code is yours.")
 
 (defn cast (pid: (or map pid) payload:any -> nil)
   "Send `payload` to a server process as a cast — fire-and-forget, the asynchronous
-counterpart to `call` (no reply, the caller never blocks)."
+counterpart to `call` (no reply, the caller never blocks).
+
+    (gen/cast server [:put :k 1])   ;=> nil — the server handles it asynchronously"
   (send pid [:$cast payload]))
 
 (defn call (pid payload)
@@ -63,7 +65,9 @@ counterpart to `call` (no reply, the caller never blocks)."
 default `gen_server:call` timeout). Monitors the server, so a *dead* server
 raises at once rather than hanging; a timeout raises too. Use `call-timeout`
 for a custom deadline. Other messages stay queued — the reply is matched by a
-fresh (ref)."
+fresh (ref).
+
+    (gen/call server :ping)   ;=> the server's reply, e.g. :pong"
   (call-timeout pid payload 5000))
 
 (defn call-timeout (pid payload ms)
@@ -82,7 +86,9 @@ forever — unbounded growth over a retry loop, plus a re-scan by every later
 selective receive. `(%ref-deactivate r)` closes that: the kernel drops a message
 addressed to a deactivated ref **at delivery**, so it never enters the queue at
 all (ADR-244). (Erlang through OTP 23 solved the same problem by having the caller
-simply exit on timeout, which made a late reply moot.)"
+simply exit on timeout, which made a late reply moot.)
+
+    (gen/call-timeout server [:get :k] 500)   ;=> the reply, or raises `call: timed out …` after 500 ms"
   (let (r (ref) m (monitor pid))
     (send pid [:$call (self) r payload])
     (receive
@@ -127,14 +133,18 @@ will be produced (a worker, a later message, a timer) and call this when it exis
 
 Safe to call after the caller gave up: its reply `ref` is a one-shot alias, so a late
 answer is dropped at delivery rather than left unmatchable in the mailbox. Replying
-twice to one token is likewise harmless — the second is dropped."
+twice to one token is likewise harmless — the second is dropped.
+
+    (gen/reply reply result)   ;=> the caller blocked in `gen/call` returns `result`"
   (send (nth token 0) [:reply (nth token 1) value]))
 
 (defn stop (pid: (or map pid) -> nil)
   "Tell a server process to exit its receive loop cleanly (running its
 `terminate` clause first, if it has one). Returns nil immediately — there is no
 acknowledgement (the process is gone by the time the caller could check). Safe to
-send to a pid that has already exited."
+send to a pid that has already exited.
+
+    (gen/stop server)   ;=> nil — the server runs its `terminate` clause and exits"
   (send pid [:$stop]))
 
 (defn code-change (pid: (or map pid) -> nil)
@@ -146,22 +156,30 @@ threading its old-shaped state until told to migrate. A no-op (the message is
 dropped) if the server declares no `code-change` clause. Returns nil immediately —
 like `stop`, there is no acknowledgement; follow with a `call`/`query` if you
 need to observe the migrated state. A supervisor (or an `on-reload` hook) is the
-usual caller, once per affected child after a reload."
+usual caller, once per affected child after a reload.
+
+    (gen/code-change server)   ;=> nil — the server migrates its state on its next message"
   (send pid [:$code-change]))
 
 (defn start (f state)
-  "Spawn a `defserver` server `f` with its initial `state`; return its pid."
+  "Spawn a `defserver` server `f` with its initial `state`; return its pid.
+
+    (gen/start counter 0)   ;=> the pid of a `counter` server with state 0"
   (spawn (f state)))
 
 (defn start-link (f state)
   "Like `start`, but `spawn-link` the server to the caller so a crash
-propagates either way (Erlang `start_link`). Returns the pid."
+propagates either way (Erlang `start_link`). Returns the pid.
+
+    (gen/start-link counter 0)   ;=> the pid of a `counter` server linked to the caller"
   (spawn-link (f state)))
 
 (defn start-named (name f state)
   "Spawn a server and `register` it under `name` (a keyword), returning its pid.
 Address it later via `(proc/whereis name)` or by sending to `{:name name}`. (Combine
-with linking by registering the result of `start-link` yourself.)"
+with linking by registering the result of `start-link` yourself.)
+
+    (gen/start-named :counter counter 0)   ;=> the pid, also reachable as `(proc/whereis :counter)`"
   (let (pid (start f state)) (proc/register name pid) pid))
 
 ;; ---- defserver -------------------------------------------------------------

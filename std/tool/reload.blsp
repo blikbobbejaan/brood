@@ -49,7 +49,9 @@ trigger, docs/type-soundness-reload.md).")
 (defn code-version ()
   "The current runtime code generation (see `*code-version*`), bumped on each
 successful hot reload. Compare a stashed value against this to detect that the code
-behind a long-lived loop has changed since it started."
+behind a long-lived loop has changed since it started.
+
+    (reload/code-version)   ;=> an int, e.g. 3 — bumped by each hot reload"
   *code-version*)
 
 ;; The per-file watcher loop. Tail-recursive on (path, last-seen-mtime).
@@ -206,7 +208,9 @@ should happen right after new code lands.
 Errors during a reload (half-written save, syntax error, …) print and are
 swallowed — the watcher keeps running. Returns nil. To stop watching, kill
 the parent process (per-watcher stop is deferred; there's no compelling
-use yet)."
+use yet).
+
+    (reload/on-change \"src/\")   ;=> nil — every `.blsp` under src/ now reloads on save"
   (cond
     (not (file/exists? path)) (error "on-change: no such path: " path)
     (file/dir? path)

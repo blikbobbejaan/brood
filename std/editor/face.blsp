@@ -73,13 +73,17 @@ theme change is visible to a running UI on its next frame (late binding).")
 ;; its faces gone — `highlight-spans` answered nil for a week of tree-walker CI (KI-141).
 (defn def-face (name attrs)
   "Register (or replace) face `name` with the attribute map `attrs`; returns `name`.
-`attrs` may carry an `:inherit` face name layered under it at resolution time."
+`attrs` may carry an `:inherit` face name layered under it at resolution time.
+
+    (editor/face/def-face :myapp/warning {:fg :yellow :bold true})   ;=> :myapp/warning — the face registry now holds it"
   (%registry-update! '*faces* :assoc [name] attrs)
   name)
 
 (defn face-set (name attrs)
   "Merge `attrs` into face `name` (creating it if absent) — restyle a face in one
-place, keeping its other attributes. Returns `name`."
+place, keeping its other attributes. Returns `name`.
+
+    (editor/face/face-set :syntax/keyword {:bold true})   ;=> :syntax/keyword — the registry's keyword face is now bold"
   (%registry-update! '*faces* :merge [name] attrs)
   name)
 

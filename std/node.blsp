@@ -14,24 +14,34 @@
 ;; one reaches it as `/name`.
 
 (defn name (-> (or symbol keyword))
-  "This runtime's node name (:nonode until node/start)."
+  "This runtime's node name (:nonode until node/start).
+
+    (node/name)   ;=> e.g. :ed@host, or :nonode before `node/start`"
   (%node-name))
 
 (defn list (-> (list (or symbol keyword)))
-  "A list of currently connected peer node names."
+  "A list of currently connected peer node names.
+
+    (node/list)   ;=> the connected peers, e.g. (:ed@host), or nil"
   (%nodes))
 
 (defn disconnect (nm)
-  "Tear down the link to peer node `nm` now, without exiting this process — fires [:nodedown nm] on both sides and prunes `nm` from (node/list). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive."
+  "Tear down the link to peer node `nm` now, without exiting this process — fires [:nodedown nm] on both sides and prunes `nm` from (node/list). Returns true if a link existed, false otherwise. Use it to leave a node/cluster cleanly while staying alive.
+
+    (node/disconnect :ed@host)   ;=> true if a link existed"
   (%disconnect nm))
 
 (defn monitor (nm: (or symbol keyword) -> keyword)
   "Get [:nodedown nm] when the link to node `nm` goes down (heartbeat timeout or close).
-  Returns the node's name, as a keyword."
+  Returns the node's name, as a keyword.
+
+    (node/monitor :ed@host)   ;=> :ed@host — `[:nodedown :ed@host]` arrives if the link drops"
   (%monitor-node nm))
 
 (defn demonitor (nm)
-  "Cancel this process's node monitor for node `nm` (undo node/monitor); a no-op if none is registered. Returns nil."
+  "Cancel this process's node monitor for node `nm` (undo node/monitor); a no-op if none is registered. Returns nil.
+
+    (node/demonitor :ed@host)   ;=> nil"
   (%demonitor-node nm))
 
 ;; A long-lived `:remote-spawn` server: the receiver-side machinery behind the
@@ -50,7 +60,9 @@
     (_ (remote-spawn-server))))
 
 (defn serve-spawns ()
-  "Idempotently start + register the local `:remote-spawn` server so peers can `(node/spawn this-node …)` against this node. Safe to call multiple times — only the first call spawns a server. Typically called once at startup, after `(node/start …)`."
+  "Idempotently start + register the local `:remote-spawn` server so peers can `(node/spawn this-node …)` against this node. Safe to call multiple times — only the first call spawns a server. Typically called once at startup, after `(node/start …)`.
+
+    (node/serve-spawns)   ;=> the `:remote-spawn` server's pid"
   (when (nil? (proc/whereis :remote-spawn))
     (proc/register :remote-spawn (/spawn (remote-spawn-server))))
   nil)
@@ -158,7 +170,9 @@ local node; pass an already-qualified `:name@host` to override (a long/FQDN name
 `(node/start name)` listens on a local Unix-domain socket (no port) — the common
 same-machine case; `(node/start name \"host:port\")` listens over TCP for remote
 peers. The cookie defaults to `(node/cookie)`. Returns the qualified node name.
-Errors if this runtime is already a node."
+Errors if this runtime is already a node.
+
+    (node/start :ed \"0.0.0.0:9001\")   ;=> the qualified node name, ed@0.0.0.0"
   (%node-listen (node-qualify nm addr)
     (if (nil? addr)
       (str "unix:" (node-socket-path (node-name-part (->string nm))))
@@ -171,7 +185,9 @@ Unix socket; `(node/connect \"name@host:port\")` dials a remote node over TCP. C
 authenticated with this runtime's `(node/cookie)`. Returns the peer's authoritative
 `name@host` node name (from the handshake) — address the peer with that value
 (`{:name … :node <that>}`), not a bare literal. This runtime must already be a
-node — call `(node/start …)` first."
+node — call `(node/start …)` first.
+
+    (node/connect \"ed@host:9001\")   ;=> the peer's qualified node name, ed@host"
   (when (not (string? spec))
     (error "node/connect: expected a node name string (\"name\" or \"name@host:port\"), got "
       (pr-str spec)))
@@ -201,7 +217,9 @@ TCP endpoint (reachable remotely). Both share the node's identity + cookie. The
 shape behind a local+remote editor daemon — e.g. `(node/start :ed@host
 \"0.0.0.0:9001\")` then `(node/also-listen)` is reachable as `(node/connect \"ed\")`
 locally and `(node/connect \"ed@host:9001\")` from another machine. Errors if this
-runtime isn't a node yet."
+runtime isn't a node yet.
+
+    (node/also-listen \"0.0.0.0:9001\")   ;=> this node now also accepts TCP peers on port 9001"
   (when (= (name) :nonode)
     (error "node/also-listen: this runtime is not a node yet — call (node/start name) first"))
   (%node-also-listen (if (nil? addr)

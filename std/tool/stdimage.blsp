@@ -40,7 +40,9 @@ write their own ~2 MB copy of an identical image; keyed this way they share one.
 
 The computation lives in the PRELUDE (`%std-image-path`), not here: an image has to be
 installed before the first `require`, and this module is itself reached BY a require. One
-definition, called from both ends."
+definition, called from both ends.
+
+    (stdimage/image-path)   ;=> \"/home/me/.cache/brood/std-image-0.43.0+….bin\" — nil with no cache directory"
   (%std-image-path))
 
 (defn- prefixed-by-any? (nm names)
@@ -168,7 +170,9 @@ it is dropped, since nothing materialises it back."
 (defn build (&optional modules)
   "Build (or rebuild) this binary's stdlib image in the cache directory and return
 `[path entry-count]`, or nil when there is no cache directory. `modules` defaults to every
-baked-in module; see [[build-at]] for what goes in."
+baked-in module; see [[build-at]] for what goes in.
+
+    (stdimage/build)   ;=> [\"/home/me/.cache/brood/std-image-0.43.0+….bin\" 5120] — nil with no cache directory"
   (let (path (image-path))
     (when path
       (let (dir (path/dirname path))
@@ -196,7 +200,9 @@ the module without it. So each module is probed inside `%isolate` for what it in
 ON ITS OWN, and a root global goes to the SMALLEST such set containing it — the module
 that defines it, never one that merely depends on that module. All 95 probes cost ~0.7 s,
 paid once per build. A root global no probe claims belongs to the prelude and is skipped,
-since the prelude is always present."
+since the prelude is always present.
+
+    (stdimage/build-at \"/tmp/std.bin\" [\"json\" \"string\"])   ;=> [\"/tmp/std.bin\" 240]"
   ;; An image is a snapshot of what loading binds, keyed on the stdlib's CONTENT alone — so
   ;; it must be written by a process in which loading binds the same thing every process
   ;; will want. With contracts armed it does not: every sig'd function is bound to its
@@ -318,7 +324,9 @@ The body is the prelude's `%std-image-install`, for the reason `image-path` reco
 what calling it from HERE can and cannot do: requiring this module has already loaded its
 dependency tree from source, so an install at this point serves only modules not yet
 touched. The boot install (`BROOD_STDIMAGE=1`, the last line of the prelude) is the one that
-serves everything."
+serves everything.
+
+    (stdimage/install)   ;=> 95 — sections installed, or nil on a miss"
   (%std-image-install))
 
 (defn status ()
@@ -344,7 +352,9 @@ test written to catch exactly this.
 
 `:stale` is the answer worth having: it reports the id this binary WANTS beside the ids that
 are actually on disk, so `built for 7dc4da8e, running fb7f000f` reads off the two directly
-instead of being inferred from a run that looked wrong."
+instead of being inferred from a run that looked wrong.
+
+    (stdimage/status)   ;=> {:state :live :installed 95 :want \"0.43.0+…\" :path \"…/std-image-0.43.0+….bin\" :sections 95 :others []}"
   (let (want (system/stdlib-id)
         path (image-path))
     (if (nil? path)
@@ -379,6 +389,8 @@ instead of being inferred from a run that looked wrong."
 
 (defn ensure ()
   "Install the stdlib image, building it first if this binary has none yet. Returns the
-section count. The build cost is paid once per binary; every later process just indexes."
+section count. The build cost is paid once per binary; every later process just indexes.
+
+    (stdimage/ensure)   ;=> 95 — the installed section count"
   (or (install)
     (do (build) (install))))

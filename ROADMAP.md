@@ -530,7 +530,10 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 > carried forward. Three of this list's claims had gone stale in the reader's favour — an
 > item recorded as open can be *fixed* and still read as work, which is its own cost.
 
-- [ ] **Examples.** 2026-10-22: 211 executed examples added across 38 std files (every pure,
+- [ ] **Examples.** 2026-10-22 (later): illustrations (` ;=> `, read and callee-checked, not
+      run) cover the functions whose results depend on the world — ~550 added; with every
+      module loaded `audit/exampleless` is **120**, nearly all Rust builtins (docs in `crates/`)
+      and `defrecord`-generated constructors/accessors. Earlier the same day: 211 executed examples added across 38 std files (every pure,
       deterministic function in the editor, data, process, tooling and runtime modules the
       audit listed); `audit/exampleless` with every module loaded went **834 → 676**, and what
       remains is overwhelmingly I/O, network, process, clock or live-image functions an

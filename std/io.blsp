@@ -90,18 +90,24 @@ or your own type). The check a function taking a port can branch on instead of l
 
 (defn stdout-port ()
   "The default stdout port: writes to real stdout, honouring `with-out-str`
-capture. (The prelude's default `*out*` is the bare `%write-out` fn this wraps.)"
+capture. (The prelude's default `*out*` is the bare `%write-out` fn this wraps.)
+
+    (io/stdout-port)   ;=> a standard-port record, displayed as #<port stdout>"
   (standard-port "stdout" %write-out))
 
 (defn stderr-port ()
-  "The default stderr port: writes to real stderr (never captured)."
+  "The default stderr port: writes to real stderr (never captured).
+
+    (io/stderr-port)   ;=> a standard-port record, displayed as #<port stderr>"
   (standard-port "stderr" %write-err))
 
 (defn fn-port (f)
   "A port that hands each written string to the 1-arg callback `f` — which is to say,
 `f` itself: a bare fn is already a port (the `:fn` impl of `Port`). The general adapter,
 kept as a name because it *documents* the intent at a call site; `f` may buffer, filter,
-count, or forward however it likes."
+count, or forward however it likes.
+
+    (io/fn-port (fn (s) (send logger [:line s])))   ;=> that same fn, usable as a port"
   f)
 
 (defrecord process-port (pid))
@@ -169,15 +175,15 @@ it does not."
   "Write the display forms of `xs` with NO trailing newline, to `*out*` — or to the port
 named by a trailing `:to <port>`. Returns nil.
 
-    (io/write \"working\")
-    (io/write \"progress: \" n :to *err*)"
+    (io/write \"working\")   ;=> nil, after writing `working` to *out*
+    (io/write \"progress: \" n :to *err*)   ;=> nil, after writing to stderr"
   (send-text xs "" render-display))
 
 (defn puts (& xs)
   "Write the display forms of `xs` followed by a newline, to `*out*` — or to the port named
 by a trailing `:to <port>`. Returns nil. The everyday output function.
 
-    (io/puts \"hello\")
+    (io/puts \"hello\")   ;=> nil, after printing the line `hello`
     (io/puts \"count = \" n)
     (io/puts \"boom\" :to *err*)
     (io/puts \"entry\" :to (io/file-port \"log.txt\"))"
@@ -191,7 +197,9 @@ The debugging counterpart of [[puts]]: `(io/puts \"a\\nb\")` prints two lines, w
 `(io/inspect \"a\\nb\")` prints `\"a\\nb\"`, so you can see what the value actually is.
 
 Distinct from the bare `inspect`, which is the `Inspect` ability op and returns the string
-rather than writing it — that one belongs with `pr-str`, this one with the writers."
+rather than writing it — that one belongs with `pr-str`, this one with the writers.
+
+    (io/inspect \"a\\nb\" :k)   ;=> nil, after printing the line `\"a\\nb\" :k`"
   (send-text xs "\n" inspect-render))
 
 ;; ---- installing a port for a dynamic extent ---------------------------------
@@ -200,7 +208,9 @@ rather than writing it — that one belongs with `pr-str`, this one with the wri
   "`port` as a bare 1-arg sink fn: itself when it already is one, else a closure that
 `write`s to it. The adapter at the `*out*`/`*err*` boundary — those dynamic vars hold
 a plain fn so the prelude can call it directly with no dispatch, while a record
-port still reaches them through this. `with-out`/`with-err` apply it for you."
+port still reaches them through this. `with-out`/`with-err` apply it for you.
+
+    (io/port-fn (io/file-port \"log.txt\"))   ;=> a 1-arg fn appending each string to log.txt"
   (if (fn? port) port (fn (s) (emit port s))))
 
 (defmacro with-out (port & body)

@@ -95,7 +95,9 @@ unrelated message cost nothing."
 `\"name@host:port\"` remote) alive: connect now, and on `[:nodedown]` retry with
 exponential backoff (`opts` `{:min-ms 500 :max-ms 30000}`) until it's back.
 Idempotent per spec (a named watcher process); returns the watcher's pid. This
-runtime must already be a node (`node-start`)."
+runtime must already be a node (`node-start`).
+
+    (reconnect/watch \"db@10.0.0.5:4370\")   ;=> the watcher's pid"
   ;; The watcher starts in the disconnected state, whose first act is the connect attempt.
   (let (o (or opts {}))
     (spawn (reconnect-proc-name spec) (reconnect-down spec nil o nil (reconnect-opt o :min-ms 500)))))
@@ -103,7 +105,9 @@ runtime must already be a node (`node-start`)."
 (defn subscribe (spec)
   "Register the current process with `spec`'s watcher (start it with `watch`
 first): you'll receive `[:nodeup name]` when a reconnect lands and
-`[:nodedown name]` when the link falls. Returns the caller's pid."
+`[:nodedown name]` when the link falls. Returns the caller's pid.
+
+    (reconnect/subscribe \"db@10.0.0.5:4370\")   ;=> the caller's pid; [:nodeup …]/[:nodedown …] follow"
   (let (pid (proc/whereis (reconnect-proc-name spec)))
     (if (nil? pid)
       (error "reconnect: no watcher for " spec " — call watch first")
@@ -113,7 +117,9 @@ first): you'll receive `[:nodeup name]` when a reconnect lands and
 
 (defn unwatch (spec)
   "Stop watching `spec` (the watcher process exits; subscribers get nothing
-further). Returns nil."
+further). Returns nil.
+
+    (reconnect/unwatch \"db@10.0.0.5:4370\")   ;=> nil"
   (let (pid (proc/whereis (reconnect-proc-name spec)))
     (when pid (send pid [:reconnect-stop]))
     nil))

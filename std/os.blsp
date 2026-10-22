@@ -16,7 +16,9 @@ functions lived in `proc`, whose other half is green-process introspection, so `
 started an operating-system process while the bare `spawn` special form started a green one.")
 
 (defn hostname ()
-  "This machine's short hostname (no domain). Used to qualify a node name as name@host."
+  "This machine's short hostname (no domain). Used to qualify a node name as name@host.
+
+    (os/hostname)   ;=> \"workstation\""
   (%hostname))
 
 (defn run-process (prog:string args: (or list vector) -> int)
@@ -27,7 +29,9 @@ started an operating-system process while the bare `spawn` special form started 
   (%run-process prog args))
 
 (defn exe-path ()
-  "The absolute path of the running executable, or nil when the platform won't say (a sandbox with no /proc/self/exe equivalent). For locating something installed ALONGSIDE this binary: a shipped app cannot assume PATH — a desktop launch inherits the session's, which routinely lacks ~/.local/bin — so \"the runtime that installed me is my sibling\" is the reliable lookup. Nil rather than an error, because asking where you live is opportunistic."
+  "The absolute path of the running executable, or nil when the platform won't say (a sandbox with no /proc/self/exe equivalent). For locating something installed ALONGSIDE this binary: a shipped app cannot assume PATH — a desktop launch inherits the session's, which routinely lacks ~/.local/bin — so \"the runtime that installed me is my sibling\" is the reliable lookup. Nil rather than an error, because asking where you live is opportunistic.
+
+    (os/exe-path)   ;=> \"/home/me/.local/bin/brood\", or nil"
   (%exe-path))
 
 (defn canonicalize (path)
@@ -37,11 +41,15 @@ started an operating-system process while the bare `spawn` special form started 
   (%canonicalize path))
 
 (defn stdin-tty? ()
-  "True when stdin is an interactive terminal (false when redirected from a pipe or file). The REPL gates raw-mode line editing on this."
+  "True when stdin is an interactive terminal (false when redirected from a pipe or file). The REPL gates raw-mode line editing on this.
+
+    (os/stdin-tty?)   ;=> true at an interactive terminal, false when piped"
   (%stdin-tty?))
 
 (defn stdout-tty? (-> bool)
-  "True when stdout is an interactive terminal (false when piped or captured)."
+  "True when stdout is an interactive terminal (false when piped or captured).
+
+    (os/stdout-tty?)   ;=> true at an interactive terminal, false when piped"
   (%stdout-tty?))
 
 (defn now (-> int)
@@ -57,11 +65,15 @@ started an operating-system process while the bare `spawn` special form started 
   (%now-ns))
 
 (defn clipboard-get ()
-  "The OS clipboard's text, or nil when empty / non-text / unavailable (no display server, or a build without the clipboard feature)."
+  "The OS clipboard's text, or nil when empty / non-text / unavailable (no display server, or a build without the clipboard feature).
+
+    (os/clipboard-get)   ;=> \"the copied text\", or nil"
   (%clipboard-get))
 
 (defn clipboard-set (s)
-  "Copy string s to the OS clipboard so other apps can paste it; returns s. A no-op (still returns s) when no clipboard is available or the clipboard feature is off."
+  "Copy string s to the OS clipboard so other apps can paste it; returns s. A no-op (still returns s) when no clipboard is available or the clipboard feature is off.
+
+    (os/clipboard-set \"hello\")   ;=> \"hello\""
   (%clipboard-set s))
 
 (defn clipboard-image "The OS clipboard's image as `{:png bytes :width w :height h}`, or nil. `:png` is the
@@ -283,22 +295,25 @@ no `[:proc-err …]` stream. A caller that needs the two apart wants pipes.
 The child gets its own session and controlling terminal, so job control and ^C reach
 IT rather than the program hosting it. Unix only.
 
-    (let (p (os/spawn-pty \"bash\" [\"-i\"] {:cols 100 :rows 30}))
-      (os/write p \"echo hi\\n\"))"
+    (os/spawn-pty \"bash\" [\"-i\"] {:cols 100 :rows 30})   ;=> a subprocess handle; output arrives as [:proc handle data]"
   (%pty-spawn prog args opts))
 
 (defn resize-pty (p cols rows)
   "Tell pty child `p` its terminal is now `cols` × `rows`; it sees `SIGWINCH` and
 redraws. Call it when the window showing the child changes size — a full-screen program
 lays out against this and has no other way to learn. Returns nil; throws if `p` is
-unknown, closed, or was spawned with pipes."
+unknown, closed, or was spawned with pipes.
+
+    (os/resize-pty p 120 40)   ;=> nil; the child sees SIGWINCH and redraws"
   (%pty-resize p cols rows))
 
 (defn write (p data)
   "Write data to subprocess p's stdin (blocking) and flush. data is any iolist — a
 string, a bytes value, a byte int 0–255, or an arbitrarily nested list/vector of those,
 flattened once at the write (ADR-139); a string leaf is always its UTF-8 bytes, whatever
-the child's mode (ADR-141). Returns nil; throws if p is unknown/closed."
+the child's mode (ADR-141). Returns nil; throws if p is unknown/closed.
+
+    (os/write p \"echo hi\\n\")   ;=> nil, once the bytes reach the child's stdin"
   (%proc-send p data))
 
 (defn close (p)
@@ -306,7 +321,9 @@ the child's mode (ADR-141). Returns nil; throws if p is unknown/closed."
 stdin and stop reading its output. Idempotent; returns nil. `[:proc-exit handle code]`
 (if it has not come yet) and the final `[:proc-closed handle code]` still arrive at the
 owner, promptly — a descendant that escaped the kill cannot keep the handle open,
-because close stops reading."
+because close stops reading.
+
+    (os/close p)   ;=> nil; [:proc-exit …] and [:proc-closed …] still arrive"
   (%proc-close p))
 
 (defn signal (p sig)
@@ -319,8 +336,7 @@ arrives as for any exit. Until `[:proc-closed …]` the group can still be signa
 reaches descendants the child left running. Returns nil; throws if `p` is unknown or
 closed, or `sig` is not one of those. Unix only.
 
-    (let (p (os/spawn \"sh\" [\"-c\" \"sleep 60\"]))
-      (os/signal p :int))"
+    (os/signal (os/spawn \"sh\" [\"-c\" \"sleep 60\"]) :int)   ;=> nil; the sleep gets SIGINT"
   (%proc-signal p sig))
 
 (defn set-binary (p on)
@@ -328,5 +344,7 @@ closed, or `sig` is not one of those. Unix only.
 (mirrors tcp-set-binary; outbound os/write is unaffected, ADR-141). In binary mode
 inbound [:proc …]/[:proc-err …] delivers data as a byte-faithful `bytes` value (not a
 string) — for a child speaking a binary protocol over stdio. Returns nil; throws if p is
-unknown/closed."
+unknown/closed.
+
+    (os/set-binary p true)   ;=> nil; later [:proc p data] messages carry bytes"
   (%proc-set-binary p on))

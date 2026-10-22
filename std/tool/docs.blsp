@@ -209,7 +209,9 @@ bare-surface (prelude) name, whose references are bare already."
   ADR-070 rooting), like `model-file` — a `(reflect/global-names)` delta mis-credits a module already
   bound (transitively loaded, or materialised from a startup image, ADR-218) and modules the
   file's own load pulls in. Files with no module header, or read outside a project, fall back
-  to the delta."
+  to the delta.
+
+    (docs/document-file \"/path/to/proj/src/app.blsp\")   ;=> \"# app …\" — Markdown for that file's module"
   (let (src (file/slurp path)
         declared (docs-module-name src)
         ;; check-allow :discarded-catch — a name nothing can type / describe / locate is simply omitted from the docs
@@ -230,7 +232,9 @@ bare-surface (prelude) name, whose references are bare already."
 ;; (baked-in or on *load-path*), snapshot the globals, `require` it, and document
 ;; the names it added.
 (defn document-module (modname)
-  "The Markdown documentation for the module named `modname` (a symbol or string), resolved baked-in or on `*load-path*`. Errors if it can't be found."
+  "The Markdown documentation for the module named `modname` (a symbol or string), resolved baked-in or on `*load-path*`. Errors if it can't be found.
+
+    (docs/document-module 'json)   ;=> \"# json …\" — Markdown for the module's public definitions"
   (let (key (->string modname) src (docs-source key))
     (if (nil? src)
       (error "doc: cannot find module '" key "'")
@@ -253,7 +257,9 @@ bare-surface (prelude) name, whose references are bare already."
 ;; Markdown for the whole project: find it from the cwd, put its sources on the
 ;; load-path, and document each source file in turn.
 (defn document-project ()
-  "The Markdown documentation for the whole project (every source file under it), found from the cwd. Errors if not in a project."
+  "The Markdown documentation for the whole project (every source file under it), found from the cwd. Errors if not in a project.
+
+    (docs/document-project)   ;=> \"# myapp …\" — Markdown for every source file of the project"
   ; project/find-root / --collect-sources / setup
   (let (files (project/source-files (docs-setup-root "doc")))
     ;; One join over the whole project, not a per-file recopy of everything emitted
@@ -271,7 +277,9 @@ bare-surface (prelude) name, whose references are bare already."
     (and (not (includes? nm "--")) (not (string/starts-with? nm "%")))))
 
 (defn document-all ()
-  "The Markdown reference for every *public* global currently bound in the image — each builtin and prelude function/macro with its signature and one-line summary. The complete primitive reference (`nest doc --all`); read this once instead of probing names one at a time. Opt-in std modules (`display`, `buffer`, `ansi`, …) aren't loaded here — `nest doc <module>` documents those."
+  "The Markdown reference for every *public* global currently bound in the image — each builtin and prelude function/macro with its signature and one-line summary. The complete primitive reference (`nest doc --all`); read this once instead of probing names one at a time. Opt-in std modules (`display`, `buffer`, `ansi`, …) aren't loaded here — `nest doc <module>` documents those.
+
+    (docs/document-all)   ;=> \"# Brood reference …\" — Markdown over every public global in the image"
   (let (syms (seq/filter (reflect/global-names) docs-public?))
     (str "# Brood — global reference\n\n"
       "Every public global bound in a fresh image: the Rust builtins plus the "
@@ -349,7 +357,9 @@ bare-surface (prelude) name, whose references are bare already."
   rooted under the project name (ADR-070) — e.g. `web/endpoint` -> `hive/web/endpoint/…` —
   so the namespace is taken from `project-file-feature` (the rooted name) while the
   module is *displayed* under its declared name. A file with no module header, or read
-  outside a project, falls back to the load delta."
+  outside a project, falls back to the load delta.
+
+    (docs/model-file \"/path/to/proj/src/app.blsp\")   ;=> {:module … :doc \"…\" :defs [{:name … :sig … :doc … :macro false :type … :source …} …] …}"
   (let (src (file/slurp path)
         declared (docs-module-name src)
         ;; check-allow :discarded-catch — a name nothing can type / describe / locate is simply omitted from the docs
@@ -368,7 +378,9 @@ bare-surface (prelude) name, whose references are bare already."
 
 (defn model-project ()
   "The whole-project doc model — `{:name :version :modules […]}` — found from the cwd,
-  documenting every source file under it. Errors if not in a Brood project."
+  documenting every source file under it. Errors if not in a Brood project.
+
+    (docs/model-project)   ;=> {:name \"myapp\" :version \"0.1.0\" :guides … :modules […]}"
   (let (root (docs-setup-root "docs"))
     {:name *project-name*
      :version *project-version*
@@ -411,13 +423,17 @@ bare-surface (prelude) name, whose references are bare already."
 (defn generate-site (& args)
   "Generate an HTML documentation site for the current project into `doc/` (or the
   directory named by the first argument): a rendered `index.html` plus the structured
-  `model.json`. The policy behind `nest docs`."
+  `model.json`. The policy behind `nest docs`.
+
+    (docs/generate-site \"site\")   ;=> site/index.html and site/model.json written"
   (let (out-dir (if (empty? args) "doc" (first args)) model (model-project))
     (write-site out-dir model (get model :name))))
 
 (defn generate-site-all (& args)
   "Generate an HTML site for the whole builtin + prelude reference into `doc/` (or the
-  first-argument directory) — the language reference. Backs `nest docs --all`."
+  first-argument directory) — the language reference. Backs `nest docs --all`.
+
+    (docs/generate-site-all)   ;=> doc/index.html and doc/model.json for the whole language reference"
   (let (out-dir (if (empty? args) "doc" (first args)))
     (write-site out-dir (model-all) "Brood — reference")))
 
@@ -520,5 +536,7 @@ bare-surface (prelude) name, whose references are bare already."
     (doctest-report (collect-doctests (str *project-name* "/")))))
 
 (defn generate (& args)
-  "Print Markdown documentation to stdout: the whole project with no args, or a single module given its name. The policy behind `nest doc`."
+  "Print Markdown documentation to stdout: the whole project with no args, or a single module given its name. The policy behind `nest doc`.
+
+    (docs/generate \"app\")   ;=> module app's Markdown printed to stdout"
   (if (empty? args) (io/puts (document-project)) (io/puts (document-module (first args)))))

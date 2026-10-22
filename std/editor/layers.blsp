@@ -262,7 +262,9 @@ leaves `ctx` unchanged, so a bad hook can't crash the loop."
 (defn run-event (ctx event)
   "Fan `event` across ALL active layers, highest precedence first, threading `ctx`
 through every hook. For broadcast events — `:on-focus`/`:on-blur`/`:on-close` and
-app-defined ones — *not* the lifecycle `:activate`/`:deactivate`."
+app-defined ones — *not* the lifecycle `:activate`/`:deactivate`.
+
+    (editor/layers/run-event {:layers (list {:name :a})} :on-focus)   → {:layers ({:name :a})}"
   (layers-run-hooks ctx
     (mapcat (layer-collect ctx :hooks) (fn (hk) (or (get hk event) (list))))))
 
@@ -353,7 +355,9 @@ returns `[ctx' pending']`. The bridge from layers to keymap — compose, then st
 (defn register-system-layer (ref)
   "Register `ref` as an always-on system layer (appended at lowest precedence to
 every buffer). **Idempotent** — registering the same ref again is a no-op, so a
-module that registers at load is safe to (re)load."
+module that registers at load is safe to (re)load.
+
+    (editor/layers/register-system-layer 'myapp/layer)   ;=> …the registry updated: every buffer now carries myapp/layer…"
   ;; The membership test is INSIDE the transform, so two processes registering the same
   ;; ref cannot both see it absent and both append (the KI-23 shape).
   ;; `:append-new` — an op, not a whole-map swap, so a module registering at load inside
@@ -363,19 +367,25 @@ module that registers at load is safe to (re)load."
 (defn register-type-layers (type refs)
   "Bind buffer `type` to `refs` (a list of layer references, head = highest
 precedence). Rebinds the registry, so it hot-swaps on the next buffer of that type.
-To add a single layer to a type, `assoc` onto its existing `(layers-for-type type)`."
+To add a single layer to a type, `assoc` onto its existing `(layers-for-type type)`.
+
+    (editor/layers/register-type-layers :elixir ['myapp/elixir-layer])   ;=> …the registry updated: new :elixir buffers get that layer…"
   (%registry-update! 'editor/layers/*type-layers* :assoc [type] refs))
 
 (defn register-file-type (spec type)
   "Map filenames to `type`: `spec` is a suffix string (matched with `ends-with?`)
 or a predicate `(fn (filename) -> bool)`. Prepended, so the most-recently-registered
-rule wins — a project can override a default."
+rule wins — a project can override a default.
+
+    (editor/layers/register-file-type \".ex\" :elixir)   ;=> …the registry updated: a file ending .ex is now :elixir…"
   (%registry-update! 'editor/layers/*auto-type-by-file* :cons-new [] {:match spec :type type}))
 
 (defn register-interpreter-type (name type)
   "Map the interpreter `name` a `#!` line names — the program's basename, or the word
 after `env` (`#!/usr/bin/env bash` and `#!/bin/bash` are both `\"bash\"`) — to `type`.
-The Emacs `interpreter-mode-alist`: a script with no extension is typed by its shebang."
+The Emacs `interpreter-mode-alist`: a script with no extension is typed by its shebang.
+
+    (editor/layers/register-interpreter-type \"bash\" :shell)   ;=> …the registry updated: a #!/bin/bash script is now :shell…"
   (%registry-update! 'editor/layers/*auto-type-by-interpreter* :assoc [name] type))
 
 (defn shebang-interpreter (line:string -> (or nil string))
@@ -413,7 +423,9 @@ shebang. The version suffix is kept (`python3`), a trailing newline and argument
         (if (nil? name) nil (get *auto-type-by-interpreter* name))))))
 
 (defn layers-for-type (type)
-  "The layer refs bound to `type`, or () if none."
+  "The layer refs bound to `type`, or () if none.
+
+    (editor/layers/layers-for-type :no-such-type)   → ()"
   (or (get *type-layers* type) ()))
 
 (defn- layers-file-matches? (file spec)
@@ -451,7 +463,9 @@ buffers (a `*magit-status*`, a scratch buffer). Does not (re)seed layers; pair w
 **plus the always-on `*system-layers*`** (at lowest precedence), firing each
 layer's `:activate` (base-first). Replaces any existing `:layers` — call on buffer
 creation, or after `set-buffer-type`. The type list's order is preserved (head =
-highest precedence); system layers come last."
+highest precedence); system layers come last.
+
+    (editor/layers/init-buffer-layers buf)   ;=> buf with :type and :layers set from the registered types and layers"
   (let (type (buffer-type-for buf)
         refs (append (layers-for-type type) *system-layers*)
         seeded (assoc buf :type type :layers ()))
@@ -540,7 +554,9 @@ of `ctxs` so its window-level layers compose with the focused buffer's. Returns
   "Move focus from context `from` to `to`: fan `:on-blur` across `from`'s layers and
 `:on-focus` across `to`'s, returning `[from' to']`. Either side may be nil (a
 no-op). Neither context is activated/deactivated — leaving a context is *dormancy*,
-not teardown; its layers simply stop being consulted."
+not teardown; its layers simply stop being consulted.
+
+    (editor/layers/switch-focus nil nil)   → [nil nil]"
   [(if (nil? from) from (run-event from :on-blur)) (if (nil? to) to (run-event to :on-focus))])
 
 (defn deactivate-all (ctx)

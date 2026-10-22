@@ -64,7 +64,9 @@ halves a REPL shows — the value and what it printed.")
   "One request line (no trailing newline): `id` an int, `src` the Brood source to
 evaluate (may span lines — it's escaped), `timeout-ms` an int or nil for the
 server default, `trace` an optional vector of fn-name strings to boundary-trace — or
-`:all` for every global the session has defined, resolved in the server's own image."
+`:all` for every global the session has defined, resolved in the server's own image.
+
+    (:src (eval-server/evsrv-decode-request (eval-server/evsrv-encode-request 1 \"(+ 1 2)\" nil)))   → \"(+ 1 2)\""
   (pr-str (if (or (nil? trace) (and (not (= trace :all)) (empty? trace)))
             {:id id :src src :timeout-ms timeout-ms}
             {:id id :src src :timeout-ms timeout-ms :trace trace})))
@@ -74,7 +76,9 @@ server default, `trace` an optional vector of fn-name strings to boundary-trace 
 the advisory type-checker's verdict on `src` (`reflect/check-string-structured`), as
 `{:id :ok true :diagnostics ({:line :col :message} …) :ms}`, the list whole rather than
 display-bounded. What an editor sends for a buffer's diagnostics: the check runs in the
-child — its image, its project — and nothing of that project is loaded into the editor."
+child — its image, its project — and nothing of that project is loaded into the editor.
+
+    (:check (eval-server/evsrv-decode-request (eval-server/evsrv-encode-check 2 \"(+ 1 2)\" 5000)))   → true"
   (pr-str {:id id :src src :timeout-ms timeout-ms :check true}))
 
 (defn evsrv-encode-test (id specs timeout-ms)
@@ -140,7 +144,9 @@ later — one bad line must not kill the server), a present `:trace` a vector, a
 
 A `:test` carries `:specs` instead of `:src` because what it names is FILES, not source:
 the tests already exist on disk, and sending their text would evaluate a copy rather than
-run the thing you are looking at."
+run the thing you are looking at.
+
+    (eval-server/evsrv-decode-request \"garbage\")   → nil"
   ;; check-allow :discarded-catch — a line that is not the expected map, or a not-yet-defined trace target, is skipped
   (check-allow :discarded-catch
     (try
@@ -164,7 +170,9 @@ run the thing you are looking at."
 
 (defn evsrv-encode-reply (reply)
   "One reply line (no trailing newline) for `reply`, a map. The boot banner
-`{:ready true}` and the per-request replies all travel through here."
+`{:ready true}` and the per-request replies all travel through here.
+
+    (eval-server/evsrv-encode-reply {:ready true})   → \"{:ready true}\""
   (pr-str reply))
 
 (defn- evsrv-read-map (s)
@@ -183,7 +191,9 @@ A reply that something PREFIXED is salvaged from its first `{`. The child's stdo
 shared with whatever the evaluated code prints, and a print without a trailing newline
 does not get a line of its own — it gets the front of the next one. That cost six of
 twenty-seven streamed test verdicts before the runner's progress marks were silenced, and
-silencing them fixes the runner rather than the case: a test is still free to print."
+silencing them fixes the runner rather than the case: a test is still free to print.
+
+    (:ready (eval-server/evsrv-decode-reply \"progress{:ready true}\"))   → true"
   (or (evsrv-read-map line)
     (let (i (index-of line "{"))
       (when (> i 0) (evsrv-read-map (string/substring line i (string/length line)))))))
@@ -249,7 +259,9 @@ looking identical to a round-trip that cleaned up after itself."
   "Capture the pristine global-name set NOW, so a later `:trace :all` can tell the session's
 own definitions from the language's. Idempotent — the first call wins. [[run]] calls it
 before the banner; anything embedding [[eval-capturing]] should call it at startup, or
-accept a baseline taken at the first traced request."
+accept a baseline taken at the first traced request.
+
+    (eval-server/baseline-globals)   ;=> nil until the server captures its baseline, then that set of names"
   (do (eval-server-baseline) nil))
 (defn- eval-server-own-name? (n)
   ;; A name the SESSION wrote, as opposed to one a module brought with it. Bare only:
@@ -264,7 +276,9 @@ accept a baseline taken at the first traced request."
 (defn session-globals ()
   "Every global name defined since the baseline was captured — the session's own top-level
 definitions, with the language's and any later-required module's excluded. What
-`:trace :all` resolves to."
+`:trace :all` resolves to.
+
+    (eval-server/session-globals)   ;=> [\"my-helper\" \"main\"] — the names this session defined"
   (let (base (eval-server-baseline))
     (into []
       (seq/filter (map (reflect/global-names) ->string)
@@ -302,7 +316,9 @@ definitions, with the language's and any later-required module's excluded. What
 
 The parent's cleanup after a child that could not run its own teardown — a kill on deadline,
 or an abnormal death. Replaces `debug/untrace-all` on those paths, which restored the whole
-image and so took wrappers away from requests that were still running (KI-107)."
+image and so took wrappers away from requests that were still running (KI-107).
+
+    (eval-server/release-holds-of (self))   ;=> the count of holds released — 0 for a process holding none"
   (let (names (keys (or (get *trace-holders* pid) {})))
     ;; check-allow :discarded-catch — best-effort release; a name redefined since is reported by `untrace-fn`
     (doseq (n names)
@@ -383,7 +399,9 @@ image and so took wrappers away from requests that were still running (KI-107)."
 (defn check-structured (src)
   "Advisory type-check `src` (the `:check` request's core): `{:ok true :diagnostics
 (…) :ms}` with the checker's `{:line :col :message}` maps whole — `()` for a source that
-does not parse — or `:ok false` with `:error` when the checker itself raised. Never throws."
+does not parse — or `:ok false` with `:error` when the checker itself raised. Never throws.
+
+    (:ok (eval-server/check-structured \"(+ 1 2)\"))   → true"
   (let (started (os/now))
     (try
       {:ok true :diagnostics (or (reflect/check-string-structured src) ()) :ms (- (os/now) started)}
@@ -415,7 +433,10 @@ source itself provides is always the one that runs.
 In-image caveat for long-lived callers: evaluated source that calls
 `(%capture-begin)` without a matching take strands OUR buffer on the calling
 process's capture stack (later prints are swallowed). Irrelevant on the server
-path — the per-request evaluator process dies — but worth knowing when embedding."
+path — the per-request evaluator process dies — but worth knowing when embedding.
+
+    (:value (eval-server/eval-capturing \"(+ 1 2)\"))       → \"3\"
+    (:output (eval-server/eval-capturing \"(io/write 1)\"))   → \"1\""
   (let (started (os/now)
         pids-before (proc/list)
         ;; `:all` is truthy and not a collection, so it counts as traced without being
@@ -482,7 +503,9 @@ path — the per-request evaluator process dies — but worth knowing when embed
 completion, `{:id id :ok false :timeout true}` after the deadline (the evaluator
 is hard-killed; the session image survives — and any traces the killed evaluator
 installed are restored here), or `:ok false` with `:error` if the evaluator
-process died without answering."
+process died without answering.
+
+    (eval-server/answer {:id 1 :src \"(+ 1 2)\"})   ;=> {:id 1 :ok true :value \"3\" :output \"\" :ms … :procs …}"
   (let (id (get req :id)
         src (get req :src)
         raw-timeout (get req :timeout-ms)
@@ -825,7 +848,9 @@ anything arriving while a run is in flight waits its turn."
   "Run the eval server: print the `{:ready true}` banner, then answer one request
 per stdin line until EOF. This is the child's whole program — a client spawns
 `nest run <script>` where the script references `eval-server/…`
-`(run)`, and drives it over stdin/stdout."
+`(run)`, and drives it over stdin/stdout.
+
+    (eval-server/run)   ;=> nil at stdin EOF, after answering one request per line"
   (baseline-globals) ; before the banner: nothing of the user's has run yet
   (io/puts (evsrv-encode-reply {:ready true}))
   (let (me (self))

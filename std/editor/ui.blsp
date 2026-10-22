@@ -127,7 +127,9 @@ window id. So a display made here must be polled by the process that made it; do
 hand it to another process to run. And because the delivered key/mouse messages
 carry no window id, one process should drive **one** window (which is why
 `(observe)` spawns a process per window) — two windows in one process would mix
-their input. Both are deferred trade-offs (ADR-059), fine for the observer."
+their input. Both are deferred trade-offs (ADR-059), fine for the observer.
+
+    (editor/ui/gui-display {:title \"demo\" :width 800 :height 600})   ;=> {:enter … :draw … :poll … :window id}, or an error without the gui feature"
   (let (id (gui/open (get opts :title) (get opts :width) (get opts :height) opts))
     {:enter (fn () nil)
      :leave (fn () (gui/close id))
@@ -181,7 +183,9 @@ screen (a larger frontend just shows it in its top-left)."
 and merges their input: update the view and *every* attached frontend updates
 together (a GUI window and the terminal today; remote frontends later — they slot
 in as just another member). The frame renders at the smallest common grid so it
-fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism."
+fits everywhere. Pure Brood over the `term-*`/`gui-*` mechanism.
+
+    (editor/ui/display-broadcast [*term-display* (editor/ui/gui-display)])   ;=> one display map driving both frontends"
   {:enter (fn () (doseq (d displays) ((get d :enter))))
    :leave (fn () (doseq (d displays) ((get d :leave))))
    :size (fn () (display-min-size displays))
@@ -195,7 +199,9 @@ process), else polls `display` as usual. So `ui-run` sees server-pushed events a
 terminal (where the raw `:poll` reads only the keyboard) and the GUI — `update` folds
 an `[:sse ev]` in like any other input. The other display ops pass through unchanged.
 A flood of events can starve the keyboard poll; fine for occasional pushes (a daemon's
-event feed). Needs the `sse` module on the producing side (loaded by referencing `sse/…`)."
+event feed). Needs the `sse` module on the producing side (loaded by referencing `sse/…`).
+
+    (editor/ui/with-events *term-display*)   ;=> the display, its :poll also yielding [:sse ev] messages"
   (assoc display
     :poll
       (fn (ms)
@@ -333,7 +339,10 @@ Only one timer fires per call; simultaneous timers serialize over successive ite
 button) asking the app to quit, as distinct from the Escape *key* (`:escape`).
 `ui-run` already quits on `:close` for you; reach for this only in a hand-rolled
 `receive` loop (one not built on `ui-run`) so the X button closes the window
-alongside whatever quit keys you bind — e.g. `(:close :quit)` next to your own."
+alongside whatever quit keys you bind — e.g. `(:close :quit)` next to your own.
+
+    (editor/ui/quit-request? :close)    → true
+    (editor/ui/quit-request? :escape)   → false"
   (= input :close))
 
 (defn- ui-close-quits? (model input)
@@ -350,7 +359,9 @@ no wiring, as before."
 process's mailbox by another process) to raise this app's window to the front.
 `ui-run` handles it by calling the display's `:focus`; a frontend without one (the
 terminal) just ignores it. The seam a singleton launcher uses to surface an
-already-open window instead of opening a duplicate (e.g. a repeated `(observe)`)."
+already-open window instead of opening a duplicate (e.g. a repeated `(observe)`).
+
+    (editor/ui/focus-request? :focus)   → true"
   (= input :focus))
 
 (defn- ui-log-error (where e)
@@ -401,7 +412,9 @@ result is a one-element list holding a `[:ui/memo key deps ops]` marker the loop
 (`ui-harvest`); splice it where the ops would go (`mapcat`/`append`). Outside a loop it is
 just `(thunk)` — as is a nil `key`, the way a caller opts a fragment out (a pane whose
 ops are transformed after this). Omit from `deps` nothing the thunk reads, or a stale
-fragment is painted."
+fragment is painted.
+
+    (editor/ui/ui-memo [:line 12] [\"text\"] (fn () [[:text \"text\"]]))   ;=> ([:ui/memo [:line 12] [\"text\"] ops]) in a loop; the thunk's ops outside one"
   (if (or (nil? *ui-memo*) (nil? key))
     (thunk)
     (let (prev (get *ui-memo* key)
@@ -409,7 +422,10 @@ fragment is painted."
       (list [:ui/memo key deps ops]))))
 
 (defn ui-memo-marker? (op)
-  "True for a `[:ui/memo key deps ops]` marker."
+  "True for a `[:ui/memo key deps ops]` marker.
+
+    (editor/ui/ui-memo-marker? [:ui/memo :k [] []])   → true
+    (editor/ui/ui-memo-marker? [:text \"x\"])          → false"
   (and (vector? op) (= (first op) :ui/memo)))
 
 (defn ui-harvest (frame)
@@ -418,7 +434,9 @@ frontend paints), and the table of this turn's fragments — what `*ui-memo*` is
 for the next turn. The loop calls it on every rendered frame; a frame without markers
 comes back as it went in, with an empty table. Recurses into a marker's ops and a
 `:scroll-region`'s. Native (`%ui-harvest`): it walks every op of every frame, where a
-Brood-level walk cost about a millisecond — more than the paint the memo saves."
+Brood-level walk cost about a millisecond — more than the paint the memo saves.
+
+    (editor/ui/ui-harvest frame)   ;=> [the frame with markers spliced away, {key [deps ops] …}]"
   (%ui-harvest frame))
 
 ;; ---- per-turn tracing (BROOD_UI_TRACE=1) ------------------------------------
@@ -741,7 +759,9 @@ skips `overlay-exit` needs no dismiss step (the `:default` impl supplies both)."
 
 (defn overlay-active (overlays model)
   "The first overlay in `overlays` open for `model` (`overlay-active?`; list order =
-precedence), or nil."
+precedence), or nil.
+
+    (editor/ui/overlay-active [] {})   → nil"
   (seq/find overlays (fn (overlay) (overlay-active? overlay model))))
 
 (defn overlay-route (overlays model input fallback)
@@ -749,7 +769,9 @@ precedence), or nil."
 when none is open. The owning overlay (`overlay-owns?`) handles the key; a key it does
 **not** own dismisses the overlay (`overlay-exit`) and is re-dispatched through
 `fallback` — Emacs' dismiss-and-process. Overlays are records implementing `Overlay`.
-The shared seam behind the editor's transient overlays and the observer's minibuffer."
+The shared seam behind the editor's transient overlays and the observer's minibuffer.
+
+    (editor/ui/overlay-route overlays model input fallback)   ;=> the model after the overlay or the fallback handled `input`"
   (let (overlay (overlay-active overlays model))
     (cond
       (nil? overlay) (fallback model input)

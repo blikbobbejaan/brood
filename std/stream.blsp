@@ -166,7 +166,9 @@ monitor is the whole guard.
 (defn socket-> (sock)
   "A stream of string chunks from TCP socket `sock`. Transfers socket ownership
 to the stream process — the caller must not `receive` from `sock` afterwards.
-Call immediately after accept or connect, before any data has been read."
+Call immediately after accept or connect, before any data has been read.
+
+    (stream/socket-> (tcp/connect \"localhost\" 8080))   ;=> a stream of the string chunks the socket receives"
   (let (me (self)
         s (spawn (sock-init sock me)))
     (receive
@@ -519,7 +521,9 @@ Raises on a stream error.
 
 (defn pipe (src sink)
   "Drain stream `src`, sending each value as `[:stream-data v]` to process `sink`,
-then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error)."
+then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error).
+
+    (stream/pipe (stream/range 0 3) consumer-pid)   ;=> consumer-pid gets [:stream-data 0] … [:stream-data 2], then :stream-eof"
   (pipe-loop src sink))
 
 (defn- pipe-loop (src sink)
@@ -529,7 +533,9 @@ then `:stream-eof` when done (or `[:stream-err msg]` + `:stream-eof` on error)."
     (item (do (send sink [:stream-err (second item)]) (send sink :stream-eof)))))
 
 (defn ->socket (s sock)
-  "Drain stream `s`, writing each chunk to `sock` with `tcp/send`. Returns nil."
+  "Drain stream `s`, writing each chunk to `sock` with `tcp/send`. Returns nil.
+
+    (stream/->socket (stream/socket-> upstream) sock)   ;=> nil, once every chunk is written to sock"
   (for-each s (fn (chunk) (tcp/send sock chunk))))
 
 ;; (restored: this is stream's take-while, not the sequence one)

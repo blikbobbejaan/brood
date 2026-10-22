@@ -120,20 +120,26 @@ agreed. `buffer-from-file` and `save-buffer` stamp it; `buffer-file-changed?` re
 
 (defn buffer-from-file (path)
   "Read the file at `path` into a fresh buffer, with `:file` set to `path` so
-`save-buffer` can write it back, stamped with the file's mtime (`buffer-stamp-file`)."
+`save-buffer` can write it back, stamped with the file's mtime (`buffer-stamp-file`).
+
+    (editor/buffer/buffer-from-file \"notes.txt\")   ;=> …a buffer named notes.txt holding the file's text, :file set…"
   (buffer-stamp-file (make-buffer (file/slurp path) path path)))
 
 (defn find-file-buffer (path)
   "Open `path` for editing, vim/emacs `find-file` style: its contents if the file
 exists, else a fresh *empty* buffer — either way backed by `path`, so `save-buffer`
 writes it (creating the file for a new path). Visiting a missing path starts an
-unsaved buffer rather than erroring."
+unsaved buffer rather than erroring.
+
+    (editor/buffer/find-file-buffer \"new.txt\")   ;=> …an empty buffer backed by new.txt, when no such file exists yet…"
   (if (file/exists? path) (buffer-from-file path) (make-buffer "" path path)))
 
 (defn save-buffer (buf)
   "Write `buf`'s text to its `:file`; raise if it has none. Returns `buf` stamped with
 the file's new mtime (`buffer-stamp-file`) and unmodified (`mark-buffer-saved`), so a caller
-that keeps the result knows the file and the text agree again."
+that keeps the result knows the file and the text agree again.
+
+    (editor/buffer/save-buffer buf)   ;=> buf, stamped and unmodified — after writing its text to its :file"
   (let (f (get buf :file))
     (if (nil? f)
       (error "save-buffer: buffer has no file: " (get buf :name))
@@ -156,7 +162,11 @@ different question). One `stat`; cheap enough to ask on an idle beat.
 
 ;; ---- reads ------------------------------------------------------------------
 
-(defn buffer-rope (buf) "The buffer's underlying rope (process-local)." (get buf :rope))
+(defn buffer-rope (buf)
+  "The buffer's underlying rope (process-local).
+
+    (text/length (editor/buffer/buffer-rope (editor/buffer/make-buffer \"hi\")))   → 2"
+  (get buf :rope))
 (defn buffer-text (buf)
   "The buffer's full text as a string.
 
@@ -884,7 +894,9 @@ touched the region.
 
 The region survives, so repeated calls keep peeling changes off the same lines — and
 the step itself is an ordinary undo entry, so a plain `undo` afterwards takes the
-whole thing back."
+whole thing back.
+
+    (editor/buffer/buffer-text (editor/buffer/undo-in-region (editor/buffer/make-buffer \"abc\")))   → \"abc\""
   (let (bounds (buffer-region-bounds buf))
     (if (or (nil? bounds) (empty? (or (get buf :undo) ())))
       buf
@@ -1715,7 +1727,9 @@ wrapped paragraph together from the bottom.
   "Fold `(f buf line)` over each line in `buf`'s `region-line-range`, threading the
 buffer through — the scaffold for line-wise commands (comment, indent-region, …).
 `f` must not add or remove lines (line numbers stay valid across the fold). Returns
-the resulting buffer."
+the resulting buffer.
+
+    (editor/buffer/buffer-text (editor/buffer/map-region-lines (editor/buffer/goto-char (editor/buffer/set-mark (editor/buffer/make-buffer \"a\\nb\\nc\")) 4) (fn (b line) (editor/buffer/insert (editor/buffer/goto-char b (text/line->char (editor/buffer/buffer-rope b) line)) \"#\"))))   → \"#a\\n#b\\nc\""
   (let ([sl el] (region-line-range buf))
     (fold (range sl (inc el)) buf f)))
 
@@ -1919,7 +1933,9 @@ changed the buffer, survivors get a push (they see the cursor vanish)."
   "Spawn a process that owns a copy of `buf` and serves edits/queries; return its
 pid. The rope can't cross a process boundary, so this ships `buf`'s *text* (plus
 name/file/point/mark) and rebuilds the rope inside the new process. Drive it with
-`buffer-edit` and `buffer-query`."
+`buffer-edit` and `buffer-query`.
+
+    (editor/buffer/spawn-buffer (editor/buffer/make-buffer \"hi\"))   ;=> #<pid …the new buffer process…>"
   (let (text (buffer-text buf)
         name (buffer-name buf)
         file (buffer-file buf)
@@ -1936,7 +1952,9 @@ name/file/point/mark) and rebuilds the rope inside the new process. Drive it wit
   "Apply pure transform `f` (a `buffer -> buffer` fn) inside buffer process `bp`.
 With `origin` (any value — conventionally the sender's pid), the resulting push is
 tagged with it, so subscribers can recognise their own edit coming back (see
-`buffer-push` — the echo-suppression seam). Asynchronous — returns nil."
+`buffer-push` — the echo-suppression seam). Asynchronous — returns nil.
+
+    (editor/buffer/buffer-edit pid (fn (b) (editor/buffer/insert b \"x\")))   ;=> nil — the insert lands in the process"
   (send bp [:edit f origin]))
 
 (defn buffer-edit-reply (bp f &optional origin)
@@ -1946,7 +1964,9 @@ delete the region *and* learn what was deleted) as one atomic, totally-ordered
 round-trip; no concurrent splice can land between the read and the write. `value`
 must be non-rope (the rope never leaves the process); `origin` tags the push as for
 `buffer-edit`. Asynchronous — returns a ref `r`; the caller receives `[:reply r
-value]` (or use `buffer-edit-value` to block for it)."
+value]` (or use `buffer-edit-value` to block for it).
+
+    (editor/buffer/buffer-edit-reply pid (fn (b) [b (editor/buffer/buffer-point b)]))   ;=> #<ref …> — then [:reply r 0] arrives"
   (let (r (ref))
     (send bp [:edit-reply f origin (self) r])
     r))
@@ -1955,7 +1975,9 @@ value]` (or use `buffer-edit-value` to block for it)."
   "`buffer-edit-reply`, blocking for the extracted value: apply `f` (`buffer ->
 [new-buf value]`) in buffer process `bp` and return `value`. Throws after `timeout`
 ms (default 5000) — the bounded-sync form for callers that need the answer to
-proceed (an interactive command deciding on what it read)."
+proceed (an interactive command deciding on what it read).
+
+    (editor/buffer/buffer-edit-value pid (fn (b) [b (editor/buffer/buffer-point b)]))   ;=> 0 — the point inside process `pid`"
   (let (r (buffer-edit-reply bp f origin))
     (receive
       ([:reply ^r v] v)
@@ -2010,7 +2032,9 @@ keystroke on a shared buffer, whatever the document's size. `origin` tags the pu
 for `buffer-edit`. With `base` (the version this splice was computed against), the
 process TRANSFORMS it over every splice applied since (`splice-transform`) before
 applying — so two people typing in different places inside one round-trip window both
-land exactly where they meant to, no CRDT. Asynchronous — returns nil."
+land exactly where they meant to, no CRDT. Asynchronous — returns nil.
+
+    (editor/buffer/buffer-splice pid 0 2 \"hey\")   ;=> nil — the process replaces [0, 2) with \"hey\""
   (if (nil? base)
     (send bp [:splice lo hi repl origin])
     (send bp [:splice lo hi repl origin base])))
@@ -2018,13 +2042,17 @@ land exactly where they meant to, no CRDT. Asynchronous — returns nil."
 (defn buffer-marker-move (bp id pos &optional origin)
   "Set marker `id` to `pos` inside buffer process `bp`, pushing only `{:markers …
 :participants …}` — a cursor move never ships the document. `origin` tags the push.
-Asynchronous — returns nil."
+Asynchronous — returns nil.
+
+    (editor/buffer/buffer-marker-move pid :cursor 4)   ;=> nil — the process moves marker :cursor to 4"
   (send bp [:marker-set id pos origin]))
 
 (defn buffer-query (bp: (or map pid) f:any -> any)
   "Synchronously read a derived view from buffer process `bp` via pure fn `f` (a
 `buffer -> view`). `f` must return a non-rope value — e.g. `buffer-text`,
-`buffer-point`, `(fn (b) (buffer-line-at b 0))`. Blocks for the reply."
+`buffer-point`, `(fn (b) (buffer-line-at b 0))`. Blocks for the reply.
+
+    (editor/buffer/buffer-query pid editor/buffer/buffer-text)   ;=> \"…the text buffer process `pid` holds…\""
   (let (r (ref))
     (send bp [:get f (self) r])
     (receive ([:reply ^r v] v))))
@@ -2035,11 +2063,15 @@ gets on every edit — `[:buffer-updated bp version view]`, where `view` is `(pr
 derived non-rope value (a viewport projection, the text, a marker set), or nil when `proj` is
 nil (a bare change notification). The push side of buffers-as-processes: a pane subscribes
 with its viewport projection and re-renders from each pushed frame instead of polling. Many
-processes may subscribe to one buffer — that is what lets several sessions see each edit."
+processes may subscribe to one buffer — that is what lets several sessions see each edit.
+
+    (editor/buffer/subscribe-buffer pid editor/buffer/buffer-text)   ;=> nil — then [:buffer-updated pid version text] per edit"
   (send bp [:subscribe (self) proj]))
 
 (defn unsubscribe-buffer (bp: (or map pid) -> nil)
-  "Stop the calling process receiving `[:buffer-updated …]` pushes from buffer process `bp`."
+  "Stop the calling process receiving `[:buffer-updated …]` pushes from buffer process `bp`.
+
+    (editor/buffer/unsubscribe-buffer pid)   ;=> nil — no further pushes from `pid`"
   (send bp [:unsubscribe (self)]))
 
 (defn buffer-sync (bp proj &optional (timeout 2000))
@@ -2057,7 +2089,9 @@ the caller's monitor will deal with it)."
   "Stop buffer process `bp` (it leaves its loop). Synchronous; returns :stopped —
 or :no-reply after 2s (an already-dead process: sending [:stop] to a corpse would
 otherwise park the caller forever, e.g. killing a buffer whose process just
-crashed, before the [:down] has been folded)."
+crashed, before the [:down] has been folded).
+
+    (editor/buffer/stop-buffer pid)   ;=> :stopped — or :no-reply when `pid` is already dead"
   (let (r (ref))
     (send bp [:stop (self) r])
     (receive ([:reply ^r v] v) (after 2000 :no-reply))))
@@ -2069,10 +2103,14 @@ crashed, before the [:down] has been folded)."
 process serves `buffer-edit` / `buffer-query` and accepts `[:write s]`, so it is a
 valid `io`/logger sink — `(add-backend (process-backend (create-buffer \"*log*\")))`
 streams log output straight into it. Tear it down with `delete-buffer`. (High-volume
-sinks may want `(buffer-edit pid disable-undo)` so appends don't grow undo history.)"
+sinks may want `(buffer-edit pid disable-undo)` so appends don't grow undo history.)
+
+    (editor/buffer/create-buffer \"*log*\")   ;=> #<pid …the new, empty buffer process…>"
   (spawn-buffer (make-buffer "" name)))
 
 (defn delete-buffer (bp)
   "Stop buffer process `bp` and free it — the symmetric name for `stop-buffer`.
-Synchronous; returns :stopped."
+Synchronous; returns :stopped.
+
+    (editor/buffer/delete-buffer pid)   ;=> :stopped"
   (stop-buffer bp))

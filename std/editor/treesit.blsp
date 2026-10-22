@@ -61,7 +61,9 @@ Per-language face tables + keymaps are policy in the editor. `(require
 (defn missing-services (layer:any -> list)
   "The `language-contract` services `layer` fails to provide — `()` when it is complete.
 What a registration checks before accepting a language, so an incomplete mode fails at
-load with the list rather than at the keypress that needed it."
+load with the list rather than at the keypress that needed it.
+
+    (editor/treesit/missing-services {:ts-lang :elixir})   → (:fontify :indent)"
   (seq/filter (get language-contract :required) (fn (k) (nil? (get layer k)))))
 
 ;; ---- is this text finished? -------------------------------------------------
@@ -167,7 +169,10 @@ and digits don't."
   "True for an anonymous token whose text is alphabetic — a language keyword
 (`def`/`end`/`do`/`if`/`fn`/`class`…). The cheap, cross-language way to colour
 keywords without enumerating every grammar's keyword set: keywords surface as
-anonymous tokens, operators/punctuation as anonymous non-alphabetic ones."
+anonymous tokens, operators/punctuation as anonymous non-alphabetic ones.
+
+    (editor/treesit/anonymous-keyword? {:named false :text \"def\"})   → true
+    (editor/treesit/anonymous-keyword? {:named false :text \"+\"})     → false"
   (and (not (get node :named))
     (let (t (get node :text))
       (and (not (nil? t)) (> (string/length t) 0) (ts-alpha? (string/char-at t 0))))))
@@ -177,7 +182,9 @@ anonymous tokens, operators/punctuation as anonymous non-alphabetic ones."
 token (`anonymous-keyword?`) is a `:syntax/keyword`. Most language tables need
 only name the handful of *named* nodes they colour (string/comment/number/…) and
 get keywords for free. The face is resolved live, so a `(face-set :syntax/…)`
-restyles the editor on its next frame."
+restyles the editor on its next frame.
+
+    (fn? (editor/treesit/face-of-syntax {:string :syntax/string}))   → true"
   (fn (node)
     (let (name (or (get kind->face-name (get node :kind))
                  (if (anonymous-keyword? node) :syntax/keyword nil)))
@@ -266,7 +273,9 @@ other than whitespace, or 0 when there is none — the CANDIDATE restart point, 
 Separate from [[column0-restart]] because the guard is the language-specific half. Elixir can
 decide safety by counting paired heredoc markers, which is what `column0-restart` does; Ruby
 cannot (its `<<~EOS` terminator is arbitrary text) and needs to scan for its own openers. Both
-want the same candidate, and neither should re-derive it."
+want the same candidate, and neither should re-derive it.
+
+    (editor/treesit/column0-before \"a\\nb\\n  c\" 6)   → 2"
   ;; `pos` is a line start when `ed-window-src` calls this, but normalising to one anyway
   ;; makes the answer total: an offset in the middle of a line asks about that line, and the
   ;; result is always a line start, never an offset into one.
@@ -296,7 +305,9 @@ nothing to count, and should keep the lead-in rather than pass a list that canno
 **What it does not fix.** A construct opening ABOVE the window is invisible to this guard —
 and to the lead-in it replaces. Both mis-colour there, identically. That is the ceiling of
 any windowed fontify rather than of this rule: measured against a whole-file parse, the
-restart is never wrong where the lead-in is right, and is right everywhere the lead-in is."
+restart is never wrong where the lead-in is right, and is right everywhere the lead-in is.
+
+    (editor/treesit/column0-restart \"x\\n'''\\ny\" 6 [\"'''\"])   → 0"
   (let (candidate (column0-before src pos)
         opened (fold delimiters 0 (fn (n d) (+ n (ts-count-upto src d candidate 0 0)))))
     (if (= 0 (math/rem opened 2)) candidate 0)))
@@ -510,7 +521,9 @@ against real source.
 Deliberately not a full indent engine: no alignment to an open bracket's column, no operator
 continuation rules. It answers the shape that block-structured languages share, which is the
 shape `nest format` answers for Brood, and it is checked line-for-line against real source in
-`tests/treesit_module_test.blsp`."
+`tests/treesit_module_test.blsp`.
+
+    (editor/treesit/indent-column \"def f do\\nx\\nend\" :elixir 9 spec)   ;=> 2 — with the :elixir grammar installed and the spec above"
   (let (width (get spec :width 2)
         eol (let (i (index-of text "\n" bol)) (if (< i 0) (string/length text) i))
         line (string/substring text bol eol)
@@ -628,25 +641,33 @@ steps through, comments excluded (see [[*comment-kinds*]])."
 
 (defn point-forward (text:string lang:keyword point:any -> any)
   "End of the next named node at or after `point` within the enclosing node;
-unchanged if none (the Emacs `forward-sexp`, over a tree-sitter tree)."
+unchanged if none (the Emacs `forward-sexp`, over a tree-sitter tree).
+
+    (editor/treesit/point-forward \"foo(1, 2)\" :elixir 0)   ;=> 9 — with the :elixir grammar installed"
   (let (nxt (seq/find (ts-siblings text lang point) (fn (f) (>= (get f :start) point))))
     (if (nil? nxt) point (get nxt :end))))
 
 (defn point-backward (text:string lang:keyword point:any -> any)
-  "Start of the previous named node ending at or before `point` (`backward-sexp`)."
+  "Start of the previous named node ending at or before `point` (`backward-sexp`).
+
+    (editor/treesit/point-backward \"foo(1, 2)\" :elixir 9)   ;=> 0 — with the :elixir grammar installed"
   (let (prev (last (seq/filter (ts-siblings text lang point) (fn (f) (<= (get f :end) point)))))
     (if (nil? prev) point (get prev :start))))
 
 (defn point-list-forward (text:string lang:keyword point:any -> any)
   "End of the next child CONTAINER at or after `point` — leaf nodes are stepped over, not
-stopped at (Emacs `forward-list`); unchanged if none."
+stopped at (Emacs `forward-list`); unchanged if none.
+
+    (editor/treesit/point-list-forward src :elixir 0)   ;=> …the end of the next container…"
   (let (nxt (seq/find (ts-siblings text lang point)
               (fn (f) (and (get f :container) (>= (get f :start) point)))))
     (if (nil? nxt) point (get nxt :end))))
 
 (defn point-list-backward (text:string lang:keyword point:any -> any)
   "Start of the previous child CONTAINER ending at or before `point` — leaves stepped over
-(Emacs `backward-list`); unchanged if none."
+(Emacs `backward-list`); unchanged if none.
+
+    (editor/treesit/point-list-backward src :elixir 40)   ;=> …the start of the previous container…"
   (let (prev (last (seq/filter (ts-siblings text lang point)
                      (fn (f) (and (get f :container) (<= (get f :end) point))))))
     (if (nil? prev) point (get prev :start))))
@@ -658,13 +679,17 @@ container on the chain that neither begins nor ends at `point` itself."
           (fn (n) (and (get n :container) (< (get n :start) point) (< point (get n :end)))))))
 
 (defn point-up (text:string lang:keyword point:any -> any)
-  "Start of the enclosing node (`backward-up-list`); unchanged at top level."
+  "Start of the enclosing node (`backward-up-list`); unchanged at top level.
+
+    (editor/treesit/point-up src :elixir 30)   ;=> …the start of the node enclosing offset 30…"
   (let (enc (ts-enclosing-node text lang point))
     (if (nil? enc) point (get enc :start))))
 
 (defn point-up-forward (text:string lang:keyword point:any -> any)
   "End of the enclosing node — the forward counterpart of `point-up` (Emacs `up-list`);
-unchanged at top level."
+unchanged at top level.
+
+    (editor/treesit/point-up-forward src :elixir 30)   ;=> …the end of the node enclosing offset 30…"
   (let (enc (ts-enclosing-node text lang point))
     (if (nil? enc) point (get enc :end))))
 
@@ -757,12 +782,16 @@ The shared body of `point-defun-start` / `point-defun-end`."
 (defn point-defun-start (text lang point)
   "Start of the enclosing **definition** (`beginning-of-defun`): the deepest `def` / `class`
 / `module` / … containing `point` — so a `def` inside an Elixir `defmodule` or a Ruby `class`,
-not the whole enclosing module. Falls back to the top-level form, then `point`."
+not the whole enclosing module. Falls back to the top-level form, then `point`.
+
+    (editor/treesit/point-defun-start src :elixir 30)   ;=> …the offset of the enclosing `def`…"
   (ts-defun-edge text lang point :start))
 
 (defn point-defun-end (text lang point)
   "End of the enclosing **definition** (`end-of-defun`, C-M-e) — the close of the same node
-`point-defun-start` finds, so the pair brackets one `def` / `class` / `module`."
+`point-defun-start` finds, so the pair brackets one `def` / `class` / `module`.
+
+    (editor/treesit/point-defun-end src :elixir 30)   ;=> …the offset just past the enclosing def's `end`…"
   (ts-defun-edge text lang point :end))
 
 ;; ---- getting a grammar: from where it lives to a library the runtime can load ------

@@ -505,7 +505,9 @@ A zero-arg lambda `(fn () …)` body is passed through (not re-wrapped), like `s
 the result — parking only this process, never a scheduler worker. An error in
 the native rethrows here, catchable as usual. Only long/blocking
 data-in/data-out natives are allowed (`%offload` refuses the rest); other
-mailbox messages stay queued while waiting (selective receive)."
+mailbox messages stay queued while waiting (selective receive).
+
+    (offload file/slurp-bytes \"big.bin\")   ;=> …the file's bytes, read off the scheduler…"
   (let (tok (%offload f (into [] args)))
     (receive
       ([:offload ^tok result] result)

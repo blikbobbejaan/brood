@@ -63,7 +63,9 @@ native its iterations stop being counted while its allocations keep being counte
 `:alloc` 200017 against `:vm-apply` 197 — a ratio of 1025 that says nothing about the
 program. `:native-runs` (tiered arms that ran to completion natively) is in the map so a reader can
 see whether that is the situation, and `:native-deopts` beside it because a high deopt count
-against a low run count is the separate `compiles but keeps falling off native` signal."
+against a low run count is the separate `compiles but keeps falling off native` signal.
+
+    (get (perf/ratios {} {}) :allocations)   → 0"
   (let (applies (at vm :vm-apply)
         defers (at vm :tw-defer)
         activations (+ applies defers)
@@ -102,7 +104,9 @@ which is what actually distinguishes GC-frequency-bound from allocation-volume-b
 
 **The thresholds below are first-cut heuristics, not calibrated cutoffs.** Every number they
 read is in the report beside them, so a reader can disagree with the label without having to
-re-derive the inputs."
+re-derive the inputs.
+
+    (first (perf/verdict {}))   → :no-data"
   (let (n (or (get rs :samples) {})
         ;; `(or … {})` and `(or … 0)`: this is a public function documented as taking a `ratios`
         ;; map, and a caller who hands it something else should get a verdict rather than
@@ -142,7 +146,9 @@ get one) — the snapshots are still returned, but every counter reads zero and 
 verdict is `:no-data`, never a claim.
 
 `:debug-build?` true means the timings in `:gc` are from a debug binary and are not
-representative; the *counts* still are."
+representative; the *counts* still are.
+
+    (perf/report)   ;=> {:enabled? true :verdict :dispatch-bound :why \"…\" …}"
   (let (vm (dev/vm-stats)
         gc (dev/gc-stats)
         on? (= (get vm :enabled) true)
@@ -178,7 +184,9 @@ Two limits on `just that region`. The counters are still **process-global**, so 
 process's work lands in them too — measure one workload at a time, or accept that the numbers
 are the whole runtime's. And the **GC figures are not resettable**: there is no counterpart to
 `(vm-stats-reset)` for `(gc-stats)`, so `:gc-collections` stays cumulative from process start
-even inside a `measure`. Read it as a ceiling on the region, not a count of it."
+even inside a `measure`. Read it as a ceiling on the region, not a count of it.
+
+    (perf/measure (fn () (build-index docs)))   ;=> {:value <the index> :report {:verdict :balanced …}}"
   (dev/vm-stats-reset)
   (let (v (thunk))
     {:value v :report (report)}))
@@ -191,7 +199,9 @@ even inside a `measure`. Read it as a ceiling on the region, not a count of it."
 
 The shape a terminal reader wants: the verdict first, the numbers that produced it
 next, then the raw snapshots' headline counters. Returns the map so it is still usable
-from a script."
+from a script.
+
+    (perf/summary)   ;=> the `perf/report` map, after printing it"
   (let (r (report))
     (io/puts (string/interp "perf: {(get r :verdict)} — {(get r :why)}"))
     (when (get r :debug-build?)

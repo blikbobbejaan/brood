@@ -169,7 +169,9 @@ or a failure for a platform no release is built for.
   "Update the installed Brood to the latest release, or to `:version` (a tag like
 `\"v0.34.0\"`), into `:dir` (default: the directory of the running `nest`). With `:check`
 true, only says whether a newer release exists. Returns 0 when done or already current, and
-1 with a message on stderr on any failure. Backs `nest update-brood`."
+1 with a message on stderr on any failure. Backs `nest update-brood`.
+
+    (update-brood/update {:check true})   ;=> 0 — says whether a newer release exists, installs nothing"
   (let ({:keys [version dir check]} options
         current (system/brood-version)
         outcome (with (tag (if (string? version) version (latest-tag)) target (this-target))

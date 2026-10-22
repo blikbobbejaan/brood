@@ -523,7 +523,9 @@ travels as a handle; a view must be realised first).
       ([:pmap ^tag i r] (pmap-collect tag n (+ got 1) (assoc acc i r))))))
 
 (defn sample (seed:int coll:seqable -> (tuple any int))
-  "Returns `[item next-seed]`: one uniformly random element of non-empty `coll` (list, vector, or a map read as its `[k v]` entries)."
+  "Returns `[item next-seed]`: one uniformly random element of non-empty `coll` (list, vector, or a map read as its `[k v]` entries).
+
+    (first (seq/sample 42 [7]))   → 7"
   (let (items (into [] coll)
         n (count items))
     (if (= n 0)
@@ -557,7 +559,9 @@ travels as a handle; a view must be realised first).
   (if (< i 0) acc (shuffle-drain m (- i 1) (cons (get m i) acc))))
 
 (defn shuffle (seed:int coll:seqable -> (tuple any any))
-  "Returns `[shuffled next-seed]`: the items of `coll` as a list in uniformly random order (Fisher–Yates)."
+  "Returns `[shuffled next-seed]`: the items of `coll` as a list in uniformly random order (Fisher–Yates).
+
+    (sort (first (seq/shuffle 42 [3 1 2])))   → (1 2 3)"
   (let (v (into [] coll)
         n (count v)
         slots (fold (range n) {} (fn (m i) (assoc m i (nth v i))))
