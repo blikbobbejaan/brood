@@ -181,7 +181,6 @@ Core vocabulary — the language's own words: special-form companions, sequence 
 - `*e`
 - `->count`
 - `->float`
-- `->count`
 - `->seq`
 - `->string`
 - `and`
