@@ -364,16 +364,17 @@ every module was. Beside the image goes the record the next partial rebuild read
   (check-allow :discarded-catch
     (try
       (file/spit (modules-record-path root)
-        (pr-str {:fingerprint fp
-                 :global (image-global-key)
-                 :files (fold (sorted-source-files root)
-                          {}
-                          (fn (m f) (%map-assoc m f (stamp-of f))))
-                 :owners (project-module-owners reloaded previous)
-                 ;; the registries the root section carries — see `project-redeclare-registries!`
-                 :registries (seq/filter (%registry-names)
-                               (fn (n) (not (includes? *project-image-registry-exclusions* n))))
-                 :pinned (project-pinned-modules reloaded previous)}))
+        (pr-str
+          {:fingerprint fp
+           :global (image-global-key)
+           :files (fold (sorted-source-files root)
+                    {}
+                    (fn (m f) (%map-assoc m f (stamp-of f))))
+           :owners (project-module-owners reloaded previous)
+           ;; the registries the root section carries — see `project-redeclare-registries!`
+           :registries (seq/filter (%registry-names)
+                         (fn (n) (not (includes? *project-image-registry-exclusions* n))))
+           :pinned (project-pinned-modules reloaded previous)}))
       (catch _ nil))))
 
 (defn- read-modules-record (root)
