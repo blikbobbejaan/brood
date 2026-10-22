@@ -89,13 +89,17 @@ if its owner crashes and vice versa."
   "Call `(f state)` inside the agent and return the result. Blocks until the
 agent replies (up to 5 s; a dead agent raises rather than hanging). Use
 `identity` to return the state as-is. If `f` raises, the error is re-raised here and
-the agent keeps running."
+the agent keeps running.
+
+    (let (a (agent/start (fn () 10))) (let (v (agent/get a (fn (n) (* n 2)))) (do (agent/stop a) v)))   → 20"
   (agent-result (gen/call pid [:get f])))
 
 (defn update (pid f)
   "Replace the agent's state with `(f state)` and return `:ok`. Blocks until applied (up
 to 5 s; a dead agent raises rather than hanging). If `f` raises, the error is re-raised
-here and the agent keeps its previous state."
+here and the agent keeps its previous state.
+
+    (let (a (agent/start (fn () 0))) (do (agent/update a (fn (n) (+ n 5))) (let (v (agent/get a identity)) (do (agent/stop a) v))))   → 5"
   (agent-result (gen/call pid [:update f])))
 
 (defn get-and-update (pid f)
@@ -103,7 +107,9 @@ here and the agent keeps its previous state."
 Returns `result` and leaves the agent with `new-state`. Blocks until the agent
 replies (up to 5 s; a dead agent raises rather than hanging). If `f` raises (or returns
 anything but a 2-vector), the error is re-raised here and the agent keeps its previous
-state."
+state.
+
+    (let (a (agent/start (fn () 1))) (let (old (agent/get-and-update a (fn (n) [n (+ n 1)])) new (agent/get a identity)) (do (agent/stop a) [old new])))   → [1 2]"
   (agent-result (gen/call pid [:get-and-update f])))
 
 (defn cast (pid: (or map pid) f:any -> nil)
@@ -114,5 +120,7 @@ caller to report to, so an `f` that raises crashes the agent (let it crash) — 
 
 (defn stop (pid)
   "Ask the agent to exit its loop cleanly. Blocks until it acknowledges (up to
-5 s; a dead agent raises rather than hanging)."
+5 s; a dead agent raises rather than hanging).
+
+    (agent/stop (agent/start (fn () 1)))   → :ok"
   (gen/call pid :stop))

@@ -18,7 +18,10 @@
 
 (defn escape (raw)
   "HTML-escape `&`, `<`, `>` and `\"` in `raw` (coerced to a string), so the result is safe
-both as element text and inside a double-quoted attribute."
+both as element text and inside a double-quoted attribute.
+
+    (markdown/escape \"<a href=\\\"x\\\">&</a>\")   → \"&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;\"
+    (markdown/escape 42)                       → \"42\""
   (-> (str raw)
     (string/replace "&" "&amp;")
     (string/replace "<" "&lt;")

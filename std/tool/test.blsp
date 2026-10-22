@@ -500,11 +500,17 @@ the test rather than hanging the run."
 
 ;; --- small text/list helpers for the trace and slow-test output --------------
 (defn opt? (flag opts)
-  "True if the boolean flag `flag` is present anywhere in the `run-tests` option list `opts` (e.g. `:trace`)."
+  "True if the boolean flag `flag` is present anywhere in the `run-tests` option list `opts` (e.g. `:trace`).
+
+    (test/opt? :trace '(:slow :trace))   → true
+    (test/opt? :trace '(:timeout 5000))   → false"
   (includes? opts flag))
 
 (defn opt-val (key opts default)
-  "The value following `key` in the `run-tests` option list `opts` (e.g. `5000` for `:timeout 5000`), or `default` when `key` is absent."
+  "The value following `key` in the `run-tests` option list `opts` (e.g. `5000` for `:timeout 5000`), or `default` when `key` is absent.
+
+    (test/opt-val :timeout '(:trace :timeout 5000) 1000)   → 5000
+    (test/opt-val :timeout '(:trace) 1000)   → 1000"
   ; the value following `key` in the run-tests args (e.g. `:timeout 5000`), or default.
   (cond
     (empty? opts) default
@@ -537,28 +543,48 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; that test (empty = passed). A failure record is (loc detail-lines); `loc` is
 ;; (file line col) or nil, captured per-assertion (see `fail-loc`).
 (defn r-group (r)
-  "The group (describe) name of a result tuple `(group name fails ms …)`, or \"\" when ungrouped."
+  "The group (describe) name of a result tuple `(group name fails ms …)`, or \"\" when ungrouped.
+
+    (test/r-group '(\"math\" \"adds\" () 3))   → \"math\""
   (first r))
-(defn r-name (r) "The test name of a result tuple `(group name fails ms …)`." (second r))
+(defn r-name (r)
+  "The test name of a result tuple `(group name fails ms …)`.
+
+    (test/r-name '(\"math\" \"adds\" () 3))   → \"adds\""
+  (second r))
 (defn r-fails (r)
-  "The list of failure records for a result — empty means the test passed. Each record is `(loc detail-lines)`."
+  "The list of failure records for a result — empty means the test passed. Each record is `(loc detail-lines)`.
+
+    (test/r-fails '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   → ((nil (\"boom\")))"
   (third r))
 (defn- r-ms (r) (nth r 3))
 (defn r-failed? (r)
-  "True if the result has at least one failed assertion (a non-empty `r-fails`)."
+  "True if the result has at least one failed assertion (a non-empty `r-fails`).
+
+    (test/r-failed? '(\"math\" \"adds\" ((nil (\"boom\"))) 3))   → true
+    (test/r-failed? '(\"math\" \"adds\" () 3))   → false"
   (not (empty? (r-fails r))))
 ;; Read defensively: results synthesised elsewhere (a dead or timed-out worker) are
 ;; 4-element tuples, and those are never skips.
 (defn r-skipped? (r)
-  "True if the result is a skipped test — its 5th field is `true`. Read defensively: a 4-element result (a dead or timed-out worker) is never a skip."
+  "True if the result is a skipped test — its 5th field is `true`. Read defensively: a 4-element result (a dead or timed-out worker) is never a skip.
+
+    (test/r-skipped? '(\"math\" \"adds\" () 0 true))   → true
+    (test/r-skipped? '(\"math\" \"adds\" () 3))   → false"
   (and (> (count r) 4) (= (nth r 4) true)))
 ;; Where the test was declared, as `file:line`, or "" when the position wasn't
 ;; recorded (a body whose first form is a bare literal carries no position).
 (defn r-where (r)
-  "Where the test was declared, as `file:line` (the result's 6th field), or \"\" when no position was recorded."
+  "Where the test was declared, as `file:line` (the result's 6th field), or \"\" when no position was recorded.
+
+    (test/r-where '(\"math\" \"adds\" () 3 false \"tests/m_test.blsp:4\"))   → \"tests/m_test.blsp:4\"
+    (test/r-where '(\"math\" \"adds\" () 3))   → \"\""
   (if (> (count r) 5) (or (nth r 5) "") ""))
 (defn label (group name)
-  "Join a group and test name into one display label — `\"group › name\"`, or just `name` when `group` is \"\" (ungrouped)."
+  "Join a group and test name into one display label — `\"group › name\"`, or just `name` when `group` is \"\" (ungrouped).
+
+    (test/label \"math\" \"adds\")   → \"math › adds\"
+    (test/label \"\" \"adds\")   → \"adds\""
   ; "group › name", or just name if ungrouped
   (if (= group "") (str name) (str group " › " name)))
 (defn- full-name (r) (label (r-group r) (r-name r)))
@@ -1533,7 +1559,9 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
 ;; only `test failed: group › name` with nothing to jump to; it now falls back to the
 ;; test's own declaration site, which the result carries.
 (defn fail-where (r failure-record)
-  "Where a failure occurred, as `file:line:col` relative to the working directory. Uses the failure record `rec`'s own captured position when it has one; otherwise falls back to result `r`'s declaration site (`r-where`), and \"\" only when neither is known."
+  "Where a failure occurred, as `file:line:col` relative to the working directory. Uses the failure record `rec`'s own captured position when it has one; otherwise falls back to result `r`'s declaration site (`r-where`), and \"\" only when neither is known.
+
+    (test/fail-where '(\"g\" \"a\" () 1 false \"tests/m_test.blsp:4\") '(nil (\"x\")))   → \"tests/m_test.blsp:4\""
   (let (loc (fail-loc-of failure-record))
     (cond
       loc (str (test-relative-path (first loc)) ":" (second loc) ":" (third loc))
@@ -1603,11 +1631,15 @@ failures have been reported. `brood --test` prints `message` and exits non-zero.
           (io/puts (str "  " (string/pad-right (str (first p)) 40) " " (secs-str (second p)))))))))
 
 (defn count-failed (results:seqable -> int)
-  "Count the results in `results` that have at least one failed assertion (a failing test, not the total number of failed assertions)."
+  "Count the results in `results` that have at least one failed assertion (a failing test, not the total number of failed assertions).
+
+    (test/count-failed '((\"g\" \"a\" () 1) (\"g\" \"b\" ((nil (\"x\"))) 1)))   → 1"
   ; tests with at least one failed assertion
   (fold results 0 (fn (acc r) (if (r-failed? r) (+ acc 1) acc))))
 (defn count-skipped (results:seqable -> int)
-  "Count the results in `results` that were skipped — registered with `:skip` but never run."
+  "Count the results in `results` that were skipped — registered with `:skip` but never run.
+
+    (test/count-skipped '((\"g\" \"a\" () 0 true) (\"g\" \"b\" () 1)))   → 1"
   ; tests that registered but were never run (`:skip`)
   (fold results 0 (fn (acc r) (if (r-skipped? r) (+ acc 1) acc))))
 (defn- count-failures (results)

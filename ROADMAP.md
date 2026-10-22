@@ -530,7 +530,11 @@ family of per-type functions. ADR-250 through ADR-253 carry the decisions.
 > carried forward. Three of this list's claims had gone stale in the reader's favour — an
 > item recorded as open can be *fixed* and still read as work, which is its own cost.
 
-- [ ] **Examples.** `docstring, no example` is **1077**; `documented + example` is **447**;
+- [ ] **Examples.** 2026-10-22: 211 executed examples added across 38 std files (every pure,
+      deterministic function in the editor, data, process, tooling and runtime modules the
+      audit listed); `audit/exampleless` with every module loaded went **834 → 676**, and what
+      remains is overwhelmingly I/O, network, process, clock or live-image functions an
+      executed example cannot pin. Older figures follow. `docstring, no example` is **1077**; `documented + example` is **447**;
       258 more have no docstring slot at all (`def`/`defdyn`/ability ops), so coverage is
       **447/1524 = 29.3%** — not the 16% recorded here, which predates the doctest work and
       the 38 core examples. `tests/doc_examples_test.blsp` *executes* every one, so each

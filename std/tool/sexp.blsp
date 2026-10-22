@@ -84,7 +84,9 @@ as a unit — descending through them is a deferred refinement.
 ;; bare `get` on the parent cannot say.
 (check-allow :trusted
   (defn forms-of (anode)
-    "The form (non-whitespace, non-comment) children of `anode`."
+    "The form (non-whitespace, non-comment) children of `anode`.
+
+    (count (sexp/forms-of (sexp/tree \"(a) ; c\\n(b)\")))   → 2"
     (seq/filter (or (get anode :kids) (list)) form?)))
 (sig forms-of (map -> (list sexp-node)))
 

@@ -3257,3 +3257,11 @@ code point, splitting clusters. Boundary primitives for ropes (`GraphemeCursor` 
 chunks, ~0.3 µs a step at 389k chars, no cache) and strings; the buffer and line editor step by
 them (ADR-422). Found on the way: a module function named like a root macro (`spy`) is accepted
 but every bare call expands the macro — recorded as an open design question.
+
+2026-10-22 (night, examples): 211 executed docstring examples across 38 std files, written by five
+parallel agents over disjoint module groups, each verifying its own with `doctest/failures-under`
+and limited to deterministic, environment-free functions. Gated here: a whole-image
+`doctest/failures` is empty from the repo root and from `/tmp`, and every local gate is green.
+`audit/exampleless` (all modules loaded) 834 → 676. One docstring was wrong and is fixed:
+`explain/error` returns the code it looked up for an unknown code, `:unknown` only when none
+could be derived.

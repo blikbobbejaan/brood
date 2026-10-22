@@ -110,7 +110,10 @@ theme editor or the docs; resolve a single face with `face`."
 (defn face (name)
   "Resolve face `name` to the attribute map a render op wants (`{:fg :red …}`),
 following its `:inherit` chain. An unknown name resolves to `nil` — the default
-face — so `(text r c s (face :missing))` is just unstyled text. Pure."
+face — so `(text r c s (face :missing))` is just unstyled text. Pure.
+
+    (get (editor/face/face :ui/error) :fg)   → :red
+    (editor/face/face :no-such-face)         → nil"
   (face-resolve name 0))
 
 ;; ---- the core `:ui/*` faces -------------------------------------------------

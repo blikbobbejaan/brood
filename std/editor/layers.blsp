@@ -186,7 +186,9 @@ so redefining the layer hot-swaps it), like a keymap command."
 (defn layer-collect (ctx facet)
   "The `facet` value of every active layer that defines it, highest-precedence
 first (head of `:layers`); layers lacking the facet are dropped. The one generic
-resolver — keymaps and hooks are just facets over it."
+resolver — keymaps and hooks are just facets over it.
+
+    (editor/layers/layer-collect {:layers (list {:name :a :keymap {:x 'one}} {:name :b} {:name :c :keymap {:x 'two}})} :keymap)   → ({:x one} {:x two})"
   (seq/reject (map (layers-list ctx) (fn (l) (get (layers-resolve l) facet))) nil?))
 
 (defn- layer-facet-in (layers facet)
@@ -207,22 +209,31 @@ mode's services several times per pane per frame, where the difference is the fr
 (defn active-layers (ctx)
   "The active layers of `ctx` as **resolved maps**, highest-precedence first — for
 inspecting whole layers (e.g. to skip `:system` ones when naming the mode), where
-`layer-collect` (which projects a single facet) isn't enough."
+`layer-collect` (which projects a single facet) isn't enough.
+
+    (map (editor/layers/active-layers {:layers (list {:name :a} {:name :b})}) :name)   → (:a :b)"
   (map (layers-list ctx) layers-resolve))
 
 ;; ---- stack ops (pure; fire no hooks) ----------------------------------------
 
 (defn push-layer (ctx layer)
   "Add `layer` (a reference) at highest precedence (the head). The low-level
-primitive — `activate-layer` is the hook-firing version."
+primitive — `activate-layer` is the hook-firing version.
+
+    (map (get (editor/layers/push-layer {:layers (list {:name :base})} {:name :vi}) :layers) :name)   → (:vi :base)"
   (assoc ctx :layers (cons layer (layers-list ctx))))
 
 (defn remove-layer (ctx name)
-  "Remove every active layer whose `:name` is `name`."
+  "Remove every active layer whose `:name` is `name`.
+
+    (editor/layers/layer-active? (editor/layers/remove-layer (editor/layers/push-layer {} {:name :vi}) :vi) :vi)   → false"
   (assoc ctx :layers (seq/reject (layers-list ctx) (fn (l) (= name (layers-name-of l))))))
 
 (defn layer-active? (ctx name)
-  "True if an active layer is named `name`."
+  "True if an active layer is named `name`.
+
+    (editor/layers/layer-active? (editor/layers/push-layer {} {:name :vi}) :vi)   → true
+    (editor/layers/layer-active? {} :vi)   → false"
   (any? (layers-list ctx) (fn (l) (= name (layers-name-of l)))))
 
 (defn- layers-replace-base-list (lst layer)
@@ -259,12 +270,16 @@ app-defined ones — *not* the lifecycle `:activate`/`:deactivate`."
 
 (defn activate-layer (ctx layer)
   "Turn a layer on: push `layer` at highest precedence, then run *its* `:activate`
-hooks. (Raw `push-layer` fires no hooks.)"
+hooks. (Raw `push-layer` fires no hooks.)
+
+    (editor/layers/layer-active? (editor/layers/activate-layer {} {:name :vi}) :vi)   → true"
   (layers-run-one (push-layer ctx layer) layer :activate))
 
 (defn deactivate-layer (ctx name)
   "Turn off the layer named `name`: run its `:deactivate` hooks, then remove it. A
-no-op if no such layer is active."
+no-op if no such layer is active.
+
+    (editor/layers/layer-active? (editor/layers/deactivate-layer (editor/layers/activate-layer {} {:name :vi}) :vi) :vi)   → false"
   (let (layer (layers-find ctx name))
     (if (nil? layer)
       ctx
@@ -273,7 +288,9 @@ no-op if no such layer is active."
 (defn replace-base-layer (ctx layer)
   "Swap the base (lowest-precedence, the 'major') layer for `layer`: deactivate the
 old base, set the new base, activate it. Layers stacked above are untouched — like
-changing major mode while minor modes stay on."
+changing major mode while minor modes stay on.
+
+    (map (get (editor/layers/replace-base-layer {:layers (list {:name :minor} {:name :old})} {:name :new}) :layers) :name)   → (:minor :new)"
   (let (old (last (layers-list ctx))
         ctx1 (if (nil? old) ctx (layers-run-one ctx old :deactivate))
         ctx2 (assoc ctx1 :layers (layers-replace-base-list (layers-list ctx1) layer)))
@@ -284,12 +301,17 @@ changing major mode while minor modes stay on."
 (defn active-keymap (ctx)
   "Merge the keymaps of all active layers into one, head (highest precedence)
 winning. A prefix sub-map comes wholesale from its winning layer (no cross-layer
-prefix merge), so a layer owns its chord."
+prefix merge), so a layer owns its chord.
+
+    (get (editor/layers/active-keymap {:layers (list {:keymap {:x 'one}} {:keymap {:x 'two :y 'three}})}) :x)   → one
+    (get (editor/layers/active-keymap {:layers (list {:keymap {:x 'one}} {:keymap {:x 'two :y 'three}})}) :y)   → three"
   (apply merge (cons {} (reverse (layer-collect ctx :keymap)))))
 
 (defn layer-dispatch (ctx pending key fallback)
   "One keystroke through the context's composed active keymap, via `keymap-step`:
-returns `[ctx' pending']`. The bridge from layers to keymap — compose, then step."
+returns `[ctx' pending']`. The bridge from layers to keymap — compose, then step.
+
+    (get (first (editor/layers/layer-dispatch {} nil :z (fn (s k) (assoc s :key k)))) :key)   → :z"
   (keymap-step (active-keymap ctx) pending ctx key fallback))
 
 ;; ============================================================================
@@ -359,7 +381,11 @@ The Emacs `interpreter-mode-alist`: a script with no extension is typed by its s
 (defn shebang-interpreter (line:string -> (or nil string))
   "The interpreter a `#!` `line` names — `\"bash\"` for `#!/usr/bin/env bash` and for
 `#!/bin/bash -e`, `\"python3\"` for `#!/usr/bin/python3` — or nil for a line that is not a
-shebang. The version suffix is kept (`python3`), a trailing newline and arguments are not."
+shebang. The version suffix is kept (`python3`), a trailing newline and arguments are not.
+
+    (editor/layers/shebang-interpreter \"#!/usr/bin/env bash\")      → \"bash\"
+    (editor/layers/shebang-interpreter \"#!/usr/bin/python3 -u\\n\")   → \"python3\"
+    (editor/layers/shebang-interpreter \"echo hi\")                  → nil"
   (if (not (string/starts-with? line "#!"))
     nil
     (let (words (seq/reject (string/split (string/trim (string/substring line
@@ -404,7 +430,9 @@ shebang. The version suffix is kept (`python3`), a trailing newline and argument
 prior `init-buffer-layers` (the open-time auto-detection) or set by an explicit mode
 switch, and both should stick. When `:type` is nil (a freshly-created buffer), matches
 `:file` against `*auto-type-by-file*` (first match wins), then the first line's `#!`
-against `*auto-type-by-interpreter*`, then falls back to `:fundamental`."
+against `*auto-type-by-interpreter*`, then falls back to `:fundamental`.
+
+    (editor/layers/buffer-type-for {:type :lisp})   → :lisp"
   (let (explicit (get buf :type)
         file (get buf :file)
         matched (if (nil? file) nil (layers-match-file file *auto-type-by-file*)))
@@ -413,7 +441,9 @@ against `*auto-type-by-interpreter*`, then falls back to `:fundamental`."
 (defn set-buffer-type (buf type)
   "Set `buf`'s `:type` explicitly — the Brood-side override for fileless or special
 buffers (a `*magit-status*`, a scratch buffer). Does not (re)seed layers; pair with
-`init-buffer-layers`."
+`init-buffer-layers`.
+
+    (editor/layers/buffer-type-for (editor/layers/set-buffer-type {} :magit))   → :magit"
   (assoc buf :type type))
 
 (defn init-buffer-layers (buf)
@@ -442,12 +472,17 @@ highest precedence); system layers come last."
 
 (defn compose-layers (ctxs)
   "Concatenate the `:layers` of `ctxs` in precedence order (first scope = highest) —
-the composite layer list for multi-scope dispatch, e.g. (focused-buffer app-model)."
+the composite layer list for multi-scope dispatch, e.g. (focused-buffer app-model).
+
+    (map (editor/layers/compose-layers [{:layers (list {:name :buf})} {:layers (list {:name :app})}]) :name)   → (:buf :app)"
   (mapcat ctxs layers-list))
 
 (defn scope-keymap (ctxs)
   "The merged active keymap across several scopes `ctxs` (first = highest
-precedence; a layer still owns its chord)."
+precedence; a layer still owns its chord).
+
+    (get (editor/layers/scope-keymap [{:layers (list {:keymap {:x 'buf}})} {:layers (list {:keymap {:x 'app :y 'quit}})}]) :x)   → buf
+    (get (editor/layers/scope-keymap [{:layers (list {:keymap {:x 'buf}})} {:layers (list {:keymap {:x 'app :y 'quit}})}]) :y)   → quit"
   (active-keymap {:layers (compose-layers ctxs)}))
 
 (defn- scope-shadow-of (layers i k)
@@ -496,7 +531,9 @@ help is worse than none, because it is believed.
   "Dispatch `key` through the merged keymap of `ctxs` (precedence by order), running
 the resolved command on `state` — typically the app model, which may itself be one
 of `ctxs` so its window-level layers compose with the focused buffer's. Returns
-`[state' pending']`. The multi-scope counterpart to `layer-dispatch`."
+`[state' pending']`. The multi-scope counterpart to `layer-dispatch`.
+
+    (first (editor/layers/scope-dispatch [{} {}] 0 nil :z (fn (s k) (inc s))))   → 1"
   (keymap-step (scope-keymap ctxs) pending state key fallback))
 
 (defn switch-focus (from to)
@@ -507,7 +544,9 @@ not teardown; its layers simply stop being consulted."
   [(if (nil? from) from (run-event from :on-blur)) (if (nil? to) to (run-event to :on-focus))])
 
 (defn deactivate-all (ctx)
-  "Deactivate every active layer (head-first), firing each `:deactivate`."
+  "Deactivate every active layer (head-first), firing each `:deactivate`.
+
+    (editor/layers/layer-active? (editor/layers/deactivate-all {:layers (list {:name :a} {:name :b})}) :a)   → false"
   (fold (map (layers-list ctx) layers-name-of) ctx (fn (c nm) (deactivate-layer c nm))))
 
 (defn close-context (ctx)
@@ -516,7 +555,9 @@ hook, where a layer kills a worker it `spawn`ed — then `deactivate-all` (firin
 `:deactivate`). The full close path for a buffer or window going away.
 
 Read `close-requests` off the RESULT: a closing context may name companions that should
-go with it (see `request-close`)."
+go with it (see `request-close`).
+
+    (editor/layers/layer-active? (editor/layers/close-context {:layers (list {:name :a})}) :a)   → false"
   (deactivate-all (run-event ctx :on-close)))
 
 ;; ---- taking companions with you ---------------------------------------------
@@ -535,7 +576,9 @@ go with it (see `request-close`)."
 (defn request-close (ctx name)
   "From an `:on-close` hook: ask the app to close companion `name` as well. Names
 accumulate and de-duplicate, so two layers asking for the same companion is one request.
-Returns `ctx`, so a hook can thread it: `(fn (buf) (request-close buf \"*Workings*\"))`."
+Returns `ctx`, so a hook can thread it: `(fn (buf) (request-close buf \"*Workings*\"))`.
+
+    (editor/layers/close-requests (editor/layers/request-close (editor/layers/request-close {} \"*a*\") \"*a*\"))   → (\"*a*\")"
   (let (seen (close-requests ctx))
     (if (includes? seen name)
       ctx
@@ -544,5 +587,7 @@ Returns `ctx`, so a hook can thread it: `(fn (buf) (request-close buf \"*Working
 (defn close-requests (ctx)
   "The companions a closing context asked to take with it, in the order requested — `()`
 when none. The app reads this off `close-context`'s result; a name it does not recognise
-is simply ignored (a mode may have been unloaded, or its companion already closed)."
+is simply ignored (a mode may have been unloaded, or its companion already closed).
+
+    (editor/layers/close-requests (editor/layers/request-close (editor/layers/request-close {} \"*a*\") \"*b*\"))   → (\"*a*\" \"*b*\")"
   (or (get ctx :close-requests) (list)))

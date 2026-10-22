@@ -128,7 +128,10 @@ identity and may override those paths. The rest of the tool is its siblings:
 
 ;; (plist-get '(:a 1 :b 2) :b) => 2 — the value after key k in a flat kv list, or nil.
 (defn plist-get (kvs k)
-  "Read the value paired with key `k` from a flat property-list `kvs` (`k1 v1 k2 v2 …`); nil if `k` is absent."
+  "Read the value paired with key `k` from a flat property-list `kvs` (`k1 v1 k2 v2 …`); nil if `k` is absent.
+
+    (project/plist-get '(:a 1 :b 2) :b)  → 2
+    (project/plist-get '(:a 1) :z)       → nil"
   (cond (empty? kvs) nil (= (first kvs) k) (second kvs) else (plist-get (rest (rest kvs)) k)))
 
 ;; Normalise the manifest's `:main` value into a `(module fn)` pair of symbols.
@@ -219,12 +222,18 @@ identity and may override those paths. The rest of the tool is its siblings:
   (list :project/dep-path :project/dep-git :project/dep-tarball :project/dep-registry))
 
 (defn dep? (x)
-  "True if `x` is a dependency record (any of the four kinds)."
+  "True if `x` is a dependency record (any of the four kinds).
+
+    (project/dep? (project/parse-dep '[foo :path \"../foo\"]))  → true
+    (project/dep? {:name 'foo})                                 → false"
   (and (record? x) (includes? *project-dep-ids* (record-id x))))
 
 (defn dep-path? (x)
   "True if `x` is a `:path` dependency — the one kind that loads **in place** rather
-than being fetched into `_deps/<name>/`."
+than being fetched into `_deps/<name>/`.
+
+    (project/dep-path? (project/parse-dep '[foo :path \"../foo\"]))  → true
+    (project/dep-path? (project/parse-dep '[foo :version \"^1.0.0\"]))  → false"
   (and (record? x) (= (record-id x) :project/dep-path)))
 
 ;; The keys of a flat plist (every other element from the head).
@@ -320,7 +329,10 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
 
 ;; Normalise one `[name kind spec & opts]` entry into the dep record for its kind.
 (defn parse-dep (entry)
-  "Parse one `:dependencies` vector entry `[name kind & opts]` into a normalised dep record, dispatching on `kind` (`:git`/`:path`/`:tarball`/`:version`) and recording the `:optional` flag (ADR-172)."
+  "Parse one `:dependencies` vector entry `[name kind & opts]` into a normalised dep record, dispatching on `kind` (`:git`/`:path`/`:tarball`/`:version`) and recording the `:optional` flag (ADR-172).
+
+    (->string (project/parse-dep '[foo :path \"../foo\"]))  → \"foo  (path \\\"../foo\\\")\"
+    (->string (project/parse-dep '[foo :git \"https://example.com/foo.git\" :ref \"v1.0.0\"]))  → \"foo  (git https://example.com/foo.git @ v1.0.0)\""
   (when (not (vector? entry))
     (error "project: each :dependencies entry must be a vector, got " entry))
   (when (< (count entry) 3) (error "project: dependency entry is too short: " entry))
@@ -348,7 +360,10 @@ spells, and it is a single path component — no `/`, `\\` or NUL, and not start
 ;; Parse the manifest's :dependencies value into a list of dep records.
 ;; Omitted/nil => empty list.
 (defn parse-deps (deps)
-  "Parse the manifest's `:dependencies` vector into a list of dep records; an omitted/nil value yields the empty list."
+  "Parse the manifest's `:dependencies` vector into a list of dep records; an omitted/nil value yields the empty list.
+
+    (map (project/parse-deps '[[a :path \"../a\"] [b :version \"^1.0.0\"]]) ->string)  → (\"a  (path \\\"../a\\\")\" \"b  (registry v^1.0.0)\")
+    (project/parse-deps nil)  → nil"
   (cond
     (nil? deps) nil
     (vector? deps) (map deps parse-dep)
@@ -500,7 +515,9 @@ manifest is read, naming the key, not later inside whoever consumes the map."
     (or (find-root dir) (error who ": not in a Brood project (no project.blsp found from " dir ")"))))
 
 (defn abs-paths (root:string rels: (seqable string) -> (list string))
-  "Resolve each relative path in `rels` against `root`, returning the list of absolute paths."
+  "Resolve each relative path in `rels` against `root`, returning the list of absolute paths.
+
+    (project/abs-paths \"/app\" [\"src\" \"tests\"])  → (\"/app/src\" \"/app/tests\")"
   (map rels (fn (r) (path/join root r))))
 
 (defn- files-ending-in (dir suffix)

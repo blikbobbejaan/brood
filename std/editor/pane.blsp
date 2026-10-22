@@ -247,7 +247,9 @@ tree when the two paths are equal. Selection stays where it was.
   "Rotate every pane's payload `n` steps forward through traversal order (each pane takes
 the payload of the pane `n` before it; the first takes the last's) — a negative `n` turns
 the other way. Selection stays put, so the reader ends up looking at a different buffer
-in the same place (Emacs `rotate-frame`'s buffer half)."
+in the same place (Emacs `rotate-frame`'s buffer half).
+
+    (editor/pane/pane-payload-at (editor/pane/pane-rotate (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))   → :b"
   (let (paths (pane-leaf-paths tree)
         k (count paths)
         payloads (map paths (fn (p) (pane-payload-at tree p))))
@@ -263,7 +265,9 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
   (defn pane-transpose (tree)
     "Every split turned the other way — `:row` becomes `:col` and back — so a layout of
   stacked panes becomes side-by-side ones and vice versa, ratios and order kept
-  (`transpose-frame`)."
+  (`transpose-frame`).
+
+    (get (editor/pane/pane-transpose (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) :dir)   → :row"
     (if (pane-leaf? tree)
       tree
       (assoc tree
@@ -277,7 +281,10 @@ in the same place (Emacs `rotate-frame`'s buffer half)."
   (defn pane-flip (tree &optional (dir nil))
     "Every split's children exchanged — the layout mirrored — with `:ratio` inverted so
   each pane keeps its size. `dir` restricts it to splits of that direction: `:col` mirrors
-  left-right (`flop-frame`), `:row` top-bottom (`flip-frame`), nil both."
+  left-right (`flop-frame`), `:row` top-bottom (`flip-frame`), nil both.
+
+    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b)) '(:a))        → :b
+    (editor/pane/pane-payload-at (editor/pane/pane-flip (editor/pane/pane-split (editor/pane/pane-single :a) :col :b) :row) '(:a))   → :a"
     (if (pane-leaf? tree)
       tree
       (let (a (pane-flip (get tree :a) dir)

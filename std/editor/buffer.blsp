@@ -76,7 +76,9 @@ Where `end-of-line` lands and the rightmost column point can hold on that line."
 (defn make-buffer (text &optional (name "*scratch*") (file nil))
   "A fresh buffer holding `text`, with point at 0, no mark, and an empty undo history.
 `name` is a label (default `\"*scratch*\"`); `file` is the backing path or nil. It starts
-unmodified: `text` is its baseline (`buffer-modified?`)."
+unmodified: `text` is its baseline (`buffer-modified?`).
+
+    (editor/buffer/buffer-point (editor/buffer/make-buffer \"hi\"))   → 0"
   (mark-buffer-saved (buffer (text/from-string text) 0 nil name file () ())))
 
 (defn buffer? (x)
@@ -299,7 +301,10 @@ point never lands inside `e` + a combining accent or an emoji sequence (ADR-422)
 
 (defn forward-line (buf:buffer &optional (n:int 1) -> buffer)
   "Point moved `n` lines forward (negative = backward), keeping the column where
-the target line is long enough. Clamps to the buffer's line range."
+the target line is long enough. Clamps to the buffer's line range.
+
+    (editor/buffer/buffer-point (editor/buffer/forward-line (editor/buffer/goto-char (editor/buffer/make-buffer \"ab\\ncd\") 1)))   → 4
+    (editor/buffer/buffer-point (editor/buffer/forward-line (editor/buffer/make-buffer \"ab\\ncd\") 5))   → 3"
   (let (rope (get buf :rope)
         col (buffer-column buf)
         target (buffer-clamp 0
@@ -309,7 +314,9 @@ the target line is long enough. Clamps to the buffer's line range."
     (goto-char buf (+ line-start (math/min col (buffer-line-end-col buf target))))))
 
 (defn backward-line (buf:buffer &optional (n:int 1) -> buffer)
-  "Point moved `n` lines backward (see `forward-line`)."
+  "Point moved `n` lines backward (see `forward-line`).
+
+    (editor/buffer/buffer-point (editor/buffer/backward-line (editor/buffer/goto-char (editor/buffer/make-buffer \"ab\\ncd\") 4)))   → 1"
   (forward-line buf (- n)))
 
 (defn beginning-of-buffer (buf)
@@ -554,7 +561,10 @@ A no-op when the ring is empty.
   "The char index of the first occurrence of `needle` in `buf`'s text at or after
 `from`, or nil if there is none. With `fold?`, the comparison ignores case (simple case
 folding — `string/fold-case`). Pure — it does not move point; the caller composes
-`goto-char`/`set-mark`. The forward primitive incremental search rides on."
+`goto-char`/`set-mark`. The forward primitive incremental search rides on.
+
+    (editor/buffer/buffer-search-forward (editor/buffer/make-buffer \"abcabc\") \"bc\" 2)       → 4
+    (editor/buffer/buffer-search-forward (editor/buffer/make-buffer \"abc\") \"BC\" 0 true)   → 1"
   (let (i (%rope-find (buffer-rope buf) needle from fold?))
     (if (< i 0) nil i)))
 (sig buffer-search-forward (any string any -> (or int nil)))
@@ -562,7 +572,10 @@ folding — `string/fold-case`). Pure — it does not move point; the caller com
 (defn buffer-search-backward (buf needle before &optional (fold? false))
   "The char index of the last occurrence of `needle` in `buf`'s text whose start is
 strictly before `before`, or nil if there is none. With `fold?`, the comparison ignores
-case. The backward counterpart of `buffer-search-forward`."
+case. The backward counterpart of `buffer-search-forward`.
+
+    (editor/buffer/buffer-search-backward (editor/buffer/make-buffer \"abcabc\") \"bc\" 4)   → 1
+    (editor/buffer/buffer-search-backward (editor/buffer/make-buffer \"abc\") \"bc\" 1)      → nil"
   (let (i (%rope-rfind (buffer-rope buf) needle before fold?))
     (if (< i 0) nil i)))
 (sig buffer-search-backward (any string any -> (or int nil)))
@@ -1250,7 +1263,9 @@ insertion point shift with the text. Throws if `buf` is read-only.
 (defn delete-char (buf:buffer &optional (n:int 1) -> buffer)
   "Delete `n` user-perceived characters *after* point — whole grapheme clusters (ADR-422);
 point stays put. Recorded for undo (a no-op at end-of-buffer is not recorded). Throws if
-`buf` is read-only."
+`buf` is read-only.
+
+    (editor/buffer/buffer-text (editor/buffer/delete-char (editor/buffer/make-buffer \"abc\")))   → \"bc\""
   (buffer-barf-if-read-only buf)
   (let (p (get buf :point)
         end (text/forward-graphemes (get buf :rope) p (math/max n 0)))
@@ -1267,7 +1282,10 @@ point stays put. Recorded for undo (a no-op at end-of-buffer is not recorded). T
 (defn delete-backward-char (buf:buffer &optional (n:int 1) -> buffer)
   "Delete `n` user-perceived characters *before* point (backspace) — whole grapheme clusters
 (ADR-422); point moves back with it. Recorded for undo (a no-op at point 0 is not recorded).
-Throws if `buf` is read-only."
+Throws if `buf` is read-only.
+
+    (editor/buffer/buffer-text (editor/buffer/delete-backward-char (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"abc\"))))     → \"ab\"
+    (editor/buffer/buffer-text (editor/buffer/delete-backward-char (editor/buffer/end-of-buffer (editor/buffer/make-buffer \"abc\")) 2))   → \"a\""
   (buffer-barf-if-read-only buf)
   (let (p (get buf :point)
         start (text/backward-graphemes (get buf :rope) p (math/max n 0)))
@@ -1572,7 +1590,9 @@ remote participants' cursors on a shared buffer.
 count it describes. Read it back with `annotation`.
 
 `key` must not be one of the buffer's own fields — it names an annotation, and a field
-name would overwrite the buffer's own state."
+name would overwrite the buffer's own state.
+
+    (editor/buffer/annotation-value (editor/buffer/annotate (editor/buffer/make-buffer \"a\\nb\") :lint [1 2]) :lint)   → [1 2]"
     (assoc buf
       key
         {:value value
@@ -1583,7 +1603,10 @@ name would overwrite the buffer's own state."
   "The annotation stored under `key` as `{:value :current? :stale?}`, or nil when
 there is none. `:current?` — the line count still matches, so line-keyed data is
 positionally valid. `:stale?` — the text has changed since, so the value is older
-than what you see."
+than what you see.
+
+    (editor/buffer/annotation (editor/buffer/make-buffer \"a\") :lint)   → nil
+    (get (editor/buffer/annotation (editor/buffer/insert (editor/buffer/annotate (editor/buffer/make-buffer \"a\") :lint 7) \"z\") :lint) :stale?)   → true"
   (let (a (get buf key))
     (when (map? a)
       {:value (get a :value)
@@ -1592,7 +1615,10 @@ than what you see."
 
 (defn annotation-value (buf key)
   "The annotated value under `key` **only while it is positionally current**, else
-nil — the common case for line-keyed data a renderer would otherwise misplace."
+nil — the common case for line-keyed data a renderer would otherwise misplace.
+
+    (editor/buffer/annotation-value (editor/buffer/annotate (editor/buffer/make-buffer \"a\") :lint 7) :lint)   → 7
+    (editor/buffer/annotation-value (editor/buffer/insert (editor/buffer/annotate (editor/buffer/make-buffer \"a\") :lint 7) \"\\n\") :lint)   → nil"
   (let (a (annotation buf key))
     (when (and a (:current? a)) (:value a))))
 
@@ -1945,7 +1971,10 @@ proceed (an interactive command deciding on what it read)."
 
 (defn splice-disjoint? (a b)
   "Whether splices `a`/`b` (`[lo hi …]`) touch nothing in common — STRICTLY apart, so
-even boundary-touching (an insert exactly at the other's edge) counts as ambiguous."
+even boundary-touching (an insert exactly at the other's edge) counts as ambiguous.
+
+    (editor/buffer/splice-disjoint? [0 2 \"x\"] [5 6 \"\"])   → true
+    (editor/buffer/splice-disjoint? [0 2 \"x\"] [2 3 \"\"])   → false"
   (or (< (nth a 1) (nth b 0)) (> (nth a 0) (nth b 1))))
 
 (defn splice-transform (splice applied)
@@ -1954,7 +1983,10 @@ even boundary-touching (an insert exactly at the other's edge) counts as ambiguo
 correctly on the text that DOES. Disjoint-before shifts by `applied`'s length delta;
 disjoint-after is untouched; an overlap degrades to inserting `repl` just after
 `applied`'s replacement (the deterministic authoritative choice — the span it meant
-to delete no longer exists as written)."
+to delete no longer exists as written).
+
+    (editor/buffer/splice-transform [5 6 \"x\"] [0 2 4])   → [7 8 \"x\"]
+    (editor/buffer/splice-transform [0 1 \"x\"] [3 4 0])   → [0 1 \"x\"]"
   (let ([lo hi repl] splice
         [alo ahi alen] applied
         delta (- alen (- ahi alo)))
@@ -1964,7 +1996,9 @@ to delete no longer exists as written)."
       else (let (p (+ alo alen)) [p p repl]))))
 
 (defn splice-transform-all (splice:any applieds:seqable -> any)
-  "`splice` transformed over each of `applieds` in order (oldest first)."
+  "`splice` transformed over each of `applieds` in order (oldest first).
+
+    (editor/buffer/splice-transform-all [5 6 \"x\"] [[0 2 4] [0 0 1]])   → [8 9 \"x\"]"
   (fold applieds splice (fn (sp a) (splice-transform sp a))))
 
 (defn buffer-splice (bp lo hi repl &optional origin base)

@@ -125,7 +125,10 @@ result and the cited name stays escaped."
 
   `module-name` is what a bare `[[name]]` is resolved against; without it only the explicit
   `[[mod/name]]` form links (the bare one is left as written rather than pointed at an anchor
-  that would not exist)."
+  that would not exist).
+
+    (docsite/prose \"Hello **world**\")  → \"<p>Hello <strong>world</strong></p>\"
+    (docsite/prose nil)                → \"\""
   (if (or (nil? text) (= (string/trim (str text)) ""))
     ""
     (doclinks-outside-code (markdown/->html (str text) {:code-indent 1}) module-name)))
@@ -134,7 +137,9 @@ result and the cited name stays escaped."
 
 (defn- slug (raw) (string/replace (string/replace (str raw) "/" "-") " " "-"))
 (defn module-anchor (module-name)
-  "The HTML anchor id for `module-name`'s section (`m-<slug>`)."
+  "The HTML anchor id for `module-name`'s section (`m-<slug>`).
+
+    (docsite/module-anchor \"string\")  → \"m-string\""
   (str "m-" (slug module-name)))
 ;; An anchor is built from a definition NAME, and a name is whatever the source called it —
 ;; Brood symbols admit `&`, `<` and `>`, so an anchor can contain them. Every site that puts
@@ -143,7 +148,9 @@ result and the cited name stays escaped."
 ;; id. Escaping BOTH the id and the href keeps them equal — the browser decodes entities on
 ;; each side alike — so the link still lands.
 (defn def-anchor (module-name definition-name)
-  "The HTML anchor id for a definition within a module (`d-<module>-<name>`)."
+  "The HTML anchor id for a definition within a module (`d-<module>-<name>`).
+
+    (docsite/def-anchor \"string\" \"join\")  → \"d-string-join\""
   (str "d-" (slug module-name) "-" (slug definition-name)))
 
 ;; ---- one definition ---------------------------------------------------------

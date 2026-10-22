@@ -103,7 +103,10 @@ Takes EITHER a 0-arg thunk — run it in a child process and wait — or a handl
 Awaiting a handle only works from the process the task replies to (`:reply-to`,
 which defaults to whoever called `task`) — the reply is a message, and only its
 addressee can receive it. Use it in a script or test; use `task` plus a `receive`
-to keep an interactive loop live."
+to keep an interactive loop live.
+
+    (task/await (fn () (+ 1 2)) 5000)   → 3
+    (task/await (task/task (fn () (* 6 7))) 5000)   → 42"
   (if (pid? thunk-or-handle)
     (await-handle thunk-or-handle timeout-ms)
     (let (me (self)

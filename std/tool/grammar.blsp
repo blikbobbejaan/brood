@@ -28,19 +28,27 @@ over `(reflect/special-forms)` + `encode`."
 (defn doc-heads ()
   "The `def…` heads whose form carries a docstring — the keys of the kernel's canonical
 `(reflect/doc-forms)`, the same list the LSP's semantic tokens and `std/editor/highlight.blsp`
-read. The shared input to every grammar's docstring rule."
+read. The shared input to every grammar's docstring rule.
+
+    (includes? (grammar/doc-heads) \"defn\")  → true"
   (keys (reflect/doc-forms)))
 
 (defn fn-doc-heads ()
   "The subset of `doc-heads` that build a FUNCTION — where a lone trailing string is
-the return value rather than documentation."
+the return value rather than documentation.
+
+    (includes? (grammar/fn-doc-heads) \"defn\")  → true
+    (includes? (grammar/fn-doc-heads) \"def\")   → false"
   (seq/filter (doc-heads) (fn (h) (= :fn (get (reflect/doc-forms) h)))))
 
 (defn special-keywords ()
   "The special-form / core-macro names to highlight as control keywords:
 `(reflect/special-forms)` minus the `def…` heads (those get a distinct name-capturing rule,
 so they must not also land in the keyword alternation). The shared input to every
-grammar target."
+grammar target.
+
+    (includes? (grammar/special-keywords) \"if\")    → true
+    (includes? (grammar/special-keywords) \"defn\")  → false"
   (seq/filter (reflect/special-forms) (fn (k) (not (string/starts-with? k "def")))))
 
 ;; ---- regex helpers (TextMate uses the Oniguruma engine) ----------------------

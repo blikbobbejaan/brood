@@ -148,10 +148,27 @@ milliseconds.
 ;; not verified (strict): a record NAME is an open shape, so `:hour` on a `date` — a key it
 ;; does not declare — reads as unknown to the checker; the default is the whole answer.
 (check-allow :trusted
-  (defn hour (dt) "The :hour field (0–23)." (get dt :hour 0))
-  (defn minute (dt) "The :minute field (0–59)." (get dt :minute 0))
-  (defn second (dt) "The :second field (0–59)." (get dt :second 0))
-  (defn ms (dt) "The :ms field (0–999)." (get dt :ms 0)))
+  (defn hour (dt)
+    "The :hour field (0–23).
+
+    (datetime/hour (datetime/parse-iso8601 \"2026-08-27T13:45:07.250Z\"))   → 13
+    (datetime/hour (datetime/parse-date \"2026-08-27\"))                    → 0"
+    (get dt :hour 0))
+  (defn minute (dt)
+    "The :minute field (0–59).
+
+    (datetime/minute (datetime/parse-iso8601 \"2026-08-27T13:45:07.250Z\"))   → 45"
+    (get dt :minute 0))
+  (defn second (dt)
+    "The :second field (0–59).
+
+    (datetime/second (datetime/parse-iso8601 \"2026-08-27T13:45:07.250Z\"))   → 7"
+    (get dt :second 0))
+  (defn ms (dt)
+    "The :ms field (0–999).
+
+    (datetime/ms (datetime/parse-iso8601 \"2026-08-27T13:45:07.250Z\"))   → 250"
+    (get dt :ms 0)))
 (sig hour ((or datetime date time-of-day) -> int))
 (sig minute ((or datetime date time-of-day) -> int))
 (sig second ((or datetime date time-of-day) -> int))
@@ -193,7 +210,10 @@ milliseconds.
 ;; ability is `:sealed` so `nest check` flags a temporal type that forgets it.
 
 (defability Temporal
-  "A calendar value that renders as ISO 8601."
+  "A calendar value that renders as ISO 8601.
+
+    (datetime/->iso (datetime/parse-date \"2026-08-27\"))   → \"2026-08-27\"
+    (datetime/->iso (datetime/epoch-ms-> 0))               → \"1970-01-01T00:00:00.000Z\""
   :sealed [datetime date time-of-day]
   (->iso [self] :-> string))
 

@@ -195,7 +195,9 @@
       (fn (found pair) (if (header-key? header (first pair)) (second pair) found)))))
 
 (defn derived-category (name)
-  "The category `name`'s definition site gives it, ignoring `*exceptions*`, or nil."
+  "The category `name`'s definition site gives it, ignoring `*exceptions*`, or nil.
+
+    (doc-catalog/derived-category \"string/join\")  → :strings"
   (let (slash (string/last-index-of name "/"))
     (if (> slash 0)
       (get *module-categories* (string/substring name 0 slash))
@@ -203,5 +205,8 @@
 
 (defn category-of (name)
   "The category keyword for a function name (a string, bare or `mod/name`), or :other when
-  nothing places it."
+  nothing places it.
+
+    (doc-catalog/category-of \"string/join\")  → :strings
+    (doc-catalog/category-of \"zz-nope\")      → :other"
   (or (get *exceptions* name) (derived-category name) :other))

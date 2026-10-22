@@ -44,7 +44,9 @@ state)` — e.g. self-insert, or a no-op `(fn (s _) s)`). A command that throws 
 caught and leaves the state unchanged, so a bad binding can't crash the loop. The
 flat, single-key path: a binding to a nested keymap (a chord prefix) is ignored
 here — use `keymap-step` for chords. Pure apart from the symbol resolution;
-testable without a terminal."
+testable without a terminal.
+
+    (editor/keymap/keymap-dispatch {} 1 :z (fn (s k) (inc s)))   → 2"
   (let (sym (get keymap key))
     (if (or (nil? sym) (map? sym))
       (fallback state key)
@@ -119,7 +121,9 @@ Pure apart from the symbol resolution; testable without a terminal."
   \"press-whatever-you-actually-have-bound\" help text: a UI names the COMMAND and
   asks the live keymap what key runs it, so documentation follows a rebinding
   instead of going stale (Emacs `where-is-internal` / `substitute-command-keys`).
-  Pure over the keymap data — no dispatch, no eval."
+  Pure over the keymap data — no dispatch, no eval.
+
+    (editor/keymap/keymap-where-is {:a 'save :x {:q 'quit}} 'quit)   → ([:x :q])"
     ;; `map?` FIRST: a nested keymap is a prefix, never a command — so passing a
     ;; sub-keymap as `command` finds nothing rather than matching by structural `=`.
     (mapcat keymap
@@ -181,7 +185,9 @@ What it is FOR: a keymap binds commands by SYMBOL, late-bound, so it can name a 
 whose module has not been loaded yet. That makes the keymap the one place an application
 can discover a deferred feature's commands WITHOUT loading it — for a command palette, a
 help listing, or an `M-x`-style by-name runner that would otherwise offer only what
-happens to be in memory. Pure over the keymap data — no dispatch, no eval, no load."
+happens to be in memory. Pure over the keymap data — no dispatch, no eval, no load.
+
+    (sort (map (editor/keymap/keymap-commands {:a 'save :x {:q 'quit :s 'save}}) str))   → (\"quit\" \"save\")"
   (seq/distinct (map (keymap-bindings keymap) first)))
 
 ;; check-allow: deliberately non-tail — depth = the bound key-sequence length — a few keys.
@@ -195,7 +201,9 @@ happens to be in memory. Pure over the keymap data — no dispatch, no eval, no 
   is extended in place.
 
       (-> {} (keymap-bind [:ctrl-x :ctrl-e] 'eval-last-sexp)
-             (keymap-bind [:ctrl-x :ctrl-s] 'save-buffer))"
+             (keymap-bind [:ctrl-x :ctrl-s] 'save-buffer))
+
+    (editor/keymap/keymap-bind {} [:ctrl-x :ctrl-s] 'save-buffer)   → {:ctrl-x {:ctrl-s save-buffer}}"
     (if (= (count keys) 1)
       (assoc keymap (first keys) command)
       (let (k (first keys)

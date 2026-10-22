@@ -87,7 +87,9 @@ the sentence.
 description of how it failed — a wrong result, or a line that looks like an example and does
 not parse as one.
 
-`name-str` only labels the message — it is the name the example was found on."
+`name-str` only labels the message — it is the name the example was found on.
+
+    (doctest/check \"x\" \"plain prose\")  → nil"
   (when (example-line? line)
     (let (c (case-of line))
       (if (nil? c)

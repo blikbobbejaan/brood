@@ -203,7 +203,9 @@ introspection + runtime-validation registry `defevent` populates. Returns `event
   event)
 
 (defn event-schema (event)
-  "The declared schema for `event` (from `defevent`), or nil if undeclared."
+  "The declared schema for `event` (from `defevent`), or nil if undeclared.
+
+    (telemetry/event-schema :no-such-event)   → nil"
   (get *events* event))
 (defn events ()
   "The declared-event registry: `event → {:name :measurements :metadata :doc}`."

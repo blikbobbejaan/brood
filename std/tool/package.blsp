@@ -356,7 +356,9 @@ transitively-closed lock file and puts each dep's source on *load-path*."
 (defability Dependency
   "A project dependency: where its source comes from, and how it is resolved, locked,
   written back to the manifest, and reconciled with another request for the same name.
-  Sealed over the four manifest kinds."
+  Sealed over the four manifest kinds.
+
+    (package/dep-kind (project/parse-dep '[foo :path \"../foo\"]))  → :path"
   :sealed [project/dep-path project/dep-git project/dep-tarball project/dep-registry]
   (dep-kind [self] :-> keyword)
   (dep-resolve [self root locked])

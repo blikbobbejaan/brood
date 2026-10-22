@@ -20,5 +20,7 @@
   (%renames))
 
 (defn renamed-to (name: (or string symbol) -> (or map nil))
-  "The ledger entry `{:to new-name :adr adr}` for the old name `name` (a string or symbol), or nil when the name was never ledgered."
+  "The ledger entry `{:to new-name :adr adr}` for the old name `name` (a string or symbol), or nil when the name was never ledgered.
+
+    (renames/renamed-to \"no-such-name-ever\")  → nil"
   (get (%renames) (->string name)))

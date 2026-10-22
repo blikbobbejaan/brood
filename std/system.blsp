@@ -58,7 +58,9 @@ The environment/subprocess half moved to `os` on 2026-08-27: `system/env` was li
 Reach for this instead of `bound?` when a capability is optional: a builtin from
 an absent feature is still **bound** and still raises when called, so `(bound?
 'gui/open)` answers yes on a runtime that cannot open a window. An app that wants
-to degrade rather than fail asks the build."
+to degrade rather than fail asks the build.
+
+    (system/feature? :no-such-feature)   → false"
   (includes? (system/features) name))
 
 ;; ---- module system -----------------------------------------------------------
@@ -70,5 +72,7 @@ to degrade rather than fail asks the build."
 ;; path itself — so moving them here would mean loading `system` requires `system`.
 
 (defn module-doc (mod)
-  "The docstring declared by `(defmodule mod …)` (a symbol or string), or nil."
+  "The docstring declared by `(defmodule mod …)` (a symbol or string), or nil.
+
+    (system/module-doc 'no-such-module)   → nil"
   (get *module-docs* (->string mod)))

@@ -242,7 +242,10 @@ everything (the \"no release yet\" placeholder a registry starts from).
 (defn compile (constraint)
   "Compile a constraint STRING into a form `match?` checks quickly (see this
 module's overview). nil / \"\" compile to nil (no constraint). Raises on a malformed term,
-the same as `satisfies?` — compiling is where a bad constraint is caught."
+the same as `satisfies?` — compiling is where a bad constraint is caught.
+
+    (version/compile \"\")                                         → nil
+    (version/match? (version/compile \">=1.0, <2.0\") \"1.5.0\")   → true"
   (if (or (nil? constraint) (= (string/trim constraint) ""))
     nil
     (let (terms (map (seq/keep (string/split constraint ",")
@@ -379,7 +382,10 @@ The shape a plugin manifest's `:enhances` map is checked with:
 (defn unsatisfied (versions constraints)
   "The `constraints` entries `versions` does NOT satisfy, as a list of
 `[name constraint have]` (`have` is nil when absent) — what an application shows
-the user when it declines a plugin, instead of a bare false."
+the user when it declines a plugin, instead of a bare false.
+
+    (version/unsatisfied {:a \"1.2.0\" :b \"2.0.0\"} {:a \"^1.0\" :b \"^1.0\"})   → ([:b \"^1.0\" \"2.0.0\"])
+    (version/unsatisfied {} {:c \"^1.0\"})                                    → ([:c \"^1.0\" nil])"
   (seq/keep (%map-pairs constraints)
     (fn (kv)
       (let ([nm constraint] kv

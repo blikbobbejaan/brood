@@ -80,7 +80,9 @@ hit-tests it on pointer-move; the terminal ignores it (ADR-080).
 The cells are the ones the op is painted in: inside a `cell-region` they are that
 region's cells (a zone in a zoomed pane is sized and placed at the pane's px), and
 inside a `scroll-region` the zone slides with the ops around it. The frontend resolves
-each zone to pixels once per frame, so a zone means the same thing wherever it sits."
+each zone to pixels once per frame, so a zone means the same thing wherever it sits.
+
+    (editor/display/cursor-zone 0 0 1 10 :col-resize)   → [:cursor-zone 0 0 1 10 :col-resize]"
   [:cursor-zone x y w h shape])
 
 (defn rect (row col w h face &optional (radius 0.0))
@@ -98,7 +100,10 @@ ignores it and space-fills as always, which is the same frontend asymmetry
 pill address field, a button highlight — is one op that degrades on its own,
 rather than an `frect` for the window plus a `rect` inside it for the terminal.
 Use `(/ h 2)`-ish for a pill. A zero radius emits the 5-element op unchanged, so
-existing frames are byte-identical."
+existing frames are byte-identical.
+
+    (editor/display/rect 1 2 3 4 {:bg :blue})   → [:rect 1 2 3 4 {:bg :blue}]
+    (editor/display/rect 1 2 3 4 nil 0.5)       → [:rect 1 2 3 4 nil 0.5]"
   (if (= radius 0.0)
     [:rect row col w h face]
     [:rect row col w h face radius]))
@@ -108,7 +113,9 @@ existing frames are byte-identical."
 ops shifted upward by `dy-frac × cell-height` pixels. The offset is scoped: ops outside
 this region are not affected and no reset sentinel is needed. `ops` is a flat vector of
 render ops (built with `into []`). Regions may be nested (inner overrides outer). GUI-only —
-the terminal frontend flattens the inner ops and ignores the offset. ADR-114."
+the terminal frontend flattens the inner ops and ignores the offset. ADR-114.
+
+    (editor/display/scroll-region 0.5 [])   → [:scroll-region 0.5 []]"
   [:scroll-region dy-frac ops])
 
 (defn cell-region (x y w h px ops)
@@ -139,7 +146,9 @@ fills an anti-aliased, alpha-blended quad: `opacity` (0..1, default 1.0) fades i
 whatever's behind, and `radius` (cell units, default 0.0 — use `(/ w 2)` for a pill)
 rounds the corners. `face`'s `:bg` (or `:fg` under `:reverse`) is the fill colour.
 The primitive a smooth scrollbar thumb / slider / progress bar wants. GUI-only — the
-terminal frontend skips it (like `vspans`)."
+terminal frontend skips it (like `vspans`).
+
+    (editor/display/frect 0.5 1.0 2.0 1.0 nil)   → [:frect 0.5 1.0 2.0 1.0 nil 1.0 0.0]"
   [:frect x y w h face opacity radius])
 
 (defn bar (row width s &optional (opts {}))
@@ -157,7 +166,10 @@ shape `std/observer` draws by hand. Returns one `text` op.
              characters — with the terminal frontend rendering it 1x.
 
     (bar 0 cols \" file.blsp        UTF-8  L1\" {:face (face :ui/header)})
-    (bar (dec rows) cols msg {:face {:bg :blue :fg :white} :align :center})"
+    (bar (dec rows) cols msg {:face {:bg :blue :fg :white} :align :center})
+
+    (editor/display/bar 0 6 \"ab\")                   → [:text 0 0 \"ab    \"]
+    (editor/display/bar 0 6 \"ab\" {:align :right})   → [:text 0 0 \"    ab\"]"
   (let (scale (math/max 1 (get opts :scale 1))
         cells (math/max 1 (math/quot width scale)))
     (text row
@@ -199,14 +211,20 @@ can splice in conditional ops inline. Pass the result to a frontend (`term/draw`
   "An interaction zone: the screen-cell rectangle `rect` (`[x y w h]`, 0-based cells)
 tagged with `id` — any value the caller keys off when the pointer hits it (a segment id, a
 command symbol, a payload map). `cursor`, when given, is the pointer shape to request while
-hovered (rendered via `zone-cursor-ops`, as a `cursor-zone`). Pure data."
+hovered (rendered via `zone-cursor-ops`, as a `cursor-zone`). Pure data.
+
+    (:rect (editor/display/zone [0 0 4 1] :save))              → [0 0 4 1]
+    (:cursor (editor/display/zone [0 0 4 1] :save :pointer))   → :pointer"
   {:rect rect :id id :cursor cursor})
 
 (defn zone-at (zones col row)
   "The hit `zone` in `zones` containing cell `(col, row)`, or nil. Scans in order and keeps
 the **last** match, so a zone painted later (visually on top) shadows an earlier one it
 overlaps — matching paint order. The model calls this on pointer-move (to find the hovered
-zone) and on click (to find the target)."
+zone) and on click (to find the target).
+
+    (get (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar) (editor/display/zone [2 0 3 1] :btn)] 3 0) :id)   → :btn
+    (editor/display/zone-at [(editor/display/zone [0 0 10 1] :bar)] 3 5)   → nil"
   (fold zones
     nil
     (fn (hit z)
@@ -218,7 +236,9 @@ zone) and on click (to find the target)."
 (defn zone-cursor-ops (zones)
   "`cursor-zone` render ops for every zone in `zones` that requests a `:cursor` shape — so
 the one zone list the model hit-tests also drives the frontend's pointer shape. Zones with
-no `:cursor` contribute nothing."
+no `:cursor` contribute nothing.
+
+    (editor/display/zone-cursor-ops [(editor/display/zone [0 0 4 1] :link :pointer) (editor/display/zone [5 0 2 1] :plain)])   → ([:cursor-zone 0 0 4 1 :pointer])"
   (map (seq/filter zones :cursor)
     (fn (z) (let ([x y w h] (get z :rect)) (cursor-zone x y w h (get z :cursor))))))
 
@@ -245,7 +265,9 @@ non-number where a number belongs. Written as comparisons the type follows the v
 (defn card-rect (row col w h cols rows)
   "The clamped top-left `[mr mc]` of a `w`×`h`-cell card anchored at `(row, col)`: shifted
 so the whole card stays on the `cols`×`rows` screen. Shared by a card's renderer and any
-click/hover hit-test, so a card near a screen edge stays interactive exactly where drawn."
+click/hover hit-test, so a card near a screen edge stays interactive exactly where drawn.
+
+    (editor/display/card-rect 20 75 10 4 80 24)   → [20 70]"
   [(clamp-cell row (- rows h)) (clamp-cell col (- cols w))])
 
 (defn card-surface (row col w h face &optional (gui? false) (opts {}))
@@ -254,7 +276,9 @@ click/hover hit-test, so a card near a screen edge stays interactive exactly whe
 `frect` (radius `opts :radius`, default 0.5 cell); a `opts :border` face adds a crisp rounded
 hairline as a slightly larger border-coloured `frect` drawn behind the surface (a rounded
 edge, not a shadow). The terminal falls back to a flat `rect` (no radius, no border). Content
-is drawn by the caller on top."
+is drawn by the caller on top.
+
+    (editor/display/card-surface 1 2 10 3 nil)   → ([:rect 1 2 10 3 nil])"
   (let (radius (get opts :radius 0.5)
         border (get opts :border))
     (if gui?
@@ -267,7 +291,9 @@ is drawn by the caller on top."
 (defn card-pill (row col w face &optional (opts {}))
   "A rounded selection **pill** inside a card: a one-row-tall `frect` highlight at
 `(row, col)` spanning `w` cells, inset slightly so it floats within the card's padding.
-GUI-only (the flat/terminal card highlights the selected row with a solid face instead)."
+GUI-only (the flat/terminal card highlights the selected row with a solid face instead).
+
+    (editor/display/card-pill 2 3 10 nil)   → [:frect 3.2 2.08 9.6 0.84 nil 1.0 0.35]"
   (frect (+ 0.2 col) (+ 0.08 row) (- w 0.4) 0.84 face 1.0 (get opts :radius 0.35)))
 
 (defn tooltip (anchor-row anchor-col lines face fg cols rows &optional (gui? false) (opts {}))

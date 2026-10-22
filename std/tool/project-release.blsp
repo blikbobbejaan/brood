@@ -636,7 +636,11 @@ screen never drift apart on what \"built\" means. Both carry a TIME, not just a 
 builds of one afternoon are the pair anyone comparing versions actually has, and a date alone
 cannot tell them apart. What distinguishes the cases is the parenthetical: a bundle's stamp is
 when `nest release` ran, a source run's is when HEAD was committed, and the second says so
-rather than passing itself off as a build."
+rather than passing itself off as a build.
+
+    (project-release/build-stamp-text {:built-at 0 :bundled? true})  → \"1970-01-01 00:00 UTC\"
+    (project-release/build-stamp-text {:commit \"a5e2405\"})          → \"from source (a5e2405)\"
+    (project-release/build-stamp-text {})                            → \"unknown\""
   (let (ms (get info :built-at)
         commit (get info :commit)
         at (when ms (str (datetime/format (datetime/epoch-ms-> ms) "%Y-%m-%d %H:%M") " UTC")))

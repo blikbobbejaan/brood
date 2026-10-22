@@ -41,23 +41,32 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 ;; intent is recoverable). See the `parse-source` doc in builtins.rs.
 
 (defn node-kind (n)
-  "The kind keyword of CST node `n` (`:list`, `:symbol`, `:whitespace`, …)."
+  "The kind keyword of CST node `n` (`:list`, `:symbol`, `:whitespace`, …).
+
+    (format/node-kind [:symbol \"foo\"])   → :symbol"
   (nth n 0))
 (defn node-text (n)
-  "The raw source text of leaf node `n` (so it re-emits byte-for-byte)."
+  "The raw source text of leaf node `n` (so it re-emits byte-for-byte).
+
+    (format/node-text [:symbol \"foo\"])   → \"foo\""
   (nth n 1))
 ; leaf
 (defn- node-form (n) (nth n 1))
 ; wrapper (quote/quasi/unquote/splice)
 (defn node-children (n)
-  "The child-node vector of container node `n` (includes trivia)."
+  "The child-node vector of container node `n` (includes trivia).
+
+    (count (format/node-children (reflect/parse-source \"(a) (b)\")))   → 3"
   (nth n 1))
 ; container (a vector)
 
 (defn- whitespace? (n) (= (node-kind n) :whitespace))
 (defn- comment? (n) (= (node-kind n) :comment))
 (defn trivia? (n)
-  "True if node `n` is trivia — whitespace or a comment."
+  "True if node `n` is trivia — whitespace or a comment.
+
+    (format/trivia? [:whitespace \" \"])   → true
+    (format/trivia? [:symbol \"a\"])       → false"
   (or (whitespace? n) (comment? n)))
 
 (defn- container? (n)
@@ -69,7 +78,9 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 
 ;; ---- small utilities --------------------------------------------------------
 (defn vec->list (v:vector -> any)
-  "The vector `v` as a list, preserving order."
+  "The vector `v` as a list, preserving order.
+
+    (format/vec->list [1 2 3])   → (1 2 3)"
   (vec->list-acc v (dec (count v)) nil))
 (defn- vec->list-acc (v i acc)
   (if (< i 0) acc (vec->list-acc v (dec i) (cons (nth v i) acc))))
@@ -177,7 +188,10 @@ for every well-formed input. Hand-checked across the brood repo's std/ and tests
 (defn head-header-count (head-node)
   "How many args after this head stay on the first line of a broken list. -1 means
 not a known body form (defaults to call-style — every arg breaks). Consults the
-project/plugin table (`*format-headers-extra*`) first, then the built-ins."
+project/plugin table (`*format-headers-extra*`) first, then the built-ins.
+
+    (format/head-header-count [:symbol \"defn\"])   → 2
+    (format/head-header-count [:int \"1\"])         → -1"
   (if (= (node-kind head-node) :symbol)
     (let (sym (symbol (node-text head-node)))
       (get *format-headers-extra* sym (get *format-headers* sym -1)))
@@ -198,12 +212,17 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins."
 (sig *format-pair-body* (map symbol bool))
 
 (defn pair-bindings? (head-node)
-  "True if `head-node` names a form whose first header arg is a pair-list."
+  "True if `head-node` names a form whose first header arg is a pair-list.
+
+    (format/pair-bindings? [:symbol \"let\"])   → true
+    (format/pair-bindings? [:symbol \"do\"])    → false"
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-bindings* (symbol (node-text head-node)) false)))
 
 (defn pair-body? (head-node:vector -> bool)
-  "True if `head-node` names a form whose body emits in pairs."
+  "True if `head-node` names a form whose body emits in pairs.
+
+    (format/pair-body? [:symbol \"cond\"])   → true"
   (and (= (node-kind head-node) :symbol)
     (get *format-pair-body* (symbol (node-text head-node)) false)))
 
@@ -223,7 +242,10 @@ project/plugin table (`*format-headers-extra*`) first, then the built-ins."
   "True if `head-node` is a `defn`-family head and `args` (the head's structural args)
 show a multi-arity/multi-pattern body: the slot after the name holds an ARM — a list
 whose first element is a list or vector — not a params list. Such a form keeps only
-the name on the head line so every arm lands on its own line."
+the name on the head line so every arm lands on its own line.
+
+    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:list []]]]])     → true
+    (format/multi-arity-defn? [:symbol \"defn\"] [[:symbol \"f\"] [:list [[:symbol \"x\"]]]])   → false"
   (and (defn-family? head-node)
     (>= (count args) 2)
     (let (slot (second args))
@@ -244,7 +266,10 @@ the name on the head line so every arm lands on its own line."
 (def *verbatim-kinds*
   #{:symbol :keyword :int :float :ratio :decimal :bool :nil :error})
 (defn verbatim-kind? (k)
-  "True if node kind `k` re-emits as exactly its own source text (a leaf literal)."
+  "True if node kind `k` re-emits as exactly its own source text (a leaf literal).
+
+    (format/verbatim-kind? :int)    → true
+    (format/verbatim-kind? :list)   → false"
   (contains? *verbatim-kinds* k))
 
 ;; ---- labelled bodies --------------------------------------------------------
@@ -266,19 +291,27 @@ the name on the head line so every arm lands on its own line."
 ;; shows the shape as `nest format` emits it). `brood-indent` in bedit mirrors this.
 (defn label-node? (c)
   "True for a bare symbol ending in `:` — a label in a labelled body (`next:`). A
-keyword (`:next`) is not one."
+keyword (`:next`) is not one.
+
+    (format/label-node? [:symbol \"next:\"])    → true
+    (format/label-node? [:keyword \":next\"])   → false"
   (and (= (node-kind c) :symbol)
     (let (t (node-text c)) (and (> (string/length t) 1) (string/ends-with? t ":")))))
 
 (defn labelled-body? (forms)
-  "True when any of the body `forms` (the args after a head) is a label."
+  "True when any of the body `forms` (the args after a head) is a label.
+
+    (format/labelled-body? [[:symbol \"a\"] [:symbol \"next:\"]])   → true"
   (any? forms label-node?))
 
 ;; Single-line emit: returns the string, or nil if the node cannot legally
 ;; appear on one line (it contains a comment, or a string with a literal
 ;; newline). Recursive — a list inlines only if every child does.
 (defn single-line (n)
-  "Render node `n` on one line, or nil if it can't legally be single-line (it contains a comment, or a string with a literal newline). Recursive — a list inlines only if every child does."
+  "Render node `n` on one line, or nil if it can't legally be single-line (it contains a comment, or a string with a literal newline). Recursive — a list inlines only if every child does.
+
+    (format/single-line (first (format/node-children (reflect/parse-source \"(a\\n  b)\"))))     → \"(a b)\"
+    (format/single-line (first (format/node-children (reflect/parse-source \"(a ; c\\n  b)\"))))   → nil"
   (let (k (node-kind n))
     (cond
       (= k :whitespace) " "
@@ -332,7 +365,9 @@ keyword (`:next`) is not one."
 ;; `render n indent` produces the canonical text for node n, possibly multi-line.
 ;; The result never ends with a newline (callers own the gluing).
 (defn render (n indent)
-  "Render node `n` at column `indent` as canonical text, breaking across lines when it exceeds the width budget. The result never ends with a newline (callers own the gluing)."
+  "Render node `n` at column `indent` as canonical text, breaking across lines when it exceeds the width budget. The result never ends with a newline (callers own the gluing).
+
+    (format/render (first (format/node-children (reflect/parse-source \"(a   b)\"))) 0)   → \"(a b)\""
   (let (k (node-kind n))
     (cond
       (or (verbatim-kind? k) (= k :str)) (node-text n)
@@ -525,7 +560,10 @@ The last non-ws child being a comment is now both necessary AND sufficient: sinc
 same-line trailing comment is left in place rather than hoisted above its form
 (`f0082dc7`), a comment that is last in the source is last in the output either way.
 That retired the `comment-on-own-line?` pair this used to need, and they are gone —
-if you are reintroducing hoisting, they are what you have to write back."
+if you are reintroducing hoisting, they are what you have to write back.
+
+    (format/last-nonws-comment? [[:symbol \"a\"] [:comment \";; x\"] [:whitespace \" \"]])   → true
+    (format/last-nonws-comment? [[:comment \";; x\"] [:symbol \"a\"]])                      → false"
   (last-nonws-comment?-at kids (dec (count kids))))
 (defn- last-nonws-comment?-at (kids i)
   (cond
@@ -988,7 +1026,9 @@ if you are reintroducing hoisting, they are what you have to write back."
   (let (root (reflect/parse-source src)) (cst-root (node-children root))))
 
 (defn cst-root (kids)
-  "Render the root's child nodes `kids` — the top-level forms — into the formatted source string, with exactly one trailing newline."
+  "Render the root's child nodes `kids` — the top-level forms — into the formatted source string, with exactly one trailing newline.
+
+    (format/cst-root (format/node-children (reflect/parse-source \"(a  b)\")))   → \"(a b)\\n\""
   ;; The walk accumulates the top-level blocks as a REVERSED chunk list, joined once here.
   ;; Accumulating the output string itself — `(str acc "\n" block)` per form — would recopy
   ;; everything emitted so far, O(forms × file); it reads as linear at small sizes and only

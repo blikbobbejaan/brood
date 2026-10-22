@@ -124,7 +124,9 @@ order); the output is built from `:keep` and `:insert` ops.
 (defn unified (ops context-lines)
   "Format `ops` as a unified-diff-like list of strings, showing `context-lines`
 of context around each change. Returns a list of strings (one per line of output),
-each prefixed with ` ` (keep), `-` (delete), or `+` (insert)."
+each prefixed with ` ` (keep), `-` (delete), or `+` (insert).
+
+    (diff/unified (diff/seq [\"a\" \"b\"] [\"a\" \"c\"]) 3)   → (\" a\" \"+c\" \"-b\")"
   (map ops
     (fn (op)
       (let (tag (first op)

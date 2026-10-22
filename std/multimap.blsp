@@ -34,7 +34,9 @@ look-alike map, and it prints as `#<multimap …>` (`->map` is the plain-map vie
 ;; The bare `multimap?` type predicate lives in the prelude alongside `set?`/`map?` (ADR-236).
 
 (defn empty ()
-  "An empty multimap."
+  "An empty multimap.
+
+    (multimap/->map (multimap/empty))   → {}"
   (multimap {}))
 
 (defn empty? (mm:multimap -> bool)

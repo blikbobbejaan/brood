@@ -290,7 +290,10 @@ stream (O(tokens)), so it stays fast enough for per-frame fontification.
 `{\"defun\" true …}` — and defaults to Brood's. Everything else this does is true of any
 s-expression language: parens, `;` comments, `\"` strings, numbers. Passing another
 dialect's set is therefore the whole of teaching it to colour, which is what an elisp or
-Scheme mode needs and all it needs."
+Scheme mode needs and all it needs.
+
+    (editor/highlight/highlight-spans \"x ; hi\")    → ([2 6 {:fg :dark-grey}])
+    (editor/highlight/highlight-spans \"(let x)\")   → ([1 4 {:fg :blue, :bold true}])"
   (hl-spans (reflect/scan-tokens src) '() '() specials (hl-faces)))
 (sig highlight-spans (string -> any))
 

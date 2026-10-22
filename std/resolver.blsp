@@ -45,11 +45,15 @@ version strings that exist for it; `deps-fn` maps a name + a version to that rel
   {:versions versions-fn :deps deps-fn})
 
 (defn provider-versions (provider name)
-  "The version strings `provider` knows for `name` (possibly empty/nil)."
+  "The version strings `provider` knows for `name` (possibly empty/nil).
+
+    (resolver/provider-versions (resolver/make-provider (fn (n) [\"1.0.0\"]) (fn (n v) [])) 'a)  → [\"1.0.0\"]"
   ((get provider :versions) name))
 
 (defn provider-deps (provider name version)
-  "The `[dep-name constraint]` requirements of `name` at `version`, per `provider`."
+  "The `[dep-name constraint]` requirements of `name` at `version`, per `provider`.
+
+    (resolver/provider-deps (resolver/make-provider (fn (n) []) (fn (n v) [['b \"^1.0\"]])) 'a \"1.0.0\")  → [[b \"^1.0\"]]"
   ((get provider :deps) name version))
 
 ;; --- budget: a safety net, not the search's crutch -------------------------------
