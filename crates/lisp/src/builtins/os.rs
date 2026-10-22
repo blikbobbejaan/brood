@@ -19,6 +19,14 @@ pub(super) fn register(primitives: &mut super::Primitives) {
         getenv,
     );
     primitives.def(
+        "%user-home",
+        Arity::exact(1),
+        Sig::new(vec![string], string.union(nil_ty)),
+        &["name"],
+        "The home directory of the user called name (the password database, so NSS users too), or nil when there is no such user. What a `~name/` path names.",
+        user_home,
+    );
+    primitives.def(
         "%hostname",
         Arity::exact(0),
         Sig::nullary(string),
@@ -131,6 +139,60 @@ pub(super) fn getenv(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
         Ok(val) => Ok(heap.alloc_string(&val)),
         Err(_) => Ok(Value::nil()),
     }
+}
+
+/// `(%user-home name)` — the home directory of the user called `name`, from the password
+/// database (`getpwnam`, so an NSS/LDAP user resolves too), or nil when there is no such
+/// user. The other half of `~`: `~/` is `$HOME`, `~name/` is this. The reentrant
+/// `getpwnam_r` writes into a buffer of ours, so no lock is shared with `file/stat`'s
+/// `getpwuid` (green processes run on several OS threads). Nil off unix.
+pub(super) fn user_home(args: &[Value], _: EnvId, heap: &mut Heap) -> LispResult {
+    let name = expect_string(heap, "%user-home", arg(args, 0))?;
+    match lookup_user_home(&name) {
+        Some(dir) => Ok(heap.alloc_string(&dir)),
+        None => Ok(Value::nil()),
+    }
+}
+
+#[cfg(unix)]
+fn lookup_user_home(name: &str) -> Option<String> {
+    let c_name = std::ffi::CString::new(name).ok()?;
+    let mut buffer: Vec<libc::c_char> = vec![0; 1024];
+    loop {
+        // SAFETY: `getpwnam_r` fills `entry` with pointers into `buffer`, which outlives
+        // every read of them below; `found` is null or `&mut entry`.
+        let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut found: *mut libc::passwd = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwnam_r(
+                c_name.as_ptr(),
+                &mut entry,
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut found,
+            )
+        };
+        // the entry did not fit: try a bigger buffer, up to a bound no real entry reaches
+        if status == libc::ERANGE && buffer.len() < (1 << 20) {
+            buffer.resize(buffer.len() * 4, 0);
+            continue;
+        }
+        if status != 0 || found.is_null() || entry.pw_dir.is_null() {
+            return None;
+        }
+        // SAFETY: `pw_dir` is a NUL-terminated string inside `buffer`, still alive here.
+        let dir = unsafe { std::ffi::CStr::from_ptr(entry.pw_dir) };
+        return dir
+            .to_str()
+            .ok()
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| dir.to_string());
+    }
+}
+
+#[cfg(not(unix))]
+fn lookup_user_home(_name: &str) -> Option<String> {
+    None
 }
 
 /// `(hostname)` — this machine's short hostname (no domain), used to qualify a

@@ -205,18 +205,30 @@ divergent pair still yields a valid relative path (`/x/y` from `/a/b` → `../..
 ;; (`file/exists?`, `file/regular?`, `file/dir?`). `path` stays pure — it only
 ;; manipulates path strings and never touches the filesystem (ADR-234).
 
+(defn- expand-user (path)
+  "`path`, which starts `~name`, with that prefix replaced by the home of the user `name`
+(`%user-home`) — or nil when `name` is no user."
+  (let (slash (index-of path "/")
+        end (if (< slash 0) (string/length path) slash)
+        home (%user-home (string/substring path 1 end)))
+    (when home (str home (string/substring path end (string/length path))))))
+
 (defn absolute (path &optional base)
   "Resolve `path` to an absolute path: a `/`-rooted path is returned unchanged, a
-`~`/`~/…` path is expanded against `$HOME`, and any other (relative) path is joined
-onto `base` (default the current directory, `(file/cwd)`). The empty string is returned as
-is. Makes a path absolute, not canonical — it does not collapse `.`/`..` segments.
+`~`/`~/…` path is expanded against `$HOME` and a `~name`/`~name/…` path against that
+user's home (as a shell does), and any other (relative) path — a `~name` that is no user
+among them — is joined onto `base` (default the current directory, `(file/cwd)`). The empty
+string is returned as is. Makes a path absolute, not canonical — it does not collapse
+`.`/`..` segments.
 
-    (path/absolute? (path/absolute \"a\"))   → true"
+    (path/absolute? (path/absolute \"a\"))                     → true
+    (= (path/absolute \"~root/x\") (str (%user-home \"root\") \"/x\"))   → true"
   (cond
     (or (= path "") (string/starts-with? path "/")) path
     (= path "~") (or (%getenv "HOME") path)
     (string/starts-with? path "~/")
       (str (or (%getenv "HOME") "~") (string/substring path 1 (string/length path)))
+    (string/starts-with? path "~") (or (expand-user path) (path/join (or base (file/cwd)) path))
     else (path/join (or base (file/cwd)) path)))
 (sig absolute (string &optional string -> string))
 
