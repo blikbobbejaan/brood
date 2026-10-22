@@ -970,6 +970,23 @@ fn check_sig_declarations(
     out: &mut Vec<(Option<Pos>, String)>,
 ) {
     for &form in forms {
+        // Typed parameters (ADR-420) are a declaration too: each type they write must read,
+        // or the position silently widens to `any`.
+        if let Some((name, types)) = crate::eval::macros::defn_param_types(heap, form) {
+            let spelling = value::symbol_name(name);
+            let pos = heap.form_pos_only(form);
+            for (label, ty_form) in types {
+                if let Some(problem) = annot::type_expr_problem(heap, ty_form) {
+                    let what = if label == "->" {
+                        "the result".to_string()
+                    } else {
+                        format!("parameter `{label}`")
+                    };
+                    out.push((pos, format!("defn {spelling}: {what}: {problem}")));
+                }
+            }
+            continue;
+        }
         let Some((name, ty_form)) = annot::sig_decl_parts(heap, form) else {
             continue;
         };

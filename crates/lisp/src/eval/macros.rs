@@ -29,8 +29,8 @@ use linmap::*;
 pub(crate) use patterns::*;
 use pipeline::*;
 pub use resolve::*;
-pub(crate) use typed::typed_param_sig;
 use typed::*;
+pub(crate) use typed::{defn_param_types, typed_param_sig};
 
 use crate::core::heap::Heap;
 use crate::core::keywords as kw;

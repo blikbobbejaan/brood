@@ -76,3 +76,20 @@ fn the_checker_binds_the_name_not_the_typed_symbol() {
         "the body's `x` is the parameter: {ws:?}"
     );
 }
+
+/// ADR-259 holds for typed parameters: an unreadable type is reported, not silently widened.
+#[test]
+fn a_misspelled_parameter_type_is_reported() {
+    let ws = file_warnings("(defn f (s:strng -> int) 0)");
+    assert!(
+        ws.iter()
+            .any(|w| w.contains("defn f: parameter `s`") && w.contains("unknown type `strng`")),
+        "{ws:?}"
+    );
+    let ws = file_warnings("(defn g (s:string -> intt) 0)");
+    assert!(
+        ws.iter()
+            .any(|w| w.contains("defn g: the result") && w.contains("unknown type `intt`")),
+        "{ws:?}"
+    );
+}

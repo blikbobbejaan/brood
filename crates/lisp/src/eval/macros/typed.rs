@@ -163,6 +163,60 @@ pub(crate) fn typed_param_sig(heap: &mut Heap, params: Value) -> Option<Value> {
         .map(|(_, sig)| sig)
 }
 
+/// For a raw `(defn NAME (params…) …)` / `(defn- …)` whose parameter list carries types: the
+/// name and each type form it writes, labelled — the parameter's name, or `->` for the result.
+/// `None` for any other form or an untyped list. Reads only; nothing is allocated (a type
+/// written `x:int` is the interned symbol `int`). For the readers of raw source that hold a
+/// typed definition to what they hold a `(sig …)` to: the declaration check reports an
+/// unreadable type here exactly as in a `sig` (ADR-259).
+pub(crate) fn defn_param_types(heap: &Heap, form: Value) -> Option<(Symbol, Vec<(String, Value)>)> {
+    let items = heap.list_to_vec(form).ok()?;
+    let ValueRef::Sym(head) = items.first()?.unpack() else {
+        return None;
+    };
+    if !value::symbol_is(head, "defn") && !value::symbol_is(head, "defn-") {
+        return None;
+    }
+    let ValueRef::Sym(name) = items.get(1)?.unpack() else {
+        return None;
+    };
+    let params = *items.get(2)?;
+    if !matches!(params.unpack(), ValueRef::Pair(_)) {
+        return None;
+    }
+    let list = heap.list_to_vec(params).ok()?;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < list.len() {
+        let p = list[i];
+        if is_sym(p, syntax_typed::ARROW) {
+            if let Some(&ret) = list.get(i + 1) {
+                out.push((syntax_typed::ARROW.to_string(), ret));
+            }
+            break;
+        }
+        let slot_head = match p.unpack() {
+            ValueRef::Pair(_) => heap
+                .list_to_vec(p)
+                .ok()
+                .and_then(|slot| slot.first().copied()),
+            _ => Some(p),
+        };
+        match slot_head.and_then(typed_name) {
+            Some(TypedName::Inline(n, ty)) => out.push((n.to_string(), value::sym(ty))),
+            Some(TypedName::Next(n)) => {
+                if let Some(&ty) = list.get(i + 1) {
+                    out.push((n.to_string(), ty));
+                }
+                i += 1;
+            }
+            None => {}
+        }
+        i += 1;
+    }
+    (!out.is_empty()).then_some((name, out))
+}
+
 /// Is `fn_items` (`(fn …)`'s items) a multi-clause `fn` — every form after `fn` a clause?
 fn fn_is_multi_clause(heap: &Heap, fn_items: &[Value]) -> bool {
     fn_items.len() > 1 && fn_items[1..].iter().all(|&f| is_clause(heap, f))

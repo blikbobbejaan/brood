@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// No name `std/` declares a `(sig …)` for is also curated. A declaration outranks the
+/// No name `std/` declares — by a `(sig …)` or by typed parameters — is also curated. A declaration outranks the
 /// table, so an entry beside one is dead weight at best — and at worst a second, drifting
 /// statement of the contract, consulted wherever the declaration is not (a module the
 /// check did not load, a lookup chain that reads the table first).
@@ -41,7 +41,11 @@ fn no_curated_name_is_declared_in_std() {
         };
 
         for form in &forms {
-            let Some((name, _)) = super::annot::sig_decl_parts(&heap, *form) else {
+            // A `(sig …)`, or a definition whose typed parameters declare it (ADR-420).
+            let Some(name) = super::annot::sig_decl_parts(&heap, *form)
+                .map(|(name, _)| name)
+                .or_else(|| crate::eval::macros::defn_param_types(&heap, *form).map(|(n, _)| n))
+            else {
                 continue;
             };
             let bare = crate::core::value::symbol_name(name);
